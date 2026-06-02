@@ -161,12 +161,17 @@ For the current local environment, MANO assets are available under `/data/dex_ho
 
 The current v1 runner is `scripts/run_v1_wilor_colmap.py`. It uses:
 
-- WiLoR for per-frame MANO vertices, joints, 2D projections, hand side, and camera-relative hand translations.
-- pycolmap for offline SfM camera poses in arbitrary-scale world coordinates.
+- WiLoR for dense-frame MANO parameters, sampled vertices, 3D joints, 2D projections, hand side, and camera-relative hand translations.
+- pycolmap for offline keyframe SfM camera poses in arbitrary-scale world coordinates.
+- Slerp and translation interpolation to assign dense-frame camera poses from registered keyframes; short edge gaps are marked as predictions and longer gaps remain unavailable.
+- Temporal filtering over hand tracks. Measured hands are smoothed, short gaps are interpolated, and all predicted/interpolated frames are labeled in JSON and overlays.
+- Caption-conditioned tomato tracking with red-component proposals and temporal correction. This is a 2D object track only; occluded frames are marked separately and no 6D object pose is claimed.
+- Relative hand-world coordinates from WiLoR camera-local joints, the interpolated COLMAP camera pose, and a sparse-depth scale estimate. This field is named `joints3d_world_relative` and is for relative visualization, not metric calibration.
 - EgoScale JSON action segments for semantic captions.
-- No object-pose backend. Object pose is marked `not_run` in the output JSON.
 
-This runner should be reported as `camera_backend=pycolmap_sfm`, not as SLAM. DPVO was attempted as the SLAM/VO backend, but its CUDA extension failed to compile against the current Torch/CUDA API because the kernels call `AT_DISPATCH_FLOATING_TYPES_AND_HALF` with `tensor.type()`. The v1 output therefore answers the deliverable format with real hand reconstruction and real camera pose, while leaving the SLAM-specific risk unresolved.
+This runner should be reported as `camera_backend=pycolmap_sfm_keyframes`, not as SLAM. DPVO was attempted as the SLAM/VO backend, but its CUDA extension failed to compile against the current Torch/CUDA API because the kernels call `AT_DISPATCH_FLOATING_TYPES_AND_HALF` with `tensor.type()`. The v1 output therefore answers the deliverable format with real hand reconstruction, real offline camera pose, dense interpolation, filtering, and 2D object tracking, while leaving the SLAM-specific risk unresolved.
+
+The dense tomato example output is in `outputs/examples/tomato_v1_wilor_colmap_dense`. It was rendered at 10 fps for the 68 s clip, producing 680-frame overlay, reconstruction, and side-by-side videos. The 3D panel displays the relative SfM camera path, relative world wrist anchors when camera pose is available, and a camera-local MANO inset. It does not display uncalibrated WiLoR mesh geometry as a metric world reconstruction.
 
 ## Quality Checks
 
