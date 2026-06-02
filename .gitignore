@@ -4,3 +4,5 @@ LOG.md
 __pycache__/
 *.pyc
 outputs/
+.DS_Store
+.serena/

@@ -147,6 +147,8 @@ The first runnable v1 example should process one challenging but tractable clip:
 
 This clip is a home-kitchen tomato preparation task with both small and large camera-motion labels. It has visible hands, a manipulated food object, and enough head motion to expose localization uncertainty.
 
+The example run is acceptable only if it exercises real backends for the modules it claims. A run that only decodes video, draws generic keypoints, or writes files is a baseline overlay, not a pipeline proof.
+
 The example run is acceptable only if it produces:
 
 - `overlay.mp4`
@@ -155,7 +157,9 @@ The example run is acceptable only if it produces:
 - `annotations.json`
 - `qc.json`
 
-For the current local environment, MANO assets are available under `/data/dex_home/yiwen/mano_assets/mano/models/`, and `manotorch` is available under `/data/dex_home/yiwen/manotorch`. The example runner should validate those assets and export a MANO template mesh record. The current runner still uses MediaPipe as a proposal backend for image evidence; template MANO availability is not the same as per-frame MANO reconstruction from HaMeR/WiLoR.
+For the current local environment, MANO assets are available under `/data/dex_home/yiwen/mano_assets/mano/models/`, and `manotorch` is available under `/data/dex_home/yiwen/manotorch`. Template MANO availability is not per-frame MANO reconstruction. A minimum real-backend example must either run HaMeR/WiLoR or fit MANO parameters against observed evidence and report the fit residuals.
+
+The current real example runner is `scripts/run_v1_real_example.py`. It runs pycolmap on sampled frames, fits MANO parameters to MediaPipe 2D landmarks through `manotorch`, and tracks red tomato-like masks. Its object output is a mask track, not 6D pose, and its MANO output is a landmark-supervised fit, not an RGB MANO regressor.
 
 ## Quality Checks
 
