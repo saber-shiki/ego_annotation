@@ -6,3 +6,4 @@ __pycache__/
 outputs/
 .DS_Store
 .serena/
+third_party/

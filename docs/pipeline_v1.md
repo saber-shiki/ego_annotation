@@ -157,9 +157,16 @@ The example run is acceptable only if it produces:
 - `annotations.json`
 - `qc.json`
 
-For the current local environment, MANO assets are available under `/data/dex_home/yiwen/mano_assets/mano/models/`, and `manotorch` is available under `/data/dex_home/yiwen/manotorch`. Template MANO availability is not per-frame MANO reconstruction. A minimum real-backend example must either run HaMeR/WiLoR or fit MANO parameters against observed evidence and report the fit residuals.
+For the current local environment, MANO assets are available under `/data/dex_home/yiwen/mano_assets/mano/models/`. Template MANO availability is not per-frame MANO reconstruction. A minimum real-backend example must either run HaMeR/WiLoR or fit MANO parameters against observed evidence and report the fit residuals.
 
-The current real example runner is `scripts/run_v1_real_example.py`. It runs pycolmap on sampled frames, fits MANO parameters to MediaPipe 2D landmarks through `manotorch`, and tracks red tomato-like masks. Its object output is a mask track, not 6D pose, and its MANO output is a landmark-supervised fit, not an RGB MANO regressor.
+The current v1 runner is `scripts/run_v1_wilor_colmap.py`. It uses:
+
+- WiLoR for per-frame MANO vertices, joints, 2D projections, hand side, and camera-relative hand translations.
+- pycolmap for offline SfM camera poses in arbitrary-scale world coordinates.
+- EgoScale JSON action segments for semantic captions.
+- No object-pose backend. Object pose is marked `not_run` in the output JSON.
+
+This runner should be reported as `camera_backend=pycolmap_sfm`, not as SLAM. DPVO was attempted as the SLAM/VO backend, but its CUDA extension failed to compile against the current Torch/CUDA API because the kernels call `AT_DISPATCH_FLOATING_TYPES_AND_HALF` with `tensor.type()`. The v1 output therefore answers the deliverable format with real hand reconstruction and real camera pose, while leaving the SLAM-specific risk unresolved.
 
 ## Quality Checks
 
