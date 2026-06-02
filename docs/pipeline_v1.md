@@ -2,188 +2,198 @@
 
 ## Scope
 
-Pipeline v1 targets RGB-only egocentric clips from `/data2/egoscale_demo_30h`. Each task folder contains one MP4 and one JSON action annotation. The v1 output is an inspectable annotation package per clip:
+Pipeline v1 is the first end-to-end RGB-only annotation pipeline for EgoScale kitchen manipulation clips. It produces:
 
-- video overlay with hand detections, hand keypoints, quality flags, and semantic caption
-- 3D animation with head-camera trajectory, hand landmarks or MANO mesh when available, and optional object track
-- side-by-side video plus 3D reconstruction with caption timeline
-- per-frame annotation JSON and QC report
+- `overlay_mano_object.mp4`: source video with MANO hand overlays, object mask/extent, and semantic caption.
+- `reconstruction_3d_world.mp4`: clip-local 3D animation of DROID-SLAM head camera path, MANO hand joints/surface samples, and object centroid/extent.
+- `side_by_side.mp4`: synchronized overlay and 3D reconstruction with the caption timeline.
+- `annotations_v1_full.json`: per-source-frame hand, camera, object, caption, status, and QC-bearing fields.
+- `qc_v1_full.json`: backend coverage, scale evidence, smoothing/prediction counts, and output paths.
 
-The RGB-only package does not contain depth, IMU, calibration, or ground truth. Metric 5 mm accuracy cannot be claimed globally from these inputs. v1 treats 5 mm as a refinement target for visible, locally constrained contacts after calibration and scale anchoring; the deliverable must expose uncertainty and gap intervals.
+The input package has RGB video and action JSON only. It has no ground-truth poses, no depth stream, no IMU, and no camera calibration file in the inspected task folders. v1 therefore reports a metric-like clip-local reconstruction anchored by hand anthropometry and monocular DROID depth, but it cannot certify 5 mm absolute accuracy. The 5 mm target remains a design target for v2+ after explicit calibration, depth, fiducials, or measured object/scene priors are added.
 
-## Dataset Observations
+## Implemented Example
 
-The package has 1,757 MP4/JSON pairs, about 99 GB total. Sampled videos are 1920x1080, H.264, 30 fps. The JSON is action-level semantic metadata and camera-motion labels. Metadata loading must use `utf-8-sig`, because some JSON files include a UTF-8 BOM.
-
-Frame-weighted camera-motion labels in the delivered metadata are approximately:
-
-- small: 20.05 h, 84.3%
-- large: 3.41 h, 14.3%
-- medium: 0.33 h, 1.4%
-
-The hard cases are split across two mechanisms. Tabletop tasks have useful scene texture and stable head pose, but hands, tools, yarn, cloth, and food frequently occlude fingers. Floor and mopping tasks have wider camera motion, blur, specular or low-texture surfaces, and long foreground tools that dominate the image.
-
-## Coordinate Contract
-
-All modules should emit data into one clip-local coordinate system:
-
-- `world`: right-handed, meters, initialized from the first accepted camera frame
-- `T_world_camera`: camera-to-world transform per frame
-- `T_camera_world`: inverse transform for rendering and reprojection checks
-- `T_world_wrist_left`, `T_world_wrist_right`: MANO wrist/root transforms when available
-- `T_world_object_<id>`: rigid object pose when object tracking is enabled
-- 2D image coordinates in pixels, with original video resolution recorded
-
-Every numeric stream must include confidence and status. Missing measurements are represented as gaps with reasons. Interpolation is allowed only as a marked prediction interval.
-
-## Modules
-
-### 1. Preprocessing and QC
-
-Inputs:
-
-- MP4
-- action JSON
-- optional camera intrinsics and distortion
-
-Operations:
-
-- read metadata with `encoding="utf-8-sig"`
-- sample representative frames and compute blur/exposure/visibility diagnostics
-- extract hand/object candidate intervals
-- build a caption timeline from existing action segments
-
-Outputs:
-
-- `metadata.json`
-- `frames/` or decoded stream cache when needed
-- `qc.json` with decode status, frame count, fps, resolution, and metadata consistency
-
-### 2. Head Camera Localization
-
-Preferred backends:
-
-- MASt3R-SLAM for dense correspondence and difficult RGB-only scenes
-- DROID-SLAM for strong learned visual SLAM when installation and GPU memory permit
-- DPVO as a lighter learned VO baseline
-- COLMAP only as an offline SfM diagnostic, not as the primary production path
-
-Required behavior:
-
-- use calibrated intrinsics when available
-- run at lower resolution for pose, then render overlays at original resolution
-- expose tracking loss and relocalization intervals
-- align monocular scale using explicit priors only: hand anthropometry, floor/table plane, known tool/object size, AprilTag/calibration clips, or external measurements
-
-Output:
-
-- per-frame `T_world_camera`
-- `scale_status`: `metric`, `scale_prior`, or `relative`
-- SLAM QC: tracked frame ratio, lost intervals, reprojection or correspondence residuals, loop/scale drift indicators
-
-### 3. Hand Pose and MANO
-
-Preferred backends:
-
-- HaMeR for MANO hand mesh recovery from RGB
-- WiLoR for end-to-end 3D hand localization and reconstruction
-- MediaPipe or similar hand detector only as a fast proposal/QC backend, not as the final MANO source
-
-Required behavior:
-
-- detect left/right hands and preserve identity through time
-- output 2D keypoints, MANO pose/shape/camera parameters when available, and per-frame confidence
-- smooth only over visible, consistent intervals
-- mark occlusions, truncations, and low-confidence predictions
-
-Output:
-
-- per-frame hand keypoints
-- MANO vertices, faces, pose, shape, wrist transforms when available
-- hand QC: detection rate, left/right identity switches, high-occlusion intervals, reprojection quality
-
-### 4. Semantic Captioning
-
-v1 uses the existing JSON action segmentation as the primary caption source. A vision LLM can refine captions by sampling frames in each action interval and asking for visible events only. The captioner must preserve the existing timing and must not invent off-screen objects.
-
-Output:
-
-- action timeline with start/end frames, action label, visible-object notes, and final caption text
-
-### 5. Optional Object Pose
-
-Object pose is deferred unless the object is rigid, visible, and identifiable. Preferred backends:
-
-- SAM2 or XMem for object mask tracking
-- FoundationPose or MegaPose when CAD/reference models exist
-- BundleSDF when the clip provides enough views for object reconstruction and tracking
-
-Output:
-
-- object masks
-- `T_world_object_<id>`
-- object QC: mask stability, rigid-fit residual, contact consistency, lost intervals
-
-### 6. Physical Consistency
-
-The refinement stage should optimize a sliding window with:
-
-- camera pose residuals from SLAM/VO
-- 2D reprojection residuals for hands and objects
-- MANO pose and shape priors
-- temporal velocity and acceleration penalties
-- hand-object contact terms only where contact is detected
-- soft non-penetration terms using object or coarse scene signed-distance fields
-- rigid object constancy
-- scale priors from explicit measurements
-
-The optimizer should fail loudly when constraints disagree. A visually plausible overlay is not enough, because overlays can remain plausible even when the world trajectory is wrong.
-
-## Single-Clip Example Policy
-
-The first runnable v1 example should process one challenging but tractable clip:
+The closed v1 example is:
 
 `/data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_7/20260118_1257_Rec3db6_P0_Sc6ab88_task_7.mp4`
 
-This clip is a home-kitchen tomato preparation task with both small and large camera-motion labels. It has visible hands, a manipulated food object, and enough head motion to expose localization uncertainty.
+This is a 2040-frame, 1920x1080, 30 fps tomato preparation clip. The manipulated object interval is frame 312 through 1911 from the JSON action captions.
 
-The example run is acceptable only if it exercises real backends for the modules it claims. A run that only decodes video, draws generic keypoints, or writes files is a baseline overlay, not a pipeline proof.
+Final outputs are under:
 
-The example run is acceptable only if it produces:
+`outputs/examples/tomato_v1_full/fused/`
 
-- `overlay.mp4`
-- `reconstruction_3d.mp4`
-- `side_by_side.mp4`
-- `annotations.json`
-- `qc.json`
+The final full run processed all 2040 source frames and produced 2040-frame videos at 30 fps.
 
-For the current local environment, MANO assets are available under `/data/dex_home/yiwen/mano_assets/mano/models/`. Template MANO availability is not per-frame MANO reconstruction. A minimum real-backend example must either run HaMeR/WiLoR or fit MANO parameters against observed evidence and report the fit residuals.
+## Coordinate Contract
 
-The current v1 runner is `scripts/run_v1_wilor_colmap.py`. It uses:
+All 3D data is expressed in one DROID-derived clip-local world coordinate system:
 
-- WiLoR for dense-frame MANO parameters, sampled vertices, 3D joints, 2D projections, hand side, and camera-relative hand translations.
-- pycolmap for offline keyframe SfM camera poses in arbitrary-scale world coordinates.
-- Slerp and translation interpolation to assign dense-frame camera poses from registered keyframes; short edge gaps are marked as predictions and longer gaps remain unavailable.
-- Temporal filtering over hand tracks. Measured hands are smoothed, short gaps are interpolated, and all predicted/interpolated frames are labeled in JSON and overlays.
-- Caption-conditioned tomato tracking with red-component proposals and temporal correction. This is a 2D object track only; occluded frames are marked separately and no 6D object pose is claimed.
-- Relative hand-world coordinates from WiLoR camera-local joints, the interpolated COLMAP camera pose, and a sparse-depth scale estimate. This field is named `joints3d_world_relative` and is for relative visualization, not metric calibration.
-- EgoScale JSON action segments for semantic captions.
+- `T_world_camera`: camera-to-world transform per source frame.
+- Hand joints and MANO vertices are first solved in source camera meters, then transformed by `T_world_camera`. Runs made before the full-vertex exporter change carry 78 sampled vertices per hand; current WiLoR exports carry full MANO vertices.
+- The object is represented as a deformable centroid with spherical extent, not as a rigid 6D pose, because tomato chopping changes topology and visible shape.
+- Image coordinates remain in original 1920x1080 pixels inside JSON; rendered videos are 960x540 overlay and 1920x540 side-by-side.
 
-This runner should be reported as `camera_backend=pycolmap_sfm_keyframes`, not as SLAM. DPVO was attempted as the SLAM/VO backend, but its CUDA extension failed to compile against the current Torch/CUDA API because the kernels call `AT_DISPATCH_FLOATING_TYPES_AND_HALF` with `tensor.type()`. The v1 output therefore answers the deliverable format with real hand reconstruction, real offline camera pose, dense interpolation, filtering, and 2D object tracking, while leaving the SLAM-specific risk unresolved.
+World scale is estimated by aligning DROID relative depth to source-camera hand depths from WiLoR/MANO geometry. The QC stores the scale sample count, ratio IQR, and residual IQR because this scale anchor is approximate.
 
-The dense tomato example output is in `outputs/examples/tomato_v1_wilor_colmap_dense`. It was rendered at 10 fps for the 68 s clip, producing 680-frame overlay, reconstruction, and side-by-side videos. The 3D panel displays the relative SfM camera path, relative world wrist anchors when camera pose is available, and a camera-local MANO inset. It does not display uncalibrated WiLoR mesh geometry as a metric world reconstruction.
+## Modules
 
-## Quality Checks
+### 1. Metadata And Captions
 
-A v1 clip package should be rejected or marked partial when:
+`run_v1_wilor_colmap.load_actions` reads the EgoScale JSON with `utf-8-sig` because some files contain a BOM. v1 uses the action segment text as the semantic caption source. The caption for each frame is copied from the active segment; no off-screen events are invented.
 
-- video decode fails or frame count is inconsistent
-- hand detection rate is too low for the requested deliverable
-- hand identity flips are visible
-- head pose is relative-scale only while the report claims metric accuracy
-- SLAM loses tracking without a marked gap
-- predicted frames are rendered as measured annotations
-- caption mentions non-visible objects or actions
-- side-by-side output is blank, out of sync, or text occludes the view
+### 2. Head Camera Localization
 
-The QC report should make failure modes visible instead of smoothing them away.
+`scripts/run_droid_full_frame.py` runs DROID-SLAM on every source frame at stride 1. The output contains:
+
+- `droid_dense_trajectory.npz`
+- `droid_dense_trajectory.json`
+- `droid_keyframe_reconstruction.pth`
+- `droid_keyframes.json`
+- `droid_qc.json`
+
+The final tomato run has 2040/2040 dense camera poses and 51 DROID keyframes. DROID depth is stored at network stride 8 and remains monocular relative depth until the fusion stage estimates a global scale.
+
+### 3. MANO Hand Reconstruction
+
+`scripts/run_wilor_full_frame.py` runs WiLoR on every source frame. The output contains full-frame hand detections, 2D joints, MANO camera-space joints, MANO parameters, vertices, side labels, and detector scores.
+
+`scripts/fuse_v1_full_fidelity.py` converts WiLoR output into source-camera meters by:
+
+1. Scaling WiLoR local hand geometry so median wrist-to-middle-tip distance matches 0.175 m.
+2. Solving a least-squares source-camera translation from MANO 3D joints, 2D joints, and source intrinsics.
+3. Rejecting physically invalid hand solves.
+4. Running a constant-velocity RTS Kalman smoother per hand side.
+
+Measured hand frames stay marked as measured; short occlusion/truncation gaps are marked as Kalman predictions. On the final tomato run, left/right hand median source-frame reprojection residuals were about 7.28 px and 9.91 px.
+
+### 4. Object Segmentation And Tracking
+
+The v1 object module is implemented for the tomato example. It is not a generic category-agnostic object tracker.
+
+For each semantic object frame, `scripts/fuse_v1_full_fidelity.py` builds object candidates from:
+
+- caption-relevant hand geometry;
+- compact tomato-red connected components near active hands or prior object state;
+- OWLv2 tomato proposals;
+- SAM ViT-B masks from candidate boxes;
+- temporal prior from the previous accepted object state.
+
+SAM candidates are scored by mask confidence, red content, hand-object contact, distance to action-relevant hands, and temporal consistency. The chosen mask is then refined:
+
+- `chop_red_component_union` joins multiple high-confidence tomato-red components when chopping splits the visible object.
+- `scrape_optical_flow_temporal_union` warps the previous accepted object mask with dense DIS optical flow during scraping so the chopped pile does not collapse to one small red patch when color saturation changes.
+- Degenerate edge-clamped states are rejected instead of rendered.
+
+The object track is smoothed with an RTS Kalman smoother over center, bbox, and area. Predicted frames remain marked as predictions. The final tomato run measured 1587 object frames, predicted 3, and rejected 8 invalid measurements.
+
+### 5. Object World Pose Proxy
+
+Tomato chopping makes a rigid 6D pose invalid. v1 therefore estimates a deformable object centroid and extent:
+
+- The 2D object centroid defines a source-camera ray.
+- DROID depth samples provide absolute depth rows when a nearby keyframe depth is available.
+- Fingertip/contact anchors provide 3D contact constraints when hands are close to the object.
+- Temporal smoothness regularizes the per-frame object depth.
+
+The optimizer solves one depth variable per active object frame with sparse L-BFGS-B bounds. The final annotation stores:
+
+- `center_source_camera_m`
+- `center_world_m`
+- `depth_m`
+- `radius_m`
+- `pose_type = deformable_object_centroid_with_spherical_extent`
+- per-frame depth evidence flags
+
+### 6. Rendering
+
+The overlay renderer draws:
+
+- MANO hand keypoints, skeletons, and projected vertex samples for left and right hands;
+- object masks, extent boxes, and centroids;
+- semantic caption text.
+
+The 3D renderer draws:
+
+- camera trajectory in DROID world coordinates;
+- current hand joints and MANO surface samples in world coordinates;
+- object centroid and spherical extent proxy in world coordinates.
+
+The side-by-side video concatenates the overlay and 3D render at the same frame index, so one source frame corresponds to one output frame.
+
+## Verification On The Tomato Example
+
+Final video checks:
+
+- `overlay_mano_object.mp4`: 960x540, 2040 frames, 30 fps, 68 s.
+- `reconstruction_3d_world.mp4`: 960x540, 2040 frames, 30 fps, 68 s.
+- `side_by_side.mp4`: 1920x540, 2040 frames, 30 fps, 68 s.
+
+Representative visual inspections after the final full run:
+
+- Frame 312: object mask is on the tomato in the container, not the sink/edge artifact.
+- Frame 336: object is left unobserved during edge/occlusion instead of hallucinated.
+- Frame 600: object extent covers the intact tomato slice and the piece under hand/knife contact.
+- Frame 1020: object extent covers the chopped tomato material on the board.
+- Frame 1860: scrape phase tracks the chopped tomato pile.
+- Frame 1910: optical-flow temporal union prevents collapse to a tiny contact patch and keeps the chopped pile extent.
+- Frame 1980: object annotation is absent after the tomato semantic interval.
+
+## Second-Sample Validation
+
+The same v1 pipeline was also run on:
+
+`/data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_5/20260118_1257_Rec3db6_P0_Sc6ab88_task_5.mp4`
+
+This 960-frame tomato washing/peeling clip tests a different scene, sink reflections, water, and pre-contact object visibility. Outputs are under:
+
+`outputs/examples/tomato_task5_full/fused/`
+
+Checks after the corrective rerun:
+
+- DROID-SLAM produced 960/960 dense camera poses.
+- WiLoR detected hands in 939/960 frames.
+- The object module processed the semantic tomato interval frame 270 through 939, measured 666 frames, and marked the first four active frames as Kalman predictions from the first measured tomato state rather than hiding the visible tomato.
+- Final videos are 960 frames at 30 fps: `overlay_mano_object.mp4` is 960x540, `reconstruction_3d_world.mp4` is 960x540, and `side_by_side.mp4` is 1920x540.
+- Visual frames 270, 274, 480, 690, and 900 show object association on the tomato and hand overlays on the active hands.
+
+## Failure Limits
+
+v1 is a real pipeline, but it is still limited by RGB-only monocular evidence:
+
+- DROID scale is inferred from hand geometry and relative depth; it is not a calibrated metric reconstruction.
+- Hand anthropometry introduces scale error because the actual subject hand size is unknown.
+- The object pose is a centroid/extent proxy for a deformable object, not a rigid CAD pose.
+- Tomato segmentation uses object-specific color/semantic cues plus SAM and temporal motion. Other object categories need an explicit object model or a category-specific segmentation strategy.
+- Contact constraints help stabilize object depth but do not prove physical non-penetration without a scene/object SDF.
+
+These limits are recorded in QC and should drive v2 rather than be hidden by rendering.
+
+## Commands
+
+Run DROID on the example:
+
+```bash
+PYTHONPATH=third_party/DROID-SLAM uv run --project . python scripts/run_droid_full_frame.py \
+  --clip /data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_7/20260118_1257_Rec3db6_P0_Sc6ab88_task_7.mp4 \
+  --output-dir outputs/examples/tomato_v1_full/droid \
+  --droid-area 98304
+```
+
+Run WiLoR on the example:
+
+```bash
+uv run --project . python scripts/run_wilor_full_frame.py \
+  --clip /data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_7/20260118_1257_Rec3db6_P0_Sc6ab88_task_7.mp4 \
+  --output-dir outputs/examples/tomato_v1_full/wilor
+```
+
+Fuse and render:
+
+```bash
+PYTHONPATH=scripts uv run --project . python scripts/fuse_v1_full_fidelity.py \
+  --output-dir outputs/examples/tomato_v1_full/fused \
+  --object-stride 1 \
+  --render-width 960
+```

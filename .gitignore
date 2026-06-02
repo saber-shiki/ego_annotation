@@ -7,3 +7,4 @@ outputs/
 .DS_Store
 .serena/
 third_party/
+checkpoints/

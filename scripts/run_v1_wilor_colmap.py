@@ -455,6 +455,7 @@ def run_wilor_on_frame(model, cfg, detector, device, frame: np.ndarray, rescale_
                     "joints2d_raw": joints2d.astype(float).tolist(),
                     "joints2d": joints2d.astype(float).tolist(),
                     "mano_params": mano_params_for_sample(out, n),
+                    "vertices_camera": verts.tolist(),
                     "vertices_camera_sample": verts[::10].tolist(),
                     "filter_status": "measured_raw",
                 }
