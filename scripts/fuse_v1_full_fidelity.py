@@ -1506,12 +1506,38 @@ def render_3d_frame(frames: list[dict], index: int, camera_positions: np.ndarray
     if obj.get("center_world_m") is not None:
         p = np.asarray(obj["center_world_m"], dtype=float)
         ax.scatter([p[0]], [p[1]], [p[2]], color="red", s=38)
+        radius_m = float(obj.get("radius_m", 0.0) or 0.0)
+        if radius_m > 0:
+            theta = np.linspace(0.0, 2.0 * np.pi, 96)
+            zeros = np.zeros_like(theta)
+            circle = radius_m * np.stack([np.cos(theta), np.sin(theta), zeros], axis=1)
+            for axes in ((0, 1, 2), (0, 2, 1), (1, 2, 0)):
+                pts_circle = np.zeros_like(circle)
+                pts_circle[:, axes[0]] = circle[:, 0]
+                pts_circle[:, axes[1]] = circle[:, 1]
+                pts_circle[:, axes[2]] = circle[:, 2]
+                pts_circle += p[None, :]
+                ax.plot(pts_circle[:, 0], pts_circle[:, 1], pts_circle[:, 2], color="red", linewidth=0.8, alpha=0.55)
     all_pts = [camera_positions[max(0, index - 90) : min(len(frames), index + 90)]]
     for hand in frame["hands"]:
         all_pts.append(np.asarray(hand["joints3d_world_m"], dtype=float))
         all_pts.append(hand_vertices(hand, "_world_m"))
     if obj.get("center_world_m") is not None:
-        all_pts.append(np.asarray(obj["center_world_m"], dtype=float)[None])
+        p = np.asarray(obj["center_world_m"], dtype=float)
+        radius_m = float(obj.get("radius_m", 0.0) or 0.0)
+        all_pts.append(
+            np.vstack(
+                [
+                    p,
+                    p + [radius_m, 0.0, 0.0],
+                    p - [radius_m, 0.0, 0.0],
+                    p + [0.0, radius_m, 0.0],
+                    p - [0.0, radius_m, 0.0],
+                    p + [0.0, 0.0, radius_m],
+                    p - [0.0, 0.0, radius_m],
+                ]
+            )
+        )
     pts = np.concatenate(all_pts, axis=0)
     center = pts.mean(axis=0)
     radius = max(0.15, float(np.percentile(np.linalg.norm(pts - center, axis=1), 95)))
