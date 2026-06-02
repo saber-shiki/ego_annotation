@@ -1,2 +1,6 @@
 PROMPT.md
 LOG.md
+.venv/
+__pycache__/
+*.pyc
+outputs/
