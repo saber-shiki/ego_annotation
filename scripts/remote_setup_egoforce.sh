@@ -18,6 +18,7 @@ if [ -n "${CUDA_HOME:-}" ]; then
   export PATH="${CUDA_HOME}/bin:${PATH}"
   export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 fi
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.0}"
 
 if [ ! -x "${UV_BIN}" ]; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
