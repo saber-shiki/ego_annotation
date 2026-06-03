@@ -16,17 +16,24 @@ V2 replaces that object path:
 
 V2 scope: reconstruct the observed surface for a manipulated object and show contact-frame object geometry. V3 scope starts at complete watertight geometry and a single object-centric mesh state across the whole clip.
 
+## V2 Milestone Closure Criteria
+
+The V2 observed-surface milestone is closed against this plan when it has:
+
+- a VLM-produced object plan for a manipulated object track in a representative clip;
+- accepted masks for the delivered interval, with visual QC rejecting identity drift;
+- one declared depth source for the mesh archive;
+- per-frame observed-surface object meshes in world coordinates for the delivered interval;
+- overlay, 3D world reconstruction, and side-by-side videos with MANO hands, head camera, object mesh, and semantic caption;
+- QC that reports hand-object distance residuals and inspected visual failures.
+
 ## Implemented Components
 
 - `scripts/build_object_plan_vlm.py`: calls the OpenAI Responses API with sampled frames and action metadata, returning a structured object plan.
-- `scripts/build_object_point_prompts_vlm.py`: asks a VLM for positive and negative SAM point prompts on selected target-object frames, in image coordinates.
 - `scripts/segment_object_plan_v2.py`: runs plan-driven OWLv2 plus SAM and writes full-timeline annotations with object masks.
-- `scripts/segment_object_points_v2.py`: runs SAM from VLM point prompts when detector boxes localize the wrong object.
 - `scripts/verify_plan_masks_vlm.py`: verifies proposed masks against the target object description using a VLM review sheet.
 - `scripts/estimate_metric_depth_v2.py`: runs Depth Anything V2 metric indoor on measured object-mask frames and stores dense metric depth maps.
 - `scripts/reconstruct_object_mesh_v2.py`: builds a per-frame dynamic mesh from masks, one selected depth source, and head-camera pose; optional contact-depth correction is disabled by default and reported when enabled.
-- `scripts/refine_mask_by_vlm_points_depth_v3.py`: filters point-prompt masks by connected components and metric-depth compatibility with VLM positive points. This is a diagnostic refinement, not a substitute for visual tracking.
-- `scripts/run_sam2_vlm_points_track.py`: propagates a target object through video using SAM2 from VLM point prompts on clean seed frames.
 - `scripts/fuse_v1_full_fidelity.py`: renders `--object-mesh-npz` archives in the 3D world panel.
 
 ## Representative Trash Clip
@@ -58,47 +65,9 @@ Review sheet:
 
 `/data2/ego_annotation_outputs/representative_trash/v2_plan_white_bag_masks/review_sheets/white_bag_plan_masks_000_918.jpg`
 
-### White-Liner Point-Prompt Recovery
+### White-Liner Track Status
 
-The white liner is the manipulated deformable object in the second half of this clip. The rejected OWLv2-box masks did not support object mesh reconstruction, so v3 adds a model-driven point-prompt path.
-
-VLM point prompts:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_point_prompts/object_point_prompts_vlm.json`
-
-Selected prompted frames:
-
-- 534, 602, 671, 678, 720, 797, 858, 880, 900, 918
-
-The VLM placed positive points on visible liner sheet, rim, or folds and negative points on hands, the pink lid, the can interior, floor, wall, plant, and clothing.
-
-SAM point masks:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_points_sam/`
-
-The point masks are semantically better than the OWLv2-box masks. VLM verification accepted all 10 selected masks as the white-liner track:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_points_vlm_verify/qc_vlm_mask_verification.json`
-
-Visual inspection still found spillover: frame 720 included floor glare and clothing fragments, and frame 918 covered the pink lid. Metric-depth component filtering kept 7 of 10 prompted frames but did not fix frame 918 because the false lid/background component had compatible monocular depth:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_points_depth_refined/qc_depth_refined_masks.json`
-
-This falsifies depth-only cleanup for translucent liner masks. The next valid path is video identity tracking or a stronger referring segmentation model, not meshing the raw point masks.
-
-SAM2 propagation from VLM point seeds:
-
-`/mnt/user-home/yiwen/ego_annotation_remote/outputs/v3_white_liner_sam2_points_678_918/`
-
-The 4090 server run used seed frames 678, 720, 797, and 858, and completed 241 frames from 678 to 918. QC reports 241 visible frames.
-
-Local visual review of selected propagated masks rejected this result:
-
-- frame 720: SAM2 tracked floor glare/background instead of the liner;
-- frame 858: SAM2 tracked the pink lid instead of the visible liner flap;
-- frame 900: SAM2 tracked the pink lid.
-
-This falsifies SAM2 propagation from weak translucent-liner point seeds as the white-liner mask solution. The next perception path needs a stronger referring segmentation model or direct model-produced masks for translucent/deformable objects.
+The white liner is the harder manipulated deformable object in the second half of this clip. Its V2 OWLv2-box mask run failed visual QC, so V2 quarantines that track and delivers the accepted pink-lid observed-surface mesh. Follow-on white-liner recovery attempts belong in `docs/pipeline_v3.md`.
 
 ### Accepted Pink-Lid Track
 
@@ -180,7 +149,7 @@ For the contact window 840 to 930:
 - worst distance in this window: 0.597 m at frame 875
 - frames 848 and 885 have near-contact distances below 10 mm, while frames 840 to 847 and 875 show large hand-object depth disagreement
 
-## Current Deliverable Slice
+## Current V2 Milestone Delivery
 
 Contact-window side-by-side render:
 
@@ -203,6 +172,8 @@ Visual inspection:
 - frame 875: the 2D mask covers the lid, but the observed surface is far from both hands;
 - frame 880: the surface stays present and detailed, with remaining depth mismatch against the MANO hands.
 
+This closes the V2 observed-surface mesh milestone for the accepted pink-lid contact-window slice. It does not close the overall annotation pipeline.
+
 ## Evidence Status
 
 The current v2 result supports these mechanisms on one representative non-kitchen clip:
@@ -214,7 +185,7 @@ The current v2 result supports these mechanisms on one representative non-kitche
 - Dynamic observed-surface mesh reconstruction gives a real object mesh in the world panel.
 - The corrected strict run exposes the open scale/contact problem instead of hiding it: the hand-mesh distance distribution remains far above the 5 mm target.
 
-Evidence still required:
+Evidence required by later pipeline versions for the overall task:
 
 - complete mesh reconstruction for the full object, including the unseen backside;
 - a single temporally consistent object-centric mesh identity;
@@ -223,107 +194,6 @@ Evidence still required:
 - joint optimization of depth scale, hand pose, camera pose, object pose, and contact state;
 - physical force consistency with explicit force, mass, inertia, and object acceleration estimates.
 
-## V3 Design Direction
+## After V2
 
-V3 should make the object the state variable across the clip, beyond per-frame observed surfaces.
-
-Masking upgrade:
-
-- Use referring video segmentation or mask tracking after VLM object selection. Good candidates are Grounded-SAM variants, Florence-2/Florence-style referring detection, SAM2 video propagation, XMem/Cutie-style memory tracking, and VLM verification for ambiguous frames.
-- The current white-bag failure is the test case for this upgrade: a detector confidence score can stay high while object identity drifts. The v3 mask stage should carry identity through time and use VLM review sheets to reject drift.
-
-Mesh-prior upgrade:
-
-- Generate a complete object mesh from a clean object crop and mask. SAM 3D Objects is the best matched current model because its input contract is image plus mask and its output is full 3D object geometry, texture, and layout for cluttered natural images. Its public setup requires Hugging Face checkpoint access and a GPU with at least 32 GB VRAM.
-- Use TripoSR as the immediate public executable mesh-prior probe. It produces a complete single image mesh quickly and runs on 4090 class GPUs. TripoSR consumes an isolated object image; SAM 3D consumes the full scene plus mask.
-- Treat the generated mesh as a prior. The optimized object state must fit multi-frame mask silhouettes, metric depth surfaces, DROID camera poses, and MANO contact evidence.
-
-Factor-graph upgrade:
-
-- Variables: camera poses, MANO hand states, object pose, complete object mesh or deformation state, per-frame contact state, and depth/scale corrections.
-- Vision factors: silhouette overlap between rendered mesh and verified masks, depth residuals against observed mask-depth surfaces, temporal pose/deformation smoothness, and object identity consistency across mask-track embeddings or VLM verdicts.
-- Contact factors: non-penetration between MANO mesh and object mesh, contact attraction only for observed or inferred contact states, and contact persistence during grasp-like phases.
-- Force and acceleration factors should enter after object mass, inertia, and contact mode are explicit variables. Before that point, contact residuals constrain geometry while force claims remain underdetermined.
-
-Depth/contact diagnostic:
-
-- `scripts/diagnose_contact_depth_conflict_v3.py` measures the camera-frame depth of the observed object mesh and the MANO vertices that project near the object mask.
-- On frames 840 to 930, 84 of 91 frames have hand vertices near the mask.
-- Median hand-minus-object depth gap for those near-mask vertices is 0.385 m; p95 is 0.667 m.
-- This explains why object pose optimization alone cannot enforce contact: the visual mask says the hand and object overlap in 2D, while the current MANO and monocular metric-depth estimates place them far apart in camera depth.
-
-Current v3 execution target:
-
-1. Use frame 858 of the trash clip as the first mesh-prior test because the accepted mask is clean and both hands interact with the pink lid.
-2. Run TripoSR on the accepted crop to obtain a complete mesh prior.
-3. Align that mesh to the frame-858 metric-depth object surface using similarity ICP plus silhouette scale initialization.
-4. Extend alignment through frames 858 to 930 with an optimizer that can test whether shared mesh geometry explains multiple observed surfaces and MANO contact evidence.
-5. Render the aligned complete mesh together with the v2 observed-surface mesh to expose failure modes visually.
-
-## V3 First Evidence
-
-Input crop and mask:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_triposr_input/`
-
-The crop comes from source frame 858 and uses the accepted pink-lid mask. The object fills a 478 by 478 neutral-background crop.
-
-TripoSR execution:
-
-- model: `stabilityai/TripoSR`
-- server: `192.168.11.220`, A800 GPU, launched through `tmux`
-- local mesh output: `/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_triposr_frame858/0/mesh.obj`
-- mesh size: 28,417 vertices and 56,696 faces
-
-The A800 run was needed because `torchmcubes` requires a CUDA toolkit for build. The 4090 server had Python and torch but lacked `nvcc`; the A800 server had `/usr/local/cuda` and built the dependency. The TripoSR run also required installing `onnxruntime` because `rembg` imports it even when `--no-remove-bg` is used.
-
-Frame-858 prior alignment on the strict metric-depth surface:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858_strict/qc_align_mesh_prior_v3.json`
-
-- observed surface: 1,849 vertices and 3,539 faces
-- aligned complete prior: 28,417 vertices and 56,696 faces
-- prior-to-observed median distance: 10.8 mm
-- observed-to-prior median distance: 8.9 mm
-- prior-to-observed p95 distance: 29.2 mm
-- observed-to-prior p95 distance: 34.4 mm
-
-Tripanel visual review:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858_strict/alignment_review_tripanel.png`
-
-The review shows a round complete prior aligned over a wider irregular observed surface. The numeric surface distance is lower after the strict metric-depth rebuild, but the visual still indicates that the observed mask-depth surface includes more than the compact lid prior. V3 must separate manipulated object identity from adjacent support/trash-can geometry before treating this as object pose.
-
-Window optimization prototype:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_window_858_930/qc_optimize_mesh_prior_window_v3.json`
-
-- window: frames 858 to 930
-- used measured mesh frames: 73
-- variables: 7 shared similarity parameters
-- residual RMS: 3.10 to 1.40
-- status: hit `max_nfev=80`
-- observed-to-prior median distances: 24.5 to 55.9 mm, median 35.0 mm
-- hand-to-prior minimum distances: 0.36 to 39.9 mm, median 2.28 mm
-
-Window visual review:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_window_858_930/window_alignment_review_tripanel.png`
-
-The window optimizer is a failed prototype. The tripanel shows the complete prior inflated into a large oval around the observed surface. The objective reduced numeric residuals by changing scale and rotation without preserving the visible object identity. This failure identifies the next v3 requirement: silhouette rendering factors, per-frame object pose variables, bidirectional surface terms, depth-scale variables, and explicit separation between the manipulated lid and nearby support/trash-can geometry.
-
-Per-frame pose factor-graph probe:
-
-`/data2/ego_annotation_outputs/representative_trash/v3_factor_graph_858_880_depth_probe/qc_object_factor_graph_v3.json`
-
-- window: frames 858 to 880
-- variables: 161, including per-frame rotation, translation, and camera-axis depth offset
-- status: hit `max_nfev=35`
-- residual RMS: 3.22 to 2.71
-- observed-to-prior median surface distance: 58.4 mm to 19.2 mm
-- prior-to-observed median surface distance: 62.1 mm to 18.6 mm
-- contact median distance: 566 mm to 577 mm
-- contact p95 distance: 598 mm to 623 mm
-- depth-axis offsets reached 0.39 m
-
-This probe improves mesh-to-surface fit but leaves contact wrong. That result shifts the next v3 implementation from object-pose-only optimization to joint scale/depth optimization over MANO, object depth, and camera trajectory. The current data says the hand-object contact conflict is upstream of object mesh fitting.
+`docs/pipeline_v3.md` owns the complete-mesh, persistent object-state, referring-segmentation, joint scale/depth/contact, and force-consistency work. Those items are required by the overall annotation constitution, while the V2 milestone closes at observed-surface mesh reconstruction plus an inspected contact-window render.
