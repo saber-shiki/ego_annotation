@@ -331,6 +331,8 @@ def infer_arrays(inference, rgb: np.ndarray, frame: dict, width: int, height: in
 
 def infer_arrays_from_detector(inference, rgb: np.ndarray) -> dict:
     boxes = inference.detect_bounding_boxes(rgb)
+    if "hand" not in boxes.get("left", {}) and "hand" not in boxes.get("right", {}):
+        raise RuntimeError("EgoForce detector found no hand boxes")
     left = inference.left_dataset.transform(rgb, boxes["left"])
     right = inference.right_dataset.transform(rgb, boxes["right"])
     from inference import infer
@@ -350,6 +352,8 @@ def make_hand(
     intrinsics: np.ndarray,
     T_world_camera: np.ndarray,
     backend: str,
+    detector_box: dict | None,
+    crop_source: str,
 ) -> tuple[dict, dict]:
     joints = np.asarray(out["pred_j3d"][side_i], dtype=float)
     vertices = np.asarray(out["pred_vertices"][side_i], dtype=float)
@@ -380,6 +384,7 @@ def make_hand(
         "side": side,
         "measurement_available": bool(measurement_available),
         "detector_score": detector_score,
+        "crop_source": crop_source,
         "filter_status": "egoforce_camera_space",
         "source_intrinsics": intrinsics.astype(float).tolist(),
         "cam_t": cam_t.astype(float).tolist(),
@@ -403,6 +408,16 @@ def make_hand(
     }
     if bbox is not None:
         hand["bbox_xyxy"] = [float(v) for v in bbox]
+    if detector_box is not None and "hand" in detector_box:
+        det_hand = detector_box["hand"]
+        detector_bbox = np.asarray(det_hand.get("bbox", []), dtype=float).reshape(-1)
+        if detector_bbox.shape != (4,):
+            raise RuntimeError(f"{side} EgoForce detector hand box has invalid shape {detector_bbox.shape}")
+        hand["egoforce_detector_bbox_xyxy"] = [float(v) for v in detector_bbox]
+        hand["egoforce_detector_score"] = float(det_hand.get("score", 0.0))
+        keypoint = np.asarray(det_hand.get("keypoint", []), dtype=float)
+        if keypoint.ndim == 2 and keypoint.shape[1] == 2:
+            hand["egoforce_detector_keypoints2d"] = keypoint.astype(float).tolist()
     row = {
         "frame_idx": int(frame["frame_idx"]),
         "side": side,
@@ -413,7 +428,10 @@ def make_hand(
         "median_camera_depth_m": float(np.median(joints[:, 2])),
         "vertex_count": int(len(vertices)),
         "arm_vertex_count": int(len(arm_vertices)),
+        "crop_source": crop_source,
     }
+    if detector_box is not None and "hand" in detector_box:
+        row["egoforce_detector_score"] = float(detector_box["hand"].get("score", 0.0))
     return hand, row
 
 
@@ -491,7 +509,8 @@ def run(args: argparse.Namespace) -> dict:
             new_hands = []
             raw_entry = {}
             for side_i, side in enumerate(("left", "right")):
-                if observed_hand(frame, side) is None:
+                detector_side_box = boxes.get(side, {})
+                if args.crop_source == "annotation_boxes" and observed_hand(frame, side) is None:
                     skipped.append({"frame_idx": frame_idx, "side": side, "reason": "missing_observed_hand_box"})
                     continue
                 if args.crop_source == "egoforce_detector" and "hand" not in boxes.get(side, {}):
@@ -506,6 +525,8 @@ def run(args: argparse.Namespace) -> dict:
                         intrinsics=intrinsics,
                         T_world_camera=T,
                         backend="EgoForce",
+                        detector_box=detector_side_box,
+                        crop_source=args.crop_source,
                     )
                 except Exception as exc:
                     skipped.append({"frame_idx": frame_idx, "side": side, "reason": str(exc)})
