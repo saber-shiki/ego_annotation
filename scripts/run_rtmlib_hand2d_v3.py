@@ -269,7 +269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wilor-raw", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--backend", default="onnxruntime")
-    parser.add_argument("--mode", default="balanced", choices=["performance", "balanced", "lightweight"])
+    parser.add_argument("--mode", default="lightweight", choices=["lightweight"])
     parser.add_argument("--det-frequency", type=int, default=1)
     parser.add_argument("--min-keypoints", type=int, default=8)
     parser.add_argument("--draw-score-thr", type=float, default=0.3)
