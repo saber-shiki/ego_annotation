@@ -110,6 +110,21 @@ Factors:
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
 
+Current diagnostics narrow the remaining missing evidence. The next solver cannot be another local smoother over the same variables. It must add at least one nonlocal source of metric information:
+
+- a calibrated camera/head scale source, such as measured camera intrinsics plus a known-size object or scene measurement;
+- a stronger 3D hand-depth model that predicts metric hand state directly from egocentric images and is checked against 2D RTMLib/WiLoR agreement;
+- a temporal hand reconstruction stage that optimizes MANO pose and depth over many frames with metric-depth observations, then uses contact as a checked residual rather than a mandatory attraction;
+- object support and force checks only after the hand/object trajectory is geometrically credible.
+
+Until one of these sources is added, V3 should report the contradiction instead of rendering corrected contact. The current evidence rejects these approaches as closure mechanisms:
+
+- object-only mesh pose refinement;
+- translation-only, similarity-only, rigid, and local MANO pose refits;
+- HaWoR direct replacement or camera-local adaptation;
+- Kalman smoothing over the current hand state;
+- forcing contact when image-supported contact rows are sparse or inconsistent.
+
 Operationally, the version sequence is:
 
 - V1: prove the full annotation plumbing with dense head trajectory, WiLoR MANO, captions, and an initial 3D presentation.
