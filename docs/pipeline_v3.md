@@ -309,6 +309,29 @@ Result:
 
 Interpretation: local metric-depth instability does not explain the main MANO-depth excess. Even stable depth patches with good 2D keypoints place current MANO substantially deeper than the depth surface. The near-object subset is worse, so contact/occlusion regions need special treatment, but the broad mechanism is a MANO/camera-depth alignment error rather than only edge noise in metric depth.
 
+### Hand-Contact Reliability Diagnostic
+
+Implemented:
+
+- `scripts/diagnose_hand_contact_reliability_v3.py`
+
+This diagnostic asks whether current WiLoR hands can be used as physical contact observations for the accepted pink-lid object mesh. A hand row is reliable only when the hand is measured, detector score is high, raw 2D keypoint reprojection is good, metric-depth samples at hand joints agree with MANO depth, local depth patches are stable, MANO hand span is plausible, and near-mask hand vertices are already close to the object surface:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hand_contact_reliability_840_930.json`
+
+Result:
+
+- hand rows: 50;
+- measured high-score hand rows: 27;
+- reliable contact rows: 0;
+- measured high-score median 2D keypoint reprojection: 23.6 px;
+- measured high-score median MANO-minus-metric-depth residual: 257 mm;
+- measured high-score median hand/object contact-depth gap: 115 mm, computed only on the 5 rows with near-mask contact samples;
+- measured high-score median hand span: 101 mm;
+- condition counts for measured high-score rows: 5 pass projection, 0 pass depth, 7 pass stable-depth, 9 pass span, 0 pass contact.
+
+Interpretation: the current WiLoR hand stream cannot provide valid contact factors in this slice. Detector score alone is misleading under occlusion. The graph must either use a stronger egocentric world-hand backend or refit MANO pose/translation with 2D keypoints, metric depth, hand-size priors, and temporal constraints before contact residuals become physical evidence.
+
 ### MANO Depth-Refit Candidate Render
 
 Implemented:
@@ -353,17 +376,19 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/diagnose_metric_depth_alignment_v3.py`
 - `scripts/refit_mano_metric_depth_v3.py`
 - `scripts/diagnose_hand_depth_reliability_v3.py`
+- `scripts/diagnose_hand_contact_reliability_v3.py`
 - `scripts/apply_mano_depth_refit_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 - `scripts/optimize_joint_mano_object_graph_v3.py`
+- `scripts/remote_setup_hawor.sh`
+- `scripts/export_hawor_world.py`
 
 ## Immediate Execution Plan
 
-1. Restore GPU-server connectivity and inspect any existing `ego_samwise_setup` tmux session before launching duplicate work.
-2. Complete SAMWISE setup in tmux on a GPU host and verify the checkpoint file.
-3. Run `scripts/run_samwise_referring_masks.py` on frames 678 to 918.
-4. Pull review stills and mask QC; visually reject or accept before meshing.
-5. If SAMWISE masks pass, reconstruct a white-liner observed-surface mesh and test whether depth/contact conflict resembles the pink-lid case.
-6. If SAMWISE masks fail, move to SOLA or image-level referring segmentation instead of writing visual if/else cleanup.
-7. Replace the current source-camera MANO placement with a stronger hand/camera/depth estimator before expanding the joint graph, because the current graph cannot satisfy contact without violating reprojection or hand-size priors.
+1. Restore GPU-server connectivity and inspect tmux sessions before launching duplicate work.
+2. Run `scripts/remote_setup_hawor.sh` in tmux on a GPU host and verify HaWoR, masked DROID-SLAM, Metric3D, weights, and MANO assets.
+3. Run `scripts/export_hawor_world.py` on the representative trash clip to export world-space MANO hands, validity masks, and SLAM camera poses.
+4. Compare HaWoR hand rows against the same contact-reliability diagnostic. V3 can use HaWoR contact factors only if reliable contact rows become nonzero and the median depth/contact errors fall below the documented thresholds.
+5. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
+6. If HaWoR also fails the contact-reliability diagnostic, implement a MANO-layer refit that optimizes pose, translation, and temporal state from raw 2D keypoints plus metric-depth samples, instead of relaxing contact thresholds.
