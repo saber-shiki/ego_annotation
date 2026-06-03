@@ -96,6 +96,29 @@ def hand_data_from_bbox(bbox: list[float], width: int, height: int) -> dict:
     return {"bbox": np.asarray([x0, y0, x1, y1], dtype=float), "keypoint": keypoints}
 
 
+def detector_box_is_valid(box: dict, width: int, height: int) -> bool:
+    bbox = np.asarray(box.get("bbox", []), dtype=float).reshape(-1)
+    if bbox.shape != (4,) or not np.isfinite(bbox).all():
+        return False
+    keypoints = np.asarray(box.get("keypoint", []), dtype=float)
+    if keypoints.ndim != 2 or keypoints.shape[0] < 3 or keypoints.shape[1] < 2:
+        return False
+    if not np.isfinite(keypoints[:, :2]).all():
+        return False
+    x0, y0, x1, y1 = [float(v) for v in bbox]
+    return x1 > x0 and y1 > y0 and x0 < width and y0 < height and x1 >= 0.0 and y1 >= 0.0
+
+
+def sanitize_detector_boxes(boxes: dict, width: int, height: int) -> dict:
+    sanitized = {"left": dict(boxes.get("left", {})), "right": dict(boxes.get("right", {}))}
+    for side in ("left", "right"):
+        side_boxes = sanitized[side]
+        for key in ("hand", "arm"):
+            if key in side_boxes and not detector_box_is_valid(side_boxes[key], width, height):
+                del side_boxes[key]
+    return sanitized
+
+
 def build_box_payload(
     side: str,
     frame: dict,
@@ -330,7 +353,8 @@ def infer_arrays(inference, rgb: np.ndarray, frame: dict, width: int, height: in
 
 
 def infer_arrays_from_detector(inference, rgb: np.ndarray) -> dict:
-    boxes = inference.detect_bounding_boxes(rgb)
+    height, width = rgb.shape[:2]
+    boxes = sanitize_detector_boxes(inference.detect_bounding_boxes(rgb), width, height)
     if "hand" not in boxes.get("left", {}) and "hand" not in boxes.get("right", {}):
         raise RuntimeError("EgoForce detector found no hand boxes")
     left = inference.left_dataset.transform(rgb, boxes["left"])
@@ -350,6 +374,8 @@ def make_hand(
     out: dict,
     frame: dict,
     intrinsics: np.ndarray,
+    image_width: int,
+    image_height: int,
     T_world_camera: np.ndarray,
     backend: str,
     detector_box: dict | None,
@@ -411,8 +437,8 @@ def make_hand(
     if detector_box is not None and "hand" in detector_box:
         det_hand = detector_box["hand"]
         detector_bbox = np.asarray(det_hand.get("bbox", []), dtype=float).reshape(-1)
-        if detector_bbox.shape != (4,):
-            raise RuntimeError(f"{side} EgoForce detector hand box has invalid shape {detector_bbox.shape}")
+        if not detector_box_is_valid(det_hand, image_width, image_height):
+            raise RuntimeError(f"{side} EgoForce detector hand box is invalid: {detector_bbox.tolist()}")
         hand["egoforce_detector_bbox_xyxy"] = [float(v) for v in detector_bbox]
         hand["egoforce_detector_score"] = float(det_hand.get("score", 0.0))
         keypoint = np.asarray(det_hand.get("keypoint", []), dtype=float)
@@ -523,6 +549,8 @@ def run(args: argparse.Namespace) -> dict:
                         out=out,
                         frame=frame,
                         intrinsics=intrinsics,
+                        image_width=width,
+                        image_height=height,
                         T_world_camera=T,
                         backend="EgoForce",
                         detector_box=detector_side_box,
