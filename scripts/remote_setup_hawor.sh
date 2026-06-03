@@ -19,13 +19,16 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.6}"
+export PATH="$CUDA_HOME/bin:$PATH"
 
 if [ ! -d .venv_hawor ]; then
   uv venv --python 3.10 .venv_hawor
 fi
 source .venv_hawor/bin/activate
-uv pip install torch==1.13.0+cu117 torchvision==0.14.0+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+uv pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 uv pip install pip "setuptools<70" wheel ninja packaging
+uv pip install torch-scatter==2.1.2 --find-links https://data.pyg.org/whl/torch-2.6.0+cu126.html
 uv pip install --no-build-isolation -r third_party/HaWoR/requirements.txt
 uv pip install pytorch-lightning==2.2.4 --no-deps
 uv pip install lightning-utilities torchmetrics==1.4.0 gdown
