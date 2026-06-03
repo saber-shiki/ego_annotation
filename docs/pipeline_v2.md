@@ -19,10 +19,14 @@ V2 scope: reconstruct the observed surface for a manipulated object and show con
 ## Implemented Components
 
 - `scripts/build_object_plan_vlm.py`: calls the OpenAI Responses API with sampled frames and action metadata, returning a structured object plan.
+- `scripts/build_object_point_prompts_vlm.py`: asks a VLM for positive and negative SAM point prompts on selected target-object frames, in image coordinates.
 - `scripts/segment_object_plan_v2.py`: runs plan-driven OWLv2 plus SAM and writes full-timeline annotations with object masks.
+- `scripts/segment_object_points_v2.py`: runs SAM from VLM point prompts when detector boxes localize the wrong object.
 - `scripts/verify_plan_masks_vlm.py`: verifies proposed masks against the target object description using a VLM review sheet.
 - `scripts/estimate_metric_depth_v2.py`: runs Depth Anything V2 metric indoor on measured object-mask frames and stores dense metric depth maps.
 - `scripts/reconstruct_object_mesh_v2.py`: builds a per-frame dynamic mesh from masks, one selected depth source, and head-camera pose; optional contact-depth correction is disabled by default and reported when enabled.
+- `scripts/refine_mask_by_vlm_points_depth_v3.py`: filters point-prompt masks by connected components and metric-depth compatibility with VLM positive points. This is a diagnostic refinement, not a substitute for visual tracking.
+- `scripts/run_sam2_vlm_points_track.py`: propagates a target object through video using SAM2 from VLM point prompts on clean seed frames.
 - `scripts/fuse_v1_full_fidelity.py`: renders `--object-mesh-npz` archives in the 3D world panel.
 
 ## Representative Trash Clip
@@ -53,6 +57,40 @@ Visual QC rejected this result. The masks selected the pink lid in frames 880 to
 Review sheet:
 
 `/data2/ego_annotation_outputs/representative_trash/v2_plan_white_bag_masks/review_sheets/white_bag_plan_masks_000_918.jpg`
+
+### White-Liner Point-Prompt Recovery
+
+The white liner is the manipulated deformable object in the second half of this clip. The rejected OWLv2-box masks did not support object mesh reconstruction, so v3 adds a model-driven point-prompt path.
+
+VLM point prompts:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_point_prompts/object_point_prompts_vlm.json`
+
+Selected prompted frames:
+
+- 534, 602, 671, 678, 720, 797, 858, 880, 900, 918
+
+The VLM placed positive points on visible liner sheet, rim, or folds and negative points on hands, the pink lid, the can interior, floor, wall, plant, and clothing.
+
+SAM point masks:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_points_sam/`
+
+The point masks are semantically better than the OWLv2-box masks. VLM verification accepted all 10 selected masks as the white-liner track:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_points_vlm_verify/qc_vlm_mask_verification.json`
+
+Visual inspection still found spillover: frame 720 included floor glare and clothing fragments, and frame 918 covered the pink lid. Metric-depth component filtering kept 7 of 10 prompted frames but did not fix frame 918 because the false lid/background component had compatible monocular depth:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_white_liner_points_depth_refined/qc_depth_refined_masks.json`
+
+This falsifies depth-only cleanup for translucent liner masks. The next valid path is video identity tracking or a stronger referring segmentation model, not meshing the raw point masks.
+
+SAM2 propagation from VLM point seeds:
+
+`/mnt/user-home/yiwen/ego_annotation_remote/outputs/v3_white_liner_sam2_points_678_918/`
+
+The 4090 server run used seed frames 678, 720, 797, and 858, and completed 241 frames from 678 to 918. QC reports 241 visible frames. Local visual review is still pending because SSH transfer from the 4090 host became unstable after the run. This remote result is evidence that the video propagation stage executes; it is not accepted mask evidence until selected propagated masks are pulled and inspected.
 
 ### Accepted Pink-Lid Track
 
