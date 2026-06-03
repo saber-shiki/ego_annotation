@@ -115,9 +115,14 @@ OBJECT_PROFILES: dict[str, dict] = {
         "pose_type": "rigid_object_centroid_with_extent",
     },
     "trash_bag": {
-        "prompts": ("trash bag", "garbage bag", "trash can", "bin"),
-        "keywords": ("trash_bag", "trash bag", "trash can", "garbage bag", "line_trash_can"),
+        "prompts": ("trash bag", "garbage bag", "black trash bag", "white trash bag"),
+        "keywords": ("trash_bag", "trash bag", "garbage bag", "line_trash_can", "open_trash_bag", "adjust_trash_bag"),
         "pose_type": "deformable_bag_or_container_centroid_with_extent",
+    },
+    "trash_can": {
+        "prompts": ("trash can", "garbage can", "bin"),
+        "keywords": ("move_trash_can", "trash can", "garbage can", "bin"),
+        "pose_type": "rigid_container_centroid_with_extent",
     },
     "bowl": {
         "prompts": ("bowl", "white bowl", "porcelain bowl"),
@@ -737,6 +742,9 @@ def infer_object_label(actions: list[dict], requested: str) -> str:
 
 def infer_action_object_label(action: dict) -> tuple[str, float]:
     text = f"{action.get('action', '')} {action.get('description', '')}".lower().replace("_", " ")
+    action_name = action.get("action", "").lower()
+    if action_name == "line_trash_can":
+        return "trash_bag", 10.0
     best_label = None
     best_score = 0.0
     for label, profile in OBJECT_PROFILES.items():
@@ -1110,6 +1118,7 @@ def sam_mask_from_boxes(
         prev_center = 0.5 * (p[:2] + p[2:])
     for box_info in boxes[:8]:
         box = np.asarray(box_info["box"], dtype=np.float32)
+        box_area = max(1.0, float((box[2] - box[0] + 1.0) * (box[3] - box[1] + 1.0)))
         masks, scores, _ = predictor.predict(box=box, multimask_output=True)
         for mask, sam_score in zip(masks, scores):
             area = int(mask.sum())
@@ -1123,6 +1132,10 @@ def sam_mask_from_boxes(
             assoc_dist = association_distance(center, geom)
             prev_dist = math.inf if prev_center is None else float(np.linalg.norm(prev_center - center))
             if min(assoc_dist, prev_dist) > 230.0:
+                continue
+            if area < 0.18 * box_area and contact_ratio <= 0.0 and prev_dist > 90.0:
+                continue
+            if area < 1200 and min(assoc_dist, prev_dist) > 55.0:
                 continue
             if use_red and red_fraction < 0.04 and min(assoc_dist, prev_dist) > 90.0:
                 continue
@@ -1348,6 +1361,13 @@ def fill_object_track(
         indices = [i for i, frame in enumerate(frames) if start <= int(frame["frame_idx"]) <= end]
         if not indices:
             continue
+        pose_type = str(object_profile(label)["pose_type"])
+        area_samples = [
+            float(object_meas[i]["area_px"])
+            for i in indices
+            if object_meas[i] is not None and str(object_meas[i].get("label")) == label
+        ]
+        segment_area_median = float(np.median(area_samples)) if area_samples else 0.0
         meas = []
         conf = []
         valid_measurements: list[dict | None] = []
@@ -1366,9 +1386,16 @@ def fill_object_track(
             box_height = bbox[3] - bbox[1] + 1.0
             prev_jump = math.inf if prev_valid_center is None else float(np.linalg.norm(center - prev_valid_center))
             tomato_guard = m.get("profile") == "tomato_color_refined"
+            area_px = float(m["area_px"])
+            large_deformable = "bag" in pose_type or "deformable" in pose_type
             valid = not (edge and (box_width < 36.0 or box_height < 36.0 or (tomato_guard and float(m.get("red_fraction", 0.0)) < 0.20)))
             if prev_valid_center is not None and prev_jump > 520.0 and float(m.get("min_tip_dist_px", math.inf)) > 60.0:
                 valid = False
+            if large_deformable and segment_area_median > 0.0:
+                if area_px < 0.06 * segment_area_median:
+                    valid = False
+                if area_px < 0.14 * segment_area_median and float(m.get("contact_ratio", 0.0)) <= 0.0 and float(m.get("min_tip_dist_px", math.inf)) > 80.0:
+                    valid = False
             if valid:
                 meas.append(np.asarray(m["center_xy"] + m["bbox_xyxy"] + [math.sqrt(max(1.0, float(m["area_px"])))], dtype=float))
                 conf.append(float(max(0.05, m["score"])))
@@ -1462,6 +1489,7 @@ def fill_object_track(
                 "end_frame": end,
                 "measured_frames": segment_observed,
                 "predicted_frames": segment_predicted,
+                "measurement_area_median_px": segment_area_median,
             }
         )
     if not measured_source_frames:
