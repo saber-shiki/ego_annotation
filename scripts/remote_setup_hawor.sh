@@ -79,6 +79,9 @@ sed -i \
   src/correlation_kernels.cu \
   src/altcorr_kernel.cu \
   thirdparty/lietorch/lietorch/extras/corr_index_kernel.cu
+sed -i \
+  -e 's/::detail::scalar_type(the_type)/the_type.scalarType()/g' \
+  thirdparty/lietorch/lietorch/include/dispatch.h
 rm -rf build droid_backends.egg-info thirdparty/lietorch/build thirdparty/lietorch/lietorch.egg-info
 python setup.py install
 cd "$ROOT/third_party/HaWoR"
