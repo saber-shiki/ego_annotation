@@ -1,117 +1,244 @@
-# Pipeline V2: Physics-Aware Object Refinement
+# Pipeline V2: VLM-Planned Object Mesh Reconstruction
 
-## Scope
+## Logic
 
-Pipeline v2 keeps the v1 measurement stack and adds a physical consistency layer over the object state. It consumes `annotations_v1_full.json`, preserves the object image ray for every active frame, and refines the object depth and extent in the DROID/WiLoR world coordinate system.
+V1 established full-frame plumbing with DROID camera poses, WiLoR MANO hands, captions, object masks, and side-by-side rendering. Its object stage still encoded visual variation in hand-written category logic and rendered object geometry as a proxy. That failed the central requirement: manipulated objects must be reconstructed as geometry, and visual object selection must be model-produced.
 
-The design target follows from v1's residual error. The object already has a full-frame mask track, a source-camera ray, DROID depth rows, and hand-contact anchors. The next observable correction is whether the 3D object proxy is physically consistent with the MANO hands.
+V2 replaces that object path:
 
-## Implementation
+1. A VLM reads sampled video frames and action metadata, then writes an object plan with track IDs, descriptions, open-vocabulary prompts, active intervals, and physical notes.
+2. OWLv2 proposes boxes from the VLM prompts; SAM produces masks from those boxes.
+3. Visual QC and optional VLM mask verification reject masks that cover a different planned object or background.
+4. Depth Anything V2 metric indoor estimates dense per-frame depth for verified mask frames.
+5. The mesh stage back-projects verified mask pixels through the camera intrinsics and head-camera pose to build a dynamic observed-surface mesh in world coordinates.
+6. Contact-aware depth shifting uses MANO source-camera depth only when the mask visibly touches hand keypoints, then recomputes mesh contact distances.
+7. The renderer draws MANO hands, head camera frustum, trajectory, and the object mesh in the world reconstruction panel.
 
-`scripts/refine_v2_physics.py` builds a sparse factor graph with one depth and one radius variable per active object frame.
+V2 scope: reconstruct the observed surface for a manipulated object and show contact-frame object geometry. V3 scope starts at complete watertight geometry and a single object-centric mesh state across the whole clip.
 
-Each frame contributes:
+## Implemented Components
 
-- depth prior: keep the v1 DROID/contact optimized depth unless physical terms justify moving it;
-- mask-radius prior: keep the 3D radius consistent with the visible mask area and current depth;
-- contact-surface residuals: fingertips near the object in image space should lie near the object surface in 3D;
-- non-penetration residuals: MANO surface samples near the object in image space should not sit inside the object extent;
-- temporal center acceleration: object centers should move smoothly along the fixed source rays;
-- temporal radius acceleration: object extent should vary smoothly except where the mask evidence supports change.
+- `scripts/build_object_plan_vlm.py`: calls the OpenAI Responses API with sampled frames and action metadata, returning a structured object plan.
+- `scripts/segment_object_plan_v2.py`: runs plan-driven OWLv2 plus SAM and writes full-timeline annotations with object masks.
+- `scripts/verify_plan_masks_vlm.py`: verifies proposed masks against the target object description using a VLM review sheet.
+- `scripts/estimate_metric_depth_v2.py`: runs Depth Anything V2 metric indoor on measured object-mask frames and stores dense metric depth maps.
+- `scripts/reconstruct_object_mesh_v2.py`: builds a per-frame dynamic mesh from masks, metric depth or DROID depth, head-camera pose, and contact-aware depth correction.
+- `scripts/fuse_v1_full_fidelity.py`: renders `--object-mesh-npz` archives in the 3D world panel.
 
-The optimizer uses `scipy.optimize.least_squares` with a sparse Jacobian pattern over the chain graph. A short-budget run that does not converge raises with the diagnostic residual table instead of writing a partial v2 annotation.
+## Representative Trash Clip
 
-## Outputs
+Clip:
 
-For each clip, v2 writes:
+`/data2/egoscale_demo_30h/egoscale_tasks/20260108_1057_Recf94e_P0_S994da4_task_9/20260108_1057_Recf94e_P0_S994da4_task_9.mp4`
 
-- `annotations_v2_physics.json`
-- `qc_v2_physics.json`
-- `overlay_mano_object.mp4`
-- `reconstruction_3d_world.mp4`
-- `side_by_side.mp4`
+VLM plan:
 
-The renderer is the same visual contract as v1. The overlay is unchanged in image space because v2 refines only the 3D object state. The 3D panel draws the head camera frustum, local trajectory, MANO hands, and v2 object state in a head-local world-coordinate view. The JSON remains in DROID world coordinates; the display view is for legibility and should not be read as a calibrated gravity frame.
+`/data2/ego_annotation_outputs/representative_trash/v2_object_plan/object_plan_vlm.json`
 
-The reported contact and penetration values are internal residual metrics against the spherical object proxy and sampled MANO surface. They measure physical consistency within this model. They are not ground-truth pose error.
+The VLM identified four tracks:
 
-## Validated Samples
+- `black_trash_bag`
+- `white_trash_bag`
+- `off_white_trash_can_first`
+- `pink_lid_trash_can_second`
 
-Task7 tomato chopping/preparation, full-MANO rerun:
+### Failed White-Bag Track
 
-`/data2/ego_annotation_outputs/fullmesh_task7/v2_physics_contact/`
+The white-bag segmentation run processed 471 planned frames and wrote masks for all 471 frames:
 
-- videos: 2040 frames, 30 fps; overlay/reconstruction 960x540; side-by-side 1920x540;
-- optimizer: 1590 active object frames, 105,349 residuals, 215,452 sparse Jacobian nonzeros, 183 function evaluations;
-- MANO surface: full 778-vertex mesh per hand when WiLoR detects a hand;
-- object semantic interval: 1600 frames; 1590 v2 object pose frames and 10 explicitly unobserved degenerate edge/occlusion frames;
-- contact median internal residual: 14.6 mm to 5.9 mm;
-- contact p95 internal residual: 50.7 mm to 25.2 mm;
-- max sampled hand-object penetration: 57.5 mm to 17.9 mm;
-- p95 sampled penetration: 20.3 mm to 2.9 mm.
+`/data2/ego_annotation_outputs/representative_trash/v2_plan_white_bag_masks/`
 
-Task5 tomato washing/peeling, full-MANO rerun:
+Visual QC rejected this result. The masks selected the pink lid in frames 880 to 918 and a wall/door-like surface around frame 534. The detector score and detection rate were live signals for prompt match; the review sheet showed identity drift. This mask set is quarantined, and mesh reconstruction consumes accepted object masks only.
 
-`/data2/ego_annotation_outputs/fullmesh_task5/v2_physics_contact/`
+Review sheet:
 
-- videos: 960 frames, 30 fps; overlay/reconstruction 960x540; side-by-side 1920x540;
-- optimizer: 670 active object frames, 48,632 residuals, 99,266 sparse Jacobian nonzeros, 208 function evaluations;
-- MANO surface: full 778-vertex mesh per hand when WiLoR detects a hand;
-- object semantic interval: 670 frames; 670 v2 object pose frames;
-- contact median internal residual: 13.2 mm to 7.0 mm;
-- contact p95 internal residual: 82.7 mm to 44.0 mm;
-- max sampled hand-object penetration: 45.4 mm to 29.8 mm;
-- p95 sampled penetration: 25.8 mm to 5.4 mm.
+`/data2/ego_annotation_outputs/representative_trash/v2_plan_white_bag_masks/review_sheets/white_bag_plan_masks_000_918.jpg`
 
-Residual RMS before and after v2:
+### Accepted Pink-Lid Track
 
-| clip | residual group | before | after |
-| --- | --- | ---: | ---: |
-| task7 | depth prior | 0.000 | 0.389 |
-| task7 | radius mask | 0.000 | 0.654 |
-| task7 | center acceleration | 0.089 | 0.209 |
-| task7 | radius acceleration | 0.139 | 0.240 |
-| task7 | contact surface | 2.619 | 1.289 |
-| task7 | non-penetration | 0.411 | 0.066 |
-| task5 | depth prior | 0.000 | 0.714 |
-| task5 | radius mask | 0.000 | 1.179 |
-| task5 | center acceleration | 0.102 | 0.340 |
-| task5 | radius acceleration | 0.064 | 0.300 |
-| task5 | contact surface | 4.073 | 2.005 |
-| task5 | non-penetration | 0.535 | 0.112 |
+The pink-lid/trash-can track is visibly manipulated and the mask sheet matches the target object.
 
-The physical refinement moves object depth/radius away from the v1 depth and mask priors to reduce contact and penetration contradictions. Task7 depth IQR changed by -1.1 mm to 29.5 mm; task5 depth IQR changed by -22.6 mm to 12.8 mm.
+Mask output:
 
-Fresh stills inspected after rendering:
+`/data2/ego_annotation_outputs/representative_trash/v2_plan_pink_lid_masks/`
 
-- task7 frames 600 and 1910: object remains on visible tomato material; 3D object extent stays close to active hands;
-- task7 frames 334-343: degenerate edge/occlusion states remain unobserved rather than forcing a 3D object pose;
-- task7 frame 1980: object annotation is absent after the tomato semantic interval; only hand annotations remain;
-- task5 frame 270: predicted pre-contact object state remains on visible tomato with weak hand-contact influence;
-- task5 frame 274: first measured tomato state remains on the visible tomato;
-- task5 frame 480: sink contact frame remains visually coherent after v2 depth/radius refinement.
+Mask QC:
 
-The full-MANO rerun changed the v2 tuning. The earlier sampled-surface setting over-prioritized non-penetration after 778-vertex MANO became available and slightly worsened task5 contact p95. The current default uses `contact_sigma_m = 0.010` and `penetration_sigma_m = 0.020`, which reduced both contact error and sampled penetration on task5 and task7.
+- planned frames processed: 372
+- detected frames: 372
+- target object: `pink_lid_trash_can_second`
+- active frame span: 678 to 1049
 
-## Evidence Limits
+Review sheet:
 
-V2 improves internal physical consistency under the v1 measurement model. Absolute 5 mm certification still requires an external metric reference.
+`/data2/ego_annotation_outputs/representative_trash/v2_plan_pink_lid_masks/review_sheets/pink_lid_plan_masks_678_1049.jpg`
 
-The remaining limit is observability. The dataset package inspected so far has RGB video and action JSON; depth, IMU, camera calibration, fiducials, CAD model, object size, and ground-truth pose are absent. DROID scale is still anchored by WiLoR hand geometry and DROID relative depth. The v2 factor graph can reduce contradictions between hand contact, object depth, object extent, and temporal motion. A calibrated metric reference must come from additional evidence.
+The accepted sheet shows a consistent mask on the pink lid/trash-can assembly from approach through close-up handling.
 
-## V3 Direction
+## Mesh Reconstruction
 
-The next improvement should target the missing observability:
+DROID-only mesh reconstruction produced a real observed-surface mesh, but it missed the most important contact interval because DROID keyframes jumped from frame 818 to frame 980. That left frames 840 to 930 without nearby DROID depth.
 
-- camera and scale: evaluate VGGT or MASt3R-style dense geometry as an additional depth/correspondence prior against DROID on the same clips;
-- object masks: add video-memory tracking after OWLv2/SAM proposals because SAM2 alone lost task7 frames 335-345 under heavy occlusion;
-- object state: use object-family state models. Compact tomato-like objects can keep centroid/extent variables; large deformable bags need surface/keypoint/rim variables; long tools need endpoints/axis variables.
-- hands: fit MANO through temporal/contact residuals in addition to per-frame detector output, and keep per-hand depth correction tied to explicit contact evidence;
-- calibration: add an explicit scale source, such as measured hand size, known object/tool size, AprilTag/Charuco calibration, table plane measurement, or depth/IMU if available.
+DROID-only mesh QC:
 
-SAM2 check on task7 frames 312-360:
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh/qc_object_mesh_v2.json`
 
-- Input interval included all 49 source frames, not only old v2 measured frames.
-- Prompt frame: 312, from the existing v2 object box.
-- SAM2 produced visible masks on 38/49 frames and lost frames 335-345, the heavy occlusion span.
-- This falsifies a segmentation-only v3 for occlusions. The object state still needs contact-aware prediction and physical consistency during full occlusion.
+- mesh frames: 186
+- valid vertices: 74,638
+- valid triangles: 126,956
+- missing near-DROID-keyframe frames: 153
+- hand-mesh distance median: 0.284 m
+
+Depth Anything V2 metric indoor filled that observability gap:
+
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_metric_depth/qc_metric_depth_v2.json`
+
+- selected mask frames: 372
+- dense depth resolution: 960 by 540
+- depth median: 1.109 m
+- depth p05/p95: 0.372 m / 2.234 m
+
+Metric-depth mesh QC:
+
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric/qc_object_mesh_v2.json`
+
+- mesh frames: 339
+- valid vertices: 250,195
+- valid triangles: 456,367
+- frames outside the object interval: 678
+- depth-underconstrained frames: 28
+- mesh-underconstrained frames: 5
+- hand-mesh distance median over frames with hands: 0.096 m
+- hand-mesh distance p05/p95 over frames with hands: 0.00083 m / 0.892 m
+
+For the contact window 840 to 930:
+
+- mesh frames: 91
+- hand-mesh distance median: 0.0028 m
+- hand-mesh distance p05/p95: 0.00059 m / 0.268 m
+- frames 840 to 847 have larger distances, with the worst distance at frame 840: 0.406 m
+- frames 858, 880, 903, and 930 show hand-contact-consistent object mesh geometry
+
+## Current Deliverable Slice
+
+Contact-window side-by-side render:
+
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_render_840_930/side_by_side.mp4`
+
+Frame count and size:
+
+- side-by-side: 91 frames, 30 fps, 1920 by 540
+- overlay: 91 frames, 30 fps, 960 by 540
+- 3D reconstruction: 91 frames, 30 fps, 960 by 540
+
+Inspected stills:
+
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_render_840_930/review_stills/`
+
+Visual inspection:
+
+- frame 858: the object mesh appears as a large lid surface near both hands;
+- frame 880: the object mesh exists in the previously missing DROID-depth gap and overlaps the active hand region;
+- frame 903: the mesh remains close to both hands but shows noisy monocular-depth surface folds;
+- frame 930: the mesh stays present near the handled lid.
+
+## Evidence Status
+
+The current v2 result supports these mechanisms on one representative non-kitchen clip:
+
+- VLM object planning can identify manipulated object tracks.
+- Open-vocabulary detection plus SAM can produce correct object masks when the target is visually unambiguous.
+- The same path can fail when the prompt is ambiguous, as shown by the rejected white-bag masks.
+- Dense metric monocular depth is necessary when DROID keyframes skip the contact interval.
+- Dynamic observed-surface mesh reconstruction gives a real object mesh in the world panel.
+- Contact-aware depth correction can reduce hand-mesh distance to millimeter scale in strong contact frames.
+
+Evidence still required:
+
+- complete mesh reconstruction for the full object, including the unseen backside;
+- a single temporally consistent object-centric mesh identity;
+- deformable white-bag reconstruction;
+- absolute 5 mm accuracy against external ground truth;
+- physical force consistency with explicit force, mass, inertia, and object acceleration estimates.
+
+## V3 Design Direction
+
+V3 should make the object the state variable across the clip, beyond per-frame observed surfaces.
+
+Masking upgrade:
+
+- Use referring video segmentation or mask tracking after VLM object selection. Good candidates are Grounded-SAM variants, Florence-2/Florence-style referring detection, SAM2 video propagation, XMem/Cutie-style memory tracking, and VLM verification for ambiguous frames.
+- The current white-bag failure is the test case for this upgrade: a detector confidence score can stay high while object identity drifts. The v3 mask stage should carry identity through time and use VLM review sheets to reject drift.
+
+Mesh-prior upgrade:
+
+- Generate a complete object mesh from a clean object crop and mask. SAM 3D Objects is the best matched current model because its input contract is image plus mask and its output is full 3D object geometry, texture, and layout for cluttered natural images. Its public setup requires Hugging Face checkpoint access and a GPU with at least 32 GB VRAM.
+- Use TripoSR as the immediate public executable mesh-prior probe. It produces a complete single image mesh quickly and runs on 4090 class GPUs. TripoSR consumes an isolated object image; SAM 3D consumes the full scene plus mask.
+- Treat the generated mesh as a prior. The optimized object state must fit multi-frame mask silhouettes, metric depth surfaces, DROID camera poses, and MANO contact evidence.
+
+Factor-graph upgrade:
+
+- Variables: camera poses, MANO hand states, object pose, complete object mesh or deformation state, per-frame contact state, and depth/scale corrections.
+- Vision factors: silhouette overlap between rendered mesh and verified masks, depth residuals against observed mask-depth surfaces, temporal pose/deformation smoothness, and object identity consistency across mask-track embeddings or VLM verdicts.
+- Contact factors: non-penetration between MANO mesh and object mesh, contact attraction only for observed or inferred contact states, and contact persistence during grasp-like phases.
+- Force and acceleration factors should enter after object mass, inertia, and contact mode are explicit variables. Before that point, contact residuals constrain geometry while force claims remain underdetermined.
+
+Current v3 execution target:
+
+1. Use frame 858 of the trash clip as the first mesh-prior test because the accepted mask is clean and both hands interact with the pink lid.
+2. Run TripoSR on the accepted crop to obtain a complete mesh prior.
+3. Align that mesh to the frame-858 metric-depth object surface using similarity ICP plus silhouette scale initialization.
+4. Extend alignment through frames 858 to 930 with an optimizer that can test whether shared mesh geometry explains multiple observed surfaces and MANO contact evidence.
+5. Render the aligned complete mesh together with the v2 observed-surface mesh to expose failure modes visually.
+
+## V3 First Evidence
+
+Input crop and mask:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_triposr_input/`
+
+The crop comes from source frame 858 and uses the accepted pink-lid mask. The object fills a 478 by 478 neutral-background crop.
+
+TripoSR execution:
+
+- model: `stabilityai/TripoSR`
+- server: `192.168.11.220`, A800 GPU, launched through `tmux`
+- local mesh output: `/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_triposr_frame858/0/mesh.obj`
+- mesh size: 28,417 vertices and 56,696 faces
+
+The A800 run was needed because `torchmcubes` requires a CUDA toolkit for build. The 4090 server had Python and torch but lacked `nvcc`; the A800 server had `/usr/local/cuda` and built the dependency. The TripoSR run also required installing `onnxruntime` because `rembg` imports it even when `--no-remove-bg` is used.
+
+Frame-858 prior alignment:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858/qc_align_mesh_prior_v3.json`
+
+- observed surface: 1,849 vertices and 3,539 faces
+- aligned complete prior: 28,417 vertices and 56,696 faces
+- prior-to-observed median distance: 22.3 mm
+- observed-to-prior median distance: 13.8 mm
+- prior-to-observed p95 distance: 56.0 mm
+- observed-to-prior p95 distance: 53.2 mm
+
+Tripanel visual review:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858/alignment_review_tripanel.png`
+
+The review shows a plausible rounded-lid complete prior inside the larger observed mask-depth surface. The observed surface likely includes lid plus adjacent trash-can geometry, while the prior models the rounded lid-like object. V3 must separate complete object identity from surrounding support geometry during optimization.
+
+Window optimization prototype:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_window_858_930/qc_optimize_mesh_prior_window_v3.json`
+
+- window: frames 858 to 930
+- used measured mesh frames: 73
+- variables: 7 shared similarity parameters
+- residual RMS: 3.10 to 1.40
+- status: hit `max_nfev=80`
+- observed-to-prior median distances: 24.5 to 55.9 mm, median 35.0 mm
+- hand-to-prior minimum distances: 0.36 to 39.9 mm, median 2.28 mm
+
+Window visual review:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_window_858_930/window_alignment_review_tripanel.png`
+
+The window optimizer is a failed prototype. The tripanel shows the complete prior inflated into a large oval around the observed surface. The objective reduced numeric residuals by changing scale and rotation without preserving the visible object identity. This failure identifies the next v3 requirement: silhouette rendering factors, per-frame object pose variables, bidirectional surface terms, and explicit separation between the manipulated lid and nearby support/trash-can geometry.

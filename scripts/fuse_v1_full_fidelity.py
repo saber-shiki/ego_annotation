@@ -6,6 +6,7 @@ import gc
 import inspect
 import json
 import math
+import os
 import pickle
 import time
 import warnings
@@ -199,6 +200,12 @@ class WorldProjector:
     pixels_per_meter: float
     screen_center: tuple[float, float]
     size: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class ObjectMeshFrame:
+    vertices: np.ndarray
+    faces: np.ndarray
 
 
 def load_json(path: Path) -> dict:
@@ -742,9 +749,6 @@ def infer_object_label(actions: list[dict], requested: str) -> str:
 
 def infer_action_object_label(action: dict) -> tuple[str, float]:
     text = f"{action.get('action', '')} {action.get('description', '')}".lower().replace("_", " ")
-    action_name = action.get("action", "").lower()
-    if action_name == "line_trash_can":
-        return "trash_bag", 10.0
     best_label = None
     best_score = 0.0
     for label, profile in OBJECT_PROFILES.items():
@@ -1057,8 +1061,9 @@ def load_owl_detector(device: str):
     from transformers import Owlv2ForObjectDetection, Owlv2Processor
 
     model_id = "google/owlv2-base-patch16-ensemble"
-    processor = Owlv2Processor.from_pretrained(model_id)
-    model = Owlv2ForObjectDetection.from_pretrained(model_id).to(device).eval()
+    local_only = os.environ.get("EGO_LOCAL_FILES_ONLY", "0") == "1"
+    processor = Owlv2Processor.from_pretrained(model_id, local_files_only=local_only)
+    model = Owlv2ForObjectDetection.from_pretrained(model_id, local_files_only=local_only).to(device).eval()
     return processor, model
 
 
@@ -1310,6 +1315,8 @@ def run_object_masks(args: argparse.Namespace, frames: list[dict], actions: list
                 mask_path.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(mask_path), mask_small)
                 object_meas[local_idx]["mask_path"] = str(mask_path)
+                object_meas[local_idx]["mask_image_size"] = [int(render.width), int(render.height)]
+                object_meas[local_idx]["source_image_size"] = [int(frame.shape[1]), int(frame.shape[0])]
                 detected += 1
     finally:
         cap.release()
@@ -2026,6 +2033,63 @@ def draw_polyline(
         cv2.line(image, a, b, color, thickness, cv2.LINE_AA)
 
 
+def load_object_mesh_archive(path: Path | None) -> dict[int, ObjectMeshFrame]:
+    if path is None:
+        return {}
+    blob = np.load(path)
+    required = {"frame_idx", "vertex_offsets", "face_offsets", "vertices", "faces"}
+    missing = required.difference(blob.files)
+    if missing:
+        raise RuntimeError(f"object mesh archive missing keys: {sorted(missing)}")
+    frame_idx = blob["frame_idx"].astype(int)
+    vertex_offsets = blob["vertex_offsets"].astype(np.int64)
+    face_offsets = blob["face_offsets"].astype(np.int64)
+    vertices = blob["vertices"].astype(float)
+    faces = blob["faces"].astype(np.int32)
+    if len(vertex_offsets) != len(frame_idx) + 1 or len(face_offsets) != len(frame_idx) + 1:
+        raise RuntimeError("object mesh archive offsets do not match frame_idx length")
+    out: dict[int, ObjectMeshFrame] = {}
+    for i, source_idx in enumerate(frame_idx):
+        v0, v1 = int(vertex_offsets[i]), int(vertex_offsets[i + 1])
+        f0, f1 = int(face_offsets[i]), int(face_offsets[i + 1])
+        frame_vertices = vertices[v0:v1]
+        frame_faces = faces[f0:f1]
+        if len(frame_vertices) == 0 or len(frame_faces) == 0:
+            raise RuntimeError(f"object mesh archive contains empty mesh for frame {source_idx}")
+        if frame_faces.min() < 0 or frame_faces.max() >= len(frame_vertices):
+            raise RuntimeError(f"object mesh archive face index out of range for frame {source_idx}")
+        out[int(source_idx)] = ObjectMeshFrame(vertices=frame_vertices, faces=frame_faces)
+    return out
+
+
+def draw_object_mesh(image: np.ndarray, mesh: ObjectMeshFrame, projector: WorldProjector) -> None:
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces, dtype=np.int32)
+    if len(vertices) == 0 or len(faces) == 0:
+        return
+    q = vertices @ projector.basis.T
+    face_depth = q[faces].mean(axis=1)[:, 1]
+    order = np.argsort(face_depth)
+    xy = project_world(vertices, projector)
+    overlay = image.copy()
+    for face_id in order:
+        poly = xy[faces[int(face_id)]]
+        if np.any(poly[:, 0] < -1000) or np.any(poly[:, 0] > image.shape[1] + 1000):
+            continue
+        if np.any(poly[:, 1] < -1000) or np.any(poly[:, 1] > image.shape[0] + 1000):
+            continue
+        cv2.fillConvexPoly(overlay, poly.astype(np.int32), (70, 92, 220), cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.30, image, 0.70, 0, image)
+    edge_budget = min(len(faces), 900)
+    edge_ids = np.linspace(0, len(faces) - 1, edge_budget, dtype=int)
+    for face_id in edge_ids:
+        poly = xy[faces[int(face_id)]]
+        cv2.polylines(image, [poly.astype(np.int32)], True, OBJECT_COLOR, 1, cv2.LINE_AA)
+    center = project_world(vertices.mean(axis=0, keepdims=True), projector)[0]
+    cv2.drawMarker(image, tuple(center), OBJECT_COLOR, cv2.MARKER_CROSS, 13, 2, cv2.LINE_AA)
+    cv2.putText(image, "OBJECT MESH", tuple((center + np.asarray([9, 14])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, OBJECT_COLOR, 2, cv2.LINE_AA)
+
+
 def draw_reference_grid(image: np.ndarray, projector: WorldProjector, radius: float) -> None:
     extent = max(0.25, radius * 0.9)
     q_center = projector.q_center
@@ -2109,6 +2173,43 @@ def object_extent_points(obj: dict, basis: np.ndarray) -> np.ndarray:
     return p[None, :] + offsets @ basis
 
 
+def mask_patch_pixels(obj: dict) -> np.ndarray | None:
+    mask_path = obj.get("mask_path")
+    if not mask_path:
+        return None
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        return None
+    mask = mask > 0
+    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(contour) < 20.0:
+        return None
+    hull = cv2.convexHull(contour)
+    epsilon = max(1.5, 0.018 * cv2.arcLength(hull, True))
+    poly = cv2.approxPolyDP(hull, epsilon, True).reshape(-1, 2).astype(float)
+    if len(poly) < 3:
+        return None
+    center = poly.mean(axis=0)
+    angles = np.arctan2(poly[:, 1] - center[1], poly[:, 0] - center[0])
+    poly = poly[np.argsort(angles)]
+    if len(poly) > 10:
+        step = int(math.ceil(len(poly) / 10))
+        poly = poly[::step][:10]
+    size = obj.get("mask_image_size")
+    if size is None:
+        xs = [float(poly[:, 0].max()), float(obj.get("bbox_xyxy", [0, 0, mask.shape[1] - 1, mask.shape[0] - 1])[2])]
+        ys = [float(poly[:, 1].max()), float(obj.get("bbox_xyxy", [0, 0, mask.shape[1] - 1, mask.shape[0] - 1])[3])]
+        size = [mask.shape[1], mask.shape[0]]
+        if max(xs) <= mask.shape[1] and max(ys) <= mask.shape[0]:
+            size = [mask.shape[1], mask.shape[0]]
+    sx = float(obj.get("source_image_size", [mask.shape[1], mask.shape[0]])[0]) / float(size[0])
+    sy = float(obj.get("source_image_size", [mask.shape[1], mask.shape[0]])[1]) / float(size[1])
+    return poly * np.asarray([sx, sy], dtype=float)
+
+
 def object_patch_points(obj: dict, frame: dict) -> np.ndarray | None:
     pose_type = str(obj.get("pose_type", ""))
     if "bag" not in pose_type and "deformable" not in pose_type:
@@ -2122,25 +2223,28 @@ def object_patch_points(obj: dict, frame: dict) -> np.ndarray | None:
     if obj.get("bbox_xyxy") is None or intrinsics is None or obj.get("depth_m") is None:
         return None
     fx, fy, cx, cy = np.asarray(intrinsics, dtype=float)
-    x1, y1, x2, y2 = np.asarray(obj["bbox_xyxy"], dtype=float)
-    w = max(1.0, x2 - x1 + 1.0)
-    h = max(1.0, y2 - y1 + 1.0)
-    inset = 0.08
-    points_2d = np.asarray(
-        [
-            [x1 + inset * w, y1 + inset * h],
-            [x2 - inset * w, y1 + inset * h],
-            [x2 - inset * w, y2 - inset * h],
-            [x1 + inset * w, y2 - inset * h],
-            [0.5 * (x1 + x2), 0.5 * (y1 + y2)],
-        ],
-        dtype=float,
-    )
+    points_2d = mask_patch_pixels(obj)
+    if points_2d is None:
+        x1, y1, x2, y2 = np.asarray(obj["bbox_xyxy"], dtype=float)
+        w = max(1.0, x2 - x1 + 1.0)
+        h = max(1.0, y2 - y1 + 1.0)
+        inset = 0.08
+        points_2d = np.asarray(
+            [
+                [x1 + inset * w, y1 + inset * h],
+                [x2 - inset * w, y1 + inset * h],
+                [x2 - inset * w, y2 - inset * h],
+                [x1 + inset * w, y2 - inset * h],
+            ],
+            dtype=float,
+        )
+    center_2d = np.asarray(obj["center_xy"], dtype=float)
+    points_2d = np.vstack([points_2d, center_2d[None, :]])
     rays = np.c_[(points_2d[:, 0] - cx) / fx, (points_2d[:, 1] - cy) / fy, np.ones(len(points_2d))]
     T = np.asarray(frame["camera"]["T_world_camera_metric"], dtype=float)
     pts = (T @ np.c_[rays * float(obj["depth_m"]), np.ones(len(rays))].T).T[:, :3]
     center = np.asarray(obj["center_world_m"], dtype=float)
-    span = float(np.max(np.linalg.norm(pts[:4] - center[None, :], axis=1)))
+    span = float(np.max(np.linalg.norm(pts[:-1] - center[None, :], axis=1)))
     if not np.isfinite(span) or span < 1e-6:
         return None
     scale = min(1.0, 0.55 / span)
@@ -2157,14 +2261,15 @@ def draw_object_extent(
     radius = float(obj.get("radius_m", 0.0) or 0.0)
     p_xy = project_world(p[None, :], projector)[0]
     if patch is not None:
-        patch_xy = project_world(patch[:4], projector)
+        patch_xy = project_world(patch[:-1], projector)
         overlay = image.copy()
         cv2.fillConvexPoly(overlay, patch_xy, (70, 80, 220), cv2.LINE_AA)
         cv2.addWeighted(overlay, 0.20, image, 0.80, 0, image)
         cv2.polylines(image, [patch_xy], True, OBJECT_COLOR, 3, cv2.LINE_AA)
-        center_xy = project_world(patch[4:5], projector)[0]
-        cv2.drawMarker(image, tuple(center_xy), OBJECT_COLOR, cv2.MARKER_CROSS, 17, 2, cv2.LINE_AA)
-        cv2.putText(image, "OBJECT SURFACE", tuple((center_xy + np.asarray([9, 14])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, OBJECT_COLOR, 2, cv2.LINE_AA)
+        patch_center_xy = patch_xy.mean(axis=0).astype(int)
+        object_center_xy = project_world(patch[-1:], projector)[0]
+        cv2.drawMarker(image, tuple(object_center_xy), OBJECT_COLOR, cv2.MARKER_CROSS, 13, 2, cv2.LINE_AA)
+        cv2.putText(image, "MASK RAY PATCH", tuple((patch_center_xy + np.asarray([9, 14])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, OBJECT_COLOR, 2, cv2.LINE_AA)
         return
     cv2.circle(image, tuple(p_xy), 7, OBJECT_COLOR, -1, cv2.LINE_AA)
     if radius > 0.0:
@@ -2186,6 +2291,7 @@ def render_3d_frame(
     size: tuple[int, int],
     mano_edges: dict[int, np.ndarray],
     display_basis: np.ndarray,
+    object_meshes: dict[int, ObjectMeshFrame] | None = None,
 ) -> np.ndarray:
     width, height = size
     image = np.full((height, width, 3), (244, 245, 240), dtype=np.uint8)
@@ -2199,6 +2305,9 @@ def render_3d_frame(
         verts = hand_vertices(hand, "_world_m")
         scene_pts.extend([joints, verts])
     obj = frame.get("object", {})
+    object_mesh = (object_meshes or {}).get(int(frame["frame_idx"]))
+    if object_mesh is not None:
+        scene_pts.append(object_mesh.vertices)
     if obj.get("center_world_m") is not None:
         patch = object_patch_points(obj, frame)
         if patch is not None:
@@ -2219,7 +2328,9 @@ def render_3d_frame(
     past_path = camera_positions[max(0, index - 30) : index + 1]
     if len(past_path) > 1:
         draw_polyline(image, past_path, projector, (15, 15, 15), 4)
-    if obj.get("center_world_m") is not None:
+    if object_mesh is not None:
+        draw_object_mesh(image, object_mesh, projector)
+    elif obj.get("center_world_m") is not None:
         draw_object_extent(image, obj, projector, object_patch_points(obj, frame))
     for hand in frame["hands"]:
         joints = np.asarray(hand["joints3d_world_m"], dtype=float)
@@ -2267,6 +2378,7 @@ def render_outputs(args: argparse.Namespace, frames: list[dict], render: RenderS
         raise RuntimeError("failed to open video writers")
     camera_positions = np.asarray([frame["camera"]["position_world_m"] for frame in frames], dtype=float)
     display_basis = world_display_basis(frames, camera_positions)
+    object_meshes = load_object_mesh_archive(args.object_mesh_npz)
     sx, sy = render.width / info.width, render.height / info.height
     try:
         for i, frame_ann in enumerate(tqdm(frames, desc="render")):
@@ -2275,7 +2387,7 @@ def render_outputs(args: argparse.Namespace, frames: list[dict], render: RenderS
             draw_object_overlay(frame, frame_ann, sx, sy)
             draw_hand_overlay(frame, frame_ann, sx, sy, mano_edges)
             put_caption(frame, frame_ann["caption"], frame_ann["frame_idx"])
-            panel = render_3d_frame(frames, i, camera_positions, (render.width, render.height), mano_edges, display_basis)
+            panel = render_3d_frame(frames, i, camera_positions, (render.width, render.height), mano_edges, display_basis, object_meshes)
             overlay.write(frame)
             recon.write(panel)
             side.write(np.concatenate([frame, panel], axis=1))
@@ -2335,7 +2447,8 @@ def run(args: argparse.Namespace) -> dict:
             if int(frame["frame_idx"]) != expected:
                 raise RuntimeError("raw WiLoR frames are not source-contiguous")
     droid = np.load(args.droid_npz)
-    actions = load_actions(args.clip.with_suffix(".json"))
+    actions_path = args.actions_json if args.actions_json is not None else args.clip.with_suffix(".json")
+    actions = load_actions(actions_path)
     cap, info = open_video(args.clip)
     cap.release()
     intrinsics = droid["intrinsics_source"].astype(float)
@@ -2432,6 +2545,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-only-annotations", type=Path)
     parser.add_argument("--frame-start", type=int)
     parser.add_argument("--frame-end", type=int)
+    parser.add_argument("--actions-json", type=Path)
+    parser.add_argument("--object-mesh-npz", type=Path)
     return parser.parse_args()
 
 
