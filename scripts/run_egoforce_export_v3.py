@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 
 import cv2
@@ -206,6 +207,10 @@ def make_inference(egoforce_root: Path, camera_model, disable_kalman: bool, pose
 
     from demo_hand_arm_loader import DemoHandArmLoader
     from settings import config as cfg
+    models_pkg = types.ModuleType("models")
+    models_pkg.__path__ = [str(egoforce_root / "models")]
+    models_pkg.__package__ = "models"
+    sys.modules["models"] = models_pkg
     from models.halo import HALO
     from models.limb_model import LimbModel
     from types import SimpleNamespace
