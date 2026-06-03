@@ -259,6 +259,49 @@ Result:
 
 Interpretation: the object mesh sits at the metric-depth surface because V2 meshed that surface, while MANO is systematically deeper than metric depth at the hand joint projections. This does not prove Depth Anything is metrically exact, but it localizes the current pink-lid contact conflict to MANO/camera-depth alignment more strongly than object-mesh depth. The next v3 component must refit measured MANO depth against metric depth and 2D keypoints before contact can become a physically meaningful factor.
 
+### Independent 2D Hand-Keypoint Evidence
+
+Implemented:
+
+- `scripts/run_rtmlib_hand2d_v3.py`
+- `scripts/diagnose_rtmlib_wilor_hand2d_v3.py`
+
+RTMLib was run on the A800 host for frames 840 to 930:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_rtmlib_hand2d_840_930/`
+
+Runtime note: the job was launched under tmux on the GPU server, but ONNXRuntime could not load the CUDA provider because `libcudnn.so.9` was missing from the runtime library path. RTMLib still completed with the ONNXRuntime backend and wrote 91-frame outputs. This affects speed, not the semantics of the 2D keypoint model output.
+
+RTMLib output:
+
+- processed frames: 91;
+- frames with hands: 91;
+- median hands per frame: 2;
+- median RTMLib hand mean score: 0.403;
+- overlay video: `rtmlib_hand2d_overlay.mp4`.
+
+The first all-pairs comparison to WiLoR was misleading because correct and crossed hand pairings were mixed. The one-to-one association diagnostic gives the actual 2D agreement:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_rtmlib_hand2d_840_930/qc_rtmlib_wilor_association.json`
+
+Result:
+
+- frames: 91;
+- frames with at least one RTMLib/WiLoR match: 65;
+- frames with at least one match below 30 px median keypoint error: 54;
+- matched hand instances: 113;
+- good matched hand instances: 101;
+- matched median keypoint delta: 16.3 px;
+- good-match p95 keypoint delta: 21.8 px.
+
+Visual review:
+
+- frame 840 rejects RTMLib as a direct replacement because it marks the lower body/leg region as a low-confidence hand while the visible hand is near the can;
+- frame 880 gives one useful left-hand match at 12.3 px median keypoint delta but misses the right hand;
+- frames 903 and 930 give visually plausible two-hand RTMLib detections and one-to-one matches to WiLoR at roughly 9 to 22 px median keypoint delta.
+
+Interpretation: RTMLib provides an independent live 2D hand-keypoint observation for many contact-window frames. It does not explain the hundreds-of-millimeters hand/object depth conflict, and it cannot be converted into contact constraints when detections are unmatched, low-confidence, or visually false. The next graph should use RTMLib and WiLoR as associated 2D evidence, while metric depth and contact terms own the depth disagreement.
+
 ### MANO Metric-Depth Refit Probe
 
 Implemented:
