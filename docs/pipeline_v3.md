@@ -287,6 +287,28 @@ Status: `diagnostic_mano_reprojection_residual_too_large`.
 
 Interpretation: metric-depth evidence can pull MANO to the depth surface without shrinking the hand. On rows with good initial 2D keypoints, the median reprojection remains below the 12 px threshold after refit. The required shifts are still large, many rows hit the shift bound, and the good-keypoint p95 depth residual remains 140 mm. V3 needs a hand-depth estimator that models metric-depth reliability, hand occlusion, and temporal consistency before applying contact factors to the final annotation.
 
+### Hand-Depth Reliability Diagnostic
+
+Implemented:
+
+- `scripts/diagnose_hand_depth_reliability_v3.py`
+
+This diagnostic samples Depth Anything metric depth at measured hand joints and records local depth-patch stability, keypoint reprojection quality, and proximity to the accepted object mask:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hand_depth_reliability_840_930.json`
+
+Result:
+
+- joint rows: 2604;
+- good-keypoint rows: 1853;
+- stable good-keypoint rows: 1740;
+- stable good-keypoint MANO-minus-metric-depth median: 161 mm;
+- stable good-keypoint depth-patch IQR ratio median/p95: 0.0035 / 0.0187;
+- stable good points near the object mask: 198;
+- stable good near-object MANO-minus-metric-depth median: 230 mm.
+
+Interpretation: local metric-depth instability does not explain the main MANO-depth excess. Even stable depth patches with good 2D keypoints place current MANO substantially deeper than the depth surface. The near-object subset is worse, so contact/occlusion regions need special treatment, but the broad mechanism is a MANO/camera-depth alignment error rather than only edge noise in metric depth.
+
 ## Implemented Diagnostics
 
 The implemented v3 code is diagnostic, not the required solver above:
@@ -297,6 +319,7 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/diagnose_mano_contact_reprojection_tradeoff_v3.py`
 - `scripts/diagnose_metric_depth_alignment_v3.py`
 - `scripts/refit_mano_metric_depth_v3.py`
+- `scripts/diagnose_hand_depth_reliability_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 - `scripts/optimize_joint_mano_object_graph_v3.py`
