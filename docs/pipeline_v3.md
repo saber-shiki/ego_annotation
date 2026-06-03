@@ -109,12 +109,33 @@ Factors:
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
 
+### Joint Depth Contact Probe
+
+The first low-dimensional joint probe uses the same 840 to 930 contact-depth rows, but constrains the correction to one shared MANO depth scale, one shared object depth scale, and smooth per-frame depth shifts:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_joint_depth_contact_840_930.json`
+
+Result:
+
+- rows: 79 frames with at least 80 near-mask hand vertices;
+- raw hand-object depth gap median/p95: 0.390 m / 0.667 m;
+- corrected absolute gap median/p95: 0.009 m / 0.059 m;
+- contact solved threshold: 0.010 m p95;
+- hand depth scale: 0.750, exactly the lower bound;
+- object depth scale: 1.052;
+- hand and object depth shifts both hit their absolute bounds.
+
+Status: `diagnostic_contact_depth_conflict_remains`.
+
+Interpretation: shared depth scale plus smooth shifts cannot explain the contact conflict within the current bounds. The next solver must add image reprojection and silhouette terms for MANO/camera/object state, because the depth-only contact rows alone force implausible corrections and still leave 59 mm p95 contact-depth error.
+
 ## Implemented Diagnostics
 
 The implemented v3 code is diagnostic, not the required solver above:
 
 - `scripts/summarize_contact_depth_scale_v3.py`
 - `scripts/optimize_contact_depth_scale_v3.py`
+- `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 
 ## Immediate Execution Plan
