@@ -390,6 +390,45 @@ Result:
 
 The HaWoR translation-refit annotation produced zero contact-supported observations under the same matched-2D/contact criteria. HaWoR therefore does not close the v3 hand state on this slice. It is still useful evidence that a different hand backend changes the error direction: HaWoR is too shallow relative to metric depth, while WiLoR’s accepted contact rows have a smaller but still inconsistent depth/contact tradeoff.
 
+### EgoForce Pose-Head Branch
+
+EgoForce was tested because it directly targets egocentric camera-space hand pose, the missing quantity in the current failure. The diagnostic used annotation-derived hand boxes only as crops and disabled Kalman filtering:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_egoforce_posehead_840_930/`
+
+Runtime repairs on the A800 host:
+
+- downloaded and size-verified `_DATA/model_weights.pth` from the public EgoForce Hugging Face repository;
+- copied MANO left/right pickle files from `/data/dex_home/yiwen/mano_assets/mano/models`;
+- installed `chumpy` with no build isolation and restored legacy NumPy aliases before MANO pickle loading;
+- bypassed unused EgoForce package imports that pulled in PyTorch3D and depth-model wrappers before the pose head could run;
+- replaced EgoForce's PyTorch3D-dependent camera-space solve with the same pinhole ray-translation least-squares equation over the pose-head 2D/3D outputs and crop metadata.
+
+Output:
+
+- requested frames: 91;
+- hand rows: 131;
+- skipped rows/frames: 43;
+- overlay video: `egoforce_posehead_overlay.mp4`, 83 frames at 1920 x 1080;
+- median joint reprojection to the source observed keypoints: 127 px;
+- p95 joint reprojection: 463 px.
+
+The shared contact-reliability diagnostic gives:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_egoforce_posehead_840_930/qc_contact_reliability_bonescale.json`
+
+Result:
+
+- rows with object masks and meshes: 31;
+- high-score measured rows: 27;
+- reliable contact rows: 0;
+- high-score median joint reprojection: 238 px;
+- depth-consistent rows: 0;
+- contact-consistent rows: 2, but these rows fail projection and depth checks;
+- median hand bone scale: 163 mm.
+
+Visual review of `overlay_probe_001.jpg`, `overlay_probe_002.jpg`, and `overlay_probe_003.jpg` confirms the metric failure: EgoForce points are displaced onto the lid, floor, or arm rather than the visible hand. This branch therefore does not supply usable contact evidence on the representative slice. Full EgoForce detector mode remains a separate test after the full detector setup finishes, because the pose-head diagnostic used annotation boxes and pseudo-arm boxes as crop evidence.
+
 ### MANO Metric-Depth Refit Probe
 
 Implemented:
