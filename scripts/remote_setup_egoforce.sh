@@ -9,6 +9,16 @@ UV_BIN="${UV_BIN:-/mnt/user-home/yiwen/.local/bin/uv}"
 mkdir -p "${ROOT}" "${LOG_DIR}"
 cd "${ROOT}"
 
+if [ -z "${CUDA_HOME:-}" ] && [ -d /usr/local/cuda-12.6 ]; then
+  export CUDA_HOME=/usr/local/cuda-12.6
+elif [ -z "${CUDA_HOME:-}" ] && [ -d /usr/local/cuda ]; then
+  export CUDA_HOME=/usr/local/cuda
+fi
+if [ -n "${CUDA_HOME:-}" ]; then
+  export PATH="${CUDA_HOME}/bin:${PATH}"
+  export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
+fi
+
 if [ ! -x "${UV_BIN}" ]; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   UV_BIN="/mnt/user-home/yiwen/.local/bin/uv"
