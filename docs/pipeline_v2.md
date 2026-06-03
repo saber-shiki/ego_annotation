@@ -90,7 +90,15 @@ SAM2 propagation from VLM point seeds:
 
 `/mnt/user-home/yiwen/ego_annotation_remote/outputs/v3_white_liner_sam2_points_678_918/`
 
-The 4090 server run used seed frames 678, 720, 797, and 858, and completed 241 frames from 678 to 918. QC reports 241 visible frames. Local visual review is still pending because SSH transfer from the 4090 host became unstable after the run. This remote result is evidence that the video propagation stage executes; it is not accepted mask evidence until selected propagated masks are pulled and inspected.
+The 4090 server run used seed frames 678, 720, 797, and 858, and completed 241 frames from 678 to 918. QC reports 241 visible frames.
+
+Local visual review of selected propagated masks rejected this result:
+
+- frame 720: SAM2 tracked floor glare/background instead of the liner;
+- frame 858: SAM2 tracked the pink lid instead of the visible liner flap;
+- frame 900: SAM2 tracked the pink lid.
+
+This falsifies SAM2 propagation from weak translucent-liner point seeds as the white-liner mask solution. The next perception path needs a stronger referring segmentation model or direct model-produced masks for translucent/deformable objects.
 
 ### Accepted Pink-Lid Track
 
