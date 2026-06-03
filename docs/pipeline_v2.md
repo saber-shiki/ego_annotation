@@ -31,7 +31,7 @@ For each clip, v2 writes:
 - `reconstruction_3d_world.mp4`
 - `side_by_side.mp4`
 
-The renderer is the same visual contract as v1. The overlay is unchanged in image space because v2 refines only the 3D object state. The 3D panel draws the head camera frustum, local trajectory, MANO hands, and v2 object centroid/extent in a camera-up aligned world view. The JSON remains in DROID world coordinates; the display view avoids treating DROID's raw z coordinate as physical height.
+The renderer is the same visual contract as v1. The overlay is unchanged in image space because v2 refines only the 3D object state. The 3D panel draws the head camera frustum, local trajectory, MANO hands, and v2 object state in a head-local world-coordinate view. The JSON remains in DROID world coordinates; the display view is for legibility and should not be read as a calibrated gravity frame.
 
 The reported contact and penetration values are internal residual metrics against the spherical object proxy and sampled MANO surface. They measure physical consistency within this model. They are not ground-truth pose error.
 
@@ -104,8 +104,9 @@ The remaining limit is observability. The dataset package inspected so far has R
 The next improvement should target the missing observability:
 
 - camera and scale: evaluate VGGT or MASt3R-style dense geometry as an additional depth/correspondence prior against DROID on the same clips;
-- object masks: replace tomato-specific color proposals with action-segment object profiles, promptable OWLv2/SAM proposals, hand-contact scoring, and video-memory tracking;
-- hands: fit MANO through temporal/contact residuals in addition to per-frame detector output;
+- object masks: add video-memory tracking after OWLv2/SAM proposals because SAM2 alone lost task7 frames 335-345 under heavy occlusion;
+- object state: use object-family state models. Compact tomato-like objects can keep centroid/extent variables; large deformable bags need surface/keypoint/rim variables; long tools need endpoints/axis variables.
+- hands: fit MANO through temporal/contact residuals in addition to per-frame detector output, and keep per-hand depth correction tied to explicit contact evidence;
 - calibration: add an explicit scale source, such as measured hand size, known object/tool size, AprilTag/Charuco calibration, table plane measurement, or depth/IMU if available.
 
 SAM2 check on task7 frames 312-360:

@@ -2,7 +2,7 @@
 
 ## Scope
 
-Pipeline v1 is the first end-to-end RGB-only annotation pipeline for EgoScale manipulation clips. The initial full deliveries were tomato kitchen clips because they were the first clips with all backends completed; representative non-kitchen clips are now tracked separately in `docs/representative_samples.md` and the action-segment object front-end is being tested on the trash-bag sample.
+Pipeline v1 is the first end-to-end RGB-only annotation pipeline for EgoScale manipulation clips. The initial full deliveries were tomato kitchen clips because they were the first clips with all backends completed. Representative non-kitchen clips are tracked in `docs/representative_samples.md`; the trash-bag sample is the current full non-kitchen validation of the action-segment object front-end.
 
 - `overlay_mano_object.mp4`: 960x540 source video render with MANO hand overlays, object mask/extent, and semantic caption.
 - `reconstruction_3d_world.mp4`: clip-local 3D animation of DROID-SLAM head camera path, MANO hand joints/surface samples, and object centroid/extent.
@@ -46,7 +46,8 @@ All 3D data is expressed in one DROID-derived clip-local world coordinate system
 
 - `T_world_camera`: camera-to-world transform per source frame.
 - Hand joints and MANO vertices are first solved in source camera meters, then transformed by `T_world_camera`. The final `/data2/ego_annotation_outputs/fullmesh_task*` deliveries carry full 778-vertex MANO meshes per detected hand.
-- The object is represented as a deformable centroid with spherical extent because tomato chopping changes topology and visible shape.
+- Tomato objects are represented as deformable centroids with spherical extent because chopping changes topology and visible shape.
+- Large deformable bags are represented as visible surface patches from mask/bbox rays plus optimized depth/contact anchors. The JSON still stores centroid/depth/radius fields for continuity.
 - Image coordinates remain in original 1920x1080 pixels inside JSON; rendered videos are 960x540 overlay and 1920x540 side-by-side.
 
 World scale is estimated by aligning DROID relative depth to source-camera hand depths from WiLoR/MANO geometry. The QC stores the scale sample count, ratio IQR, and residual IQR because this scale anchor is approximate.
@@ -84,7 +85,7 @@ Measured hand frames stay marked as measured; short occlusion/truncation gaps ar
 
 ### 4. Object Segmentation And Tracking
 
-The v1 object module currently targets tomato clips. Category-general tracking requires an object model or promptable video-memory tracker per category.
+The object front-end has two operating regimes. Tomato clips use color-refined SAM proposals because red material gives a strong object cue. Representative non-kitchen clips use action-segment object profiles, OWLv2 prompts, SAM masks, hand-contact scoring, temporal continuity, and deformable-size rejection.
 
 For each semantic object frame, `scripts/fuse_v1_full_fidelity.py` builds object candidates from:
 
@@ -133,9 +134,9 @@ The 3D renderer draws:
 - camera trajectory in DROID world coordinates;
 - the current head camera as a frustum with camera-forward/up/right axes;
 - current hand joints and MANO surface samples in world coordinates;
-- object centroid and extent proxy in world coordinates.
+- object centroid/extent for compact objects or an object surface patch for deformable bags.
 
-The renderer aligns the display view to the median camera-up direction. The underlying JSON remains in DROID world coordinates; the render avoids treating DROID's raw z axis as physical height.
+The renderer uses a head-local view for each frame so the egocentric hand-object interaction remains legible while the points stay in DROID world coordinates. The underlying JSON remains in DROID world coordinates; the rendered vertical axis is a display convention and should not be read as a calibrated gravity estimate.
 
 The side-by-side video concatenates the overlay and 3D render at the same frame index, so one source frame corresponds to one output frame.
 
@@ -168,6 +169,20 @@ Checks after the corrective rerun:
 - The object module processed the semantic tomato interval frame 270 through 939, measured 666 frames, and marked the first four active frames as Kalman predictions from the first measured tomato state while keeping the visible tomato represented. The object world proxy covers all 670 semantic frames.
 - Final videos are 960 frames at 30 fps: `overlay_mano_object.mp4` is 960x540, `reconstruction_3d_world.mp4` is 960x540, and `side_by_side.mp4` is 1920x540.
 - Visual frames 270, 274, 480, 690, and 900 show object association on the tomato and hand overlays on the active hands.
+
+## Representative Non-Kitchen Validation
+
+The trash-bag sample under `/data2/ego_annotation_outputs/representative_trash/fused_bagprompt_full_final/` exercises large deformable object tracking outside the tomato/kitchen setting.
+
+Checks after the final corrective rerun:
+
+- DROID-SLAM produced 1050/1050 dense camera poses.
+- WiLoR detected hands in 898/1050 frames.
+- The object module tracked the action-segment `trash_bag` object with 807 measured frames, 3 predicted frames, and 13 rejected invalid/degenerated measurements.
+- The world object stage produced 810 active surface/centroid states using 585 DROID-depth frames and 321 contact-anchor frames.
+- Hand/object contact correction accepted 819 contact-depth measurements and updated 775 hand frames.
+- Final videos are 1050 frames at 30 fps: `overlay_mano_object.mp4` is 960x540, `reconstruction_3d_world.mp4` is 960x540, and `side_by_side.mp4` is 1920x540.
+- Visual frames 90, 269, 678, 900, 910, and 917 were inspected. Frames 910 and 917 correctly suppress object rendering after the visible target is gone.
 
 ## Failure Limits
 
