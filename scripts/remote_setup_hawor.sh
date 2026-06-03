@@ -20,7 +20,9 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-uv venv --python 3.10 .venv_hawor
+if [ ! -d .venv_hawor ]; then
+  uv venv --python 3.10 .venv_hawor
+fi
 source .venv_hawor/bin/activate
 uv pip install torch==1.13.0+cu117 torchvision==0.14.0+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
 uv pip install setuptools wheel ninja packaging
