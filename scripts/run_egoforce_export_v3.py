@@ -207,6 +207,17 @@ def make_inference(egoforce_root: Path, camera_model, disable_kalman: bool, pose
 
     from demo_hand_arm_loader import DemoHandArmLoader
     from settings import config as cfg
+    for name, value in {
+        "bool": bool,
+        "int": int,
+        "float": float,
+        "complex": complex,
+        "object": object,
+        "unicode": str,
+        "str": str,
+    }.items():
+        if not hasattr(np, name):
+            setattr(np, name, value)
     models_pkg = types.ModuleType("models")
     models_pkg.__path__ = [str(egoforce_root / "models")]
     models_pkg.__package__ = "models"
