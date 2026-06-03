@@ -30,6 +30,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.6}"
 export PATH="$CUDA_HOME/bin:$PATH"
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.0}"
+export MAX_JOBS="${MAX_JOBS:-4}"
 
 if [ -f .venv_hawor/.ego_env_marker ] && [ "$(cat .venv_hawor/.ego_env_marker)" != "$ENV_MARKER" ]; then
   rm -rf .venv_hawor
@@ -73,6 +75,10 @@ cp "$MANO_RIGHT" _DATA/data/mano/MANO_RIGHT.pkl
 cp "$MANO_LEFT" _DATA/data_left/mano_left/MANO_LEFT.pkl
 
 cd thirdparty/DROID-SLAM
+sed -i -E \
+  "/-gencode=arch=compute_(60|61|70|75|80|86),code=(sm_|compute_)(60|61|70|75|80|86)/d" \
+  setup.py \
+  thirdparty/lietorch/setup.py
 sed -i \
   -e 's/volume\.type()/volume.scalar_type()/g' \
   -e 's/fmap1\.type()/fmap1.scalar_type()/g' \
