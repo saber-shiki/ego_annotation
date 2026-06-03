@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -125,8 +126,13 @@ def build_box_payload(
 
 
 def make_camera_model(egoforce_root: Path, intrinsics: np.ndarray, width: int, height: int):
-    sys.path.insert(0, str(egoforce_root))
-    from camera_models import PinholeCameraModel
+    module_path = egoforce_root / "camera_models" / "pinhole.py"
+    spec = importlib.util.spec_from_file_location("egoforce_pinhole_camera_model", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load EgoForce pinhole camera module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    PinholeCameraModel = module.PinholeCameraModel
 
     return PinholeCameraModel(intrinsics[:2].astype(np.float32), intrinsics[2:].astype(np.float32), width, height)
 
