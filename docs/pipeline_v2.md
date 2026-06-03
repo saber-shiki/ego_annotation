@@ -33,6 +33,8 @@ For each clip, v2 writes:
 
 The renderer is the same visual contract as v1. The overlay is unchanged in image space because v2 refines only the 3D object state. The 3D panel draws the v2 object centroid and spherical extent.
 
+The reported contact and penetration values are internal residual metrics against the spherical object proxy and sampled MANO surface. They measure physical consistency within this model. They are not ground-truth pose error.
+
 ## Validated Samples
 
 Task7 tomato chopping/preparation, full-MANO rerun:
@@ -42,8 +44,9 @@ Task7 tomato chopping/preparation, full-MANO rerun:
 - videos: 2040 frames, 30 fps; overlay/reconstruction 960x540; side-by-side 1920x540;
 - optimizer: 1590 active object frames, 105,349 residuals, 215,452 sparse Jacobian nonzeros, 183 function evaluations;
 - MANO surface: full 778-vertex mesh per hand when WiLoR detects a hand;
-- contact median error: 14.6 mm to 5.9 mm;
-- contact p95 error: 50.7 mm to 25.2 mm;
+- object semantic interval: 1600 frames; 1590 v2 object pose frames and 10 explicitly unobserved degenerate edge/occlusion frames;
+- contact median internal residual: 14.6 mm to 5.9 mm;
+- contact p95 internal residual: 50.7 mm to 25.2 mm;
 - max sampled hand-object penetration: 57.5 mm to 17.9 mm;
 - p95 sampled penetration: 20.3 mm to 2.9 mm.
 
@@ -54,14 +57,35 @@ Task5 tomato washing/peeling, full-MANO rerun:
 - videos: 960 frames, 30 fps; overlay/reconstruction 960x540; side-by-side 1920x540;
 - optimizer: 670 active object frames, 48,632 residuals, 99,266 sparse Jacobian nonzeros, 208 function evaluations;
 - MANO surface: full 778-vertex mesh per hand when WiLoR detects a hand;
-- contact median error: 13.2 mm to 7.0 mm;
-- contact p95 error: 82.7 mm to 44.0 mm;
+- object semantic interval: 670 frames; 670 v2 object pose frames;
+- contact median internal residual: 13.2 mm to 7.0 mm;
+- contact p95 internal residual: 82.7 mm to 44.0 mm;
 - max sampled hand-object penetration: 45.4 mm to 29.8 mm;
 - p95 sampled penetration: 25.8 mm to 5.4 mm.
+
+Residual RMS before and after v2:
+
+| clip | residual group | before | after |
+| --- | --- | ---: | ---: |
+| task7 | depth prior | 0.000 | 0.389 |
+| task7 | radius mask | 0.000 | 0.654 |
+| task7 | center acceleration | 0.089 | 0.209 |
+| task7 | radius acceleration | 0.139 | 0.240 |
+| task7 | contact surface | 2.619 | 1.289 |
+| task7 | non-penetration | 0.411 | 0.066 |
+| task5 | depth prior | 0.000 | 0.714 |
+| task5 | radius mask | 0.000 | 1.179 |
+| task5 | center acceleration | 0.102 | 0.340 |
+| task5 | radius acceleration | 0.064 | 0.300 |
+| task5 | contact surface | 4.073 | 2.005 |
+| task5 | non-penetration | 0.535 | 0.112 |
+
+The physical refinement moves object depth/radius away from the v1 depth and mask priors to reduce contact and penetration contradictions. Task7 depth IQR changed by -1.1 mm to 29.5 mm; task5 depth IQR changed by -22.6 mm to 12.8 mm.
 
 Fresh stills inspected after rendering:
 
 - task7 frames 600 and 1910: object remains on visible tomato material; 3D object extent stays close to active hands;
+- task7 frames 334-343: degenerate edge/occlusion states remain unobserved rather than forcing a 3D object pose;
 - task7 frame 1980: object annotation is absent after the tomato semantic interval; only hand annotations remain;
 - task5 frame 270: predicted pre-contact object state remains on visible tomato with weak hand-contact influence;
 - task5 frame 274: first measured tomato state remains on the visible tomato;

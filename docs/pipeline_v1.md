@@ -4,9 +4,9 @@
 
 Pipeline v1 is the first end-to-end RGB-only annotation pipeline for EgoScale kitchen manipulation clips. It produces:
 
-- `overlay_mano_object.mp4`: source video with MANO hand overlays, object mask/extent, and semantic caption.
+- `overlay_mano_object.mp4`: 960x540 source video render with MANO hand overlays, object mask/extent, and semantic caption.
 - `reconstruction_3d_world.mp4`: clip-local 3D animation of DROID-SLAM head camera path, MANO hand joints/surface samples, and object centroid/extent.
-- `side_by_side.mp4`: synchronized overlay and 3D reconstruction with the caption timeline.
+- `side_by_side.mp4`: synchronized 1920x540 overlay and 3D reconstruction with the caption timeline.
 - `annotations_v1_full.json`: per-source-frame hand, camera, object, caption, status, and QC-bearing fields.
 - `qc_v1_full.json`: backend coverage, scale evidence, smoothing/prediction counts, and output paths.
 
@@ -124,7 +124,7 @@ The optimizer solves one depth variable per active object frame with sparse L-BF
 
 The overlay renderer draws:
 
-- MANO hand keypoints, skeletons, and projected vertex samples for left and right hands;
+- MANO hand keypoints, skeletons, decimated MANO mesh edges, and projected vertex samples for left and right hands;
 - object masks, extent boxes, and centroids;
 - semantic caption text.
 
@@ -147,7 +147,7 @@ Final video checks:
 Representative visual inspections after the final full run:
 
 - Frame 312: object mask is on the tomato in the container; the sink/edge artifact is absent.
-- Frame 336: the tracker leaves the object unobserved during edge/occlusion.
+- Frames 334-343: the tracker marks ten degenerate edge/occlusion states as unobserved and suppresses object rendering.
 - Frame 600: object extent covers the intact tomato slice and the piece under hand/knife contact.
 - Frame 1020: object extent covers the chopped tomato material on the board.
 - Frame 1860: scrape phase tracks the chopped tomato pile.
@@ -162,7 +162,7 @@ Checks after the corrective rerun:
 
 - DROID-SLAM produced 960/960 dense camera poses.
 - WiLoR detected hands in 939/960 frames.
-- The object module processed the semantic tomato interval frame 270 through 939, measured 666 frames, and marked the first four active frames as Kalman predictions from the first measured tomato state while keeping the visible tomato represented.
+- The object module processed the semantic tomato interval frame 270 through 939, measured 666 frames, and marked the first four active frames as Kalman predictions from the first measured tomato state while keeping the visible tomato represented. The object world proxy covers all 670 semantic frames.
 - Final videos are 960 frames at 30 fps: `overlay_mano_object.mp4` is 960x540, `reconstruction_3d_world.mp4` is 960x540, and `side_by_side.mp4` is 1920x540.
 - Visual frames 270, 274, 480, 690, and 900 show object association on the tomato and hand overlays on the active hands.
 
