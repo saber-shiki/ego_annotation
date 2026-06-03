@@ -445,6 +445,7 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/export_hawor_world.py`
 - `scripts/adapt_hawor_to_annotations_v3.py`
 - `scripts/adapt_hawor_camera_local_v3.py`
+- `scripts/optimize_hand_rigid_contact_v3.py`
 
 ### HaWoR World-Hand Branch
 
@@ -524,6 +525,26 @@ A translation-only refit of HaWoR camera-local hands improves metric-depth resid
 - reliable contact rows: 0.
 
 Interpretation: HaWoR camera-local geometry is more plausible than the Sim(3) world bridge, but translation alone cannot satisfy projection, depth, and contact. The next solver needs at least per-frame rotation/depth/contact-state variables, or stronger 2D hand keypoints, before rendering a candidate.
+
+### HaWoR Rigid Hand-State Probe
+
+Implemented:
+
+- `scripts/optimize_hand_rigid_contact_v3.py`
+
+This probe adds per-frame hand rotation to the HaWoR camera-local translation variables. It uses reprojection, metric-depth, temporal, bone-scale, and object contact-depth factors.
+
+Result on frames 840 to 930:
+
+- observations: 27;
+- median reprojection: 30.7 px to 20.2 px;
+- median MANO-minus-metric-depth residual under the reliability rows: -147 mm to -24 mm;
+- median contact gap on available measured high-score rows: -137 mm to -386 mm;
+- median rotation correction: 0.36 rad;
+- median translation correction: 167 mm;
+- reliable contact rows after corrected reliability QC: 0.
+
+Interpretation: rigid per-frame freedom improves some reprojection and depth residuals, but it worsens contact and uses large hidden corrections. This is a failed diagnostic, not a candidate for rendering. The next hand stage needs contact-state inference and robust keypoint selection, or a stronger hand keypoint backend, rather than looser rigid optimization.
 
 ## Immediate Execution Plan
 
