@@ -134,6 +134,18 @@ def summarize_by_side(rows: list[dict], key: str) -> dict:
     return {side: summarize_key([row for row in rows if str(row.get("side")) == side], key) for side in sides}
 
 
+def group_summary(rows: list[dict]) -> dict:
+    return {
+        "rows": len(rows),
+        "contact_abs_gap_m": summarize_key(rows, "contact_abs_gap_m"),
+        "center_ray_translation_norm_m": summarize_key(rows, "center_ray_translation_norm_m"),
+        "current_bbox_l2_px": summarize_key(rows, "current_bbox_l2_px"),
+        "camera_origin_scale": summarize_key(rows, "camera_origin_scale"),
+        "camera_origin_scale_hand_extent_change_m": summarize_key(rows, "camera_origin_scale_hand_extent_change_m"),
+        "by_side_contact_abs_gap_m": summarize_by_side(rows, "contact_abs_gap_m") if rows else {},
+    }
+
+
 def run(args: argparse.Namespace) -> dict:
     annotations = load_json(args.annotations)
     droid = np.load(args.droid_npz)
@@ -211,6 +223,11 @@ def run(args: argparse.Namespace) -> dict:
                         "side": hand.get("side"),
                         "detector_score": float(hand.get("detector_score", np.nan)),
                         "measurement_available": bool(hand.get("measurement_available", False)),
+                        "high_confidence_measured": bool(
+                            hand.get("measurement_available", False)
+                            and np.isfinite(float(hand.get("detector_score", np.nan)))
+                            and float(hand.get("detector_score", np.nan)) >= args.report_min_score
+                        ),
                         "filter_status": hand.get("filter_status"),
                         "object_depth_m": object_depth_m,
                         "near_hand_depth_m": near_depth_m,
@@ -271,6 +288,10 @@ def run(args: argparse.Namespace) -> dict:
         "min_near_vertices": int(args.min_near_vertices),
         "tradeoff_rows": len(rows),
         "skipped_rows": len(skipped),
+        "report_min_score": float(args.report_min_score),
+        "all_rows_summary": group_summary(rows),
+        "measured_rows_summary": group_summary([row for row in rows if row.get("measurement_available")]),
+        "high_confidence_measured_rows_summary": group_summary([row for row in rows if row.get("high_confidence_measured")]),
         "contact_abs_gap_m": summarize_key(rows, "contact_abs_gap_m"),
         "contact_signed_gap_m": summarize_key(rows, "contact_signed_gap_m"),
         "current_bbox_l2_px": summarize_key(rows, "current_bbox_l2_px"),
@@ -322,6 +343,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contact-distance-px", type=float, default=18.0)
     parser.add_argument("--min-near-vertices", type=int, default=80)
     parser.add_argument("--intrinsics-tolerance", type=float, default=1e-3)
+    parser.add_argument("--report-min-score", type=float, default=0.50)
     parser.add_argument("--contact-solved-m", type=float, default=0.005)
     parser.add_argument("--hand-extent-change-solved-m", type=float, default=0.005)
     return parser.parse_args()

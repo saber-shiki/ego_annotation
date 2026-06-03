@@ -185,13 +185,15 @@ Result:
 
 - per-hand rows: 106;
 - median absolute hand/object contact-depth gap: 0.423 m;
+- measured hand rows: 65, with median gap 0.381 m;
+- measured rows with detector score at least 0.50: 58, with median gap 0.393 m;
 - median center-ray hand translation required to match object depth: 0.427 m;
 - current MANO bbox residual median: 122 px L2;
 - median center-ray translation changes bbox residual by 18 px, with p95 change 151 px;
 - projection-preserving camera-origin scale median: 0.717;
 - median implied metric hand-extent change under that scale: 78.6 mm.
 
-Interpretation: there is no small harmless MANO correction that makes the current object surface contact-consistent. Rigidly moving the hand to the object requires roughly 0.4 m translation. Preserving the 2D projection while changing depth implies a hand-size change around 80 mm at the median. The conflict belongs to joint MANO/camera/depth scale estimation, not to object-pose refinement alone.
+Interpretation: the large gap remains when predicted and low-score hands are excluded. There is no small harmless MANO correction that makes the current object surface contact-consistent. Rigidly moving the hand to the object requires roughly 0.4 m translation. Preserving the 2D projection while changing depth implies a hand-size change around 80 mm at the median. The conflict belongs to joint MANO/camera/depth scale estimation, not to object-pose refinement alone and not mainly to predicted-hand artifacts.
 
 ### Joint MANO-Object Graph Probe
 
