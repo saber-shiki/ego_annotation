@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="${EGO_HAWOR_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote/hawor_work}"
 MANO_RIGHT="${EGO_MANO_RIGHT:-/data/dex_home/yiwen/mano_assets/mano/MANO_RIGHT.pkl}"
 MANO_LEFT="${EGO_MANO_LEFT:-/data/dex_home/yiwen/mano_assets/mano/MANO_LEFT.pkl}"
+ENV_MARKER="torch2.6.0-cu126"
 
 mkdir -p "$ROOT/third_party" "$ROOT/weights/external" "$ROOT/weights/hawor/checkpoints" "$ROOT/data" "$ROOT/outputs"
 cd "$ROOT"
@@ -22,10 +23,14 @@ export PATH="$HOME/.local/bin:$PATH"
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.6}"
 export PATH="$CUDA_HOME/bin:$PATH"
 
+if [ -f .venv_hawor/.ego_env_marker ] && [ "$(cat .venv_hawor/.ego_env_marker)" != "$ENV_MARKER" ]; then
+  rm -rf .venv_hawor
+fi
 if [ ! -d .venv_hawor ]; then
   uv venv --python 3.10 .venv_hawor
 fi
 source .venv_hawor/bin/activate
+printf '%s\n' "$ENV_MARKER" > .venv_hawor/.ego_env_marker
 uv pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 uv pip install pip "setuptools<70" wheel ninja packaging
 uv pip install torch-scatter==2.1.2 --find-links https://data.pyg.org/whl/torch-2.6.0+cu126.html
