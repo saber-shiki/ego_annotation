@@ -206,7 +206,8 @@ def make_inference(egoforce_root: Path, camera_model, disable_kalman: bool, pose
 
     from demo_hand_arm_loader import DemoHandArmLoader
     from settings import config as cfg
-    from models import HALO, LimbModel
+    from models.halo import HALO
+    from models.limb_model import LimbModel
     from types import SimpleNamespace
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
