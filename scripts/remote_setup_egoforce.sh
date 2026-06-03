@@ -16,7 +16,7 @@ fi
 
 if [ ! -d "${REPO}/.git" ]; then
   git clone https://github.com/dfki-av/EgoForce.git "${REPO}"
-else
+elif [ "${EGO_SKIP_GIT_UPDATE:-0}" != "1" ]; then
   git -C "${REPO}" pull --ff-only
 fi
 
