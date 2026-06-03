@@ -8,7 +8,7 @@ IMG_FOCAL="${EGO_HAWOR_IMG_FOCAL:-2304}"
 
 cd "$ROOT"
 source .venv_hawor/bin/activate
-export PYTHONPATH="$ROOT/third_party/HaWoR:$PYTHONPATH"
+export PYTHONPATH="$ROOT/third_party/HaWoR${PYTHONPATH:+:$PYTHONPATH}"
 
 python repo/scripts/export_hawor_world.py \
   --hawor-root "$ROOT/third_party/HaWoR" \
