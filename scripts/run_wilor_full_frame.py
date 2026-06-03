@@ -24,19 +24,37 @@ from run_v1_wilor_colmap import (
 )
 
 
+def explicit_hand_sides(actions: list[dict]) -> set[str] | None:
+    sides: set[str] = set()
+    for action in actions:
+        raw = action.get("hand_sides")
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            raise RuntimeError(f"hand_sides must be a list when present: {action}")
+        for item in raw:
+            side = str(item).lower()
+            if side not in {"left", "right"}:
+                raise RuntimeError(f"unknown hand side in hand_sides: {item}")
+            sides.add(side)
+    return sides or None
+
+
 def run(args: argparse.Namespace) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     ensure_wilor_assets(args.wilor_root, args.mano_right)
     model, cfg, detector, device = load_wilor_backend(args.wilor_root)
 
-    json_path = args.clip.with_suffix(".json")
+    json_path = args.actions_json if args.actions_json is not None else args.clip.with_suffix(".json")
     actions = load_actions(json_path)
+    allowed_sides = explicit_hand_sides(actions)
     cap, info = open_video(args.clip)
 
     frames = []
     started = time.time()
     detected_frames = 0
     detected_hands = 0
+    filtered_hands = 0
     frame_idx = 0
     pbar = tqdm(total=info.frame_count, desc="wilor_full_frame")
     try:
@@ -47,6 +65,10 @@ def run(args: argparse.Namespace) -> dict:
             if args.max_frames is not None and frame_idx >= args.max_frames:
                 break
             hands = run_wilor_on_frame(model, cfg, detector, device, frame, args.rescale_factor, args.batch_size)
+            if allowed_sides is not None:
+                before = len(hands)
+                hands = [hand for hand in hands if str(hand.get("side", "")).lower() in allowed_sides]
+                filtered_hands += before - len(hands)
             if hands:
                 detected_frames += 1
                 detected_hands += len(hands)
@@ -84,6 +106,8 @@ def run(args: argparse.Namespace) -> dict:
         "hand_detection_rate": detected_frames / max(1, len(frames)),
         "detected_hands": detected_hands,
         "mean_hands_per_frame": detected_hands / max(1, len(frames)),
+        "explicit_hand_sides": sorted(allowed_sides) if allowed_sides is not None else None,
+        "filtered_hands_by_explicit_side": filtered_hands,
         "elapsed_s": time.time() - started,
         "raw_path": str(raw_path),
     }
@@ -100,6 +124,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rescale-factor", type=float, default=2.0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--actions-json", type=Path)
     return parser.parse_args()
 
 
