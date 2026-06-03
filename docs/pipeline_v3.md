@@ -349,6 +349,32 @@ Result:
 
 Interpretation: independent 2D keypoints make the contradiction sharper. In rows where 2D hands are live, metric depth and contact can be made individually plausible, but the joint fit requires bounded depth shifts or loses keypoint quality. This rejects a Kalman-only or smoothing-only fix. The next v3 mechanism must estimate hand depth from stronger 3D evidence, external scale, or a richer MANO/depth/camera state before contact can serve as a physical regularizer.
 
+HaWoR was also tested in the same diagnostic instead of assuming it was unusable from the earlier adapter failure.
+
+Camera-local HaWoR contact-supported run:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hand_depth_keypoint_contact_840_930/qc_hawor_camera_local_hand_depth_keypoint_contact.json`
+
+Result:
+
+- observations: 3;
+- before fitting: keypoint reprojection median 26.2 px, MANO-minus-metric-depth median -385 mm, hand-object depth median -220 mm;
+- contact fit: hand-object depth median becomes 3.9 mm, but hand scale hits the 1.15 upper bound, hand shift hits the 150 mm bound, and keypoint reprojection median rises to 28.1 px;
+- status: `diagnostic_keypoint_reprojection_residual_too_large`.
+
+Camera-local HaWoR without required near-mask contact:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hand_depth_keypoint_contact_840_930/qc_hawor_camera_local_hand_depth_keypoint_contact_no_near.json`
+
+Result:
+
+- observations: 10;
+- before fitting: keypoint reprojection median 29.0 px, MANO-minus-metric-depth median -284 mm;
+- contact fit: MANO-minus-metric-depth median becomes -10.8 mm, but hand scale hits the 1.15 upper bound and hand shift reaches the 150 mm bound;
+- status: `diagnostic_keypoint_reprojection_residual_too_large`.
+
+The HaWoR translation-refit annotation produced zero contact-supported observations under the same matched-2D/contact criteria. HaWoR therefore does not close the v3 hand state on this slice. It is still useful evidence that a different hand backend changes the error direction: HaWoR is too shallow relative to metric depth, while WiLoR’s accepted contact rows have a smaller but still inconsistent depth/contact tradeoff.
+
 ### MANO Metric-Depth Refit Probe
 
 Implemented:
