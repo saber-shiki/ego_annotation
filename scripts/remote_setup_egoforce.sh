@@ -24,17 +24,17 @@ cd "${REPO}"
 "${UV_BIN}" venv --python 3.10 .venv
 source .venv/bin/activate
 
-python -m pip install --upgrade pip setuptools==81.0.0 wheel
-python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
-python -m pip install torch_tensorrt==2.8.0+cu126 --find-links https://download.pytorch.org/whl/torch-tensorrt
-python -m pip install -r scripts/requirements.txt
-python -m pip install mmcv==2.1.0 --no-build-isolation
-python -m pip install git+https://github.com/javrtg/AnyCalib.git --no-build-isolation
-python -m pip install git+https://github.com/mattloper/chumpy.git --no-build-isolation
-python -m pip install git+https://github.com/facebookresearch/pytorch3d.git --no-build-isolation
-python -m pip install thirdparty/datapipes
-python -m pip install thirdparty/mmdetection --no-build-isolation
-python -m pip install numpy==1.26.4 projectaria_client_sdk==1.1.0 --no-cache-dir
+"${UV_BIN}" pip install --python .venv/bin/python --upgrade pip setuptools==81.0.0 wheel
+"${UV_BIN}" pip install --python .venv/bin/python torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
+"${UV_BIN}" pip install --python .venv/bin/python torch_tensorrt==2.8.0+cu126 --find-links https://download.pytorch.org/whl/torch-tensorrt
+"${UV_BIN}" pip install --python .venv/bin/python -r scripts/requirements.txt
+"${UV_BIN}" pip install --python .venv/bin/python mmcv==2.1.0 --no-build-isolation
+"${UV_BIN}" pip install --python .venv/bin/python git+https://github.com/javrtg/AnyCalib.git --no-build-isolation
+"${UV_BIN}" pip install --python .venv/bin/python git+https://github.com/mattloper/chumpy.git --no-build-isolation
+"${UV_BIN}" pip install --python .venv/bin/python git+https://github.com/facebookresearch/pytorch3d.git --no-build-isolation
+"${UV_BIN}" pip install --python .venv/bin/python thirdparty/datapipes
+"${UV_BIN}" pip install --python .venv/bin/python thirdparty/mmdetection --no-build-isolation
+"${UV_BIN}" pip install --python .venv/bin/python numpy==1.26.4 projectaria_client_sdk==1.1.0 --no-cache-dir
 
 if [ ! -f "${REPO}/_DATA/model_weights.pth" ]; then
   bash scripts/download_model_weights.sh
