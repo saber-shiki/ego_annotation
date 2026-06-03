@@ -608,6 +608,7 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/optimize_hand_translation_contact_v3.py`
 - `scripts/refit_mano_pose_contact_v3.py`
 - `scripts/optimize_hand_similarity_contact_v3.py`
+- `scripts/optimize_temporal_hand_contact_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 - `scripts/optimize_joint_mano_object_graph_v3.py`
@@ -749,10 +750,46 @@ Corrected contact reliability:
 
 Interpretation: HandDGP does not solve the current v3 hand/object metric contradiction on this egocentric contact window. It places the hand shallower than metric depth and the object mesh, while the projection error remains above the contact-reliability threshold for nearly all rows. This branch strengthens the current diagnosis: replacing WiLoR with a generic camera-space hand mesh model is insufficient. HandDGP also does not provide MANO pose parameters, so it cannot satisfy the final MANO deliverable by itself. The missing mechanism is a clip-specific joint hand/depth/contact estimation stage or a more egocentric metric hand backend whose output passes the same residual checks.
 
+### Temporal Hand Contact Graph Probe
+
+Implemented:
+
+- `scripts/optimize_temporal_hand_contact_v3.py`
+
+This probe keeps the fused WiLoR local hand geometry and optimizes a temporal source-camera translation, velocity, and continuous contact probability for measured hands. It uses separate WiLoR and RTMLib 2D keypoint residuals, metric-depth residuals, object-depth contact residuals only for near-mask vertices, non-penetration residuals, bone-scale priors, and temporal motion/contact smoothness. It also checks the annotation representation contract before fitting: `joints3d_camera + cam_t` and `vertices_camera + cam_t` must match the fused source-camera geometry within 25 mm, or the row is rejected.
+
+Smoke result on frames 880 to 889:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_temporal_hand_contact_split2d_880_889/qc_temporal_hand_contact.json`
+
+- observations: 12;
+- variables: 84;
+- solver RMS: 7.60 to 5.59;
+- median translation shift: 158 mm;
+- median contact probability: 0.050 to 0.039;
+- median WiLoR keypoint reprojection: 305 px to 46 px;
+- median RTMLib keypoint reprojection on matched rows: 167 px to 45 px;
+- median MANO-minus-metric-depth: -58 mm to 3.4 mm;
+- median contact gap: 120 mm to 143 mm.
+
+External contact reliability on the candidate:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_temporal_hand_contact_split2d_880_889/qc_contact_reliability_bonescale_after.json`
+
+- rows: 18;
+- measured high-score rows: 12;
+- reliable contact rows: 0;
+- measured high-score median reprojection: 46.4 px;
+- measured high-score median MANO-minus-metric-depth: 14 mm;
+- measured high-score contact gap: 13.7 mm on only one near-mask row;
+- contact-ok rows: 0 because the near-mask support is below the reliability threshold.
+
+Interpretation: the graph improves the depth residual without forcing contact. This is the right failure mode, because it exposes that the available 2D and near-mask contact support cannot justify a physically reliable contact factor. Temporal translation, velocity, and contact-state inference over the existing fused hand stream are therefore insufficient to close V3.
+
 ## Immediate Execution Plan
 
-1. Replace the per-hand independent refits with a temporal hand-state graph on the 840 to 930 contact window. Variables: per-frame hand translation, rotation, camera-depth correction, contact state, and temporal velocity; optional pose residuals come from HaWoR camera-local hands or fused WiLoR geometry. Observations: raw 2D keypoints, metric-depth samples at reliable joints, object mesh non-penetration, contact attraction only for image-supported contact rows, and bone-scale priors.
-2. Add a representation contract check to every future MANO refit: before optimization, regenerated local joints/vertices must match the annotation stream within documented millimeter tolerances. If the contract fails, the script must abort rather than fitting a different hand model.
+1. Complete the EgoForce detector-mode branch after the A800 setup finishes. The pose-head branch used annotation crops and failed; detector mode is still the remaining EgoForce test.
+2. Add a MANO-parametric temporal refit only if its regenerated local joints/vertices match the annotation stream within documented millimeter tolerances. If the contract fails, the script must abort rather than fitting a different hand model.
 3. Produce a candidate annotation JSON and rerun `scripts/diagnose_hand_contact_reliability_v3.py`. The candidate is accepted only if reliable contact rows become nonzero, bone scale is plausible, and projection/depth/contact residuals pass the documented thresholds.
 4. Render the candidate videos only after the reliability diagnostic is not already falsified.
 5. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
