@@ -199,6 +199,13 @@ Factor-graph upgrade:
 - Contact factors: non-penetration between MANO mesh and object mesh, contact attraction only for observed or inferred contact states, and contact persistence during grasp-like phases.
 - Force and acceleration factors should enter after object mass, inertia, and contact mode are explicit variables. Before that point, contact residuals constrain geometry while force claims remain underdetermined.
 
+Depth/contact diagnostic:
+
+- `scripts/diagnose_contact_depth_conflict_v3.py` measures the camera-frame depth of the observed object mesh and the MANO vertices that project near the object mask.
+- On frames 840 to 930, 84 of 91 frames have hand vertices near the mask.
+- Median hand-minus-object depth gap for those near-mask vertices is 0.385 m; p95 is 0.667 m.
+- This explains why object pose optimization alone cannot enforce contact: the visual mask says the hand and object overlap in 2D, while the current MANO and monocular metric-depth estimates place them far apart in camera depth.
+
 Current v3 execution target:
 
 1. Use frame 858 of the trash clip as the first mesh-prior test because the accepted mask is clean and both hands interact with the pink lid.
@@ -258,3 +265,19 @@ Window visual review:
 `/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_window_858_930/window_alignment_review_tripanel.png`
 
 The window optimizer is a failed prototype. The tripanel shows the complete prior inflated into a large oval around the observed surface. The objective reduced numeric residuals by changing scale and rotation without preserving the visible object identity. This failure identifies the next v3 requirement: silhouette rendering factors, per-frame object pose variables, bidirectional surface terms, depth-scale variables, and explicit separation between the manipulated lid and nearby support/trash-can geometry.
+
+Per-frame pose factor-graph probe:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_factor_graph_858_880_depth_probe/qc_object_factor_graph_v3.json`
+
+- window: frames 858 to 880
+- variables: 161, including per-frame rotation, translation, and camera-axis depth offset
+- status: hit `max_nfev=35`
+- residual RMS: 3.22 to 2.71
+- observed-to-prior median surface distance: 58.4 mm to 19.2 mm
+- prior-to-observed median surface distance: 62.1 mm to 18.6 mm
+- contact median distance: 566 mm to 577 mm
+- contact p95 distance: 598 mm to 623 mm
+- depth-axis offsets reached 0.39 m
+
+This probe improves mesh-to-surface fit but leaves contact wrong. That result shifts the next v3 implementation from object-pose-only optimization to joint scale/depth optimization over MANO, object depth, and camera trajectory. The current data says the hand-object contact conflict is upstream of object mesh fitting.
