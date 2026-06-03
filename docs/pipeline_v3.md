@@ -18,6 +18,15 @@ The compact contact-depth report for frames 840 to 930 has 84 frames where hand 
 
 This magnitude cannot be fixed by a Kalman smoother or an object-pose-only optimizer. V3 must jointly reason about object identity, object mesh, MANO metric scale/depth, camera pose scale, metric depth reliability, and contact state.
 
+A lightweight 1D contact-depth diagnostic then solved only the depth gap for frames with at least 80 near-mask hand vertices. It reduced median corrected depth gap to 0.16 mm, but the inferred correction was not small:
+
+- median hand-depth scale: 0.939
+- median object-depth scale: 1.217
+- p95 object-depth scale: 1.581
+- median object-depth shift: 43 mm
+
+This is useful as a causal diagnostic, not as an annotation result. It shows that contact can be made numerically true only by exposing scale and shift corrections as explicit variables with priors. A hidden correction would destroy the evidence about which subsystem is wrong.
+
 ## Perception Branch
 
 The white-liner track remains the hardest object-perception case in the representative trash clip. The rejected evidence is explicit:
@@ -98,6 +107,11 @@ Factors:
 - prior terms on physically plausible hand size, object rigidity/deformation, and depth scale.
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
+
+Implemented diagnostics:
+
+- `scripts/summarize_contact_depth_scale_v3.py`
+- `scripts/optimize_contact_depth_scale_v3.py`
 
 ## Immediate Execution Plan
 
