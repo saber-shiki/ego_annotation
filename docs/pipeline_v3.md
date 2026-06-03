@@ -444,6 +444,7 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/remote_setup_hawor.sh`
 - `scripts/export_hawor_world.py`
 - `scripts/adapt_hawor_to_annotations_v3.py`
+- `scripts/adapt_hawor_camera_local_v3.py`
 
 ### HaWoR World-Hand Branch
 
@@ -459,10 +460,10 @@ Export QC:
 - HaWoR metric scale estimate: 0.872534;
 - SLAM DBA errors reported by HaWoR: 1.098 and 0.797.
 
-The raw HaWoR hand output has plausible hand size before alignment:
+The raw HaWoR hand output has plausible surface extent before alignment:
 
-- left-hand joint-span median: 86 mm;
-- right-hand joint-span median: 79 mm;
+- left-hand fingertip-spread median: 86 mm;
+- right-hand fingertip-spread median: 79 mm;
 - vertex bounding-box diagonal median: about 221 to 226 mm.
 
 The camera-path Sim(3) alignment to the existing DROID-derived annotation world for frames 840 to 930 reached:
@@ -483,17 +484,51 @@ That camera alignment is not physically valid for the hands. It shrinks the HaWo
 - measured high-score rows: 27;
 - reliable contact rows: 0;
 - measured high-score median joint reprojection error: 481.5 px;
-- measured high-score median hand span: 26.2 mm;
+- measured high-score median fingertip spread after Sim(3): 26.2 mm;
 - near-mask contact-gap median on available rows: -847.8 mm.
 
 Alternative bridge checks do not rescue the branch. Raw HaWoR projection under HaWoR's own camera convention has a better median reprojection error of 25.8 px, but p95 remains 715.9 px. Whole-clip and near-window camera alignment variants still have hundreds of pixels of median reprojection error after adaptation. A reprojection-aware Sim(3) compromise improves median reprojection to about 39 px, but preserves a tiny 29 mm hand span and increases camera error to roughly 35 to 54 mm. Tightening the hand-size prior only raises the hand span to about 43 mm while pushing camera error toward 58 to 93 mm.
 
 Interpretation: HaWoR is useful evidence, but it is not a direct v3 replacement for WiLoR in this clip. HaWoR's own hand-camera projection is partly plausible, while a single world-frame Sim(3) that aligns HaWoR cameras to the existing DROID trajectory makes the hands physically impossible. The next v3 implementation must optimize hand state in the target metric frame with explicit hand-size, 2D keypoint, metric-depth, temporal, and contact factors. It must not accept HaWoR contact factors through a hidden scale correction.
 
+### HaWoR Camera-Local Branch
+
+Implemented:
+
+- `scripts/adapt_hawor_camera_local_v3.py`
+
+The camera-local adapter preserves HaWoR's per-frame hand geometry in HaWoR camera coordinates, then uses the existing annotation camera pose only to place that camera-local hand in the DROID/object world. This avoids the global camera-path Sim(3) that shrank HaWoR hands.
+
+Result on frames 840 to 930:
+
+- adapted hands: 182;
+- median hand bone scale: 165 mm;
+- median fingertip spread: 76 mm;
+- median camera depth: 1.01 m;
+- median joint reprojection: 22.6 px over all adapted hands.
+
+Corrected contact reliability:
+
+- measured high-score rows: 27;
+- reliable contact rows: 0;
+- measured high-score median reprojection: 30.7 px;
+- measured high-score median MANO-minus-metric-depth residual: -147 mm;
+- measured high-score median contact gap on available near-mask rows: -137 mm;
+- all measured high-score rows pass bone scale.
+
+A translation-only refit of HaWoR camera-local hands improves metric-depth residual but still fails contact reliability:
+
+- measured high-score median reprojection: 31.4 px;
+- measured high-score median MANO-minus-metric-depth residual: -13 mm;
+- measured high-score contact rows: only 3 available, with median gap -19 mm;
+- reliable contact rows: 0.
+
+Interpretation: HaWoR camera-local geometry is more plausible than the Sim(3) world bridge, but translation alone cannot satisfy projection, depth, and contact. The next solver needs at least per-frame rotation/depth/contact-state variables, or stronger 2D hand keypoints, before rendering a candidate.
+
 ## Immediate Execution Plan
 
-1. Replace the per-hand independent refits with a temporal fused-geometry hand solver on the 840 to 930 contact window. Variables: per-frame hand translation, local joint correction or MANO-space pose prior residual, hand-size scale, and temporal velocity. Observations: raw 2D keypoints, metric-depth samples at reliable joints, fused WiLoR geometry, saved MANO params as weak priors, object mesh non-penetration, and contact attraction only for image-supported contact rows.
+1. Replace the per-hand independent refits with a temporal hand-state graph on the 840 to 930 contact window. Variables: per-frame hand translation, rotation, camera-depth correction, contact state, and temporal velocity; optional pose residuals come from HaWoR camera-local hands or fused WiLoR geometry. Observations: raw 2D keypoints, metric-depth samples at reliable joints, object mesh non-penetration, contact attraction only for image-supported contact rows, and bone-scale priors.
 2. Add a representation contract check to every future MANO refit: before optimization, regenerated local joints/vertices must match the annotation stream within documented millimeter tolerances. If the contract fails, the script must abort rather than fitting a different hand model.
-3. Produce a candidate annotation JSON and rerun `scripts/diagnose_hand_contact_reliability_v3.py`. The candidate is accepted only if reliable contact rows become nonzero, hand spans are plausible, and projection/depth/contact residuals pass the documented thresholds.
+3. Produce a candidate annotation JSON and rerun `scripts/diagnose_hand_contact_reliability_v3.py`. The candidate is accepted only if reliable contact rows become nonzero, bone scale is plausible, and projection/depth/contact residuals pass the documented thresholds.
 4. Render the candidate videos only after the reliability diagnostic is not already falsified.
 5. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
