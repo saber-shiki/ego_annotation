@@ -10,29 +10,43 @@ Pipeline v1 is the first end-to-end RGB-only annotation pipeline for EgoScale ki
 - `annotations_v1_full.json`: per-source-frame hand, camera, object, caption, status, and QC-bearing fields.
 - `qc_v1_full.json`: backend coverage, scale evidence, smoothing/prediction counts, and output paths.
 
-The input package has RGB video and action JSON only. It has no ground-truth poses, no depth stream, no IMU, and no camera calibration file in the inspected task folders. v1 therefore reports a metric-like clip-local reconstruction anchored by hand anthropometry and monocular DROID depth, but it cannot certify 5 mm absolute accuracy. The 5 mm target remains a design target for v2+ after explicit calibration, depth, fiducials, or measured object/scene priors are added.
+The inspected task folders contain RGB video and action JSON only; ground-truth poses, depth stream, IMU, and camera calibration files are absent. v1 therefore reports a metric-like clip-local reconstruction anchored by hand anthropometry and monocular DROID depth. Absolute 5 mm certification requires explicit calibration, depth, fiducials, or measured object/scene priors.
 
-## Implemented Example
+## Delivered Examples
 
-The closed v1 example is:
+The final v1 deliveries are the full-MANO reruns under `/data2/ego_annotation_outputs`, produced after the earlier repo-local sampled-vertex validation folders.
+
+Task7 tomato chopping/preparation:
 
 `/data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_7/20260118_1257_Rec3db6_P0_Sc6ab88_task_7.mp4`
 
 This is a 2040-frame, 1920x1080, 30 fps tomato preparation clip. The manipulated object interval is frame 312 through 1911 from the JSON action captions.
 
-Final outputs are under:
+Final v1 outputs are under:
 
-`outputs/examples/tomato_v1_full/fused/`
+`/data2/ego_annotation_outputs/fullmesh_task7/fused/`
 
 The final full run processed all 2040 source frames and produced 2040-frame videos at 30 fps.
+
+Task5 tomato washing/peeling:
+
+`/data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_5/20260118_1257_Rec3db6_P0_Sc6ab88_task_5.mp4`
+
+This is a 960-frame, 1920x1080, 30 fps tomato washing/peeling clip. The manipulated object interval is frame 270 through 939 from the JSON action captions.
+
+Final v1 outputs are under:
+
+`/data2/ego_annotation_outputs/fullmesh_task5/fused/`
+
+The final full run processed all 960 source frames and produced 960-frame videos at 30 fps.
 
 ## Coordinate Contract
 
 All 3D data is expressed in one DROID-derived clip-local world coordinate system:
 
 - `T_world_camera`: camera-to-world transform per source frame.
-- Hand joints and MANO vertices are first solved in source camera meters, then transformed by `T_world_camera`. Runs made before the full-vertex exporter change carry 78 sampled vertices per hand; current WiLoR exports carry full MANO vertices.
-- The object is represented as a deformable centroid with spherical extent, not as a rigid 6D pose, because tomato chopping changes topology and visible shape.
+- Hand joints and MANO vertices are first solved in source camera meters, then transformed by `T_world_camera`. The final `/data2/ego_annotation_outputs/fullmesh_task*` deliveries carry full 778-vertex MANO meshes per detected hand.
+- The object is represented as a deformable centroid with spherical extent because tomato chopping changes topology and visible shape.
 - Image coordinates remain in original 1920x1080 pixels inside JSON; rendered videos are 960x540 overlay and 1920x540 side-by-side.
 
 World scale is estimated by aligning DROID relative depth to source-camera hand depths from WiLoR/MANO geometry. The QC stores the scale sample count, ratio IQR, and residual IQR because this scale anchor is approximate.
@@ -70,7 +84,7 @@ Measured hand frames stay marked as measured; short occlusion/truncation gaps ar
 
 ### 4. Object Segmentation And Tracking
 
-The v1 object module is implemented for the tomato example. It is not a generic category-agnostic object tracker.
+The v1 object module currently targets tomato clips. Category-general tracking requires an object model or promptable video-memory tracker per category.
 
 For each semantic object frame, `scripts/fuse_v1_full_fidelity.py` builds object candidates from:
 
@@ -122,7 +136,7 @@ The 3D renderer draws:
 
 The side-by-side video concatenates the overlay and 3D render at the same frame index, so one source frame corresponds to one output frame.
 
-## Verification On The Tomato Example
+## Verification On Task7
 
 Final video checks:
 
@@ -132,29 +146,23 @@ Final video checks:
 
 Representative visual inspections after the final full run:
 
-- Frame 312: object mask is on the tomato in the container, not the sink/edge artifact.
-- Frame 336: object is left unobserved during edge/occlusion instead of hallucinated.
+- Frame 312: object mask is on the tomato in the container; the sink/edge artifact is absent.
+- Frame 336: the tracker leaves the object unobserved during edge/occlusion.
 - Frame 600: object extent covers the intact tomato slice and the piece under hand/knife contact.
 - Frame 1020: object extent covers the chopped tomato material on the board.
 - Frame 1860: scrape phase tracks the chopped tomato pile.
 - Frame 1910: optical-flow temporal union prevents collapse to a tiny contact patch and keeps the chopped pile extent.
-- Frame 1980: object annotation is absent after the tomato semantic interval.
+- Frame 1980: object annotation is absent after the tomato semantic interval; only hand annotations remain.
 
 ## Second-Sample Validation
 
-The same v1 pipeline was also run on:
-
-`/data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_5/20260118_1257_Rec3db6_P0_Sc6ab88_task_5.mp4`
-
-This 960-frame tomato washing/peeling clip tests a different scene, sink reflections, water, and pre-contact object visibility. Outputs are under:
-
-`outputs/examples/tomato_task5_full/fused/`
+Task5 tests a different scene, sink reflections, water, and pre-contact object visibility.
 
 Checks after the corrective rerun:
 
 - DROID-SLAM produced 960/960 dense camera poses.
 - WiLoR detected hands in 939/960 frames.
-- The object module processed the semantic tomato interval frame 270 through 939, measured 666 frames, and marked the first four active frames as Kalman predictions from the first measured tomato state rather than hiding the visible tomato.
+- The object module processed the semantic tomato interval frame 270 through 939, measured 666 frames, and marked the first four active frames as Kalman predictions from the first measured tomato state while keeping the visible tomato represented.
 - Final videos are 960 frames at 30 fps: `overlay_mano_object.mp4` is 960x540, `reconstruction_3d_world.mp4` is 960x540, and `side_by_side.mp4` is 1920x540.
 - Visual frames 270, 274, 480, 690, and 900 show object association on the tomato and hand overlays on the active hands.
 
@@ -162,13 +170,13 @@ Checks after the corrective rerun:
 
 v1 is a real pipeline, but it is still limited by RGB-only monocular evidence:
 
-- DROID scale is inferred from hand geometry and relative depth; it is not a calibrated metric reconstruction.
+- DROID scale is inferred from hand geometry and relative depth; calibrated metric reconstruction requires an external metric source.
 - Hand anthropometry introduces scale error because the actual subject hand size is unknown.
-- The object pose is a centroid/extent proxy for a deformable object, not a rigid CAD pose.
+- The object pose is a centroid/extent proxy for a deformable object.
 - Tomato segmentation uses object-specific color/semantic cues plus SAM and temporal motion. Other object categories need an explicit object model or a category-specific segmentation strategy.
-- Contact constraints help stabilize object depth but do not prove physical non-penetration without a scene/object SDF.
+- Contact constraints help stabilize object depth. Physical non-penetration proof requires a scene/object SDF.
 
-These limits are recorded in QC and should drive v2 rather than be hidden by rendering.
+These limits are recorded in QC and drive v2.
 
 ## Commands
 
@@ -177,7 +185,7 @@ Run DROID on the example:
 ```bash
 PYTHONPATH=third_party/DROID-SLAM uv run --project . python scripts/run_droid_full_frame.py \
   --clip /data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_7/20260118_1257_Rec3db6_P0_Sc6ab88_task_7.mp4 \
-  --output-dir outputs/examples/tomato_v1_full/droid \
+  --output-dir /data2/ego_annotation_outputs/fullmesh_task7/droid \
   --droid-area 98304
 ```
 
@@ -186,14 +194,18 @@ Run WiLoR on the example:
 ```bash
 uv run --project . python scripts/run_wilor_full_frame.py \
   --clip /data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_7/20260118_1257_Rec3db6_P0_Sc6ab88_task_7.mp4 \
-  --output-dir outputs/examples/tomato_v1_full/wilor
+  --output-dir /data2/ego_annotation_outputs/fullmesh_task7/wilor
 ```
 
 Fuse and render:
 
 ```bash
 PYTHONPATH=scripts uv run --project . python scripts/fuse_v1_full_fidelity.py \
-  --output-dir outputs/examples/tomato_v1_full/fused \
+  --clip /data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_7/20260118_1257_Rec3db6_P0_Sc6ab88_task_7.mp4 \
+  --wilor-raw /data2/ego_annotation_outputs/fullmesh_task7/wilor/wilor_raw.json \
+  --droid-npz /data2/ego_annotation_outputs/fullmesh_task7/droid/droid_dense_trajectory.npz \
+  --droid-reconstruction /data2/ego_annotation_outputs/fullmesh_task7/droid/droid_keyframe_reconstruction.pth \
+  --output-dir /data2/ego_annotation_outputs/fullmesh_task7/fused \
   --object-stride 1 \
   --render-width 960
 ```

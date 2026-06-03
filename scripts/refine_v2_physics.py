@@ -465,8 +465,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-penetration-points", type=int, default=64)
     parser.add_argument("--accel-sigma-m", type=float, default=0.030)
     parser.add_argument("--radius-accel-sigma-m", type=float, default=0.006)
-    parser.add_argument("--contact-sigma-m", type=float, default=0.020)
-    parser.add_argument("--penetration-sigma-m", type=float, default=0.010)
+    parser.add_argument("--contact-sigma-m", type=float, default=0.010)
+    parser.add_argument("--penetration-sigma-m", type=float, default=0.020)
     parser.add_argument("--max-nfev", type=int, default=240)
     return parser.parse_args()
 
