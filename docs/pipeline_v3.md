@@ -148,6 +148,25 @@ Status: `diagnostic_contact_depth_conflict_remains`.
 
 Interpretation: shared depth scale plus smooth shifts cannot explain the contact conflict within the current bounds. The next solver must add image reprojection and silhouette terms for MANO/camera/object state, because the depth-only contact rows alone force implausible corrections and still leave 59 mm p95 contact-depth error.
 
+### Confidence-Gated Object Factor Graph
+
+The object-pose factor graph was rerun on frames 858 to 880 with contact residuals weighted by hand detector score and MANO reprojection fit:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_factor_graph_858_880_confidence/qc_object_factor_graph_v3.json`
+
+Result:
+
+- used frames: 23;
+- contact weight median/p95: 0.360 / 0.609;
+- observed-to-prior median surface distance: 56.4 mm to 18.0 mm;
+- prior-to-observed median surface distance: 60.6 mm to 16.7 mm;
+- contact median distance: 608 mm to 560 mm;
+- contact p95 distance: 665 mm to 659 mm;
+- depth-axis offset median/p95: 23 mm / 281 mm;
+- optimizer status: hit `max_nfev=45`.
+
+Interpretation: confidence gating reduces the influence of weak hand states, but object-pose optimization still cannot repair contact. V3 must add MANO/camera depth variables with reprojection and temporal constraints rather than treating the hand mesh as fixed.
+
 ## Implemented Diagnostics
 
 The implemented v3 code is diagnostic, not the required solver above:

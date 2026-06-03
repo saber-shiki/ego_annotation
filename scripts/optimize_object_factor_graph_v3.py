@@ -33,6 +33,7 @@ class FrameFactorData:
     camera_axis_world: np.ndarray
     contact_points: np.ndarray
     has_contact_evidence: bool
+    contact_weight: float
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,20 @@ def mask_distance_map(mask: np.ndarray) -> np.ndarray:
     return cv2.distanceTransform(inverse, cv2.DIST_L2, 3).astype(np.float32)
 
 
+def summarize_array(values: np.ndarray) -> dict:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return {"count": 0, "median": None, "p05": None, "p95": None, "max": None}
+    return {
+        "count": int(arr.size),
+        "median": float(np.median(arr)),
+        "p05": float(np.percentile(arr, 5.0)),
+        "p95": float(np.percentile(arr, 95.0)),
+        "max": float(np.max(arr)),
+    }
+
+
 def project_world(points_world: np.ndarray, T_world_camera: np.ndarray, intrinsics: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     T_camera_world = np.linalg.inv(T_world_camera)
     homog = np.c_[points_world, np.ones(len(points_world), dtype=float)]
@@ -131,6 +146,47 @@ def hand_surface_points(frame: dict) -> np.ndarray:
     if not points:
         return np.zeros((0, 3), dtype=float)
     return np.vstack(points)
+
+
+def hand_reprojection_residual_px(hand: dict) -> float | None:
+    box = hand.get("bbox_xyxy")
+    intr = np.asarray(hand.get("source_intrinsics", []), dtype=float)
+    cam_t = np.asarray(hand.get("cam_t", [0.0, 0.0, 0.0]), dtype=float)
+    if box is None or intr.shape != (4,) or cam_t.shape != (3,):
+        return None
+    points = []
+    for key in ("joints3d_camera", "vertices_camera"):
+        arr = np.asarray(hand.get(key, []), dtype=float)
+        if arr.ndim == 2 and arr.shape[1] == 3 and len(arr):
+            points.append(arr + cam_t[None, :])
+    if not points:
+        return None
+    cloud = np.vstack(points)
+    if not np.all(np.isfinite(cloud)) or np.any(cloud[:, 2] <= 0.0):
+        return None
+    fx, fy, cx, cy = intr
+    uv = np.c_[fx * cloud[:, 0] / cloud[:, 2] + cx, fy * cloud[:, 1] / cloud[:, 2] + cy]
+    proj_min = uv.min(axis=0)
+    proj_max = uv.max(axis=0)
+    x0, y0, x1, y1 = [float(v) for v in box]
+    residual = np.r_[proj_min - np.asarray([x0, y0]), proj_max - np.asarray([x1, y1])]
+    return float(np.linalg.norm(residual))
+
+
+def frame_contact_weight(frame: dict, args: argparse.Namespace) -> float:
+    weights = []
+    for hand in frame.get("hands", []):
+        score = float(hand.get("detector_score", 0.0))
+        score_weight = min(1.0, max(0.0, score / args.contact_score_full))
+        reproj = hand_reprojection_residual_px(hand)
+        if reproj is None:
+            reproj_weight = args.contact_missing_reprojection_weight
+        else:
+            reproj_weight = float(np.exp(-0.5 * (reproj / args.contact_reprojection_sigma_px) ** 2))
+        weights.append(score_weight * reproj_weight)
+    if not weights:
+        return 0.0
+    return float(max(weights))
 
 
 def contact_points_for_frame(frame: dict, mask: np.ndarray, intrinsics: np.ndarray, max_points: int, distance_px: float) -> np.ndarray:
@@ -190,6 +246,7 @@ def build_frame_data(args: argparse.Namespace, frames: list[dict], intrinsics: n
             mask_path = localize_path(str(obj["mask_path"]), args.remote_output_root, args.local_output_root)
             mask = resize_bool_mask(mask_path, mask_size)
             contacts = contact_points_for_frame(frame, mask, intrinsics, args.max_contact_points, args.contact_distance_px)
+            contact_weight = frame_contact_weight(frame, args)
             records.append(
                 FrameFactorData(
                     frame_idx=idx,
@@ -202,7 +259,8 @@ def build_frame_data(args: argparse.Namespace, frames: list[dict], intrinsics: n
                     source_size=source_size,
                     camera_axis_world=camera_axis_world(np.asarray(frame["camera"]["T_world_camera_metric"], dtype=float)),
                     contact_points=contacts,
-                    has_contact_evidence=len(contacts) > 0,
+                    has_contact_evidence=len(contacts) > 0 and contact_weight >= args.min_contact_weight,
+                    contact_weight=contact_weight,
                 )
             )
         except Exception as exc:
@@ -272,7 +330,8 @@ def residual_vector(
         residuals.append(silhouette_residual(silhouette_points, frame, intrinsics, args.sigma_silhouette_px, args.max_silhouette_px))
         if frame.has_contact_evidence:
             d_contact, _ = tree.query(frame.contact_points, k=1)
-            residuals.append(np.clip(d_contact, 0.0, args.max_contact_residual_m) / args.sigma_contact_m)
+            contact_sigma = args.sigma_contact_m / max(args.min_contact_weight, frame.contact_weight)
+            residuals.append(np.clip(d_contact, 0.0, args.max_contact_residual_m) / contact_sigma)
             if args.enable_depth_axis:
                 residuals.append(np.asarray([depth_offsets[i] / args.sigma_contact_depth_offset_m], dtype=float))
         elif args.enable_depth_axis:
@@ -325,6 +384,7 @@ def frame_metrics(
             "rotation_delta_rad": rotvecs[i].astype(float).tolist(),
             "depth_axis_offset_m": float(depth_offsets[i]),
             "contact_points": int(len(frame.contact_points)),
+            "contact_weight": float(frame.contact_weight),
         }
         if frame.has_contact_evidence:
             d_contact, _ = tree.query(frame.contact_points, k=1)
@@ -477,6 +537,7 @@ def run(args: argparse.Namespace) -> dict:
         "residual_rms_after": float(np.sqrt(np.mean(after_vec * after_vec))),
         "before_summary": before_summary,
         "after_summary": after_summary,
+        "contact_weight_summary": summarize_array(np.asarray([frame.contact_weight for frame in frames], dtype=float)),
         "contact_improved": bool(contact_improved),
         "surface_improved": bool(surface_improved),
         "frame_metrics_before": before_metrics,
@@ -513,6 +574,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sigma-observed-m", type=float, default=0.040)
     parser.add_argument("--sigma-prior-surface-m", type=float, default=0.055)
     parser.add_argument("--sigma-contact-m", type=float, default=0.025)
+    parser.add_argument("--contact-score-full", type=float, default=0.80)
+    parser.add_argument("--contact-reprojection-sigma-px", type=float, default=120.0)
+    parser.add_argument("--contact-missing-reprojection-weight", type=float, default=0.25)
+    parser.add_argument("--min-contact-weight", type=float, default=0.15)
     parser.add_argument("--sigma-silhouette-px", type=float, default=5.0)
     parser.add_argument("--sigma-translation-step-m", type=float, default=0.045)
     parser.add_argument("--sigma-rotation-step-rad", type=float, default=0.28)
