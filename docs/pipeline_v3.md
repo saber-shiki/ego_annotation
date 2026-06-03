@@ -616,6 +616,8 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/adapt_hawor_to_annotations_v3.py`
 - `scripts/adapt_hawor_camera_local_v3.py`
 - `scripts/optimize_hand_rigid_contact_v3.py`
+- `scripts/remote_setup_handdgp.sh`
+- `scripts/run_handdgp_export_v3.py`
 
 ### HaWoR World-Hand Branch
 
@@ -715,6 +717,37 @@ Result on frames 840 to 930:
 - reliable contact rows after corrected reliability QC: 0.
 
 Interpretation: rigid per-frame freedom improves some reprojection and depth residuals, but it worsens contact and uses large hidden corrections. This is a failed diagnostic, not a candidate for rendering. The next hand stage needs contact-state inference and robust keypoint selection, or a stronger hand keypoint backend, rather than looser rigid optimization.
+
+### HandDGP Camera-Space Branch
+
+Implemented:
+
+- `scripts/remote_setup_handdgp.sh`
+- `scripts/run_handdgp_export_v3.py`
+
+HandDGP was tested as an independent camera-space hand mesh source because its DGP module solves global camera translation from cropped hand images and crop intrinsics. The adapter runs on measured WiLoR hand crops, transforms the source camera intrinsics into crop coordinates, runs the official FreiHAND checkpoint, writes camera-space vertices and joints into the annotation schema as diagnostic full-vertex hand geometry, and reuses the same contact reliability diagnostic.
+
+Result on frames 840 to 930:
+
+- exported hands: 124;
+- skipped hands: 0;
+- export median reprojection: 26.5 px;
+- export p95 reprojection: 234.9 px;
+- export median hand depth: 0.785 m.
+
+Corrected contact reliability:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_handdgp_840_930/qc_contact_reliability_bonescale.json`
+
+- reliability rows: 27;
+- measured high-score rows: 27;
+- reliable contact rows: 0;
+- measured high-score median reprojection: 36.5 px;
+- measured high-score median MANO-minus-metric-depth residual: -244 mm;
+- measured high-score median contact gap on available near-mask rows: -330 mm;
+- measured high-score median bone scale: 126 mm.
+
+Interpretation: HandDGP does not solve the current v3 hand/object metric contradiction on this egocentric contact window. It places the hand shallower than metric depth and the object mesh, while the projection error remains above the contact-reliability threshold for nearly all rows. This branch strengthens the current diagnosis: replacing WiLoR with a generic camera-space hand mesh model is insufficient. HandDGP also does not provide MANO pose parameters, so it cannot satisfy the final MANO deliverable by itself. The missing mechanism is a clip-specific joint hand/depth/contact estimation stage or a more egocentric metric hand backend whose output passes the same residual checks.
 
 ## Immediate Execution Plan
 
