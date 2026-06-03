@@ -278,10 +278,14 @@ Result:
 - median absolute ray shift: 170 mm;
 - median 2D joint reprojection residual: 10.9 px to 13.3 px;
 - median hand span changes by -0.4 mm.
+- good-keypoint subset, defined by initial median reprojection at most 20 px: 90 rows;
+- good-keypoint subset median depth residual: 144 mm to 0 mm;
+- good-keypoint subset median 2D reprojection: 9.1 px to 11.5 px;
+- good-keypoint subset p95 depth residual after refit: 140 mm.
 
 Status: `diagnostic_mano_reprojection_residual_too_large`.
 
-Interpretation: metric-depth evidence can pull MANO to the depth surface without shrinking the hand, but the required shifts are large and many rows hit the shift bound. The shift also worsens 2D reprojection beyond the 12 px median threshold. V3 needs a hand-depth estimator that models metric-depth reliability, hand occlusion, and temporal consistency before applying contact factors to the final annotation.
+Interpretation: metric-depth evidence can pull MANO to the depth surface without shrinking the hand. On rows with good initial 2D keypoints, the median reprojection remains below the 12 px threshold after refit. The required shifts are still large, many rows hit the shift bound, and the good-keypoint p95 depth residual remains 140 mm. V3 needs a hand-depth estimator that models metric-depth reliability, hand occlusion, and temporal consistency before applying contact factors to the final annotation.
 
 ## Implemented Diagnostics
 

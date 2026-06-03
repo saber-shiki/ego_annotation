@@ -164,6 +164,24 @@ def summarize_key(rows: list[dict], key: str) -> dict:
     return summarize(values)
 
 
+def metrics_summary(before_rows: list[dict], after_rows: list[dict], prefix: str = "") -> dict:
+    _ = prefix
+    return {
+        "rows": len(after_rows),
+        "before": {
+            "mano_minus_metric_depth_m": summarize_key(before_rows, "mano_minus_metric_depth_before_m"),
+            "joint_reprojection_median_px": summarize_key(before_rows, "joint_reprojection_median_before_px"),
+            "span_m": summarize_key(before_rows, "span_before_m"),
+        },
+        "after": {
+            "mano_minus_metric_depth_m": summarize_key(after_rows, "mano_minus_metric_depth_after_m"),
+            "joint_reprojection_median_px": summarize_key(after_rows, "joint_reprojection_median_after_px"),
+            "span_m": summarize_key(after_rows, "span_after_m"),
+            "span_change_m": summarize_key(after_rows, "span_change_m"),
+        },
+    }
+
+
 def run(args: argparse.Namespace) -> dict:
     annotations = load_json(args.annotations)
     depth_blob = np.load(args.metric_depth_npz)
@@ -196,6 +214,13 @@ def run(args: argparse.Namespace) -> dict:
     before_rows = row_metrics(x0, rows)
     solved, solver = solve_by_scale_scan(rows, args)
     after_rows = row_metrics(solved, rows)
+    good_indices = [
+        i
+        for i, row in enumerate(before_rows)
+        if row["joint_reprojection_median_before_px"] <= args.good_keypoint_reprojection_px
+    ]
+    good_before = [before_rows[i] for i in good_indices]
+    good_after = [after_rows[i] for i in good_indices]
     scale = float(np.exp(solved[0]))
     span_after = np.asarray([row["span_after_m"] for row in after_rows], dtype=float)
     depth_after = np.asarray([abs(row["mano_minus_metric_depth_after_m"]) for row in after_rows], dtype=float)
@@ -222,6 +247,8 @@ def run(args: argparse.Namespace) -> dict:
         "frame_end": int(args.frame_end),
         "rows": len(rows),
         "skipped_rows": len(skipped),
+        "good_keypoint_reprojection_px": float(args.good_keypoint_reprojection_px),
+        "good_keypoint_rows": len(good_after),
         "variables": int(solved.size),
         "solver": solver,
         "hand_scale": scale,
@@ -240,6 +267,7 @@ def run(args: argparse.Namespace) -> dict:
             "span_m": summarize_key(after_rows, "span_after_m"),
             "span_change_m": summarize_key(after_rows, "span_change_m"),
         },
+        "good_keypoint_subset": metrics_summary(good_before, good_after),
         "thresholds": {
             "depth_solved_median_m": float(args.depth_solved_median_m),
             "reprojection_solved_median_px": float(args.reprojection_solved_median_px),
@@ -290,6 +318,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-span-m", type=float, default=0.210)
     parser.add_argument("--depth-solved-median-m", type=float, default=0.020)
     parser.add_argument("--reprojection-solved-median-px", type=float, default=12.0)
+    parser.add_argument("--good-keypoint-reprojection-px", type=float, default=20.0)
     parser.add_argument("--bound-tolerance", type=float, default=1e-4)
     parser.add_argument("--sigma-span-m", type=float, default=0.015)
     parser.add_argument("--scale-grid-count", type=int, default=101)
