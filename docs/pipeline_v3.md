@@ -309,6 +309,39 @@ Result:
 
 Interpretation: local metric-depth instability does not explain the main MANO-depth excess. Even stable depth patches with good 2D keypoints place current MANO substantially deeper than the depth surface. The near-object subset is worse, so contact/occlusion regions need special treatment, but the broad mechanism is a MANO/camera-depth alignment error rather than only edge noise in metric depth.
 
+### MANO Depth-Refit Candidate Render
+
+Implemented:
+
+- `scripts/apply_mano_depth_refit_v3.py`
+
+This script creates a candidate annotation JSON by shifting only measured hands with good initial 2D reprojection toward metric-depth samples, then recomputes source-camera and world MANO vertices:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_mano_depth_refit_candidate_840_930/annotations_mano_depth_refit.json`
+
+Rendered videos:
+
+- `/data2/ego_annotation_outputs/representative_trash/v3_mano_depth_refit_candidate_840_930/render/overlay_mano_object.mp4`
+- `/data2/ego_annotation_outputs/representative_trash/v3_mano_depth_refit_candidate_840_930/render/reconstruction_3d_world.mp4`
+- `/data2/ego_annotation_outputs/representative_trash/v3_mano_depth_refit_candidate_840_930/render/side_by_side.mp4`
+
+Result:
+
+- applied hand corrections: 86;
+- median applied shift: -155 mm;
+- structural video check: 91 frames, overlay and reconstruction 960 by 540, side-by-side 1920 by 540;
+- contact-depth median: 385 mm to 249 mm;
+- high-confidence measured contact-depth median: 393 mm to 234 mm;
+- high-confidence measured contact-depth p95 remains 598 mm.
+
+Visual review:
+
+- frame 858: image overlay remains plausible, but the 3D hands are still separated from the object mesh;
+- frame 880: right-hand overlay collapses into a narrow vertical strip on the lid;
+- frame 903: hands remain below or beside the lid in 3D.
+
+Interpretation: depth translation alone is not an acceptable v3 annotation stage. It improves the median depth residual but does not produce contact-consistent MANO geometry and degrades some visible hand overlays. The next hand branch must refit MANO pose/translation jointly, or replace the hand backend with a model whose metric hand placement is better conditioned under egocentric occlusion.
+
 ## Implemented Diagnostics
 
 The implemented v3 code is diagnostic, not the required solver above:
@@ -320,6 +353,7 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/diagnose_metric_depth_alignment_v3.py`
 - `scripts/refit_mano_metric_depth_v3.py`
 - `scripts/diagnose_hand_depth_reliability_v3.py`
+- `scripts/apply_mano_depth_refit_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 - `scripts/optimize_joint_mano_object_graph_v3.py`
