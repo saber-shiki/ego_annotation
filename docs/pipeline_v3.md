@@ -110,6 +110,14 @@ Factors:
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
 
+Operationally, the version sequence is:
+
+- V1: prove the full annotation plumbing with dense head trajectory, WiLoR MANO, captions, and an initial 3D presentation.
+- V2: remove object proxies by using VLM object plans, open-vocabulary detection, SAM masks, metric depth, and observed-surface object meshes.
+- V3: solve or expose the metric contradiction between the observed object mesh and MANO hands through a joint factor graph. V3 cannot close by producing a nicer render while contact stays hundreds of millimeters wrong.
+
+QC in this project means falsification of the annotation, not only file checks. Structural QC checks that videos, frame counts, JSON records, and mesh archives exist. Geometric QC checks surface fit, silhouette fit, MANO reprojection, hand/object contact distance, penetration support, temporal smoothness, and whether any residual improves only by pushing hidden variables to implausible values. Visual QC checks that the overlay and 3D presentation show the intended object and hand state rather than a diagnostic-looking plot or a wrong object.
+
 ### MANO Reprojection Diagnostic
 
 The contact window also shows that the MANO source-camera placement has nontrivial 2D disagreement with the hand detector boxes:
@@ -167,6 +175,67 @@ Result:
 
 Interpretation: confidence gating reduces the influence of weak hand states, but object-pose optimization still cannot repair contact. V3 must add MANO/camera depth variables with reprojection and temporal constraints rather than treating the hand mesh as fixed.
 
+### MANO Contact-Reprojection Tradeoff
+
+The next diagnostic asks what would happen if MANO were moved far enough to satisfy the object contact depth:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_mano_contact_reprojection_tradeoff_840_930.json`
+
+Result:
+
+- per-hand rows: 106;
+- median absolute hand/object contact-depth gap: 0.423 m;
+- median center-ray hand translation required to match object depth: 0.427 m;
+- current MANO bbox residual median: 122 px L2;
+- median center-ray translation changes bbox residual by 18 px, with p95 change 151 px;
+- projection-preserving camera-origin scale median: 0.717;
+- median implied metric hand-extent change under that scale: 78.6 mm.
+
+Interpretation: there is no small harmless MANO correction that makes the current object surface contact-consistent. Rigidly moving the hand to the object requires roughly 0.4 m translation. Preserving the 2D projection while changing depth implies a hand-size change around 80 mm at the median. The conflict belongs to joint MANO/camera/depth scale estimation, not to object-pose refinement alone.
+
+### Joint MANO-Object Graph Probe
+
+Implemented:
+
+- `scripts/optimize_joint_mano_object_graph_v3.py`
+
+The first probe uses frames 858 to 862 with the strict pink-lid observed mesh and the frame-858 TripoSR mesh prior:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_joint_mano_object_858_862/qc_joint_mano_object_graph_v3.json`
+
+State:
+
+- per-frame object rotation, translation, and camera-axis depth offset;
+- one global hand metric scale;
+- one per-hand center-ray depth shift.
+
+Factors:
+
+- observed object surface to complete-mesh prior;
+- complete-mesh prior to observed object surface;
+- object silhouette inside the accepted mask;
+- hand-object contact proximity from near-mask MANO vertices;
+- MANO bbox reprojection to detector boxes;
+- temporal smoothness and anchor priors.
+
+Result:
+
+- used frames: 5;
+- hand factors: 3;
+- optimizer hit `max_nfev=25`, so this is still a diagnostic probe;
+- observed-to-prior median surface distance: 93.4 mm to 24.2 mm;
+- prior-to-observed median surface distance: 84.1 mm to 20.2 mm;
+- contact median distance: 679 mm to 533 mm;
+- contact p95 distance: 698 mm to 572 mm;
+- MANO bbox residual median: 129 px to 128 px;
+- hand scale: 0.99994;
+- median hand ray shift: -8.0 mm;
+- median object depth-axis offset: 65 mm.
+
+Status: `diagnostic_joint_surface_improved_contact_remains_large`.
+
+Interpretation: adding explicit MANO scale and ray-shift variables does not solve contact under reprojection and hand-size priors. The graph improves object surface fit but leaves more than 0.5 m median hand/object contact distance. This is the correct failure signal: V3 needs a stronger hand/camera/depth estimation stage, not looser contact weights or a hidden smoothing correction.
+
 ## Implemented Diagnostics
 
 The implemented v3 code is diagnostic, not the required solver above:
@@ -174,8 +243,10 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/summarize_contact_depth_scale_v3.py`
 - `scripts/optimize_contact_depth_scale_v3.py`
 - `scripts/diagnose_hand_reprojection_depth_v3.py`
+- `scripts/diagnose_mano_contact_reprojection_tradeoff_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
+- `scripts/optimize_joint_mano_object_graph_v3.py`
 
 ## Immediate Execution Plan
 
@@ -185,4 +256,4 @@ The implemented v3 code is diagnostic, not the required solver above:
 4. Pull review stills and mask QC; visually reject or accept before meshing.
 5. If SAMWISE masks pass, reconstruct a white-liner observed-surface mesh and test whether depth/contact conflict resembles the pink-lid case.
 6. If SAMWISE masks fail, move to SOLA or image-level referring segmentation instead of writing visual if/else cleanup.
-7. Implement a v3 joint optimizer over a short pink-lid contact window using the existing strict metric mesh and contact-depth report, with explicit residual reporting for reprojection, depth, silhouette, penetration, and contact.
+7. Replace the current source-camera MANO placement with a stronger hand/camera/depth estimator before expanding the joint graph, because the current graph cannot satisfy contact without violating reprojection or hand-size priors.
