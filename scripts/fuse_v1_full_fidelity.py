@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
-import matplotlib
 import numpy as np
 import torch
 from PIL import Image
@@ -22,10 +21,6 @@ from scipy.optimize import minimize
 from tqdm import tqdm
 
 from run_v1_wilor_colmap import HAND_EDGES, caption_for_frame, load_actions, open_video
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 
 DEFAULT_CLIP = Path(
@@ -41,6 +36,100 @@ TIP_IDS = [4, 8, 12, 16, 20]
 HAND_SPAN_TARGET_M = 0.175
 DEFAULT_MANO_RIGHT = Path("third_party/WiLoR/mano_data/MANO_RIGHT.pkl")
 MANO_EDGE_STRIDE = 3
+
+OBJECT_PROFILES: dict[str, dict] = {
+    "tomato": {
+        "prompts": ("tomato", "red tomato", "cut tomato", "tomato pieces"),
+        "keywords": ("tomato",),
+        "color_refinement": "tomato_red",
+        "pose_type": "deformable_object_centroid_with_spherical_extent",
+    },
+    "mop": {
+        "prompts": ("mop", "long-handled mop", "mop pole", "mop head"),
+        "keywords": ("mop",),
+        "pose_type": "articulated_or_long_tool_centroid_with_extent",
+    },
+    "pet_bed": {
+        "prompts": ("pet bed", "animal bed", "floor pet bed"),
+        "keywords": ("pet bed", "drag pet bed"),
+        "pose_type": "deformable_or_rigid_object_centroid_with_extent",
+    },
+    "knife": {
+        "prompts": ("knife", "kitchen knife", "cutting knife"),
+        "keywords": ("knife",),
+        "pose_type": "thin_rigid_tool_centroid_with_extent",
+    },
+    "cutting_board": {
+        "prompts": ("cutting board", "wooden cutting board", "round cutting board"),
+        "keywords": ("cutting board",),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+    "cloth": {
+        "prompts": ("cloth", "cleaning cloth", "rag", "blue cloth", "grey cloth"),
+        "keywords": ("cloth", "wipe"),
+        "pose_type": "deformable_object_centroid_with_extent",
+    },
+    "keyboard": {
+        "prompts": ("keyboard", "black keyboard", "computer keyboard"),
+        "keywords": ("keyboard",),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+    "jar": {
+        "prompts": ("jar", "small jar", "round jar"),
+        "keywords": ("jar",),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+    "box": {
+        "prompts": ("box", "small box", "round box", "rectangular object"),
+        "keywords": ("box", "round box", "small box", "rectangular object"),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+    "crochet": {
+        "prompts": ("crochet hook", "hook", "yarn", "crocheted fabric", "white fabric"),
+        "keywords": ("crochet", "hook", "yarn", "fabric"),
+        "pose_type": "fine_tool_and_deformable_material_centroid_with_extent",
+    },
+    "clothing": {
+        "prompts": ("clothing", "clothes", "coat", "black coat"),
+        "keywords": ("clothing", "clothes", "coat"),
+        "pose_type": "deformable_object_centroid_with_extent",
+    },
+    "suitcase": {
+        "prompts": ("suitcase", "purple suitcase", "luggage"),
+        "keywords": ("suitcase", "zip suitcase", "close suitcase"),
+        "pose_type": "rigid_container_centroid_with_extent",
+    },
+    "plant": {
+        "prompts": ("plant", "potted plant", "branch", "scissors", "wooden stick"),
+        "keywords": ("plant", "branch", "prune", "scissors", "soil", "stick"),
+        "pose_type": "thin_object_or_clutter_centroid_with_extent",
+    },
+    "dehumidifier": {
+        "prompts": ("dehumidifier", "white dehumidifier"),
+        "keywords": ("dehumidifier",),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+    "fan": {
+        "prompts": ("floor fan", "fan"),
+        "keywords": ("fan", "floor fan"),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+    "trash_bag": {
+        "prompts": ("trash bag", "garbage bag", "trash can", "bin"),
+        "keywords": ("trash_bag", "trash bag", "trash can", "garbage bag", "line_trash_can"),
+        "pose_type": "deformable_bag_or_container_centroid_with_extent",
+    },
+    "bowl": {
+        "prompts": ("bowl", "white bowl", "porcelain bowl"),
+        "keywords": ("bowl",),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+    "phone": {
+        "prompts": ("phone", "mobile phone", "smartphone"),
+        "keywords": ("phone",),
+        "pose_type": "rigid_object_centroid_with_extent",
+    },
+}
 
 
 def hand_vertices_field(hand: dict, suffix: str = "") -> str:
@@ -98,6 +187,15 @@ class RenderSpec:
     fps: float
 
 
+@dataclass(frozen=True)
+class WorldProjector:
+    basis: np.ndarray
+    q_center: np.ndarray
+    pixels_per_meter: float
+    screen_center: tuple[float, float]
+    size: tuple[int, int]
+
+
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -108,17 +206,6 @@ def read_video_frame(cap: cv2.VideoCapture, frame_idx: int) -> np.ndarray:
     if not ok:
         raise RuntimeError(f"failed to read video frame {frame_idx}")
     return frame
-
-
-def manipulated_object_interval(actions: list[dict], label: str) -> tuple[int, int]:
-    spans = [
-        (int(action["start_frame"]), int(action["end_frame"]))
-        for action in actions
-        if label in (action.get("description", "") + " " + action.get("action", "")).lower()
-    ]
-    if not spans:
-        raise RuntimeError(f"no semantic interval mentions object label: {label}")
-    return min(s for s, _ in spans), max(e for _, e in spans)
 
 
 def choose_hand_by_side(hands: list[dict]) -> dict[str, dict]:
@@ -622,17 +709,91 @@ def transform_hands_to_world(frames: list[dict], droid_npz: Path, droid_to_meter
     return T_metric
 
 
+def object_profile(label: str) -> dict:
+    normalized = label.lower().replace(" ", "_")
+    if normalized in OBJECT_PROFILES:
+        return OBJECT_PROFILES[normalized]
+    prompts = tuple(dict.fromkeys((label, label.replace("_", " "))))
+    return {
+        "prompts": prompts,
+        "keywords": tuple(token for token in label.lower().replace("_", " ").split() if len(token) > 2),
+        "pose_type": "object_centroid_with_extent",
+    }
+
+
+def infer_object_label(actions: list[dict], requested: str) -> str:
+    if requested != "auto":
+        return requested
+    scores: dict[str, float] = {label: 0.0 for label in OBJECT_PROFILES}
+    for action in actions:
+        label, confidence = infer_action_object_label(action)
+        duration = max(1, int(action.get("end_frame", 0)) - int(action.get("start_frame", 0)))
+        scores[label] = scores.get(label, 0.0) + confidence * duration
+    best_label = max(scores, key=lambda label: scores[label])
+    if scores[best_label] <= 0.0:
+        raise RuntimeError("could not infer manipulated object label from action metadata; pass --object-label")
+    return best_label
+
+
+def infer_action_object_label(action: dict) -> tuple[str, float]:
+    text = f"{action.get('action', '')} {action.get('description', '')}".lower().replace("_", " ")
+    best_label = None
+    best_score = 0.0
+    for label, profile in OBJECT_PROFILES.items():
+        score = float(sum(text.count(keyword.replace("_", " ")) for keyword in profile["keywords"]))
+        if action.get("action", "").lower().endswith(label):
+            score += 2.0
+        if label in action.get("action", "").lower().replace("_", " "):
+            score += 1.5
+        if score > best_score:
+            best_label = label
+            best_score = score
+    if best_label is None:
+        return "unknown", 0.0
+    verb_only = action.get("action", "").lower().replace("_", " ")
+    ambiguous_object_words = {"object", "item", "items", "desk", "table", "surface", "floor"}
+    if best_label == "cloth" and "wipe" in verb_only and not any(word in text for word in ("cloth", "rag", "towel")):
+        return "unknown", 0.0
+    if best_score <= 1.0 and any(word in verb_only.split() for word in ambiguous_object_words):
+        return "unknown", 0.0
+    return best_label, best_score
+
+
+def object_label_for_action(action: dict, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    label, score = infer_action_object_label(action)
+    if score <= 0.0:
+        raise RuntimeError(f"could not infer manipulated object for action: {action}")
+    return label
+
+
+def action_relevance(action: dict, object_label: str) -> int:
+    profile = object_profile(object_label)
+    text = f"{action.get('action', '')} {action.get('description', '')}".lower().replace("_", " ")
+    return sum(text.count(keyword.replace("_", " ")) for keyword in profile["keywords"])
+
+
+def manipulated_object_interval(actions: list[dict], label: str) -> tuple[int, int]:
+    relevant = [
+        (int(action["start_frame"]), int(action["end_frame"]))
+        for action in actions
+        if action_relevance(action, label) > 0
+    ]
+    if not relevant:
+        raise RuntimeError(f"no semantic interval mentions object label: {label}")
+    return min(s for s, _ in relevant), max(e for _, e in relevant)
+
+
 def active_object_hands(frame_ann: dict) -> list[dict]:
     caption = frame_ann.get("caption", "").lower()
     wanted: set[str] = set()
-    if "left hand places" in caption or "left hand holds" in caption:
-        wanted.add("left")
-    if "right hand" in caption and ("tomato" in caption or "knife" in caption):
-        wanted.add("right")
-    if "left hand" in caption and ("tomato" in caption or "bowl" in caption):
-        wanted.add("left")
-    if not wanted and "tomato" in caption:
+    if "both hands" in caption or "both hand" in caption:
         wanted = {"left", "right"}
+    if "left hand" in caption:
+        wanted.add("left")
+    if "right hand" in caption:
+        wanted.add("right")
     selected = [hand for hand in frame_ann["hands"] if hand["side"] in wanted]
     return selected if selected else frame_ann["hands"]
 
@@ -893,10 +1054,11 @@ def load_owl_detector(device: str):
     return processor, model
 
 
-def owl_boxes(processor, model, frame: np.ndarray, threshold: float) -> list[dict]:
+def owl_boxes(processor, model, frame: np.ndarray, threshold: float, object_label: str) -> list[dict]:
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     image = Image.fromarray(rgb)
-    texts = [["tomato", "red tomato", "cut tomato", "tomato pieces"]]
+    profile = object_profile(object_label)
+    texts = [list(profile["prompts"])]
     inputs = processor(text=texts, images=image, return_tensors="pt").to(model.device)
     with torch.no_grad():
         out = model(**inputs)
@@ -910,8 +1072,6 @@ def owl_boxes(processor, model, frame: np.ndarray, threshold: float) -> list[dic
     labels = result.get("text_labels", [])
     for i, score in enumerate(result["scores"].detach().cpu().tolist()):
         label = labels[i] if isinstance(labels, list) and i < len(labels) else str(int(result["labels"][i]))
-        if "tomato" not in label:
-            continue
         box = result["boxes"][i].detach().cpu().numpy().astype(float)
         boxes.append({"box": box.tolist(), "score": float(score), "label": label, "source": "owlv2"})
     return boxes
@@ -931,6 +1091,7 @@ def sam_mask_from_boxes(
     contact_points: np.ndarray,
     geom: dict,
     prev_box: list[float] | None,
+    object_label: str,
 ) -> dict | None:
     if not boxes:
         return None
@@ -941,6 +1102,8 @@ def sam_mask_from_boxes(
         cv2.inRange(hsv, (165, 60, 35), (180, 255, 255)),
     ).astype(bool)
     scored = []
+    profile = object_profile(object_label)
+    use_red = profile.get("color_refinement") == "tomato_red"
     prev_center = None
     if prev_box is not None:
         p = np.asarray(prev_box, dtype=float)
@@ -961,13 +1124,15 @@ def sam_mask_from_boxes(
             prev_dist = math.inf if prev_center is None else float(np.linalg.norm(prev_center - center))
             if min(assoc_dist, prev_dist) > 230.0:
                 continue
-            if red_fraction < 0.04 and min(assoc_dist, prev_dist) > 90.0:
+            if use_red and red_fraction < 0.04 and min(assoc_dist, prev_dist) > 90.0:
                 continue
+            temporal_bonus = 0.18 * math.exp(-min(prev_dist, 220.0) / 95.0) if prev_center is not None else 0.0
             score = (
                 float(box_info["score"])
                 + 0.35 * float(sam_score)
                 + 0.45 * contact_ratio
-                + 0.18 * red_fraction
+                + (0.18 * red_fraction if use_red else 0.0)
+                + temporal_bonus
                 - 0.0016 * min(assoc_dist, 180.0)
                 - 0.001 * min(prev_dist, 160.0)
             )
@@ -1004,19 +1169,45 @@ def sam_mask_from_boxes(
     }
 
 
+def action_for_frame(actions: list[dict], source_idx: int) -> dict | None:
+    for action in actions:
+        if int(action.get("start_frame", -1)) <= source_idx < int(action.get("end_frame", -1)):
+            return action
+    return None
+
+
 def run_object_masks(args: argparse.Namespace, frames: list[dict], actions: list[dict], render: RenderSpec) -> tuple[list[dict], dict]:
-    start, end = manipulated_object_interval(actions, args.object_label)
     available = {int(frame["frame_idx"]): i for i, frame in enumerate(frames)}
     frame_start = min(available)
     frame_end = max(available)
-    start = max(start, frame_start)
-    end = min(end, frame_end)
-    if args.frame_start is not None:
-        start = max(start, int(args.frame_start))
-    if args.frame_end is not None:
-        end = min(end, int(args.frame_end))
-    if start > end:
-        raise RuntimeError(f"empty object interval after frame limits: start={start}, end={end}")
+    intervals = []
+    action_labels: list[dict] = []
+    for action in actions:
+        if args.object_label != "auto" and action_relevance(action, args.object_label) <= 0:
+            continue
+        try:
+            label = object_label_for_action(action, args.object_label)
+        except RuntimeError:
+            continue
+        start = max(int(action["start_frame"]), frame_start)
+        end = min(int(action["end_frame"]) - 1, frame_end)
+        if args.frame_start is not None:
+            start = max(start, int(args.frame_start))
+        if args.frame_end is not None:
+            end = min(end, int(args.frame_end))
+        if start <= end:
+            intervals.append((start, end, label, action))
+            action_labels.append(
+                {
+                    "start_frame": start,
+                    "end_frame": end,
+                    "label": label,
+                    "action": action.get("action"),
+                    "description": action.get("description"),
+                }
+            )
+    if not intervals:
+        raise RuntimeError("no object intervals after frame limits")
     step = max(1, int(args.object_stride))
     cap, info = open_video(args.clip)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1028,25 +1219,48 @@ def run_object_masks(args: argparse.Namespace, frames: list[dict], actions: list
     prev_mask: np.ndarray | None = None
     prev_frame: np.ndarray | None = None
     prev_source_idx: int | None = None
+    prev_label: str | None = None
     flow_estimator = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
     processed = 0
     detected = 0
     try:
-        source_indices = [idx for idx in range(start, end + 1, step) if idx in available]
+        source_indices = []
+        frame_label: dict[int, str] = {}
+        for start, end, label, _ in intervals:
+            for idx in range(start, end + 1, step):
+                if idx in available:
+                    source_indices.append(idx)
+                    frame_label[idx] = label
+        source_indices = sorted(set(source_indices))
         for source_idx in tqdm(source_indices, desc="object_sam"):
             local_idx = available[source_idx]
+            object_label = frame_label[source_idx]
+            profile = object_profile(object_label)
+            use_tomato_color = profile.get("color_refinement") == "tomato_red"
+            if prev_label != object_label:
+                prev_box = None
+                prev_mask = None
+                prev_frame = None
+                prev_source_idx = None
+                prev_label = object_label
             frame = read_video_frame(cap, source_idx)
             geom = hand_association_geometry(frames[local_idx])
             contact = geom["tips"]
-            boxes = red_mask_boxes(frame, geom, prev_box)
-            boxes.extend(owl_boxes(owl_processor, owl_model, frame, args.owl_threshold))
+            boxes = []
+            if use_tomato_color:
+                boxes.extend(red_mask_boxes(frame, geom, prev_box))
+            boxes.extend(owl_boxes(owl_processor, owl_model, frame, args.owl_threshold, object_label))
             if prev_box is not None:
-                boxes.append({"box": prev_box, "score": 0.12, "label": "tomato_temporal_prior", "source": "temporal_prior"})
+                boxes.append({"box": prev_box, "score": 0.12, "label": f"{object_label}_temporal_prior", "source": "temporal_prior"})
             boxes.sort(key=lambda item: float(item["score"]), reverse=True)
-            mask_info = sam_mask_from_boxes(sam, frame, boxes, contact, geom, prev_box)
+            mask_info = sam_mask_from_boxes(sam, frame, boxes, contact, geom, prev_box, object_label)
             processed += 1
             if mask_info is not None:
-                refined_mask, refined_status = refine_deformable_tomato_mask(frame, mask_info["mask"], frames[local_idx], geom)
+                refined_mask, refined_status = (
+                    refine_deformable_tomato_mask(frame, mask_info["mask"], frames[local_idx], geom)
+                    if use_tomato_color
+                    else (mask_info["mask"], "sam_single_mask")
+                )
                 if prev_source_idx is not None and source_idx - prev_source_idx == step:
                     temporal_mask, temporal_status = fuse_temporal_object_mask(
                         flow_estimator,
@@ -1075,6 +1289,9 @@ def run_object_masks(args: argparse.Namespace, frames: list[dict], actions: list
                 prev_frame = frame.copy()
                 prev_source_idx = source_idx
                 object_meas[local_idx] = {k: v for k, v in mask_info.items() if k != "mask"}
+                object_meas[local_idx]["label"] = object_label
+                object_meas[local_idx]["profile"] = "tomato_color_refined" if use_tomato_color else "general_prompt_contact_temporal"
+                object_meas[local_idx]["prompts"] = list(profile["prompts"])
                 mask_small = cv2.resize(mask_info["mask"].astype(np.uint8) * 255, (render.width, render.height), interpolation=cv2.INTER_NEAREST)
                 mask_path = args.output_dir / "object_masks" / f"{source_idx:06d}.png"
                 mask_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1089,13 +1306,16 @@ def run_object_masks(args: argparse.Namespace, frames: list[dict], actions: list
             torch.cuda.empty_cache()
 
     return object_meas, {
-        "label": args.object_label,
-        "semantic_interval": [start, end],
+        "label": "per_action_auto" if args.object_label == "auto" else args.object_label,
+        "requested_label": args.object_label,
+        "action_labels": action_labels,
+        "semantic_interval": [min(start for start, _, _, _ in intervals), max(end for _, end, _, _ in intervals)],
         "stride": step,
         "processed_frames": processed,
         "detected_frames": detected,
         "detection_rate_on_processed": detected / max(1, processed),
-        "backend": "OWLv2 proposals + SAM ViT-B masks + contact/temporal proposal scoring + deformable tomato refinement + DIS optical-flow mask propagation",
+        "backend": "OWLv2 prompt proposals + SAM ViT-B masks + hand-contact and temporal proposal scoring",
+        "profile": "per_action_prompt_contact_temporal",
     }
 
 
@@ -1104,129 +1324,158 @@ def fill_object_track(
     object_meas: list[dict | None],
     fps: float,
     image_size: tuple[int, int],
-    object_label: str,
-    semantic_interval: tuple[int, int],
+    object_segments: list[dict],
 ) -> dict:
-    meas = []
-    conf = []
-    template = None
-    prev_valid_center: np.ndarray | None = None
+    for frame in frames:
+        frame["object"] = {"label": None, "status": "outside_semantic_interval"}
     invalid_measurements = 0
-    for m in object_meas:
-        if m is None:
-            meas.append(None)
-            conf.append(0.0)
-        else:
-            bbox = np.asarray(m["bbox_xyxy"], dtype=float)
-            center = np.asarray(m["center_xy"], dtype=float)
-            edge = bool(m.get("edge_touch", False))
-            width = bbox[2] - bbox[0] + 1.0
-            height = bbox[3] - bbox[1] + 1.0
-            prev_jump = math.inf if prev_valid_center is None else float(np.linalg.norm(center - prev_valid_center))
-            valid = not (edge and (width < 36.0 or height < 36.0 or float(m.get("red_fraction", 0.0)) < 0.20))
-            if prev_valid_center is not None and prev_jump > 520.0 and float(m.get("min_tip_dist_px", math.inf)) > 60.0:
-                valid = False
-            if valid:
-                if template is None:
-                    template = m
-                meas.append(np.asarray(m["center_xy"] + m["bbox_xyxy"] + [math.sqrt(max(1.0, float(m["area_px"])))], dtype=float))
-                conf.append(float(max(0.05, m["score"])))
-                prev_valid_center = center
-            else:
-                meas.append(None)
-                conf.append(0.0)
-                invalid_measurements += 1
-    if template is None:
-        raise RuntimeError("object module produced no valid SAM masks")
     meas_sigma = np.asarray([16.0, 16.0, 28.0, 28.0, 28.0, 28.0, 18.0], dtype=float)
     proc_pos = np.asarray([3.5, 3.5, 6.0, 6.0, 6.0, 6.0, 3.5], dtype=float)
     proc_vel = np.asarray([80.0, 80.0, 120.0, 120.0, 120.0, 120.0, 80.0], dtype=float)
-    smoothed, statuses = kalman_rts(meas, conf, fps, meas_sigma, proc_pos, proc_vel)
-    measured_indices = [i for i, m in enumerate(meas) if m is not None]
-    first_measured = measured_indices[0]
-    last_measured = measured_indices[-1]
     max_edge_prediction = max(3, int(round(0.50 * fps)))
     observed = 0
     predicted = 0
     outside_visibility = 0
     edge_predicted = 0
     contact_frames = 0
-    start, end = semantic_interval
     width, height = image_size
-    for i, frame in enumerate(frames):
-        source_idx = int(frame["frame_idx"])
-        active = start <= source_idx <= end
-        if not active:
-            frame["object"] = {"label": object_label, "status": "outside_semantic_interval"}
+    measured_source_frames: list[int] = []
+    segment_qc = []
+    for segment in object_segments:
+        label = str(segment["label"])
+        start = int(segment["start_frame"])
+        end = int(segment["end_frame"])
+        indices = [i for i, frame in enumerate(frames) if start <= int(frame["frame_idx"]) <= end]
+        if not indices:
             continue
-        before = i < first_measured
-        after = i > last_measured
-        edge_gap = first_measured - i if before else i - last_measured if after else 0
-        if (before or after) and edge_gap > max_edge_prediction:
-            outside_visibility += 1
-            frame["object"] = {"label": object_label, "status": "unobserved_before_or_after_object_track"}
-            continue
-        vec = smoothed[i]
-        center = vec[:2]
-        bbox = vec[2:6]
-        bbox[[0, 2]] = np.clip(bbox[[0, 2]], 0, width - 1)
-        bbox[[1, 3]] = np.clip(bbox[[1, 3]], 0, height - 1)
-        center[0] = float(np.clip(center[0], 0, width - 1))
-        center[1] = float(np.clip(center[1], 0, height - 1))
-        box_w = float(bbox[2] - bbox[0])
-        box_h = float(bbox[3] - bbox[1])
-        m = object_meas[i]
-        if (box_w < 12.0 or box_h < 12.0) or (center[0] <= 1.0 and box_w < 60.0):
-            frame["object"] = {"label": object_label, "status": "unobserved_degenerate_track_state"}
-            if m is not None:
-                invalid_measurements += 1
-            continue
-        status = "measured_sam_kalman" if m is not None else "predicted_kalman"
-        if m is not None:
-            observed += 1
-            contact_ratio = float(m.get("contact_ratio", 0.0))
-            min_tip = float(m.get("min_tip_dist_px", math.inf))
-            red_fraction = float(m.get("red_fraction", 0.0))
-        else:
-            predicted += 1
-            if before or after:
-                edge_predicted += 1
-            contact = hand_contact_points(frame)
-            if contact.size:
-                d = np.linalg.norm(contact - center[None, :], axis=1)
-                min_tip = float(d.min())
-                contact_ratio = float(min_tip < 45.0)
+        meas = []
+        conf = []
+        valid_measurements: list[dict | None] = []
+        prev_valid_center: np.ndarray | None = None
+        for i in indices:
+            m = object_meas[i]
+            if m is None or str(m.get("label")) != label:
+                meas.append(None)
+                conf.append(0.0)
+                valid_measurements.append(None)
+                continue
+            bbox = np.asarray(m["bbox_xyxy"], dtype=float)
+            center = np.asarray(m["center_xy"], dtype=float)
+            edge = bool(m.get("edge_touch", False))
+            box_width = bbox[2] - bbox[0] + 1.0
+            box_height = bbox[3] - bbox[1] + 1.0
+            prev_jump = math.inf if prev_valid_center is None else float(np.linalg.norm(center - prev_valid_center))
+            tomato_guard = m.get("profile") == "tomato_color_refined"
+            valid = not (edge and (box_width < 36.0 or box_height < 36.0 or (tomato_guard and float(m.get("red_fraction", 0.0)) < 0.20)))
+            if prev_valid_center is not None and prev_jump > 520.0 and float(m.get("min_tip_dist_px", math.inf)) > 60.0:
+                valid = False
+            if valid:
+                meas.append(np.asarray(m["center_xy"] + m["bbox_xyxy"] + [math.sqrt(max(1.0, float(m["area_px"])))], dtype=float))
+                conf.append(float(max(0.05, m["score"])))
+                valid_measurements.append(m)
+                prev_valid_center = center
             else:
-                min_tip = math.inf
-                contact_ratio = 0.0
-            red_fraction = 0.0
-        if contact_ratio > 0 or min_tip < 45.0:
-            contact_frames += 1
-        frame["object"] = {
-            "label": object_label,
-            "status": status,
-            "bbox_xyxy": bbox.astype(float).tolist(),
-            "center_xy": center.astype(float).tolist(),
-            "area_px": float(max(1.0, vec[6] * vec[6])),
-            "measurement_available": m is not None,
-            "mask_path": m.get("mask_path") if m else None,
-            "contact_ratio": contact_ratio,
-            "min_tip_dist_px": min_tip,
-            "red_fraction": red_fraction,
-            "mask_refinement": m.get("mask_refinement") if m else None,
-            "proposal_source": m.get("proposal_source") if m else None,
-            "sam_score": float(m["sam_score"]) if m and "sam_score" in m else None,
-            "pose_status": "pending_world_ray_depth_optimization",
-        }
+                meas.append(None)
+                conf.append(0.0)
+                valid_measurements.append(None)
+                invalid_measurements += 1
+        measured_positions = [pos for pos, m in enumerate(meas) if m is not None]
+        if not measured_positions:
+            for i in indices:
+                frames[i]["object"] = {"label": label, "status": "unobserved_no_valid_object_measurement"}
+                outside_visibility += 1
+            segment_qc.append({"label": label, "start_frame": start, "end_frame": end, "measured_frames": 0, "predicted_frames": 0})
+            continue
+        smoothed, _ = kalman_rts(meas, conf, fps, meas_sigma, proc_pos, proc_vel)
+        first_measured = measured_positions[0]
+        last_measured = measured_positions[-1]
+        segment_observed = 0
+        segment_predicted = 0
+        for pos, i in enumerate(indices):
+            frame = frames[i]
+            before = pos < first_measured
+            after = pos > last_measured
+            edge_gap = first_measured - pos if before else pos - last_measured if after else 0
+            if (before or after) and edge_gap > max_edge_prediction:
+                outside_visibility += 1
+                frame["object"] = {"label": label, "status": "unobserved_before_or_after_object_track"}
+                continue
+            vec = smoothed[pos]
+            center = vec[:2]
+            bbox = vec[2:6]
+            bbox[[0, 2]] = np.clip(bbox[[0, 2]], 0, width - 1)
+            bbox[[1, 3]] = np.clip(bbox[[1, 3]], 0, height - 1)
+            center[0] = float(np.clip(center[0], 0, width - 1))
+            center[1] = float(np.clip(center[1], 0, height - 1))
+            box_w = float(bbox[2] - bbox[0])
+            box_h = float(bbox[3] - bbox[1])
+            m = valid_measurements[pos]
+            if (box_w < 12.0 or box_h < 12.0) or (center[0] <= 1.0 and box_w < 60.0):
+                frame["object"] = {"label": label, "status": "unobserved_degenerate_track_state"}
+                if object_meas[i] is not None:
+                    invalid_measurements += 1
+                continue
+            status = "measured_sam_kalman" if m is not None else "predicted_kalman"
+            if m is not None:
+                observed += 1
+                segment_observed += 1
+                measured_source_frames.append(int(frame["frame_idx"]))
+                contact_ratio = float(m.get("contact_ratio", 0.0))
+                min_tip = float(m.get("min_tip_dist_px", math.inf))
+                red_fraction = float(m.get("red_fraction", 0.0))
+            else:
+                predicted += 1
+                segment_predicted += 1
+                if before or after:
+                    edge_predicted += 1
+                contact = hand_contact_points(frame)
+                if contact.size:
+                    d = np.linalg.norm(contact - center[None, :], axis=1)
+                    min_tip = float(d.min())
+                    contact_ratio = float(min_tip < 45.0)
+                else:
+                    min_tip = math.inf
+                    contact_ratio = 0.0
+                red_fraction = 0.0
+            if contact_ratio > 0 or min_tip < 45.0:
+                contact_frames += 1
+            frame["object"] = {
+                "label": label,
+                "status": status,
+                "bbox_xyxy": bbox.astype(float).tolist(),
+                "center_xy": center.astype(float).tolist(),
+                "area_px": float(max(1.0, vec[6] * vec[6])),
+                "measurement_available": m is not None,
+                "mask_path": m.get("mask_path") if m else None,
+                "contact_ratio": contact_ratio,
+                "min_tip_dist_px": min_tip,
+                "red_fraction": red_fraction,
+                "mask_refinement": m.get("mask_refinement") if m else None,
+                "proposal_source": m.get("proposal_source") if m else None,
+                "sam_score": float(m["sam_score"]) if m and "sam_score" in m else None,
+                "pose_status": "pending_world_ray_depth_optimization",
+            }
+        segment_qc.append(
+            {
+                "label": label,
+                "start_frame": start,
+                "end_frame": end,
+                "measured_frames": segment_observed,
+                "predicted_frames": segment_predicted,
+            }
+        )
+    if not measured_source_frames:
+        raise RuntimeError("object module produced no valid SAM masks in any active segment")
     return {
         "measured_frames": observed,
         "predicted_frames": predicted,
         "outside_visibility_frames": outside_visibility,
         "edge_predicted_frames": edge_predicted,
         "contact_frames": contact_frames,
-        "first_measured_source_frame": int(frames[first_measured]["frame_idx"]),
-        "last_measured_source_frame": int(frames[last_measured]["frame_idx"]),
+        "first_measured_source_frame": int(min(measured_source_frames)),
+        "last_measured_source_frame": int(max(measured_source_frames)),
         "invalid_measurements_rejected": invalid_measurements,
+        "segments": segment_qc,
     }
 
 
@@ -1239,8 +1488,9 @@ def source_camera_ray(center_xy: np.ndarray, intrinsics: np.ndarray) -> np.ndarr
 def contact_anchor_world(frame: dict, center_xy: np.ndarray, radius_px: float) -> tuple[np.ndarray | None, float]:
     candidates = []
     for hand in frame["hands"]:
-        points2d = np.asarray(hand["joints2d"], dtype=float)[TIP_IDS]
-        points3d = np.asarray(hand["joints3d_world_m"], dtype=float)[TIP_IDS]
+        all_points = radius_px >= 120.0
+        points2d = np.asarray(hand["joints2d"], dtype=float) if all_points else np.asarray(hand["joints2d"], dtype=float)[TIP_IDS]
+        points3d = np.asarray(hand["joints3d_world_m"], dtype=float) if all_points else np.asarray(hand["joints3d_world_m"], dtype=float)[TIP_IDS]
         dists = np.linalg.norm(points2d - center_xy[None, :], axis=1)
         for dist, point in zip(dists, points3d):
             if dist <= radius_px:
@@ -1250,6 +1500,13 @@ def contact_anchor_world(frame: dict, center_xy: np.ndarray, radius_px: float) -
     candidates.sort(key=lambda item: item[0])
     selected = np.asarray([point for _, point in candidates[:4]], dtype=float)
     return selected.mean(axis=0), candidates[0][0]
+
+
+def object_depth_bounds(label: str) -> tuple[float, float]:
+    pose_type = str(object_profile(label)["pose_type"])
+    if "bag" in pose_type or "deformable" in pose_type or "tool" in pose_type:
+        return 0.15, 2.20
+    return 0.20, 3.20
 
 
 def add_sparse_row(rows: list[int], cols: list[int], vals: list[float], rhs: list[float], row: int, terms: list[tuple[int, float]], target: float, sigma: float) -> int:
@@ -1284,7 +1541,9 @@ def attach_object_world(
         sampled = sample_droid_depth_relative(recon, source_idx, center, image_size, max_keyframe_gap)
         if sampled is not None:
             droid_depth_samples[i] = (sampled[0] * droid_to_meters, sampled[1])
-        anchor, min_dist = contact_anchor_world(frame, center, max(65.0, min(150.0, float(obj.get("min_tip_dist_px", 150.0)) + 35.0)))
+        contact_radius = max(85.0, min(260.0, 0.35 * math.sqrt(max(1.0, float(obj.get("area_px", 1.0))))))
+        contact_radius = max(contact_radius, min(220.0, float(obj.get("min_tip_dist_px", 150.0)) + 55.0))
+        anchor, min_dist = contact_anchor_world(frame, center, contact_radius)
         if anchor is not None:
             contact_samples[i] = (anchor, min_dist)
     if not active:
@@ -1311,9 +1570,14 @@ def attach_object_world(
             ray = source_camera_ray(center, intrinsics)
             origin = T_metric[frame_idx, :3, 3]
             direction = T_metric[frame_idx, :3, :3] @ ray
-            sigma = 0.055 + 0.00035 * min(min_dist, 150.0)
+            label = str(frames[frame_idx]["object"].get("label", ""))
+            pose_type = str(object_profile(label)["pose_type"])
+            sigma = 0.030 + 0.00022 * min(min_dist, 220.0)
+            if "bag" in pose_type or "deformable" in pose_type:
+                sigma *= 0.65
             depth_from_anchor = float(np.dot(anchor - origin, direction) / max(1e-9, np.dot(direction, direction)))
-            if 0.20 <= depth_from_anchor <= 3.20:
+            lo, hi = object_depth_bounds(label)
+            if lo <= depth_from_anchor <= hi:
                 initial_depths.setdefault(frame_idx, depth_from_anchor)
             for axis in range(3):
                 row = add_sparse_row(
@@ -1329,6 +1593,11 @@ def attach_object_world(
                 absolute_rows += 1
     for a, b, c in zip(active[:-2], active[1:-1], active[2:]):
         if b - a != 1 or c - b != 1:
+            continue
+        if (
+            frames[a]["object"].get("label") != frames[b]["object"].get("label")
+            or frames[b]["object"].get("label") != frames[c]["object"].get("label")
+        ):
             continue
         for axis in range(3):
             terms = []
@@ -1353,8 +1622,11 @@ def attach_object_world(
         median_initial = float(np.median(list(initial_depths.values())))
     else:
         median_initial = 1.40
+    bounds = [object_depth_bounds(str(frames[frame_idx]["object"].get("label", ""))) for frame_idx in active]
+    lo_arr = np.asarray([lo for lo, _ in bounds], dtype=float)
+    hi_arr = np.asarray([hi for _, hi in bounds], dtype=float)
     x0 = np.asarray([initial_depths.get(frame_idx, median_initial) for frame_idx in active], dtype=float)
-    x0 = np.clip(x0, 0.20, 3.20)
+    x0 = np.clip(x0, lo_arr, hi_arr)
 
     def objective(x: np.ndarray) -> tuple[float, np.ndarray]:
         residual = A @ x - b
@@ -1366,7 +1638,7 @@ def attach_object_world(
         fun=lambda x: objective(x)[0],
         x0=x0,
         jac=lambda x: objective(x)[1],
-        bounds=[(0.20, 3.20)] * len(active),
+        bounds=bounds,
         method="L-BFGS-B",
         options={"maxiter": 2000, "ftol": 1e-9, "gtol": 1e-6, "maxls": 50},
     )
@@ -1385,7 +1657,7 @@ def attach_object_world(
         obj["center_world_m"] = point_world.astype(float).tolist()
         obj["depth_m"] = float(depth_m)
         obj["radius_m"] = float(radius_px * depth_m / focal)
-        obj["pose_type"] = "deformable_object_centroid_with_spherical_extent"
+        obj["pose_type"] = object_profile(str(obj["label"]))["pose_type"]
         obj["pose_status"] = "world_ray_depth_optimized_from_droid_depth_contact_and_temporal_smoothness"
         obj["depth_evidence"] = {
             "droid_depth": frame_idx in droid_depth_samples,
@@ -1483,76 +1755,264 @@ def put_caption(frame: np.ndarray, caption: str, frame_idx: int) -> None:
         y += 24
 
 
-def render_3d_frame(frames: list[dict], index: int, camera_positions: np.ndarray, size: tuple[int, int], mano_edges: dict[int, np.ndarray]) -> np.ndarray:
-    fig = plt.figure(figsize=(size[0] / 100, size[1] / 100), dpi=100)
-    ax = fig.add_subplot(111, projection="3d")
-    ax.plot(camera_positions[:, 0], camera_positions[:, 1], camera_positions[:, 2], color="black", linewidth=1.2)
-    cur = camera_positions[index]
-    ax.scatter([cur[0]], [cur[1]], [cur[2]], color="black", s=28)
+def unit_vector(vec: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(vec, dtype=float)
+    norm = float(np.linalg.norm(arr))
+    if not np.isfinite(norm) or norm < 1e-9:
+        raise RuntimeError(f"cannot normalize {name}")
+    return arr / norm
+
+
+def camera_transform(frame: dict) -> np.ndarray:
+    T = np.asarray(frame["camera"]["T_world_camera_metric"], dtype=float)
+    if T.shape != (4, 4) or not np.isfinite(T).all():
+        raise RuntimeError("camera T_world_camera_metric must be finite 4x4")
+    return T
+
+
+def camera_axes(T: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    right = unit_vector(T[:3, 0], "camera right")
+    up = unit_vector(-T[:3, 1], "camera up")
+    forward = unit_vector(T[:3, 2], "camera forward")
+    return right, up, forward
+
+
+def world_display_basis(frames: list[dict], camera_positions: np.ndarray) -> np.ndarray:
+    step = max(1, len(frames) // 160)
+    ups = []
+    forwards = []
+    for frame in frames[::step]:
+        _, up, forward = camera_axes(camera_transform(frame))
+        ups.append(up)
+        forwards.append(forward)
+    up = unit_vector(np.median(np.asarray(ups, dtype=float), axis=0), "median camera up")
+    forward_raw = np.median(np.asarray(forwards, dtype=float), axis=0)
+    forward = forward_raw - up * float(np.dot(forward_raw, up))
+    if np.linalg.norm(forward) < 1e-6:
+        travel = np.asarray(camera_positions[-1] - camera_positions[0], dtype=float)
+        forward = travel - up * float(np.dot(travel, up))
+    forward = unit_vector(forward, "display forward")
+    right = unit_vector(np.cross(forward, up), "display right")
+    forward = unit_vector(np.cross(up, right), "display forward orthogonalized")
+    return np.stack([right, forward, up], axis=0)
+
+
+def build_world_projector(points: np.ndarray, basis: np.ndarray, size: tuple[int, int]) -> WorldProjector:
+    width, height = size
+    q = np.asarray(points, dtype=float) @ basis.T
+    xy = np.stack([q[:, 0] + 0.34 * q[:, 1], q[:, 2] - 0.18 * q[:, 1]], axis=1)
+    lo = xy.min(axis=0)
+    hi = xy.max(axis=0)
+    span = np.maximum(hi - lo, np.asarray([0.20, 0.20], dtype=float))
+    left, right, top, bottom = 44.0, 38.0, 78.0, 34.0
+    available = np.asarray([width - left - right, height - top - bottom], dtype=float)
+    if np.any(available <= 0):
+        raise RuntimeError("render size is too small for world projector")
+    pixels_per_meter = 0.92 * float(np.min(available / span))
+    xy_center = 0.5 * (lo + hi)
+    qy = float(np.median(q[:, 1]))
+    q_center = np.asarray([xy_center[0] - 0.34 * qy, qy, xy_center[1] + 0.18 * qy], dtype=float)
+    return WorldProjector(
+        basis=basis,
+        q_center=q_center,
+        pixels_per_meter=pixels_per_meter,
+        screen_center=(float(left + 0.5 * available[0]), float(top + 0.5 * available[1])),
+        size=size,
+    )
+
+
+def project_world(points: np.ndarray, projector: WorldProjector) -> np.ndarray:
+    q = np.asarray(points, dtype=float) @ projector.basis.T
+    q_center = projector.q_center
+    x_metric = q[:, 0] + 0.34 * q[:, 1] - (q_center[0] + 0.34 * q_center[1])
+    y_metric = q[:, 2] - 0.18 * q[:, 1] - (q_center[2] - 0.18 * q_center[1])
+    x = projector.screen_center[0] + projector.pixels_per_meter * x_metric
+    y = projector.screen_center[1] - projector.pixels_per_meter * y_metric
+    xy = np.stack([x, y], axis=1)
+    return np.clip(np.rint(xy), -100000, 100000).astype(int)
+
+
+def draw_polyline(
+    image: np.ndarray,
+    points: np.ndarray,
+    projector: WorldProjector,
+    color: tuple[int, int, int],
+    thickness: int,
+    closed: bool = False,
+) -> None:
+    if len(points) < 2:
+        return
+    xy = project_world(points, projector)
+    count = len(xy)
+    limit = count if closed else count - 1
+    for i in range(limit):
+        a = tuple(xy[i])
+        b = tuple(xy[(i + 1) % count])
+        cv2.line(image, a, b, color, thickness, cv2.LINE_AA)
+
+
+def draw_reference_grid(image: np.ndarray, projector: WorldProjector, radius: float) -> None:
+    extent = max(0.25, radius * 0.9)
+    q_center = projector.q_center
+    z = q_center[2] - 0.5 * radius
+    values = np.linspace(-extent, extent, 9)
+    for value in values:
+        x = q_center[0] + value
+        draw_polyline(
+            image,
+            np.asarray([[x, q_center[1] - extent, z], [x, q_center[1] + extent, z]], dtype=float) @ projector.basis,
+            projector,
+            (224, 226, 220),
+            1,
+        )
+        y = q_center[1] + value
+        draw_polyline(
+            image,
+            np.asarray([[q_center[0] - extent, y, z], [q_center[0] + extent, y, z]], dtype=float) @ projector.basis,
+            projector,
+            (224, 226, 220),
+            1,
+        )
+
+
+def camera_frustum_points(T: np.ndarray, radius: float) -> np.ndarray:
+    right, up, forward = camera_axes(T)
+    center = T[:3, 3]
+    length = max(0.08, min(0.22, 0.18 * radius))
+    width = length * 0.72
+    height = length * 0.46
+    plane = center + forward * length
+    corners = np.asarray(
+        [
+            plane - right * width - up * height,
+            plane + right * width - up * height,
+            plane + right * width + up * height,
+            plane - right * width + up * height,
+        ],
+        dtype=float,
+    )
+    return np.vstack([center[None, :], corners])
+
+
+def draw_camera_frustum(
+    image: np.ndarray,
+    T: np.ndarray,
+    projector: WorldProjector,
+    radius: float,
+) -> None:
+    pts = camera_frustum_points(T, radius)
+    cam = pts[0]
+    corners = pts[1:]
+    draw_polyline(image, corners, projector, (20, 20, 20), 2, closed=True)
+    for corner in corners:
+        draw_polyline(image, np.vstack([cam, corner]), projector, (20, 20, 20), 2)
+    right, up, forward = camera_axes(T)
+    axis_len = max(0.06, min(0.16, 0.13 * radius))
+    axes = [
+        (cam + forward * axis_len, (190, 70, 20)),
+        (cam + up * axis_len, (35, 120, 35)),
+        (cam + right * axis_len, (70, 70, 70)),
+    ]
+    cam_xy = project_world(cam[None, :], projector)[0]
+    cv2.circle(image, tuple(cam_xy), 6, (15, 15, 15), -1, cv2.LINE_AA)
+    for end, color in axes:
+        end_xy = project_world(end[None, :], projector)[0]
+        cv2.arrowedLine(image, tuple(cam_xy), tuple(end_xy), color, 2, cv2.LINE_AA, tipLength=0.24)
+    label_xy = tuple((cam_xy + np.asarray([9, -9])).astype(int))
+    cv2.putText(image, "HEAD CAM", label_xy, cv2.FONT_HERSHEY_SIMPLEX, 0.48, (10, 10, 10), 2, cv2.LINE_AA)
+
+
+def object_extent_points(obj: dict, basis: np.ndarray) -> np.ndarray:
+    p = np.asarray(obj["center_world_m"], dtype=float)
+    radius = float(obj.get("radius_m", 0.0) or 0.0)
+    if radius <= 0.0:
+        return p[None, :]
+    offsets = radius * np.asarray(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]],
+        dtype=float,
+    )
+    return p[None, :] + offsets @ basis
+
+
+def draw_object_extent(
+    image: np.ndarray,
+    obj: dict,
+    projector: WorldProjector,
+) -> None:
+    p = np.asarray(obj["center_world_m"], dtype=float)
+    radius = float(obj.get("radius_m", 0.0) or 0.0)
+    p_xy = project_world(p[None, :], projector)[0]
+    cv2.circle(image, tuple(p_xy), 7, OBJECT_COLOR, -1, cv2.LINE_AA)
+    if radius > 0.0:
+        theta = np.linspace(0.0, 2.0 * np.pi, 80)
+        rings = [
+            np.stack([radius * np.cos(theta), radius * np.sin(theta), np.zeros_like(theta)], axis=1),
+            np.stack([radius * np.cos(theta), np.zeros_like(theta), radius * np.sin(theta)], axis=1),
+            np.stack([np.zeros_like(theta), radius * np.cos(theta), radius * np.sin(theta)], axis=1),
+        ]
+        for ring in rings:
+            draw_polyline(image, p[None, :] + ring @ projector.basis, projector, OBJECT_COLOR, 2, closed=True)
+    cv2.putText(image, "OBJECT", tuple((p_xy + np.asarray([9, 14])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, OBJECT_COLOR, 2, cv2.LINE_AA)
+
+
+def render_3d_frame(
+    frames: list[dict],
+    index: int,
+    camera_positions: np.ndarray,
+    size: tuple[int, int],
+    mano_edges: dict[int, np.ndarray],
+    display_basis: np.ndarray,
+) -> np.ndarray:
+    width, height = size
+    image = np.full((height, width, 3), (244, 245, 240), dtype=np.uint8)
     frame = frames[index]
+    T = camera_transform(frame)
+    local_path = camera_positions[max(0, index - 120) : min(len(frames), index + 121)]
+    scene_pts = [local_path, camera_frustum_points(T, 0.9)]
     for hand in frame["hands"]:
         joints = np.asarray(hand["joints3d_world_m"], dtype=float)
         verts = hand_vertices(hand, "_world_m")
-        color = "tab:green" if hand["side"] == "left" else "tab:orange"
-        segs = [[joints[a], joints[b]] for a, b in HAND_EDGES]
-        ax.add_collection3d(Line3DCollection(segs, colors=color, linewidths=2.0))
-        ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], color=color, s=5)
-        ax.scatter(verts[:, 0], verts[:, 1], verts[:, 2], color=color, s=1, alpha=0.35)
-        edges = mano_edges.get(len(verts), np.empty((0, 2), dtype=int))
-        if len(edges):
-            mesh_segs = [[verts[a], verts[b]] for a, b in edges[::2]]
-            ax.add_collection3d(Line3DCollection(mesh_segs, colors=color, linewidths=0.45, alpha=0.28))
+        scene_pts.extend([joints, verts])
     obj = frame.get("object", {})
     if obj.get("center_world_m") is not None:
-        p = np.asarray(obj["center_world_m"], dtype=float)
-        ax.scatter([p[0]], [p[1]], [p[2]], color="red", s=38)
-        radius_m = float(obj.get("radius_m", 0.0) or 0.0)
-        if radius_m > 0:
-            theta = np.linspace(0.0, 2.0 * np.pi, 96)
-            zeros = np.zeros_like(theta)
-            circle = radius_m * np.stack([np.cos(theta), np.sin(theta), zeros], axis=1)
-            for axes in ((0, 1, 2), (0, 2, 1), (1, 2, 0)):
-                pts_circle = np.zeros_like(circle)
-                pts_circle[:, axes[0]] = circle[:, 0]
-                pts_circle[:, axes[1]] = circle[:, 1]
-                pts_circle[:, axes[2]] = circle[:, 2]
-                pts_circle += p[None, :]
-                ax.plot(pts_circle[:, 0], pts_circle[:, 1], pts_circle[:, 2], color="red", linewidth=0.8, alpha=0.55)
-    all_pts = [camera_positions[max(0, index - 90) : min(len(frames), index + 90)]]
-    for hand in frame["hands"]:
-        all_pts.append(np.asarray(hand["joints3d_world_m"], dtype=float))
-        all_pts.append(hand_vertices(hand, "_world_m"))
+        scene_pts.append(object_extent_points(obj, display_basis))
+    pts = np.concatenate(scene_pts, axis=0)
+    finite = np.isfinite(pts).all(axis=1)
+    if not finite.any():
+        raise RuntimeError("3D renderer received no finite scene points")
+    pts = pts[finite]
+    projector = build_world_projector(pts, display_basis, size)
+    q = pts @ display_basis.T
+    radius = max(0.20, float(np.percentile(np.linalg.norm(q - projector.q_center[None, :], axis=1), 92)))
+
+    draw_reference_grid(image, projector, radius)
+    draw_polyline(image, local_path, projector, (112, 112, 112), 2)
+    past_path = camera_positions[max(0, index - 30) : index + 1]
+    if len(past_path) > 1:
+        draw_polyline(image, past_path, projector, (15, 15, 15), 4)
     if obj.get("center_world_m") is not None:
-        p = np.asarray(obj["center_world_m"], dtype=float)
-        radius_m = float(obj.get("radius_m", 0.0) or 0.0)
-        all_pts.append(
-            np.vstack(
-                [
-                    p,
-                    p + [radius_m, 0.0, 0.0],
-                    p - [radius_m, 0.0, 0.0],
-                    p + [0.0, radius_m, 0.0],
-                    p - [0.0, radius_m, 0.0],
-                    p + [0.0, 0.0, radius_m],
-                    p - [0.0, 0.0, radius_m],
-                ]
-            )
-        )
-    pts = np.concatenate(all_pts, axis=0)
-    center = pts.mean(axis=0)
-    radius = max(0.15, float(np.percentile(np.linalg.norm(pts - center, axis=1), 95)))
-    ax.set_xlim(center[0] - radius, center[0] + radius)
-    ax.set_ylim(center[1] - radius, center[1] + radius)
-    ax.set_zlim(center[2] - radius, center[2] + radius)
-    ax.set_xlabel("x m")
-    ax.set_ylabel("y m")
-    ax.set_zlabel("z m")
-    ax.view_init(elev=22, azim=-63)
-    fig.tight_layout(pad=0.2)
-    fig.canvas.draw()
-    img = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)[..., :3].copy()
-    plt.close(fig)
-    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        draw_object_extent(image, obj, projector)
+    for hand in frame["hands"]:
+        joints = np.asarray(hand["joints3d_world_m"], dtype=float)
+        verts = hand_vertices(hand, "_world_m")
+        color = LEFT_COLOR if hand["side"] == "left" else RIGHT_COLOR
+        mesh_color = tuple(int(0.55 * c + 0.45 * 244) for c in color)
+        edges = mano_edges.get(len(verts), np.empty((0, 2), dtype=int))
+        if len(edges):
+            for a, b in edges[::2]:
+                draw_polyline(image, verts[[int(a), int(b)]], projector, mesh_color, 1)
+        joint_xy = project_world(joints, projector)
+        for a, b in HAND_EDGES:
+            cv2.line(image, tuple(joint_xy[a]), tuple(joint_xy[b]), color, 3, cv2.LINE_AA)
+        for point in joint_xy:
+            cv2.circle(image, tuple(point), 3, color, -1, cv2.LINE_AA)
+        label = "L HAND" if hand["side"] == "left" else "R HAND"
+        cv2.putText(image, label, tuple((joint_xy[0] + np.asarray([7, -7])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 2, cv2.LINE_AA)
+    draw_camera_frustum(image, T, projector, radius)
+    cv2.putText(image, "WORLD RECONSTRUCTION", (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (20, 20, 20), 2, cv2.LINE_AA)
+    cv2.putText(image, "camera-up aligned", (16, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (85, 85, 85), 1, cv2.LINE_AA)
+    cv2.putText(image, f"frame {int(frame['frame_idx']):04d}", (16, height - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 80), 1, cv2.LINE_AA)
+    return image
 
 
 def render_outputs(args: argparse.Namespace, frames: list[dict], render: RenderSpec) -> None:
@@ -1577,6 +2037,7 @@ def render_outputs(args: argparse.Namespace, frames: list[dict], render: RenderS
     if not overlay.isOpened() or not recon.isOpened() or not side.isOpened():
         raise RuntimeError("failed to open video writers")
     camera_positions = np.asarray([frame["camera"]["position_world_m"] for frame in frames], dtype=float)
+    display_basis = world_display_basis(frames, camera_positions)
     sx, sy = render.width / info.width, render.height / info.height
     try:
         for i, frame_ann in enumerate(tqdm(frames, desc="render")):
@@ -1585,7 +2046,7 @@ def render_outputs(args: argparse.Namespace, frames: list[dict], render: RenderS
             draw_object_overlay(frame, frame_ann, sx, sy)
             draw_hand_overlay(frame, frame_ann, sx, sy, mano_edges)
             put_caption(frame, frame_ann["caption"], frame_ann["frame_idx"])
-            panel = render_3d_frame(frames, i, camera_positions, (render.width, render.height), mano_edges)
+            panel = render_3d_frame(frames, i, camera_positions, (render.width, render.height), mano_edges, display_basis)
             overlay.write(frame)
             recon.write(panel)
             side.write(np.concatenate([frame, panel], axis=1))
@@ -1601,6 +2062,16 @@ def run(args: argparse.Namespace) -> dict:
     started = time.time()
     if args.render_only_annotations is not None:
         frames = load_json(args.render_only_annotations)["frames"]
+        if args.frame_start is not None or args.frame_end is not None:
+            start = int(frames[0]["frame_idx"]) if args.frame_start is None else int(args.frame_start)
+            end = int(frames[-1]["frame_idx"]) if args.frame_end is None else int(args.frame_end)
+            frames = [frame for frame in frames if start <= int(frame["frame_idx"]) <= end]
+            if not frames:
+                raise RuntimeError(f"render-only slice {start}:{end} contains no frames")
+            expected = np.arange(start, end + 1, dtype=int)
+            actual = np.asarray([int(frame["frame_idx"]) for frame in frames], dtype=int)
+            if len(actual) != len(expected) or not np.array_equal(actual, expected):
+                raise RuntimeError("render-only annotations are not source-contiguous over requested slice")
         cap, info = open_video(args.clip)
         cap.release()
         if not frames or any("camera" not in frame for frame in frames):
@@ -1660,8 +2131,7 @@ def run(args: argparse.Namespace) -> dict:
         object_meas,
         info.fps,
         (info.width, info.height),
-        args.object_label,
-        (int(semantic_interval[0]), int(semantic_interval[1])),
+        list(object_measure_qc["action_labels"]),
     )
     object_world_qc = attach_object_world(
         frames,
@@ -1723,7 +2193,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam-checkpoint", type=Path, default=Path("checkpoints/sam_vit_b_01ec64.pth"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/examples/tomato_v1_full/fused"))
     parser.add_argument("--mano-right", type=Path, default=DEFAULT_MANO_RIGHT)
-    parser.add_argument("--object-label", default="tomato")
+    parser.add_argument("--object-label", default="auto")
     parser.add_argument("--object-stride", type=int, default=1)
     parser.add_argument("--owl-threshold", type=float, default=0.03)
     parser.add_argument("--max-keyframe-gap", type=int, default=15)

@@ -42,12 +42,17 @@ def check_qc(path: Path) -> dict:
     if not isinstance(outputs, dict):
         raise RuntimeError(f"{path}: missing outputs object")
 
-    annotations = Path(outputs.get("annotations", qc.get("output_annotations", "")))
-    if not annotations.exists():
-        raise FileNotFoundError(annotations)
-    actual_annotation_frames = len(load(annotations).get("frames", []))
+    annotation_value = outputs.get("annotations", qc.get("output_annotations"))
+    if annotation_value is None:
+        annotations = None
+        actual_annotation_frames = 0
+    else:
+        annotations = Path(annotation_value)
+        if not annotations.exists():
+            raise FileNotFoundError(annotations)
+        actual_annotation_frames = len(load(annotations).get("frames", []))
     timeline_frames = expected_frames(qc, actual_annotation_frames)
-    if actual_annotation_frames != timeline_frames:
+    if annotations is not None and actual_annotation_frames != timeline_frames:
         raise RuntimeError(
             f"{annotations}: annotation frame count {actual_annotation_frames} != {timeline_frames}"
         )
@@ -76,7 +81,7 @@ def check_qc(path: Path) -> dict:
 
     return {
         "qc": str(path),
-        "annotations": str(annotations),
+        "annotations": str(annotations) if annotations is not None else None,
         "frames": timeline_frames,
         "videos": videos,
     }

@@ -31,7 +31,7 @@ For each clip, v2 writes:
 - `reconstruction_3d_world.mp4`
 - `side_by_side.mp4`
 
-The renderer is the same visual contract as v1. The overlay is unchanged in image space because v2 refines only the 3D object state. The 3D panel draws the v2 object centroid and spherical extent.
+The renderer is the same visual contract as v1. The overlay is unchanged in image space because v2 refines only the 3D object state. The 3D panel draws the head camera frustum, local trajectory, MANO hands, and v2 object centroid/extent in a camera-up aligned world view. The JSON remains in DROID world coordinates; the display view avoids treating DROID's raw z coordinate as physical height.
 
 The reported contact and penetration values are internal residual metrics against the spherical object proxy and sampled MANO surface. They measure physical consistency within this model. They are not ground-truth pose error.
 
@@ -104,6 +104,13 @@ The remaining limit is observability. The dataset package inspected so far has R
 The next improvement should target the missing observability:
 
 - camera and scale: evaluate VGGT or MASt3R-style dense geometry as an additional depth/correspondence prior against DROID on the same clips;
-- object masks: replace tomato-specific color proposals with SAM2 video memory and promptable object identity;
+- object masks: replace tomato-specific color proposals with action-segment object profiles, promptable OWLv2/SAM proposals, hand-contact scoring, and video-memory tracking;
 - hands: fit MANO through temporal/contact residuals in addition to per-frame detector output;
 - calibration: add an explicit scale source, such as measured hand size, known object/tool size, AprilTag/Charuco calibration, table plane measurement, or depth/IMU if available.
+
+SAM2 check on task7 frames 312-360:
+
+- Input interval included all 49 source frames, not only old v2 measured frames.
+- Prompt frame: 312, from the existing v2 object box.
+- SAM2 produced visible masks on 38/49 frames and lost frames 335-345, the heavy occlusion span.
+- This falsifies a segmentation-only v3 for occlusions. The object state still needs contact-aware prediction and physical consistency during full occlusion.

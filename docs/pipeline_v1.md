@@ -2,7 +2,7 @@
 
 ## Scope
 
-Pipeline v1 is the first end-to-end RGB-only annotation pipeline for EgoScale kitchen manipulation clips. It produces:
+Pipeline v1 is the first end-to-end RGB-only annotation pipeline for EgoScale manipulation clips. The initial full deliveries were tomato kitchen clips because they were the first clips with all backends completed; representative non-kitchen clips are now tracked separately in `docs/representative_samples.md` and the action-segment object front-end is being tested on the trash-bag sample.
 
 - `overlay_mano_object.mp4`: 960x540 source video render with MANO hand overlays, object mask/extent, and semantic caption.
 - `reconstruction_3d_world.mp4`: clip-local 3D animation of DROID-SLAM head camera path, MANO hand joints/surface samples, and object centroid/extent.
@@ -131,8 +131,11 @@ The overlay renderer draws:
 The 3D renderer draws:
 
 - camera trajectory in DROID world coordinates;
+- the current head camera as a frustum with camera-forward/up/right axes;
 - current hand joints and MANO surface samples in world coordinates;
-- object centroid and spherical extent proxy in world coordinates.
+- object centroid and extent proxy in world coordinates.
+
+The renderer aligns the display view to the median camera-up direction. The underlying JSON remains in DROID world coordinates; the render avoids treating DROID's raw z axis as physical height.
 
 The side-by-side video concatenates the overlay and 3D render at the same frame index, so one source frame corresponds to one output frame.
 
@@ -173,7 +176,7 @@ v1 is a real pipeline, but it is still limited by RGB-only monocular evidence:
 - DROID scale is inferred from hand geometry and relative depth; calibrated metric reconstruction requires an external metric source.
 - Hand anthropometry introduces scale error because the actual subject hand size is unknown.
 - The object pose is a centroid/extent proxy for a deformable object.
-- Tomato segmentation uses object-specific color/semantic cues plus SAM and temporal motion. Other object categories need an explicit object model or a category-specific segmentation strategy.
+- The original tomato segmentation path uses object-specific color/semantic cues plus SAM and temporal motion. The generalized object front-end uses action-segment labels, OWLv2 prompts, SAM masks, hand-contact scoring, and temporal continuity; representative clips are needed to validate each object family.
 - Contact constraints help stabilize object depth. Physical non-penetration proof requires a scene/object SDF.
 
 These limits are recorded in QC and drive v2.
