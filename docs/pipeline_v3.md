@@ -383,12 +383,14 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/optimize_joint_mano_object_graph_v3.py`
 - `scripts/remote_setup_hawor.sh`
 - `scripts/export_hawor_world.py`
+- `scripts/adapt_hawor_to_annotations_v3.py`
 
 ## Immediate Execution Plan
 
 1. Restore GPU-server connectivity and inspect tmux sessions before launching duplicate work.
 2. Run `scripts/remote_setup_hawor.sh` in tmux on a GPU host and verify HaWoR, masked DROID-SLAM, Metric3D, weights, and MANO assets.
 3. Run `scripts/export_hawor_world.py` on the representative trash clip to export world-space MANO hands, validity masks, and SLAM camera poses.
-4. Compare HaWoR hand rows against the same contact-reliability diagnostic. V3 can use HaWoR contact factors only if reliable contact rows become nonzero and the median depth/contact errors fall below the documented thresholds.
-5. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
-6. If HaWoR also fails the contact-reliability diagnostic, implement a MANO-layer refit that optimizes pose, translation, and temporal state from raw 2D keypoints plus metric-depth samples, instead of relaxing contact thresholds.
+4. Run `scripts/adapt_hawor_to_annotations_v3.py` to align HaWoR's world frame to the existing camera trajectory and write a comparable annotation JSON. HaWoR reprojection must be measured against existing observed 2D keypoints, not against its own projected joints.
+5. Compare HaWoR hand rows against the same contact-reliability diagnostic. V3 can use HaWoR contact factors only if reliable contact rows become nonzero and the median depth/contact errors fall below the documented thresholds.
+6. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
+7. If HaWoR also fails the contact-reliability diagnostic, implement a MANO-layer refit that optimizes pose, translation, and temporal state from raw 2D keypoints plus metric-depth samples, instead of relaxing contact thresholds.
