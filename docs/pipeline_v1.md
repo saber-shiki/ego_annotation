@@ -47,7 +47,7 @@ All 3D data is expressed in one DROID-derived clip-local world coordinate system
 - `T_world_camera`: camera-to-world transform per source frame.
 - Hand joints and MANO vertices are first solved in source camera meters, then transformed by `T_world_camera`. The final `/data2/ego_annotation_outputs/fullmesh_task*` deliveries carry full 778-vertex MANO meshes per detected hand.
 - Tomato objects are represented as deformable centroids with spherical extent because chopping changes topology and visible shape.
-- Large deformable bags are represented as visible surface patches from mask/bbox rays plus optimized depth/contact anchors. The JSON still stores centroid/depth/radius fields for continuity.
+- Deformable objects can be rendered as visible surface patches from mask/bbox rays plus optimized depth/contact anchors. The JSON still stores centroid/depth/radius fields for continuity.
 - Image coordinates remain in original 1920x1080 pixels inside JSON; rendered videos are 960x540 overlay and 1920x540 side-by-side.
 
 World scale is estimated by aligning DROID relative depth to source-camera hand depths from WiLoR/MANO geometry. The QC stores the scale sample count, ratio IQR, and residual IQR because this scale anchor is approximate.
@@ -134,7 +134,7 @@ The 3D renderer draws:
 - camera trajectory in DROID world coordinates;
 - the current head camera as a frustum with camera-forward/up/right axes;
 - current hand joints and MANO surface samples in world coordinates;
-- object centroid/extent for compact objects or an object surface patch for deformable bags.
+- object centroid/extent for compact objects or an object surface patch for deformable objects.
 
 The renderer uses a head-local view for each frame so the egocentric hand-object interaction remains legible while the points stay in DROID world coordinates. The underlying JSON remains in DROID world coordinates; the rendered vertical axis is a display convention and should not be read as a calibrated gravity estimate.
 
