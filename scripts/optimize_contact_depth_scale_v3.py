@@ -123,8 +123,17 @@ def run(args: argparse.Namespace) -> dict:
     object_shift = np.asarray([row["object_shift_m"] for row in after_rows], dtype=float)
     report = {
         "status": "diagnostic_only",
+        "annotation_ready": False,
+        "identifiability": "underdetermined_per_frame_depth_variables",
         "contact_depth_report": str(args.contact_depth_report),
         "rows": len(rows),
+        "variables": int(len(result.x)),
+        "contact_equations": int(len(rows)),
+        "free_depth_variables_per_frame": 4,
+        "degrees_of_freedom_note": (
+            "Each frame has hand scale, object scale, hand shift, and object shift for one contact-depth equation. "
+            "Priors regularize a diagnostic tradeoff; corrected gaps do not identify the true faulty subsystem."
+        ),
         "min_near_vertices": int(args.min_near_vertices),
         "nfev": int(result.nfev),
         "success": bool(result.success),

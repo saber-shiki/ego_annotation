@@ -18,14 +18,14 @@ The compact contact-depth report for frames 840 to 930 has 84 frames where hand 
 
 This magnitude cannot be fixed by a Kalman smoother or an object-pose-only optimizer. V3 must jointly reason about object identity, object mesh, MANO metric scale/depth, camera pose scale, metric depth reliability, and contact state.
 
-A lightweight 1D contact-depth diagnostic then solved only the depth gap for frames with at least 80 near-mask hand vertices. It reduced median corrected depth gap to 0.16 mm, but the inferred correction was not small:
+A lightweight 1D contact-depth diagnostic then solved only the depth gap for frames with at least 80 near-mask hand vertices. This diagnostic is intentionally underdetermined: each frame has one contact-depth equation and four correction variables before priors. It reduced median corrected depth gap to 0.16 mm, but the inferred correction was not small:
 
 - median hand-depth scale: 0.939
 - median object-depth scale: 1.217
 - p95 object-depth scale: 1.581
 - median object-depth shift: 43 mm
 
-This is useful as a causal diagnostic, not as an annotation result. It shows that contact can be made numerically true only by exposing scale and shift corrections as explicit variables with priors. A hidden correction would destroy the evidence about which subsystem is wrong.
+This is useful as a causal diagnostic, not as an annotation result. It shows that contact can be made numerically true when scale and shift corrections are explicit variables, while the true faulty subsystem remains unidentified. A hidden correction would destroy the evidence about which subsystem is wrong.
 
 ## Perception Branch
 
@@ -53,7 +53,7 @@ This runner should be used after checkpoint access is granted. It consumes a vid
 
 ### SAMWISE
 
-SAMWISE is the next executable fallback because it is a CVPR 2025 text-driven video segmentation model built on SAM2 and provides arbitrary-video/frame-folder inference from natural-language prompts.
+SAMWISE is the next unverified executable candidate because it is a CVPR 2025 text-driven video segmentation model built on SAM2 and provides arbitrary-video/frame-folder inference from natural-language prompts.
 
 Implemented preparation:
 
@@ -64,7 +64,8 @@ Planned run:
 
 - input: frames 678 to 918 of the representative trash clip
 - prompt: `translucent white plastic trash bag liner being opened and placed inside the small trash can`
-- expected output: binary mask PNGs, overlay video, review stills at 678, 720, 797, 858, 880, 900, 918, and QC JSON
+- expected raw output: binary mask PNGs, overlay video, review stills at 678, 720, 797, 858, 880, 900, 918, and QC JSON
+- acceptance requirement: visual or VLM semantic verification must accept the masks before mesh reconstruction
 
 The GPU hosts became unreachable over SSH before setup/checkpoint verification completed. This is an external connectivity blocker for the SAMWISE execution branch, not a model-selection decision.
 
@@ -86,7 +87,7 @@ Interpretation:
 
 Object-complete mesh priors are feasible, but mesh alignment alone cannot fix hand/object contact while MANO/camera/depth scale disagree.
 
-## Factor Graph
+## Required V3 Solver
 
 V3 should model one joint state over the clip:
 
@@ -108,10 +109,13 @@ Factors:
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
 
-Implemented diagnostics:
+## Implemented Diagnostics
+
+The implemented v3 code is diagnostic, not the required solver above:
 
 - `scripts/summarize_contact_depth_scale_v3.py`
 - `scripts/optimize_contact_depth_scale_v3.py`
+- `scripts/optimize_object_factor_graph_v3.py`
 
 ## Immediate Execution Plan
 

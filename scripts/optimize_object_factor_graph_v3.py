@@ -35,6 +35,12 @@ class FrameFactorData:
     has_contact_evidence: bool
 
 
+@dataclass(frozen=True)
+class FrameBuildResult:
+    records: list[FrameFactorData]
+    skipped: list[dict]
+
+
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -170,7 +176,7 @@ def active_frame_records(annotations: dict, start: int, end: int) -> list[dict]:
     return out
 
 
-def build_frame_data(args: argparse.Namespace, frames: list[dict], intrinsics: np.ndarray) -> list[FrameFactorData]:
+def build_frame_data(args: argparse.Namespace, frames: list[dict], intrinsics: np.ndarray) -> FrameBuildResult:
     records = []
     skipped = []
     for frame in frames:
@@ -203,9 +209,7 @@ def build_frame_data(args: argparse.Namespace, frames: list[dict], intrinsics: n
             skipped.append({"frame_idx": idx, "reason": str(exc)})
     if len(records) < 2:
         raise RuntimeError(f"too few usable factor frames; skipped={skipped[:8]}")
-    if skipped:
-        print(json.dumps({"skipped_frames": skipped[:20], "skipped_count": len(skipped)}, indent=2))
-    return records
+    return FrameBuildResult(records=records, skipped=skipped)
 
 
 def unpack_params(params: np.ndarray, n: int, depth_axis_enabled: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -385,7 +389,10 @@ def run(args: argparse.Namespace) -> dict:
     selected_frames = active_frame_records(annotations, args.frame_start, args.frame_end)
     droid = np.load(args.droid_npz)
     intrinsics = np.asarray(droid["intrinsics_source"], dtype=float)
-    frames = build_frame_data(args, selected_frames, intrinsics)
+    build_result = build_frame_data(args, selected_frames, intrinsics)
+    frames = build_result.records
+    skipped_frames = build_result.skipped
+    skipped_fraction = len(skipped_frames) / max(1, len(selected_frames))
     mesh = trimesh.load(args.mesh_prior, force="mesh", process=False)
     if not isinstance(mesh, trimesh.Trimesh) or len(mesh.vertices) == 0 or len(mesh.faces) == 0:
         raise RuntimeError(f"invalid mesh prior: {args.mesh_prior}")
@@ -436,7 +443,9 @@ def run(args: argparse.Namespace) -> dict:
         and float(surface_after) < float(surface_before)
     )
     status = "diagnostic_contact_not_solved"
-    if result.success and contact_improved and surface_improved:
+    if skipped_fraction > args.max_skipped_fraction:
+        status = "diagnostic_failed_too_many_skipped_frames"
+    elif result.success and contact_improved and surface_improved:
         status = "diagnostic_surface_and_contact_improved"
     elif result.success and surface_improved:
         status = "diagnostic_surface_improved_contact_not_solved"
@@ -453,6 +462,11 @@ def run(args: argparse.Namespace) -> dict:
         "frame_start": int(args.frame_start),
         "frame_end": int(args.frame_end),
         "used_frames": [frame.frame_idx for frame in frames],
+        "candidate_frames": [int(frame["frame_idx"]) for frame in selected_frames],
+        "skipped_frames": skipped_frames,
+        "skipped_frame_count": int(len(skipped_frames)),
+        "skipped_fraction": float(skipped_fraction),
+        "max_skipped_fraction": float(args.max_skipped_fraction),
         "variables": int(len(result.x)),
         "max_nfev": int(args.max_nfev),
         "depth_axis_enabled": bool(args.enable_depth_axis),
@@ -509,6 +523,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-surface-residual-m", type=float, default=0.20)
     parser.add_argument("--max-contact-residual-m", type=float, default=0.20)
     parser.add_argument("--max-silhouette-px", type=float, default=80.0)
+    parser.add_argument("--max-skipped-fraction", type=float, default=0.05)
     parser.add_argument("--enable-depth-axis", action="store_true")
     parser.add_argument("--sigma-contact-depth-offset-m", type=float, default=0.75)
     parser.add_argument("--sigma-noncontact-depth-offset-m", type=float, default=0.08)

@@ -162,7 +162,10 @@ def run(args: argparse.Namespace) -> dict:
     video = render(args, frames, results)
     areas = [float(row["area_px"]) for row in results.values() if row.get("visible")]
     qc = {
-        "status": "ok",
+        "status": "raw_inference_completed_semantics_unverified",
+        "annotation_ready": False,
+        "mesh_ready": False,
+        "semantic_acceptance_required": True,
         "backend": "SAMWISE text-driven video segmentation",
         "clip": str(args.clip),
         "text_prompt": args.text_prompt,
@@ -185,6 +188,10 @@ def run(args: argparse.Namespace) -> dict:
             "overlay": str(video),
             "review_stills": str(args.output_dir / "review_stills"),
         },
+        "acceptance_note": (
+            "Visibility, area, and overlay generation only prove model execution. "
+            "Masks must pass visual or VLM semantic verification before mesh reconstruction."
+        ),
     }
     (args.output_dir / "samwise_track.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     (args.output_dir / "qc_samwise_referring_masks.json").write_text(json.dumps(qc, indent=2), encoding="utf-8")
