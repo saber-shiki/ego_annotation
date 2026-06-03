@@ -238,6 +238,27 @@ Status: `diagnostic_joint_surface_improved_contact_remains_large`.
 
 Interpretation: adding explicit MANO scale and ray-shift variables does not solve contact under reprojection and hand-size priors. The graph improves object surface fit but leaves more than 0.5 m median hand/object contact distance. This is the correct failure signal: V3 needs a stronger hand/camera/depth estimation stage, not looser contact weights or a hidden smoothing correction.
 
+### Metric-Depth Alignment Diagnostic
+
+Implemented:
+
+- `scripts/diagnose_metric_depth_alignment_v3.py`
+
+The diagnostic compares the current MANO source-camera depth and object mesh source-camera depth against the independent Depth Anything V2 metric-depth map used for observed-surface meshing:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_metric_depth_alignment_840_930.json`
+
+Result:
+
+- rows: 182;
+- high-confidence measured hand rows: 124;
+- object mesh depth minus metric-depth median: -0.98 mm;
+- high-confidence measured MANO depth minus metric-depth median: 165 mm;
+- high-confidence measured MANO over metric-depth median ratio: 1.136;
+- high-confidence measured MANO over metric-depth p95 ratio: 1.784.
+
+Interpretation: the object mesh sits at the metric-depth surface because V2 meshed that surface, while MANO is systematically deeper than metric depth at the hand joint projections. This does not prove Depth Anything is metrically exact, but it localizes the current pink-lid contact conflict to MANO/camera-depth alignment more strongly than object-mesh depth. The next v3 component must refit measured MANO depth against metric depth and 2D keypoints before contact can become a physically meaningful factor.
+
 ## Implemented Diagnostics
 
 The implemented v3 code is diagnostic, not the required solver above:
@@ -246,6 +267,7 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/optimize_contact_depth_scale_v3.py`
 - `scripts/diagnose_hand_reprojection_depth_v3.py`
 - `scripts/diagnose_mano_contact_reprojection_tradeoff_v3.py`
+- `scripts/diagnose_metric_depth_alignment_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 - `scripts/optimize_joint_mano_object_graph_v3.py`
