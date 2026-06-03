@@ -73,18 +73,37 @@ def condition_counts(rows: list[dict]) -> dict:
         "projection_ok",
         "depth_ok",
         "stable_depth_ok",
-        "span_ok",
+        "bone_scale_ok",
         "contact_ok",
         "reliable_for_contact",
     ]
     return {key: count_true(rows, key) for key in keys}
 
 
-def hand_span_m(joints: np.ndarray) -> float:
+def hand_tip_spread_m(joints: np.ndarray) -> float:
     if joints.shape != (21, 3):
         return float("nan")
     fingertips = joints[[4, 8, 12, 16, 20]]
     return float(np.max(np.linalg.norm(fingertips[:, None, :] - fingertips[None, :, :], axis=2)))
+
+
+def hand_bone_scale_m(joints: np.ndarray) -> float:
+    if joints.shape != (21, 3):
+        return float("nan")
+    chains = [
+        [0, 1, 2, 3, 4],
+        [0, 5, 6, 7, 8],
+        [0, 9, 10, 11, 12],
+        [0, 13, 14, 15, 16],
+        [0, 17, 18, 19, 20],
+    ]
+    lengths = []
+    for chain in chains:
+        length = 0.0
+        for a, b in zip(chain[:-1], chain[1:]):
+            length += float(np.linalg.norm(joints[b] - joints[a]))
+        lengths.append(length)
+    return float(np.median(lengths))
 
 
 def depth_patch_iqr_ratio(depth: np.ndarray, xy: np.ndarray, radius: int) -> float:
@@ -147,12 +166,13 @@ def hand_row(frame: dict, hand_i: int, hand: dict, depth: np.ndarray, mask: np.n
     projection_ok = float(np.median(reproj)) <= args.max_good_median_reprojection_px
     depth_ok = len(mano_minus_metric) >= args.min_good_depth_joints and abs(float(np.median(mano_minus_metric))) <= args.max_good_depth_bias_m
     patch_ok = len(stable_depth) >= args.min_good_depth_joints and float(np.mean(stable_depth)) >= args.min_stable_depth_fraction
-    span = hand_span_m(joints)
-    span_ok = args.min_span_m <= span <= args.max_span_m
+    tip_spread = hand_tip_spread_m(joints)
+    bone_scale = hand_bone_scale_m(joints)
+    bone_scale_ok = args.min_bone_scale_m <= bone_scale <= args.max_bone_scale_m
     contact_ok = len(near_vertices) >= args.min_near_vertices and abs(float(np.median(contact_gap))) <= args.max_good_contact_gap_m
     measured = bool(hand.get("measurement_available", False))
     detector_ok = np.isfinite(score) and score >= args.min_detector_score
-    reliable_for_contact = bool(measured and detector_ok and projection_ok and depth_ok and patch_ok and span_ok and contact_ok)
+    reliable_for_contact = bool(measured and detector_ok and projection_ok and depth_ok and patch_ok and bone_scale_ok and contact_ok)
 
     return {
         "frame_idx": frame_idx,
@@ -167,7 +187,8 @@ def hand_row(frame: dict, hand_i: int, hand: dict, depth: np.ndarray, mask: np.n
         "mano_minus_metric_depth_median_m": None if len(mano_minus_metric) == 0 else float(np.median(mano_minus_metric)),
         "mano_minus_metric_depth_p95_abs_m": None if len(mano_minus_metric) == 0 else float(np.percentile(np.abs(mano_minus_metric), 95.0)),
         "stable_depth_fraction": None if len(stable_depth) == 0 else float(np.mean(stable_depth)),
-        "hand_span_m": span,
+        "hand_bone_scale_m": bone_scale,
+        "hand_tip_spread_m": tip_spread,
         "near_mask_vertices": int(len(near_vertices)),
         "near_mask_hand_minus_object_depth_median_m": None if len(contact_gap) == 0 else float(np.median(contact_gap)),
         "near_mask_hand_minus_object_depth_p95_abs_m": None if len(contact_gap) == 0 else float(np.percentile(np.abs(contact_gap), 95.0)),
@@ -175,7 +196,7 @@ def hand_row(frame: dict, hand_i: int, hand: dict, depth: np.ndarray, mask: np.n
         "projection_ok": bool(projection_ok),
         "depth_ok": bool(depth_ok),
         "stable_depth_ok": bool(patch_ok),
-        "span_ok": bool(span_ok),
+        "bone_scale_ok": bool(bone_scale_ok),
         "contact_ok": bool(contact_ok),
         "reliable_for_contact": reliable_for_contact,
     }
@@ -240,19 +261,22 @@ def run(args: argparse.Namespace) -> dict:
             "joint_reprojection_px": summarize_key(rows, "median_joint_reprojection_px"),
             "mano_minus_metric_depth_m": summarize_key(rows, "mano_minus_metric_depth_median_m"),
             "contact_gap_m": summarize_key(rows, "near_mask_hand_minus_object_depth_median_m"),
-            "hand_span_m": summarize_key(rows, "hand_span_m"),
+            "hand_bone_scale_m": summarize_key(rows, "hand_bone_scale_m"),
+            "hand_tip_spread_m": summarize_key(rows, "hand_tip_spread_m"),
         },
         "summary_measured_high_score": {
             "joint_reprojection_px": summarize_key(measured_high_score, "median_joint_reprojection_px"),
             "mano_minus_metric_depth_m": summarize_key(measured_high_score, "mano_minus_metric_depth_median_m"),
             "contact_gap_m": summarize_key(measured_high_score, "near_mask_hand_minus_object_depth_median_m"),
-            "hand_span_m": summarize_key(measured_high_score, "hand_span_m"),
+            "hand_bone_scale_m": summarize_key(measured_high_score, "hand_bone_scale_m"),
+            "hand_tip_spread_m": summarize_key(measured_high_score, "hand_tip_spread_m"),
         },
         "summary_reliable_contact": {
             "joint_reprojection_px": summarize_key(reliable, "median_joint_reprojection_px"),
             "mano_minus_metric_depth_m": summarize_key(reliable, "mano_minus_metric_depth_median_m"),
             "contact_gap_m": summarize_key(reliable, "near_mask_hand_minus_object_depth_median_m"),
-            "hand_span_m": summarize_key(reliable, "hand_span_m"),
+            "hand_bone_scale_m": summarize_key(reliable, "hand_bone_scale_m"),
+            "hand_tip_spread_m": summarize_key(reliable, "hand_tip_spread_m"),
         },
         "condition_counts_all": condition_counts(rows),
         "condition_counts_measured_high_score": condition_counts(measured_high_score),
@@ -263,12 +287,13 @@ def run(args: argparse.Namespace) -> dict:
             "max_good_contact_gap_m": float(args.max_good_contact_gap_m),
             "min_good_depth_joints": int(args.min_good_depth_joints),
             "min_near_vertices": int(args.min_near_vertices),
-            "min_span_m": float(args.min_span_m),
-            "max_span_m": float(args.max_span_m),
+            "min_bone_scale_m": float(args.min_bone_scale_m),
+            "max_bone_scale_m": float(args.max_bone_scale_m),
         },
         "interpretation": (
             "A contact factor is trustworthy only when the measured hand has good 2D keypoint reprojection, "
-            "stable metric-depth samples at its keypoints, plausible MANO span, and a small hand-object depth gap. "
+            "stable metric-depth samples at its keypoints, plausible MANO bone scale, and a small hand-object depth gap. "
+            "Tip spread is reported as a pose descriptor but is not used as a size test because a grasping hand can be closed. "
             "Rows that pass detector score alone but fail these tests are perception conflicts, not contact evidence."
         ),
         "rows_preview": rows[:180],
@@ -302,8 +327,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-stable-depth-fraction", type=float, default=0.75)
     parser.add_argument("--contact-distance-px", type=float, default=8.0)
     parser.add_argument("--min-near-vertices", type=int, default=80)
-    parser.add_argument("--min-span-m", type=float, default=0.110)
-    parser.add_argument("--max-span-m", type=float, default=0.210)
+    parser.add_argument("--min-bone-scale-m", type=float, default=0.120)
+    parser.add_argument("--max-bone-scale-m", type=float, default=0.240)
     return parser.parse_args()
 
 

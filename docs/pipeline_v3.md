@@ -315,7 +315,7 @@ Implemented:
 
 - `scripts/diagnose_hand_contact_reliability_v3.py`
 
-This diagnostic asks whether current WiLoR hands can be used as physical contact observations for the accepted pink-lid object mesh. A hand row is reliable only when the hand is measured, detector score is high, raw 2D keypoint reprojection is good, metric-depth samples at hand joints agree with MANO depth, local depth patches are stable, MANO hand span is plausible, and near-mask hand vertices are already close to the object surface:
+This diagnostic asks whether current WiLoR hands can be used as physical contact observations for the accepted pink-lid object mesh. A hand row is reliable only when the hand is measured, detector score is high, raw 2D keypoint reprojection is good, metric-depth samples at hand joints agree with MANO depth, local depth patches are stable, MANO bone scale is plausible, and near-mask hand vertices are already close to the object surface:
 
 `/data2/ego_annotation_outputs/representative_trash/v3_hand_contact_reliability_840_930.json`
 
@@ -327,10 +327,11 @@ Result:
 - measured high-score median 2D keypoint reprojection: 23.6 px;
 - measured high-score median MANO-minus-metric-depth residual: 257 mm;
 - measured high-score median hand/object contact-depth gap: 115 mm, computed only on the 5 rows with near-mask contact samples;
-- measured high-score median hand span: 101 mm;
-- condition counts for measured high-score rows: 5 pass projection, 0 pass depth, 7 pass stable-depth, 9 pass span, 0 pass contact.
+- measured high-score median bone scale: 213 mm;
+- measured high-score median fingertip spread: 101 mm;
+- condition counts for measured high-score rows after the corrected bone-scale QC: 5 pass projection, 0 pass depth, 7 pass stable-depth, 27 pass bone scale, 0 pass contact.
 
-Interpretation: the current WiLoR hand stream cannot provide valid contact factors in this slice. Detector score alone is misleading under occlusion. The graph must either use a stronger egocentric world-hand backend or refit MANO pose/translation with 2D keypoints, metric depth, hand-size priors, and temporal constraints before contact residuals become physical evidence.
+Interpretation: the current WiLoR hand stream cannot provide valid contact factors in this slice. Detector score alone is misleading under occlusion. The original tip-spread size check was wrong because a grasping hand can be closed; the corrected bone-scale check shows that hand scale is not the active bottleneck. The failures are depth agreement and hand/object contact support.
 
 ### MANO Depth-Refit Candidate Render
 
@@ -382,9 +383,10 @@ Smoke result on frames 880 to 889:
 - reliable contact rows after translation refit: 0;
 - measured high-score median 2D reprojection: 45.4 px;
 - measured high-score median MANO-minus-metric-depth residual: 13.8 mm;
-- measured high-score median hand span: 32.5 mm.
+- measured high-score median bone scale after corrected QC: 164 mm;
+- measured high-score median fingertip spread: 32.5 mm.
 
-Interpretation: translation can reduce some depth residuals while preserving the collapsed local hand geometry. A 32.5 mm hand span is physically impossible for a MANO hand in this task, so translation-only refit cannot be the v3 hand state.
+Interpretation: translation can reduce some depth residuals, but it does not create reliable contact evidence. The small fingertip spread is a closed-hand pose descriptor, not a size failure. The refit is rejected because projection support remains weak and contact rows still fail.
 
 The MANO-layer pose/contact refit attempted to optimize MANO pose, global orientation, translation, and local scale from the saved `mano_params`.
 
@@ -397,13 +399,14 @@ Smoke result on frames 880 to 889:
 - measured high-score median 2D reprojection: 41.2 px;
 - measured high-score median MANO-minus-metric-depth residual: -68.4 mm;
 - measured high-score median contact gap on available near-mask rows: 160 mm;
-- measured high-score median hand span: 112 mm.
+- measured high-score median bone scale after corrected QC: 191 mm;
+- measured high-score median fingertip spread: 112 mm.
 
-This refit repaired hand span but failed contact and projection reliability. The cause is partly a representation mismatch: the fused annotations store WiLoR local geometry after a global scale and a source-camera translation solve, while `mano_params` remain in the raw WiLoR MANO frame. Reconstructing fused geometry from a plain SMPLX MANO layer and the saved params gives tens to hundreds of millimeters of geometry error. Using WiLoR's own MANO wrapper and the recovered raw-to-metric scale of 1.341 improves reproduction, but the right hand in frames 886 to 889 still has median joint errors from 14 mm to 61 mm.
+This refit changes the visible hand pose but still fails contact and projection reliability. The cause is partly a representation mismatch: the fused annotations store WiLoR local geometry after a global scale and a source-camera translation solve, while `mano_params` remain in the raw WiLoR MANO frame. Reconstructing fused geometry from a plain SMPLX MANO layer and the saved params gives tens to hundreds of millimeters of geometry error. Using WiLoR's own MANO wrapper and the recovered raw-to-metric scale of 1.341 improves reproduction, but the right hand in frames 886 to 889 still has median joint errors from 14 mm to 61 mm.
 
-Interpretation: saved `mano_params` are a useful pose prior, not the current source of truth for metric hand geometry. The next v3 hand solver must operate on the fused local vertex/joint stream, repair collapsed local hand geometry with an explicit shape/pose or deformation model anchored to that stream, and only then apply contact factors.
+Interpretation: saved `mano_params` are a useful pose prior, not the current source of truth for metric hand geometry. The next v3 hand solver must operate on the fused local vertex/joint stream or a stronger hand backend, and must treat tip spread as pose state rather than hand-size evidence.
 
-The fused-geometry similarity refit then tested whether the collapsed local hands could be repaired by scaling the existing local vertex/joint cloud about the wrist while optimizing source-camera translation.
+The fused-geometry similarity refit then tested whether a local isotropic scale and source-camera translation can resolve the contact conflict.
 
 Smoke result on frames 880 to 889:
 
@@ -413,10 +416,11 @@ Smoke result on frames 880 to 889:
 - reliable contact rows after similarity refit: 0;
 - measured high-score median 2D reprojection: 44.5 px;
 - measured high-score median MANO-minus-metric-depth residual: 13.8 mm;
-- measured high-score median hand span: 38.4 mm;
+- measured high-score median bone scale after corrected QC: 189 mm;
+- measured high-score median fingertip spread: 38.4 mm;
 - measured high-score contact gap on the one available near-mask row: 27.7 mm.
 
-Interpretation: similarity refit improves depth and one contact-depth row, but preserves physically impossible local hand collapse. The limiting variable is the local hand pose or hand backend evidence, not only source-camera translation or scalar hand size.
+Interpretation: similarity refit improves depth and one contact-depth row, but still yields zero reliable contact rows because projection support and contact support remain weak. The limiting variable is the coupled image/depth/contact hand state, not scalar hand size.
 
 ## Implemented Diagnostics
 
