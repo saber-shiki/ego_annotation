@@ -10,8 +10,8 @@ V2 replaces that object path:
 2. OWLv2 proposes boxes from the VLM prompts; SAM produces masks from those boxes.
 3. Visual QC and optional VLM mask verification reject masks that cover a different planned object or background.
 4. Depth Anything V2 metric indoor estimates dense per-frame depth for verified mask frames.
-5. The mesh stage back-projects verified mask pixels through the camera intrinsics and head-camera pose to build a dynamic observed-surface mesh in world coordinates.
-6. Contact-aware depth shifting uses MANO source-camera depth only when the mask visibly touches hand keypoints, then recomputes mesh contact distances.
+5. The mesh stage back-projects verified mask pixels through the camera intrinsics and head-camera pose to build a dynamic observed-surface mesh in world coordinates. Each mesh archive now uses one declared depth source so DROID-relative depth and monocular metric depth are not mixed inside the same object track.
+6. Contact-depth correction is an explicit ablation with reported shift values. The default V2 mesh archive leaves monocular depth unchanged, then reports the resulting hand-mesh distances.
 7. The renderer draws MANO hands, head camera frustum, trajectory, and the object mesh in the world reconstruction panel.
 
 V2 scope: reconstruct the observed surface for a manipulated object and show contact-frame object geometry. V3 scope starts at complete watertight geometry and a single object-centric mesh state across the whole clip.
@@ -22,7 +22,7 @@ V2 scope: reconstruct the observed surface for a manipulated object and show con
 - `scripts/segment_object_plan_v2.py`: runs plan-driven OWLv2 plus SAM and writes full-timeline annotations with object masks.
 - `scripts/verify_plan_masks_vlm.py`: verifies proposed masks against the target object description using a VLM review sheet.
 - `scripts/estimate_metric_depth_v2.py`: runs Depth Anything V2 metric indoor on measured object-mask frames and stores dense metric depth maps.
-- `scripts/reconstruct_object_mesh_v2.py`: builds a per-frame dynamic mesh from masks, metric depth or DROID depth, head-camera pose, and contact-aware depth correction.
+- `scripts/reconstruct_object_mesh_v2.py`: builds a per-frame dynamic mesh from masks, one selected depth source, and head-camera pose; optional contact-depth correction is disabled by default and reported when enabled.
 - `scripts/fuse_v1_full_fidelity.py`: renders `--object-mesh-npz` archives in the 3D world panel.
 
 ## Representative Trash Clip
@@ -98,32 +98,47 @@ Depth Anything V2 metric indoor filled that observability gap:
 - depth median: 1.109 m
 - depth p05/p95: 0.372 m / 2.234 m
 
-Metric-depth mesh QC:
+An adversarial review exposed that the earlier metric-depth archive mixed 186 DROID-depth frames with 153 metric-depth frames. The corrected archive uses only `metric_depth`.
 
-`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric/qc_object_mesh_v2.json`
+Strict metric-depth mesh QC:
 
-- mesh frames: 339
-- valid vertices: 250,195
-- valid triangles: 456,367
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_strict/qc_object_mesh_v2.json`
+
+- depth source: `metric_depth`
+- mesh frames: 372
+- valid vertices: 550,893
+- valid triangles: 1,047,857
 - frames outside the object interval: 678
-- depth-underconstrained frames: 28
-- mesh-underconstrained frames: 5
-- hand-mesh distance median over frames with hands: 0.096 m
-- hand-mesh distance p05/p95 over frames with hands: 0.00083 m / 0.892 m
+- hand-mesh distance frame count: 281
+- hand-mesh distance median over frames with hands: 0.202 m
+- hand-mesh distance p05/p95 over frames with hands: 0.0049 m / 0.572 m
+- worst hand-mesh distance: 0.832 m at frame 817
+
+Bounded contact-depth ablation:
+
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_strict_contact03/qc_object_mesh_v2.json`
+
+- contact-depth correction cap: 0.03 m
+- corrected frames: 159
+- median reported shift: 0.03 m
+- hand-mesh distance median over frames with hands: 0.201 m
+- hand-mesh distance p95 over frames with hands: 0.566 m
+
+The ablation saturated the 30 mm cap on most corrected frames and barely changed the distribution. That falsifies a simple global contact-depth shift as the scale/contact fix.
 
 For the contact window 840 to 930:
 
 - mesh frames: 91
-- hand-mesh distance median: 0.0028 m
-- hand-mesh distance p05/p95: 0.00059 m / 0.268 m
-- frames 840 to 847 have larger distances, with the worst distance at frame 840: 0.406 m
-- frames 858, 880, 903, and 930 show hand-contact-consistent object mesh geometry
+- hand-mesh distance median: 0.092 m
+- hand-mesh distance p05/p95: 0.0015 m / 0.544 m
+- worst distance in this window: 0.597 m at frame 875
+- frames 848 and 885 have near-contact distances below 10 mm, while frames 840 to 847 and 875 show large hand-object depth disagreement
 
 ## Current Deliverable Slice
 
 Contact-window side-by-side render:
 
-`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_render_840_930/side_by_side.mp4`
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_strict_render_840_930/side_by_side.mp4`
 
 Frame count and size:
 
@@ -133,14 +148,14 @@ Frame count and size:
 
 Inspected stills:
 
-`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_render_840_930/review_stills/`
+`/data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_strict_render_840_930/review_stills/`
 
 Visual inspection:
 
-- frame 858: the object mesh appears as a large lid surface near both hands;
-- frame 880: the object mesh exists in the previously missing DROID-depth gap and overlaps the active hand region;
-- frame 903: the mesh remains close to both hands but shows noisy monocular-depth surface folds;
-- frame 930: the mesh stays present near the handled lid.
+- frame 840: the 2D mask is correct, but the metric-depth surface is visibly separated from the hands in the world panel;
+- frame 858: the object mask and observed surface are plausible, while the left hand remains separated in 3D;
+- frame 875: the 2D mask covers the lid, but the observed surface is far from both hands;
+- frame 880: the surface stays present and detailed, with remaining depth mismatch against the MANO hands.
 
 ## Evidence Status
 
@@ -149,16 +164,17 @@ The current v2 result supports these mechanisms on one representative non-kitche
 - VLM object planning can identify manipulated object tracks.
 - Open-vocabulary detection plus SAM can produce correct object masks when the target is visually unambiguous.
 - The same path can fail when the prompt is ambiguous, as shown by the rejected white-bag masks.
-- Dense metric monocular depth is necessary when DROID keyframes skip the contact interval.
+- Dense metric monocular depth supplies full mask-interval coverage when DROID keyframes skip the contact interval.
 - Dynamic observed-surface mesh reconstruction gives a real object mesh in the world panel.
-- Contact-aware depth correction can reduce hand-mesh distance to millimeter scale in strong contact frames.
+- The corrected strict run exposes the open scale/contact problem instead of hiding it: the hand-mesh distance distribution remains far above the 5 mm target.
 
 Evidence still required:
 
 - complete mesh reconstruction for the full object, including the unseen backside;
 - a single temporally consistent object-centric mesh identity;
 - deformable white-bag reconstruction;
-- absolute 5 mm accuracy against external ground truth;
+- external scale and ground-truth-style validation before any absolute 5 mm claim;
+- joint optimization of depth scale, hand pose, camera pose, object pose, and contact state;
 - physical force consistency with explicit force, mass, inertia, and object acceleration estimates.
 
 ## V3 Design Direction
@@ -208,22 +224,22 @@ TripoSR execution:
 
 The A800 run was needed because `torchmcubes` requires a CUDA toolkit for build. The 4090 server had Python and torch but lacked `nvcc`; the A800 server had `/usr/local/cuda` and built the dependency. The TripoSR run also required installing `onnxruntime` because `rembg` imports it even when `--no-remove-bg` is used.
 
-Frame-858 prior alignment:
+Frame-858 prior alignment on the strict metric-depth surface:
 
-`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858/qc_align_mesh_prior_v3.json`
+`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858_strict/qc_align_mesh_prior_v3.json`
 
 - observed surface: 1,849 vertices and 3,539 faces
 - aligned complete prior: 28,417 vertices and 56,696 faces
-- prior-to-observed median distance: 22.3 mm
-- observed-to-prior median distance: 13.8 mm
-- prior-to-observed p95 distance: 56.0 mm
-- observed-to-prior p95 distance: 53.2 mm
+- prior-to-observed median distance: 10.8 mm
+- observed-to-prior median distance: 8.9 mm
+- prior-to-observed p95 distance: 29.2 mm
+- observed-to-prior p95 distance: 34.4 mm
 
 Tripanel visual review:
 
-`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858/alignment_review_tripanel.png`
+`/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_aligned_frame858_strict/alignment_review_tripanel.png`
 
-The review shows a plausible rounded-lid complete prior inside the larger observed mask-depth surface. The observed surface likely includes lid plus adjacent trash-can geometry, while the prior models the rounded lid-like object. V3 must separate complete object identity from surrounding support geometry during optimization.
+The review shows a round complete prior aligned over a wider irregular observed surface. The numeric surface distance is lower after the strict metric-depth rebuild, but the visual still indicates that the observed mask-depth surface includes more than the compact lid prior. V3 must separate manipulated object identity from adjacent support/trash-can geometry before treating this as object pose.
 
 Window optimization prototype:
 
@@ -241,4 +257,4 @@ Window visual review:
 
 `/data2/ego_annotation_outputs/representative_trash/v3_mesh_prior_window_858_930/window_alignment_review_tripanel.png`
 
-The window optimizer is a failed prototype. The tripanel shows the complete prior inflated into a large oval around the observed surface. The objective reduced numeric residuals by changing scale and rotation without preserving the visible object identity. This failure identifies the next v3 requirement: silhouette rendering factors, per-frame object pose variables, bidirectional surface terms, and explicit separation between the manipulated lid and nearby support/trash-can geometry.
+The window optimizer is a failed prototype. The tripanel shows the complete prior inflated into a large oval around the observed surface. The objective reduced numeric residuals by changing scale and rotation without preserving the visible object identity. This failure identifies the next v3 requirement: silhouette rendering factors, per-frame object pose variables, bidirectional surface terms, depth-scale variables, and explicit separation between the manipulated lid and nearby support/trash-can geometry.

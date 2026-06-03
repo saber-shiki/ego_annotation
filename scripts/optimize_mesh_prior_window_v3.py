@@ -212,8 +212,10 @@ def run(args: argparse.Namespace) -> dict:
             "hand_to_prior_min_m": hand_min,
             "hand_to_prior_median_m": hand_med,
         }
+    status = "optimizer_converged" if result.success else "optimizer_failed"
     report = {
-        "status": "ok",
+        "status": status,
+        "interpretation": "prototype_metrics_only",
         "mesh_prior": str(args.mesh_prior),
         "initial_alignment_qc": str(args.initial_alignment_qc),
         "observed_mesh_npz": str(args.observed_mesh_npz),

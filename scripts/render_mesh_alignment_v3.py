@@ -72,7 +72,7 @@ def draw_mesh(
 def panel(title: str, meshes: list[tuple[str, trimesh.Trimesh]], center: np.ndarray, basis: np.ndarray, radius: float, width: int, height: int) -> np.ndarray:
     image = np.full((height, width, 3), (244, 245, 240), dtype=np.uint8)
     palette = {
-        "prior": ((220, 90, 45), 0.18, 2200),
+        "prior": ((45, 145, 220), 0.18, 2200),
         "observed": ((45, 165, 60), 0.38, 1600),
     }
     for name, mesh in meshes:
@@ -96,7 +96,7 @@ def render(args: argparse.Namespace) -> dict:
     ]
     image = np.concatenate(panels, axis=1)
     cv2.putText(image, "green = observed surface", (24, args.height - 54), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (45, 165, 60), 2, cv2.LINE_AA)
-    cv2.putText(image, "blue = complete mesh prior", (24, args.height - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (220, 90, 45), 2, cv2.LINE_AA)
+    cv2.putText(image, "orange = complete mesh prior", (24, args.height - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (45, 145, 220), 2, cv2.LINE_AA)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(args.output), image)
     report = {

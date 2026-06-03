@@ -74,6 +74,16 @@ def load_metric_depth_archive(path: Path | None) -> dict | None:
     }
 
 
+def robust_patch_median(stack: np.ndarray, min_finite: int = 5) -> np.ndarray:
+    finite = np.isfinite(stack) & (stack > 1e-4)
+    clean = stack.astype(float).copy()
+    clean[~finite] = np.nan
+    out = np.nanmedian(clean, axis=1)
+    out[finite.sum(axis=1) < min_finite] = np.nan
+    out[~np.isfinite(out)] = np.nan
+    return out
+
+
 def metric_depth_for_pixels(metric_depth: dict | None, frame_idx: int, pixels: np.ndarray, image_size: tuple[int, int]) -> np.ndarray | None:
     if metric_depth is None:
         return None
@@ -90,11 +100,7 @@ def metric_depth_for_pixels(metric_depth: dict | None, frame_idx: int, pixels: n
         for dx in (-1, 0, 1):
             xx = np.clip(x + dx, 0, depth.shape[1] - 1)
             samples.append(depth[yy, xx])
-    stack = np.stack(samples, axis=1)
-    stack[(~np.isfinite(stack)) | (stack <= 1e-4)] = np.nan
-    out = np.nanmedian(stack, axis=1)
-    out[~np.isfinite(out)] = np.nan
-    return out
+    return robust_patch_median(np.stack(samples, axis=1))
 
 
 def median_depth_from_disparity(disp: np.ndarray, pixels: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
@@ -107,9 +113,8 @@ def median_depth_from_disparity(disp: np.ndarray, pixels: np.ndarray, image_size
         for dx in (-1, 0, 1):
             xx = np.clip(x + dx, 0, disp.shape[1] - 1)
             samples.append(disp[yy, xx])
-    stack = np.stack(samples, axis=1)
-    stack[(~np.isfinite(stack)) | (stack <= 1e-4)] = np.nan
-    depth = 1.0 / np.nanmedian(stack, axis=1)
+    disp_med = robust_patch_median(np.stack(samples, axis=1))
+    depth = 1.0 / disp_med
     depth[~np.isfinite(depth)] = np.nan
     return depth
 
@@ -167,6 +172,9 @@ def mesh_from_mask_depth(
     max_triangle_edge_m: float,
     min_vertices: int,
     min_faces: int,
+    depth_source: str,
+    enable_contact_depth_correction: bool,
+    max_contact_depth_shift_m: float,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     obj = frame["object"]
     if "source_image_size" not in obj or "mask_image_size" not in obj:
@@ -181,20 +189,29 @@ def mesh_from_mask_depth(
     grid_x, grid_y = np.meshgrid(xs, ys)
     mask_pixels = np.c_[grid_x[mask_grid], grid_y[mask_grid]].astype(float)
     source_pixels = mask_pixels * np.asarray([source_size[0] / mask_size[0], source_size[1] / mask_size[1]], dtype=float)
-    depth_source = "droid"
     depth_keyframe = None
-    droid_depth = nearest_droid_depth_map(recon, int(frame["frame_idx"]), max_keyframe_gap)
-    if droid_depth is not None:
+    if depth_source == "droid":
+        droid_depth = nearest_droid_depth_map(recon, int(frame["frame_idx"]), max_keyframe_gap)
+        if droid_depth is None:
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32), {"reason": "no_droid_depth"}
         disp, depth_keyframe = droid_depth
         relative_depth = median_depth_from_disparity(disp, source_pixels, source_size)
         depths = relative_depth * float(droid_to_meters)
-    else:
+    elif depth_source == "metric_depth":
         metric = metric_depth_for_pixels(metric_depth, int(frame["frame_idx"]), source_pixels, source_size)
         if metric is None:
-            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32), {"reason": "no_depth_source"}
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32), {"reason": "no_metric_depth"}
         depths = metric
-        depth_source = "metric_depth"
-    depths = contact_depth_shift(frame, source_pixels, depths, intrinsics)
+    else:
+        raise RuntimeError(f"unsupported depth source: {depth_source}")
+    depths, contact_report = contact_depth_shift(
+        frame,
+        source_pixels,
+        depths,
+        intrinsics,
+        enable_contact_depth_correction,
+        max_contact_depth_shift_m,
+    )
     valid_depth = np.isfinite(depths) & (depths >= 0.20) & (depths <= 3.20)
     if int(valid_depth.sum()) < min_vertices:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32), {"reason": "depth_underconstrained"}
@@ -222,6 +239,7 @@ def mesh_from_mask_depth(
         "reason": "ok",
         "depth_source": depth_source,
         "depth_keyframe": int(depth_keyframe) if depth_keyframe is not None else None,
+        "contact_depth_correction": contact_report,
         "vertices": int(len(vertices_arr)),
         "triangles": int(len(faces)),
         "depth_median_m": float(np.median(depths[valid_depth])),
@@ -230,10 +248,23 @@ def mesh_from_mask_depth(
     return vertices_arr, faces, report
 
 
-def contact_depth_shift(frame: dict, source_pixels: np.ndarray, depths: np.ndarray, intrinsics: np.ndarray) -> np.ndarray:
+def contact_depth_shift(
+    frame: dict,
+    source_pixels: np.ndarray,
+    depths: np.ndarray,
+    intrinsics: np.ndarray,
+    enabled: bool,
+    max_shift_m: float,
+) -> tuple[np.ndarray, dict]:
+    report = {"enabled": bool(enabled), "applied": False, "shift_m": 0.0, "support_vertices": 0}
+    if not enabled:
+        return depths, report
+    if max_shift_m <= 0.0 or not math.isfinite(max_shift_m):
+        raise RuntimeError("--max-contact-depth-shift-m must be positive and finite when correction is enabled")
     obj = frame.get("object", {})
     if float(obj.get("contact_ratio", 0.0)) <= 0.0 and float(obj.get("min_tip_dist_px", math.inf)) > 10.0:
-        return depths
+        report["reason"] = "no_2d_contact"
+        return depths, report
     hands = []
     for hand in frame.get("hands", []):
         if "joints2d" not in hand or "joints3d_camera" not in hand or "cam_t" not in hand:
@@ -244,12 +275,14 @@ def contact_depth_shift(frame: dict, source_pixels: np.ndarray, depths: np.ndarr
         if xy.ndim == 2 and xy.shape[1] == 2 and xyz.ndim == 2 and xyz.shape[1] == 3 and cam_t.shape == (3,):
             hands.append((xy, xyz[:, 2] + float(cam_t[2])))
     if not hands:
-        return depths
+        report["reason"] = "no_hand_depth"
+        return depths, report
     pixels = np.vstack([xy for xy, _ in hands])
     hand_depths = np.concatenate([z for _, z in hands])
     finite = np.isfinite(hand_depths) & (hand_depths > 0.0)
     if not np.any(finite):
-        return depths
+        report["reason"] = "no_finite_hand_depth"
+        return depths, report
     pixels = pixels[finite]
     hand_depths = hand_depths[finite]
     diff = source_pixels[:, None, :] - pixels[None, :, :]
@@ -258,16 +291,21 @@ def contact_depth_shift(frame: dict, source_pixels: np.ndarray, depths: np.ndarr
     valid_depth = np.isfinite(depths) & (depths > 0.0)
     support = close & valid_depth
     if int(support.sum()) < 8:
-        return depths
+        report["reason"] = "insufficient_contact_support"
+        report["support_vertices"] = int(support.sum())
+        return depths, report
     nearest = np.argmin(dist[support], axis=1)
     target = hand_depths[nearest]
     shift = float(np.median(target - depths[support]))
     if not math.isfinite(shift):
-        return depths
-    shift = float(np.clip(shift, -0.75, 0.75))
+        report["reason"] = "nonfinite_shift"
+        report["support_vertices"] = int(support.sum())
+        return depths, report
+    shift = float(np.clip(shift, -float(max_shift_m), float(max_shift_m)))
     corrected = depths.copy()
     corrected[valid_depth] = np.maximum(0.05, corrected[valid_depth] + shift)
-    return corrected
+    report.update({"applied": abs(shift) > 1e-9, "shift_m": shift, "support_vertices": int(support.sum())})
+    return corrected, report
 
 
 def hand_surface_points(frame: dict) -> np.ndarray:
@@ -374,6 +412,9 @@ def run(args: argparse.Namespace) -> dict:
             args.max_triangle_edge_m,
             args.min_vertices,
             args.min_faces,
+            args.depth_source,
+            bool(args.enable_contact_depth_correction),
+            float(args.max_contact_depth_shift_m),
         )
         reason = str(report["reason"])
         reason_counts[reason] += 1
@@ -400,14 +441,43 @@ def run(args: argparse.Namespace) -> dict:
     triangles = np.asarray([len(faces) for faces in faces_per_frame], dtype=float)
     verts = np.asarray([len(vertices) for vertices in vertices_per_frame], dtype=float)
     contact_arr = np.asarray(contact_distances, dtype=float)
+    contact_frame_count = int(contact_arr.size)
+    contact_corrections = [
+        float(report.get("contact_depth_correction", {}).get("shift_m", 0.0))
+        for report in reports
+        if report.get("reason") == "ok" and report.get("contact_depth_correction", {}).get("applied")
+    ]
+    depth_source_counts = Counter(
+        str(report.get("depth_source"))
+        for report in reports
+        if report.get("reason") == "ok" and report.get("depth_source") is not None
+    )
+    worst_distance = None
+    worst_distance_frame = None
+    for report in reports:
+        value = report.get("min_hand_mesh_distance_m")
+        if value is None:
+            continue
+        value = float(value)
+        if worst_distance is None or value > worst_distance:
+            worst_distance = value
+            worst_distance_frame = int(report["frame_idx"])
     qc = {
         "status": "ok",
         "annotations": str(args.annotations),
         "droid_reconstruction": str(args.droid_reconstruction),
         "metric_depth_npz": str(args.metric_depth_npz) if args.metric_depth_npz is not None else None,
+        "depth_source": str(args.depth_source),
+        "depth_source_counts": dict(sorted(depth_source_counts.items())),
+        "mask_stride_px": int(args.mask_stride),
+        "contact_depth_correction_enabled": bool(args.enable_contact_depth_correction),
+        "contact_depth_correction_applied_frames": int(len(contact_corrections)),
+        "contact_depth_shift_median_m": float(np.median(np.asarray(contact_corrections))) if contact_corrections else None,
+        "contact_depth_shift_max_abs_m": float(np.max(np.abs(np.asarray(contact_corrections)))) if contact_corrections else None,
         "droid_to_meters": droid_to_meters,
         "frames": len(frames),
         "mesh_frames": int(len(frame_indices)),
+        "hand_mesh_distance_frame_count": contact_frame_count,
         "reason_counts": dict(sorted(reason_counts.items())),
         "mesh_archive": str(archive_path),
         "vertices_total": int(sum(len(v) for v in vertices_per_frame)),
@@ -419,6 +489,8 @@ def run(args: argparse.Namespace) -> dict:
         "hand_mesh_distance_median_m": float(np.median(contact_arr)) if contact_arr.size else None,
         "hand_mesh_distance_p05_m": float(np.percentile(contact_arr, 5)) if contact_arr.size else None,
         "hand_mesh_distance_p95_m": float(np.percentile(contact_arr, 95)) if contact_arr.size else None,
+        "hand_mesh_distance_max_m": worst_distance,
+        "hand_mesh_distance_max_frame": worst_distance_frame,
         "elapsed_s": time.time() - started,
         "frame_reports": reports,
     }
@@ -438,6 +510,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--remote-output-root", type=Path)
     parser.add_argument("--local-output-root", type=Path)
     parser.add_argument("--max-keyframe-gap", type=int, default=6)
+    parser.add_argument("--depth-source", choices=("metric_depth", "droid"), default="metric_depth")
+    parser.add_argument("--enable-contact-depth-correction", action="store_true")
+    parser.add_argument("--max-contact-depth-shift-m", type=float, default=0.03)
     parser.add_argument("--mask-stride", type=int, default=8)
     parser.add_argument("--max-triangle-edge-m", type=float, default=0.10)
     parser.add_argument("--min-vertices", type=int, default=40)

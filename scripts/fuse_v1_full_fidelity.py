@@ -2403,6 +2403,7 @@ def run(args: argparse.Namespace) -> dict:
     started = time.time()
     if args.render_only_annotations is not None:
         frames = load_json(args.render_only_annotations)["frames"]
+        localize_render_only_mask_paths(frames, args.remote_output_root, args.local_output_root)
         if args.frame_start is not None or args.frame_end is not None:
             start = int(frames[0]["frame_idx"]) if args.frame_start is None else int(args.frame_start)
             end = int(frames[-1]["frame_idx"]) if args.frame_end is None else int(args.frame_end)
@@ -2434,6 +2435,12 @@ def run(args: argparse.Namespace) -> dict:
         }
         (args.output_dir / "render_only_qc.json").write_text(json.dumps(qc, indent=2), encoding="utf-8")
         return qc
+    if not args.allow_legacy_object_heuristics:
+        raise RuntimeError(
+            "full fusion uses retired category-specific object heuristics; "
+            "run V2 object-plan scripts for new object annotations, or pass "
+            "--allow-legacy-object-heuristics only to reproduce old V1 outputs"
+        )
     raw_all = load_json(args.wilor_raw)["frames"]
     raw = raw_all
     full_raw_count = len(raw_all)
@@ -2528,6 +2535,29 @@ def run(args: argparse.Namespace) -> dict:
     return qc
 
 
+def localize_render_only_mask_paths(frames: list[dict], remote_root: Path | None, local_root: Path | None) -> None:
+    if remote_root is None and local_root is None:
+        return
+    if remote_root is None or local_root is None:
+        raise RuntimeError("--remote-output-root and --local-output-root must be provided together")
+    for frame in frames:
+        obj = frame.get("object", {})
+        mask_path = obj.get("mask_path")
+        if not mask_path:
+            continue
+        path = Path(str(mask_path))
+        if path.exists():
+            continue
+        try:
+            rel = path.relative_to(remote_root)
+        except ValueError as exc:
+            raise RuntimeError(f"mask path is outside --remote-output-root: {path}") from exc
+        candidate = local_root / rel
+        if not candidate.exists():
+            raise RuntimeError(f"localized mask path is missing: {candidate}")
+        obj["mask_path"] = str(candidate)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--clip", type=Path, default=DEFAULT_CLIP)
@@ -2547,6 +2577,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int)
     parser.add_argument("--actions-json", type=Path)
     parser.add_argument("--object-mesh-npz", type=Path)
+    parser.add_argument("--allow-legacy-object-heuristics", action="store_true")
+    parser.add_argument("--remote-output-root", type=Path)
+    parser.add_argument("--local-output-root", type=Path)
     return parser.parse_args()
 
 
