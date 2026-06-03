@@ -1,5 +1,6 @@
 PROMPT.md
 LOG.md
+.env
 .venv/
 __pycache__/
 *.pyc
