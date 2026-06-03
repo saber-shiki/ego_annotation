@@ -73,6 +73,13 @@ cp "$MANO_RIGHT" _DATA/data/mano/MANO_RIGHT.pkl
 cp "$MANO_LEFT" _DATA/data_left/mano_left/MANO_LEFT.pkl
 
 cd thirdparty/DROID-SLAM
+sed -i \
+  -e 's/volume\.type()/volume.scalar_type()/g' \
+  -e 's/fmap1\.type()/fmap1.scalar_type()/g' \
+  src/correlation_kernels.cu \
+  src/altcorr_kernel.cu \
+  thirdparty/lietorch/lietorch/extras/corr_index_kernel.cu
+rm -rf build droid_backends.egg-info thirdparty/lietorch/build thirdparty/lietorch/lietorch.egg-info
 python setup.py install
 cd "$ROOT/third_party/HaWoR"
 
