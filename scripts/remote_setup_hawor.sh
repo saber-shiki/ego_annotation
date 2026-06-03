@@ -2,13 +2,22 @@
 set -euo pipefail
 
 ROOT="${EGO_HAWOR_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote/hawor_work}"
-MANO_RIGHT="${EGO_MANO_RIGHT:-/data/dex_home/yiwen/mano_assets/mano/MANO_RIGHT.pkl}"
-MANO_LEFT="${EGO_MANO_LEFT:-/data/dex_home/yiwen/mano_assets/mano/MANO_LEFT.pkl}"
+MANO_ROOT="${EGO_MANO_ROOT:-$ROOT/assets/mano}"
+MANO_RIGHT="${EGO_MANO_RIGHT:-$MANO_ROOT/MANO_RIGHT.pkl}"
+MANO_LEFT="${EGO_MANO_LEFT:-$MANO_ROOT/MANO_LEFT.pkl}"
 ENV_MARKER="torch2.6.0-cu126"
 
 mkdir -p "$ROOT/third_party" "$ROOT/weights/external" "$ROOT/weights/hawor/checkpoints" "$ROOT/data" "$ROOT/outputs"
 cd "$ROOT"
 
+for asset in "$MANO_RIGHT" "$MANO_LEFT"; do
+  if [ ! -s "$asset" ]; then
+    echo "missing required MANO asset: $asset" >&2
+    exit 1
+  fi
+done
+
+export PATH="$HOME/.local/bin:$PATH"
 if [ ! -d third_party/HaWoR/.git ]; then
   git clone --recursive https://github.com/ThunderVVV/HaWoR.git third_party/HaWoR
 else
@@ -19,7 +28,6 @@ fi
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-export PATH="$HOME/.local/bin:$PATH"
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.6}"
 export PATH="$CUDA_HOME/bin:$PATH"
 
