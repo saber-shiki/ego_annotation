@@ -365,6 +365,59 @@ Visual review:
 
 Interpretation: depth translation alone is not an acceptable v3 annotation stage. It improves the median depth residual but does not produce contact-consistent MANO geometry and degrades some visible hand overlays. The next hand branch must refit MANO pose/translation jointly, or replace the hand backend with a model whose metric hand placement is better conditioned under egocentric occlusion.
 
+### Hand Translation and MANO-Layer Refit Diagnostics
+
+Implemented:
+
+- `scripts/optimize_hand_translation_contact_v3.py`
+- `scripts/refit_mano_pose_contact_v3.py`
+- `scripts/optimize_hand_similarity_contact_v3.py`
+
+The translation-only diagnostic uses the fused WiLoR local geometry as the source of truth and optimizes per-hand source-camera translation against 2D keypoints, metric depth, temporal smoothness, hand-size limits, and object contact depth.
+
+Smoke result on frames 880 to 889:
+
+- independent contact-reliability rows: 18;
+- measured high-score rows: 12;
+- reliable contact rows after translation refit: 0;
+- measured high-score median 2D reprojection: 45.4 px;
+- measured high-score median MANO-minus-metric-depth residual: 13.8 mm;
+- measured high-score median hand span: 32.5 mm.
+
+Interpretation: translation can reduce some depth residuals while preserving the collapsed local hand geometry. A 32.5 mm hand span is physically impossible for a MANO hand in this task, so translation-only refit cannot be the v3 hand state.
+
+The MANO-layer pose/contact refit attempted to optimize MANO pose, global orientation, translation, and local scale from the saved `mano_params`.
+
+Smoke result on frames 880 to 889:
+
+- fit rows: 12;
+- independent contact-reliability rows: 18;
+- measured high-score rows: 12;
+- reliable contact rows after pose refit: 0;
+- measured high-score median 2D reprojection: 41.2 px;
+- measured high-score median MANO-minus-metric-depth residual: -68.4 mm;
+- measured high-score median contact gap on available near-mask rows: 160 mm;
+- measured high-score median hand span: 112 mm.
+
+This refit repaired hand span but failed contact and projection reliability. The cause is partly a representation mismatch: the fused annotations store WiLoR local geometry after a global scale and a source-camera translation solve, while `mano_params` remain in the raw WiLoR MANO frame. Reconstructing fused geometry from a plain SMPLX MANO layer and the saved params gives tens to hundreds of millimeters of geometry error. Using WiLoR's own MANO wrapper and the recovered raw-to-metric scale of 1.341 improves reproduction, but the right hand in frames 886 to 889 still has median joint errors from 14 mm to 61 mm.
+
+Interpretation: saved `mano_params` are a useful pose prior, not the current source of truth for metric hand geometry. The next v3 hand solver must operate on the fused local vertex/joint stream, repair collapsed local hand geometry with an explicit shape/pose or deformation model anchored to that stream, and only then apply contact factors.
+
+The fused-geometry similarity refit then tested whether the collapsed local hands could be repaired by scaling the existing local vertex/joint cloud about the wrist while optimizing source-camera translation.
+
+Smoke result on frames 880 to 889:
+
+- fit observations: 12;
+- independent contact-reliability rows: 18;
+- measured high-score rows: 12;
+- reliable contact rows after similarity refit: 0;
+- measured high-score median 2D reprojection: 44.5 px;
+- measured high-score median MANO-minus-metric-depth residual: 13.8 mm;
+- measured high-score median hand span: 38.4 mm;
+- measured high-score contact gap on the one available near-mask row: 27.7 mm.
+
+Interpretation: similarity refit improves depth and one contact-depth row, but preserves physically impossible local hand collapse. The limiting variable is the local hand pose or hand backend evidence, not only source-camera translation or scalar hand size.
+
 ## Implemented Diagnostics
 
 The implemented v3 code is diagnostic, not the required solver above:
@@ -378,6 +431,9 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/diagnose_hand_depth_reliability_v3.py`
 - `scripts/diagnose_hand_contact_reliability_v3.py`
 - `scripts/apply_mano_depth_refit_v3.py`
+- `scripts/optimize_hand_translation_contact_v3.py`
+- `scripts/refit_mano_pose_contact_v3.py`
+- `scripts/optimize_hand_similarity_contact_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 - `scripts/optimize_joint_mano_object_graph_v3.py`
@@ -432,7 +488,8 @@ Interpretation: HaWoR is useful evidence, but it is not a direct v3 replacement 
 
 ## Immediate Execution Plan
 
-1. Implement a MANO-layer refit on the 840 to 930 contact window. Variables: per-hand MANO translation, global hand scale, limited pose correction if the MANO layer is available in the active environment, and temporal velocity state. Observations: raw 2D keypoints, metric-depth samples at reliable joints, existing MANO pose prior, hand-size prior, object mesh non-penetration, and contact attraction only for image-supported contact rows.
-2. Produce a candidate annotation JSON and rerun `scripts/diagnose_hand_contact_reliability_v3.py`. The candidate is accepted only if reliable contact rows become nonzero, hand spans are plausible, and projection/depth/contact residuals pass the documented thresholds.
-3. Render the candidate videos only after the reliability diagnostic is not already falsified.
-4. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
+1. Replace the per-hand independent refits with a temporal fused-geometry hand solver on the 840 to 930 contact window. Variables: per-frame hand translation, local joint correction or MANO-space pose prior residual, hand-size scale, and temporal velocity. Observations: raw 2D keypoints, metric-depth samples at reliable joints, fused WiLoR geometry, saved MANO params as weak priors, object mesh non-penetration, and contact attraction only for image-supported contact rows.
+2. Add a representation contract check to every future MANO refit: before optimization, regenerated local joints/vertices must match the annotation stream within documented millimeter tolerances. If the contract fails, the script must abort rather than fitting a different hand model.
+3. Produce a candidate annotation JSON and rerun `scripts/diagnose_hand_contact_reliability_v3.py`. The candidate is accepted only if reliable contact rows become nonzero, hand spans are plausible, and projection/depth/contact residuals pass the documented thresholds.
+4. Render the candidate videos only after the reliability diagnostic is not already falsified.
+5. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
