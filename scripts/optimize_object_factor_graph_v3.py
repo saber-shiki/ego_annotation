@@ -419,8 +419,33 @@ def run(args: argparse.Namespace) -> dict:
     ]
     mesh_archive = args.output_dir / "factor_graph_object_meshes.npz"
     save_mesh_archive(mesh_archive, frames, vertices_per_frame, np.asarray(mesh.faces, dtype=np.int32))
+    before_summary = summarize_metrics(before_metrics)
+    after_summary = summarize_metrics(after_metrics)
+    contact_before = before_summary.get("contact_median_m_median")
+    contact_after = after_summary.get("contact_median_m_median")
+    surface_before = before_summary.get("observed_to_prior_median_m_median")
+    surface_after = after_summary.get("observed_to_prior_median_m_median")
+    contact_improved = (
+        contact_before is not None
+        and contact_after is not None
+        and float(contact_after) < float(contact_before)
+    )
+    surface_improved = (
+        surface_before is not None
+        and surface_after is not None
+        and float(surface_after) < float(surface_before)
+    )
+    status = "diagnostic_contact_not_solved"
+    if result.success and contact_improved and surface_improved:
+        status = "diagnostic_surface_and_contact_improved"
+    elif result.success and surface_improved:
+        status = "diagnostic_surface_improved_contact_not_solved"
+    elif not result.success and surface_improved:
+        status = "diagnostic_surface_improved_optimizer_incomplete_contact_not_solved"
     report = {
-        "status": "ok",
+        "status": status,
+        "annotation_ready": False,
+        "diagnostic_only": True,
         "annotations": str(args.annotations),
         "mesh_prior": str(args.mesh_prior),
         "initial_alignment_qc": str(args.initial_alignment_qc),
@@ -436,8 +461,10 @@ def run(args: argparse.Namespace) -> dict:
         "message": str(result.message),
         "residual_rms_before": float(np.sqrt(np.mean(before_vec * before_vec))),
         "residual_rms_after": float(np.sqrt(np.mean(after_vec * after_vec))),
-        "before_summary": summarize_metrics(before_metrics),
-        "after_summary": summarize_metrics(after_metrics),
+        "before_summary": before_summary,
+        "after_summary": after_summary,
+        "contact_improved": bool(contact_improved),
+        "surface_improved": bool(surface_improved),
         "frame_metrics_before": before_metrics,
         "frame_metrics_after": after_metrics,
         "mesh_archive": str(mesh_archive),
