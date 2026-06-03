@@ -23,7 +23,8 @@ export PATH="$HOME/.local/bin:$PATH"
 uv venv --python 3.10 .venv_hawor
 source .venv_hawor/bin/activate
 uv pip install torch==1.13.0+cu117 torchvision==0.14.0+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
-uv pip install -r third_party/HaWoR/requirements.txt
+uv pip install setuptools wheel ninja packaging
+uv pip install --no-build-isolation -r third_party/HaWoR/requirements.txt
 uv pip install pytorch-lightning==2.2.4 --no-deps
 uv pip install lightning-utilities torchmetrics==1.4.0 gdown
 
