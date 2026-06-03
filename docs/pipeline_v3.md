@@ -109,6 +109,22 @@ Factors:
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
 
+### MANO Reprojection Diagnostic
+
+The contact window also shows that the MANO source-camera placement has nontrivial 2D disagreement with the hand detector boxes:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hand_reprojection_depth_840_930.json`
+
+Result:
+
+- hand rows: 182;
+- MANO median depth: 1.326 m;
+- projected MANO bbox versus detector bbox median L2 residual: 103 px;
+- projected MANO bbox versus detector bbox p95 L2 residual: 231 px;
+- projected MANO bbox versus detector bbox median max-axis residual: 75 px.
+
+Interpretation: the hand side of the geometry is not a fixed metric oracle. V3 needs explicit MANO translation/depth variables constrained by 2D reprojection, temporal motion, and hand-size priors before contact factors can be trusted.
+
 ### Joint Depth Contact Probe
 
 The first low-dimensional joint probe uses the same 840 to 930 contact-depth rows, but constrains the correction to one shared MANO depth scale, one shared object depth scale, and smooth per-frame depth shifts:
@@ -135,6 +151,7 @@ The implemented v3 code is diagnostic, not the required solver above:
 
 - `scripts/summarize_contact_depth_scale_v3.py`
 - `scripts/optimize_contact_depth_scale_v3.py`
+- `scripts/diagnose_hand_reprojection_depth_v3.py`
 - `scripts/optimize_joint_depth_contact_v3.py`
 - `scripts/optimize_object_factor_graph_v3.py`
 
