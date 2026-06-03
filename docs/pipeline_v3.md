@@ -385,12 +385,54 @@ The implemented v3 code is diagnostic, not the required solver above:
 - `scripts/export_hawor_world.py`
 - `scripts/adapt_hawor_to_annotations_v3.py`
 
+### HaWoR World-Hand Branch
+
+HaWoR was run on the representative trash clip on the A800 GPU server through tmux:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hawor_world/hawor_world_hands.npz`
+
+Export QC:
+
+- frames: 1050;
+- image focal used by HaWoR: 2304;
+- valid hand frames: 1049 left and 1049 right;
+- HaWoR metric scale estimate: 0.872534;
+- SLAM DBA errors reported by HaWoR: 1.098 and 0.797.
+
+The raw HaWoR hand output has plausible hand size before alignment:
+
+- left-hand joint-span median: 86 mm;
+- right-hand joint-span median: 79 mm;
+- vertex bounding-box diagonal median: about 221 to 226 mm.
+
+The camera-path Sim(3) alignment to the existing DROID-derived annotation world for frames 840 to 930 reached:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hawor_world_adapted_840_930/qc_adapt_hawor_to_annotations_v3.json`
+
+- alignment frames: 19;
+- camera-position error median/p95/max: 14.9 mm / 26.4 mm / 30.5 mm;
+- Sim(3) scale: 0.350569;
+- adapted hands: 182;
+- skipped hands: 0.
+
+That camera alignment is not physically valid for the hands. It shrinks the HaWoR hand span to about 26 mm and gives hundreds of pixels of 2D error against the original observed keypoints. The shared contact-reliability diagnostic reports:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hawor_contact_reliability_840_930.json`
+
+- rows: 50;
+- measured high-score rows: 27;
+- reliable contact rows: 0;
+- measured high-score median joint reprojection error: 481.5 px;
+- measured high-score median hand span: 26.2 mm;
+- near-mask contact-gap median on available rows: -847.8 mm.
+
+Alternative bridge checks do not rescue the branch. Raw HaWoR projection under HaWoR's own camera convention has a better median reprojection error of 25.8 px, but p95 remains 715.9 px. Whole-clip and near-window camera alignment variants still have hundreds of pixels of median reprojection error after adaptation. A reprojection-aware Sim(3) compromise improves median reprojection to about 39 px, but preserves a tiny 29 mm hand span and increases camera error to roughly 35 to 54 mm. Tightening the hand-size prior only raises the hand span to about 43 mm while pushing camera error toward 58 to 93 mm.
+
+Interpretation: HaWoR is useful evidence, but it is not a direct v3 replacement for WiLoR in this clip. HaWoR's own hand-camera projection is partly plausible, while a single world-frame Sim(3) that aligns HaWoR cameras to the existing DROID trajectory makes the hands physically impossible. The next v3 implementation must optimize hand state in the target metric frame with explicit hand-size, 2D keypoint, metric-depth, temporal, and contact factors. It must not accept HaWoR contact factors through a hidden scale correction.
+
 ## Immediate Execution Plan
 
-1. Restore GPU-server connectivity and inspect tmux sessions before launching duplicate work.
-2. Run `scripts/remote_setup_hawor.sh` in tmux on a GPU host and verify HaWoR, masked DROID-SLAM, Metric3D, weights, and MANO assets.
-3. Run `scripts/export_hawor_world.py` on the representative trash clip to export world-space MANO hands, validity masks, and SLAM camera poses.
-4. Run `scripts/adapt_hawor_to_annotations_v3.py` to align HaWoR's world frame to the existing camera trajectory and write a comparable annotation JSON. HaWoR reprojection must be measured against existing observed 2D keypoints, not against its own projected joints.
-5. Compare HaWoR hand rows against the same contact-reliability diagnostic. V3 can use HaWoR contact factors only if reliable contact rows become nonzero and the median depth/contact errors fall below the documented thresholds.
-6. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
-7. If HaWoR also fails the contact-reliability diagnostic, implement a MANO-layer refit that optimizes pose, translation, and temporal state from raw 2D keypoints plus metric-depth samples, instead of relaxing contact thresholds.
+1. Implement a MANO-layer refit on the 840 to 930 contact window. Variables: per-hand MANO translation, global hand scale, limited pose correction if the MANO layer is available in the active environment, and temporal velocity state. Observations: raw 2D keypoints, metric-depth samples at reliable joints, existing MANO pose prior, hand-size prior, object mesh non-penetration, and contact attraction only for image-supported contact rows.
+2. Produce a candidate annotation JSON and rerun `scripts/diagnose_hand_contact_reliability_v3.py`. The candidate is accepted only if reliable contact rows become nonzero, hand spans are plausible, and projection/depth/contact residuals pass the documented thresholds.
+3. Render the candidate videos only after the reliability diagnostic is not already falsified.
+4. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
