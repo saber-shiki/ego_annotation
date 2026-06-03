@@ -54,11 +54,11 @@ if [ ! -f weights/hawor/model_config.yaml ]; then
   wget -O weights/hawor/model_config.yaml https://huggingface.co/ThunderVVV/HaWoR/resolve/main/hawor/model_config.yaml
 fi
 if [ ! -f weights/external/droid.pth ]; then
-  gdown --fuzzy 'https://drive.google.com/file/d/1PpqVt1H4maBa_GbPJp4NwxRsd9jk-elh/view?usp=sharing' -O weights/external/droid.pth
+  gdown 'https://drive.google.com/uc?id=1PpqVt1H4maBa_GbPJp4NwxRsd9jk-elh' -O weights/external/droid.pth
 fi
 if [ ! -f thirdparty/Metric3D/weights/metric_depth_vit_large_800k.pth ]; then
   mkdir -p thirdparty/Metric3D/weights
-  gdown --fuzzy 'https://drive.google.com/file/d/1eT2gG-kwsVzNy5nJrbm4KC-9DbNKyLnr/view?usp=drive_link' -O thirdparty/Metric3D/weights/metric_depth_vit_large_800k.pth
+  gdown 'https://drive.google.com/uc?id=1eT2gG-kwsVzNy5nJrbm4KC-9DbNKyLnr' -O thirdparty/Metric3D/weights/metric_depth_vit_large_800k.pth
 fi
 
 cp "$MANO_RIGHT" _DATA/data/mano/MANO_RIGHT.pkl
