@@ -302,6 +302,53 @@ Visual review:
 
 Interpretation: RTMLib provides an independent live 2D hand-keypoint observation for many contact-window frames. It does not explain the hundreds-of-millimeters hand/object depth conflict, and it cannot be converted into contact constraints when detections are unmatched, low-confidence, or visually false. The next graph should use RTMLib and WiLoR as associated 2D evidence, while metric depth and contact terms own the depth disagreement.
 
+### Hand Depth, Keypoint, and Contact Graph
+
+Implemented:
+
+- `scripts/optimize_hand_depth_keypoint_contact_v3.py`
+
+The graph uses only hand observations with associated RTMLib/WiLoR 2D landmarks. Its state is deliberately small:
+
+- one global hand scale;
+- per-hand camera-ray depth shift;
+- per-row object depth shift;
+- no hidden fallback to predicted hands.
+
+Factors:
+
+- 2D keypoint reprojection to the WiLoR keypoints when RTMLib and WiLoR agree below 30 px;
+- MANO joint depth against the metric-depth map;
+- hand/object contact depth for hand vertices that project near the object mask;
+- hand bone-scale prior;
+- temporal smoothness on hand and object depth shifts.
+
+Strict contact-supported run:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hand_depth_keypoint_contact_840_930/qc_hand_depth_keypoint_contact_loose_near.json`
+
+Result:
+
+- observations: 3, all left-hand frames 886, 888, and 889;
+- before fitting: keypoint reprojection median 14.5 px, MANO-minus-metric-depth median -62 mm, hand-object depth median 85 mm;
+- depth-only fit: MANO-minus-metric-depth median 13 mm, but hand-object depth median worsens to 155 mm;
+- contact fit: hand-object depth median becomes 3.2 mm, but object shift saturates the 80 mm bound and MANO-minus-metric-depth median remains -54 mm;
+- status: `diagnostic_metric_depth_residual_remains`.
+
+Matched-2D run with no required near-mask contact:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_hand_depth_keypoint_contact_840_930/qc_hand_depth_keypoint_contact_no_near_minrows1.json`
+
+Result:
+
+- observations: 6;
+- before fitting: keypoint reprojection median 19.7 px, MANO-minus-metric-depth median 49 mm;
+- depth-only fit: MANO-minus-metric-depth median 0.45 mm, but hand shifts reach the 150 mm bound;
+- contact fit: contact-supported rows reach 2.4 mm median hand-object depth, but hand scale drops to 0.883, hand shifts reach the 150 mm bound, object shift reaches the 80 mm bound, and keypoint reprojection median rises to 20.6 px;
+- status: `diagnostic_keypoint_reprojection_residual_too_large`.
+
+Interpretation: independent 2D keypoints make the contradiction sharper. In rows where 2D hands are live, metric depth and contact can be made individually plausible, but the joint fit requires bounded depth shifts or loses keypoint quality. This rejects a Kalman-only or smoothing-only fix. The next v3 mechanism must estimate hand depth from stronger 3D evidence, external scale, or a richer MANO/depth/camera state before contact can serve as a physical regularizer.
+
 ### MANO Metric-Depth Refit Probe
 
 Implemented:
