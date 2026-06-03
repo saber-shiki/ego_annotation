@@ -104,6 +104,7 @@ Factors:
 - object mesh to metric-depth surface residuals;
 - MANO/object non-penetration signed-distance residuals;
 - contact attraction only when contact is inferred from image evidence and temporal continuity;
+- contact attraction downweighted or disabled for predicted or low-confidence hands whose reprojection residual is large;
 - temporal smoothness on camera, hands, object pose, and deformation;
 - prior terms on physically plausible hand size, object rigidity/deformation, and depth scale.
 
@@ -122,8 +123,10 @@ Result:
 - projected MANO bbox versus detector bbox median L2 residual: 103 px;
 - projected MANO bbox versus detector bbox p95 L2 residual: 231 px;
 - projected MANO bbox versus detector bbox median max-axis residual: 75 px.
+- per-side median L2 residual: left 119 px, right 67 px;
+- worst residuals occur on the right hand around frames 875 to 884, where several rows are predicted or low-confidence hand states.
 
-Interpretation: the hand side of the geometry is not a fixed metric oracle. V3 needs explicit MANO translation/depth variables constrained by 2D reprojection, temporal motion, and hand-size priors before contact factors can be trusted.
+Interpretation: the hand side of the geometry is not a fixed metric oracle. V3 needs explicit MANO translation/depth variables constrained by 2D reprojection, temporal motion, hand-size priors, and hand observation confidence before contact factors can be trusted.
 
 ### Joint Depth Contact Probe
 
