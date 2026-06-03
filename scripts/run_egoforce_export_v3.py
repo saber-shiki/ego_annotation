@@ -131,17 +131,103 @@ def make_camera_model(egoforce_root: Path, intrinsics: np.ndarray, width: int, h
     return PinholeCameraModel(intrinsics[:2].astype(np.float32), intrinsics[2:].astype(np.float32), width, height)
 
 
-def make_inference(egoforce_root: Path, camera_model, disable_kalman: bool):
+def make_inference(egoforce_root: Path, camera_model, disable_kalman: bool, pose_head_only: bool):
     sys.path.insert(0, str(egoforce_root / "demo"))
     sys.path.insert(0, str(egoforce_root))
-    from inference import Inference
+    if not pose_head_only:
+        from inference import Inference
 
-    inference = Inference(camera_model=camera_model, undistort_inp=False)
-    if disable_kalman:
-        inference.enable_kalman_filter = False
-        inference.left_kalman_filter = None
-        inference.right_kalman_filter = None
+        inference = Inference(camera_model=camera_model, undistort_inp=False)
+        if disable_kalman:
+            inference.enable_kalman_filter = False
+            inference.left_kalman_filter = None
+            inference.right_kalman_filter = None
+        return inference
+
+    from demo_hand_arm_loader import DemoHandArmLoader
+    from settings import config as cfg
+    from models import HALO, LimbModel
+    from types import SimpleNamespace
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = HALO(cfg)
+    model.load_state_dict(torch.load(cfg.POSE_3D.CHECKPOINT_PATH, map_location=device), strict=True)
+    model.to(device).eval()
+    inference = SimpleNamespace()
+    inference.device = device
+    inference.model = model
+    inference.limb_model = LimbModel(cfg, device=device, use_pose_pca=False, n_components=5)
+    inference.camera_model = camera_model
+    inference.left_dataset = DemoHandArmLoader(cfg, camera_model, undistort_inp=False, return_complete_image=False, hand_type="left")
+    inference.right_dataset = DemoHandArmLoader(cfg, camera_model, undistort_inp=False, return_complete_image=False, hand_type="right")
+    inference.undistort_inp = False
+    inference.enable_kalman_filter = False
+    inference.left_kalman_filter = None
+    inference.right_kalman_filter = None
+    inference.pose_head_only = True
     return inference
+
+
+def pose_head_infer(inference, left_data, right_data) -> dict:
+    from core import compute_camera_space_mesh, get_limb
+    from settings import config as cfg
+
+    device = inference.device
+    data_items = [left_data[0], right_data[0]]
+    meta_items = [left_data[1], right_data[1]]
+    model_data = {
+        key: torch.stack([item[key] for item in data_items], dim=0).unsqueeze(1).to(device)
+        for key in ("hand_crop", "hand_sparse_kpe", "arm_crop", "arm_sparse_kpe")
+    }
+    meta = {key: torch.stack([item[key] for item in meta_items], dim=0).to(device) for key in meta_items[0]}
+    pred_hand_type = torch.tensor([[0], [1]], dtype=torch.long, device=device)
+
+    with torch.no_grad():
+        outputs = inference.model(
+            model_data["hand_crop"],
+            model_data["hand_sparse_kpe"],
+            model_data["arm_crop"],
+            model_data["arm_sparse_kpe"],
+        )
+
+    pred_betas = outputs["betas"].float()
+    pred_global_orient = outputs["global_orient"].float()
+    pred_hand_pose = outputs["hand_pose"].float()
+    pred_kpts_2d = outputs["hand_kpts_2d"].squeeze(1).float()
+    pred_arm_kpts_2d = outputs["arm_kpts_2d"].squeeze(1).float()
+    pred_hand_kpt_w = outputs["hand_kpt_w"].squeeze(1).float()
+    pred_arm_kpt_w = outputs["arm_kpt_w"].squeeze(1).float()
+    pred_arm_shape = outputs["arm_shape"].float()
+    pred_arm_R = outputs["arm_R"].float()
+    zT = torch.zeros(pred_global_orient.shape[0], pred_global_orient.shape[1], 3, device=device)
+    limb_output = get_limb(
+        cfg,
+        inference.limb_model,
+        pred_global_orient,
+        pred_betas,
+        pred_hand_pose,
+        zT,
+        pred_hand_type,
+        pred_arm_shape,
+        pred_arm_R,
+    )
+    limb_output.hand.crop_j2d = pred_kpts_2d
+    limb_output.arm.crop_j2d = pred_arm_kpts_2d
+    limb_output.hand.confidence = pred_hand_kpt_w
+    limb_output.arm.confidence = pred_arm_kpt_w
+    cs = compute_camera_space_mesh(cfg, meta, limb_output)
+    pred_j3d = cs.hand.joints.detach().cpu().numpy()
+    pred_vertices = cs.hand.vertices.detach().cpu().numpy()
+    pred_arm_j3d = cs.arm.joints.detach().cpu().numpy()
+    pred_arm_vertices = cs.arm.vertices.detach().cpu().numpy()
+    pred_j2d = inference.camera_model.camera_to_uv(pred_j3d)
+    return {
+        "pred_j3d": pred_j3d,
+        "pred_j2d": pred_j2d,
+        "pred_vertices": pred_vertices,
+        "pred_arm_j3d": pred_arm_j3d,
+        "pred_arm_vertices": pred_arm_vertices,
+    }
 
 
 def infer_arrays(inference, rgb: np.ndarray, frame: dict, width: int, height: int, use_pseudo_arm_boxes: bool) -> dict:
@@ -152,12 +238,19 @@ def infer_arrays(inference, rgb: np.ndarray, frame: dict, width: int, height: in
     boxes = {"left": left_payload, "right": right_payload}
     left = inference.left_dataset.transform(rgb, boxes["left"])
     right = inference.right_dataset.transform(rgb, boxes["right"])
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from inference import infer
-    from settings import config as cfg
+    if getattr(inference, "pose_head_only", False):
+        out = pose_head_infer(inference, left, right)
+    else:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        if not hasattr(inference, "undistort_inp"):
+            inference.undistort_inp = False
+        if not hasattr(inference, "enable_kalman_filter"):
+            inference.enable_kalman_filter = False
+        from inference import infer
+        from settings import config as cfg
 
-    with torch.no_grad():
-        out = infer(inference, cfg, inference.model, inference.limb_model, left, right, inference.device)
+        with torch.no_grad():
+            out = infer(inference, cfg, inference.model, inference.limb_model, left, right, inference.device)
     return {"out": out, "boxes": boxes}
 
 
@@ -285,7 +378,8 @@ def run(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"annotation frame {args.frame_start} missing")
     intrinsics = fallback_intrinsics(first_frame, explicit_intrinsics)
     camera_model = make_camera_model(args.egoforce_root, intrinsics, width, height)
-    inference = make_inference(args.egoforce_root, camera_model, disable_kalman=args.disable_kalman)
+    pose_head_only = args.crop_source == "annotation_boxes"
+    inference = make_inference(args.egoforce_root, camera_model, disable_kalman=args.disable_kalman, pose_head_only=pose_head_only)
     if hasattr(inference, "set_kalman_filter_frequency"):
         inference.set_kalman_filter_frequency(fps)
 
