@@ -1362,6 +1362,7 @@ def fill_object_track(
         if not indices:
             continue
         pose_type = str(object_profile(label)["pose_type"])
+        large_deformable = "bag" in pose_type or "deformable" in pose_type
         area_samples = [
             float(object_meas[i]["area_px"])
             for i in indices
@@ -1387,7 +1388,6 @@ def fill_object_track(
             prev_jump = math.inf if prev_valid_center is None else float(np.linalg.norm(center - prev_valid_center))
             tomato_guard = m.get("profile") == "tomato_color_refined"
             area_px = float(m["area_px"])
-            large_deformable = "bag" in pose_type or "deformable" in pose_type
             valid = not (edge and (box_width < 36.0 or box_height < 36.0 or (tomato_guard and float(m.get("red_fraction", 0.0)) < 0.20)))
             if prev_valid_center is not None and prev_jump > 520.0 and float(m.get("min_tip_dist_px", math.inf)) > 60.0:
                 valid = False
@@ -1437,7 +1437,24 @@ def fill_object_track(
             box_w = float(bbox[2] - bbox[0])
             box_h = float(bbox[3] - bbox[1])
             m = valid_measurements[pos]
-            if (box_w < 12.0 or box_h < 12.0) or (center[0] <= 1.0 and box_w < 60.0):
+            predicted_contact_ratio = 0.0
+            predicted_min_tip = math.inf
+            if m is None:
+                contact = hand_contact_points(frame)
+                if contact.size:
+                    d = np.linalg.norm(contact - center[None, :], axis=1)
+                    predicted_min_tip = float(d.min())
+                    predicted_contact_ratio = float(predicted_min_tip < 45.0)
+            area_px = float(max(1.0, vec[6] * vec[6]))
+            collapsed_large_prediction = (
+                large_deformable
+                and m is None
+                and segment_area_median > 0.0
+                and area_px < 0.14 * segment_area_median
+                and predicted_contact_ratio <= 0.0
+                and predicted_min_tip > 80.0
+            )
+            if (box_w < 12.0 or box_h < 12.0) or (center[0] <= 1.0 and box_w < 60.0) or collapsed_large_prediction:
                 frame["object"] = {"label": label, "status": "unobserved_degenerate_track_state"}
                 if object_meas[i] is not None:
                     invalid_measurements += 1
@@ -1455,14 +1472,8 @@ def fill_object_track(
                 segment_predicted += 1
                 if before or after:
                     edge_predicted += 1
-                contact = hand_contact_points(frame)
-                if contact.size:
-                    d = np.linalg.norm(contact - center[None, :], axis=1)
-                    min_tip = float(d.min())
-                    contact_ratio = float(min_tip < 45.0)
-                else:
-                    min_tip = math.inf
-                    contact_ratio = 0.0
+                min_tip = predicted_min_tip
+                contact_ratio = predicted_contact_ratio
                 red_fraction = 0.0
             if contact_ratio > 0 or min_tip < 45.0:
                 contact_frames += 1
@@ -1471,7 +1482,7 @@ def fill_object_track(
                 "status": status,
                 "bbox_xyxy": bbox.astype(float).tolist(),
                 "center_xy": center.astype(float).tolist(),
-                "area_px": float(max(1.0, vec[6] * vec[6])),
+                "area_px": area_px,
                 "measurement_available": m is not None,
                 "mask_path": m.get("mask_path") if m else None,
                 "contact_ratio": contact_ratio,
@@ -1711,6 +1722,117 @@ def attach_object_world(
     }
 
 
+def apply_hand_object_contact_correction(frames: list[dict], fps: float) -> dict:
+    measurements: dict[str, list[np.ndarray | None]] = {"left": [None] * len(frames), "right": [None] * len(frames)}
+    confidences: dict[str, list[float]] = {"left": [0.0] * len(frames), "right": [0.0] * len(frames)}
+    candidates = 0
+    accepted = 0
+    for i, frame in enumerate(frames):
+        obj = frame.get("object", {})
+        if obj.get("center_world_m") is None or obj.get("radius_m") is None:
+            continue
+        center = np.asarray(obj["center_world_m"], dtype=float)
+        radius = float(obj["radius_m"])
+        pose_type = str(obj.get("pose_type", ""))
+        contact_limit = 0.12 if ("bag" in pose_type or "deformable" in pose_type) else 0.07
+        active_sides = {hand["side"] for hand in active_object_hands(frame)}
+        for hand in frame.get("hands", []):
+            side = str(hand["side"])
+            if side not in active_sides:
+                continue
+            joints = np.asarray(hand["joints3d_world_m"], dtype=float)
+            if not joints.size:
+                continue
+            d = np.linalg.norm(joints - center[None, :], axis=1) - radius
+            tip_ids = np.asarray(TIP_IDS, dtype=int)
+            tip_gap = float(np.min(np.abs(d[tip_ids])))
+            all_gap = float(np.min(np.abs(d)))
+            min_gap = min(tip_gap, all_gap)
+            candidates += 1
+            if min_gap > contact_limit:
+                continue
+            closest = tip_ids[int(np.argmin(np.abs(d[tip_ids])))] if tip_gap <= all_gap else int(np.argmin(np.abs(d)))
+            joint = joints[closest]
+            direction = joint - center
+            norm = float(np.linalg.norm(direction))
+            if norm < 1e-6:
+                continue
+            target = center + direction * (radius / norm)
+            delta_world = target - joint
+            T = np.asarray(frame["camera"]["T_world_camera_metric"], dtype=float)
+            joint_source = np.asarray(hand["joints3d_source_camera_m"], dtype=float)[closest]
+            depth = float(joint_source[2])
+            if depth <= 0.15:
+                continue
+            ray = T[:3, :3] @ (joint_source / depth)
+            denom = float(np.dot(ray, ray))
+            if denom < 1e-9:
+                continue
+            depth_delta = float(np.dot(delta_world, ray) / denom)
+            if abs(depth_delta) > 0.28:
+                continue
+            measurements[side][i] = np.asarray([depth_delta], dtype=float)
+            confidences[side][i] = max(0.05, 1.0 - min_gap / contact_limit)
+            accepted += 1
+    applied = 0
+    offsets_by_side: dict[str, int] = {}
+    for side in ("left", "right"):
+        if not any(m is not None for m in measurements[side]):
+            offsets_by_side[side] = 0
+            continue
+        smoothed, _ = kalman_rts(
+            measurements[side],
+            confidences[side],
+            fps,
+            measurement_sigma=np.asarray([0.025], dtype=float),
+            process_position_sigma=np.asarray([0.010], dtype=float),
+            process_velocity_sigma=np.asarray([0.045], dtype=float),
+        )
+        side_applied = 0
+        for i, offset_vec in enumerate(smoothed):
+            if measurements[side][i] is None:
+                continue
+            depth_delta = float(np.clip(offset_vec[0], -0.35, 0.35))
+            if abs(depth_delta) < 1e-4:
+                continue
+            frame = frames[i]
+            T = np.asarray(frame["camera"]["T_world_camera_metric"], dtype=float)
+            for hand in frame.get("hands", []):
+                if hand["side"] != side:
+                    continue
+                for suffix in ("joints3d", "vertices"):
+                    source_key = f"{suffix}_source_camera_m"
+                    if source_key not in hand:
+                        source_key = f"{suffix}_source_camera_m_sample"
+                    world_key = f"{suffix}_world_m"
+                    if world_key not in hand:
+                        world_key = f"{suffix}_world_m_sample"
+                    if source_key not in hand or world_key not in hand:
+                        continue
+                    source = np.asarray(hand[source_key], dtype=float)
+                    z = np.maximum(source[:, 2:3], 1e-6)
+                    corrected = source * ((z + depth_delta) / z)
+                    world = (T @ np.c_[corrected, np.ones(len(corrected))].T).T[:, :3]
+                    hand[source_key] = corrected.astype(float).tolist()
+                    hand[world_key] = world.astype(float).tolist()
+                hand["hand_object_contact_correction"] = {
+                    "depth_delta_m": depth_delta,
+                    "status": "semantic_contact_depth_residual_smoothed",
+                }
+                applied += 1
+                side_applied += 1
+                break
+        offsets_by_side[side] = side_applied
+    return {
+        "candidate_hand_frames": candidates,
+        "accepted_measurements": accepted,
+        "applied_hand_frames": applied,
+        "applied_by_side": offsets_by_side,
+        "max_abs_depth_delta_m": 0.35,
+        "contact_limit_m": {"rigid": 0.07, "deformable": 0.12},
+    }
+
+
 def draw_hand_overlay(frame: np.ndarray, frame_ann: dict, sx: float, sy: float, mano_edges: dict[int, np.ndarray]) -> None:
     for hand in frame_ann["hands"]:
         color = LEFT_COLOR if hand["side"] == "left" else RIGHT_COLOR
@@ -1822,7 +1944,32 @@ def world_display_basis(frames: list[dict], camera_positions: np.ndarray) -> np.
     forward = unit_vector(forward, "display forward")
     right = unit_vector(np.cross(forward, up), "display right")
     forward = unit_vector(np.cross(up, right), "display forward orthogonalized")
-    return np.stack([right, forward, up], axis=0)
+    basis = np.stack([right, forward, up], axis=0)
+    hand_offsets = []
+    sample_step = max(1, len(frames) // 240)
+    for frame in frames[::sample_step]:
+        head = np.asarray(frame["camera"]["position_world_m"], dtype=float)
+        for hand in frame.get("hands", []):
+            joints = np.asarray(hand.get("joints3d_world_m", []), dtype=float)
+            if joints.size:
+                hand_offsets.append(float(np.median((joints - head[None, :]) @ basis[2])))
+    if hand_offsets and float(np.median(hand_offsets)) > 0.0:
+        basis[1:] *= -1.0
+    return basis
+
+
+def camera_display_basis(T: np.ndarray, frame: dict) -> np.ndarray:
+    right, up, forward = camera_axes(T)
+    basis = np.stack([right, forward, up], axis=0)
+    offsets = []
+    head = np.asarray(frame["camera"]["position_world_m"], dtype=float)
+    for hand in frame.get("hands", []):
+        joints = np.asarray(hand.get("joints3d_world_m", []), dtype=float)
+        if joints.size:
+            offsets.append(float(np.median((joints - head[None, :]) @ basis[2])))
+    if offsets and float(np.median(offsets)) > 0.0:
+        basis[1:] *= -1.0
+    return basis
 
 
 def build_world_projector(points: np.ndarray, basis: np.ndarray, size: tuple[int, int]) -> WorldProjector:
@@ -1962,14 +2109,63 @@ def object_extent_points(obj: dict, basis: np.ndarray) -> np.ndarray:
     return p[None, :] + offsets @ basis
 
 
+def object_patch_points(obj: dict, frame: dict) -> np.ndarray | None:
+    pose_type = str(obj.get("pose_type", ""))
+    if "bag" not in pose_type and "deformable" not in pose_type:
+        return None
+    intrinsics = obj.get("source_intrinsics")
+    if intrinsics is None:
+        for hand in frame.get("hands", []):
+            if hand.get("source_intrinsics") is not None:
+                intrinsics = hand["source_intrinsics"]
+                break
+    if obj.get("bbox_xyxy") is None or intrinsics is None or obj.get("depth_m") is None:
+        return None
+    fx, fy, cx, cy = np.asarray(intrinsics, dtype=float)
+    x1, y1, x2, y2 = np.asarray(obj["bbox_xyxy"], dtype=float)
+    w = max(1.0, x2 - x1 + 1.0)
+    h = max(1.0, y2 - y1 + 1.0)
+    inset = 0.08
+    points_2d = np.asarray(
+        [
+            [x1 + inset * w, y1 + inset * h],
+            [x2 - inset * w, y1 + inset * h],
+            [x2 - inset * w, y2 - inset * h],
+            [x1 + inset * w, y2 - inset * h],
+            [0.5 * (x1 + x2), 0.5 * (y1 + y2)],
+        ],
+        dtype=float,
+    )
+    rays = np.c_[(points_2d[:, 0] - cx) / fx, (points_2d[:, 1] - cy) / fy, np.ones(len(points_2d))]
+    T = np.asarray(frame["camera"]["T_world_camera_metric"], dtype=float)
+    pts = (T @ np.c_[rays * float(obj["depth_m"]), np.ones(len(rays))].T).T[:, :3]
+    center = np.asarray(obj["center_world_m"], dtype=float)
+    span = float(np.max(np.linalg.norm(pts[:4] - center[None, :], axis=1)))
+    if not np.isfinite(span) or span < 1e-6:
+        return None
+    scale = min(1.0, 0.55 / span)
+    return center[None, :] + scale * (pts - center[None, :])
+
+
 def draw_object_extent(
     image: np.ndarray,
     obj: dict,
     projector: WorldProjector,
+    patch: np.ndarray | None = None,
 ) -> None:
     p = np.asarray(obj["center_world_m"], dtype=float)
     radius = float(obj.get("radius_m", 0.0) or 0.0)
     p_xy = project_world(p[None, :], projector)[0]
+    if patch is not None:
+        patch_xy = project_world(patch[:4], projector)
+        overlay = image.copy()
+        cv2.fillConvexPoly(overlay, patch_xy, (70, 80, 220), cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.20, image, 0.80, 0, image)
+        cv2.polylines(image, [patch_xy], True, OBJECT_COLOR, 3, cv2.LINE_AA)
+        center_xy = project_world(patch[4:5], projector)[0]
+        cv2.drawMarker(image, tuple(center_xy), OBJECT_COLOR, cv2.MARKER_CROSS, 17, 2, cv2.LINE_AA)
+        cv2.putText(image, "OBJECT SURFACE", tuple((center_xy + np.asarray([9, 14])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, OBJECT_COLOR, 2, cv2.LINE_AA)
+        return
     cv2.circle(image, tuple(p_xy), 7, OBJECT_COLOR, -1, cv2.LINE_AA)
     if radius > 0.0:
         theta = np.linspace(0.0, 2.0 * np.pi, 80)
@@ -1995,22 +2191,27 @@ def render_3d_frame(
     image = np.full((height, width, 3), (244, 245, 240), dtype=np.uint8)
     frame = frames[index]
     T = camera_transform(frame)
-    local_path = camera_positions[max(0, index - 120) : min(len(frames), index + 121)]
-    scene_pts = [local_path, camera_frustum_points(T, 0.9)]
+    view_basis = camera_display_basis(T, frame)
+    local_path = camera_positions[max(0, index - 30) : index + 1]
+    scene_pts = [camera_frustum_points(T, 0.9)]
     for hand in frame["hands"]:
         joints = np.asarray(hand["joints3d_world_m"], dtype=float)
         verts = hand_vertices(hand, "_world_m")
         scene_pts.extend([joints, verts])
     obj = frame.get("object", {})
     if obj.get("center_world_m") is not None:
-        scene_pts.append(object_extent_points(obj, display_basis))
+        patch = object_patch_points(obj, frame)
+        if patch is not None:
+            scene_pts.append(patch)
+        else:
+            scene_pts.append(object_extent_points(obj, view_basis))
     pts = np.concatenate(scene_pts, axis=0)
     finite = np.isfinite(pts).all(axis=1)
     if not finite.any():
         raise RuntimeError("3D renderer received no finite scene points")
     pts = pts[finite]
-    projector = build_world_projector(pts, display_basis, size)
-    q = pts @ display_basis.T
+    projector = build_world_projector(pts, view_basis, size)
+    q = pts @ view_basis.T
     radius = max(0.20, float(np.percentile(np.linalg.norm(q - projector.q_center[None, :], axis=1), 92)))
 
     draw_reference_grid(image, projector, radius)
@@ -2019,7 +2220,7 @@ def render_3d_frame(
     if len(past_path) > 1:
         draw_polyline(image, past_path, projector, (15, 15, 15), 4)
     if obj.get("center_world_m") is not None:
-        draw_object_extent(image, obj, projector)
+        draw_object_extent(image, obj, projector, object_patch_points(obj, frame))
     for hand in frame["hands"]:
         joints = np.asarray(hand["joints3d_world_m"], dtype=float)
         verts = hand_vertices(hand, "_world_m")
@@ -2038,7 +2239,7 @@ def render_3d_frame(
         cv2.putText(image, label, tuple((joint_xy[0] + np.asarray([7, -7])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 2, cv2.LINE_AA)
     draw_camera_frustum(image, T, projector, radius)
     cv2.putText(image, "WORLD RECONSTRUCTION", (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (20, 20, 20), 2, cv2.LINE_AA)
-    cv2.putText(image, "camera-up aligned", (16, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (85, 85, 85), 1, cv2.LINE_AA)
+    cv2.putText(image, "world coords, head-local view", (16, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (85, 85, 85), 1, cv2.LINE_AA)
     cv2.putText(image, f"frame {int(frame['frame_idx']):04d}", (16, height - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 80), 1, cv2.LINE_AA)
     return image
 
@@ -2170,6 +2371,7 @@ def run(args: argparse.Namespace) -> dict:
         (info.width, info.height),
         int(args.max_keyframe_gap),
     )
+    hand_object_qc = apply_hand_object_contact_correction(frames, info.fps)
 
     annotations_path = args.output_dir / "annotations_v1_full.json"
     annotations_path.write_text(json.dumps({"frames": frames}, indent=2), encoding="utf-8")
@@ -2199,6 +2401,7 @@ def run(args: argparse.Namespace) -> dict:
         "object_measurement": object_measure_qc,
         "object_track": object_track_qc,
         "object_world": object_world_qc,
+        "hand_object_contact_correction": hand_object_qc,
         "render": render.__dict__,
         "elapsed_s": time.time() - started,
         "outputs": {

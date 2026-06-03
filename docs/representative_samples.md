@@ -20,13 +20,17 @@ The object annotation stage must choose the manipulated object from hand contact
 
 Trash-bag run:
 
-`/data2/ego_annotation_outputs/representative_trash/fused_contact2/`
+`/data2/ego_annotation_outputs/representative_trash/fused_bagprompt_full_final/`
 
 - DROID: 1050/1050 dense camera poses.
 - WiLoR: hands detected in 898/1050 frames.
-- Object front-end: action-segment `trash_bag` profile, OWLv2 prompt proposals, SAM masks, hand-contact scoring, and temporal continuity.
+- Object front-end: action-segment `trash_bag` profile, separated from `trash_can`; OWLv2 prompt proposals; SAM masks; hand-contact, temporal, and deformable-size rejection.
 - Videos: 1050 frames at 30 fps; overlay/reconstruction 960x540; side-by-side 1920x540.
-- Object masks: 816 active frames measured after matching action intervals to the caption convention.
-- World object fusion: contact anchors on 274 frames, median hand-object surface gap 38.2 mm, p95 558.9 mm.
+- Object track: 807 measured frames, 3 predicted frames, 13 rejected invalid/degenerated measurements.
+- World object fusion: 810 active world states, 585 DROID-depth frames, 321 contact-anchor frames.
+- Hand/object contact correction: 819 accepted contact-depth measurements and 775 corrected hand frames.
+- Renderer: head-local world-coordinate view with an explicit `HEAD CAM` frustum and deformable object surface patch rather than a sphere-only proxy.
 
-The 2D object track is useful on many frames, but the 3D object proxy is not yet a satisfactory deformable-bag pose. The remaining failure is depth/shape representation for large deformable objects, not category selection. A centroid/spherical extent proxy cannot express a bag wrapped around a bin and held at its rim.
+Inspected frames: 90, 269, 678, 900, 910, and 917. Frames 90, 269, and 678 have measured bag states. Frame 900 keeps a large predicted bag surface while the target region is still visible. Frames 910 and 917 are marked unobserved and draw no object, avoiding the earlier false plant-side object state.
+
+The deformable-bag result is now a surface proxy, not a rigid 6D pose. That representation is appropriate for this clip because the manipulated state is a bag surface being opened and lined around a bin. The remaining limitation is metric depth and surface shape accuracy: the object surface comes from mask rays plus optimized depth/contact anchors, without depth sensors, CAD, fiducials, or ground-truth scale.
