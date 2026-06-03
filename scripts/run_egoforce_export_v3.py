@@ -137,6 +137,60 @@ def make_camera_model(egoforce_root: Path, intrinsics: np.ndarray, width: int, h
     return PinholeCameraModel(intrinsics[:2].astype(np.float32), intrinsics[2:].astype(np.float32), width, height)
 
 
+def egoforce_crop_points_to_full_image(crop_points: torch.Tensor, bbox: torch.Tensor, crop_size: torch.Tensor) -> torch.Tensor:
+    inp_w = 224.0
+    inp_h = 224.0
+    scale = crop_size[:, None, :] / crop_points.new_tensor([inp_w, inp_h]).view(1, 1, 2)
+    return crop_points * scale + bbox[:, None, :2]
+
+
+def pinhole_unit_rays(uv: torch.Tensor, focal: torch.Tensor, center: torch.Tensor) -> torch.Tensor:
+    xy = (uv - center[:, None, :]) / focal[:, None, :].clamp_min(1e-8)
+    rays = torch.cat([xy, torch.ones((*xy.shape[:2], 1), dtype=xy.dtype, device=xy.device)], dim=-1)
+    return rays / torch.linalg.norm(rays, dim=-1, keepdim=True).clamp_min(1e-12)
+
+
+def ray_translation_solve(points: torch.Tensor, rays: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    if weights.ndim == 3:
+        weights = weights.squeeze(-1)
+    weights = weights.clamp_min(0.0)
+    eye = torch.eye(3, dtype=points.dtype, device=points.device).view(1, 1, 3, 3)
+    d = rays.unsqueeze(-1)
+    projectors = eye - d @ d.transpose(-2, -1)
+    weighted_projectors = weights[:, :, None, None] * projectors
+    lhs = weighted_projectors.sum(dim=1)
+    rhs = -(weights[:, :, None] * (projectors @ points.unsqueeze(-1)).squeeze(-1)).sum(dim=1)
+    damped = lhs + torch.eye(3, dtype=points.dtype, device=points.device).view(1, 3, 3) * 1e-8
+    return torch.linalg.solve(damped, rhs).unsqueeze(1)
+
+
+def solve_camera_space_pinhole(meta: dict, limb_output, hand_2d: torch.Tensor, arm_2d: torch.Tensor) -> object:
+    from types import SimpleNamespace
+
+    device = hand_2d.device
+    focal = meta["focal_length"].to(device=device, dtype=hand_2d.dtype)
+    center = meta["principal_point"].to(device=device, dtype=hand_2d.dtype)
+    hand_bbox = meta["hand_bbox"].to(device=device, dtype=hand_2d.dtype)
+    arm_bbox = meta["arm_bbox"].to(device=device, dtype=hand_2d.dtype)
+    hand_crop_size = meta["hand_crop_size"].to(device=device, dtype=hand_2d.dtype)
+    arm_crop_size = meta["arm_crop_size"].to(device=device, dtype=hand_2d.dtype)
+
+    hand_uv = egoforce_crop_points_to_full_image(hand_2d, hand_bbox, hand_crop_size)
+    arm_uv = egoforce_crop_points_to_full_image(arm_2d, arm_bbox, arm_crop_size)
+    rays = pinhole_unit_rays(torch.cat([hand_uv, arm_uv], dim=1), focal, center)
+
+    hand_points = limb_output.hand.joints
+    arm_points = limb_output.arm.joints
+    points = torch.cat([hand_points, arm_points], dim=1)
+    weights = torch.cat([limb_output.hand.confidence, limb_output.arm.confidence], dim=1)
+    translation = ray_translation_solve(points, rays, weights)
+    return SimpleNamespace(
+        hand=SimpleNamespace(vertices=limb_output.hand.vertices + translation, joints=hand_points + translation),
+        arm=SimpleNamespace(vertices=limb_output.arm.vertices + translation, joints=arm_points + translation),
+        transl=translation,
+    )
+
+
 def make_inference(egoforce_root: Path, camera_model, disable_kalman: bool, pose_head_only: bool):
     sys.path.insert(0, str(egoforce_root / "demo"))
     sys.path.insert(0, str(egoforce_root))
@@ -175,7 +229,6 @@ def make_inference(egoforce_root: Path, camera_model, disable_kalman: bool, pose
 
 
 def pose_head_infer(inference, left_data, right_data) -> dict:
-    from core import compute_camera_space_mesh, get_limb
     from settings import config as cfg
 
     device = inference.device
@@ -206,22 +259,21 @@ def pose_head_infer(inference, left_data, right_data) -> dict:
     pred_arm_shape = outputs["arm_shape"].float()
     pred_arm_R = outputs["arm_R"].float()
     zT = torch.zeros(pred_global_orient.shape[0], pred_global_orient.shape[1], 3, device=device)
-    limb_output = get_limb(
-        cfg,
-        inference.limb_model,
-        pred_global_orient,
-        pred_betas,
-        pred_hand_pose,
-        zT,
-        pred_hand_type,
-        pred_arm_shape,
-        pred_arm_R,
+    batch, time = pred_global_orient.shape[:2]
+    limb_output = inference.limb_model(
+        pred_betas.reshape(batch * time, *pred_betas.shape[2:]),
+        pred_global_orient.reshape(batch * time, *pred_global_orient.shape[2:]),
+        pred_hand_pose.reshape(batch * time, *pred_hand_pose.shape[2:]),
+        zT.reshape(batch * time, *zT.shape[2:]),
+        pred_hand_type.reshape(batch * time),
+        pred_arm_shape.reshape(batch * time, *pred_arm_shape.shape[2:]),
+        pred_arm_R.reshape(batch * time, *pred_arm_R.shape[2:]),
     )
     limb_output.hand.crop_j2d = pred_kpts_2d
     limb_output.arm.crop_j2d = pred_arm_kpts_2d
     limb_output.hand.confidence = pred_hand_kpt_w
     limb_output.arm.confidence = pred_arm_kpt_w
-    cs = compute_camera_space_mesh(cfg, meta, limb_output)
+    cs = solve_camera_space_pinhole(meta, limb_output, pred_kpts_2d, pred_arm_kpts_2d)
     pred_j3d = cs.hand.joints.detach().cpu().numpy()
     pred_vertices = cs.hand.vertices.detach().cpu().numpy()
     pred_arm_j3d = cs.arm.joints.detach().cpu().numpy()
