@@ -684,6 +684,12 @@ def run(args: argparse.Namespace) -> dict:
         args.local_output_root,
         args,
     )
+    if args.frame_start is not None:
+        fragments = [fragment for fragment in fragments if int(fragment["frame_idx"]) >= int(args.frame_start)]
+    if args.frame_end is not None:
+        fragments = [fragment for fragment in fragments if int(fragment["frame_idx"]) <= int(args.frame_end)]
+    if not fragments:
+        raise RuntimeError("no SAM2 fragments left after frame filtering")
     predicted = vggt_predicted_source_focals(archive, source_width, source_height, int(args.target_size))
     source_focals = [float(focal) for focal in args.source_focals]
     if args.include_vggt_predicted_focal:
@@ -818,6 +824,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vggt-archive", type=Path, required=True)
     parser.add_argument("--sam2-root", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
+    parser.add_argument("--frame-start", type=int)
+    parser.add_argument("--frame-end", type=int)
     parser.add_argument("--source-focals", type=float, nargs="*", default=[1400.0, 2304.0])
     parser.add_argument("--include-vggt-predicted-focal", action="store_true")
     parser.add_argument("--width", type=int, default=1920)
