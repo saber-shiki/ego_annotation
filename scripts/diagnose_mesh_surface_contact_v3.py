@@ -49,6 +49,15 @@ JOINT_REGION = np.asarray(
     ],
     dtype=object,
 )
+REGION_ANCHOR_JOINT = {
+    "thumb": 4,
+    "index": 8,
+    "middle": 12,
+    "ring": 16,
+    "pinky": 20,
+    "palm": 0,
+}
+REGION_NAMES = tuple(REGION_ANCHOR_JOINT)
 
 
 def load_json(path: Path) -> dict:
@@ -308,7 +317,7 @@ def anatomical_patch_candidates(
     nearest_joint = np.argmin(distances, axis=1)
     nearest_region = JOINT_REGION[nearest_joint]
     reports: list[dict] = []
-    for region in ["thumb", "index", "middle", "ring", "pinky", "palm"]:
+    for region in REGION_NAMES:
         region_idx = candidate_idx[nearest_region == region]
         if region_idx.size < min(patch_sizes):
             continue
@@ -329,6 +338,11 @@ def anatomical_patch_candidates(
             report = dict(report)
             report["patch_region"] = region
             report["patch_source"] = "anatomical_region"
+            anchor = int(REGION_ANCHOR_JOINT[region])
+            report["patch_anchor_joint"] = anchor
+            report["patch_anchor_relative_center_m"] = [
+                float(v) for v in (np.asarray(report["patch_local_center_m"], dtype=float) - local_joints[anchor]).tolist()
+            ]
             reports.append(report)
     return reports
 
@@ -672,7 +686,8 @@ def patch_candidates_for_row(row: dict) -> list[dict]:
             {
                 "source": "anatomical_patch",
                 "region": region,
-                "center": report.get("patch_local_center_m"),
+                "center": report.get("patch_anchor_relative_center_m"),
+                "center_type": "anchor_relative",
                 "score": (
                     float(report["patch_distance_p95_m"]),
                     abs(float(report["patch_signed_gap_median_m"])),
@@ -705,6 +720,8 @@ def select_anatomical_report(row: dict, region: str) -> dict | None:
 def set_selected_anatomical_report(row: dict, report: dict) -> None:
     row["selected_patch_source"] = "anatomical_patch"
     row["selected_patch_region"] = str(report["patch_region"])
+    row["selected_patch_anchor_joint"] = int(report.get("patch_anchor_joint", -1))
+    row["selected_patch_anchor_relative_center_m"] = report.get("patch_anchor_relative_center_m")
     row["best_patch_vertices"] = int(report["patch_vertices"])
     row["best_patch_vertex_ids"] = [int(v) for v in report["patch_vertex_ids"]]
     row["best_patch_distance_median_m"] = report["patch_distance_median_m"]
@@ -731,6 +748,12 @@ def support_rank(candidate: dict, support_frames: int, drift: float) -> tuple[in
         -float(candidate_score[0]),
         1 if candidate.get("source") == "anatomical_patch" else 0,
     )
+
+
+def temporal_drift_limit(candidate: dict, args: argparse.Namespace) -> float:
+    if candidate.get("center_type") == "anchor_relative":
+        return float(args.accept_temporal_anchor_relative_drift_m)
+    return float(args.accept_temporal_patch_local_drift_m)
 
 
 def apply_temporal_support(row: dict, candidate: dict, track_key: str, frames: list[int], drift: float) -> None:
@@ -805,7 +828,7 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
                     if len(centers) != len(window):
                         continue
                     drift = point_extent(np.stack(centers, axis=0))
-                    if drift is None or float(drift) > float(args.accept_temporal_patch_local_drift_m):
+                    if drift is None or float(drift) > temporal_drift_limit(window[0][1], args):
                         continue
                     for row, candidate in window:
                         apply_temporal_support(row, candidate, track_key, frames, float(drift))
@@ -1003,6 +1026,7 @@ def run(args: argparse.Namespace) -> dict:
             "min_temporal_patch_frames": int(args.min_temporal_patch_frames),
             "max_temporal_patch_gap_frames": int(args.max_temporal_patch_gap_frames),
             "accept_temporal_patch_local_drift_m": float(args.accept_temporal_patch_local_drift_m),
+            "accept_temporal_anchor_relative_drift_m": float(args.accept_temporal_anchor_relative_drift_m),
         },
         "interpretation": (
             "This diagnostic tests broad-mask candidate contacts against the actual object mesh surface. "
@@ -1010,7 +1034,8 @@ def run(args: argparse.Namespace) -> dict:
             "in the current camera frame and estimates signed separation using the mesh normal oriented toward the camera. "
             "Rows can pass through a single compact global patch or through a compact anatomical finger-region patch. "
             "The anatomical path is still category-agnostic: it partitions MANO vertices by nearest local hand joint and "
-            "requires the same region to have temporal support. Rows pass only when image reprojection, UniDepth hand depth, "
+            "requires the same region to have temporal support relative to that region's distal hand joint. Rows pass only "
+            "when image reprojection, UniDepth hand depth, "
             "MANO bone scale, mesh-surface distance, signed gap, penetration fraction, local patch spread, and temporal "
             "support all agree. Passing rows are contact evidence for this mesh hypothesis; failing rows mean the broad-mask "
             "contact result is not sufficient physical evidence."
@@ -1062,6 +1087,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-temporal-patch-frames", type=int, default=2)
     parser.add_argument("--max-temporal-patch-gap-frames", type=int, default=8)
     parser.add_argument("--accept-temporal-patch-local-drift-m", type=float, default=0.030)
+    parser.add_argument("--accept-temporal-anchor-relative-drift-m", type=float, default=0.025)
     parser.add_argument("--keep-detail", action="store_true")
     return parser.parse_args()
 
