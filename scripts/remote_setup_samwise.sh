@@ -5,7 +5,18 @@ ROOT=/mnt/user-home/yiwen/ego_annotation_remote/sam3_work
 mkdir -p "$ROOT/repo/scripts" "$ROOT/data" "$ROOT/checkpoints" "$ROOT/third_party" "$ROOT/outputs"
 cd "$ROOT"
 
-if [ ! -d third_party/SAMWISE/.git ]; then
+if [ -n "${SAMWISE_SOURCE_ARCHIVE:-}" ]; then
+  rm -rf third_party/SAMWISE
+  mkdir -p third_party
+  tar -xzf "$SAMWISE_SOURCE_ARCHIVE" -C third_party
+  if [ -d third_party/SAMWISE-main ]; then
+    mv third_party/SAMWISE-main third_party/SAMWISE
+  fi
+  if [ ! -f third_party/SAMWISE/inference_demo.py ]; then
+    echo "extracted SAMWISE archive lacks inference_demo.py" >&2
+    exit 1
+  fi
+elif [ ! -d third_party/SAMWISE/.git ]; then
   git clone https://github.com/ClaudiaCuttano/SAMWISE.git third_party/SAMWISE
 else
   git -C third_party/SAMWISE pull --ff-only
