@@ -84,10 +84,20 @@ Current evidence:
 - The 858-930 window optimizer reduced object surface residuals but failed contact consistency.
 - VGGT masked multiview geometry over frames 858 to 880 produced noncollapsed raw object points, but camera-motion Sim3 scaling collapsed the object to millimeters. Rescaling from the observed surface extent produced a 0.57 m by 0.66 m by 0.42 m rounded mesh with 71 mm median point-to-observed distance and a visual blob around the lid, so it is rejected as an annotation mesh.
 - Hunyuan3D-2mv multiview generation from four depth-grown object crops ran successfully on A800 and produced a 369k-vertex mesh. Frame 858/878 alignment again reached low nearest-surface medians, but visual QC rejects the result as a generic oval shell with fuzzy side growth rather than scene-faithful lid/can geometry.
+- SAMWISE text-conditioned segmentation produced clean object-level lid masks for frames 858 to 880. A dense mask-depth height-field mesh from those masks reached median silhouette-mask IoU 0.9965 and median vertex-depth error 0.24 mm across 23 frames. This establishes a valid visible-surface mesh observation for the lid.
+- The same height-field archive fails temporal object consistency. Its robust camera-frame Z extent changes up to 2.50x relative to the median, and the world center speed reaches 8.79 m/s between adjacent video frames. This is a metric-depth/camera-scale inconsistency, because the per-frame projection evidence is already strong.
+- A one-variable-per-frame depth-scale graph regularized object XY extent to within about 6 percent of the median, but projection-depth error rose to 36.7 mm median and 293 mm on frame 880. The tradeoff exposes the missing constraint: V3 needs independent metric camera/depth scale evidence before rigid object pose can be trusted.
 
 Interpretation:
 
-Object-complete asset priors are feasible, but the current object crops underconstrain hidden geometry. Mesh alignment alone can fit the partial observed surface while inventing a plausible but wrong backside. V3 should stop treating single-image or weak-multiview asset generation as the closure path for this clip. The next mesh branch must reconstruct scene object geometry from RGB-D surfaces, object pose, and verified surface masks, then use the graph to expose the remaining hand/camera/depth conflict.
+Object-complete asset priors are feasible, but the current object crops underconstrain hidden geometry. Mesh alignment alone can fit the partial observed surface while inventing a plausible but wrong backside. The scene-derived visible surface is now stronger evidence than the generative complete priors for this clip. The next mesh branch must add an independent metric-scale source and then use the graph to decide whether the rigid lid trajectory, MANO trajectory, and camera trajectory can satisfy surface projection, temporal motion, and contact together.
+
+Implemented current mesh tools:
+
+- `scripts/complete_object_heightfield_from_mask_depth_v3.py`
+- `scripts/diagnose_object_mesh_temporal_consistency_v3.py`
+- `scripts/reconstruct_scaled_observed_object_mesh_v3.py`
+- `scripts/regularize_heightfield_depth_scale_v3.py`
 
 ## Required V3 Solver
 
