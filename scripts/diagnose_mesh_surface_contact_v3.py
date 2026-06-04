@@ -23,6 +23,34 @@ from diagnose_metric_depth_alignment_v3 import depth_frame, sample_depth
 from optimize_object_factor_graph_v3 import localize_path, mask_distance_map, resize_bool_mask
 
 
+JOINT_REGION = np.asarray(
+    [
+        "palm",
+        "thumb",
+        "thumb",
+        "thumb",
+        "thumb",
+        "index",
+        "index",
+        "index",
+        "index",
+        "middle",
+        "middle",
+        "middle",
+        "middle",
+        "ring",
+        "ring",
+        "ring",
+        "ring",
+        "pinky",
+        "pinky",
+        "pinky",
+        "pinky",
+    ],
+    dtype=object,
+)
+
+
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -126,6 +154,13 @@ def hand_local_vertices(hand: dict) -> np.ndarray:
     if cam_t.shape == (3,):
         return vertices - cam_t[None, :]
     return vertices
+
+
+def hand_local_joints(hand: dict) -> np.ndarray:
+    joints = np.asarray(hand.get("joints3d_camera", []), dtype=float)
+    if joints.shape != (21, 3):
+        raise RuntimeError("hand has no usable local 21x3 joints")
+    return joints
 
 
 def hand_keypoints(hand: dict) -> np.ndarray:
@@ -255,6 +290,192 @@ def best_patch(
     }
 
 
+def anatomical_patch_candidates(
+    hand_vertices: np.ndarray,
+    local_vertices: np.ndarray,
+    local_joints: np.ndarray,
+    object_vertices: np.ndarray,
+    object_normals: np.ndarray,
+    candidate_idx: np.ndarray,
+    patch_sizes: list[int],
+    tree: cKDTree,
+) -> list[dict]:
+    if candidate_idx.size == 0:
+        return []
+    if local_vertices.shape[0] != hand_vertices.shape[0] or local_joints.shape != (21, 3):
+        return []
+    distances = np.linalg.norm(local_vertices[candidate_idx, None, :] - local_joints[None, :, :], axis=2)
+    nearest_joint = np.argmin(distances, axis=1)
+    nearest_region = JOINT_REGION[nearest_joint]
+    reports: list[dict] = []
+    for region in ["thumb", "index", "middle", "ring", "pinky", "palm"]:
+        region_idx = candidate_idx[nearest_region == region]
+        if region_idx.size < min(patch_sizes):
+            continue
+        for size in sorted({int(value) for value in patch_sizes}):
+            if region_idx.size < size:
+                continue
+            report = patch_summary(
+                hand_vertices,
+                local_vertices,
+                object_vertices,
+                object_normals,
+                region_idx,
+                int(size),
+                tree,
+            )
+            if report is None:
+                continue
+            report = dict(report)
+            report["patch_region"] = region
+            report["patch_source"] = "anatomical_region"
+            reports.append(report)
+    return reports
+
+
+def geometry_ok_for_patch(report: dict, args: argparse.Namespace) -> dict:
+    anatomical = report.get("patch_source") == "anatomical_region"
+    local_spread_limit = (
+        float(args.accept_anatomical_patch_local_spread_m)
+        if anatomical
+        else float(args.accept_patch_local_spread_m)
+    )
+    min_vertices = int(args.min_anatomical_patch_vertices) if anatomical else int(args.min_patch_vertices)
+    patch_available = int(report.get("patch_vertices", 0)) >= min_vertices
+    patch_distance_ok = bool(
+        patch_available
+        and report.get("patch_distance_p95_m") is not None
+        and float(report["patch_distance_p95_m"]) <= float(args.accept_patch_distance_p95_m)
+    )
+    patch_signed_ok = bool(
+        patch_available
+        and report.get("patch_signed_gap_median_m") is not None
+        and abs(float(report["patch_signed_gap_median_m"])) <= float(args.accept_patch_signed_gap_m)
+        and float(report["patch_signed_gap_p95_abs_m"]) <= float(args.accept_patch_signed_gap_p95_m)
+    )
+    patch_spread_ok = bool(
+        patch_available
+        and report.get("patch_local_spread_m") is not None
+        and float(report["patch_local_spread_m"]) <= local_spread_limit
+        and report.get("patch_spread_m") is not None
+        and float(report["patch_spread_m"]) <= float(args.accept_patch_spread_m)
+    )
+    penetration_ok = bool(float(report.get("patch_penetration_fraction_010m", 1.0)) <= float(args.accept_patch_penetration_fraction))
+    return {
+        "patch_distance_ok": patch_distance_ok,
+        "patch_signed_ok": patch_signed_ok,
+        "patch_spread_ok": patch_spread_ok,
+        "patch_penetration_ok": penetration_ok,
+        "contact_geometry_ok": bool(patch_distance_ok and patch_signed_ok and patch_spread_ok and penetration_ok),
+    }
+
+
+def best_anatomical_patch(
+    hand_vertices: np.ndarray,
+    local_vertices: np.ndarray,
+    local_joints: np.ndarray,
+    object_vertices: np.ndarray,
+    object_normals: np.ndarray,
+    candidate_idx: np.ndarray,
+    patch_sizes: list[int],
+    tree: cKDTree,
+    args: argparse.Namespace,
+) -> dict:
+    reports = anatomical_patch_candidates(
+        hand_vertices,
+        local_vertices,
+        local_joints,
+        object_vertices,
+        object_normals,
+        candidate_idx,
+        patch_sizes,
+        tree,
+    )
+    for report in reports:
+        report.update(geometry_ok_for_patch(report, args))
+    viable = [report for report in reports if bool(report["contact_geometry_ok"])]
+    source = viable if viable else reports
+    if not source:
+        return {
+            "anatomical_patch_reports": [],
+            "anatomical_patch_available": False,
+            "anatomical_patch_region": None,
+            "anatomical_patch_vertices": 0,
+            "anatomical_patch_vertex_ids": [],
+            "anatomical_patch_distance_median_m": None,
+            "anatomical_patch_distance_p95_m": None,
+            "anatomical_patch_signed_gap_median_m": None,
+            "anatomical_patch_signed_gap_p95_abs_m": None,
+            "anatomical_patch_penetration_fraction_010m": 0.0,
+            "anatomical_patch_front_separation_fraction_030m": 0.0,
+            "anatomical_patch_spread_m": None,
+            "anatomical_patch_local_spread_m": None,
+            "anatomical_patch_local_center_m": None,
+            "anatomical_patch_geometry_ok": False,
+            "anatomical_patch_distance_ok": False,
+            "anatomical_patch_signed_ok": False,
+            "anatomical_patch_spread_ok": False,
+            "anatomical_patch_penetration_ok": False,
+        }
+
+    def key(report: dict) -> tuple[float, float, float, int]:
+        return (
+            float(report["patch_distance_p95_m"]),
+            abs(float(report["patch_signed_gap_median_m"])),
+            float(report["patch_local_spread_m"]),
+            int(report["patch_vertices"]),
+        )
+
+    best = min(source, key=key)
+    return {
+        "anatomical_patch_reports": reports,
+        "anatomical_patch_available": True,
+        "anatomical_patch_region": best["patch_region"],
+        "anatomical_patch_vertices": int(best["patch_vertices"]),
+        "anatomical_patch_vertex_ids": best["patch_vertex_ids"],
+        "anatomical_patch_distance_median_m": best["patch_distance_median_m"],
+        "anatomical_patch_distance_p95_m": best["patch_distance_p95_m"],
+        "anatomical_patch_signed_gap_median_m": best["patch_signed_gap_median_m"],
+        "anatomical_patch_signed_gap_p95_abs_m": best["patch_signed_gap_p95_abs_m"],
+        "anatomical_patch_penetration_fraction_010m": best["patch_penetration_fraction_010m"],
+        "anatomical_patch_front_separation_fraction_030m": best["patch_front_separation_fraction_030m"],
+        "anatomical_patch_spread_m": best["patch_spread_m"],
+        "anatomical_patch_local_spread_m": best["patch_local_spread_m"],
+        "anatomical_patch_local_center_m": best["patch_local_center_m"],
+        "anatomical_patch_geometry_ok": bool(best["contact_geometry_ok"]),
+        "anatomical_patch_distance_ok": bool(best["patch_distance_ok"]),
+        "anatomical_patch_signed_ok": bool(best["patch_signed_ok"]),
+        "anatomical_patch_spread_ok": bool(best["patch_spread_ok"]),
+        "anatomical_patch_penetration_ok": bool(best["patch_penetration_ok"]),
+    }
+
+
+def set_selected_patch(row: dict, prefix: str) -> None:
+    row["selected_patch_source"] = prefix
+    row["selected_patch_region"] = None if prefix == "best_patch" else row.get(f"{prefix}_region")
+    row["best_patch_vertices"] = int(row.get(f"{prefix}_vertices", row.get("best_patch_vertices", 0)) or 0)
+    row["best_patch_vertex_ids"] = [int(v) for v in row.get(f"{prefix}_vertex_ids", row.get("best_patch_vertex_ids", []))]
+    for key in [
+        "distance_median_m",
+        "distance_p95_m",
+        "signed_gap_median_m",
+        "signed_gap_p95_abs_m",
+        "penetration_fraction_010m",
+        "front_separation_fraction_030m",
+        "spread_m",
+        "local_spread_m",
+        "local_center_m",
+    ]:
+        value = row.get(f"{prefix}_{key}")
+        if value is not None:
+            row[f"best_patch_{key}"] = value
+    for key in ["distance_ok", "signed_ok", "spread_ok", "penetration_ok", "geometry_ok"]:
+        value = row.get(f"{prefix}_{key}")
+        if value is not None:
+            field = "contact_geometry_ok" if key == "geometry_ok" else f"patch_{key}"
+            row[field] = bool(value)
+
+
 def row_for_hand(
     frame: dict,
     hand_i: int,
@@ -271,6 +492,7 @@ def row_for_hand(
     joints = hand_camera_joints(hand)
     vertices = hand_camera_vertices(hand, T_world_camera)
     local_vertices = hand_local_vertices(hand)
+    local_joints = hand_local_joints(hand)
     keypoints = hand_keypoints(hand)
     intr = intrinsics_for(frame, hand, args.intrinsics_source, args.intrinsics)
     if np.any(vertices[:, 2] <= 0.0) or np.any(joints[:, 2] <= 0.0):
@@ -304,6 +526,17 @@ def row_for_hand(
         [int(value) for value in args.patch_sizes],
         tree,
     )
+    anatomical_patch = best_anatomical_patch(
+        vertices,
+        local_vertices,
+        local_joints,
+        object_vertices_camera,
+        object_normals_camera,
+        candidate_idx,
+        [int(value) for value in args.anatomical_patch_sizes],
+        tree,
+        args,
+    )
     score = float(hand.get("detector_score", np.nan))
     measured = bool(hand.get("measurement_available", False))
     detector_ok = bool(np.isfinite(score) and score >= float(args.min_detector_score))
@@ -332,23 +565,17 @@ def row_for_hand(
     )
     patch_spread_ok = bool(
         patch_available
+        and patch["best_patch_local_spread_m"] is not None
+        and float(patch["best_patch_local_spread_m"]) <= float(args.accept_patch_local_spread_m)
         and patch["best_patch_spread_m"] is not None
         and float(patch["best_patch_spread_m"]) <= float(args.accept_patch_spread_m)
     )
     penetration_ok = bool(
         float(patch["best_patch_penetration_fraction_010m"]) <= float(args.accept_patch_penetration_fraction)
     )
-    contact_geometry_ok = bool(patch_distance_ok and patch_signed_ok and patch_spread_ok and penetration_ok)
-    reliable = bool(
-        measured
-        and detector_ok
-        and projection_ok
-        and depth_ok
-        and stable_depth_ok
-        and bone_scale_ok
-        and contact_geometry_ok
-    )
-    return {
+    global_contact_geometry_ok = bool(patch_distance_ok and patch_signed_ok and patch_spread_ok and penetration_ok)
+    contact_geometry_ok = bool(global_contact_geometry_ok or anatomical_patch["anatomical_patch_geometry_ok"])
+    row = {
         "frame_idx": int(frame["frame_idx"]),
         "hand_idx": int(hand_i),
         "side": str(hand.get("side", "unknown")),
@@ -367,6 +594,9 @@ def row_for_hand(
         "hand_tip_spread_m": float(hand_tip_spread_m(joints)),
         "mask_candidate_vertices": int(candidate_idx.size),
         **patch,
+        **anatomical_patch,
+        "selected_patch_source": "best_patch" if global_contact_geometry_ok else "anatomical_patch",
+        "selected_patch_region": None if global_contact_geometry_ok else anatomical_patch["anatomical_patch_region"],
         "detector_ok": detector_ok,
         "projection_ok": projection_ok,
         "depth_ok": depth_ok,
@@ -376,15 +606,19 @@ def row_for_hand(
         "patch_signed_ok": patch_signed_ok,
         "patch_spread_ok": patch_spread_ok,
         "patch_penetration_ok": penetration_ok,
+        "global_contact_geometry_ok": global_contact_geometry_ok,
         "contact_geometry_ok": contact_geometry_ok,
         "patch_temporal_support_frames": 0,
         "patch_temporal_support_span_frames": 0,
         "patch_temporal_local_drift_m": None,
         "patch_temporal_local_drift_ok": False,
         "patch_temporal_support_ok": False,
-        "reliable_geometry_contact": reliable,
+        "reliable_geometry_contact": False,
         "reliable_for_contact": False,
     }
+    if not global_contact_geometry_ok and anatomical_patch["anatomical_patch_geometry_ok"]:
+        set_selected_patch(row, "anatomical_patch")
+    return row
 
 
 def point_extent(points: np.ndarray) -> float | None:
@@ -395,28 +629,167 @@ def point_extent(points: np.ndarray) -> float | None:
     return float(np.max(np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)))
 
 
+def row_passes_noncontact_checks(row: dict) -> bool:
+    return bool(
+        row.get("measurement_available", False)
+        and row.get("detector_ok", False)
+        and row.get("projection_ok", False)
+        and row.get("depth_ok", False)
+        and row.get("stable_depth_ok", False)
+        and row.get("bone_scale_ok", False)
+    )
+
+
+def patch_candidates_for_row(row: dict) -> list[dict]:
+    candidates: list[dict] = []
+    if bool(row.get("global_contact_geometry_ok", False)):
+        candidates.append(
+            {
+                "source": "best_patch",
+                "region": "global",
+                "center": row.get("best_patch_local_center_m"),
+                "score": (
+                    float(row["best_patch_distance_p95_m"]),
+                    abs(float(row["best_patch_signed_gap_median_m"])),
+                    float(row["best_patch_local_spread_m"]),
+                ),
+            }
+        )
+    by_region: dict[str, list[dict]] = {}
+    for report in row.get("anatomical_patch_reports", []):
+        if bool(report.get("contact_geometry_ok", False)):
+            by_region.setdefault(str(report["patch_region"]), []).append(report)
+    for region, reports in by_region.items():
+        report = min(
+            reports,
+            key=lambda item: (
+                float(item["patch_distance_p95_m"]),
+                abs(float(item["patch_signed_gap_median_m"])),
+                float(item["patch_local_spread_m"]),
+            ),
+        )
+        candidates.append(
+            {
+                "source": "anatomical_patch",
+                "region": region,
+                "center": report.get("patch_local_center_m"),
+                "score": (
+                    float(report["patch_distance_p95_m"]),
+                    abs(float(report["patch_signed_gap_median_m"])),
+                    float(report["patch_local_spread_m"]),
+                ),
+                "report": report,
+            }
+        )
+    return candidates
+
+
+def select_anatomical_report(row: dict, region: str) -> dict | None:
+    reports = [
+        report
+        for report in row.get("anatomical_patch_reports", [])
+        if str(report.get("patch_region")) == region and bool(report.get("contact_geometry_ok", False))
+    ]
+    if not reports:
+        return None
+    return min(
+        reports,
+        key=lambda report: (
+            float(report["patch_distance_p95_m"]),
+            abs(float(report["patch_signed_gap_median_m"])),
+            float(report["patch_local_spread_m"]),
+        ),
+    )
+
+
+def set_selected_anatomical_report(row: dict, report: dict) -> None:
+    row["selected_patch_source"] = "anatomical_patch"
+    row["selected_patch_region"] = str(report["patch_region"])
+    row["best_patch_vertices"] = int(report["patch_vertices"])
+    row["best_patch_vertex_ids"] = [int(v) for v in report["patch_vertex_ids"]]
+    row["best_patch_distance_median_m"] = report["patch_distance_median_m"]
+    row["best_patch_distance_p95_m"] = report["patch_distance_p95_m"]
+    row["best_patch_signed_gap_median_m"] = report["patch_signed_gap_median_m"]
+    row["best_patch_signed_gap_p95_abs_m"] = report["patch_signed_gap_p95_abs_m"]
+    row["best_patch_penetration_fraction_010m"] = report["patch_penetration_fraction_010m"]
+    row["best_patch_front_separation_fraction_030m"] = report["patch_front_separation_fraction_030m"]
+    row["best_patch_spread_m"] = report["patch_spread_m"]
+    row["best_patch_local_spread_m"] = report["patch_local_spread_m"]
+    row["best_patch_local_center_m"] = report["patch_local_center_m"]
+    row["patch_distance_ok"] = bool(report["patch_distance_ok"])
+    row["patch_signed_ok"] = bool(report["patch_signed_ok"])
+    row["patch_spread_ok"] = bool(report["patch_spread_ok"])
+    row["patch_penetration_ok"] = bool(report["patch_penetration_ok"])
+    row["contact_geometry_ok"] = True
+
+
+def support_rank(candidate: dict, support_frames: int, drift: float) -> tuple[int, float, float, int]:
+    candidate_score = candidate.get("score", (float("inf"), float("inf"), float("inf")))
+    return (
+        int(support_frames),
+        -float(drift),
+        -float(candidate_score[0]),
+        1 if candidate.get("source") == "anatomical_patch" else 0,
+    )
+
+
+def apply_temporal_support(row: dict, candidate: dict, track_key: str, frames: list[int], drift: float) -> None:
+    rank = support_rank(candidate, len(set(frames)), float(drift))
+    previous = row.get("_support_rank")
+    if previous is not None and tuple(previous) >= rank:
+        return
+    row["_support_rank"] = list(rank)
+    row["patch_temporal_support_frames"] = int(len(set(frames)))
+    row["patch_temporal_support_span_frames"] = int(max(frames) - min(frames))
+    row["patch_temporal_local_drift_m"] = float(drift)
+    row["patch_temporal_local_drift_ok"] = True
+    row["patch_temporal_support_ok"] = True
+    row["selected_patch_track_key"] = track_key
+    if candidate["source"] == "anatomical_patch":
+        report = candidate.get("report") or select_anatomical_report(row, str(candidate["region"]))
+        if report is not None:
+            set_selected_anatomical_report(row, report)
+    else:
+        row["selected_patch_source"] = "best_patch"
+        row["selected_patch_region"] = None
+
+
 def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> None:
-    groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
-        if bool(row.get("reliable_geometry_contact", False)):
+        row["patch_temporal_support_frames"] = 0
+        row["patch_temporal_support_span_frames"] = 0
+        row["patch_temporal_local_drift_m"] = None
+        row["patch_temporal_local_drift_ok"] = False
+        row["patch_temporal_support_ok"] = False
+        row["reliable_geometry_contact"] = bool(row_passes_noncontact_checks(row) and row.get("contact_geometry_ok", False))
+        row["reliable_for_contact"] = False
+        row.pop("_support_rank", None)
+
+    groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
+    for row in rows:
+        if not row_passes_noncontact_checks(row):
+            continue
+        for candidate in patch_candidates_for_row(row):
+            center = np.asarray(candidate.get("center"), dtype=float)
+            if center.shape != (3,) or not np.isfinite(center).all():
+                continue
             track = row.get("track_id")
-            if track is None:
-                key = ("side_hand", f"{row.get('side')}:{row.get('hand_idx')}")
-            else:
-                key = ("track", str(track))
-            groups.setdefault(key, []).append(row)
-    for candidates in groups.values():
-        ordered = sorted(candidates, key=lambda row: int(row["frame_idx"]))
-        clusters: list[list[dict]] = []
-        cur: list[dict] = []
-        for row in ordered:
+            track_key = f"{row.get('side')}:{row.get('hand_idx')}" if track is None else str(track)
+            key = (track_key, str(candidate["source"]), str(candidate["region"]))
+            groups.setdefault(key, []).append((row, candidate))
+    for (track_key, source, region), candidates in groups.items():
+        ordered = sorted(candidates, key=lambda item: int(item[0]["frame_idx"]))
+        clusters: list[list[tuple[dict, dict]]] = []
+        cur: list[tuple[dict, dict]] = []
+        for item in ordered:
+            row = item[0]
             if not cur:
-                cur = [row]
-            elif int(row["frame_idx"]) - int(cur[-1]["frame_idx"]) <= int(args.max_temporal_patch_gap_frames):
-                cur.append(row)
+                cur = [item]
+            elif int(row["frame_idx"]) - int(cur[-1][0]["frame_idx"]) <= int(args.max_temporal_patch_gap_frames):
+                cur.append(item)
             else:
                 clusters.append(cur)
-                cur = [row]
+                cur = [item]
         if cur:
             clusters.append(cur)
         for cluster in clusters:
@@ -424,30 +797,23 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
             for start in range(n):
                 for end in range(start + int(args.min_temporal_patch_frames), n + 1):
                     window = cluster[start:end]
-                    frames = [int(row["frame_idx"]) for row in window]
-                    centers = [
-                        np.asarray(row.get("best_patch_local_center_m"), dtype=float)
-                        for row in window
-                        if row.get("best_patch_local_center_m") is not None
-                    ]
+                    frames = [int(row["frame_idx"]) for row, _candidate in window]
+                    if len(set(frames)) < int(args.min_temporal_patch_frames):
+                        continue
+                    centers = [np.asarray(candidate.get("center"), dtype=float) for _row, candidate in window]
                     centers = [center for center in centers if center.shape == (3,) and np.isfinite(center).all()]
                     if len(centers) != len(window):
                         continue
                     drift = point_extent(np.stack(centers, axis=0))
                     if drift is None or float(drift) > float(args.accept_temporal_patch_local_drift_m):
                         continue
-                    for row in window:
-                        row["patch_temporal_support_frames"] = int(max(row["patch_temporal_support_frames"], len(set(frames))))
-                        row["patch_temporal_support_span_frames"] = int(
-                            max(row["patch_temporal_support_span_frames"], max(frames) - min(frames))
-                        )
-                        previous = row.get("patch_temporal_local_drift_m")
-                        if previous is None or float(drift) < float(previous):
-                            row["patch_temporal_local_drift_m"] = float(drift)
-                        row["patch_temporal_local_drift_ok"] = True
-                        row["patch_temporal_support_ok"] = True
-            for row in cluster:
+                    for row, candidate in window:
+                        apply_temporal_support(row, candidate, track_key, frames, float(drift))
+            for row, _candidate in cluster:
+                row["reliable_geometry_contact"] = bool(row_passes_noncontact_checks(row) and row["contact_geometry_ok"])
                 row["reliable_for_contact"] = bool(row["reliable_geometry_contact"] and row["patch_temporal_support_ok"])
+    for row in rows:
+        row.pop("_support_rank", None)
 
 
 def condition_counts(rows: list[dict]) -> dict:
@@ -480,6 +846,8 @@ def compact_rows(rows: list[dict], limit: int) -> list[dict]:
         "mano_minus_metric_depth_median_m",
         "stable_depth_fraction",
         "mask_candidate_vertices",
+        "selected_patch_source",
+        "selected_patch_region",
         "best_patch_vertices",
         "best_patch_distance_p95_m",
         "best_patch_signed_gap_median_m",
@@ -487,6 +855,8 @@ def compact_rows(rows: list[dict], limit: int) -> list[dict]:
         "best_patch_penetration_fraction_010m",
         "best_patch_spread_m",
         "best_patch_local_spread_m",
+        "global_contact_geometry_ok",
+        "anatomical_patch_geometry_ok",
         "contact_geometry_ok",
         "patch_temporal_support_frames",
         "patch_temporal_local_drift_m",
@@ -620,11 +990,15 @@ def run(args: argparse.Namespace) -> dict:
             "max_bone_scale_m": float(args.max_bone_scale_m),
             "mask_contact_distance_px": float(args.mask_contact_distance_px),
             "patch_sizes": [int(value) for value in args.patch_sizes],
+            "anatomical_patch_sizes": [int(value) for value in args.anatomical_patch_sizes],
             "min_patch_vertices": int(args.min_patch_vertices),
+            "min_anatomical_patch_vertices": int(args.min_anatomical_patch_vertices),
             "accept_patch_distance_p95_m": float(args.accept_patch_distance_p95_m),
             "accept_patch_signed_gap_m": float(args.accept_patch_signed_gap_m),
             "accept_patch_signed_gap_p95_m": float(args.accept_patch_signed_gap_p95_m),
             "accept_patch_spread_m": float(args.accept_patch_spread_m),
+            "accept_patch_local_spread_m": float(args.accept_patch_local_spread_m),
+            "accept_anatomical_patch_local_spread_m": float(args.accept_anatomical_patch_local_spread_m),
             "accept_patch_penetration_fraction": float(args.accept_patch_penetration_fraction),
             "min_temporal_patch_frames": int(args.min_temporal_patch_frames),
             "max_temporal_patch_gap_frames": int(args.max_temporal_patch_gap_frames),
@@ -634,9 +1008,12 @@ def run(args: argparse.Namespace) -> dict:
             "This diagnostic tests broad-mask candidate contacts against the actual object mesh surface. "
             "For each MANO vertex that projects near the object mask, it queries the nearest object-mesh surface vertex "
             "in the current camera frame and estimates signed separation using the mesh normal oriented toward the camera. "
-            "Rows pass only when image reprojection, UniDepth hand depth, MANO bone scale, mesh-surface distance, signed "
-            "gap, penetration fraction, local patch spread, and temporal support all agree. Passing rows are contact evidence "
-            "for this mesh hypothesis; failing rows mean the broad-mask contact result is not sufficient physical evidence."
+            "Rows can pass through a single compact global patch or through a compact anatomical finger-region patch. "
+            "The anatomical path is still category-agnostic: it partitions MANO vertices by nearest local hand joint and "
+            "requires the same region to have temporal support. Rows pass only when image reprojection, UniDepth hand depth, "
+            "MANO bone scale, mesh-surface distance, signed gap, penetration fraction, local patch spread, and temporal "
+            "support all agree. Passing rows are contact evidence for this mesh hypothesis; failing rows mean the broad-mask "
+            "contact result is not sufficient physical evidence."
         ),
     }
     if args.keep_detail:
@@ -672,11 +1049,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-bone-scale-m", type=float, default=0.240)
     parser.add_argument("--mask-contact-distance-px", type=float, default=8.0)
     parser.add_argument("--patch-sizes", type=int, nargs="+", default=[8, 16, 32])
+    parser.add_argument("--anatomical-patch-sizes", type=int, nargs="+", default=[4, 6, 8, 12])
     parser.add_argument("--min-patch-vertices", type=int, default=8)
+    parser.add_argument("--min-anatomical-patch-vertices", type=int, default=4)
     parser.add_argument("--accept-patch-distance-p95-m", type=float, default=0.040)
     parser.add_argument("--accept-patch-signed-gap-m", type=float, default=0.020)
     parser.add_argument("--accept-patch-signed-gap-p95-m", type=float, default=0.040)
     parser.add_argument("--accept-patch-spread-m", type=float, default=0.050)
+    parser.add_argument("--accept-patch-local-spread-m", type=float, default=0.050)
+    parser.add_argument("--accept-anatomical-patch-local-spread-m", type=float, default=0.030)
     parser.add_argument("--accept-patch-penetration-fraction", type=float, default=0.25)
     parser.add_argument("--min-temporal-patch-frames", type=int, default=2)
     parser.add_argument("--max-temporal-patch-gap-frames", type=int, default=8)
