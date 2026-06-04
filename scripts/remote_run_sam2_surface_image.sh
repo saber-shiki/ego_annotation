@@ -46,6 +46,18 @@ EXTRA_ARGS=()
 if [ "${EGO_SAVE_CANDIDATE_MASKS:-0}" = "1" ]; then
   EXTRA_ARGS+=(--save-candidate-masks)
 fi
+if [ -n "${EGO_MIN_POSITIVE_HIT_FRACTION:-}" ]; then
+  EXTRA_ARGS+=(--min-positive-hit-fraction "$EGO_MIN_POSITIVE_HIT_FRACTION")
+fi
+if [ -n "${EGO_MAX_NEGATIVE_HITS:-}" ]; then
+  EXTRA_ARGS+=(--max-negative-hits "$EGO_MAX_NEGATIVE_HITS")
+fi
+if [ -n "${EGO_MAX_AREA_FRACTION:-}" ]; then
+  EXTRA_ARGS+=(--max-area-fraction "$EGO_MAX_AREA_FRACTION")
+fi
+if [ -n "${EGO_MAX_PROMPT_AREA_RATIO:-}" ]; then
+  EXTRA_ARGS+=(--max-prompt-area-ratio "$EGO_MAX_PROMPT_AREA_RATIO")
+fi
 
 PYTHONPATH="scripts:third_party/sam2${PYTHONPATH:+:$PYTHONPATH}" "${RUNNER[@]}" scripts/run_sam2_vlm_points_image.py \
   --clip "$CLIP" \

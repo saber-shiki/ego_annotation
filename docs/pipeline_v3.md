@@ -72,6 +72,10 @@ The pink-lid SAMWISE result is useful context geometry, but the contact-surface 
 
 After the failed contact-surface SAMWISE run, the next segmentation branch should not be another text-prompt wording change. The valid source of difference is model-produced per-frame visual evidence: VLM-selected positive and negative points, SAM masks constrained by those points on the same image, and VLM/visual review of the resulting masks. Long propagation from weak sparse seeds is rejected for this clip because prior SAM2 propagation drifted to floor, wall, and lid pixels.
 
+Image-conditioned SAM2 was then run per prompted frame. The strict selector accepted only 3 white-liner frames, 4 can-rim frames, and zero annular-rim/flange frames. Candidate-mask review explained the failure: narrow rim/liner prompts deliberately place positive points on multiple disconnected visible fragments, while SAM2 returns either one local fragment that misses other positives or one large whole-lid mask that includes negative points. The strict all-positive contract correctly rejects whole-lid masks, but it is the wrong representation for local contact fragments.
+
+A fragment selector was added with explicit thresholds: at least half of positive points, zero negative hits, and a maximum 8 percent image-area cap. This yields local observed fragments for the liner, can rim, flange, and occasional annular rim. Visual review accepts some fragments as local surface evidence, but rejects others as full-object geometry: for example, frame 886 white-liner selection expands onto the pink lid. The fragment branch is therefore contact evidence only, not a complete mesh branch.
+
 ### SOLA
 
 SOLA is a secondary text-to-track candidate. It generates SAM2 tracks and selects tracks by language alignment. Its public instructions are organized around MeViS and Ref-Youtube-VOS dataset-format track generation, so it is less direct than SAMWISE for immediate custom-video inference.
@@ -176,6 +180,7 @@ Inspection status:
 - the exposed can rim is lower confidence and correctly marks frame 858 invisible;
 - later liner prompts are plausible but boundary-sensitive because liner, rim, hand, and lid pixels overlap near the perimeter.
 - text-only SAMWISE did not convert these surface names into valid masks. The failed masks are recorded at `/data2/ego_annotation_outputs/representative_trash/v3_samwise_contact_surfaces_rejection_840_930.json`. V3 should use image-conditioned point prompts and per-frame mask selection for these surfaces before attempting mesh reconstruction.
+- image-conditioned SAM2 fragment masks are recorded under `/data2/ego_annotation_outputs/representative_trash/v3_contact_surface_sam2_image_fragments_840_930`. They improve local surface evidence but do not supply complete object geometry. A metric-depth fragment-contact diagnostic found 15 hand-surface rows and zero reliable contact rows. The closest liner row at frame 848 still has 62 mm p95 absolute gap and 71 percent penetration deeper than 10 mm. Later plausible-looking fragments remain 60 to 250 mm from MANO in depth or have large hand reprojection residuals.
 
 This branch supplies surface-specific mask targets so SAM2 or a referring video segmentation model can produce measured masks, metric-depth observed-surface meshes, and per-surface contact reliability. Contact factors should activate only after the surface mask, metric depth, MANO projection, and temporal support agree. V3 closes only when the resulting hand/object state passes per-surface contact reliability; zero reliable rows would strengthen the falsification of the current hand/camera/depth state.
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -156,40 +157,52 @@ def select_mask(
     min_area_px: int,
     image_size: tuple[int, int],
     max_prompt_area_ratio: float,
+    max_area_fraction: float,
+    min_positive_hit_fraction: float,
+    max_negative_hits: int,
     prompt_area_margin_px: float,
     score_tie_margin: float,
 ) -> tuple[np.ndarray | None, dict]:
     pos = points[labels == 1]
     neg = points[labels == 0]
     prompt_area = prompt_extent_area(pos, image_size, prompt_area_margin_px)
-    max_area = prompt_area * float(max_prompt_area_ratio)
+    max_area = min(prompt_area * float(max_prompt_area_ratio), float(image_size[0] * image_size[1]) * float(max_area_fraction))
+    required_pos = int(math.ceil(len(pos) * float(min_positive_hit_fraction)))
     candidates = []
     for i, (mask_raw, score) in enumerate(zip(masks, scores)):
         mask = mask_raw.astype(bool)
         area = int(mask.sum())
         pos_hits = point_hits(mask, pos)
         neg_hits = point_hits(mask, neg)
-        valid = area >= min_area_px and area <= max_area and pos_hits == len(pos) and neg_hits == 0
+        valid = area >= min_area_px and area <= max_area and pos_hits >= required_pos and neg_hits <= int(max_negative_hits)
         candidates.append(
             {
                 "candidate": int(i),
                 "sam_score": float(score),
                 "area_px": area,
                 "max_area_px": float(max_area),
+                "max_area_fraction": float(max_area_fraction),
                 "prompt_extent_area_px": float(prompt_area),
                 "positive_hits": int(pos_hits),
                 "positive_points": int(len(pos)),
+                "required_positive_hits": int(required_pos),
+                "min_positive_hit_fraction": float(min_positive_hit_fraction),
                 "negative_hits": int(neg_hits),
                 "negative_points": int(len(neg)),
+                "max_negative_hits": int(max_negative_hits),
                 "accepted_by_prompt_contract": bool(valid),
             }
         )
     valid_indices = [row["candidate"] for row in candidates if row["accepted_by_prompt_contract"]]
     if not valid_indices:
         return None, {"reason": "no_candidate_satisfies_prompt_contract", "candidates": candidates}
-    best_score = max(float(scores[idx]) for idx in valid_indices)
-    near_best = [idx for idx in valid_indices if float(scores[idx]) >= best_score - float(score_tie_margin)]
-    best = min(near_best, key=lambda idx: int(masks[idx].astype(bool).sum()))
+    best_fraction = max(candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]) for idx in valid_indices)
+    near_best = [
+        idx
+        for idx in valid_indices
+        if candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]) >= best_fraction - float(score_tie_margin)
+    ]
+    best = min(near_best, key=lambda idx: (int(masks[idx].astype(bool).sum()), -float(scores[idx])))
     return masks[best].astype(bool), {"reason": "ok", "selected_candidate": int(best), "candidates": candidates}
 
 
@@ -283,6 +296,9 @@ def run_predictor(
                     int(args.min_area_px),
                     image_size,
                     float(args.max_prompt_area_ratio),
+                    float(args.max_area_fraction),
+                    float(args.min_positive_hit_fraction),
+                    int(args.max_negative_hits),
                     float(args.prompt_area_margin_px),
                     float(args.score_tie_margin),
                 )
@@ -379,6 +395,9 @@ def run(args: argparse.Namespace) -> dict:
         "use_box": bool(args.use_box),
         "min_area_px": int(args.min_area_px),
         "max_prompt_area_ratio": float(args.max_prompt_area_ratio),
+        "max_area_fraction": float(args.max_area_fraction),
+        "min_positive_hit_fraction": float(args.min_positive_hit_fraction),
+        "max_negative_hits": int(args.max_negative_hits),
         "prompt_area_margin_px": float(args.prompt_area_margin_px),
         "score_tie_margin": float(args.score_tie_margin),
         "elapsed_s": time.time() - started,
@@ -408,6 +427,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--min-area-px", type=int, default=80)
     parser.add_argument("--max-prompt-area-ratio", type=float, default=3.5)
+    parser.add_argument("--max-area-fraction", type=float, default=1.0)
+    parser.add_argument("--min-positive-hit-fraction", type=float, default=1.0)
+    parser.add_argument("--max-negative-hits", type=int, default=0)
     parser.add_argument("--prompt-area-margin-px", type=float, default=40.0)
     parser.add_argument("--score-tie-margin", type=float, default=0.08)
     parser.add_argument("--use-box", action="store_true")
