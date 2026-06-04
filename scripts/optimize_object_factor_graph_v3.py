@@ -17,7 +17,12 @@ from scipy.spatial import cKDTree
 from align_mesh_prior_v3 import Sim3, load_observed_frame, sample_mesh_surface
 
 
-MEASURED_STATUSES = {"measured_plan_sam", "measured_plan_sam_vlm_verified", "measured_sam_kalman"}
+MEASURED_STATUSES = {
+    "measured_plan_sam",
+    "measured_plan_sam_vlm_verified",
+    "measured_sam_kalman",
+    "measured_sam2_vlm_points",
+}
 
 
 @dataclass(frozen=True)

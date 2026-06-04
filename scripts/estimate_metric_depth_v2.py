@@ -16,7 +16,12 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from fuse_v1_full_fidelity import DEFAULT_CLIP, load_json, open_video, read_video_frame
 
 
-MEASURED_STATUSES = {"measured_sam_kalman", "measured_plan_sam", "measured_plan_sam_vlm_verified"}
+MEASURED_STATUSES = {
+    "measured_sam_kalman",
+    "measured_plan_sam",
+    "measured_plan_sam_vlm_verified",
+    "measured_sam2_vlm_points",
+}
 
 
 def selected_frames(annotations: dict, frame_start: int | None, frame_end: int | None, stride: int) -> list[int]:

@@ -16,7 +16,12 @@ from tqdm import tqdm
 from fuse_v1_full_fidelity import load_droid_reconstruction, load_json, source_camera_ray
 
 
-MEASURED_OBJECT_STATUSES = {"measured_sam_kalman", "measured_plan_sam", "measured_plan_sam_vlm_verified"}
+MEASURED_OBJECT_STATUSES = {
+    "measured_sam_kalman",
+    "measured_plan_sam",
+    "measured_plan_sam_vlm_verified",
+    "measured_sam2_vlm_points",
+}
 
 
 def finite_matrix(value, shape: tuple[int, ...], name: str) -> np.ndarray:

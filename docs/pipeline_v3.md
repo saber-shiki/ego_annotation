@@ -110,6 +110,40 @@ Factors:
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
 
+## Surface-Specific Contact Branch
+
+The corrected V2-mask reliability diagnostic used the real pink-lid mask source and still found zero reliable contact rows. The residual comes from more than mask identity: a single lid mask collapses several physical surfaces that can have different depth, visibility, and contact state.
+
+Implemented current branch:
+
+- `scripts/build_contact_surface_plan_v3.py`
+- `scripts/render_point_prompt_review_v3.py`
+- `scripts/adapt_sam2_track_to_annotations_v3.py`
+
+Model-produced surface plan:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_contact_surface_plan_840_930/contact_surface_plan_vlm.json`
+
+The plan splits the 840 to 930 contact window into five visible surface tracks:
+
+- `pink_lid_top_dished_panel_visible`
+- `pink_lid_raised_annular_rim`
+- `pink_lid_outer_vertical_flange_edge`
+- `second_can_exposed_opening_rim`
+- `white_liner_draped_edge_second_can`
+
+Point prompts and review stills:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_contact_surface_points_840_930/`
+
+Inspection status:
+
+- the central lid panel, annular rim, outer flange, and early liner prompts are visually credible;
+- the exposed can rim is lower confidence and correctly marks frame 858 invisible;
+- later liner prompts are plausible but boundary-sensitive because liner, rim, hand, and lid pixels overlap near the perimeter.
+
+This branch supplies surface-specific mask targets so SAM2 or a referring video segmentation model can produce measured masks, metric-depth observed-surface meshes, and per-surface contact reliability. Contact factors should activate only after the surface mask, metric depth, MANO projection, and temporal support agree. V3 closes only when the resulting hand/object state passes per-surface contact reliability; zero reliable rows would strengthen the falsification of the current hand/camera/depth state.
+
 Current diagnostics narrow the remaining missing evidence. The next solver cannot be another local smoother over the same variables. It must add at least one nonlocal source of metric information:
 
 - a calibrated camera/head scale source, such as measured camera intrinsics plus a known-size object or scene measurement;
