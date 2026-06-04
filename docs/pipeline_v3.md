@@ -2,10 +2,10 @@
 
 ## Why V3 Exists
 
-V2 replaced object proxies with model-planned masks and observed-surface meshes. It proved a real object mesh path for the pink-lid track, but it also exposed a larger 3D inconsistency:
+V2 replaced object proxies with model-planned masks and observed-surface mesh evidence. It proved that the pipeline can acquire clean object masks and measured visible surfaces, but it also exposed a larger 3D inconsistency:
 
 - The accepted pink-lid mask is visually stable.
-- Metric-depth meshing covers the contact window.
+- Metric-depth meshing can fit the visible surface in image space.
 - MANO vertices often project near the object mask in 2D.
 - The same vertices are hundreds of millimeters away from the object surface in camera depth.
 
@@ -16,7 +16,7 @@ The compact contact-depth report for frames 840 to 930 has 84 frames where hand 
 - median object-over-hand depth ratio: 0.741
 - p05/p95 object-over-hand depth ratio: 0.472 / 0.937
 
-This magnitude cannot be fixed by a Kalman smoother or an object-pose-only optimizer. V3 must jointly reason about object identity, object mesh, MANO metric scale/depth, camera pose scale, metric depth reliability, and contact state.
+This magnitude cannot be fixed by a Kalman smoother or an object-pose-only optimizer. V3 must jointly reason about object identity, object mesh, MANO metric scale/depth, camera pose scale, camera intrinsics, metric depth reliability, and contact state. A visible surface patch or a clean 2D mask is evidence, not a complete manipulated-object annotation.
 
 A lightweight 1D contact-depth diagnostic then solved only the depth gap for frames with at least 80 near-mask hand vertices. This diagnostic is intentionally underdetermined: each frame has one contact-depth equation and four correction variables before priors. It reduced median corrected depth gap to 0.16 mm, but the inferred correction was not small:
 
@@ -53,25 +53,25 @@ This runner should be used after checkpoint access is granted. It consumes a vid
 
 ### SAMWISE
 
-SAMWISE is the next unverified executable candidate because it is a CVPR 2025 text-driven video segmentation model built on SAM2 and provides arbitrary-video/frame-folder inference from natural-language prompts.
+SAMWISE is the current executable language-conditioned video segmentation path. It is a CVPR 2025 text-driven video segmentation model built on SAM2 and provides arbitrary-video/frame-folder inference from natural-language prompts.
 
 Implemented preparation:
 
 - `scripts/run_samwise_referring_masks.py`
 - `scripts/remote_setup_samwise.sh`
 
-Planned run:
+Executed run:
 
-- input: frames 678 to 918 of the representative trash clip
-- prompt: `translucent white plastic trash bag liner being opened and placed inside the small trash can`
-- expected raw output: binary mask PNGs, overlay video, review stills at 678, 720, 797, 858, 880, 900, 918, and QC JSON
-- acceptance requirement: visual or VLM semantic verification must accept the masks before mesh reconstruction
+- input: frames 840 to 930 of the representative trash clip, with the mesh branch currently using the clean 858 to 880 subwindow
+- accepted prompt result: clean object-level masks for the central pink lid over frames 858 to 880
+- rejected point-prompt surface result: SAM2 point-prompt variants for rim, flange, and liner repeatedly collapsed into broad lid/background regions and must not be meshed
+- current target: language-conditioned SAMWISE segmentation of the actual contact objects, especially the translucent white liner draped edge and the can/lid perimeter surfaces
 
-The GPU hosts became unreachable over SSH before setup/checkpoint verification completed. This is an external connectivity blocker for the SAMWISE execution branch, not a model-selection decision.
+The pink-lid SAMWISE result is useful context geometry, but the contact-surface plan says the broad central lid panel is mostly a visible separator/support surface. Hand contact in this window belongs to perimeter/rim/liner pixels. The next SAMWISE run must therefore target those surfaces directly instead of refining the central lid mask again.
 
 ### SOLA
 
-SOLA is a secondary fallback. It generates SAM2 tracks and selects tracks by language alignment. Its public instructions are organized around MeViS and Ref-Youtube-VOS dataset-format track generation, so it is less direct than SAMWISE for immediate custom-video inference.
+SOLA is a secondary text-to-track candidate. It generates SAM2 tracks and selects tracks by language alignment. Its public instructions are organized around MeViS and Ref-Youtube-VOS dataset-format track generation, so it is less direct than SAMWISE for immediate custom-video inference.
 
 ## Mesh Branch
 
@@ -91,15 +91,19 @@ Current evidence:
 - VGGT object points project entirely inside the SAMWISE mask after correcting the aspect-ratio-preserving resize and padding. They expose a concrete Depth Anything failure: in frames 878 to 880, VGGT places the lid surface at about 0.69 to 0.75 m while Depth Anything places the same mask at about 1.01 to 1.12 m. This explains the late-frame heightfield expansion without blaming the mask.
 - A VGGT observed-surface mesh built from the selected points is temporally coherent: robust camera extents are 0.050 x 0.034 x 0.044 m, extent-ratio max-log median is 0.049, and pairwise center speed median is 0.056 m/s. This is still only a compact visible-surface patch, not a full lid mesh or watertight object.
 - Re-solving MANO translations under VGGT intrinsics reduces the high-score contact gap to 86 mm median, but does not close it. A bounded temporal Z-shift/contact optimizer can drive median contact gap near zero only by hitting the 35 cm shift bound and producing frame-880 median keypoint reprojection error of 80 px with an implausibly small hand scale. VGGT reduces the object-depth error, but current MANO measurements remain inconsistent with 5 mm contact annotation.
+- A source-focal sweep over the VGGT object surface shows that focal length is an active variable, not a harmless visualization parameter. VGGT predicts about 1191 px source focal, where the high-score hand rows still sit about 100 mm in front of the object surface. Around 1400 px the median hand/object depth gap crosses near zero with 7.0 px median keypoint reprojection, but the p95 absolute surface gap remains 68.5 mm and about 32 percent of near-mask vertices violate the surface by more than 10 mm. The DROID prior focal of 2304 px is incompatible with this contact interpretation: the median gap becomes about 425 mm behind the surface.
+- The focal/hand/contact graph optimizes one source focal, one hand scale, per-observation depth shifts/velocities, and per-observation contact probability. It keeps keypoint reprojection reasonable at 7.8 px median and removes positive surface violation with small 15 mm median shifts, but it does so by driving contact probability to 0.029 median and leaving only 37 percent of near-mask vertices within 30 mm. The graph therefore rejects broad pink-lid contact rather than accepting a false physical annotation.
 
 Interpretation:
 
-Object-complete asset priors are feasible, but the current object crops underconstrain hidden geometry. Mesh alignment alone can fit the partial observed surface while inventing a plausible but wrong backside. The scene-derived visible surface is now stronger evidence than the generative complete priors for this clip. The next mesh branch must add an independent metric-scale source and then use the graph to decide whether the rigid lid trajectory, MANO trajectory, and camera trajectory can satisfy surface projection, temporal motion, and contact together.
+Object-complete asset priors are feasible, but the current object crops underconstrain hidden geometry. Mesh alignment alone can fit the partial observed surface while inventing a plausible but wrong backside. The scene-derived visible surface is now stronger evidence than the generative complete priors for this clip. The next mesh branch must segment and reconstruct the actual manipulated contact material, starting with the white liner and perimeter/rim surfaces, then use the graph to decide whether camera intrinsics, the object surface, MANO trajectory, and contact state can satisfy projection, temporal motion, and contact together.
 
 Implemented current mesh tools:
 
 - `scripts/complete_object_heightfield_from_mask_depth_v3.py`
 - `scripts/diagnose_object_mesh_temporal_consistency_v3.py`
+- `scripts/diagnose_vggt_focal_sweep_v3.py`
+- `scripts/optimize_vggt_focal_hand_contact_graph_v3.py`
 - `scripts/reconstruct_scaled_observed_object_mesh_v3.py`
 - `scripts/regularize_heightfield_depth_scale_v3.py`
 
@@ -133,7 +137,9 @@ After the full-scene VGGT branch, the next graph should treat VGGT scene geometr
 - MANO depth variables constrained by 2D reprojection, temporal velocity/acceleration, hand-size priors, and detector confidence;
 - contact variables that can turn off or mark a hand observation unreliable when satisfying contact would require large reprojection error, hand-scale collapse, or bound-saturated depth shifts.
 
-The failure to close contact after VGGT is a useful V3 result because it separates two mechanisms: Depth Anything creates large object-depth outliers in late frames, and WiLoR/MANO still places some measured hands at incompatible depths even under VGGT intrinsics. V3 cannot close until a stronger temporal hand model or direct egocentric hand-depth model repairs that second mechanism.
+The focal/hand/contact graph implements this principle on frames 858 to 880. It rejects the broad-lid contact hypothesis by lowering contact probability instead of forcing geometry into contact. That is the correct failure signal for this branch: the central pink lid is a measured support/context surface, while the actual manipulated contact object is likely the liner or perimeter/rim material identified by the VLM surface plan.
+
+The failure to close contact after VGGT is a useful V3 result because it separates three mechanisms: Depth Anything creates large object-depth outliers in late frames, the DROID focal prior is inconsistent with VGGT/contact geometry, and WiLoR/MANO still places some measured hands at incompatible depths even when focal length is allowed to move. V3 cannot close until the object surface being contacted is reconstructed and a stronger temporal hand/depth model passes the same residual checks.
 
 ## Surface-Specific Contact Branch
 
@@ -887,8 +893,8 @@ Interpretation: focal length is a real sensitivity, but focal-only correction do
 
 ## Immediate Execution Plan
 
-1. Build a multi-surface object-context annotation for the pink-lid window: lid, rim, liner, and visible non-contact states must be model-produced masks or verified VLM/SAM outputs, then consumed by one uniform geometry path.
-2. Run the contact reliability diagnostic per surface. Contact factors may activate only for rows that pass 2D projection, metric-depth, bone-scale, and near-surface support on the same surface.
-3. Add a MANO-parametric temporal refit only after the contacted surface is identified. The refit must preserve the annotation representation contract and must abort if regenerated local joints/vertices disagree with the stream.
-4. Keep SAMWISE/SAM3-style referring segmentation as the white-liner recovery branch. Any recovered liner masks must pass visual or VLM verification before meshing.
-5. Render a candidate only after reliability rows become nonzero under the corrected V2-mask/object-context diagnostics.
+1. Run language-conditioned segmentation for the actual contact materials in the 840 to 930 window, starting with `white_liner_draped_edge_second_can` and perimeter/rim prompts from the VLM surface plan. Visual or VLM review must accept the masks before meshing.
+2. Reconstruct those accepted surface masks through the same category-agnostic geometry path used for the pink lid: SAMWISE mask, VGGT or measured depth surface, temporal consistency QC, and projection/depth residuals.
+3. Run the contact reliability diagnostic per reconstructed surface. Contact factors may activate only for rows that pass 2D projection, surface depth, bone-scale, temporal support, and near-surface support on the same physical surface.
+4. Extend the focal/hand/contact graph from the central lid diagnostic to the accepted liner/rim surface. The graph must keep focal, hand scale, hand depth shifts, and contact probability explicit, and it must report contact-off solutions as failed contact evidence.
+5. Render a candidate only after the reconstructed surface and hand state pass geometric QC and visual QC together. A candidate must not be rendered from a graph that satisfies contact by suppressing contact probability, hitting bounds, shrinking hand scale, or sacrificing keypoint reprojection.
