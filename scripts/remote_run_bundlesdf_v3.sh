@@ -97,6 +97,35 @@ if "pdb.set_trace()" in path.read_text(encoding="utf-8"):
     raise SystemExit("interactive pdb breakpoint remains in bundlesdf.py")
 PY
 
+"$PREFIX/bin/python" - <<'PY'
+from pathlib import Path
+
+utils = Path("Utils.py")
+text = utils.read_text(encoding="utf-8")
+helper = """
+def remove_duplicate_faces_compat(mesh):
+  if hasattr(mesh, "remove_duplicate_faces"):
+    mesh.remove_duplicate_faces()
+  else:
+    unique, inverse = trimesh.grouping.unique_rows(mesh.faces)
+    mesh.update_faces(unique)
+  return mesh
+
+"""
+if "def remove_duplicate_faces_compat(mesh):" not in text:
+    marker = "\n\ndef trimesh_clean(mesh):\n"
+    if marker not in text:
+        raise SystemExit("cannot find trimesh_clean insertion point in Utils.py")
+    text = text.replace(marker, "\n" + helper + "\ndef trimesh_clean(mesh):\n")
+text = text.replace("  mesh.remove_duplicate_faces()\n", "  remove_duplicate_faces_compat(mesh)\n")
+utils.write_text(text, encoding="utf-8")
+
+nerf = Path("nerf_runner.py")
+text = nerf.read_text(encoding="utf-8")
+text = text.replace("    mesh.remove_duplicate_faces()\n", "    remove_duplicate_faces_compat(mesh)\n")
+nerf.write_text(text, encoding="utf-8")
+PY
+
 "$PREFIX/bin/python" run_custom.py \
   --mode run_video \
   --video_dir "$DATASET_DIR" \
