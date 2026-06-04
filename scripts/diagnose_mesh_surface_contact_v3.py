@@ -823,6 +823,10 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
                     frames = [int(row["frame_idx"]) for row, _candidate in window]
                     if len(set(frames)) < int(args.min_temporal_patch_frames):
                         continue
+                    if args.require_consecutive_temporal_patch_frames:
+                        expected = list(range(min(frames), max(frames) + 1))
+                        if sorted(set(frames)) != expected:
+                            continue
                     centers = [np.asarray(candidate.get("center"), dtype=float) for _row, candidate in window]
                     centers = [center for center in centers if center.shape == (3,) and np.isfinite(center).all()]
                     if len(centers) != len(window):
@@ -1086,6 +1090,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--accept-patch-penetration-fraction", type=float, default=0.25)
     parser.add_argument("--min-temporal-patch-frames", type=int, default=2)
     parser.add_argument("--max-temporal-patch-gap-frames", type=int, default=8)
+    parser.add_argument("--require-consecutive-temporal-patch-frames", action="store_true")
     parser.add_argument("--accept-temporal-patch-local-drift-m", type=float, default=0.030)
     parser.add_argument("--accept-temporal-anchor-relative-drift-m", type=float, default=0.025)
     parser.add_argument("--keep-detail", action="store_true")
