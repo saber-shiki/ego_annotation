@@ -15,6 +15,7 @@ FRAME_START="$6"
 FRAME_END="$7"
 
 cd "$REPO_DIR"
+PYTHON_BIN="${EGO_PYTHON_BIN:-python}"
 
 if [ ! -f "$CLIP" ]; then
   echo "missing clip: $CLIP" >&2
@@ -34,7 +35,7 @@ if [ ! -d third_party/sam2/sam2 ]; then
 fi
 
 PROMPT_FRAMES="$(
-  POINT_PROMPTS="$POINT_PROMPTS" python - <<'PY'
+  POINT_PROMPTS="$POINT_PROMPTS" "$PYTHON_BIN" - <<'PY'
 import json
 import os
 payload = json.load(open(os.environ["POINT_PROMPTS"]))
@@ -51,7 +52,13 @@ PY
 
 mkdir -p "$OUTPUT_DIR"
 
-PYTHONPATH=scripts uv run python scripts/run_sam2_vlm_points_track.py \
+if [ "${EGO_USE_UV:-0}" = "1" ]; then
+  RUNNER=(uv run python)
+else
+  RUNNER=("$PYTHON_BIN")
+fi
+
+PYTHONPATH="scripts:third_party/sam2${PYTHONPATH:+:$PYTHONPATH}" "${RUNNER[@]}" scripts/run_sam2_vlm_points_track.py \
   --clip "$CLIP" \
   --point-prompts "$POINT_PROMPTS" \
   --output-dir "$OUTPUT_DIR" \
