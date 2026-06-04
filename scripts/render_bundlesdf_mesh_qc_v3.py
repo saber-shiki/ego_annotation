@@ -187,6 +187,10 @@ def run(args: argparse.Namespace) -> None:
 
     for entry in entries:
         frame_idx = int(entry["frame_idx"])
+        if args.frame_start is not None and frame_idx < int(args.frame_start):
+            continue
+        if args.frame_end is not None and frame_idx > int(args.frame_end):
+            continue
         annotation = frame_by_idx.get(frame_idx)
         if annotation is None:
             raise RuntimeError(f"missing annotation frame {frame_idx}")
@@ -280,6 +284,8 @@ def run(args: argparse.Namespace) -> None:
 
     if writer is not None:
         writer.release()
+    if not rows:
+        raise RuntimeError("no frames rendered")
 
     summary = {
         "status": "ok",
@@ -315,6 +321,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metric-depth-npz", type=Path)
     parser.add_argument("--intrinsics-source", choices=["manifest", "annotation-vggt"], default="manifest")
     parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--frame-start", type=int)
+    parser.add_argument("--frame-end", type=int)
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--max-silhouette-faces", type=int, default=30000)
     parser.add_argument("--max-wire-faces", type=int, default=1200)
