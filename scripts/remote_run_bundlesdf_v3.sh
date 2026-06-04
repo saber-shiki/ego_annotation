@@ -75,6 +75,18 @@ if not torch.cuda.is_available():
     raise SystemExit("torch CUDA unavailable")
 PY
 
+"$PREFIX/bin/python" - <<'PY'
+from pathlib import Path
+
+path = Path("bundlesdf.py")
+text = path.read_text(encoding="utf-8")
+needle = "      pdb.set_trace()\n"
+if needle in text:
+    path.write_text(text.replace(needle, ""), encoding="utf-8")
+if "pdb.set_trace()" in path.read_text(encoding="utf-8"):
+    raise SystemExit("interactive pdb breakpoint remains in bundlesdf.py")
+PY
+
 "$PREFIX/bin/python" run_custom.py \
   --mode run_video \
   --video_dir "$DATASET_DIR" \
