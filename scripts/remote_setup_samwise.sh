@@ -27,7 +27,9 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-uv venv --python 3.10 .venv_samwise
+if [ ! -x .venv_samwise/bin/python ]; then
+  uv venv --python 3.10 .venv_samwise
+fi
 source .venv_samwise/bin/activate
 uv pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu118
 grep -v '^pyav$' third_party/SAMWISE/requirements.txt > "$ROOT/samwise_requirements_runtime.txt"
