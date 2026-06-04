@@ -138,27 +138,45 @@ def point_hits(mask: np.ndarray, points: np.ndarray) -> int:
     return int(mask[y, x].sum())
 
 
+def prompt_extent_area(points: np.ndarray, image_size: tuple[int, int], margin_px: float) -> float:
+    if len(points) == 0:
+        return float(image_size[0] * image_size[1])
+    lo = np.min(points, axis=0) - float(margin_px)
+    hi = np.max(points, axis=0) + float(margin_px)
+    lo = np.clip(lo, [0.0, 0.0], [image_size[0] - 1.0, image_size[1] - 1.0])
+    hi = np.clip(hi, [0.0, 0.0], [image_size[0] - 1.0, image_size[1] - 1.0])
+    return max(1.0, float((hi[0] - lo[0] + 1.0) * (hi[1] - lo[1] + 1.0)))
+
+
 def select_mask(
     masks: np.ndarray,
     scores: np.ndarray,
     points: np.ndarray,
     labels: np.ndarray,
     min_area_px: int,
+    image_size: tuple[int, int],
+    max_prompt_area_ratio: float,
+    prompt_area_margin_px: float,
+    score_tie_margin: float,
 ) -> tuple[np.ndarray | None, dict]:
     pos = points[labels == 1]
     neg = points[labels == 0]
+    prompt_area = prompt_extent_area(pos, image_size, prompt_area_margin_px)
+    max_area = prompt_area * float(max_prompt_area_ratio)
     candidates = []
     for i, (mask_raw, score) in enumerate(zip(masks, scores)):
         mask = mask_raw.astype(bool)
         area = int(mask.sum())
         pos_hits = point_hits(mask, pos)
         neg_hits = point_hits(mask, neg)
-        valid = area >= min_area_px and pos_hits == len(pos) and neg_hits == 0
+        valid = area >= min_area_px and area <= max_area and pos_hits == len(pos) and neg_hits == 0
         candidates.append(
             {
                 "candidate": int(i),
                 "sam_score": float(score),
                 "area_px": area,
+                "max_area_px": float(max_area),
+                "prompt_extent_area_px": float(prompt_area),
                 "positive_hits": int(pos_hits),
                 "positive_points": int(len(pos)),
                 "negative_hits": int(neg_hits),
@@ -169,7 +187,9 @@ def select_mask(
     valid_indices = [row["candidate"] for row in candidates if row["accepted_by_prompt_contract"]]
     if not valid_indices:
         return None, {"reason": "no_candidate_satisfies_prompt_contract", "candidates": candidates}
-    best = max(valid_indices, key=lambda idx: float(scores[idx]))
+    best_score = max(float(scores[idx]) for idx in valid_indices)
+    near_best = [idx for idx in valid_indices if float(scores[idx]) >= best_score - float(score_tie_margin)]
+    best = min(near_best, key=lambda idx: int(masks[idx].astype(bool).sum()))
     return masks[best].astype(bool), {"reason": "ok", "selected_candidate": int(best), "candidates": candidates}
 
 
@@ -216,7 +236,17 @@ def run_predictor(
                     multimask_output=True,
                     normalize_coords=True,
                 )
-                selected, report = select_mask(masks, scores, points, labels, int(args.min_area_px))
+                selected, report = select_mask(
+                    masks,
+                    scores,
+                    points,
+                    labels,
+                    int(args.min_area_px),
+                    image_size,
+                    float(args.max_prompt_area_ratio),
+                    float(args.prompt_area_margin_px),
+                    float(args.score_tie_margin),
+                )
                 report.update({"frame_idx": int(source_idx), "used_box": bool(box is not None)})
                 reports.append(report)
                 if selected is None:
@@ -307,6 +337,9 @@ def run(args: argparse.Namespace) -> dict:
         "prompt_image_size": [int(prompt_size[0]), int(prompt_size[1])],
         "use_box": bool(args.use_box),
         "min_area_px": int(args.min_area_px),
+        "max_prompt_area_ratio": float(args.max_prompt_area_ratio),
+        "prompt_area_margin_px": float(args.prompt_area_margin_px),
+        "score_tie_margin": float(args.score_tie_margin),
         "elapsed_s": time.time() - started,
         "outputs": {
             "sam2_track": str(args.output_dir / "sam2_track.json"),
@@ -333,6 +366,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam2-image-width", type=int, default=960)
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--min-area-px", type=int, default=80)
+    parser.add_argument("--max-prompt-area-ratio", type=float, default=3.5)
+    parser.add_argument("--prompt-area-margin-px", type=float, default=40.0)
+    parser.add_argument("--score-tie-margin", type=float, default=0.08)
     parser.add_argument("--use-box", action="store_true")
     parser.add_argument("--source-width", type=int)
     parser.add_argument("--source-height", type=int)
