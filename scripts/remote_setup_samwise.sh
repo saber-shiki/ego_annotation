@@ -34,7 +34,6 @@ source .venv_samwise/bin/activate
 uv pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu118
 grep -v '^pyav$' third_party/SAMWISE/requirements.txt > "$ROOT/samwise_requirements_runtime.txt"
 uv pip install -r "$ROOT/samwise_requirements_runtime.txt"
-uv pip install -e third_party/SAMWISE/models/sam2
 uv pip install gdown
 
 cd "$ROOT/checkpoints"
@@ -50,6 +49,7 @@ assert torch.cuda.is_available(), "CUDA unavailable in SAMWISE environment"
 assert Path("final_model_mevis.pth").exists(), "SAMWISE checkpoint missing"
 import sys
 sys.path.insert(0, "/mnt/user-home/yiwen/ego_annotation_remote/sam3_work/third_party/SAMWISE")
+sys.path.insert(0, "/mnt/user-home/yiwen/ego_annotation_remote/sam3_work/third_party/SAMWISE/models/sam2")
 from models.samwise import build_samwise
 from datasets.transform_utils import VideoEvalDataset
 print("samwise_import_ok", build_samwise is not None, VideoEvalDataset is not None)
