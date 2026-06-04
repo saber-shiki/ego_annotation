@@ -111,10 +111,11 @@ def run(args: argparse.Namespace) -> None:
 
     for entry in entries:
         frame_idx = int(entry["frame_idx"])
+        pose_index = int(entry.get("source_index", entry["index"]))
         annotation = frame_by_idx.get(frame_idx)
         if annotation is None:
             raise RuntimeError(f"frame {frame_idx} from manifest is missing in annotations")
-        pose_path = args.bundlesdf_output / "ob_in_cam" / f"{int(entry['index']):06d}.txt"
+        pose_path = args.bundlesdf_output / "ob_in_cam" / f"{pose_index:06d}.txt"
         if not pose_path.exists():
             missing_pose.append(str(pose_path))
             continue
