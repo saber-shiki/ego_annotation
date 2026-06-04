@@ -82,6 +82,7 @@ Current evidence:
 - TripoSR produced a complete mesh prior for frame 858 from the accepted pink-lid crop.
 - Strict frame-858 alignment to the observed metric-depth surface reached median prior-to-observed and observed-to-prior distances near 10 mm.
 - The 858-930 window optimizer reduced object surface residuals but failed contact consistency.
+- VGGT masked multiview geometry over frames 858 to 880 produced noncollapsed raw object points, but camera-motion Sim3 scaling collapsed the object to millimeters. Rescaling from the observed surface extent produced a 0.57 m by 0.66 m by 0.42 m rounded mesh with 71 mm median point-to-observed distance and a visual blob around the lid, so it is rejected as an annotation mesh.
 
 Interpretation:
 

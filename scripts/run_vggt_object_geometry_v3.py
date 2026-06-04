@@ -10,7 +10,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import open3d as o3d
 import torch
 import trimesh
 from scipy.spatial import cKDTree
@@ -30,6 +29,12 @@ def import_vggt(repo_root: Path) -> tuple[object, object, object]:
     from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
     return VGGT, pose_encoding_to_extri_intri, unproject_depth_map_to_point_map
+
+
+def require_open3d():
+    import open3d as o3d
+
+    return o3d
 
 
 def frame_map(annotations: Path) -> dict[int, dict]:
@@ -58,6 +63,26 @@ def read_manifest(path: Path, frame_start: int, frame_end: int) -> list[dict]:
     if not np.array_equal(actual, expected):
         raise RuntimeError(f"VGGT view rows are not contiguous: {actual.tolist()}")
     return rows
+
+
+def localize_manifest_paths(rows: list[dict], remote_root: Path | None, local_root: Path | None) -> list[dict]:
+    out = []
+    for row in rows:
+        item = dict(row)
+        for key in ("image_path", "mask_path"):
+            path = Path(str(item[key]))
+            if not path.exists() and remote_root is not None and local_root is not None:
+                try:
+                    rel = path.relative_to(local_root)
+                except ValueError:
+                    rel = None
+                if rel is not None:
+                    path = remote_root / rel
+            if not path.exists():
+                raise FileNotFoundError(f"manifest {key} does not exist: {path}")
+            item[key] = str(path)
+        out.append(item)
+    return out
 
 
 def preprocess_image_and_mask(image_path: Path, mask_path: Path, target_size: int) -> tuple[torch.Tensor, np.ndarray, np.ndarray]:
@@ -163,7 +188,11 @@ def run_vggt(args: argparse.Namespace, images: torch.Tensor) -> tuple[np.ndarray
     device = torch.device(f"cuda:{int(args.gpu)}")
     torch.cuda.set_device(device)
     dtype = torch.bfloat16 if torch.cuda.get_device_capability(device)[0] >= 8 else torch.float16
-    model = VGGT.from_pretrained(args.model_id).to(device).eval()
+    model = VGGT()
+    checkpoint_url = f"https://huggingface.co/{args.model_id}/resolve/main/{args.model_file}"
+    state = torch.hub.load_state_dict_from_url(checkpoint_url, map_location="cpu")
+    model.load_state_dict(state)
+    model = model.to(device).eval()
     images = images.to(device, non_blocking=True)
     with torch.no_grad():
         with torch.cuda.amp.autocast(dtype=dtype):
@@ -228,6 +257,7 @@ def select_object_points(
 
 
 def to_pcd(points: np.ndarray, colors: np.ndarray | None, voxel_size: float, normal_radius: float, normal_max_nn: int) -> o3d.geometry.PointCloud:
+    o3d = require_open3d()
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=float))
     if colors is not None:
@@ -241,6 +271,7 @@ def to_pcd(points: np.ndarray, colors: np.ndarray | None, voxel_size: float, nor
 
 
 def mesh_from_points(points: np.ndarray, colors: np.ndarray, args: argparse.Namespace) -> tuple[trimesh.Trimesh, o3d.geometry.PointCloud]:
+    o3d = require_open3d()
     pcd = to_pcd(points, colors, args.voxel_size_m, args.normal_radius_m, args.normal_max_nn)
     clean, _ = pcd.remove_statistical_outlier(nb_neighbors=int(args.outlier_neighbors), std_ratio=float(args.outlier_std_ratio))
     if len(clean.points) >= int(args.min_fused_points):
@@ -363,6 +394,7 @@ def run(args: argparse.Namespace) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = args.views_dir / "vggt_object_views_manifest.json"
     rows = read_manifest(manifest_path, int(args.frame_start), int(args.frame_end))
+    rows = localize_manifest_paths(rows, args.remote_output_root, args.local_output_root)
     frame_indices = [int(row["frame_idx"]) for row in rows]
     frame_by_idx = frame_map(args.annotations)
     missing = [idx for idx in frame_indices if idx not in frame_by_idx]
@@ -470,9 +502,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--observed-mesh-npz", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--remote-output-root", type=Path)
+    parser.add_argument("--local-output-root", type=Path)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--model-id", default="facebook/VGGT-1B")
+    parser.add_argument("--model-file", default="model.pt")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--target-size", type=int, default=518)
     parser.add_argument("--min-depth-conf", type=float, default=0.0)
