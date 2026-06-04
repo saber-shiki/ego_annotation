@@ -786,10 +786,50 @@ External contact reliability on the candidate:
 
 Interpretation: the graph improves the depth residual without forcing contact. This is the right failure mode, because it exposes that the available 2D and near-mask contact support cannot justify a physically reliable contact factor. Temporal translation, velocity, and contact-state inference over the existing fused hand stream are therefore insufficient to close V3.
 
+### Corrected V2-Mask Contact And Focal Sweep
+
+Implemented:
+
+- `scripts/merge_v2_object_masks_with_hands_v3.py`
+- `scripts/diagnose_intrinsics_focal_sweep_v3.py`
+
+The earlier contact diagnostics used the older full-annotation object track. For the V2 pink-lid mesh, the object source of truth is:
+
+`/data2/ego_annotation_outputs/representative_trash/v2_plan_pink_lid_masks/annotations_plan_masks.local.json`
+
+The merge script combines that V2 object-mask source with the WiLoR hand stream:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_v2pink_masks_wilor_hands_merged.json`
+
+Corrected contact reliability for frames 840 to 930:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_v2pink_wilor_contact_reliability_840_930.json`
+
+- rows: 182;
+- measured high-score rows: 124;
+- reliable contact rows: 0;
+- measured high-score median joint reprojection: 10.9 px;
+- measured high-score median MANO-minus-metric-depth residual: 173 mm;
+- measured high-score median hand-lid contact gap: 269 mm;
+- measured high-score contact-ok rows: 1.
+
+This corrects a source-mixing error in the diagnostic workflow. The bad mask seen in the old contact probe came from the stale white-bag track, not from the V2 pink-lid mask source. Visual probes with the V2 masks show that the pink-lid observed-surface mask is semantically correct in frames 857 and 886. Those frames still do not give reliable physical contact evidence: the right hand interacts with liner or rim context, and the left-hand MANO fit near the lid edge is not reliable enough to serve as a contact factor.
+
+Focal-length sweep:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_v2pink_intrinsics_focal_sweep_fine_840_930.json`
+
+- tested focal range: 1800 to 2400 px with principal point 960, 540;
+- best median contact gap focal: 1800 px, with median contact gap -1.4 mm;
+- at 1800 px, reliable contact rows remain 0, depth-ok rows are 5 out of 124, and contact-ok rows are 1 out of 124;
+- at 2304 px, reliable contact rows remain 0, measured high-score median contact gap is 269 mm, and measured high-score median depth residual is 173 mm.
+
+Interpretation: focal length is a real sensitivity, but focal-only correction does not close V3. Lowering focal can align the median hand-lid depth gap, yet it fails the per-row reliability tests. The missing mechanism is a joint object-context and hand-state model that represents which surface is being contacted: lid, rim, liner, or no contact.
+
 ## Immediate Execution Plan
 
-1. Complete the EgoForce detector-mode branch after the A800 setup finishes. The pose-head branch used annotation crops and failed; detector mode is still the remaining EgoForce test.
-2. Add a MANO-parametric temporal refit only if its regenerated local joints/vertices match the annotation stream within documented millimeter tolerances. If the contract fails, the script must abort rather than fitting a different hand model.
-3. Produce a candidate annotation JSON and rerun `scripts/diagnose_hand_contact_reliability_v3.py`. The candidate is accepted only if reliable contact rows become nonzero, bone scale is plausible, and projection/depth/contact residuals pass the documented thresholds.
-4. Render the candidate videos only after the reliability diagnostic is not already falsified.
-5. Keep SAMWISE as the parallel white-liner perception branch: run `scripts/run_samwise_referring_masks.py` on frames 678 to 918 only after setup is verified in tmux, then visually reject or accept masks before meshing.
+1. Build a multi-surface object-context annotation for the pink-lid window: lid, rim, liner, and visible non-contact states must be model-produced masks or verified VLM/SAM outputs, then consumed by one uniform geometry path.
+2. Run the contact reliability diagnostic per surface. Contact factors may activate only for rows that pass 2D projection, metric-depth, bone-scale, and near-surface support on the same surface.
+3. Add a MANO-parametric temporal refit only after the contacted surface is identified. The refit must preserve the annotation representation contract and must abort if regenerated local joints/vertices disagree with the stream.
+4. Keep SAMWISE/SAM3-style referring segmentation as the white-liner recovery branch. Any recovered liner masks must pass visual or VLM verification before meshing.
+5. Render a candidate only after reliability rows become nonzero under the corrected V2-mask/object-context diagnostics.

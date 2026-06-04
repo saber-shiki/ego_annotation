@@ -149,6 +149,24 @@ For the contact window 840 to 930:
 - worst distance in this window: 0.597 m at frame 875
 - frames 848 and 885 have near-contact distances below 10 mm, while frames 840 to 847 and 875 show large hand-object depth disagreement
 
+V3 rechecked this contact window by merging the V2 pink-lid masks with the same WiLoR hand stream used in the earlier full annotation:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_v2pink_masks_wilor_hands_merged.json`
+
+Corrected contact reliability against the V2 pink-lid masks:
+
+`/data2/ego_annotation_outputs/representative_trash/v3_v2pink_wilor_contact_reliability_840_930.json`
+
+- rows: 182
+- measured high-score rows: 124
+- reliable contact rows: 0
+- measured high-score median joint reprojection: 10.9 px
+- measured high-score median MANO-minus-metric-depth residual: 173 mm
+- measured high-score median hand-lid contact gap: 269 mm
+- measured high-score contact-ok rows: 1
+
+This diagnostic uses the V2 pink-lid mask source, not the older `remote_supported_area_full_strict2` white-bag track. It confirms that the pink-lid observed surface is real, while the hand/depth/contact state remains physically inconsistent.
+
 ## Current V2 Milestone Delivery
 
 Contact-window side-by-side render:
