@@ -52,12 +52,57 @@ def load_depth_archive(path: Path, source_width: int, source_height: int) -> dic
     depth = blob["depth"].astype(np.float64)
     if depth.ndim != 3 or depth.shape[0] != len(frames):
         raise RuntimeError(f"{path} has invalid frame/depth shapes: {frames.shape}, {depth.shape}")
-    return {
+    if "source_size" in blob.files:
+        source_size_raw = np.asarray(blob["source_size"], dtype=np.int64).reshape(-1)
+        if source_size_raw.size != 2:
+            raise RuntimeError(f"{path} source_size must have two values")
+        source_size = (int(source_size_raw[0]), int(source_size_raw[1]))
+    else:
+        source_size = (int(source_width), int(source_height))
+    source = {
         "frame_idx": frames,
         "depth": depth,
         "index": {int(frame_idx): i for i, frame_idx in enumerate(frames.tolist())},
-        "source_size": (int(source_width), int(source_height)),
+        "source_size": source_size,
     }
+    if "intrinsics_fx_fy_cx_cy" in blob.files:
+        intrinsics = np.asarray(blob["intrinsics_fx_fy_cx_cy"], dtype=np.float64)
+        if intrinsics.shape != (len(frames), 4):
+            raise RuntimeError(f"{path} intrinsics_fx_fy_cx_cy has invalid shape {intrinsics.shape}")
+        source["intrinsics"] = intrinsics
+    elif "focal_px" in blob.files:
+        focal = np.asarray(blob["focal_px"], dtype=np.float64).reshape(-1)
+        if focal.shape != (len(frames),):
+            raise RuntimeError(f"{path} focal_px has invalid shape {focal.shape}")
+        source["intrinsics"] = np.c_[
+            focal,
+            focal,
+            np.full(len(frames), source_size[0] / 2.0, dtype=np.float64),
+            np.full(len(frames), source_size[1] / 2.0, dtype=np.float64),
+        ]
+        source["intrinsics_note"] = "principal point set to image center because archive supplies focal_px only"
+    else:
+        raise RuntimeError(f"{path} must supply intrinsics_fx_fy_cx_cy or focal_px for hand-scale backprojection")
+    return source
+
+
+def parse_labeled_archives(entries: list[str], depthpro_archive: Path | None) -> dict[str, Path]:
+    archives: dict[str, Path] = {}
+    if depthpro_archive is not None:
+        archives["depthpro"] = depthpro_archive
+    for entry in entries:
+        if "=" not in entry:
+            raise RuntimeError(f"depth archive entry must be label=path, got {entry!r}")
+        label, raw_path = entry.split("=", 1)
+        label = label.strip()
+        if not label or any((not ch.isalnum()) and ch != "_" for ch in label):
+            raise RuntimeError(f"invalid depth archive label {label!r}; use letters, digits, and underscores")
+        if label in {"manifest_depth", "vggt"}:
+            raise RuntimeError(f"depth archive label {label!r} is reserved")
+        if label in archives:
+            raise RuntimeError(f"duplicate depth archive label {label!r}")
+        archives[label] = Path(raw_path)
+    return archives
 
 
 def load_manifest_depth(path: Path, frame_start: int, frame_end: int, source_width: int, source_height: int) -> dict:
@@ -241,9 +286,6 @@ def depth_source_row(
     depth = np.asarray(source["depth"][src_i], dtype=np.float64)
     affine = source.get("source_to_depth_affine")
     intrinsics = np.asarray(source.get("intrinsics", [hand_intrinsics])[src_i if "intrinsics" in source else 0], dtype=np.float64)
-    if label == "depthpro" and "focal_px" in source:
-        focal = float(source["focal_px"][src_i])
-        intrinsics = np.asarray([focal, focal, 960.0, 540.0], dtype=np.float64)
     source_size = tuple(int(v) for v in source["source_size"])
     sampled = sample_depth(depth, uv, affine, source_size)
     valid = np.isfinite(sampled) & (sampled > 0.0)
@@ -285,20 +327,12 @@ def depth_source_row(
         "stable_depth_fraction": float(np.mean(stable)) if len(stable) else float("nan"),
     }
 
-
-def load_depthpro(path: Path, source_width: int, source_height: int) -> dict:
-    source = load_depth_archive(path, source_width, source_height)
-    blob = np.load(path)
-    if "focal_px" in blob.files:
-        source["focal_px"] = blob["focal_px"].astype(np.float64)
-    return source
-
-
 def run(args: argparse.Namespace) -> dict:
     annotations = load_json(args.annotations)
     frames = {int(frame["frame_idx"]): frame for frame in annotations.get("frames", [])}
     if not frames:
         raise RuntimeError("annotations must contain frames")
+    depth_archive_paths = parse_labeled_archives(args.depth_archive, args.depthpro_archive)
     depth_sources = {
         "manifest_depth": load_manifest_depth(
             args.manifest,
@@ -307,9 +341,14 @@ def run(args: argparse.Namespace) -> dict:
             int(args.source_width),
             int(args.source_height),
         ),
-        "depthpro": load_depthpro(args.depthpro_archive, int(args.source_width), int(args.source_height)),
         "vggt": load_vggt_depth_source(args.vggt_archive, int(args.source_width), int(args.source_height), int(args.target_size)),
     }
+    depth_sources.update(
+        {
+            label: load_depth_archive(path, int(args.source_width), int(args.source_height))
+            for label, path in depth_archive_paths.items()
+        }
+    )
     rows = []
     skipped = []
     for frame_idx in range(int(args.frame_start), int(args.frame_end) + 1, max(1, int(args.frame_stride))):
@@ -376,8 +415,8 @@ def run(args: argparse.Namespace) -> dict:
         "manifest": str(args.manifest),
         "depth_sources": {
             "manifest_depth": "depth maps referenced by manifest rows",
-            "depthpro": str(args.depthpro_archive),
             "vggt": str(args.vggt_archive),
+            **{label: str(path) for label, path in depth_archive_paths.items()},
         },
         "frame_start": int(args.frame_start),
         "frame_end": int(args.frame_end),
@@ -403,7 +442,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--depthpro-archive", type=Path, required=True)
+    parser.add_argument("--depthpro-archive", type=Path)
+    parser.add_argument("--depth-archive", action="append", default=[], help="Additional metric depth archive as label=path")
     parser.add_argument("--vggt-archive", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)

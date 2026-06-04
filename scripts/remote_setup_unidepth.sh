@@ -26,7 +26,7 @@ fi
 
 "$UV_BIN" pip install --python .venv/bin/python --upgrade pip setuptools wheel
 "$UV_BIN" pip install --python .venv/bin/python torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
-"$UV_BIN" pip install --python .venv/bin/python -e . --extra-index-url https://download.pytorch.org/whl/cu121
+"$UV_BIN" pip install --python .venv/bin/python -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu121
 "$UV_BIN" pip install --python .venv/bin/python opencv-python pillow numpy scipy
 
 .venv/bin/python - <<'PY'

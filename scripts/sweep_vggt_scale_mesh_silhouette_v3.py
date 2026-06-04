@@ -153,6 +153,29 @@ def load_depth_archive(path: Path) -> dict[int, np.ndarray]:
     return out
 
 
+def parse_labeled_archives(entries: list[str], depthpro_archive: Path | None) -> dict[str, Path]:
+    archives: dict[str, Path] = {}
+    if depthpro_archive is not None:
+        archives["depthpro"] = depthpro_archive
+    for entry in entries:
+        if "=" not in entry:
+            raise RuntimeError(f"depth archive entry must be label=path, got {entry!r}")
+        label, raw_path = entry.split("=", 1)
+        label = label.strip()
+        if not label or any((not ch.isalnum()) and ch != "_" for ch in label):
+            raise RuntimeError(f"invalid depth archive label {label!r}; use letters, digits, and underscores")
+        if label in {"manifest", "depth"}:
+            raise RuntimeError(f"depth archive label {label!r} is reserved")
+        if label in archives:
+            raise RuntimeError(f"duplicate depth archive label {label!r}")
+        archives[label] = Path(raw_path)
+    return archives
+
+
+def depth_abs_key(label: str) -> str:
+    return "vertex_depth_error_abs_median_m" if label == "manifest" else f"vertex_{label}_depth_error_abs_median_m"
+
+
 def make_camera_surface(vggt: dict, frame_idx: int, scale: float, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, dict]:
     i = vggt["index"].get(int(frame_idx))
     if i is None:
@@ -341,9 +364,8 @@ def run(args: argparse.Namespace) -> dict:
     if int(args.anchor_frame) not in frame_indices:
         raise RuntimeError("anchor frame must be inside the selected manifest frames")
     vggt = load_vggt_archive(args.vggt_archive)
-    depth_sources = {}
-    if args.depthpro_archive is not None:
-        depth_sources["depthpro"] = load_depth_archive(args.depthpro_archive)
+    depth_archive_paths = parse_labeled_archives(args.depth_archive, args.depthpro_archive)
+    depth_sources = {label: load_depth_archive(path) for label, path in depth_archive_paths.items()}
     scales = np.asarray(args.scales, dtype=np.float64)
     rows = []
     for scale in scales:
@@ -428,11 +450,11 @@ def run(args: argparse.Namespace) -> dict:
         patch_median = [row["observed_to_static_prior_median_m"] for row in frame_rows]
         patch_p95 = [row["observed_to_static_prior_p95_m"] for row in frame_rows]
         depth_abs = [row["vertex_depth_error_abs_median_m"] for row in frame_rows if "vertex_depth_error_abs_median_m" in row]
-        depthpro_abs = [
-            row["vertex_depthpro_depth_error_abs_median_m"]
-            for row in frame_rows
-            if "vertex_depthpro_depth_error_abs_median_m" in row
-        ]
+        source_depth_abs = {}
+        for label in depth_sources:
+            key = depth_abs_key(label)
+            values = [frame_row[key] for frame_row in frame_rows if key in frame_row]
+            source_depth_abs[label] = float(np.median(values)) if values else None
         row = {
             "scale": scale_value,
             "anchor_frame": int(args.anchor_frame),
@@ -448,19 +470,32 @@ def run(args: argparse.Namespace) -> dict:
             "median_observed_to_static_prior_median_m": float(np.median(patch_median)),
             "median_observed_to_static_prior_p95_m": float(np.median(patch_p95)),
             "median_vertex_depth_error_abs_median_m": float(np.median(depth_abs)) if depth_abs else None,
-            "median_vertex_depthpro_depth_error_abs_median_m": float(np.median(depthpro_abs)) if depthpro_abs else None,
+            "median_depth_source_error_abs_median_m": source_depth_abs,
             "frames": frame_rows,
         }
+        for label, value in source_depth_abs.items():
+            row[f"median_{depth_abs_key(label)}"] = value
         rows.append(row)
 
     best_by_iou = max(rows, key=lambda row: row["median_silhouette_mask_iou"])
     best_by_patch = min(rows, key=lambda row: row["median_observed_to_static_prior_median_m"])
     depth_rows = [row for row in rows if row["median_vertex_depth_error_abs_median_m"] is not None]
-    depthpro_rows = [row for row in rows if row["median_vertex_depthpro_depth_error_abs_median_m"] is not None]
     best_by_manifest_depth = min(depth_rows, key=lambda row: row["median_vertex_depth_error_abs_median_m"]) if depth_rows else None
-    best_by_depthpro_depth = (
-        min(depthpro_rows, key=lambda row: row["median_vertex_depthpro_depth_error_abs_median_m"]) if depthpro_rows else None
-    )
+    best_by_depth_source = {}
+    depth_source_summaries = {}
+    for label in depth_sources:
+        key = depth_abs_key(label)
+        source_rows = [row for row in rows if row.get(f"median_{key}") is not None]
+        depth_source_summaries[label] = summarize([row[f"median_{key}"] for row in source_rows])
+        best_by_depth_source[label] = (
+            {
+                out_key: value
+                for out_key, value in min(source_rows, key=lambda row: row[f"median_{key}"]).items()
+                if out_key not in {"frames"}
+            }
+            if source_rows
+            else None
+        )
     report = {
         "status": "ok",
         "annotation_ready": False,
@@ -470,7 +505,7 @@ def run(args: argparse.Namespace) -> dict:
         "vggt_archive": str(args.vggt_archive),
         "depth_sources": {
             "manifest": "Depth map referenced by manifest rows",
-            **({"depthpro": str(args.depthpro_archive)} if args.depthpro_archive is not None else {}),
+            **{label: str(path) for label, path in depth_archive_paths.items()},
         },
         "annotations": str(args.annotations),
         "manifest": str(args.manifest),
@@ -484,13 +519,7 @@ def run(args: argparse.Namespace) -> dict:
         "vertex_depth_error_abs_median_m": summarize(
             [row["median_vertex_depth_error_abs_median_m"] for row in rows if row["median_vertex_depth_error_abs_median_m"] is not None]
         ),
-        "vertex_depthpro_depth_error_abs_median_m": summarize(
-            [
-                row["median_vertex_depthpro_depth_error_abs_median_m"]
-                for row in rows
-                if row["median_vertex_depthpro_depth_error_abs_median_m"] is not None
-            ]
-        ),
+        "depth_source_error_abs_median_m": depth_source_summaries,
         "best_by_iou": {
             key: value
             for key, value in best_by_iou.items()
@@ -510,15 +539,8 @@ def run(args: argparse.Namespace) -> dict:
             if best_by_manifest_depth is not None
             else None
         ),
-        "best_by_depthpro_depth": (
-            {
-                key: value
-                for key, value in best_by_depthpro_depth.items()
-                if key not in {"frames"}
-            }
-            if best_by_depthpro_depth is not None
-            else None
-        ),
+        "best_by_depth_source": best_by_depth_source,
+        "best_by_depthpro_depth": best_by_depth_source.get("depthpro"),
         "rows": rows,
     }
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -570,6 +592,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mesh-prior", type=Path, required=True)
     parser.add_argument("--vggt-archive", type=Path, required=True)
     parser.add_argument("--depthpro-archive", type=Path)
+    parser.add_argument("--depth-archive", action="append", default=[], help="Additional metric depth archive as label=path")
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

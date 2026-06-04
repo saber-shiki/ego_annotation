@@ -80,7 +80,7 @@ def to_numpy(value: object, name: str) -> np.ndarray:
 
 
 def infer_unidepth(model: object, image: Image.Image, device: torch.device) -> tuple[np.ndarray, np.ndarray | None]:
-    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
     image_t = torch.from_numpy(rgb).permute(2, 0, 1).to(device)
     with torch.no_grad():
         prediction = model.infer(image_t)
@@ -168,6 +168,7 @@ def run(args: argparse.Namespace) -> dict:
     still_dir.mkdir(exist_ok=True)
     depth_stack = []
     focal_px = []
+    intrinsics_stack = []
     rows = []
     for entry in rows_in:
         frame_idx = int(entry["frame_idx"])
@@ -181,6 +182,8 @@ def run(args: argparse.Namespace) -> dict:
             raise RuntimeError(f"UniDepth returned no intrinsics for frame {frame_idx}")
         fx = float(intrinsics[0, 0]) * (int(args.source_width) / float(depth_raw.shape[1]))
         fy = float(intrinsics[1, 1]) * (int(args.source_height) / float(depth_raw.shape[0]))
+        cx = float(intrinsics[0, 2]) * (int(args.source_width) / float(depth_raw.shape[1]))
+        cy = float(intrinsics[1, 2]) * (int(args.source_height) / float(depth_raw.shape[0]))
         focal = float(np.sqrt(max(1e-9, fx * fy)))
         if not np.isfinite(focal) or focal <= 0.0:
             raise RuntimeError(f"invalid UniDepth focal for frame {frame_idx}: {focal}")
@@ -210,6 +213,8 @@ def run(args: argparse.Namespace) -> dict:
             "unidepth_focal_px": focal,
             "unidepth_fx_px": fx,
             "unidepth_fy_px": fy,
+            "unidepth_cx_px": cx,
+            "unidepth_cy_px": cy,
             "unidepth_mask_depth_median_m": depth_median,
             "unidepth_mask_depth_p05_m": float(np.percentile(depth_values, 5.0)),
             "unidepth_mask_depth_p95_m": float(np.percentile(depth_values, 95.0)),
@@ -221,6 +226,7 @@ def run(args: argparse.Namespace) -> dict:
         }
         rows.append(row)
         focal_px.append(focal)
+        intrinsics_stack.append([fx, fy, cx, cy])
         depth_stack.append(depth.astype(np.float16))
         cv2.imwrite(str(still_dir / f"frame_{frame_idx:06d}.png"), render_review(rgb, mask, depth, row))
 
@@ -231,6 +237,7 @@ def run(args: argparse.Namespace) -> dict:
         depth=np.stack(depth_stack, axis=0),
         source_size=np.asarray([int(args.source_width), int(args.source_height)], dtype=np.int32),
         focal_px=np.asarray(focal_px, dtype=np.float32),
+        intrinsics_fx_fy_cx_cy=np.asarray(intrinsics_stack, dtype=np.float32),
     )
     report = {
         "status": "ok",
