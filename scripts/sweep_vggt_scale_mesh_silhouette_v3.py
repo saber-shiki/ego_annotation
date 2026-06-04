@@ -134,6 +134,25 @@ def load_vggt_archive(path: Path) -> dict:
     }
 
 
+def load_depth_archive(path: Path) -> dict[int, np.ndarray]:
+    blob = np.load(path)
+    required = {"frame_idx", "depth"}
+    missing = required.difference(blob.files)
+    if missing:
+        raise RuntimeError(f"{path} missing keys: {sorted(missing)}")
+    frames = blob["frame_idx"].astype(int)
+    depth = blob["depth"].astype(np.float64)
+    if depth.ndim != 3 or len(frames) != depth.shape[0]:
+        raise RuntimeError(f"{path} has invalid frame/depth shapes: {frames.shape}, {depth.shape}")
+    out: dict[int, np.ndarray] = {}
+    for i, frame_idx in enumerate(frames.tolist()):
+        frame_depth = depth[i]
+        if not np.isfinite(frame_depth).all():
+            raise RuntimeError(f"{path} frame {frame_idx} contains non-finite depth")
+        out[int(frame_idx)] = frame_depth
+    return out
+
+
 def make_camera_surface(vggt: dict, frame_idx: int, scale: float, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, dict]:
     i = vggt["index"].get(int(frame_idx))
     if i is None:
@@ -186,6 +205,7 @@ def projection_metrics(
     T_world_camera: np.ndarray,
     K: np.ndarray,
     manifest_row: dict,
+    depth_sources: dict[str, dict[int, np.ndarray]],
     max_faces: int,
 ) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     mask = cv2.imread(str(Path(manifest_row["mask"])), cv2.IMREAD_GRAYSCALE)
@@ -215,8 +235,6 @@ def projection_metrics(
     depths = cam[positive, 2][in_bounds]
     mask_hits = object_mask[rounded[:, 1], rounded[:, 0]] if len(rounded) else np.zeros(0, dtype=bool)
     depth_hits = depth_m[rounded[:, 1], rounded[:, 0]] if len(rounded) else np.zeros(0, dtype=np.float64)
-    depth_valid = mask_hits & np.isfinite(depth_hits) & (depth_hits > 0.0)
-    depth_errors = depths[depth_valid] - depth_hits[depth_valid]
     mask_area = int(np.count_nonzero(object_mask))
     silhouette_area = int(np.count_nonzero(silhouette))
     metrics = {
@@ -228,17 +246,43 @@ def projection_metrics(
         "projected_vertices_in_image": int(len(rounded)),
         "projected_vertices_inside_mask": int(np.count_nonzero(mask_hits)),
         "projected_vertex_mask_fraction": float(np.mean(mask_hits)) if len(mask_hits) else 0.0,
-        "vertex_depth_samples": int(len(depth_errors)),
     }
-    if len(depth_errors):
+    add_depth_residual(metrics, "manifest", depths, mask_hits, depth_hits)
+    for label, source in depth_sources.items():
+        frame_depth = source.get(int(manifest_row["frame_idx"]))
+        if frame_depth is None:
+            raise RuntimeError(f"depth source {label} lacks frame {manifest_row['frame_idx']}")
+        if frame_depth.shape != object_mask.shape:
+            raise RuntimeError(
+                f"depth source {label} frame {manifest_row['frame_idx']} shape {frame_depth.shape} "
+                f"does not match mask shape {object_mask.shape}"
+            )
+        hits = frame_depth[rounded[:, 1], rounded[:, 0]] if len(rounded) else np.zeros(0, dtype=np.float64)
+        add_depth_residual(metrics, label, depths, mask_hits, hits)
+    return metrics, rgb, object_mask, silhouette, uv, cam[:, 2]
+
+
+def add_depth_residual(
+    metrics: dict,
+    label: str,
+    projected_depths: np.ndarray,
+    mask_hits: np.ndarray,
+    sampled_depths: np.ndarray,
+) -> None:
+    valid = mask_hits & np.isfinite(sampled_depths) & (sampled_depths > 0.0)
+    errors = projected_depths[valid] - sampled_depths[valid]
+    prefix = "vertex_depth_error" if label == "manifest" else f"vertex_{label}_depth_error"
+    metrics[f"{prefix}_samples"] = int(len(errors))
+    if label == "manifest":
+        metrics["vertex_depth_samples"] = int(len(errors))
+    if len(errors):
         metrics.update(
             {
-                "vertex_depth_error_median_m": float(np.median(depth_errors)),
-                "vertex_depth_error_abs_median_m": float(np.median(np.abs(depth_errors))),
-                "vertex_depth_error_abs_p95_m": float(np.percentile(np.abs(depth_errors), 95.0)),
+                f"{prefix}_median_m": float(np.median(errors)),
+                f"{prefix}_abs_median_m": float(np.median(np.abs(errors))),
+                f"{prefix}_abs_p95_m": float(np.percentile(np.abs(errors), 95.0)),
             }
         )
-    return metrics, rgb, object_mask, silhouette, uv, cam[:, 2]
 
 
 def observed_surface_distances(
@@ -297,6 +341,9 @@ def run(args: argparse.Namespace) -> dict:
     if int(args.anchor_frame) not in frame_indices:
         raise RuntimeError("anchor frame must be inside the selected manifest frames")
     vggt = load_vggt_archive(args.vggt_archive)
+    depth_sources = {}
+    if args.depthpro_archive is not None:
+        depth_sources["depthpro"] = load_depth_archive(args.depthpro_archive)
     scales = np.asarray(args.scales, dtype=np.float64)
     rows = []
     for scale in scales:
@@ -343,6 +390,7 @@ def run(args: argparse.Namespace) -> dict:
                 pose["T_world_camera_metric"],
                 K,
                 manifest[frame_idx],
+                depth_sources,
                 int(args.max_silhouette_faces),
             )
             observed_vertices_camera, observed_faces, observed_surface_row = make_camera_surface(
@@ -380,6 +428,11 @@ def run(args: argparse.Namespace) -> dict:
         patch_median = [row["observed_to_static_prior_median_m"] for row in frame_rows]
         patch_p95 = [row["observed_to_static_prior_p95_m"] for row in frame_rows]
         depth_abs = [row["vertex_depth_error_abs_median_m"] for row in frame_rows if "vertex_depth_error_abs_median_m" in row]
+        depthpro_abs = [
+            row["vertex_depthpro_depth_error_abs_median_m"]
+            for row in frame_rows
+            if "vertex_depthpro_depth_error_abs_median_m" in row
+        ]
         row = {
             "scale": scale_value,
             "anchor_frame": int(args.anchor_frame),
@@ -395,12 +448,19 @@ def run(args: argparse.Namespace) -> dict:
             "median_observed_to_static_prior_median_m": float(np.median(patch_median)),
             "median_observed_to_static_prior_p95_m": float(np.median(patch_p95)),
             "median_vertex_depth_error_abs_median_m": float(np.median(depth_abs)) if depth_abs else None,
+            "median_vertex_depthpro_depth_error_abs_median_m": float(np.median(depthpro_abs)) if depthpro_abs else None,
             "frames": frame_rows,
         }
         rows.append(row)
 
     best_by_iou = max(rows, key=lambda row: row["median_silhouette_mask_iou"])
     best_by_patch = min(rows, key=lambda row: row["median_observed_to_static_prior_median_m"])
+    depth_rows = [row for row in rows if row["median_vertex_depth_error_abs_median_m"] is not None]
+    depthpro_rows = [row for row in rows if row["median_vertex_depthpro_depth_error_abs_median_m"] is not None]
+    best_by_manifest_depth = min(depth_rows, key=lambda row: row["median_vertex_depth_error_abs_median_m"]) if depth_rows else None
+    best_by_depthpro_depth = (
+        min(depthpro_rows, key=lambda row: row["median_vertex_depthpro_depth_error_abs_median_m"]) if depthpro_rows else None
+    )
     report = {
         "status": "ok",
         "annotation_ready": False,
@@ -408,6 +468,10 @@ def run(args: argparse.Namespace) -> dict:
         "claim_tested": "one complete TRELLIS mesh aligned to the anchor visible VGGT surface remains static in world coordinates and projects plausibly across the selected frames",
         "mesh_prior": str(args.mesh_prior),
         "vggt_archive": str(args.vggt_archive),
+        "depth_sources": {
+            "manifest": "Depth map referenced by manifest rows",
+            **({"depthpro": str(args.depthpro_archive)} if args.depthpro_archive is not None else {}),
+        },
         "annotations": str(args.annotations),
         "manifest": str(args.manifest),
         "frames": frame_indices,
@@ -420,6 +484,13 @@ def run(args: argparse.Namespace) -> dict:
         "vertex_depth_error_abs_median_m": summarize(
             [row["median_vertex_depth_error_abs_median_m"] for row in rows if row["median_vertex_depth_error_abs_median_m"] is not None]
         ),
+        "vertex_depthpro_depth_error_abs_median_m": summarize(
+            [
+                row["median_vertex_depthpro_depth_error_abs_median_m"]
+                for row in rows
+                if row["median_vertex_depthpro_depth_error_abs_median_m"] is not None
+            ]
+        ),
         "best_by_iou": {
             key: value
             for key, value in best_by_iou.items()
@@ -430,6 +501,24 @@ def run(args: argparse.Namespace) -> dict:
             for key, value in best_by_patch.items()
             if key not in {"frames"}
         },
+        "best_by_manifest_depth": (
+            {
+                key: value
+                for key, value in best_by_manifest_depth.items()
+                if key not in {"frames"}
+            }
+            if best_by_manifest_depth is not None
+            else None
+        ),
+        "best_by_depthpro_depth": (
+            {
+                key: value
+                for key, value in best_by_depthpro_depth.items()
+                if key not in {"frames"}
+            }
+            if best_by_depthpro_depth is not None
+            else None
+        ),
         "rows": rows,
     }
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -480,6 +569,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mesh-prior", type=Path, required=True)
     parser.add_argument("--vggt-archive", type=Path, required=True)
+    parser.add_argument("--depthpro-archive", type=Path)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
