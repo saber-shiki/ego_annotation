@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import trimesh
+from scipy import sparse
 from scipy.optimize import least_squares
 from scipy.spatial import cKDTree
 
@@ -359,6 +360,67 @@ def residual_vector(
     return np.concatenate([r.reshape(-1) for r in residuals])
 
 
+def add_block(entries: list[tuple[int, int]], rows: range, cols: range) -> None:
+    for r in rows:
+        for c in cols:
+            entries.append((r, c))
+
+
+def residual_sparsity(frames: list[FrameFactorData], base_surface: np.ndarray, base_silhouette: np.ndarray, args: argparse.Namespace) -> sparse.csr_matrix:
+    n = len(frames)
+    width = 7 if args.enable_depth_axis else 6
+    total_cols = n * width
+    entries: list[tuple[int, int]] = []
+    row = 0
+    for i, frame in enumerate(frames):
+        cols = range(i * width, (i + 1) * width)
+        for count in (len(frame.observed_points), len(base_surface), len(base_silhouette)):
+            rows = range(row, row + int(count))
+            add_block(entries, rows, cols)
+            row += int(count)
+        if frame.has_contact_evidence:
+            rows = range(row, row + len(frame.contact_points))
+            add_block(entries, rows, cols)
+            row += len(frame.contact_points)
+            if args.enable_depth_axis:
+                add_block(entries, range(row, row + 1), cols)
+                row += 1
+        elif args.enable_depth_axis:
+            add_block(entries, range(row, row + 1), cols)
+            row += 1
+    for i in range(1, n):
+        cols = range((i - 1) * width, (i + 1) * width)
+        add_block(entries, range(row, row + 3), cols)
+        row += 3
+        add_block(entries, range(row, row + 3), cols)
+        row += 3
+        if args.enable_depth_axis:
+            add_block(entries, range(row, row + 1), cols)
+            row += 1
+    for i in range(1, n - 1):
+        cols = range((i - 1) * width, (i + 2) * width)
+        add_block(entries, range(row, row + 3), cols)
+        row += 3
+        add_block(entries, range(row, row + 3), cols)
+        row += 3
+        if args.enable_depth_axis:
+            add_block(entries, range(row, row + 1), cols)
+            row += 1
+    anchor = int(np.argmin([abs(frame.frame_idx - args.anchor_frame) for frame in frames]))
+    cols = range(anchor * width, (anchor + 1) * width)
+    add_block(entries, range(row, row + 3), cols)
+    row += 3
+    add_block(entries, range(row, row + 3), cols)
+    row += 3
+    if args.enable_depth_axis:
+        add_block(entries, range(row, row + 1), cols)
+        row += 1
+    if not entries:
+        raise RuntimeError("empty sparsity pattern")
+    rr, cc = np.asarray(entries, dtype=np.int64).T
+    return sparse.csr_matrix((np.ones(len(entries), dtype=bool), (rr, cc)), shape=(row, total_cols))
+
+
 def frame_metrics(
     params: np.ndarray,
     frames: list[FrameFactorData],
@@ -471,9 +533,13 @@ def run(args: argparse.Namespace) -> dict:
     width = 7 if args.enable_depth_axis else 6
     x0 = np.zeros(len(frames) * width, dtype=float)
     before_vec = residual_vector(x0, frames, base_surface, base_silhouette, pivot, intrinsics, args)
+    jac_pattern = residual_sparsity(frames, base_surface, base_silhouette, args)
+    if jac_pattern.shape != (len(before_vec), len(x0)):
+        raise RuntimeError(f"jacobian sparsity shape {jac_pattern.shape} disagrees with residual/vector {(len(before_vec), len(x0))}")
     result = least_squares(
         lambda x: residual_vector(x, frames, base_surface, base_silhouette, pivot, intrinsics, args),
         x0,
+        jac_sparsity=jac_pattern,
         max_nfev=args.max_nfev,
         loss="soft_l1",
         f_scale=1.0,
