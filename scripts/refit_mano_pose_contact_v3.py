@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import inspect
+import importlib.util
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,8 +12,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from scipy.spatial.transform import Rotation as Rotation
-from smplx import MANO
 
 from diagnose_hand_reprojection_depth_v3 import project_points
 from diagnose_metric_depth_alignment_v3 import depth_frame, sample_depth
@@ -21,7 +20,6 @@ from optimize_hand_translation_contact_v3 import mesh_vertices_by_frame, object_
 from optimize_object_factor_graph_v3 import localize_path, mask_distance_map, resize_bool_mask
 
 
-TIP_VERTEX_IDS = torch.tensor([744, 320, 443, 554, 671], dtype=torch.long)
 TIP_JOINT_IDS = np.asarray([4, 8, 12, 16, 20], dtype=int)
 
 
@@ -55,6 +53,8 @@ class FitInput:
     base_hand_pose: torch.Tensor
     betas: torch.Tensor
     base_cam_t: torch.Tensor
+    base_local_joints: np.ndarray
+    base_local_vertices: np.ndarray
     base_joints_source: np.ndarray
     object_depth_m: float
     contact_vertex_ids: torch.Tensor
@@ -68,25 +68,6 @@ def load_json(path: Path) -> dict:
 def save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def mano_21(joints16: torch.Tensor, vertices: torch.Tensor) -> torch.Tensor:
-    tips = vertices[:, TIP_VERTEX_IDS.to(vertices.device), :]
-    return torch.cat(
-        [
-            joints16[:, 0:4],
-            tips[:, 0:1],
-            joints16[:, 4:7],
-            tips[:, 1:2],
-            joints16[:, 7:10],
-            tips[:, 2:3],
-            joints16[:, 10:13],
-            tips[:, 3:4],
-            joints16[:, 13:16],
-            tips[:, 4:5],
-        ],
-        dim=1,
-    )
 
 
 def project_torch(points: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tensor:
@@ -105,9 +86,70 @@ def hand_span_torch(joints: torch.Tensor) -> torch.Tensor:
     return dist.max()
 
 
-def rotation_mats_to_axis_angle(mats: np.ndarray) -> np.ndarray:
-    mats = np.asarray(mats, dtype=float)
-    return Rotation.from_matrix(mats.reshape(-1, 3, 3)).as_rotvec().reshape(-1, 3)
+def load_wilor_mano_class(wilor_root: Path):
+    path = wilor_root / "wilor" / "models" / "mano_wrapper.py"
+    if not path.exists():
+        raise FileNotFoundError(f"missing WiLoR MANO wrapper: {path}")
+    spec = importlib.util.spec_from_file_location("wilor_mano_wrapper_for_v3_refit", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load WiLoR MANO wrapper spec from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.MANO
+
+
+def side_sign(side: str) -> float:
+    if side == "right":
+        return 1.0
+    if side == "left":
+        return -1.0
+    raise RuntimeError(f"unsupported hand side {side}")
+
+
+def skew(rotvec: torch.Tensor) -> torch.Tensor:
+    x, y, z = rotvec.unbind(dim=-1)
+    zero = torch.zeros_like(x)
+    return torch.stack(
+        [
+            torch.stack([zero, -z, y], dim=-1),
+            torch.stack([z, zero, -x], dim=-1),
+            torch.stack([-y, x, zero], dim=-1),
+        ],
+        dim=-2,
+    )
+
+
+def rotvec_to_matrix(rotvec: torch.Tensor) -> torch.Tensor:
+    return torch.linalg.matrix_exp(skew(rotvec))
+
+
+def apply_side_sign(points: torch.Tensor, sign: float) -> torch.Tensor:
+    out = points.clone()
+    out[..., 0] = float(sign) * out[..., 0]
+    return out
+
+
+def similarity_from_to(source: np.ndarray, target: np.ndarray) -> tuple[float, np.ndarray, np.ndarray, np.ndarray]:
+    if source.ndim != 2 or target.ndim != 2 or source.shape != target.shape or source.shape[1] != 3:
+        raise RuntimeError("similarity alignment expects matching Nx3 arrays")
+    source_center = source.mean(axis=0)
+    target_center = target.mean(axis=0)
+    src = source - source_center
+    tgt = target - target_center
+    covariance = src.T @ tgt / len(source)
+    u, s, vt = np.linalg.svd(covariance)
+    rotation = vt.T @ u.T
+    if np.linalg.det(rotation) < 0.0:
+        vt[-1] *= -1.0
+        rotation = vt.T @ u.T
+    variance = float(np.sum(src * src) / len(source))
+    if variance <= 0.0 or not np.isfinite(variance):
+        raise RuntimeError("degenerate MANO canonical vertices for similarity alignment")
+    scale = float(np.sum(s) / variance)
+    translation = target_center - scale * (source_center @ rotation.T)
+    aligned = scale * (source @ rotation.T) + translation[None, :]
+    error = np.linalg.norm(aligned - target, axis=1)
+    return scale, rotation, translation, error
 
 
 def resize_mask_to_depth(mask: np.ndarray, depth: np.ndarray) -> np.ndarray:
@@ -163,8 +205,12 @@ def build_inputs(args: argparse.Namespace) -> tuple[dict, list[FitInput], list[d
             try:
                 raw2d = np.asarray(hand["joints2d_raw"], dtype=float)
                 intr = np.asarray(hand["source_intrinsics"], dtype=float)
+                base_local_joints = np.asarray(hand["joints3d_camera"], dtype=float)
+                base_local_vertices = np.asarray(hand["vertices_camera"], dtype=float)
                 base_joints_source = np.asarray(hand["joints3d_source_camera_m"], dtype=float)
                 base_vertices_source = np.asarray(hand["vertices_source_camera_m"], dtype=float)
+                if base_local_joints.shape != (21, 3) or base_local_vertices.ndim != 2 or base_local_vertices.shape[1] != 3:
+                    raise RuntimeError("invalid local MANO geometry")
                 projected = project_points(base_joints_source, intr)
                 reproj = np.linalg.norm(projected - raw2d, axis=1)
                 metric_depth = sample_depth(depth, raw2d, source_size)
@@ -173,8 +219,11 @@ def build_inputs(args: argparse.Namespace) -> tuple[dict, list[FitInput], list[d
                     depth_valid = np.zeros(21, dtype=bool)
                 contact_ids = contact_vertex_ids(base_vertices_source, intr, mask, depth, source_size, args)
                 params = hand["mano_params"]
-                global_aa = rotation_mats_to_axis_angle(np.asarray(params["global_orient"], dtype=float))[0]
-                pose_aa = rotation_mats_to_axis_angle(np.asarray(params["hand_pose"], dtype=float)).reshape(45)
+                global_orient = np.asarray(params["global_orient"], dtype=float)
+                hand_pose = np.asarray(params["hand_pose"], dtype=float)
+                betas = np.asarray(params["betas"], dtype=float)
+                if global_orient.shape != (1, 3, 3) or hand_pose.shape != (15, 3, 3) or betas.shape != (10,):
+                    raise RuntimeError("WiLoR MANO parameters must be rotation matrices plus 10 betas")
                 out.append(
                     FitInput(
                         frame_idx=frame_idx,
@@ -185,10 +234,12 @@ def build_inputs(args: argparse.Namespace) -> tuple[dict, list[FitInput], list[d
                         intrinsics=torch.tensor(intr, dtype=torch.float32),
                         metric_depth=torch.tensor(np.nan_to_num(metric_depth, nan=0.0), dtype=torch.float32),
                         depth_valid=torch.tensor(depth_valid, dtype=torch.bool),
-                        base_global_orient=torch.tensor(global_aa[None], dtype=torch.float32),
-                        base_hand_pose=torch.tensor(pose_aa[None], dtype=torch.float32),
-                        betas=torch.tensor(np.asarray(params["betas"], dtype=float)[None], dtype=torch.float32),
+                        base_global_orient=torch.tensor(global_orient[None], dtype=torch.float32),
+                        base_hand_pose=torch.tensor(hand_pose[None], dtype=torch.float32),
+                        betas=torch.tensor(betas[None], dtype=torch.float32),
                         base_cam_t=torch.tensor(np.asarray(hand["cam_t"], dtype=float)[None], dtype=torch.float32),
+                        base_local_joints=base_local_joints,
+                        base_local_vertices=base_local_vertices,
                         base_joints_source=base_joints_source,
                         object_depth_m=float(object_depth),
                         contact_vertex_ids=torch.tensor(contact_ids, dtype=torch.long),
@@ -202,11 +253,37 @@ def build_inputs(args: argparse.Namespace) -> tuple[dict, list[FitInput], list[d
     return data, out, skipped
 
 
-def fit_one(model: MANO, item: FitInput, args: argparse.Namespace) -> tuple[dict, dict]:
+def fit_one(model, item: FitInput, args: argparse.Namespace) -> tuple[dict, dict]:
     device = torch.device("cpu")
     model = model.to(device)
-    pose_delta = torch.zeros_like(item.base_hand_pose, requires_grad=True)
-    orient_delta = torch.zeros_like(item.base_global_orient, requires_grad=True)
+    sign = side_sign(item.side)
+    with torch.no_grad():
+        base_out = model(
+            global_orient=item.base_global_orient.to(device),
+            hand_pose=item.base_hand_pose.to(device),
+            betas=item.betas.to(device),
+            return_verts=True,
+            pose2rot=False,
+        )
+        base_vertices = apply_side_sign(base_out.vertices, sign)[0].cpu().numpy()
+        base_joints = apply_side_sign(base_out.joints, sign)[0].cpu().numpy()
+    local_scale, local_rotation, local_translation, local_vertex_error = similarity_from_to(base_vertices, item.base_local_vertices)
+    aligned_base_joints = local_scale * (base_joints @ local_rotation.T) + local_translation[None, :]
+    joint_error = np.linalg.norm(aligned_base_joints - item.base_local_joints, axis=1)
+    if float(np.median(local_vertex_error)) > args.max_zero_state_vertex_error_m:
+        raise RuntimeError(
+            f"WiLoR MANO zero-state vertex mismatch {float(np.median(local_vertex_error)):.6f}m for frame {item.frame_idx}"
+        )
+    if float(np.median(joint_error)) > args.max_zero_state_joint_error_m:
+        raise RuntimeError(
+            f"WiLoR MANO zero-state joint mismatch {float(np.median(joint_error)):.6f}m for frame {item.frame_idx}"
+        )
+    local_rotation_t = torch.tensor(local_rotation, dtype=torch.float32, device=device)
+    local_translation_t = torch.tensor(local_translation, dtype=torch.float32, device=device).reshape(1, 1, 3)
+    local_scale_t = torch.tensor(float(local_scale), dtype=torch.float32, device=device)
+
+    pose_delta = torch.zeros((1, 15, 3), dtype=torch.float32, requires_grad=True)
+    orient_delta = torch.zeros((1, 1, 3), dtype=torch.float32, requires_grad=True)
     trans_delta = torch.zeros_like(item.base_cam_t, requires_grad=True)
     log_scale = torch.zeros(1, dtype=torch.float32, requires_grad=True)
     optimizer = torch.optim.Adam([pose_delta, orient_delta, trans_delta, log_scale], lr=args.lr)
@@ -215,12 +292,16 @@ def fit_one(model: MANO, item: FitInput, args: argparse.Namespace) -> tuple[dict
     best_state: dict[str, torch.Tensor] | None = None
     for _ in range(args.iters):
         optimizer.zero_grad(set_to_none=True)
-        global_orient = item.base_global_orient + orient_delta
-        hand_pose = item.base_hand_pose + pose_delta
-        out = model(global_orient=global_orient, hand_pose=hand_pose, betas=item.betas, return_verts=True)
+        global_orient = rotvec_to_matrix(orient_delta) @ item.base_global_orient.to(device)
+        hand_pose = rotvec_to_matrix(pose_delta) @ item.base_hand_pose.to(device)
+        out = model(global_orient=global_orient, hand_pose=hand_pose, betas=item.betas.to(device), return_verts=True, pose2rot=False)
+        canonical_vertices = apply_side_sign(out.vertices, sign)
+        canonical_joints = apply_side_sign(out.joints, sign)
+        local_vertices = local_scale_t * torch.matmul(canonical_vertices, local_rotation_t.T) + local_translation_t
+        local_joints = local_scale_t * torch.matmul(canonical_joints, local_rotation_t.T) + local_translation_t
         scale = torch.exp(log_scale).reshape(1, 1, 1)
-        vertices = scale * out.vertices + item.base_cam_t[:, None, :] + trans_delta[:, None, :]
-        joints = scale * mano_21(out.joints, out.vertices) + item.base_cam_t[:, None, :] + trans_delta[:, None, :]
+        vertices = scale * local_vertices + item.base_cam_t[:, None, :].to(device) + trans_delta[:, None, :]
+        joints = scale * local_joints + item.base_cam_t[:, None, :].to(device) + trans_delta[:, None, :]
         uv = project_torch(joints[0], item.intrinsics)
         reproj = robust_l1((uv - item.raw2d) / args.sigma_reprojection_px).mean()
         depth_loss = torch.tensor(0.0)
@@ -258,6 +339,8 @@ def fit_one(model: MANO, item: FitInput, args: argparse.Namespace) -> tuple[dict
                 best_state = {
                     "global_orient": global_orient.detach().clone(),
                     "hand_pose": hand_pose.detach().clone(),
+                    "local_vertices": local_vertices.detach().clone(),
+                    "local_joints": local_joints.detach().clone(),
                     "vertices": vertices.detach().clone(),
                     "joints": joints.detach().clone(),
                     "scale": torch.exp(log_scale.detach()).clone(),
@@ -286,6 +369,8 @@ def fit_one(model: MANO, item: FitInput, args: argparse.Namespace) -> tuple[dict
         "joints2d": uv_np,
         "global_orient": best_state["global_orient"].cpu().numpy(),
         "hand_pose": best_state["hand_pose"].cpu().numpy(),
+        "local_vertices": best_state["local_vertices"][0].cpu().numpy(),
+        "local_joints": best_state["local_joints"][0].cpu().numpy(),
         "scale": float(best_state["scale"]),
         "trans_delta": best_state["trans_delta"][0].cpu().numpy(),
     }
@@ -306,6 +391,9 @@ def fit_one(model: MANO, item: FitInput, args: argparse.Namespace) -> tuple[dict
         "translation_delta_norm_m": float(np.linalg.norm(fit["trans_delta"])),
         "pose_delta_abs_max_rad": float(torch.max(torch.abs(best_state["pose_delta"]))),
         "orient_delta_abs_max_rad": float(torch.max(torch.abs(best_state["orient_delta"]))),
+        "zero_state_vertex_error_median_m": float(np.median(local_vertex_error)),
+        "zero_state_vertex_error_p95_m": float(np.percentile(local_vertex_error, 95.0)),
+        "zero_state_joint_error_median_m": float(np.median(joint_error)),
     }
     return fit, metrics
 
@@ -334,6 +422,8 @@ def apply_fits(data: dict, fits: dict[tuple[int, str, int], dict], args: argpars
             fit = fits.get(key)
             if fit is None:
                 continue
+            hand["vertices_camera"] = fit["local_vertices"].astype(float).tolist()
+            hand["joints3d_camera"] = fit["local_joints"].astype(float).tolist()
             hand["vertices_source_camera_m"] = fit["vertices"].astype(float).tolist()
             hand["joints3d_source_camera_m"] = fit["joints"].astype(float).tolist()
             hand["joints2d"] = fit["joints2d"].astype(float).tolist()
@@ -344,11 +434,13 @@ def apply_fits(data: dict, fits: dict[tuple[int, str, int], dict], args: argpars
             }
             hand["joints3d_world_m"] = source_to_world(fit["joints"], T_world_camera).astype(float).tolist()
             hand["vertices_world_m"] = source_to_world(fit["vertices"], T_world_camera).astype(float).tolist()
-            hand["mano_params"]["global_orient_axis_angle"] = fit["global_orient"].reshape(3).astype(float).tolist()
-            hand["mano_params"]["hand_pose_axis_angle"] = fit["hand_pose"].reshape(45).astype(float).tolist()
+            hand["mano_params"]["global_orient"] = fit["global_orient"].reshape(1, 3, 3).astype(float).tolist()
+            hand["mano_params"]["hand_pose"] = fit["hand_pose"].reshape(15, 3, 3).astype(float).tolist()
+            hand["mano_params"]["rotation_convention"] = "wilor_rotation_matrix_pose2rot_false_with_side_x_sign"
             hand["v3_mano_pose_contact_refit"] = {
                 "scale": float(fit["scale"]),
                 "translation_delta_m": fit["trans_delta"].astype(float).tolist(),
+                "source_mano_convention": "wilor_right_mano_wrapper_pose2rot_false",
             }
             hand["filter_status"] = str(hand.get("filter_status", "")) + "_v3_mano_pose_contact_refit"
             hand["world_coordinate_status"] = "v3_mano_pose_contact_refit_source_camera_mano_transformed_by_existing_camera_pose"
@@ -358,14 +450,15 @@ def apply_fits(data: dict, fits: dict[tuple[int, str, int], dict], args: argpars
 def run(args: argparse.Namespace) -> dict:
     patch_legacy_mano_loader()
     data, items, skipped = build_inputs(args)
-    models = {
-        "left": MANO(str(args.mano_model_root), is_rhand=False, use_pca=False, flat_hand_mean=False, batch_size=1),
-        "right": MANO(str(args.mano_model_root), is_rhand=True, use_pca=False, flat_hand_mean=False, batch_size=1),
-    }
+    mano_cls = load_wilor_mano_class(args.wilor_root)
+    mano_model_path = args.wilor_mano_right if args.wilor_mano_right is not None else args.wilor_root / "mano_data" / "MANO_RIGHT.pkl"
+    if not mano_model_path.exists():
+        raise FileNotFoundError(f"missing WiLoR MANO_RIGHT model: {mano_model_path}")
+    model = mano_cls(model_path=str(mano_model_path), is_rhand=True, use_pca=False, flat_hand_mean=False, batch_size=1)
     fits: dict[tuple[int, str, int], dict] = {}
     rows: list[dict] = []
     for item in items:
-        fit, metrics = fit_one(models[item.side], item, args)
+        fit, metrics = fit_one(model, item, args)
         fits[(item.frame_idx, item.side, item.hand_index)] = fit
         rows.append(metrics)
     output = apply_fits(data, fits, args)
@@ -387,11 +480,15 @@ def run(args: argparse.Namespace) -> dict:
             "scale": summarize_key(rows, "scale"),
             "translation_delta_norm_m": summarize_key(rows, "translation_delta_norm_m"),
             "pose_delta_abs_max_rad": summarize_key(rows, "pose_delta_abs_max_rad"),
+            "zero_state_vertex_error_m": summarize_key(rows, "zero_state_vertex_error_median_m"),
+            "zero_state_joint_error_m": summarize_key(rows, "zero_state_joint_error_median_m"),
         },
         "thresholds": {
             "min_span_m": float(args.min_span_m),
             "max_span_m": float(args.max_span_m),
             "min_near_vertices": int(args.min_near_vertices),
+            "max_zero_state_vertex_error_m": float(args.max_zero_state_vertex_error_m),
+            "max_zero_state_joint_error_m": float(args.max_zero_state_joint_error_m),
         },
         "rows_preview": rows[:120],
         "skipped_preview": skipped[:120],
@@ -410,7 +507,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-qc", type=Path, required=True)
     parser.add_argument("--remote-output-root", type=Path)
     parser.add_argument("--local-output-root", type=Path)
-    parser.add_argument("--mano-model-root", type=Path, default=Path("/data/dex_home/yiwen/mano_assets/mano/models"))
+    parser.add_argument("--wilor-root", type=Path, default=Path("third_party/WiLoR"))
+    parser.add_argument("--wilor-mano-right", type=Path)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--min-detector-score", type=float, default=0.50)
@@ -434,6 +532,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pose-delta-rad", type=float, default=0.80)
     parser.add_argument("--max-orient-delta-rad", type=float, default=0.60)
     parser.add_argument("--max-translation-m", type=float, default=0.35)
+    parser.add_argument("--max-zero-state-vertex-error-m", type=float, default=0.025)
+    parser.add_argument("--max-zero-state-joint-error-m", type=float, default=0.025)
     parser.add_argument("--w-reprojection", type=float, default=1.0)
     parser.add_argument("--w-depth", type=float, default=0.8)
     parser.add_argument("--w-contact", type=float, default=1.0)
