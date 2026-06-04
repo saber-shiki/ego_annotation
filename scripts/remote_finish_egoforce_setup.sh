@@ -27,7 +27,7 @@ done
 cd "${REPO}"
 "${UV_BIN}" pip install --python "${PY}" thirdparty/datapipes
 "${UV_BIN}" pip install --python "${PY}" thirdparty/mmdetection --no-build-isolation
-"${UV_BIN}" pip install --python "${PY}" numpy==1.26.4 projectaria_client_sdk==1.1.0 --no-cache-dir
+"${UV_BIN}" pip install --python "${PY}" numpy==1.26.4 projectaria_client_sdk==1.1.0 --no-cache-dir --prerelease=allow
 
 "${PY}" - <<'PY'
 import importlib
