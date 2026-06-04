@@ -38,6 +38,7 @@ class HandObs:
     vertices0: np.ndarray
     joints2d_target: np.ndarray
     target_weight: np.ndarray
+    intrinsics: np.ndarray
     metric_depth: np.ndarray
     object_depth: float
     near_vertex_indices: np.ndarray
@@ -46,6 +47,23 @@ class HandObs:
 
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def intrinsics_for_hand(frame: dict, hand: dict, args: argparse.Namespace) -> np.ndarray:
+    if args.intrinsics_source == "hand":
+        intr = np.asarray(hand.get("source_intrinsics", []), dtype=float)
+    elif args.intrinsics_source == "annotation-vggt":
+        camera = frame.get("camera")
+        if not isinstance(camera, dict) or "vggt_source_intrinsics_fx_fy_cx_cy" not in camera:
+            raise RuntimeError(f"frame {frame.get('frame_idx')} missing camera.vggt_source_intrinsics_fx_fy_cx_cy")
+        intr = np.asarray(camera["vggt_source_intrinsics_fx_fy_cx_cy"], dtype=float)
+    elif args.intrinsics_source == "cli":
+        intr = np.asarray(args.intrinsics, dtype=float)
+    else:
+        raise RuntimeError(f"unsupported intrinsics source: {args.intrinsics_source}")
+    if intr.shape != (4,) or not np.isfinite(intr).all():
+        raise RuntimeError(f"invalid intrinsics for frame {frame.get('frame_idx')}: {intr}")
+    return intr
 
 
 def hand_vertex_key(hand: dict) -> str:
@@ -148,10 +166,10 @@ def build_obs(args: argparse.Namespace) -> tuple[list[HandObs], list[dict]]:
                 joints = np.asarray(hand["joints3d_source_camera_m"], dtype=float)
                 vertices = np.asarray(hand[hand_vertex_key(hand)], dtype=float)
                 target = np.asarray(hand["joints2d_raw"], dtype=float)
-                intr = np.asarray(hand["source_intrinsics"], dtype=float)
+                intr = intrinsics_for_hand(frame, hand, args)
                 if joints.shape != (21, 3) or vertices.ndim != 2 or vertices.shape[1] != 3:
                     raise RuntimeError("invalid hand geometry")
-                if target.shape != (21, 2) or intr.shape != (4,):
+                if target.shape != (21, 2):
                     raise RuntimeError("invalid hand keypoints")
                 metric = sample_depth(depth, target, source_size)
                 valid_depth = np.isfinite(metric) & (metric > 0.0)
@@ -187,6 +205,7 @@ def build_obs(args: argparse.Namespace) -> tuple[list[HandObs], list[dict]]:
                         vertices0=vertices,
                         joints2d_target=target,
                         target_weight=weight,
+                        intrinsics=intr,
                         metric_depth=metric,
                         object_depth=object_depth,
                         near_vertex_indices=near,
@@ -219,7 +238,7 @@ def residual(params: np.ndarray, obs: list[HandObs], args: argparse.Namespace, u
     residuals: list[np.ndarray] = [np.asarray([hand_log_scale / args.sigma_hand_log_scale], dtype=float)]
     for i, row in enumerate(obs):
         joints = correct(row.joints0, row, hand_log_scale, hand_shift[i])
-        uv = project_points(joints, args.intrinsics)
+        uv = project_points(joints, row.intrinsics)
         valid_2d = row.target_weight > 0.0
         reproj = (uv[valid_2d] - row.joints2d_target[valid_2d]).reshape(-1) / args.sigma_keypoint_px
         residuals.append(reproj * min(1.0, max(0.0, row.detector_score / args.detector_score_full)))
@@ -286,7 +305,7 @@ def metrics(params: np.ndarray, obs: list[HandObs], args: argparse.Namespace) ->
     for i, row in enumerate(obs):
         joints = correct(row.joints0, row, hand_log_scale, hand_shift[i])
         vertices = correct(row.vertices0[row.near_vertex_indices], row, hand_log_scale, hand_shift[i])
-        uv = project_points(joints, args.intrinsics)
+        uv = project_points(joints, row.intrinsics)
         valid_2d = row.target_weight > 0.0
         valid_depth = np.isfinite(row.metric_depth) & (row.metric_depth > 0.0)
         reproj = np.linalg.norm(uv[valid_2d] - row.joints2d_target[valid_2d], axis=1)
@@ -438,6 +457,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--intrinsics", type=float, nargs=4, default=[2304.0, 2304.0, 960.0, 540.0])
+    parser.add_argument("--intrinsics-source", choices=["hand", "annotation-vggt", "cli"], default="hand")
     parser.add_argument("--remote-output-root", type=Path)
     parser.add_argument("--local-output-root", type=Path)
     parser.add_argument("--min-rows", type=int, default=12)
