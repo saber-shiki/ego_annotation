@@ -117,6 +117,20 @@ def sample_mesh_surface(mesh: trimesh.Trimesh, count: int, seed: int) -> np.ndar
     return chosen[:, 0] + u[:, None] * (chosen[:, 1] - chosen[:, 0]) + v[:, None] * (chosen[:, 2] - chosen[:, 0])
 
 
+def anchor_visible_patch_surface(prior_surface: np.ndarray, anchor_points: np.ndarray, args: argparse.Namespace) -> np.ndarray:
+    tree = cKDTree(np.asarray(anchor_points, dtype=np.float64))
+    distances = tree.query(np.asarray(prior_surface, dtype=np.float64), k=1)[0]
+    patch = prior_surface[distances <= float(args.anchor_patch_max_distance_m)]
+    if len(patch) < int(args.min_anchor_patch_points):
+        raise RuntimeError(
+            f"anchor visible patch has only {len(patch)} points within "
+            f"{float(args.anchor_patch_max_distance_m):.4f}m"
+        )
+    if len(patch) > int(args.max_anchor_patch_points):
+        patch = sample_rows(patch, int(args.max_anchor_patch_points), int(args.seed) + 1100)
+    return patch
+
+
 def mask_distance(mask: np.ndarray) -> np.ndarray:
     return cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 3).astype(np.float32)
 
@@ -423,6 +437,27 @@ def frame_metrics(
     return rows
 
 
+def choose_surface_observation(
+    full_surface: np.ndarray,
+    anchor_points: np.ndarray,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, dict]:
+    if args.surface_match_mode == "whole_mesh":
+        return full_surface, {
+            "surface_match_mode": "whole_mesh",
+            "surface_points": int(len(full_surface)),
+        }
+    if args.surface_match_mode == "anchor_visible_patch":
+        patch = anchor_visible_patch_surface(full_surface, anchor_points, args)
+        return patch, {
+            "surface_match_mode": "anchor_visible_patch",
+            "surface_points": int(len(patch)),
+            "full_surface_points": int(len(full_surface)),
+            "anchor_patch_max_distance_m": float(args.anchor_patch_max_distance_m),
+        }
+    raise RuntimeError(f"unsupported surface_match_mode: {args.surface_match_mode}")
+
+
 def save_world_archive(
     path: Path,
     frames: list[FrameData],
@@ -475,9 +510,10 @@ def run(args: argparse.Namespace) -> dict:
     mesh_vertices = np.asarray(mesh.vertices, dtype=np.float64)
     mesh_faces = np.asarray(mesh.faces, dtype=np.int32)
     pivot = np.median(mesh_vertices, axis=0)
-    prior_surface = sample_mesh_surface(mesh, int(args.max_prior_surface_points), int(args.seed) + 700)
+    full_prior_surface = sample_mesh_surface(mesh, int(args.max_prior_surface_points), int(args.seed) + 700)
     prior_projection = sample_mesh_surface(mesh, int(args.max_projection_points), int(args.seed) + 900)
     anchor_points = frames[anchor_index].observed_points_camera
+    prior_surface, surface_report = choose_surface_observation(full_prior_surface, anchor_points, args)
     K = load_intrinsics(args.dataset)
     x0 = initial_params(frames, int(args.anchor_frame), anchor_points, pivot)
     before_vec = residual_vector(x0, frames, prior_surface, prior_projection, anchor_points, pivot, K, anchor_index, args)
@@ -519,6 +555,7 @@ def run(args: argparse.Namespace) -> dict:
         "message": str(result.message),
         "log_scale": float(result.x[-1]),
         "scale": float(np.exp(result.x[-1])),
+        "surface_observation": surface_report,
         "residual_rms_before": float(np.sqrt(np.mean(before_vec * before_vec))),
         "residual_rms_after": float(np.sqrt(np.mean(after_vec * after_vec))),
         "before_summary": summary_from_rows(before_rows),
@@ -547,6 +584,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-observed-points", type=int, default=900)
     parser.add_argument("--max-prior-surface-points", type=int, default=1100)
     parser.add_argument("--max-projection-points", type=int, default=1300)
+    parser.add_argument("--surface-match-mode", choices=["whole_mesh", "anchor_visible_patch"], default="whole_mesh")
+    parser.add_argument("--anchor-patch-max-distance-m", type=float, default=0.040)
+    parser.add_argument("--min-anchor-patch-points", type=int, default=80)
+    parser.add_argument("--max-anchor-patch-points", type=int, default=900)
     parser.add_argument("--sigma-observed-m", type=float, default=0.030)
     parser.add_argument("--sigma-silhouette-px", type=float, default=5.0)
     parser.add_argument("--sigma-front-depth-m", type=float, default=0.020)
