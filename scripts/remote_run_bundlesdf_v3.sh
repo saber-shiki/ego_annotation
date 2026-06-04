@@ -58,8 +58,10 @@ print(f"set {config} depth_processing.zfar={zfar}")
 PY
 
 export CUDA_VISIBLE_DEVICES="$GPU_ID"
-export LD_LIBRARY_PATH="$BUNDLE/BundleTrack/build:$PREFIX/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PYTHONPATH="$BUNDLE/BundleTrack/build:$BUNDLE/BundleTrack:$BUNDLE${PYTHONPATH:+:$PYTHONPATH}"
+TORCH_LIB="$PREFIX/lib/python3.11/site-packages/torch/lib"
+export LD_LIBRARY_PATH="$BUNDLE/BundleTrack/build:$PREFIX/lib:$TORCH_LIB:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+P3D_TRANSFORMS="${EGO_PYTORCH3D_TRANSFORMS_PATH:-/mnt/user-home/yiwen/.cache/uv/archive-v0/GQ7Vw61ILrlJefOs}"
+export PYTHONPATH="$P3D_TRANSFORMS:$BUNDLE/mycuda:$BUNDLE/BundleTrack/build:$BUNDLE/BundleTrack:$BUNDLE${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$BUNDLE"
 "$PREFIX/bin/python" - <<'PY'
