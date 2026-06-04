@@ -10,11 +10,20 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
+import trimesh
 
 
 def mesh_arrays(mesh) -> tuple[np.ndarray, np.ndarray]:
-    vertices = np.asarray(mesh.vertices)
-    faces = np.asarray(mesh.faces)
+    vertices_raw = mesh.vertices
+    faces_raw = mesh.faces
+    if isinstance(vertices_raw, torch.Tensor):
+        vertices = vertices_raw.detach().cpu().numpy()
+    else:
+        vertices = np.asarray(vertices_raw)
+    if isinstance(faces_raw, torch.Tensor):
+        faces = faces_raw.detach().cpu().numpy()
+    else:
+        faces = np.asarray(faces_raw)
     if vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) == 0:
         raise RuntimeError("TRELLIS mesh has no valid vertices")
     if faces.ndim != 2 or faces.shape[1] != 3 or len(faces) == 0:
@@ -48,7 +57,7 @@ def run(args: argparse.Namespace) -> dict:
     vertices, faces = mesh_arrays(mesh)
 
     mesh_path = args.output_dir / args.mesh_name
-    mesh.export(str(mesh_path))
+    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(str(mesh_path))
     gaussian_path = None
     gaussians = outputs.get("gaussian")
     if gaussians:
