@@ -352,6 +352,8 @@ def row_for_hand(
         "frame_idx": int(frame["frame_idx"]),
         "hand_idx": int(hand_i),
         "side": str(hand.get("side", "unknown")),
+        "track_id": hand.get("track_id"),
+        "track_source": hand.get("track_source"),
         "filter_status": hand.get("filter_status"),
         "measurement_available": measured,
         "detector_score": score,
@@ -394,10 +396,15 @@ def point_extent(points: np.ndarray) -> float | None:
 
 
 def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> None:
-    groups: dict[tuple[str, int], list[dict]] = {}
+    groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
         if bool(row.get("reliable_geometry_contact", False)):
-            groups.setdefault((str(row.get("side")), int(row.get("hand_idx"))), []).append(row)
+            track = row.get("track_id")
+            if track is None:
+                key = ("side_hand", f"{row.get('side')}:{row.get('hand_idx')}")
+            else:
+                key = ("track", str(track))
+            groups.setdefault(key, []).append(row)
     for candidates in groups.values():
         ordered = sorted(candidates, key=lambda row: int(row["frame_idx"]))
         clusters: list[list[dict]] = []

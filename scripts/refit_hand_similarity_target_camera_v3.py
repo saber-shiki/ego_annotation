@@ -26,6 +26,7 @@ class Obs:
     frame_order: int
     hand_idx: int
     side: str
+    track_id: str | None
     detector_score: float
     hand: dict
     target_frame: dict
@@ -177,6 +178,7 @@ def build_obs(args: argparse.Namespace) -> tuple[list[dict], list[Obs], list[dic
                         frame_order=order,
                         hand_idx=hand_i,
                         side=side,
+                        track_id=hand.get("track_id"),
                         detector_score=score,
                         hand=hand,
                         target_frame=target,
@@ -242,7 +244,8 @@ def residual(params: np.ndarray, obs: list[Obs], args: argparse.Namespace) -> np
 
     by_side: dict[str, list[int]] = {}
     for i, o in enumerate(obs):
-        by_side.setdefault(o.side, []).append(i)
+        key = str(o.track_id) if o.track_id is not None else o.side
+        by_side.setdefault(key, []).append(i)
     for indices in by_side.values():
         indices.sort(key=lambda i: (obs[i].frame_idx, obs[i].hand_idx))
         for a, b in zip(indices[:-1], indices[1:]):
@@ -307,6 +310,7 @@ def row_metrics(obs: list[Obs], params: np.ndarray) -> list[dict]:
                 "frame_idx": o.frame_idx,
                 "hand_idx": o.hand_idx,
                 "side": o.side,
+                "track_id": o.track_id,
                 "detector_score": o.detector_score,
                 "depth_keypoints": int(np.count_nonzero(depth_valid)),
                 "median_reprojection_before_px": float(np.median(reproj0)),
@@ -389,6 +393,7 @@ def apply_solution(output_frames: list[dict], obs: list[Obs], params: np.ndarray
         hand["v3_target_similarity_refit"] = {
             "status": "applied",
             "target_intrinsics_source": "annotation-vggt",
+            "track_id": o.track_id,
             "scale": row["scale_after"],
             "rotation_norm_rad": row["rotation_norm_after_rad"],
             "center_shift_from_init_m": row["center_shift_from_init_m"],
