@@ -215,6 +215,7 @@ def build_obs(args: argparse.Namespace) -> tuple[list[HandObs], list[dict]]:
             except Exception as exc:
                 skipped.append({"frame_idx": frame_idx, "hand_idx": hand_i, "side": side, "reason": str(exc)})
     if len(obs) < args.min_rows:
+        args._last_skipped = skipped
         raise RuntimeError(f"insufficient hand observations: {len(obs)}; skipped={skipped[:12]}")
     return obs, skipped
 
@@ -395,8 +396,41 @@ def run(args: argparse.Namespace) -> dict:
     args.intrinsics = np.asarray(args.intrinsics, dtype=float)
     if args.intrinsics.shape != (4,):
         raise RuntimeError("--intrinsics must have four values")
-    obs, skipped = build_obs(args)
+    try:
+        obs, skipped = build_obs(args)
+    except RuntimeError as exc:
+        if not args.allow_empty_observations or "insufficient hand observations" not in str(exc):
+            raise
+        obs = []
+        skipped = getattr(args, "_last_skipped", [])
     x0 = np.zeros(1 + 2 * len(obs), dtype=float)
+    if not obs:
+        skipped_counts: dict[str, int] = {}
+        for row in skipped:
+            reason = str(row.get("reason", "unknown"))
+            skipped_counts[reason] = skipped_counts.get(reason, 0) + 1
+        report = {
+            "status": "diagnostic_no_hand_observations",
+            "annotation_ready": False,
+            "diagnostic_only": True,
+            "model": "global_hand_scale_per_hand_ray_shift_per_row_object_depth_shift_with_2d_depth_contact_residuals",
+            "annotations": str(args.annotations),
+            "rtmlib_wilor_qc": str(args.rtmlib_wilor_qc),
+            "metric_depth_npz": str(args.metric_depth_npz),
+            "object_mesh_npz": str(args.object_mesh_npz),
+            "frame_start": int(args.frame_start),
+            "frame_end": int(args.frame_end),
+            "observations": 0,
+            "skipped_rows": len(skipped),
+            "skipped_reason_counts": skipped_counts,
+            "skipped_preview": skipped[:240],
+            "elapsed_s": float(time.time() - started),
+            "interpretation": "No hand rows satisfied the detector, 2D association, metric-depth, and near-object observation contract.",
+        }
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(json.dumps({k: v for k, v in report.items() if k != "skipped_preview"}, indent=2))
+        return report
     before_rows = metrics(x0, obs, args)
     depth_params, depth_solver = solve(obs, args, use_contact=False)
     depth_rows = metrics(depth_params, obs, args)
@@ -458,6 +492,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--intrinsics", type=float, nargs=4, default=[2304.0, 2304.0, 960.0, 540.0])
     parser.add_argument("--intrinsics-source", choices=["hand", "annotation-vggt", "cli"], default="hand")
+    parser.add_argument("--allow-empty-observations", action="store_true")
     parser.add_argument("--remote-output-root", type=Path)
     parser.add_argument("--local-output-root", type=Path)
     parser.add_argument("--min-rows", type=int, default=12)
