@@ -6,6 +6,7 @@ import json
 import random
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -15,8 +16,91 @@ import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader
 
-from fuse_v1_full_fidelity import DEFAULT_CLIP, open_video, put_caption, read_video_frame
-from run_sam2_object_track import extract_frames, mask_box
+DEFAULT_CLIP = Path(
+    "/data2/egoscale_demo_30h/egoscale_tasks/"
+    "20260108_1057_Recf94e_P0_S994da4_task_9/"
+    "20260108_1057_Recf94e_P0_S994da4_task_9.mp4"
+)
+
+
+@dataclass(frozen=True)
+class ClipInfo:
+    fps: float
+    width: int
+    height: int
+    frame_count: int
+
+
+def open_video(path: Path) -> tuple[cv2.VideoCapture, ClipInfo]:
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise RuntimeError(f"failed to open video {path}")
+    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if fps <= 0 or width <= 0 or height <= 0 or frame_count <= 0:
+        cap.release()
+        raise RuntimeError(
+            f"invalid video metadata for {path}: fps={fps} width={width} "
+            f"height={height} frame_count={frame_count}"
+        )
+    return cap, ClipInfo(fps=fps, width=width, height=height, frame_count=frame_count)
+
+
+def read_video_frame(cap: cv2.VideoCapture, frame_idx: int) -> np.ndarray:
+    if not cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx)):
+        raise RuntimeError(f"failed to seek video to frame {frame_idx}")
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        raise RuntimeError(f"failed to read video frame {frame_idx}")
+    return frame
+
+
+def put_caption(image: np.ndarray, text: str, frame_idx: int) -> None:
+    label = f"frame {frame_idx}: {text}"
+    pad = 8
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.48
+    thickness = 1
+    (tw, th), base = cv2.getTextSize(label, font, scale, thickness)
+    y0 = image.shape[0] - th - base - 2 * pad
+    y1 = image.shape[0]
+    cv2.rectangle(image, (0, max(0, y0)), (min(image.shape[1], tw + 2 * pad), y1), (0, 0, 0), -1)
+    cv2.putText(image, label, (pad, image.shape[0] - pad - base), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+
+def extract_frames(clip: Path, frames: list[dict], selected: list[int], output_dir: Path, image_width: int) -> Path:
+    frame_dir = output_dir / "samwise_frames"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    cap, info = open_video(clip)
+    if image_width <= 0:
+        cap.release()
+        raise RuntimeError(f"invalid image width: {image_width}")
+    scale = image_width / float(info.width)
+    image_height = int(round(info.height * scale))
+    if image_height <= 0:
+        cap.release()
+        raise RuntimeError(f"invalid extracted image height from {info.width}x{info.height} and width {image_width}")
+    for local_idx, frame_idx in enumerate(selected):
+        source_idx = int(frames[int(frame_idx)]["frame_idx"])
+        frame = read_video_frame(cap, source_idx)
+        resized = cv2.resize(frame, (image_width, image_height), interpolation=cv2.INTER_AREA)
+        path = frame_dir / f"{local_idx:06d}.jpg"
+        if not cv2.imwrite(str(path), resized, [int(cv2.IMWRITE_JPEG_QUALITY), 92]):
+            cap.release()
+            raise RuntimeError(f"failed to write {path}")
+    cap.release()
+    return frame_dir
+
+
+def mask_box(mask: np.ndarray) -> tuple[list[float] | None, float, np.ndarray | None]:
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
+        return None, 0.0, None
+    box = [float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)]
+    center = np.asarray([float(xs.mean()), float(ys.mean())], dtype=float)
+    return box, float(xs.size), center
 
 
 def import_samwise(repo: Path):
