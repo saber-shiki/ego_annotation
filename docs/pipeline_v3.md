@@ -65,9 +65,12 @@ Executed run:
 - input: frames 840 to 930 of the representative trash clip, with the mesh branch currently using the clean 858 to 880 subwindow
 - accepted prompt result: clean object-level masks for the central pink lid over frames 858 to 880
 - rejected point-prompt surface result: SAM2 point-prompt variants for rim, flange, and liner repeatedly collapsed into broad lid/background regions and must not be meshed
-- current target: language-conditioned SAMWISE segmentation of the actual contact objects, especially the translucent white liner draped edge and the can/lid perimeter surfaces
+- rejected text-only contact-surface result: SAMWISE prompts for the white liner draped edge, pink lid perimeter rim, and can opening rim were run on frames 840 to 930. Visual inspection rejects all three as mesh inputs. The liner and can-rim prompts selected the same magenta background or occluded region in frames 840 to 858 and then disappeared. The pink-rim prompt selected small off-rim/background patches.
+- current target: image-conditioned VLM point prompts for the actual contact objects, especially the translucent white liner draped edge and the can/lid perimeter surfaces
 
 The pink-lid SAMWISE result is useful context geometry, but the contact-surface plan says the broad central lid panel is mostly a visible separator/support surface. Hand contact in this window belongs to perimeter/rim/liner pixels. The next SAMWISE run must therefore target those surfaces directly instead of refining the central lid mask again.
+
+After the failed contact-surface SAMWISE run, the next segmentation branch should not be another text-prompt wording change. The valid source of difference is model-produced per-frame visual evidence: VLM-selected positive and negative points, SAM masks constrained by those points on the same image, and VLM/visual review of the resulting masks. Long propagation from weak sparse seeds is rejected for this clip because prior SAM2 propagation drifted to floor, wall, and lid pixels.
 
 ### SOLA
 
@@ -172,6 +175,7 @@ Inspection status:
 - the central lid panel, annular rim, outer flange, and early liner prompts are visually credible;
 - the exposed can rim is lower confidence and correctly marks frame 858 invisible;
 - later liner prompts are plausible but boundary-sensitive because liner, rim, hand, and lid pixels overlap near the perimeter.
+- text-only SAMWISE did not convert these surface names into valid masks. The failed masks are recorded at `/data2/ego_annotation_outputs/representative_trash/v3_samwise_contact_surfaces_rejection_840_930.json`. V3 should use image-conditioned point prompts and per-frame mask selection for these surfaces before attempting mesh reconstruction.
 
 This branch supplies surface-specific mask targets so SAM2 or a referring video segmentation model can produce measured masks, metric-depth observed-surface meshes, and per-surface contact reliability. Contact factors should activate only after the surface mask, metric depth, MANO projection, and temporal support agree. V3 closes only when the resulting hand/object state passes per-surface contact reliability; zero reliable rows would strengthen the falsification of the current hand/camera/depth state.
 
