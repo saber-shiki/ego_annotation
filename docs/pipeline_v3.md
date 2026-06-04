@@ -83,10 +83,11 @@ Current evidence:
 - Strict frame-858 alignment to the observed metric-depth surface reached median prior-to-observed and observed-to-prior distances near 10 mm.
 - The 858-930 window optimizer reduced object surface residuals but failed contact consistency.
 - VGGT masked multiview geometry over frames 858 to 880 produced noncollapsed raw object points, but camera-motion Sim3 scaling collapsed the object to millimeters. Rescaling from the observed surface extent produced a 0.57 m by 0.66 m by 0.42 m rounded mesh with 71 mm median point-to-observed distance and a visual blob around the lid, so it is rejected as an annotation mesh.
+- Hunyuan3D-2mv multiview generation from four depth-grown object crops ran successfully on A800 and produced a 369k-vertex mesh. Frame 858/878 alignment again reached low nearest-surface medians, but visual QC rejects the result as a generic oval shell with fuzzy side growth rather than scene-faithful lid/can geometry.
 
 Interpretation:
 
-Object-complete mesh priors are feasible, but mesh alignment alone cannot fix hand/object contact while MANO/camera/depth scale disagree.
+Object-complete asset priors are feasible, but the current object crops underconstrain hidden geometry. Mesh alignment alone can fit the partial observed surface while inventing a plausible but wrong backside. V3 should stop treating single-image or weak-multiview asset generation as the closure path for this clip. The next mesh branch must reconstruct scene object geometry from RGB-D surfaces, object pose, and verified surface masks, then use the graph to expose the remaining hand/camera/depth conflict.
 
 ## Required V3 Solver
 
