@@ -34,7 +34,6 @@ source .venv_samwise/bin/activate
 uv pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu118
 grep -v '^pyav$' third_party/SAMWISE/requirements.txt > "$ROOT/samwise_requirements_runtime.txt"
 uv pip install -r "$ROOT/samwise_requirements_runtime.txt"
-uv pip install av
 uv pip install -e third_party/SAMWISE/models/sam2
 uv pip install gdown
 
