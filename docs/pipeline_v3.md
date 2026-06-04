@@ -87,6 +87,10 @@ Current evidence:
 - SAMWISE text-conditioned segmentation produced clean object-level lid masks for frames 858 to 880. A dense mask-depth height-field mesh from those masks reached median silhouette-mask IoU 0.9965 and median vertex-depth error 0.24 mm across 23 frames. This establishes a valid visible-surface mesh observation for the lid.
 - The same height-field archive fails temporal object consistency. Its robust camera-frame Z extent changes up to 2.50x relative to the median, and the world center speed reaches 8.79 m/s between adjacent video frames. This is a metric-depth/camera-scale inconsistency, because the per-frame projection evidence is already strong.
 - A one-variable-per-frame depth-scale graph regularized object XY extent to within about 6 percent of the median, but projection-depth error rose to 36.7 mm median and 293 mm on frame 880. The tradeoff exposes the missing constraint: V3 needs independent metric camera/depth scale evidence before rigid object pose can be trusted.
+- Full-scene VGGT was run on frames 858 to 880 using the original scene frames and SAMWISE masks only for object-point selection. This is stronger evidence than the rejected object-crop VGGT branch because the model sees the room and camera motion. VGGT camera centers align to the DROID trajectory with 10.5 mm median error after a Sim3, but the required VGGT-to-DROID scale is 0.129 and the VGGT-predicted focal maps back to about 1200 px in the 1920-wide source frame, far from the DROID prior of 2304 px.
+- VGGT object points project entirely inside the SAMWISE mask after correcting the aspect-ratio-preserving resize and padding. They expose a concrete Depth Anything failure: in frames 878 to 880, VGGT places the lid surface at about 0.69 to 0.75 m while Depth Anything places the same mask at about 1.01 to 1.12 m. This explains the late-frame heightfield expansion without blaming the mask.
+- A VGGT observed-surface mesh built from the selected points is temporally coherent: robust camera extents are 0.050 x 0.034 x 0.044 m, extent-ratio max-log median is 0.049, and pairwise center speed median is 0.056 m/s. This is still only a compact visible-surface patch, not a full lid mesh or watertight object.
+- Re-solving MANO translations under VGGT intrinsics reduces the high-score contact gap to 86 mm median, but does not close it. A bounded temporal Z-shift/contact optimizer can drive median contact gap near zero only by hitting the 35 cm shift bound and producing frame-880 median keypoint reprojection error of 80 px with an implausibly small hand scale. VGGT reduces the object-depth error, but current MANO measurements remain inconsistent with 5 mm contact annotation.
 
 Interpretation:
 
@@ -121,6 +125,15 @@ Factors:
 - prior terms on physically plausible hand size, object rigidity/deformation, and depth scale.
 
 The graph must expose residual conflicts. A low object-depth residual with a 0.4 m hand/object depth gap is a failed joint annotation, not a success.
+
+After the full-scene VGGT branch, the next graph should treat VGGT scene geometry as an independent depth/camera factor rather than replacing all other sources with it. The current factor graph needs:
+
+- camera intrinsics and Sim3 scale variables constrained by DROID camera motion, VGGT camera motion, and any real calibration if it becomes available;
+- object visible-surface factors from SAMWISE plus VGGT, with Depth Anything downweighted or rejected on frames where it contradicts VGGT by hundreds of millimeters;
+- MANO depth variables constrained by 2D reprojection, temporal velocity/acceleration, hand-size priors, and detector confidence;
+- contact variables that can turn off or mark a hand observation unreliable when satisfying contact would require large reprojection error, hand-scale collapse, or bound-saturated depth shifts.
+
+The failure to close contact after VGGT is a useful V3 result because it separates two mechanisms: Depth Anything creates large object-depth outliers in late frames, and WiLoR/MANO still places some measured hands at incompatible depths even under VGGT intrinsics. V3 cannot close until a stronger temporal hand model or direct egocentric hand-depth model repairs that second mechanism.
 
 ## Surface-Specific Contact Branch
 
