@@ -76,8 +76,11 @@ def load_vggt_poses(args: argparse.Namespace) -> dict[int, dict]:
     frame_idx = blob["frame_idx"].astype(int)
     extrinsic = blob["extrinsic"].astype(np.float64)
     intrinsic = blob["intrinsic"].astype(np.float64)
+    centers_vggt = blob["camera_centers_vggt"].astype(np.float64) if "camera_centers_vggt" in blob.files else None
     centers = blob["camera_centers_aligned"].astype(np.float64)
     sim3_rotation = blob["sim3_rotation"].astype(np.float64)
+    sim3_translation = blob["sim3_translation"].astype(np.float64)
+    sim3_scale = float(blob["sim3_scale"][0])
     validate_rotation(sim3_rotation, "sim3_rotation")
     if extrinsic.shape[:2] != (len(frame_idx), 3) or extrinsic.shape[2] != 4:
         raise RuntimeError(f"invalid extrinsic shape {extrinsic.shape}")
@@ -85,6 +88,36 @@ def load_vggt_poses(args: argparse.Namespace) -> dict[int, dict]:
         raise RuntimeError(f"invalid intrinsic shape {intrinsic.shape}")
     if centers.shape != (len(frame_idx), 3):
         raise RuntimeError(f"invalid camera_centers_aligned shape {centers.shape}")
+    if centers_vggt is not None and centers_vggt.shape != (len(frame_idx), 3):
+        raise RuntimeError(f"invalid camera_centers_vggt shape {centers_vggt.shape}")
+
+    center_map = {int(idx): centers[i] for i, idx in enumerate(frame_idx)}
+    if args.pose_scale_mode == "sim3":
+        scale = sim3_scale
+        translation = sim3_translation
+    elif args.pose_scale_mode == "custom_anchor":
+        if centers_vggt is None:
+            raise RuntimeError("custom_anchor mode requires camera_centers_vggt in VGGT archive")
+        scale = float(args.custom_scale)
+        if not np.isfinite(scale) or scale <= 0.0:
+            raise RuntimeError(f"custom scale must be positive, got {scale}")
+        anchor_idx = int(args.anchor_frame)
+        if anchor_idx not in center_map:
+            raise RuntimeError(f"anchor frame {anchor_idx} is absent from VGGT archive")
+        annotations = load_json(args.annotations)
+        frames = annotations.get("frames")
+        if not isinstance(frames, list):
+            raise RuntimeError("annotations must contain frames list")
+        anchor_frames = [frame for frame in frames if int(frame["frame_idx"]) == anchor_idx]
+        if len(anchor_frames) != 1:
+            raise RuntimeError(f"annotations contain {len(anchor_frames)} rows for anchor frame {anchor_idx}")
+        anchor_T = np.asarray(anchor_frames[0]["camera"]["T_world_camera_metric"], dtype=np.float64)
+        if anchor_T.shape != (4, 4) or not np.isfinite(anchor_T).all():
+            raise RuntimeError(f"anchor frame {anchor_idx} has invalid camera transform")
+        anchor_i = int(np.where(frame_idx == anchor_idx)[0][0])
+        translation = anchor_T[:3, 3] - scale * (sim3_rotation @ centers_vggt[anchor_i])
+    else:
+        raise RuntimeError(f"unsupported pose scale mode: {args.pose_scale_mode}")
 
     out: dict[int, dict] = {}
     for i, idx in enumerate(frame_idx):
@@ -92,7 +125,11 @@ def load_vggt_poses(args: argparse.Namespace) -> dict[int, dict]:
         validate_rotation(R_world_to_camera_vggt, f"vggt extrinsic rotation frame {int(idx)}")
         T = np.eye(4, dtype=np.float64)
         T[:3, :3] = sim3_rotation @ R_world_to_camera_vggt.T
-        T[:3, 3] = centers[i]
+        if args.pose_scale_mode == "sim3":
+            T[:3, 3] = centers[i]
+        else:
+            assert centers_vggt is not None
+            T[:3, 3] = scale * (sim3_rotation @ centers_vggt[i]) + translation
         validate_rotation(T[:3, :3], f"aligned camera-to-world rotation frame {int(idx)}")
         out[int(idx)] = {
             "T_world_camera_metric": T,
@@ -103,6 +140,7 @@ def load_vggt_poses(args: argparse.Namespace) -> dict[int, dict]:
                 int(args.target_size),
             ),
             "vggt_padded_intrinsic": intrinsic[i],
+            "pose_scale": float(scale),
         }
     if not out:
         raise RuntimeError("VGGT archive contains no poses")
@@ -199,7 +237,8 @@ def run(args: argparse.Namespace) -> dict:
         camera["position_world_m"] = new_T[:3, 3].astype(float).tolist()
         camera["vggt_source_intrinsics_fx_fy_cx_cy"] = [float(v) for v in pose["source_intrinsics"]]
         camera["vggt_padded_intrinsic_3x3"] = pose["vggt_padded_intrinsic"].astype(float).tolist()
-        camera["pose_source_status"] = "v3_vggt_full_scene_sim3_aligned_camera_pose"
+        camera["vggt_pose_scale"] = float(pose["pose_scale"])
+        camera["pose_source_status"] = f"v3_vggt_full_scene_{args.pose_scale_mode}_camera_pose"
         changed_hands += recompute_hand_world(frame, new_T)
         rows.append(
             {
@@ -228,6 +267,9 @@ def run(args: argparse.Namespace) -> dict:
         "frame_end": int(args.frame_end),
         "changed_frames": int(len(rows)),
         "changed_hands": int(changed_hands),
+        "pose_scale_mode": str(args.pose_scale_mode),
+        "custom_scale": float(args.custom_scale) if args.pose_scale_mode == "custom_anchor" else None,
+        "anchor_frame": int(args.anchor_frame),
         "translation_delta_m": summarize([row["translation_delta_m"] for row in rows]),
         "rotation_delta_rad": summarize([row["rotation_delta_rad"] for row in rows]),
         "old_center_speed_m_s": pair_speed(rows, "old_center_world_m", float(args.fps)),
@@ -254,6 +296,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-height", type=int, default=1080)
     parser.add_argument("--target-size", type=int, default=518)
     parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--pose-scale-mode", choices=["sim3", "custom_anchor"], default="sim3")
+    parser.add_argument("--custom-scale", type=float, default=1.0)
+    parser.add_argument("--anchor-frame", type=int, default=880)
     return parser.parse_args()
 
 

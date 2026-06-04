@@ -60,6 +60,14 @@ def run(args: argparse.Namespace) -> dict:
     extrinsic = blob["extrinsic"].astype(np.float64)
     intrinsic = blob["intrinsic"].astype(np.float64)
     sim3_scale = float(blob["sim3_scale"][0])
+    if args.camera_scale_mode == "sim3":
+        camera_scale = sim3_scale
+    elif args.camera_scale_mode == "custom":
+        camera_scale = float(args.custom_scale)
+        if not np.isfinite(camera_scale) or camera_scale <= 0.0:
+            raise RuntimeError(f"custom scale must be positive, got {camera_scale}")
+    else:
+        raise RuntimeError(f"unsupported camera scale mode: {args.camera_scale_mode}")
     sim3_rotation = blob["sim3_rotation"].astype(np.float64)
     sim3_translation = blob["sim3_translation"].astype(np.float64)
 
@@ -85,7 +93,7 @@ def run(args: argparse.Namespace) -> dict:
             float(args.max_triangle_edge_m),
         )
         vertices_vggt_mesh = (vertices_aligned.astype(np.float64) - sim3_translation[None, :]) @ sim3_rotation / sim3_scale
-        vertices_camera = float(sim3_scale) * camera_points(vertices_vggt_mesh, extrinsic[i])
+        vertices_camera = float(camera_scale) * camera_points(vertices_vggt_mesh, extrinsic[i])
         if np.count_nonzero(vertices_camera[:, 2] > 0.0) < max(10, len(vertices_camera) // 2):
             raise RuntimeError(f"frame {idx} VGGT camera mesh has too few positive-depth vertices")
         row["frame_idx"] = int(idx)
@@ -116,8 +124,10 @@ def run(args: argparse.Namespace) -> dict:
         "first_frame": int(frame_indices[0]),
         "last_frame": int(frame_indices[-1]),
         "robust_camera_extent_median_m": np.median(camera_extent, axis=0).astype(float).tolist(),
-        "camera_coordinate_scale": "sim3_metric_scaled",
+        "camera_coordinate_scale": str(args.camera_scale_mode),
         "sim3_scale": float(sim3_scale),
+        "custom_scale": float(args.custom_scale) if args.camera_scale_mode == "custom" else None,
+        "applied_camera_scale": float(camera_scale),
         "mesh_to_vggt_points_median_m": summarize([row["mesh_to_vggt_points"]["median_m"] for row in rows]),
         "camera_depth_median_m": summarize([row["camera_depth_median_m"] for row in rows]),
         "rows": rows,
@@ -142,6 +152,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-px", type=int, default=5)
     parser.add_argument("--max-triangle-edge-m", type=float, default=0.08)
     parser.add_argument("--min-frames", type=int, default=3)
+    parser.add_argument("--camera-scale-mode", choices=["sim3", "custom"], default="sim3")
+    parser.add_argument("--custom-scale", type=float, default=1.0)
     return parser.parse_args()
 
 
