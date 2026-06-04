@@ -102,7 +102,7 @@ def run_sam2(args: argparse.Namespace, frames: list[dict], prompts: dict[int, di
     return results
 
 
-def render(args: argparse.Namespace, frames: list[dict], results: dict[int, dict]) -> Path:
+def render(args: argparse.Namespace, frames: list[dict], results: dict[int, dict], track_id: str) -> Path:
     cap, info = open_video(args.clip)
     height = int(round(args.render_width * info.height / info.width))
     writer_path = args.output_dir / "sam2_points_overlay.mp4"
@@ -123,7 +123,7 @@ def render(args: argparse.Namespace, frames: list[dict], results: dict[int, dict
             tint[:, :, 0] = 255
             tint[:, :, 2] = 255
             image[mask] = cv2.addWeighted(image, 0.55, tint, 0.45, 0.0)[mask]
-        put_caption(image, "SAM2 VLM-point white liner track", source_idx)
+        put_caption(image, f"SAM2 VLM-point {track_id}", source_idx)
         writer.write(image)
     writer.release()
     cap.release()
@@ -140,7 +140,7 @@ def run(args: argparse.Namespace) -> dict:
     cap.release()
     scale = args.sam2_image_width / float(info.width)
     results = run_sam2(args, frames, prompts, frame_dir, scale)
-    video = render(args, frames, results)
+    video = render(args, frames, results, str(payload["track_id"]))
     visible = sum(1 for row in results.values() if row.get("visible"))
     qc = {
         "status": "ok",
