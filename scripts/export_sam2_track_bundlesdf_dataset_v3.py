@@ -66,8 +66,7 @@ def run(args: argparse.Namespace) -> dict:
     source_entries = source_manifest.get("frames")
     if not isinstance(source_entries, list) or not source_entries:
         raise RuntimeError("source manifest must contain a nonempty frames list")
-    source_by_frame = {int(entry["frame_idx"]): entry for entry in source_entries}
-    track = load_json(args.sam2_track)
+    track = load_json(args.mask_track)
     intrinsics = load_intrinsics(args.source_dataset, source_manifest)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("rgb", "depth", "masks"):
@@ -95,7 +94,7 @@ def run(args: argparse.Namespace) -> dict:
         mask_path = local_mask_path(str(result["mask_path"]), args.remote_data_root, args.local_data_root)
         mask_raw = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if mask_raw is None:
-            raise RuntimeError(f"failed to read SAM2 mask {mask_path}")
+            raise RuntimeError(f"failed to read mask-track mask {mask_path}")
         mask = resize_mask(mask_raw, (rgb.shape[1], rgb.shape[0]))
         mask_area = int(np.count_nonzero(mask))
         if mask_area < int(args.min_mask_pixels):
@@ -133,16 +132,16 @@ def run(args: argparse.Namespace) -> dict:
             }
         )
     if len(manifest_entries) < int(args.min_frames):
-        raise RuntimeError(f"only {len(manifest_entries)} SAM2 mask frames survived export")
+        raise RuntimeError(f"only {len(manifest_entries)} mask-track frames survived export")
 
     manifest = {"frames": manifest_entries}
     (args.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     qc = {
         "status": "ok",
-        "method": "sam2_track_to_bundlesdf_dataset_v3",
+        "method": "mask_track_to_bundlesdf_dataset_v3",
         "source_dataset": str(args.source_dataset),
         "source_manifest": str(args.source_manifest),
-        "sam2_track": str(args.sam2_track),
+        "mask_track": str(args.mask_track),
         "output_dir": str(args.output_dir),
         "frames": int(len(manifest_entries)),
         "first_frame": int(manifest_entries[0]["frame_idx"]),
@@ -165,7 +164,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-dataset", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
-    parser.add_argument("--sam2-track", type=Path, required=True)
+    parser.add_argument("--mask-track", "--sam2-track", dest="mask_track", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--track-id", required=True)
     parser.add_argument("--label", required=True)
