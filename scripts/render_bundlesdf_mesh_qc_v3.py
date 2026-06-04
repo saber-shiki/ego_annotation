@@ -46,6 +46,19 @@ def load_mesh_archive(path: Path) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     return meshes
 
 
+def load_depth_archive(path: Path) -> dict[int, np.ndarray]:
+    blob = np.load(path)
+    required = {"frame_idx", "depth"}
+    missing = required.difference(blob.files)
+    if missing:
+        raise RuntimeError(f"{path} missing keys: {sorted(missing)}")
+    frame_idx = blob["frame_idx"].astype(int)
+    depth = blob["depth"].astype(np.float64)
+    if depth.ndim != 3 or len(frame_idx) != depth.shape[0]:
+        raise RuntimeError(f"{path} has invalid frame/depth shapes: {frame_idx.shape}, {depth.shape}")
+    return {int(frame): depth[i] for i, frame in enumerate(frame_idx.tolist())}
+
+
 def camera_points(world_points: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
     T_camera_world = np.linalg.inv(T_world_camera)
     homog = np.c_[world_points, np.ones(len(world_points), dtype=np.float64)]
@@ -136,6 +149,25 @@ def render_frame(
     return image
 
 
+def intrinsics_for_frame(args: argparse.Namespace, manifest: dict, annotation: dict) -> np.ndarray:
+    if args.intrinsics_source == "manifest":
+        vals = manifest.get("intrinsics_fx_fy_cx_cy")
+        if vals is None:
+            qc_path = args.manifest.parent / "qc_bundlesdf_dataset_v3.json"
+            if not qc_path.exists():
+                raise RuntimeError("manifest lacks intrinsics and dataset QC file is missing")
+            vals = load_json(qc_path)["intrinsics_fx_fy_cx_cy"]
+    elif args.intrinsics_source == "annotation-vggt":
+        camera = annotation.get("camera")
+        if not isinstance(camera, dict) or "vggt_source_intrinsics_fx_fy_cx_cy" not in camera:
+            raise RuntimeError(f"frame {annotation.get('frame_idx')} missing camera.vggt_source_intrinsics_fx_fy_cx_cy")
+        vals = camera["vggt_source_intrinsics_fx_fy_cx_cy"]
+    else:
+        raise RuntimeError(f"unsupported intrinsics source: {args.intrinsics_source}")
+    fx, fy, cx, cy = [float(x) for x in vals]
+    return np.asarray([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+
 def run(args: argparse.Namespace) -> None:
     manifest = load_json(args.manifest)
     annotations = load_json(args.annotations)
@@ -145,21 +177,13 @@ def run(args: argparse.Namespace) -> None:
         raise RuntimeError("annotations and manifest must contain frames lists")
     frame_by_idx = {int(frame["frame_idx"]): frame for frame in frames}
     meshes = load_mesh_archive(args.mesh_archive)
+    depth_archive = load_depth_archive(args.metric_depth_npz) if args.metric_depth_npz is not None else None
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     writer = None
     still_dir = args.output_dir / "stills"
     still_dir.mkdir(exist_ok=True)
-
-    K_vals = manifest.get("intrinsics_fx_fy_cx_cy")
-    if K_vals is None:
-        qc_path = args.manifest.parent / "qc_bundlesdf_dataset_v3.json"
-        if not qc_path.exists():
-            raise RuntimeError("manifest lacks intrinsics and dataset QC file is missing")
-        K_vals = load_json(qc_path)["intrinsics_fx_fy_cx_cy"]
-    fx, fy, cx, cy = [float(x) for x in K_vals]
-    K = np.asarray([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     for entry in entries:
         frame_idx = int(entry["frame_idx"])
@@ -170,17 +194,27 @@ def run(args: argparse.Namespace) -> None:
             raise RuntimeError(f"missing mesh archive frame {frame_idx}")
         rgb_path = Path(entry["rgb"])
         mask_path = Path(entry["mask"])
-        depth_path = Path(entry["depth"])
         rgb = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
         mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
-        if rgb is None or mask is None or depth is None:
-            raise RuntimeError(f"failed to read RGB/mask/depth for frame {frame_idx}")
+        if rgb is None or mask is None:
+            raise RuntimeError(f"failed to read RGB/mask for frame {frame_idx}")
         object_mask = mask > 0
-        depth_m = depth.astype(np.float64) / 1000.0
+        if depth_archive is None:
+            depth_path = Path(entry["depth"])
+            depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+            if depth is None:
+                raise RuntimeError(f"failed to read depth for frame {frame_idx}")
+            depth_m = depth.astype(np.float64) / 1000.0
+        else:
+            if frame_idx not in depth_archive:
+                raise RuntimeError(f"metric depth archive lacks frame {frame_idx}")
+            depth_m = np.asarray(depth_archive[frame_idx], dtype=np.float64)
+            if depth_m.shape != object_mask.shape:
+                raise RuntimeError(f"metric depth frame {frame_idx} shape {depth_m.shape} does not match mask {object_mask.shape}")
 
         world_vertices, faces = meshes[frame_idx]
         T_world_camera = np.asarray(annotation["camera"]["T_world_camera_metric"], dtype=np.float64)
+        K = intrinsics_for_frame(args, manifest, annotation)
         cam_vertices = camera_points(world_vertices, T_world_camera)
         positive = cam_vertices[:, 2] > 0.0
         if np.count_nonzero(positive) < max(10, len(cam_vertices) // 20):
@@ -253,6 +287,8 @@ def run(args: argparse.Namespace) -> None:
         "mesh_archive": str(args.mesh_archive),
         "manifest": str(args.manifest),
         "annotations": str(args.annotations),
+        "intrinsics_source": str(args.intrinsics_source),
+        "metric_depth_npz": str(args.metric_depth_npz) if args.metric_depth_npz is not None else None,
         "frames": int(len(rows)),
         "silhouette_mask_iou": summarize([row["silhouette_mask_iou"] for row in rows]),
         "projected_vertex_mask_fraction": summarize([row["projected_vertex_mask_fraction"] for row in rows]),
@@ -276,6 +312,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--metric-depth-npz", type=Path)
+    parser.add_argument("--intrinsics-source", choices=["manifest", "annotation-vggt"], default="manifest")
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--max-silhouette-faces", type=int, default=30000)
