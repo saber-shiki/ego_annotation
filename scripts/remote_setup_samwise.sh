@@ -38,7 +38,7 @@ uv pip install gdown
 
 cd "$ROOT/checkpoints"
 if [ ! -f final_model_mevis.pth ]; then
-  gdown --fuzzy 'https://drive.google.com/file/d/1Molt2up2bP41ekeczXWQU-LWTskKJOV2/view?usp=sharing' -O final_model_mevis.pth
+  gdown '1Molt2up2bP41ekeczXWQU-LWTskKJOV2' -O final_model_mevis.pth
 fi
 
 python - <<'PY'
