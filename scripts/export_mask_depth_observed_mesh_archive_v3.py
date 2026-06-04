@@ -180,24 +180,30 @@ def run(args: argparse.Namespace) -> dict:
         if row["status"] != "ok":
             rows.append(row)
             continue
-        T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
-        if T_world_camera.shape != (4, 4) or not np.isfinite(T_world_camera).all():
-            raise RuntimeError(f"invalid T_world_camera_metric for frame {frame_idx}")
-        world = transform_points(vertices_camera, T_world_camera)
-        row["world_extent_m"] = (world.max(axis=0) - world.min(axis=0)).astype(float).tolist()
+        if args.coordinate == "world":
+            T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
+            if T_world_camera.shape != (4, 4) or not np.isfinite(T_world_camera).all():
+                raise RuntimeError(f"invalid T_world_camera_metric for frame {frame_idx}")
+            vertices_out = transform_points(vertices_camera, T_world_camera)
+        elif args.coordinate == "camera":
+            vertices_out = vertices_camera
+        else:
+            raise RuntimeError(f"unsupported coordinate mode: {args.coordinate}")
+        row["output_extent_m"] = (vertices_out.max(axis=0) - vertices_out.min(axis=0)).astype(float).tolist()
         rows.append(row)
         frame_indices.append(frame_idx)
-        vertices_world.append(world.astype(np.float32))
+        vertices_world.append(vertices_out.astype(np.float32))
         faces_all.append(faces.astype(np.int32))
     if len(frame_indices) < int(args.min_frames):
         raise RuntimeError(f"only {len(frame_indices)} observed-surface frames exported")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     archive = args.output_dir / "observed_mask_depth_meshes_world.npz"
     save_archive(archive, frame_indices, vertices_world, faces_all)
-    ext = np.asarray([row["world_extent_m"] for row in rows if row["status"] == "ok"], dtype=np.float64)
+    ext = np.asarray([row["output_extent_m"] for row in rows if row["status"] == "ok"], dtype=np.float64)
     report = {
         "status": "ok",
         "method": "mask_depth_observed_surface_mesh_archive_v3",
+        "coordinate": args.coordinate,
         "dataset": str(args.dataset),
         "manifest": str(args.manifest),
         "annotations": str(args.annotations),
@@ -206,7 +212,7 @@ def run(args: argparse.Namespace) -> dict:
         "first_frame": int(frame_indices[0]),
         "last_frame": int(frame_indices[-1]),
         "intrinsics_fx_fy_cx_cy": [float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])],
-        "world_extent_median_m": np.median(ext, axis=0).astype(float).tolist(),
+        "output_extent_median_m": np.median(ext, axis=0).astype(float).tolist(),
         "rows": rows,
     }
     (args.output_dir / "qc_mask_depth_observed_mesh_archive_v3.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -222,6 +228,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
+    parser.add_argument("--coordinate", choices=["world", "camera"], default="world")
     parser.add_argument("--mask-stride", type=int, default=5)
     parser.add_argument("--mask-erode-px", type=int, default=1)
     parser.add_argument("--depth-low-quantile", type=float, default=0.02)
