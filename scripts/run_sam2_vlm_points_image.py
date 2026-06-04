@@ -193,6 +193,45 @@ def select_mask(
     return masks[best].astype(bool), {"reason": "ok", "selected_candidate": int(best), "candidates": candidates}
 
 
+def save_candidate_review(
+    output_dir: Path,
+    source_idx: int,
+    image_bgr: np.ndarray,
+    masks: np.ndarray,
+    scores: np.ndarray,
+    report: dict,
+) -> list[str]:
+    review_dir = output_dir / "sam2_candidate_review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    candidates = report.get("candidates", [])
+    paths = []
+    for row in candidates:
+        idx = int(row["candidate"])
+        mask = masks[idx].astype(bool)
+        panel = image_bgr.copy()
+        tint = np.zeros_like(panel)
+        tint[:, :, 1] = 220
+        tint[:, :, 2] = 255
+        panel[mask] = cv2.addWeighted(panel, 0.50, tint, 0.50, 0.0)[mask]
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(panel, contours, -1, (0, 255, 255), 2, cv2.LINE_AA)
+        label = (
+            f"{source_idx} cand={idx} score={float(scores[idx]):.3f} "
+            f"pos={row['positive_hits']}/{row['positive_points']} "
+            f"neg={row['negative_hits']}/{row['negative_points']} "
+            f"area={row['area_px']}"
+        )
+        if row.get("accepted_by_prompt_contract"):
+            label += " ACCEPT"
+        cv2.rectangle(panel, (0, 0), (panel.shape[1], 34), (0, 0, 0), -1)
+        cv2.putText(panel, label, (8, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 2, cv2.LINE_AA)
+        path = review_dir / f"{source_idx:06d}_candidate_{idx}.jpg"
+        if not cv2.imwrite(str(path), panel, [int(cv2.IMWRITE_JPEG_QUALITY), 94]):
+            raise RuntimeError(f"failed to write {path}")
+        paths.append(str(path))
+    return paths
+
+
 def run_predictor(
     args: argparse.Namespace,
     frames: list[int],
@@ -248,6 +287,8 @@ def run_predictor(
                     float(args.score_tie_margin),
                 )
                 report.update({"frame_idx": int(source_idx), "used_box": bool(box is not None)})
+                if args.save_candidate_masks:
+                    report["candidate_review_paths"] = save_candidate_review(args.output_dir, source_idx, image_bgr, masks, scores, report)
                 reports.append(report)
                 if selected is None:
                     results[source_idx] = {"visible": False, "area_px": 0.0, "reason": report["reason"]}
@@ -370,6 +411,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-area-margin-px", type=float, default=40.0)
     parser.add_argument("--score-tie-margin", type=float, default=0.08)
     parser.add_argument("--use-box", action="store_true")
+    parser.add_argument("--save-candidate-masks", action="store_true")
     parser.add_argument("--source-width", type=int)
     parser.add_argument("--source-height", type=int)
     return parser.parse_args()
