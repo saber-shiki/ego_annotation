@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import trimesh
+from scipy.ndimage import distance_transform_edt
 from scipy.optimize import least_squares
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
@@ -40,6 +41,13 @@ class ContactData:
     source: str
     region: str
     hand_patch_camera: np.ndarray
+
+
+@dataclass(frozen=True)
+class VolumeSDF:
+    sdf: np.ndarray
+    transform: np.ndarray
+    pitch_m: float
 
 
 def load_json(path: Path) -> dict:
@@ -281,6 +289,65 @@ def append_sample_block(residuals: list[np.ndarray], block: np.ndarray) -> None:
     residuals.append(values / math.sqrt(float(len(values))))
 
 
+def build_volume_sdf(mesh: trimesh.Trimesh, args: argparse.Namespace) -> VolumeSDF | None:
+    if not bool(args.use_volume_sdf):
+        return None
+    vox = mesh.voxelized(pitch=float(args.volume_sdf_pitch_m)).fill()
+    occupied = np.asarray(vox.matrix, dtype=bool)
+    if np.count_nonzero(occupied) == 0:
+        raise RuntimeError("volume SDF voxelization produced no occupied cells")
+    pad = int(args.volume_sdf_pad_voxels)
+    occupied = np.pad(occupied, pad_width=pad, mode="constant", constant_values=False)
+    outside = distance_transform_edt(~occupied, sampling=[float(args.volume_sdf_pitch_m)] * 3)
+    inside = distance_transform_edt(occupied, sampling=[float(args.volume_sdf_pitch_m)] * 3)
+    transform = np.asarray(vox.transform, dtype=np.float64).copy()
+    transform[:3, 3] -= float(args.volume_sdf_pitch_m) * pad
+    return VolumeSDF(sdf=(outside - inside).astype(np.float32), transform=transform, pitch_m=float(args.volume_sdf_pitch_m))
+
+
+def sample_volume_sdf(points: np.ndarray, volume_sdf: VolumeSDF) -> np.ndarray:
+    origin = volume_sdf.transform[:3, 3]
+    coords = (points - origin[None, :]) / float(volume_sdf.pitch_m)
+    base = np.floor(coords).astype(np.int64)
+    frac = coords - base.astype(np.float64)
+    in_bounds = (
+        (base[:, 0] >= 0)
+        & (base[:, 0] + 1 < volume_sdf.sdf.shape[0])
+        & (base[:, 1] >= 0)
+        & (base[:, 1] + 1 < volume_sdf.sdf.shape[1])
+        & (base[:, 2] >= 0)
+        & (base[:, 2] + 1 < volume_sdf.sdf.shape[2])
+    )
+    values = np.full(len(points), np.nan, dtype=np.float64)
+    if np.any(in_bounds):
+        b = base[in_bounds]
+        f = frac[in_bounds]
+        x0, y0, z0 = b[:, 0], b[:, 1], b[:, 2]
+        x1, y1, z1 = x0 + 1, y0 + 1, z0 + 1
+        xd, yd, zd = f[:, 0], f[:, 1], f[:, 2]
+        c000 = volume_sdf.sdf[x0, y0, z0]
+        c100 = volume_sdf.sdf[x1, y0, z0]
+        c010 = volume_sdf.sdf[x0, y1, z0]
+        c110 = volume_sdf.sdf[x1, y1, z0]
+        c001 = volume_sdf.sdf[x0, y0, z1]
+        c101 = volume_sdf.sdf[x1, y0, z1]
+        c011 = volume_sdf.sdf[x0, y1, z1]
+        c111 = volume_sdf.sdf[x1, y1, z1]
+        c00 = c000 * (1.0 - xd) + c100 * xd
+        c10 = c010 * (1.0 - xd) + c110 * xd
+        c01 = c001 * (1.0 - xd) + c101 * xd
+        c11 = c011 * (1.0 - xd) + c111 * xd
+        c0 = c00 * (1.0 - yd) + c10 * yd
+        c1 = c01 * (1.0 - yd) + c11 * yd
+        values[in_bounds] = c0 * (1.0 - zd) + c1 * zd
+    return values
+
+
+def camera_to_local(points: np.ndarray, rotvec: np.ndarray, translation: np.ndarray, pivot: np.ndarray) -> np.ndarray:
+    rotation = Rotation.from_rotvec(rotvec).as_matrix()
+    return (points - translation[None, :] - pivot[None, :]) @ rotation + pivot[None, :]
+
+
 def residual_vector(
     params: np.ndarray,
     frames: list[FrameData],
@@ -289,6 +356,7 @@ def residual_vector(
     contact_surface: np.ndarray,
     projection_surface: np.ndarray,
     pivot: np.ndarray,
+    volume_sdf: VolumeSDF | None,
     args: argparse.Namespace,
 ) -> np.ndarray:
     rotvecs, translations = unpack(params, len(frames))
@@ -317,6 +385,14 @@ def residual_vector(
         tree = cKDTree(transformed_contact_mesh)
         distances, _ = tree.query(contact.hand_patch_camera, k=1)
         append_sample_block(residuals, np.clip(distances, 0.0, float(args.max_contact_residual_m)) / float(args.sigma_contact_m))
+        if volume_sdf is not None:
+            local = camera_to_local(contact.hand_patch_camera, rotvecs[contact.frame_i], translations[contact.frame_i], pivot)
+            signed = sample_volume_sdf(local, volume_sdf)
+            signed = signed[np.isfinite(signed)]
+            if len(signed) == 0:
+                raise RuntimeError(f"contact row {contact.frame_idx} has no in-bounds volume SDF samples")
+            penetration = np.clip(float(args.volume_sdf_surface_m) - signed, 0.0, float(args.max_volume_sdf_penetration_m))
+            append_sample_block(residuals, penetration / float(args.sigma_volume_sdf_penetration_m))
 
     centers = np.asarray(object_centers_world, dtype=np.float64)
     for i in range(1, len(frames)):
@@ -365,6 +441,7 @@ def frame_metrics(
     mesh_faces: np.ndarray,
     pivot: np.ndarray,
     signed_mesh: trimesh.Trimesh | None,
+    volume_sdf: VolumeSDF | None,
     args: argparse.Namespace,
 ) -> dict[str, dict]:
     rotvecs, translations = unpack(params, len(frames))
@@ -405,6 +482,8 @@ def frame_metrics(
             "contact_distance_p95_m": None,
             "contact_signed_distance_median_m": None,
             "contact_penetration_fraction": None,
+            "contact_volume_sdf_median_m": None,
+            "contact_volume_sdf_penetration_fraction": None,
         }
     for contact in contacts:
         row = rows[str(contact.frame_idx)]
@@ -413,9 +492,13 @@ def frame_metrics(
         distances, _ = tree.query(contact.hand_patch_camera, k=1)
         signed_distances = None
         if signed_mesh is not None:
-            inv_R = Rotation.from_rotvec(rotvecs[contact.frame_i]).as_matrix()
-            local = (contact.hand_patch_camera - translations[contact.frame_i][None, :] - pivot[None, :]) @ inv_R + pivot[None, :]
+            local = camera_to_local(contact.hand_patch_camera, rotvecs[contact.frame_i], translations[contact.frame_i], pivot)
             signed_distances = trimesh.proximity.signed_distance(signed_mesh, local)
+        volume_sdf_values = None
+        if volume_sdf is not None:
+            local = camera_to_local(contact.hand_patch_camera, rotvecs[contact.frame_i], translations[contact.frame_i], pivot)
+            sampled = sample_volume_sdf(local, volume_sdf)
+            volume_sdf_values = sampled[np.isfinite(sampled)]
         contact_row = {
             "frame_idx": int(contact.frame_idx),
             "hand_idx": int(contact.hand_idx),
@@ -434,6 +517,17 @@ def frame_metrics(
                     "penetration_fraction": float(np.mean(signed_distances > float(args.signed_penetration_positive_m))),
                 }
             )
+        if volume_sdf_values is not None:
+            contact_row.update(
+                {
+                    "volume_sdf_median_m": float(np.median(volume_sdf_values)),
+                    "volume_sdf_p05_m": float(np.percentile(volume_sdf_values, 5.0)),
+                    "volume_sdf_penetration_fraction": float(
+                        np.mean(volume_sdf_values < -float(args.volume_sdf_penetration_tolerance_m))
+                    ),
+                    "volume_sdf_near_surface_fraction": float(np.mean(np.abs(volume_sdf_values) <= float(args.volume_sdf_near_surface_m))),
+                }
+            )
         row.setdefault("contact_rows", []).append(contact_row)
         row["contact_count"] = int(row["contact_count"]) + 1
         row["contact_distance_median_m"] = float(np.median([r["distance_median_m"] for r in row["contact_rows"]]))
@@ -441,6 +535,11 @@ def frame_metrics(
         if signed_distances is not None:
             row["contact_signed_distance_median_m"] = float(np.median([r["signed_distance_median_m"] for r in row["contact_rows"]]))
             row["contact_penetration_fraction"] = float(np.max([r["penetration_fraction"] for r in row["contact_rows"]]))
+        if volume_sdf_values is not None:
+            row["contact_volume_sdf_median_m"] = float(np.median([r["volume_sdf_median_m"] for r in row["contact_rows"]]))
+            row["contact_volume_sdf_penetration_fraction"] = float(
+                np.max([r["volume_sdf_penetration_fraction"] for r in row["contact_rows"]])
+            )
 
     centers = np.asarray(centers_world, dtype=np.float64)
     for i in range(1, len(frames)):
@@ -464,6 +563,8 @@ def summary_from_rows(rows: dict[str, dict]) -> dict:
         "contact_distance_median_m",
         "contact_distance_p95_m",
         "contact_penetration_fraction",
+        "contact_volume_sdf_median_m",
+        "contact_volume_sdf_penetration_fraction",
     ]
     return {key: summarize([row[key] for row in rows.values() if row.get(key) is not None]) for key in keys}
 
@@ -508,10 +609,11 @@ def run(args: argparse.Namespace) -> dict:
     mesh_surface = sample_mesh_surface(mesh, int(args.max_prior_surface_points), int(args.seed) + 100)
     contact_surface = sample_mesh_surface(mesh, int(args.max_contact_surface_points), int(args.seed) + 150)
     projection_surface = sample_mesh_surface(mesh, int(args.max_projection_points), int(args.seed) + 200)
+    volume_sdf = build_volume_sdf(mesh, args)
     x0 = np.zeros(len(frames) * 6, dtype=np.float64)
-    before_vec = residual_vector(x0, frames, contacts, mesh_surface, contact_surface, projection_surface, pivot, args)
+    before_vec = residual_vector(x0, frames, contacts, mesh_surface, contact_surface, projection_surface, pivot, volume_sdf, args)
     result = least_squares(
-        lambda x: residual_vector(x, frames, contacts, mesh_surface, contact_surface, projection_surface, pivot, args),
+        lambda x: residual_vector(x, frames, contacts, mesh_surface, contact_surface, projection_surface, pivot, volume_sdf, args),
         x0,
         max_nfev=int(args.max_nfev),
         loss="soft_l1",
@@ -519,13 +621,13 @@ def run(args: argparse.Namespace) -> dict:
         x_scale="jac",
         verbose=2 if args.verbose else 0,
     )
-    after_vec = residual_vector(result.x, frames, contacts, mesh_surface, contact_surface, projection_surface, pivot, args)
+    after_vec = residual_vector(result.x, frames, contacts, mesh_surface, contact_surface, projection_surface, pivot, volume_sdf, args)
     signed_mesh = mesh if bool(mesh.is_watertight) and bool(mesh.is_winding_consistent) else None
     before_rows = frame_metrics(
-        x0, frames, contacts, mesh_surface, contact_surface, projection_surface, mesh_vertices, mesh_faces, pivot, signed_mesh, args
+        x0, frames, contacts, mesh_surface, contact_surface, projection_surface, mesh_vertices, mesh_faces, pivot, signed_mesh, volume_sdf, args
     )
     after_rows = frame_metrics(
-        result.x, frames, contacts, mesh_surface, contact_surface, projection_surface, mesh_vertices, mesh_faces, pivot, signed_mesh, args
+        result.x, frames, contacts, mesh_surface, contact_surface, projection_surface, mesh_vertices, mesh_faces, pivot, signed_mesh, volume_sdf, args
     )
     before_summary = summary_from_rows(before_rows)
     after_summary = summary_from_rows(after_rows)
@@ -565,6 +667,7 @@ def run(args: argparse.Namespace) -> dict:
         "message": str(result.message),
         "mesh_watertight": bool(mesh.is_watertight),
         "signed_penetration_supported": signed_mesh is not None,
+        "volume_sdf_supported": volume_sdf is not None,
         "residual_rms_before": float(np.sqrt(np.mean(before_vec * before_vec))),
         "residual_rms_after": float(np.sqrt(np.mean(after_vec * after_vec))),
         "before_summary": before_summary,
@@ -583,6 +686,7 @@ def run(args: argparse.Namespace) -> dict:
             "sigma_silhouette_px": float(args.sigma_silhouette_px),
             "sigma_front_depth_m": float(args.sigma_front_depth_m),
             "sigma_contact_m": float(args.sigma_contact_m),
+            "sigma_volume_sdf_penetration_m": float(args.sigma_volume_sdf_penetration_m),
             "sigma_object_translation_prior_m": float(args.sigma_object_translation_prior_m),
             "sigma_object_rotation_prior_rad": float(args.sigma_object_rotation_prior_rad),
             "sigma_object_world_velocity_m_s": float(args.sigma_object_world_velocity_m_s),
@@ -622,6 +726,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sigma-front-depth-m", type=float, default=0.020)
     parser.add_argument("--depth-front-tolerance-m", type=float, default=0.008)
     parser.add_argument("--sigma-contact-m", type=float, default=0.006)
+    parser.add_argument("--use-volume-sdf", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--volume-sdf-pitch-m", type=float, default=0.003)
+    parser.add_argument("--volume-sdf-pad-voxels", type=int, default=8)
+    parser.add_argument("--volume-sdf-surface-m", type=float, default=0.0)
+    parser.add_argument("--volume-sdf-penetration-tolerance-m", type=float, default=0.002)
+    parser.add_argument("--volume-sdf-near-surface-m", type=float, default=0.006)
+    parser.add_argument("--sigma-volume-sdf-penetration-m", type=float, default=0.006)
+    parser.add_argument("--max-volume-sdf-penetration-m", type=float, default=0.030)
     parser.add_argument("--sigma-object-translation-prior-m", type=float, default=0.045)
     parser.add_argument("--sigma-object-rotation-prior-rad", type=float, default=0.20)
     parser.add_argument("--sigma-object-world-velocity-m-s", type=float, default=0.55)

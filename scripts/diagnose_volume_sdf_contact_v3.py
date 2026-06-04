@@ -54,17 +54,39 @@ def sample_sdf(points: np.ndarray, sdf: np.ndarray, transform: np.ndarray) -> np
     if pitch <= 0.0:
         raise RuntimeError("invalid SDF transform pitch")
     origin = transform[:3, 3]
-    ijk = np.rint((points - origin[None, :]) / pitch).astype(np.int64)
+    coords = (points - origin[None, :]) / pitch
+    base = np.floor(coords).astype(np.int64)
+    frac = coords - base.astype(np.float64)
     in_bounds = (
-        (ijk[:, 0] >= 0)
-        & (ijk[:, 0] < sdf.shape[0])
-        & (ijk[:, 1] >= 0)
-        & (ijk[:, 1] < sdf.shape[1])
-        & (ijk[:, 2] >= 0)
-        & (ijk[:, 2] < sdf.shape[2])
+        (base[:, 0] >= 0)
+        & (base[:, 0] + 1 < sdf.shape[0])
+        & (base[:, 1] >= 0)
+        & (base[:, 1] + 1 < sdf.shape[1])
+        & (base[:, 2] >= 0)
+        & (base[:, 2] + 1 < sdf.shape[2])
     )
     values = np.full(len(points), np.nan, dtype=np.float64)
-    values[in_bounds] = sdf[ijk[in_bounds, 0], ijk[in_bounds, 1], ijk[in_bounds, 2]]
+    if np.any(in_bounds):
+        b = base[in_bounds]
+        f = frac[in_bounds]
+        x0, y0, z0 = b[:, 0], b[:, 1], b[:, 2]
+        x1, y1, z1 = x0 + 1, y0 + 1, z0 + 1
+        xd, yd, zd = f[:, 0], f[:, 1], f[:, 2]
+        c000 = sdf[x0, y0, z0]
+        c100 = sdf[x1, y0, z0]
+        c010 = sdf[x0, y1, z0]
+        c110 = sdf[x1, y1, z0]
+        c001 = sdf[x0, y0, z1]
+        c101 = sdf[x1, y0, z1]
+        c011 = sdf[x0, y1, z1]
+        c111 = sdf[x1, y1, z1]
+        c00 = c000 * (1.0 - xd) + c100 * xd
+        c10 = c010 * (1.0 - xd) + c110 * xd
+        c01 = c001 * (1.0 - xd) + c101 * xd
+        c11 = c011 * (1.0 - xd) + c111 * xd
+        c0 = c00 * (1.0 - yd) + c10 * yd
+        c1 = c01 * (1.0 - yd) + c11 * yd
+        values[in_bounds] = c0 * (1.0 - zd) + c1 * zd
     return values
 
 
