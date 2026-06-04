@@ -66,6 +66,7 @@ export PYTHONPATH="$P3D_TRANSFORMS:$BUNDLE/mycuda:$BUNDLE/BundleTrack/build:$BUN
 cd "$BUNDLE"
 "$PREFIX/bin/python" - <<'PY'
 import my_cpp
+import kaolin
 import torch
 import open3d
 print("my_cpp", my_cpp.__file__)
@@ -73,6 +74,11 @@ print("torch", torch.__version__, torch.version.cuda, torch.cuda.is_available(),
 print("open3d", open3d.__version__)
 if not torch.cuda.is_available():
     raise SystemExit("torch CUDA unavailable")
+print("kaolin", kaolin.__version__)
+pts = torch.rand((16, 3), device="cuda") * 2.0 - 1.0
+quantized = kaolin.ops.spc.quantize_points(pts.contiguous(), level=4)
+octree = kaolin.ops.spc.unbatched_points_to_octree(quantized, 4, sorted=False)
+print("kaolin_spc_octree_bytes", len(octree))
 PY
 
 "$PREFIX/bin/python" - <<'PY'
