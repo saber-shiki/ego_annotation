@@ -8,10 +8,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from fuse_v1_full_fidelity import load_json
-
 
 SAM2_VLM_POINTS_STATUS = "measured_sam2_vlm_points"
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def mask_geometry(mask_path: Path, source_size: tuple[int, int]) -> dict:
@@ -45,14 +47,32 @@ def prompt_rows(point_prompt_payload: dict) -> dict[int, dict]:
     return {int(row["frame_idx"]): row for row in rows}
 
 
+def localize_mask_path(mask_path: str, remote_output_root: Path | None, local_output_root: Path | None) -> Path:
+    path = Path(mask_path)
+    if path.exists():
+        return path
+    if remote_output_root is not None and local_output_root is not None:
+        try:
+            rel = path.relative_to(remote_output_root)
+        except ValueError:
+            rel = None
+        if rel is not None:
+            candidate = local_output_root / rel
+            if candidate.exists():
+                return candidate
+    raise FileNotFoundError(mask_path)
+
+
 def object_record(
     frame_idx: int,
     sam2_result: dict,
     prompt_payload: dict,
     prompt_by_frame: dict[int, dict],
     source_size: tuple[int, int],
+    remote_output_root: Path | None,
+    local_output_root: Path | None,
 ) -> dict:
-    mask_path = Path(str(sam2_result["mask_path"]))
+    mask_path = localize_mask_path(str(sam2_result["mask_path"]), remote_output_root, local_output_root)
     prompt_row = prompt_by_frame.get(frame_idx, {})
     geometry = mask_geometry(mask_path, source_size)
     score = float(prompt_row.get("confidence", 1.0))
@@ -105,6 +125,11 @@ def run(args: argparse.Namespace) -> dict:
     for frame in annotations["frames"]:
         frame_idx = int(frame["frame_idx"])
         if frame_idx < frame_start or frame_idx > frame_end:
+            frame["object"] = {
+                "status": "outside_sam2_vlm_points_window",
+                "track_id": str(prompt_payload["track_id"]),
+                "label": str(prompt_payload["description"]),
+            }
             continue
         result = track.get(str(frame_idx)) or track.get(frame_idx)
         if not isinstance(result, dict) or not result.get("visible"):
@@ -117,7 +142,15 @@ def run(args: argparse.Namespace) -> dict:
             continue
         if not result.get("mask_path"):
             raise RuntimeError(f"visible SAM2 result lacks mask_path for frame {frame_idx}")
-        frame["object"] = object_record(frame_idx, result, prompt_payload, by_prompt, source_size)
+        frame["object"] = object_record(
+            frame_idx,
+            result,
+            prompt_payload,
+            by_prompt,
+            source_size,
+            args.remote_output_root,
+            args.local_output_root,
+        )
         converted += 1
     if converted == 0:
         raise RuntimeError("SAM2 track produced no visible annotation rows")
@@ -150,6 +183,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--source-width", type=int)
     parser.add_argument("--source-height", type=int)
+    parser.add_argument("--remote-output-root", type=Path)
+    parser.add_argument("--local-output-root", type=Path)
     return parser.parse_args()
 
 

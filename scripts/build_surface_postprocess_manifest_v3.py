@@ -34,6 +34,10 @@ def commands(job: dict, args: argparse.Namespace) -> dict:
             str(job["frame_start"]),
             "--frame-end",
             str(job["frame_end"]),
+            "--remote-output-root",
+            str(args.remote_output_root),
+            "--local-output-root",
+            str(args.local_output_root),
         ]
     )
     mesh = py(
@@ -116,6 +120,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--mask-stride", type=int, default=8)
     parser.add_argument("--review-stride", type=int, default=30)
+    parser.add_argument("--remote-output-root", type=Path, required=True)
+    parser.add_argument("--local-output-root", type=Path, required=True)
     return parser.parse_args()
 
 
