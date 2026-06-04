@@ -91,6 +91,7 @@ def run(args: argparse.Namespace) -> None:
         candidates = [
             args.bundlesdf_output / "mesh" / "mesh_real_scale.obj",
             args.bundlesdf_output / "textured_mesh.obj",
+            args.bundlesdf_output / "mesh_cleaned.obj",
             args.bundlesdf_output / "mesh" / "mesh_biggest_component_smoothed.obj",
             args.bundlesdf_output / "mesh" / "mesh_biggest_component.obj",
         ]

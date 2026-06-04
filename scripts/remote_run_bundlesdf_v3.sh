@@ -69,10 +69,12 @@ import my_cpp
 import kaolin
 import torch
 import open3d
+import pyrender
 from skimage import measure
 print("my_cpp", my_cpp.__file__)
 print("torch", torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())
 print("open3d", open3d.__version__)
+print("pyrender", pyrender.__version__)
 print("skimage_marching_cubes", measure.marching_cubes.__module__)
 if not torch.cuda.is_available():
     raise SystemExit("torch CUDA unavailable")
@@ -104,17 +106,9 @@ PY
   --stride 1 \
   --debug_level "$DEBUG_LEVEL"
 
-"$PREFIX/bin/python" run_custom.py \
-  --mode global_refine \
-  --video_dir "$DATASET_DIR" \
-  --out_folder "$OUTPUT_DIR" \
-  --use_segmenter 0 \
-  --use_gui 0 \
-  --stride 1 \
-  --debug_level "$DEBUG_LEVEL"
-
 test -f "$OUTPUT_DIR/config_bundletrack.yml"
 test -d "$OUTPUT_DIR/ob_in_cam"
-test -f "$OUTPUT_DIR/mesh/mesh_real_scale.obj"
+test -f "$OUTPUT_DIR/mesh_cleaned.obj"
+test -f "$OUTPUT_DIR/textured_mesh.obj"
 
 echo BUNDLESDF_RUN_V3_OK
