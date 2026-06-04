@@ -69,9 +69,11 @@ import my_cpp
 import kaolin
 import torch
 import open3d
+from skimage import measure
 print("my_cpp", my_cpp.__file__)
 print("torch", torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())
 print("open3d", open3d.__version__)
+print("skimage_marching_cubes", measure.marching_cubes.__module__)
 if not torch.cuda.is_available():
     raise SystemExit("torch CUDA unavailable")
 print("kaolin", kaolin.__version__)
