@@ -116,6 +116,7 @@ Implemented current mesh tools:
 - `scripts/complete_object_heightfield_from_mask_depth_v3.py`
 - `scripts/diagnose_object_mesh_temporal_consistency_v3.py`
 - `scripts/diagnose_vggt_focal_sweep_v3.py`
+- `scripts/diagnose_depth_source_hand_scale_v3.py`
 - `scripts/export_vggt_scene_observed_mesh_camera_v3.py`
 - `scripts/optimize_vggt_focal_hand_contact_graph_v3.py`
 - `scripts/patch_annotations_with_vggt_poses_v3.py`
@@ -158,6 +159,8 @@ After the full-scene VGGT branch, the next graph should treat VGGT scene geometr
 The focal/hand/contact graph implements this principle on frames 858 to 880. It rejects the broad-lid contact hypothesis by lowering contact probability instead of forcing geometry into contact. That is the correct failure signal for this branch: the central pink lid is a measured support/context surface, while the actual manipulated contact object is likely the liner or perimeter/rim material identified by the VLM surface plan.
 
 The failure to close contact after VGGT is a useful V3 result because it separates three mechanisms: Depth Anything creates large object-depth outliers in late frames, the DROID focal prior is inconsistent with VGGT/contact geometry, and WiLoR/MANO still places some measured hands at incompatible depths even when focal length is allowed to move. V3 cannot close until the object surface being contacted is reconstructed and a stronger temporal hand/depth model passes the same residual checks.
+
+A MANO hand-size depth-source diagnostic was added for frames 878 to 880. It backprojects measured 2D hand keypoints through the manifest depth maps, Depth Pro, and VGGT depth, then compares the resulting 3D hand bone scale with the stored MANO hand geometry. Only one hand row passes the strict measured-hand and reprojection-valid filters, so the result is weak evidence rather than a global scale owner. In that row, the manifest depth backprojects the hand to 1.15x the MANO reference scale, Depth Pro to 1.52x, and VGGT to 1.44x. The right-hand row in frame 880 has zero reprojection-valid joints under the same test. This rejects MANO hand size as a current closure mechanism for object scale in the late window, while preserving it as a residual for future graph optimization after hand tracking improves. The report is `/data2/ego_annotation_outputs/representative_trash/v3_depth_source_hand_scale_878_880/qc_depth_source_hand_scale_v3.json`.
 
 ## Surface-Specific Contact Branch
 
