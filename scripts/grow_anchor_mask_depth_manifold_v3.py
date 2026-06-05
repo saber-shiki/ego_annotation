@@ -33,6 +33,19 @@ def load_intrinsics(dataset: Path, manifest: dict) -> list[float]:
     values = manifest.get("intrinsics_fx_fy_cx_cy")
     if isinstance(values, list) and len(values) == 4:
         return [float(v) for v in values]
+    frames = manifest.get("frames")
+    if isinstance(frames, list) and frames:
+        rows = []
+        for row in frames:
+            raw = row.get("intrinsics_fx_fy_cx_cy")
+            if raw is None:
+                continue
+            values = np.asarray(raw, dtype=np.float64)
+            if values.shape != (4,) or not np.isfinite(values).all():
+                raise RuntimeError(f"invalid per-frame intrinsics for frame {row.get('frame_idx')}: {raw}")
+            rows.append(values)
+        if rows and len(rows) == len(frames):
+            return np.median(np.stack(rows, axis=0), axis=0).astype(float).tolist()
     K = np.loadtxt(dataset / "cam_K.txt").astype(np.float64)
     if K.shape != (3, 3):
         raise RuntimeError(f"{dataset / 'cam_K.txt'} must be 3x3")

@@ -63,6 +63,24 @@ def load_intrinsics(dataset: Path) -> np.ndarray:
     return K
 
 
+def intrinsics_from_entry(entry: dict) -> np.ndarray | None:
+    raw = entry.get("intrinsics_fx_fy_cx_cy")
+    if raw is None:
+        return None
+    values = np.asarray(raw, dtype=np.float64)
+    if values.shape != (4,) or not np.isfinite(values).all():
+        raise RuntimeError(f"invalid per-frame intrinsics for frame {entry.get('frame_idx')}: {raw}")
+    fx, fy, cx, cy = values.tolist()
+    return np.asarray([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+
+def entry_path(entry: dict, key: str, default: Path) -> Path:
+    raw = entry.get(key)
+    if raw is None:
+        return default
+    return Path(str(raw))
+
+
 def annotation_by_frame(path: Path) -> dict[int, dict]:
     frames = load_json(path).get("frames")
     if not isinstance(frames, list) or not frames:
@@ -77,8 +95,8 @@ def annotation_by_frame(path: Path) -> dict[int, dict]:
 def mesh_from_entry(entry: dict, dataset: Path, K: np.ndarray, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, dict]:
     idx = int(entry["index"])
     frame_idx = int(entry["frame_idx"])
-    depth_path = dataset / "depth" / f"{idx:06d}.png"
-    mask_path = dataset / "masks" / f"{idx:06d}.png"
+    depth_path = entry_path(entry, "depth", dataset / "depth" / f"{idx:06d}.png")
+    mask_path = entry_path(entry, "mask", dataset / "masks" / f"{idx:06d}.png")
     depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     if depth is None or mask is None:
@@ -164,7 +182,11 @@ def run(args: argparse.Namespace) -> dict:
     entries = manifest.get("frames")
     if not isinstance(entries, list) or not entries:
         raise RuntimeError(f"{args.manifest} must contain nonempty frames list")
-    K = load_intrinsics(args.dataset)
+    dataset_K = None
+    intrinsics_source = "manifest_row"
+    if any("intrinsics_fx_fy_cx_cy" not in entry for entry in entries):
+        dataset_K = load_intrinsics(args.dataset)
+        intrinsics_source = "dataset_cam_K"
     annotations = annotation_by_frame(args.annotations) if args.annotations is not None else {}
     if args.coordinate == "world" and args.annotations is None:
         raise RuntimeError("--annotations is required when --coordinate world")
@@ -178,6 +200,11 @@ def run(args: argparse.Namespace) -> dict:
             continue
         if args.coordinate == "world" and frame_idx not in annotations:
             raise RuntimeError(f"missing annotation frame {frame_idx}")
+        K = intrinsics_from_entry(entry)
+        if K is None:
+            if dataset_K is None:
+                raise RuntimeError(f"missing per-frame intrinsics and dataset cam_K for frame {frame_idx}")
+            K = dataset_K
         vertices_camera, faces, row = mesh_from_entry(entry, args.dataset, K, args)
         if row["status"] != "ok":
             rows.append(row)
@@ -213,7 +240,7 @@ def run(args: argparse.Namespace) -> dict:
         "frames": int(len(frame_indices)),
         "first_frame": int(frame_indices[0]),
         "last_frame": int(frame_indices[-1]),
-        "intrinsics_fx_fy_cx_cy": [float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])],
+        "intrinsics_source": intrinsics_source,
         "output_extent_median_m": np.median(ext, axis=0).astype(float).tolist(),
         "rows": rows,
     }
