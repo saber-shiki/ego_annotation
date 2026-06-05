@@ -173,7 +173,7 @@ def run(args: argparse.Namespace) -> dict:
     cap = cv2.VideoCapture(str(args.video))
     if not cap.isOpened():
         raise RuntimeError(f"failed to open video: {args.video}")
-    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    fps = float(args.output_fps) if args.output_fps is not None else float(cap.get(cv2.CAP_PROP_FPS))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     still_dir = args.output_dir / "stills"
     still_dir.mkdir(exist_ok=True)
@@ -239,6 +239,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--render-width", type=int, default=1280)
+    parser.add_argument("--output-fps", type=float, default=None)
     parser.add_argument("--max-mesh-edges", type=int, default=260)
     parser.add_argument("--still-frames", type=int, nargs="*", default=[858, 866, 867, 868, 869, 879, 880])
     parser.add_argument("--remote-output-root", type=Path, default=Path("/mnt/user-home/yiwen/ego_annotation_remote/data"))

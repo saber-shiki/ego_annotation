@@ -276,7 +276,7 @@ def run(args: argparse.Namespace) -> dict:
     cap = cv2.VideoCapture(str(args.video))
     if not cap.isOpened():
         raise RuntimeError(f"failed to open video: {args.video}")
-    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    fps = float(args.output_fps) if args.output_fps is not None else float(cap.get(cv2.CAP_PROP_FPS))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     still_dir = args.output_dir / "stills"
     still_dir.mkdir(exist_ok=True)
@@ -318,6 +318,7 @@ def run(args: argparse.Namespace) -> dict:
         "stills_dir": str(still_dir),
         "written_stills": written_stills,
         "frames": frames,
+        "fps": fps,
         "contact_frames": sorted(contact_by_frame),
         "world_view": "per-frame object-and-measured-hand focus in the stored metric world frame",
         "interpretation": "The right panel is an orthographic third-person rendering of the stored metric world frame. It does not assert gravity alignment.",
@@ -340,6 +341,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--frame-stride", type=int, default=1)
+    parser.add_argument("--output-fps", type=float, default=None)
     parser.add_argument("--output-width", type=int, default=1920)
     parser.add_argument("--panel-width", type=int, default=960)
     parser.add_argument("--panel-height", type=int, default=720)

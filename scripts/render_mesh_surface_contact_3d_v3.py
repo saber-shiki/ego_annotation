@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import open3d as o3d
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from compare_hand_streams_scale055_v3 import load_frame_window
@@ -107,16 +108,33 @@ def draw_camera_frustum(ax, origin: np.ndarray, scale: float, label: str = "head
     ax.text(origin[0], origin[1] - 0.08 * scale, origin[2] - 0.06 * scale, label, color="#111111", fontsize=9)
 
 
-def draw_mesh(ax, vertices: np.ndarray, faces: np.ndarray, max_faces: int) -> None:
-    face_ids = np.arange(len(faces), dtype=int)
-    if len(face_ids) > max_faces:
-        face_ids = face_ids[np.linspace(0, len(face_ids) - 1, max_faces, dtype=int)]
-    tris = vertices[faces[face_ids]]
-    collection = Poly3DCollection(tris, facecolors="#d95b59", edgecolors="#9d2f2f", linewidths=0.12, alpha=0.78)
+def simplify_mesh_for_display(vertices: np.ndarray, faces: np.ndarray, max_faces: int) -> tuple[np.ndarray, np.ndarray]:
+    if len(faces) <= max_faces:
+        return vertices, faces
+    mesh = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(vertices, dtype=float)),
+        o3d.utility.Vector3iVector(np.asarray(faces, dtype=np.int32)),
+    )
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=int(max_faces))
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    out_vertices = np.asarray(mesh.vertices, dtype=float)
+    out_faces = np.asarray(mesh.triangles, dtype=np.int32)
+    if out_vertices.ndim != 2 or out_vertices.shape[1] != 3 or out_faces.ndim != 2 or out_faces.shape[1] != 3:
+        raise RuntimeError("display mesh simplification produced invalid geometry")
+    if len(out_faces) == 0:
+        raise RuntimeError("display mesh simplification produced no faces")
+    return out_vertices, out_faces
+
+
+def draw_mesh(ax, vertices: np.ndarray, faces: np.ndarray) -> None:
+    tris = vertices[faces]
+    collection = Poly3DCollection(tris, facecolors="#d95b59", edgecolors="#9d2f2f", linewidths=0.04, alpha=0.86)
     ax.add_collection3d(collection)
-    point_ids = np.linspace(0, len(vertices) - 1, min(len(vertices), 420), dtype=int)
-    shown = vertices[point_ids]
-    ax.scatter(shown[:, 0], shown[:, 1], shown[:, 2], color="#b73734", s=2.0, alpha=0.35, depthshade=False)
 
 
 def draw_hand(ax, joints: np.ndarray, contact_vertices: np.ndarray) -> None:
@@ -162,6 +180,7 @@ def render_frame_3d(frame_idx: int, ann: dict, mesh: tuple[np.ndarray, np.ndarra
     vertices_world, faces = mesh
     t_world_camera = np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float)
     object_camera = to_camera(vertices_world, t_world_camera)
+    object_camera_display, faces_display = simplify_mesh_for_display(object_camera, faces, int(args.max_faces))
     hand = ann["hands"][int(row["hand_idx"])]
     joints = hand_joints_camera(hand, t_world_camera)
     vertices = hand_vertices_camera(hand, t_world_camera)
@@ -172,7 +191,7 @@ def render_frame_3d(frame_idx: int, ann: dict, mesh: tuple[np.ndarray, np.ndarra
     ax = fig.add_subplot(111, projection="3d")
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
-    draw_mesh(ax, object_camera, faces, int(args.max_faces))
+    draw_mesh(ax, object_camera_display, faces_display)
     draw_hand(ax, joints, contact_vertices)
     object_center = np.median(object_camera, axis=0)
     camera_marker = object_center + np.asarray([0.0, -0.16 * float(args.view_radius_m), -0.52 * float(args.view_radius_m)])
