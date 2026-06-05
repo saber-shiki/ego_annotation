@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import types
 import os
 import sys
 from pathlib import Path
@@ -33,12 +35,40 @@ def mesh_arrays(mesh) -> tuple[np.ndarray, np.ndarray]:
     return vertices.astype(float), faces.astype(np.int64)
 
 
+def load_image_pipeline(repo: Path):
+    trellis_root = repo / "trellis"
+    pipelines_root = trellis_root / "pipelines"
+    image_pipeline_path = pipelines_root / "trellis_image_to_3d.py"
+    if not image_pipeline_path.exists():
+        raise RuntimeError(f"TRELLIS image pipeline missing: {image_pipeline_path}")
+
+    trellis_pkg = types.ModuleType("trellis")
+    trellis_pkg.__path__ = [str(trellis_root)]
+    trellis_pkg.__package__ = "trellis"
+    sys.modules["trellis"] = trellis_pkg
+
+    pipelines_pkg = types.ModuleType("trellis.pipelines")
+    pipelines_pkg.__path__ = [str(pipelines_root)]
+    pipelines_pkg.__package__ = "trellis.pipelines"
+    sys.modules["trellis.pipelines"] = pipelines_pkg
+
+    spec = importlib.util.spec_from_file_location("trellis.pipelines.trellis_image_to_3d", image_pipeline_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load TRELLIS image pipeline spec: {image_pipeline_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.TrellisImageTo3DPipeline
+
+
 def run(args: argparse.Namespace) -> dict:
     os.environ["ATTN_BACKEND"] = args.attn_backend
     os.environ["SPCONV_ALGO"] = args.spconv_algo
     sys.path.insert(0, str(args.repo))
 
-    from trellis.pipelines import TrellisImageTo3DPipeline
+    # Load the image pipeline without executing TRELLIS package initializers.
+    # Those initializers import the text pipeline and Open3D, unused here.
+    TrellisImageTo3DPipeline = load_image_pipeline(args.repo)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     image = Image.open(args.image).convert("RGBA")
