@@ -181,8 +181,10 @@ def selected_entries(args: argparse.Namespace) -> list[dict]:
     ]
     expected = list(range(int(args.frame_start), int(args.frame_end) + 1))
     actual = [int(entry["frame_idx"]) for entry in entries]
-    if actual != expected:
+    if actual != expected and not args.allow_sparse_frames:
         raise RuntimeError(f"manifest frames are not contiguous over requested range: expected {expected}, got {actual}")
+    if not entries:
+        raise RuntimeError("no manifest frames selected")
     return entries
 
 
@@ -286,6 +288,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-faces", type=int, default=300)
     parser.add_argument("--mask-erode-px", type=int, default=0)
     parser.add_argument("--allow-depth-fill", action="store_true")
+    parser.add_argument("--allow-sparse-frames", action="store_true")
     parser.add_argument("--max-filled-depth-fraction", type=float, default=0.002)
     return parser.parse_args()
 
