@@ -97,12 +97,14 @@ def draw_hand(frame: np.ndarray, hand: dict) -> None:
 
 def run(args: argparse.Namespace) -> dict:
     frames = load_frame_window(args.annotations, args.frame_start, args.frame_end)
-    qc = load_json(args.contact_qc)
-    reliable_frames = {
-        int(row["frame_idx"])
-        for row in qc["streams"][args.stream_name]["rows_preview"]
-        if bool(row.get("reliable_for_contact", False))
-    }
+    reliable_frames: set[int] = set()
+    if args.contact_qc is not None:
+        qc = load_json(args.contact_qc)
+        reliable_frames = {
+            int(row["frame_idx"])
+            for row in qc["streams"][args.stream_name]["rows_preview"]
+            if bool(row.get("reliable_for_contact", False))
+        }
     review_frames = sorted(set(args.extra_frame or []) | reliable_frames)
     if not review_frames:
         review_frames = list(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride)))
@@ -123,11 +125,11 @@ def run(args: argparse.Namespace) -> dict:
     report = {
         "status": "ok",
         "annotations": str(args.annotations),
-        "contact_qc": str(args.contact_qc),
+        "contact_qc": str(args.contact_qc) if args.contact_qc is not None else None,
         "stream_name": args.stream_name,
         "review_frames": review_frames,
         "written": written,
-        "interpretation": "White dots are measured 2D keypoints; colored skeleton is the refit MANO projection; red overlay is the object mask.",
+        "interpretation": "White dots are measured 2D keypoints when present; colored skeleton is the MANO projection; red overlay is the object mask.",
     }
     report_path = args.output_dir / "review_manifest.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -139,8 +141,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
-    parser.add_argument("--contact-qc", type=Path, required=True)
-    parser.add_argument("--stream-name", required=True)
+    parser.add_argument("--contact-qc", type=Path)
+    parser.add_argument("--stream-name", default="hand_stream")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)

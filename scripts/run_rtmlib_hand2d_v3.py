@@ -194,26 +194,29 @@ def run(args: argparse.Namespace) -> dict:
     if not writer.isOpened():
         raise RuntimeError(f"failed to open video writer: {overlay_path}")
 
+    source_frame_offset = int(args.source_frame_offset)
     cap.set(cv2.CAP_PROP_POS_FRAMES, args.frame_start)
     frames = []
     comparisons = []
     started = time.time()
     for frame_idx in range(args.frame_start, args.frame_end + 1):
+        source_frame_idx = int(frame_idx + source_frame_offset)
         ok, frame = cap.read()
         if not ok:
             raise RuntimeError(f"failed to read frame {frame_idx}")
         keypoints, scores = tracker(frame)
         hands = to_hands(keypoints, scores, args.min_keypoints)
-        frame_comparisons = compare_to_wilor(frame_idx, hands, wilor_frames)
-        comparisons.extend({"frame_idx": frame_idx, **row} for row in frame_comparisons)
+        frame_comparisons = compare_to_wilor(source_frame_idx, hands, wilor_frames)
+        comparisons.extend({"frame_idx": source_frame_idx, **row} for row in frame_comparisons)
         rendered = draw_hands(frame, hands, args.draw_score_thr)
         writer.write(rendered)
-        if frame_idx in args.review_frames:
-            cv2.imwrite(str(review_dir / f"frame_{frame_idx:06d}.jpg"), rendered)
+        if source_frame_idx in args.review_frames:
+            cv2.imwrite(str(review_dir / f"frame_{source_frame_idx:06d}.jpg"), rendered)
         frames.append(
             {
-                "frame_idx": int(frame_idx),
-                "time_s": float(frame_idx / fps),
+                "frame_idx": int(source_frame_idx),
+                "local_frame_idx": int(frame_idx),
+                "time_s": float(source_frame_idx / fps),
                 "hands": hands,
                 "wilor_comparisons": frame_comparisons,
             }
@@ -230,8 +233,11 @@ def run(args: argparse.Namespace) -> dict:
             {
                 "clip": str(args.clip),
                 "video": {"fps": fps, "width": width, "height": height, "frame_count": frame_count},
-                "frame_start": int(args.frame_start),
-                "frame_end": int(args.frame_end),
+                "frame_start": int(args.frame_start + source_frame_offset),
+                "frame_end": int(args.frame_end + source_frame_offset),
+                "local_frame_start": int(args.frame_start),
+                "local_frame_end": int(args.frame_end),
+                "source_frame_offset": int(source_frame_offset),
                 "frames": frames,
             },
             indent=2,
@@ -241,8 +247,11 @@ def run(args: argparse.Namespace) -> dict:
     qc = {
         "status": "ok",
         "clip": str(args.clip),
-        "frame_start": int(args.frame_start),
-        "frame_end": int(args.frame_end),
+        "frame_start": int(args.frame_start + source_frame_offset),
+        "frame_end": int(args.frame_end + source_frame_offset),
+        "local_frame_start": int(args.frame_start),
+        "local_frame_end": int(args.frame_end),
+        "source_frame_offset": int(source_frame_offset),
         "processed_frames": len(frames),
         "frames_with_hands": int(sum(1 for n in detected if n > 0)),
         "hand_detection_rate": float(sum(1 for n in detected if n > 0) / max(1, len(frames))),
@@ -266,6 +275,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
+    parser.add_argument("--source-frame-offset", type=int, default=0)
     parser.add_argument("--wilor-raw", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--backend", default="onnxruntime")

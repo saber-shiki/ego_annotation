@@ -62,6 +62,9 @@ def fallback_intrinsics(frame: dict, observed: dict | None) -> np.ndarray:
         intr = np.asarray(hand.get("source_intrinsics", []), dtype=float)
         if intr.shape == (4,):
             return intr
+    intr = np.asarray(frame.get("camera", {}).get("vggt_source_intrinsics_fx_fy_cx_cy", []), dtype=float)
+    if intr.shape == (4,):
+        return intr
     raise RuntimeError("no source intrinsics available")
 
 
