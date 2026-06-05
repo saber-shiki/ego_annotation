@@ -120,6 +120,7 @@ def call_vlm(args: argparse.Namespace, object_plan: dict, frames: list[int], she
                 "Select SAM2 mask candidates for an egocentric manipulation object. "
                 "Each row has three candidate masks for the same source frame. The yellow overlay is the candidate mask. "
                 "Choose one candidate only if it primarily covers the target physical object instance and avoids hands, supports, tools, containers, background, and nearby similar objects. "
+                "The selected mask must represent one contiguous physical object instance, not a union of several nearby instances or disconnected visual artifacts. "
                 "Reject the frame when every candidate is a fragment, includes multiple object instances, switches to a nearby object, or leaks onto hands/background. "
                 "Set candidate to -1 when accepted is false.\n\n"
                 f"Target object plan:\n{json.dumps(object_plan, ensure_ascii=True)}\n\n"
@@ -180,6 +181,12 @@ def call_vlm(args: argparse.Namespace, object_plan: dict, frames: list[int], she
     return out
 
 
+def frame_batches(frames: list[int], batch_size: int) -> list[list[int]]:
+    if batch_size < 1:
+        raise RuntimeError("--batch-size must be positive")
+    return [frames[start : start + batch_size] for start in range(0, len(frames), batch_size)]
+
+
 def write_selected_masks(args: argparse.Namespace, selections: list[dict], reports: list[dict]) -> dict:
     report_by_frame = {int(row["frame_idx"]): row for row in reports}
     mask_dir = args.output_dir / "selected_masks"
@@ -224,9 +231,16 @@ def run(args: argparse.Namespace) -> dict:
     if not frames:
         raise RuntimeError("no frames to select")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    sheet_path = args.output_dir / "sam2_candidate_selection_sheet.jpg"
-    build_sheet(args.sam2_dir / "sam2_candidate_review", frames, sheet_path, int(args.tile_width))
-    selections = call_vlm(args, object_plan, frames, sheet_path)
+    selections = []
+    sheet_paths = []
+    for batch_i, batch_frames in enumerate(frame_batches(frames, int(args.batch_size))):
+        if len(frames) == len(batch_frames):
+            sheet_path = args.output_dir / "sam2_candidate_selection_sheet.jpg"
+        else:
+            sheet_path = args.output_dir / f"sam2_candidate_selection_sheet_batch_{batch_i:03d}.jpg"
+        build_sheet(args.sam2_dir / "sam2_candidate_review", batch_frames, sheet_path, int(args.tile_width))
+        sheet_paths.append(str(sheet_path))
+        selections.extend(call_vlm(args, object_plan, batch_frames, sheet_path))
     outputs = write_selected_masks(args, selections, reports)
     qc = {
         "status": "ok",
@@ -240,7 +254,7 @@ def run(args: argparse.Namespace) -> dict:
         "accepted_frames": [int(row["frame_idx"]) for row in selections if row["accepted"]],
         "rejected_frames": [int(row["frame_idx"]) for row in selections if not row["accepted"]],
         "selections": selections,
-        "selection_sheet": str(sheet_path),
+        "selection_sheets": sheet_paths,
         "outputs": outputs,
         "elapsed_s": time.time() - started,
     }
@@ -256,6 +270,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--object-index", type=int, default=0)
     parser.add_argument("--frames", nargs="*")
+    parser.add_argument("--batch-size", type=int, default=0)
     parser.add_argument("--tile-width", type=int, default=360)
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
@@ -264,7 +279,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--detail", default="high")
     parser.add_argument("--timeout-s", type=float, default=180.0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if int(args.batch_size) == 0:
+        args.batch_size = 10**9
+    return args
 
 
 def main() -> None:

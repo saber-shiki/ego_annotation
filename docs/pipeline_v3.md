@@ -958,6 +958,21 @@ Interpretation: focal length is a real sensitivity, but focal-only correction do
 
 ## Immediate Execution Plan
 
+### Wild-Rice Representative Branch
+
+The active wild-rice clip tests a different representative failure mode from the trash-lid branch: many visually similar thin stems, hands occluding the manipulated object, and a fast egocentric camera above a reflective preparation table.
+
+Current evidence for frames 2520 to 2550:
+
+- full-scene VGGT native camera was run on the A800 host and scaled by object-mask UniDepth/VGGT depth ratio. The 31-frame camera archive is `/data2/ego_annotation_outputs/representative_wild_rice/v3_vggt_native_camera_2520_2550/vggt_native_camera_v3.npz`.
+- HaWoR needed a 121-frame context clip because a 31-frame clip produced no DROID-SLAM proximity factors. The context run produced 62 hands for frames 2520 to 2550, but visual projection QC rejected raw HaWoR as final MANO because both hands were shifted lower/outward.
+- RTMLib was run on A800 for the same source frames and merged as independent 2D hand-keypoint evidence. The target-camera similarity refit improved median hand reprojection from 26.4 px to 16.5 px and median MANO-minus-UniDepth from -13.2 mm to -3.3 mm. The p95 reprojection remains high, so the refit stream is a diagnostic MANO observation, not final physical contact evidence.
+- dense VLM point prompts plus per-frame SAM2 candidates were run for every frame. A one-sheet VLM selector accepted masks that visual QC rejected: frames 2534 to 2539 merge nearby stems, and frames 2548 to 2550 initially selected prompt/image artifacts.
+- the selector was changed to batch smaller candidate sheets at higher tile resolution. The rerun fixed late frames 2548 to 2549 by selecting a clean single-stem candidate, while the VLM verifier rejected frame 2550 as a detached peel.
+- `scripts/prune_verified_mask_track_v3.py` adds a generic mask-quality filter using VLM verdicts, connected components, secondary-component ratio, and bbox fill. With relaxed thin-object fill, it keeps 21 of 31 frames and rejects disconnected or wrong-object masks. The accepted mask stream is `/data2/ego_annotation_outputs/representative_wild_rice/v3_active_stem_sam2_vlm_selected_dense_batched_pruned_relaxed_2520_2550/sam2_vlm_selected_track_pruned.json`.
+
+Interpretation: this branch now has a defensible observed-surface mask stream over most of the 31-frame manipulation window, but it does not yet have a complete object mesh or closed contact reasoning. The next valid object step is to build observed surfaces from the pruned mask stream and then test mesh completion/fusion against projection, depth, temporal rigidity, and hand contact. Frames rejected by the pruner must remain unobserved; forcing them into a continuous object mesh would reintroduce the same wrong-object simplification.
+
 1. Recover full object scale and pose for the central pink-lid object with explicit scale ownership. Use the VGGT patch as a visible-surface factor, but add full-object evidence from the SAMWISE silhouette, the TRELLIS complete-prior silhouette, MANO hand-size scale, Depth Pro/UniDepth/Depth Anything/VGGT depth-source reliability, and any accepted scene support or calibration source. The optimizer must keep the complete mesh at a physically plausible object scale; shrinking the complete prior to the 4 to 6 cm DROID-aligned VGGT patch is rejected. The current strongest scale hypothesis is 0.55 because Depth Pro and UniDepth both select it, but it is still an unresolved hypothesis until it also passes hand/object contact and calibrated scene-scale checks.
 2. Run language-conditioned or image-conditioned segmentation for the actual contact materials in the 840 to 930 window, starting with `white_liner_draped_edge_second_can` and perimeter/rim prompts from the VLM surface plan. Visual or VLM review must accept the masks before meshing.
 3. Reconstruct accepted contact-surface masks through the same category-agnostic geometry path: SAMWISE or image-conditioned SAM mask, VGGT metric surface where available, temporal consistency QC, and projection residuals. Depth Anything should be used only when it agrees with VGGT or another metric source.
