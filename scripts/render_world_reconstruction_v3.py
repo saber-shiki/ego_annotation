@@ -26,7 +26,12 @@ def load_json(path: Path) -> dict:
 
 
 def reliable_contact_rows(contact: dict) -> dict[int, dict]:
-    rows = [row for row in contact.get("rows_detail", []) if bool(row.get("reliable_for_contact", False))]
+    rows = [
+        row
+        for row in contact.get("rows_detail", [])
+        if bool(row.get("reliable_for_contact", False))
+        or bool(row.get("geometry_backed_temporal_contact", False))
+    ]
     return {int(row["frame_idx"]): row for row in rows}
 
 
@@ -138,6 +143,7 @@ def draw_camera(
     basis: np.ndarray,
     radius: float,
     scale: float,
+    label: bool = True,
 ) -> None:
     frustum = camera_frustum_points(t_world_camera, scale)
     origin = frustum[0]
@@ -147,7 +153,31 @@ def draw_camera(
     draw_polyline_3d(image, np.vstack([corners, corners[0]]), center, basis, radius, (20, 20, 20), 2, closed=False)
     xy, _ = project(frustum[:1], center, basis, radius, (image.shape[1], image.shape[0]))
     cv2.circle(image, tuple(xy[0].astype(int)), 5, (20, 20, 20), -1, cv2.LINE_AA)
-    cv2.putText(image, "head camera", tuple((xy[0] + np.asarray([8, -8])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (20, 20, 20), 1, cv2.LINE_AA)
+    if label:
+        cv2.putText(image, "head camera", tuple((xy[0] + np.asarray([8, -8])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (20, 20, 20), 1, cv2.LINE_AA)
+
+
+def draw_camera_inset(
+    image: np.ndarray,
+    annotations: dict[int, dict],
+    frame_idx: int,
+    args: argparse.Namespace,
+) -> None:
+    frames = sorted(annotations)
+    path = np.asarray([annotations[f]["camera"]["position_world_m"] for f in frames], dtype=float)
+    current = np.asarray(annotations[int(frame_idx)]["camera"]["T_world_camera_metric"], dtype=float)
+    frustum = camera_frustum_points(current, float(args.frustum_scale_m) * 2.8)
+    center, basis, radius = frame_view([path, frustum], 1.8)
+    h, w = 180, 250
+    x0 = image.shape[1] - w - 22
+    y0 = image.shape[0] - h - 58
+    inset = image[y0 : y0 + h, x0 : x0 + w].copy()
+    panel = np.full_like(inset, (238, 240, 236))
+    cv2.rectangle(panel, (0, 0), (w - 1, h - 1), (80, 80, 80), 1, cv2.LINE_AA)
+    draw_camera_path(panel, annotations, int(frame_idx), center, basis, radius)
+    draw_camera(panel, current, center, basis, radius, float(args.frustum_scale_m) * 2.8, label=False)
+    cv2.putText(panel, "head path", (12, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (25, 25, 25), 1, cv2.LINE_AA)
+    image[y0 : y0 + h, x0 : x0 + w] = panel
 
 
 def draw_hand_world(
@@ -193,6 +223,7 @@ def draw_world_panel(
     draw_mesh_world(image, vertices, faces, center, basis, radius, int(args.max_mesh_faces))
     draw_camera_path(image, annotations, int(frame_idx), center, basis, radius)
     draw_camera(image, np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float), center, basis, radius, float(args.frustum_scale_m))
+    draw_camera_inset(image, annotations, int(frame_idx), args)
     row = contact_by_frame.get(int(frame_idx))
     for i, hand in enumerate(ann.get("hands", [])):
         ids = row.get("best_patch_vertex_ids", []) if row is not None and int(row["hand_idx"]) == i else None

@@ -41,6 +41,15 @@ def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def display_contact_rows(contact: dict) -> list[dict]:
+    return [
+        row
+        for row in contact.get("rows_detail", [])
+        if bool(row.get("reliable_for_contact", False))
+        or bool(row.get("geometry_backed_temporal_contact", False))
+    ]
+
+
 def load_mesh_archive(path: Path) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     blob = np.load(path)
     frame_idx = blob["frame_idx"].astype(int)
@@ -154,8 +163,9 @@ def put_label(frame: np.ndarray, frame_idx: int, row: dict | None) -> None:
     if row is None:
         text = f"frame {frame_idx}  no reliable mesh-surface contact"
     else:
+        confidence = "detector-backed" if bool(row.get("reliable_for_contact", False)) else "geometry-backed"
         text = (
-            f"frame {frame_idx}  {row['side']} hand mesh contact  "
+            f"frame {frame_idx}  {row['side']} hand {confidence} mesh contact  "
             f"reproj {row['median_joint_reprojection_px']:.1f}px  "
             f"surface p95 {row['best_patch_distance_p95_m']*1000:.1f}mm  "
             f"signed p95 {row['best_patch_signed_gap_p95_abs_m']*1000:.1f}mm"
@@ -166,7 +176,7 @@ def put_label(frame: np.ndarray, frame_idx: int, row: dict | None) -> None:
 def run(args: argparse.Namespace) -> dict:
     annotations = load_frame_window(args.annotations, args.frame_start, args.frame_end)
     contact = load_json(args.contact_report)
-    rows = [row for row in contact.get("rows_detail", []) if bool(row.get("reliable_for_contact", False))]
+    rows = display_contact_rows(contact)
     contact_by_frame = {int(row["frame_idx"]): row for row in rows}
     frames = sorted(set(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride))) | set(contact_by_frame))
     meshes = load_mesh_archive(args.object_mesh_npz)
