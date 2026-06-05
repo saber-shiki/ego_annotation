@@ -226,7 +226,7 @@ def run(args: argparse.Namespace) -> dict:
     if len(frame_indices) < int(args.min_frames):
         raise RuntimeError(f"only {len(frame_indices)} observed-surface frames exported")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    archive = args.output_dir / "observed_mask_depth_meshes_world.npz"
+    archive = args.output_dir / f"observed_mask_depth_meshes_{args.coordinate}.npz"
     save_archive(archive, frame_indices, vertices_world, faces_all)
     ext = np.asarray([row["output_extent_m"] for row in rows if row["status"] == "ok"], dtype=np.float64)
     report = {
