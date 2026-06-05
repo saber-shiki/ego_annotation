@@ -49,10 +49,25 @@ def triangle_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, face
         local_poly = poly - np.asarray([x0, y0], dtype=np.int32)
         mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
         cv2.fillConvexPoly(mask, local_poly, 1, cv2.LINE_AA)
-        face_depth = float(np.min(z[faces[int(face_id)]]))
+        tri = poly_f.astype(np.float64)
+        tri_z = z[faces[int(face_id)]].astype(np.float64)
+        denom = (
+            (tri[1, 1] - tri[2, 1]) * (tri[0, 0] - tri[2, 0])
+            + (tri[2, 0] - tri[1, 0]) * (tri[0, 1] - tri[2, 1])
+        )
+        if abs(float(denom)) < 1e-9:
+            continue
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        px = xx.astype(np.float64) + 0.5
+        py = yy.astype(np.float64) + 0.5
+        w0 = ((tri[1, 1] - tri[2, 1]) * (px - tri[2, 0]) + (tri[2, 0] - tri[1, 0]) * (py - tri[2, 1])) / denom
+        w1 = ((tri[2, 1] - tri[0, 1]) * (px - tri[2, 0]) + (tri[0, 0] - tri[2, 0]) * (py - tri[2, 1])) / denom
+        w2 = 1.0 - w0 - w1
+        bary_inside = (w0 >= -1e-4) & (w1 >= -1e-4) & (w2 >= -1e-4)
+        face_depth = w0 * tri_z[0] + w1 * tri_z[1] + w2 * tri_z[2]
         region = zbuf[y0:y1, x0:x1]
-        update = (mask > 0) & (face_depth < region)
-        region[update] = face_depth
+        update = (mask > 0) & bary_inside & np.isfinite(face_depth) & (face_depth > 0.0) & (face_depth < region)
+        region[update] = face_depth[update]
     return zbuf
 
 
