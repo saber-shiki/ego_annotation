@@ -62,6 +62,13 @@ def target_intrinsics(frame: dict, args: argparse.Namespace) -> np.ndarray:
     return intr
 
 
+def target_source_size(frame: dict, args: argparse.Namespace) -> np.ndarray:
+    size = np.asarray(frame.get("object", {}).get("source_image_size", []), dtype=float)
+    if size.shape == (2,) and np.isfinite(size).all() and np.all(size > 0.0):
+        return size
+    return np.asarray([float(args.source_width), float(args.source_height)], dtype=float)
+
+
 def local_vertices_key(hand: dict) -> str:
     if "vertices_camera" in hand:
         return "vertices_camera"
@@ -143,7 +150,7 @@ def build_obs(args: argparse.Namespace) -> tuple[list[dict], list[Obs], list[dic
         output_frames.append(target)
         try:
             depth = depth_frame(depths, frame_to_depth_i, frame_idx)
-            source_size = np.asarray(target["object"]["source_image_size"], dtype=float)
+            source_size = target_source_size(target, args)
             intr = target_intrinsics(target, args)
         except Exception as exc:
             skipped.append({"frame_idx": frame_idx, "reason": str(exc)})
@@ -474,6 +481,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--target-intrinsics-source", choices=["annotation-vggt", "cli"], default="annotation-vggt")
     parser.add_argument("--intrinsics", type=float, nargs=4, default=[2304.0, 2304.0, 960.0, 540.0])
+    parser.add_argument("--source-width", type=int, default=1920)
+    parser.add_argument("--source-height", type=int, default=1080)
     parser.add_argument("--min-observations", type=int, default=3)
     parser.add_argument("--min-detector-score", type=float, default=0.5)
     parser.add_argument("--min-depth-keypoints", type=int, default=8)
