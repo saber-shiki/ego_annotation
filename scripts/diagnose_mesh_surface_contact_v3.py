@@ -654,6 +654,16 @@ def row_passes_noncontact_checks(row: dict) -> bool:
     )
 
 
+def row_passes_geometry_backed_observation(row: dict) -> bool:
+    return bool(
+        row.get("measurement_available", False)
+        and row.get("projection_ok", False)
+        and row.get("depth_ok", False)
+        and row.get("stable_depth_ok", False)
+        and row.get("bone_scale_ok", False)
+    )
+
+
 def patch_candidates_for_row(row: dict) -> list[dict]:
     candidates: list[dict] = []
     if bool(row.get("global_contact_geometry_ok", False)):
@@ -777,6 +787,18 @@ def apply_temporal_support(row: dict, candidate: dict, track_key: str, frames: l
         row["selected_patch_region"] = None
 
 
+def apply_geometry_temporal_support(row: dict, candidate: dict, track_key: str, frames: list[int], drift: float) -> None:
+    rank = support_rank(candidate, len(set(frames)), float(drift))
+    previous = row.get("_geometry_support_rank")
+    if previous is not None and tuple(previous) >= rank:
+        return
+    row["_geometry_support_rank"] = list(rank)
+    row["geometry_backed_patch_temporal_support_frames"] = int(len(set(frames)))
+    row["geometry_backed_patch_temporal_support_span_frames"] = int(max(frames) - min(frames))
+    row["geometry_backed_patch_temporal_local_drift_m"] = float(drift)
+    row["geometry_backed_selected_patch_track_key"] = track_key
+
+
 def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> None:
     for row in rows:
         row["patch_temporal_support_frames"] = 0
@@ -784,63 +806,98 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
         row["patch_temporal_local_drift_m"] = None
         row["patch_temporal_local_drift_ok"] = False
         row["patch_temporal_support_ok"] = False
+        row["geometry_backed_observation"] = bool(row_passes_geometry_backed_observation(row))
+        row["geometry_backed_patch_temporal_support_frames"] = 0
+        row["geometry_backed_patch_temporal_support_span_frames"] = 0
+        row["geometry_backed_patch_temporal_local_drift_m"] = None
+        row["geometry_backed_temporal_contact"] = False
         row["reliable_geometry_contact"] = bool(row_passes_noncontact_checks(row) and row.get("contact_geometry_ok", False))
         row["reliable_for_contact"] = False
         row.pop("_support_rank", None)
+        row.pop("_geometry_support_rank", None)
 
-    groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
+    strict_groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
+    geometry_groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
     for row in rows:
-        if not row_passes_noncontact_checks(row):
-            continue
-        for candidate in patch_candidates_for_row(row):
-            center = np.asarray(candidate.get("center"), dtype=float)
-            if center.shape != (3,) or not np.isfinite(center).all():
+        for is_strict, groups in (
+            (True, strict_groups),
+            (False, geometry_groups),
+        ):
+            if is_strict and not row_passes_noncontact_checks(row):
                 continue
-            track = row.get("track_id")
-            track_key = f"{row.get('side')}:{row.get('hand_idx')}" if track is None else str(track)
-            key = (track_key, str(candidate["source"]), str(candidate["region"]))
-            groups.setdefault(key, []).append((row, candidate))
-    for (track_key, source, region), candidates in groups.items():
-        ordered = sorted(candidates, key=lambda item: int(item[0]["frame_idx"]))
-        clusters: list[list[tuple[dict, dict]]] = []
-        cur: list[tuple[dict, dict]] = []
-        for item in ordered:
-            row = item[0]
-            if not cur:
-                cur = [item]
-            elif int(row["frame_idx"]) - int(cur[-1][0]["frame_idx"]) <= int(args.max_temporal_patch_gap_frames):
-                cur.append(item)
-            else:
-                clusters.append(cur)
-                cur = [item]
-        if cur:
-            clusters.append(cur)
-        for cluster in clusters:
-            n = len(cluster)
-            for start in range(n):
-                for end in range(start + int(args.min_temporal_patch_frames), n + 1):
-                    window = cluster[start:end]
-                    frames = [int(row["frame_idx"]) for row, _candidate in window]
-                    if len(set(frames)) < int(args.min_temporal_patch_frames):
-                        continue
-                    if args.require_consecutive_temporal_patch_frames:
-                        expected = list(range(min(frames), max(frames) + 1))
-                        if sorted(set(frames)) != expected:
-                            continue
-                    centers = [np.asarray(candidate.get("center"), dtype=float) for _row, candidate in window]
-                    centers = [center for center in centers if center.shape == (3,) and np.isfinite(center).all()]
-                    if len(centers) != len(window):
-                        continue
-                    drift = point_extent(np.stack(centers, axis=0))
-                    if drift is None or float(drift) > temporal_drift_limit(window[0][1], args):
-                        continue
-                    for row, candidate in window:
-                        apply_temporal_support(row, candidate, track_key, frames, float(drift))
-            for row, _candidate in cluster:
-                row["reliable_geometry_contact"] = bool(row_passes_noncontact_checks(row) and row["contact_geometry_ok"])
-                row["reliable_for_contact"] = bool(row["reliable_geometry_contact"] and row["patch_temporal_support_ok"])
+            if not is_strict and not row_passes_geometry_backed_observation(row):
+                continue
+            for candidate in patch_candidates_for_row(row):
+                center = np.asarray(candidate.get("center"), dtype=float)
+                if center.shape != (3,) or not np.isfinite(center).all():
+                    continue
+                track = row.get("track_id")
+                track_key = f"{row.get('side')}:{row.get('hand_idx')}" if track is None else str(track)
+                key = (track_key, str(candidate["source"]), str(candidate["region"]))
+                groups.setdefault(key, []).append((row, candidate))
+
+    def apply_groups(groups: dict[tuple[str, str, str], list[tuple[dict, dict]]], geometry_backed: bool) -> None:
+        for (track_key, source, region), candidates in groups.items():
+            apply_temporal_group(track_key, candidates, args, geometry_backed)
+
+    apply_groups(strict_groups, False)
+    apply_groups(geometry_groups, True)
     for row in rows:
+        row["reliable_geometry_contact"] = bool(row_passes_noncontact_checks(row) and row["contact_geometry_ok"])
+        row["reliable_for_contact"] = bool(row["reliable_geometry_contact"] and row["patch_temporal_support_ok"])
+        row["geometry_backed_temporal_contact"] = bool(
+            row["geometry_backed_observation"]
+            and row["contact_geometry_ok"]
+            and row["geometry_backed_patch_temporal_support_frames"] >= int(args.min_temporal_patch_frames)
+        )
         row.pop("_support_rank", None)
+        row.pop("_geometry_support_rank", None)
+
+
+def apply_temporal_group(
+    track_key: str,
+    candidates: list[tuple[dict, dict]],
+    args: argparse.Namespace,
+    geometry_backed: bool,
+) -> None:
+    ordered = sorted(candidates, key=lambda item: int(item[0]["frame_idx"]))
+    clusters: list[list[tuple[dict, dict]]] = []
+    cur: list[tuple[dict, dict]] = []
+    for item in ordered:
+        row = item[0]
+        if not cur:
+            cur = [item]
+        elif int(row["frame_idx"]) - int(cur[-1][0]["frame_idx"]) <= int(args.max_temporal_patch_gap_frames):
+            cur.append(item)
+        else:
+            clusters.append(cur)
+            cur = [item]
+    if cur:
+        clusters.append(cur)
+    for cluster in clusters:
+        n = len(cluster)
+        for start in range(n):
+            for end in range(start + int(args.min_temporal_patch_frames), n + 1):
+                window = cluster[start:end]
+                frames = [int(row["frame_idx"]) for row, _candidate in window]
+                if len(set(frames)) < int(args.min_temporal_patch_frames):
+                    continue
+                if args.require_consecutive_temporal_patch_frames:
+                    expected = list(range(min(frames), max(frames) + 1))
+                    if sorted(set(frames)) != expected:
+                        continue
+                centers = [np.asarray(candidate.get("center"), dtype=float) for _row, candidate in window]
+                centers = [center for center in centers if center.shape == (3,) and np.isfinite(center).all()]
+                if len(centers) != len(window):
+                    continue
+                drift = point_extent(np.stack(centers, axis=0))
+                if drift is None or float(drift) > temporal_drift_limit(window[0][1], args):
+                    continue
+                for row, candidate in window:
+                    if geometry_backed:
+                        apply_geometry_temporal_support(row, candidate, track_key, frames, float(drift))
+                    else:
+                        apply_temporal_support(row, candidate, track_key, frames, float(drift))
 
 
 def condition_counts(rows: list[dict]) -> dict:
@@ -857,6 +914,8 @@ def condition_counts(rows: list[dict]) -> dict:
         "patch_penetration_ok",
         "contact_geometry_ok",
         "patch_temporal_support_ok",
+        "geometry_backed_observation",
+        "geometry_backed_temporal_contact",
         "reliable_geometry_contact",
         "reliable_for_contact",
     ]
@@ -888,6 +947,8 @@ def compact_rows(rows: list[dict], limit: int) -> list[dict]:
         "patch_temporal_support_frames",
         "patch_temporal_local_drift_m",
         "patch_temporal_support_ok",
+        "geometry_backed_observation",
+        "geometry_backed_temporal_contact",
         "reliable_for_contact",
     ]
 
@@ -907,16 +968,21 @@ def compact_rows(rows: list[dict], limit: int) -> list[dict]:
 def summarize_rows(rows: list[dict]) -> dict:
     measured = [row for row in rows if row["measurement_available"]]
     measured_high = [row for row in measured if row["detector_ok"]]
+    geometry_backed = [row for row in rows if row.get("geometry_backed_observation", False)]
+    geometry_backed_temporal = [row for row in rows if row.get("geometry_backed_temporal_contact", False)]
     reliable_geometry = [row for row in rows if row["reliable_geometry_contact"]]
     reliable = [row for row in rows if row["reliable_for_contact"]]
     return {
         "rows": int(len(rows)),
         "measured_rows": int(len(measured)),
         "measured_high_score_rows": int(len(measured_high)),
+        "geometry_backed_observation_rows": int(len(geometry_backed)),
+        "geometry_backed_temporal_contact_rows": int(len(geometry_backed_temporal)),
         "reliable_geometry_contact_rows": int(len(reliable_geometry)),
         "reliable_temporal_contact_rows": int(len(reliable)),
         "condition_counts_all": condition_counts(rows),
         "condition_counts_measured_high_score": condition_counts(measured_high),
+        "condition_counts_geometry_backed": condition_counts(geometry_backed),
         "summary_measured_high_score": {
             "joint_reprojection_px": summarize_key(measured_high, "median_joint_reprojection_px"),
             "mano_minus_metric_depth_m": summarize_key(measured_high, "mano_minus_metric_depth_median_m"),
@@ -939,7 +1005,17 @@ def summarize_rows(rows: list[dict]) -> dict:
             "best_patch_signed_gap_p95_abs_m": summarize_key(reliable, "best_patch_signed_gap_p95_abs_m"),
             "best_patch_penetration_fraction_010m": summarize_key(reliable, "best_patch_penetration_fraction_010m"),
         },
+        "summary_geometry_backed_temporal_contact": {
+            "detector_score": summarize_key(geometry_backed_temporal, "detector_score"),
+            "joint_reprojection_px": summarize_key(geometry_backed_temporal, "median_joint_reprojection_px"),
+            "mano_minus_metric_depth_m": summarize_key(geometry_backed_temporal, "mano_minus_metric_depth_median_m"),
+            "best_patch_distance_p95_m": summarize_key(geometry_backed_temporal, "best_patch_distance_p95_m"),
+            "best_patch_signed_gap_median_m": summarize_key(geometry_backed_temporal, "best_patch_signed_gap_median_m"),
+            "best_patch_signed_gap_p95_abs_m": summarize_key(geometry_backed_temporal, "best_patch_signed_gap_p95_abs_m"),
+            "best_patch_penetration_fraction_010m": summarize_key(geometry_backed_temporal, "best_patch_penetration_fraction_010m"),
+        },
         "rows_preview": compact_rows([row for row in measured_high if int(row["mask_candidate_vertices"]) > 0], 80),
+        "geometry_backed_rows_preview": compact_rows(geometry_backed_temporal, 80),
     }
 
 

@@ -19,6 +19,7 @@ from scipy.spatial.transform import Rotation
 class FrameData:
     frame_idx: int
     T_world_camera: np.ndarray
+    K: np.ndarray
     observed_points_camera: np.ndarray
     mask: np.ndarray
     mask_distance: np.ndarray
@@ -74,6 +75,15 @@ def load_intrinsics(dataset: Path) -> np.ndarray:
     if K.shape != (3, 3) or not np.isfinite(K).all():
         raise RuntimeError(f"invalid intrinsics matrix: {dataset / 'cam_K.txt'}")
     return K
+
+
+def annotation_intrinsics(annotation: dict) -> np.ndarray:
+    values = annotation.get("camera", {}).get("vggt_source_intrinsics_fx_fy_cx_cy", [])
+    intrinsics = np.asarray(values, dtype=np.float64)
+    if intrinsics.shape != (4,) or not np.isfinite(intrinsics).all():
+        raise RuntimeError(f"annotation frame {annotation.get('frame_idx')} has invalid VGGT intrinsics")
+    fx, fy, cx, cy = intrinsics.tolist()
+    return np.asarray([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
 
 
 def load_mesh(path: Path) -> trimesh.Trimesh:
@@ -139,6 +149,7 @@ def load_frames(args: argparse.Namespace) -> list[FrameData]:
     observed_archive = load_archive(args.observed_mesh_npz)
     annotations = annotation_by_frame(args.annotations)
     manifest = manifest_by_frame(args.manifest)
+    dataset_K = load_intrinsics(args.dataset)
     frames: list[FrameData] = []
     for frame_idx in range(int(args.frame_start), int(args.frame_end) + 1):
         if frame_idx not in observed_archive:
@@ -156,11 +167,18 @@ def load_frames(args: argparse.Namespace) -> list[FrameData]:
         T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
         if T_world_camera.shape != (4, 4) or not np.isfinite(T_world_camera).all():
             raise RuntimeError(f"invalid T_world_camera_metric for frame {frame_idx}")
+        if args.intrinsics_source == "annotation-vggt":
+            K = annotation_intrinsics(annotations[frame_idx])
+        elif args.intrinsics_source == "dataset":
+            K = dataset_K
+        else:
+            raise RuntimeError(f"unsupported intrinsics source {args.intrinsics_source}")
         observed, _ = observed_archive[frame_idx]
         frames.append(
             FrameData(
                 frame_idx=frame_idx,
                 T_world_camera=T_world_camera,
+                K=K,
                 observed_points_camera=sample_rows(observed, int(args.max_observed_points), int(args.seed) + frame_idx),
                 mask=mask > 0,
                 mask_distance=mask_distance(mask > 0),
@@ -281,7 +299,6 @@ def residual_vector(
     prior_projection: np.ndarray,
     anchor_points: np.ndarray,
     pivot: np.ndarray,
-    K: np.ndarray,
     anchor_index: int,
     args: argparse.Namespace,
 ) -> np.ndarray:
@@ -296,7 +313,7 @@ def residual_vector(
         residuals.append(np.clip(d_observed, 0.0, float(args.max_surface_residual_m)) / float(args.sigma_observed_m))
 
         projection_points = transform_camera(prior_projection, pivot, rotvecs[i], translations[i], log_scale)
-        outside, front_depth, _ = projection_terms(projection_points, frame, K, args)
+        outside, front_depth, _ = projection_terms(projection_points, frame, frame.K, args)
         residuals.append(outside)
         residuals.append(front_depth)
 
@@ -381,7 +398,6 @@ def frame_metrics(
     prior_surface: np.ndarray,
     prior_projection: np.ndarray,
     pivot: np.ndarray,
-    K: np.ndarray,
     args: argparse.Namespace,
 ) -> dict[str, dict]:
     rotvecs, translations, log_scale = unpack(params, len(frames))
@@ -393,7 +409,7 @@ def frame_metrics(
         tree = cKDTree(surface)
         d_observed, _ = tree.query(frame.observed_points_camera, k=1)
         projection_points = transform_camera(prior_projection, pivot, rotvecs[i], translations[i], log_scale)
-        outside, front_depth, inside = projection_terms(projection_points, frame, K, argparse.Namespace(
+        outside, front_depth, inside = projection_terms(projection_points, frame, frame.K, argparse.Namespace(
             max_silhouette_px=float(args.max_silhouette_px),
             sigma_silhouette_px=1.0,
             min_depth_m=float(args.min_depth_m),
@@ -514,14 +530,13 @@ def run(args: argparse.Namespace) -> dict:
     prior_projection = sample_mesh_surface(mesh, int(args.max_projection_points), int(args.seed) + 900)
     anchor_points = frames[anchor_index].observed_points_camera
     prior_surface, surface_report = choose_surface_observation(full_prior_surface, anchor_points, args)
-    K = load_intrinsics(args.dataset)
     x0 = initial_params(frames, int(args.anchor_frame), anchor_points, pivot)
-    before_vec = residual_vector(x0, frames, prior_surface, prior_projection, anchor_points, pivot, K, anchor_index, args)
+    before_vec = residual_vector(x0, frames, prior_surface, prior_projection, anchor_points, pivot, anchor_index, args)
     pattern = residual_sparsity(frames, prior_surface, prior_projection, anchor_points, anchor_index)
     if pattern.shape != (len(before_vec), len(x0)):
         raise RuntimeError(f"sparsity shape {pattern.shape} does not match residual/vector {(len(before_vec), len(x0))}")
     result = least_squares(
-        lambda x: residual_vector(x, frames, prior_surface, prior_projection, anchor_points, pivot, K, anchor_index, args),
+        lambda x: residual_vector(x, frames, prior_surface, prior_projection, anchor_points, pivot, anchor_index, args),
         x0,
         jac_sparsity=pattern,
         max_nfev=int(args.max_nfev),
@@ -530,9 +545,9 @@ def run(args: argparse.Namespace) -> dict:
         x_scale="jac",
         verbose=2 if args.verbose else 0,
     )
-    after_vec = residual_vector(result.x, frames, prior_surface, prior_projection, anchor_points, pivot, K, anchor_index, args)
-    before_rows = frame_metrics(x0, frames, prior_surface, prior_projection, pivot, K, args)
-    after_rows = frame_metrics(result.x, frames, prior_surface, prior_projection, pivot, K, args)
+    after_vec = residual_vector(result.x, frames, prior_surface, prior_projection, anchor_points, pivot, anchor_index, args)
+    before_rows = frame_metrics(x0, frames, prior_surface, prior_projection, pivot, args)
+    after_rows = frame_metrics(result.x, frames, prior_surface, prior_projection, pivot, args)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     archive_path = args.output_dir / "mesh_prior_pose_graph_object_meshes_world.npz"
@@ -546,6 +561,7 @@ def run(args: argparse.Namespace) -> dict:
         "dataset": str(args.dataset),
         "manifest": str(args.manifest),
         "annotations": str(args.annotations),
+        "intrinsics_source": str(args.intrinsics_source),
         "anchor_frame": int(args.anchor_frame),
         "used_frames": [int(frame.frame_idx) for frame in frames],
         "mesh_archive_world": str(archive_path),
@@ -576,6 +592,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--intrinsics-source", choices=["dataset", "annotation-vggt"], default="dataset")
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--anchor-frame", type=int, required=True)
