@@ -105,14 +105,22 @@ def call_vlm(args: argparse.Namespace, object_plan: dict, frames: list[int], she
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
         raise RuntimeError(f"{args.api_key_env} is not set")
+    base_url = args.base_url
+    if args.base_url_env:
+        base_url = os.environ.get(args.base_url_env, "")
+        if not base_url:
+            raise RuntimeError(f"{args.base_url_env} is not set")
+    base_url = str(base_url).strip()
+    if not base_url.startswith(("http://", "https://")):
+        raise RuntimeError(f"invalid Responses API base URL: {base_url!r}")
     content = [
         {
             "type": "input_text",
             "text": (
                 "Select SAM2 mask candidates for an egocentric manipulation object. "
                 "Each row has three candidate masks for the same source frame. The yellow overlay is the candidate mask. "
-                "Choose one candidate only if it primarily covers the target object and avoids hands, basket, table, and nearby similar stems. "
-                "Reject the frame when every candidate is a fragment, includes multiple stems, switches to a nearby object, or leaks onto hands/background. "
+                "Choose one candidate only if it primarily covers the target physical object instance and avoids hands, supports, tools, containers, background, and nearby similar objects. "
+                "Reject the frame when every candidate is a fragment, includes multiple object instances, switches to a nearby object, or leaks onto hands/background. "
                 "Set candidate to -1 when accepted is false.\n\n"
                 f"Target object plan:\n{json.dumps(object_plan, ensure_ascii=True)}\n\n"
                 f"Requested frames: {frames}"
@@ -134,7 +142,7 @@ def call_vlm(args: argparse.Namespace, object_plan: dict, frames: list[int], she
     }
     with httpx.Client(timeout=float(args.timeout_s)) as client:
         response = client.post(
-            f"{args.base_url.rstrip('/')}/responses",
+            f"{base_url.rstrip('/')}/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=payload,
         )
@@ -251,6 +259,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tile-width", type=int, default=360)
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--base-url-env")
     parser.add_argument("--base-url", default="https://api.openai.com/v1")
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--detail", default="high")
