@@ -142,6 +142,14 @@ def call_responses(args: argparse.Namespace, object_plan: dict, images: list[tup
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
         raise RuntimeError(f"{args.api_key_env} is not set")
+    base_url = args.base_url
+    if args.base_url_env:
+        base_url = os.environ.get(args.base_url_env, "")
+        if not base_url:
+            raise RuntimeError(f"{args.base_url_env} is not set")
+    base_url = str(base_url).strip()
+    if not base_url.startswith(("http://", "https://")):
+        raise RuntimeError(f"invalid Responses API base URL: {base_url!r}")
     width, height = prompt_size
     requested = [idx for idx, _ in images]
     content = [
@@ -152,7 +160,7 @@ def call_responses(args: argparse.Namespace, object_plan: dict, images: list[tup
                 f"Coordinates must be in the resized image coordinate system, width={width}, height={height}. "
                 "Put positive points only on visible pixels of the target object. Put negative points on visually confusing nearby objects, hands, supports, or background. "
                 "If the target is hidden or too ambiguous, set target_visible false and return empty positive_points and negative_points. "
-                "For a translucent or deformable target, use visible plastic folds, rim edges, handles, or sheet regions belonging to that same object. "
+                "For any deformable, articulated, or partially occluded target, use visible surface regions that belong to the same physical object instance. "
                 "Do not place points on a container, lid, floor, wall, or hand unless that pixel is the target object itself.\n\n"
                 f"Target object plan:\n{json.dumps(object_plan, ensure_ascii=True)}\n\n"
                 f"Requested frame indices: {requested}"
@@ -176,7 +184,7 @@ def call_responses(args: argparse.Namespace, object_plan: dict, images: list[tup
     }
     with httpx.Client(timeout=float(args.timeout_s)) as client:
         response = client.post(
-            f"{args.base_url.rstrip('/')}/responses",
+            f"{base_url.rstrip('/')}/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=payload,
         )
@@ -264,6 +272,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-width", type=int, default=960)
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--base-url-env")
     parser.add_argument("--base-url", default="https://api.openai.com/v1")
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--detail", default="high")

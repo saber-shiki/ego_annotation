@@ -65,14 +65,23 @@ def fallback_intrinsics(frame: dict, observed: dict | None) -> np.ndarray:
     raise RuntimeError("no source intrinsics available")
 
 
-def adapt_hand(frame: dict, blob: np.lib.npyio.NpzFile, side: str, frame_idx: int) -> tuple[dict, dict]:
+def adapt_hand(
+    frame: dict,
+    blob: np.lib.npyio.NpzFile,
+    side: str,
+    source_frame_idx: int,
+    hawor_frame_idx: int,
+) -> tuple[dict, dict]:
     valid = np.asarray(blob[f"{side}_valid"], dtype=np.uint8)
-    if frame_idx >= len(valid) or int(valid[frame_idx]) == 0:
-        raise RuntimeError(f"HaWoR {side} hand invalid at frame {frame_idx}")
-    joints_camera = hawor_camera_points(blob, side, frame_idx, "joints")
-    vertices_camera = hawor_camera_points(blob, side, frame_idx, "vertices")
+    if hawor_frame_idx < 0 or hawor_frame_idx >= len(valid) or int(valid[hawor_frame_idx]) == 0:
+        raise RuntimeError(f"HaWoR {side} hand invalid at source frame {source_frame_idx} / HaWoR frame {hawor_frame_idx}")
+    joints_camera = hawor_camera_points(blob, side, hawor_frame_idx, "joints")
+    vertices_camera = hawor_camera_points(blob, side, hawor_frame_idx, "vertices")
     if np.any(joints_camera[:, 2] <= 0.0) or np.any(vertices_camera[:, 2] <= 0.0):
-        raise RuntimeError(f"HaWoR {side} camera-local hand has non-positive depth at frame {frame_idx}")
+        raise RuntimeError(
+            f"HaWoR {side} camera-local hand has non-positive depth at source frame {source_frame_idx} "
+            f"/ HaWoR frame {hawor_frame_idx}"
+        )
     observed = observed_hand(frame, side)
     intr = fallback_intrinsics(frame, observed)
     joints2d = project_points(joints_camera, intr)
@@ -119,9 +128,9 @@ def adapt_hand(frame: dict, blob: np.lib.npyio.NpzFile, side: str, frame_idx: in
             "p95": float(np.percentile(reproj, 95.0)),
         },
         "mano_params": {
-            "global_orient_axis_angle": np.asarray(blob[root_key], dtype=float)[frame_idx].astype(float).tolist(),
-            "hand_pose_axis_angle": np.asarray(blob[pose_key], dtype=float)[frame_idx].astype(float).tolist(),
-            "betas": np.asarray(blob[betas_key], dtype=float)[frame_idx].astype(float).tolist(),
+            "global_orient_axis_angle": np.asarray(blob[root_key], dtype=float)[hawor_frame_idx].astype(float).tolist(),
+            "hand_pose_axis_angle": np.asarray(blob[pose_key], dtype=float)[hawor_frame_idx].astype(float).tolist(),
+            "betas": np.asarray(blob[betas_key], dtype=float)[hawor_frame_idx].astype(float).tolist(),
         },
         "world_coordinate_status": "hawor_camera_local_transformed_by_existing_annotation_camera_pose",
         "mano_surface_status": "full_vertices",
@@ -130,7 +139,8 @@ def adapt_hand(frame: dict, blob: np.lib.npyio.NpzFile, side: str, frame_idx: in
     if bbox is not None:
         hand["bbox_xyxy"] = [float(v) for v in bbox]
     row = {
-        "frame_idx": int(frame_idx),
+        "frame_idx": int(source_frame_idx),
+        "hawor_frame_idx": int(hawor_frame_idx),
         "side": side,
         "measurement_available": bool(measurement_available),
         "detector_score": float(detector_score),
@@ -148,7 +158,7 @@ def run(args: argparse.Namespace) -> dict:
     blob = np.load(args.hawor_npz, allow_pickle=True)
     hawor_frame_idx = np.asarray(blob["frame_idx"], dtype=int)
     if np.any(hawor_frame_idx != np.arange(len(hawor_frame_idx))):
-        raise RuntimeError("HaWoR frame_idx must be contiguous source-video frame indices")
+        raise RuntimeError("HaWoR frame_idx must be contiguous zero-based indices in its processed video")
     output = copy.deepcopy(annotations)
     rows: list[dict] = []
     skipped: list[dict] = []
@@ -156,10 +166,20 @@ def run(args: argparse.Namespace) -> dict:
         frame_idx = int(frame["frame_idx"])
         if frame_idx < args.frame_start or frame_idx > args.frame_end:
             continue
+        hawor_idx = frame_idx - int(args.source_frame_offset)
+        if hawor_idx < 0 or hawor_idx >= len(hawor_frame_idx):
+            skipped.append(
+                {
+                    "frame_idx": frame_idx,
+                    "side": "all",
+                    "reason": f"source frame maps outside HaWoR window: {frame_idx} -> {hawor_idx}",
+                }
+            )
+            continue
         new_hands = []
         for side in args.sides:
             try:
-                hand, row = adapt_hand(frame, blob, side, frame_idx)
+                hand, row = adapt_hand(frame, blob, side, frame_idx, hawor_idx)
                 new_hands.append(hand)
                 rows.append(row)
             except Exception as exc:
@@ -176,6 +196,7 @@ def run(args: argparse.Namespace) -> dict:
         "output_annotations": str(args.output_annotations),
         "frame_start": int(args.frame_start),
         "frame_end": int(args.frame_end),
+        "source_frame_offset": int(args.source_frame_offset),
         "sides": list(args.sides),
         "adapted_hands": int(len(rows)),
         "skipped_hands": int(len(skipped)),
@@ -201,6 +222,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-qc", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
+    parser.add_argument("--source-frame-offset", type=int, default=0)
     parser.add_argument("--sides", nargs="+", choices=["left", "right"], default=["left", "right"])
     return parser.parse_args()
 
