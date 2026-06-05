@@ -79,6 +79,56 @@ def read_frame(cap: cv2.VideoCapture, frame_idx: int) -> np.ndarray:
     return frame
 
 
+def manifest_rgb_by_frame(path: Path) -> dict[int, Path]:
+    payload = load_json(path)
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        raise RuntimeError("manifest must contain frames list")
+    out: dict[int, Path] = {}
+    for entry in frames:
+        if "frame_idx" not in entry or "rgb" not in entry:
+            raise RuntimeError("manifest frame lacks frame_idx or rgb")
+        out[int(entry["frame_idx"])] = Path(entry["rgb"])
+    return out
+
+
+class FrameSource:
+    def __init__(self, video: Path | None, manifest: Path | None) -> None:
+        if video is None and manifest is None:
+            raise RuntimeError("provide either --video or --manifest")
+        if video is not None and manifest is not None:
+            raise RuntimeError("provide only one of --video or --manifest")
+        self.cap = None
+        self.rgb_by_frame: dict[int, Path] | None = None
+        if video is not None:
+            self.cap = cv2.VideoCapture(str(video))
+            if not self.cap.isOpened():
+                raise RuntimeError(f"failed to open video: {video}")
+        else:
+            self.rgb_by_frame = manifest_rgb_by_frame(manifest)
+
+    def fps(self) -> float:
+        if self.cap is None:
+            return 30.0
+        return float(self.cap.get(cv2.CAP_PROP_FPS))
+
+    def read(self, frame_idx: int) -> np.ndarray:
+        if self.cap is not None:
+            return read_frame(self.cap, int(frame_idx))
+        assert self.rgb_by_frame is not None
+        path = self.rgb_by_frame.get(int(frame_idx))
+        if path is None:
+            raise RuntimeError(f"manifest lacks RGB for frame {frame_idx}")
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise RuntimeError(f"failed to read manifest RGB frame {frame_idx}: {path}")
+        return image
+
+    def close(self) -> None:
+        if self.cap is not None:
+            self.cap.release()
+
+
 def draw_object_mask(frame: np.ndarray, ann: dict, args: argparse.Namespace) -> None:
     obj = ann.get("object", {})
     if not obj.get("mask_path"):
@@ -180,10 +230,8 @@ def run(args: argparse.Namespace) -> dict:
     contact_by_frame = {int(row["frame_idx"]): row for row in rows}
     frames = sorted(set(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride))) | set(contact_by_frame))
     meshes = load_mesh_archive(args.object_mesh_npz)
-    cap = cv2.VideoCapture(str(args.video))
-    if not cap.isOpened():
-        raise RuntimeError(f"failed to open video: {args.video}")
-    fps = float(args.output_fps) if args.output_fps is not None else float(cap.get(cv2.CAP_PROP_FPS))
+    frame_source = FrameSource(args.video, args.manifest)
+    fps = float(args.output_fps) if args.output_fps is not None else frame_source.fps()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     still_dir = args.output_dir / "stills"
     still_dir.mkdir(exist_ok=True)
@@ -194,7 +242,7 @@ def run(args: argparse.Namespace) -> dict:
             ann = annotations.get(int(frame_idx))
             if ann is None:
                 continue
-            image = read_frame(cap, int(frame_idx))
+            image = frame_source.read(int(frame_idx))
             draw_object_mask(image, ann, args)
             if int(frame_idx) in meshes:
                 draw_mesh_projection(image, ann, meshes[int(frame_idx)], int(args.max_mesh_edges))
@@ -220,7 +268,7 @@ def run(args: argparse.Namespace) -> dict:
                     raise RuntimeError(f"failed to write {still}")
                 written.append(str(still))
     finally:
-        cap.release()
+        frame_source.close()
         if writer is not None:
             writer.release()
     report = {
@@ -232,6 +280,8 @@ def run(args: argparse.Namespace) -> dict:
         "annotations": str(args.annotations),
         "contact_report": str(args.contact_report),
         "object_mesh_npz": str(args.object_mesh_npz),
+        "video_source": str(args.video) if args.video is not None else None,
+        "manifest_source": str(args.manifest) if args.manifest is not None else None,
     }
     (args.output_dir / "review_manifest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -240,7 +290,8 @@ def run(args: argparse.Namespace) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video", type=Path, required=True)
+    parser.add_argument("--video", type=Path)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--contact-report", type=Path, required=True)
     parser.add_argument("--object-mesh-npz", type=Path, required=True)

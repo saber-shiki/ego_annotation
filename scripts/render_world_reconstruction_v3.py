@@ -12,12 +12,12 @@ from compare_hand_streams_scale055_v3 import load_frame_window
 from diagnose_object_mesh_temporal_consistency_v3 import load_mesh_archive
 from render_mesh_alignment_v3 import project, view_basis
 from render_mesh_surface_contact_review_v3 import (
+    FrameSource,
     HAND_EDGES,
     draw_contact_patch,
     draw_hand,
     draw_mesh_projection,
     draw_object_mask,
-    read_frame,
 )
 
 
@@ -259,14 +259,14 @@ def current_focus_view(ann: dict, mesh: tuple[np.ndarray, np.ndarray], args: arg
 
 
 def render_overlay_frame(
-    cap: cv2.VideoCapture,
+    frame_source: FrameSource,
     ann: dict,
     mesh: tuple[np.ndarray, np.ndarray],
     row: dict | None,
     frame_idx: int,
     args: argparse.Namespace,
 ) -> np.ndarray:
-    image = read_frame(cap, int(frame_idx))
+    image = frame_source.read(int(frame_idx))
     draw_object_mask(image, ann, args)
     draw_mesh_projection(image, ann, mesh, int(args.max_overlay_mesh_edges))
     for hand in ann.get("hands", []):
@@ -304,10 +304,8 @@ def run(args: argparse.Namespace) -> dict:
     if missing_mesh:
         raise RuntimeError(f"mesh archive missing frames: {missing_mesh[:8]}")
     contact_by_frame = reliable_contact_rows(load_json(args.contact_report))
-    cap = cv2.VideoCapture(str(args.video))
-    if not cap.isOpened():
-        raise RuntimeError(f"failed to open video: {args.video}")
-    fps = float(args.output_fps) if args.output_fps is not None else float(cap.get(cv2.CAP_PROP_FPS))
+    frame_source = FrameSource(args.video, args.manifest)
+    fps = float(args.output_fps) if args.output_fps is not None else frame_source.fps()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     still_dir = args.output_dir / "stills"
     still_dir.mkdir(exist_ok=True)
@@ -326,7 +324,7 @@ def run(args: argparse.Namespace) -> dict:
         for frame_idx in frames:
             ann = annotations[int(frame_idx)]
             row = contact_by_frame.get(int(frame_idx))
-            overlay = render_overlay_frame(cap, ann, meshes[int(frame_idx)], row, int(frame_idx), args)
+            overlay = render_overlay_frame(frame_source, ann, meshes[int(frame_idx)], row, int(frame_idx), args)
             center, basis, radius = current_focus_view(ann, meshes[int(frame_idx)], args)
             world = draw_world_panel(annotations, meshes, contact_by_frame, int(frame_idx), center, basis, radius, args)
             caption = str(ann.get("caption", "")).strip()
@@ -341,7 +339,7 @@ def run(args: argparse.Namespace) -> dict:
                 written_stills.append(str(path))
     finally:
         writer.release()
-        cap.release()
+        frame_source.close()
     report = {
         "status": "ok",
         "method": "render_world_reconstruction_v3",
@@ -356,6 +354,8 @@ def run(args: argparse.Namespace) -> dict:
         "annotations": str(args.annotations),
         "object_mesh_npz": str(args.object_mesh_npz),
         "contact_report": str(args.contact_report),
+        "video_source": str(args.video) if args.video is not None else None,
+        "manifest_source": str(args.manifest) if args.manifest is not None else None,
     }
     (args.output_dir / "render_manifest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -364,7 +364,8 @@ def run(args: argparse.Namespace) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video", type=Path, required=True)
+    parser.add_argument("--video", type=Path)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--object-mesh-npz", type=Path, required=True)
     parser.add_argument("--contact-report", type=Path, required=True)
