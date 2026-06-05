@@ -202,7 +202,20 @@ def select_mask(
         for idx in valid_indices
         if candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]) >= best_fraction - float(score_tie_margin)
     ]
-    best = min(near_best, key=lambda idx: (int(masks[idx].astype(bool).sum()), -float(scores[idx])))
+    best = max(
+        near_best,
+        key=lambda idx: (
+            candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]),
+            -candidates[idx]["negative_hits"],
+            float(scores[idx]),
+            -abs(
+                math.log(
+                    max(1.0, float(candidates[idx]["area_px"]))
+                    / max(1.0, float(candidates[idx]["prompt_extent_area_px"]))
+                )
+            ),
+        ),
+    )
     return masks[best].astype(bool), {"reason": "ok", "selected_candidate": int(best), "candidates": candidates}
 
 
@@ -215,12 +228,18 @@ def save_candidate_review(
     report: dict,
 ) -> list[str]:
     review_dir = output_dir / "sam2_candidate_review"
+    mask_dir = output_dir / "sam2_candidate_masks"
     review_dir.mkdir(parents=True, exist_ok=True)
+    mask_dir.mkdir(parents=True, exist_ok=True)
     candidates = report.get("candidates", [])
     paths = []
     for row in candidates:
         idx = int(row["candidate"])
         mask = masks[idx].astype(bool)
+        mask_path = mask_dir / f"{source_idx:06d}_candidate_{idx}.png"
+        if not cv2.imwrite(str(mask_path), mask.astype(np.uint8) * 255):
+            raise RuntimeError(f"failed to write {mask_path}")
+        row["candidate_mask_path"] = str(mask_path)
         panel = image_bgr.copy()
         tint = np.zeros_like(panel)
         tint[:, :, 1] = 220

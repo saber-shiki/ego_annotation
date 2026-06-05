@@ -166,6 +166,8 @@ def run(args: argparse.Namespace) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     still_dir = args.output_dir / "stills"
     still_dir.mkdir(exist_ok=True)
+    depth_png_dir = args.output_dir / "depth"
+    depth_png_dir.mkdir(exist_ok=True)
     depth_stack = []
     focal_px = []
     intrinsics_stack = []
@@ -174,7 +176,9 @@ def run(args: argparse.Namespace) -> dict:
         frame_idx = int(entry["frame_idx"])
         rgb_path = localize_path(str(entry["rgb"]), args.remote_root, args.local_root)
         mask_path = localize_path(str(entry["mask"]), args.remote_root, args.local_root)
-        manifest_depth_path = localize_path(str(entry["depth"]), args.remote_root, args.local_root)
+        manifest_depth_path = None
+        if "depth" in entry and entry["depth"]:
+            manifest_depth_path = localize_path(str(entry["depth"]), args.remote_root, args.local_root)
         image = Image.open(rgb_path).convert("RGB")
         depth_raw, intrinsics = infer_unidepth(model, image, device)
         depth = resize_depth(depth_raw, (int(args.source_height), int(args.source_width)))
@@ -189,9 +193,9 @@ def run(args: argparse.Namespace) -> dict:
             raise RuntimeError(f"invalid UniDepth focal for frame {frame_idx}: {focal}")
         mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         rgb = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
-        manifest_depth = cv2.imread(str(manifest_depth_path), cv2.IMREAD_UNCHANGED)
-        if mask is None or rgb is None or manifest_depth is None:
-            raise RuntimeError(f"failed to read RGB/mask/depth for frame {frame_idx}")
+        manifest_depth = cv2.imread(str(manifest_depth_path), cv2.IMREAD_UNCHANGED) if manifest_depth_path is not None else None
+        if mask is None or rgb is None:
+            raise RuntimeError(f"failed to read RGB or mask for frame {frame_idx}")
         if mask.shape != depth.shape:
             raise RuntimeError(f"mask/depth shape mismatch for frame {frame_idx}: {mask.shape} vs {depth.shape}")
         object_pixels = (mask > 0) & np.isfinite(depth) & (depth > 0.0)
@@ -201,10 +205,6 @@ def run(args: argparse.Namespace) -> dict:
         mask_width = int(x1 - x0)
         mask_height = int(y1 - y0)
         depth_values = depth[object_pixels].astype(np.float64)
-        manifest_values = manifest_depth.astype(np.float64)[mask > 0] / 1000.0
-        manifest_values = manifest_values[np.isfinite(manifest_values) & (manifest_values > 0.0)]
-        if manifest_values.size == 0:
-            raise RuntimeError(f"frame {frame_idx} has no valid manifest-depth pixels")
         depth_median = float(np.median(depth_values))
         row = {
             "frame_idx": frame_idx,
@@ -218,16 +218,26 @@ def run(args: argparse.Namespace) -> dict:
             "unidepth_mask_depth_median_m": depth_median,
             "unidepth_mask_depth_p05_m": float(np.percentile(depth_values, 5.0)),
             "unidepth_mask_depth_p95_m": float(np.percentile(depth_values, 95.0)),
-            "manifest_mask_depth_median_m": float(np.median(manifest_values)),
             "mask_width_px": mask_width,
             "mask_height_px": mask_height,
             "width_from_unidepth_focal_m": float(mask_width * depth_median / focal),
             "height_from_unidepth_focal_m": float(mask_height * depth_median / focal),
         }
+        if manifest_depth is not None:
+            manifest_values = manifest_depth.astype(np.float64)[mask > 0] / 1000.0
+            manifest_values = manifest_values[np.isfinite(manifest_values) & (manifest_values > 0.0)]
+            if manifest_values.size == 0:
+                raise RuntimeError(f"frame {frame_idx} has no valid manifest-depth pixels")
+            row["manifest_mask_depth_median_m"] = float(np.median(manifest_values))
         rows.append(row)
         focal_px.append(focal)
         intrinsics_stack.append([fx, fy, cx, cy])
         depth_stack.append(depth.astype(np.float16))
+        depth_png_path = depth_png_dir / f"{int(entry.get('index', len(rows) - 1)):06d}.png"
+        depth_mm = np.clip(depth * 1000.0, 0.0, 65535.0).astype(np.uint16)
+        if not cv2.imwrite(str(depth_png_path), depth_mm):
+            raise RuntimeError(f"failed to write {depth_png_path}")
+        row["depth_png"] = str(depth_png_path)
         cv2.imwrite(str(still_dir / f"frame_{frame_idx:06d}.png"), render_review(rgb, mask, depth, row))
 
     depth_archive = args.output_dir / "unidepth_metric_depth_v3.npz"
@@ -253,7 +263,9 @@ def run(args: argparse.Namespace) -> dict:
         "stills_dir": str(still_dir),
         "unidepth_focal_px": summarize([row["unidepth_focal_px"] for row in rows]),
         "unidepth_mask_depth_median_m": summarize([row["unidepth_mask_depth_median_m"] for row in rows]),
-        "manifest_mask_depth_median_m": summarize([row["manifest_mask_depth_median_m"] for row in rows]),
+        "manifest_mask_depth_median_m": summarize(
+            [row["manifest_mask_depth_median_m"] for row in rows if "manifest_mask_depth_median_m" in row]
+        ),
         "width_from_unidepth_focal_m": summarize([row["width_from_unidepth_focal_m"] for row in rows]),
         "height_from_unidepth_focal_m": summarize([row["height_from_unidepth_focal_m"] for row in rows]),
         "rows": rows,

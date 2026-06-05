@@ -103,9 +103,11 @@ def action_payload(actions: list[dict]) -> list[dict]:
 
 def call_responses(args: argparse.Namespace, actions: list[dict], images: list[tuple[int, str]]) -> dict:
     load_env_file(args.env_file)
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get(args.api_key_env)
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
+        raise RuntimeError(f"{args.api_key_env} is not set")
+    sampled = [idx for idx, _ in images]
+    last_valid_frame = max(sampled + [int(action["end_frame"]) - 1 for action in actions])
     content = [
         {
             "type": "input_text",
@@ -113,6 +115,7 @@ def call_responses(args: argparse.Namespace, actions: list[dict], images: list[t
                 "Return JSON for the manipulated object plan. Use the action metadata and sampled egocentric frames. "
                 "Identify the physical object or objects being manipulated, write open-vocabulary prompts suitable for OWLv2/Grounded-SAM style segmentation, "
                 "and give frame intervals where each object should be tracked. Do not invent geometry. "
+                f"Use inclusive video frame indices for active_intervals; the last valid video frame index is {last_valid_frame}. "
                 "If an object changes shape, describe that in physical_notes; the downstream stage reconstructs mesh from masks and depth."
                 "\n\nAction metadata:\n"
                 + json.dumps(action_payload(actions), ensure_ascii=True)
@@ -206,6 +209,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--base-url", default="https://api.openai.com/v1")
+    parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--max-images", type=int, default=14)
     parser.add_argument("--image-width", type=int, default=960)

@@ -165,7 +165,9 @@ def run(args: argparse.Namespace) -> dict:
     if not isinstance(entries, list) or not entries:
         raise RuntimeError(f"{args.manifest} must contain nonempty frames list")
     K = load_intrinsics(args.dataset)
-    annotations = annotation_by_frame(args.annotations)
+    annotations = annotation_by_frame(args.annotations) if args.annotations is not None else {}
+    if args.coordinate == "world" and args.annotations is None:
+        raise RuntimeError("--annotations is required when --coordinate world")
     frame_indices = []
     vertices_world = []
     faces_all = []
@@ -174,7 +176,7 @@ def run(args: argparse.Namespace) -> dict:
         frame_idx = int(entry["frame_idx"])
         if frame_idx < int(args.frame_start) or frame_idx > int(args.frame_end):
             continue
-        if frame_idx not in annotations:
+        if args.coordinate == "world" and frame_idx not in annotations:
             raise RuntimeError(f"missing annotation frame {frame_idx}")
         vertices_camera, faces, row = mesh_from_entry(entry, args.dataset, K, args)
         if row["status"] != "ok":
@@ -206,7 +208,7 @@ def run(args: argparse.Namespace) -> dict:
         "coordinate": args.coordinate,
         "dataset": str(args.dataset),
         "manifest": str(args.manifest),
-        "annotations": str(args.annotations),
+        "annotations": str(args.annotations) if args.annotations is not None else None,
         "archive": str(archive),
         "frames": int(len(frame_indices)),
         "first_frame": int(frame_indices[0]),
@@ -224,7 +226,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--annotations", type=Path, required=True)
+    parser.add_argument("--annotations", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
