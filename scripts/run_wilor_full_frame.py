@@ -49,20 +49,26 @@ def run(args: argparse.Namespace) -> dict:
     actions = load_actions(json_path)
     allowed_sides = explicit_hand_sides(actions)
     cap, info = open_video(args.clip)
+    frame_start = 0 if args.frame_start is None else int(args.frame_start)
+    frame_end = info.frame_count - 1 if args.frame_end is None else int(args.frame_end)
+    if frame_start < 0 or frame_end < frame_start or frame_end >= info.frame_count:
+        raise RuntimeError(f"invalid frame window {frame_start}:{frame_end} for {info.frame_count} frames")
+    if args.max_frames is not None:
+        frame_end = min(frame_end, frame_start + int(args.max_frames) - 1)
+    if not cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start):
+        raise RuntimeError(f"failed to seek to frame {frame_start}")
 
     frames = []
     started = time.time()
     detected_frames = 0
     detected_hands = 0
     filtered_hands = 0
-    frame_idx = 0
-    pbar = tqdm(total=info.frame_count, desc="wilor_full_frame")
+    frame_idx = frame_start
+    pbar = tqdm(total=frame_end - frame_start + 1, desc="wilor_full_frame")
     try:
-        while True:
+        while frame_idx <= frame_end:
             ok, frame = cap.read()
             if not ok:
-                break
-            if args.max_frames is not None and frame_idx >= args.max_frames:
                 break
             hands = run_wilor_on_frame(model, cfg, detector, device, frame, args.rescale_factor, args.batch_size)
             if allowed_sides is not None:
@@ -101,7 +107,10 @@ def run(args: argparse.Namespace) -> dict:
         "clip": str(args.clip),
         "video": info.__dict__,
         "processed_frames": len(frames),
-        "full_source_timeline": bool(args.max_frames is None and len(frames) == info.frame_count),
+        "source_frame_range": [int(frames[0]["frame_idx"]), int(frames[-1]["frame_idx"])],
+        "full_source_timeline": bool(
+            args.frame_start is None and args.frame_end is None and args.max_frames is None and len(frames) == info.frame_count
+        ),
         "frames_with_hands": detected_frames,
         "hand_detection_rate": detected_frames / max(1, len(frames)),
         "detected_hands": detected_hands,
@@ -124,6 +133,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rescale-factor", type=float, default=2.0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--frame-start", type=int)
+    parser.add_argument("--frame-end", type=int)
     parser.add_argument("--actions-json", type=Path)
     return parser.parse_args()
 
