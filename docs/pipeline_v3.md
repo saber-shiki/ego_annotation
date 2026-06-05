@@ -263,6 +263,25 @@ Operationally, the version sequence is:
 
 QC in this project means falsification of the annotation, not only file checks. Structural QC checks that videos, frame counts, JSON records, and mesh archives exist. Geometric QC checks surface fit, silhouette fit, MANO reprojection, hand/object contact distance, penetration support, temporal smoothness, and whether any residual improves only by pushing hidden variables to implausible values. Visual QC checks that the overlay and 3D presentation show the intended object and hand state rather than a diagnostic-looking plot or a wrong object.
 
+## Current V3 Evidence Package
+
+The current evidence manifest is:
+
+`/data2/ego_annotation_outputs/v3_current_evidence_manifest.json`
+
+It records three representative branches:
+
+- trash-lid frames 865 to 870: strongest deliverable-shaped V3 evidence slice. It has MANO/object overlay, standalone 3D contact animation, world side-by-side with caption, an SDF-backed object/contact graph, zero penetration fraction at the sampled contact patch, median absolute SDF 1.44 mm, p95 absolute SDF 3.96 mm, observed-surface median distance 4.41 mm, and observed-surface p95 15.1 mm. It remains a V3 evidence slice because the fused mesh is open and SDF-backed; V3 still needs a watertight complete object over the full sequence.
+- wild-rice frames 2546 to 2549: short complete-mesh evidence slice for a thin manipulated stem. TRELLIS complete mesh plus mask-depth pose graph gives observed-surface median distance 5.10 mm and inside-mask median depth error 11.1 mm. Contact rows are geometry-backed and temporally supported, but detector-backed contact rows remain zero, so this slice is evidence for the mechanism and leaves closure open.
+- keyboard frames 60 to 75: rigid-object mesh success and hand-stream failure. The solidified keyboard sheet mesh is watertight with 10.6 mm thickness, 0.414 x 0.209 x 0.056 m extent, median silhouette IoU 0.832, and median absolute depth error 3.65 mm. The hand stream is still rejected: left-hand mask-depth MANO fits reach mask overlap only by saturating pose deltas and minimum scale, while right-hand SAM2 masks still merge glove with grey cloth under visual QC.
+
+The newest hand diagnostics are implemented in:
+
+- `scripts/refit_mano_articulation_mask_depth_v3.py`
+- `scripts/select_sam2_visual_track_candidates_vlm_v3.py`
+
+These scripts intentionally keep annotation readiness false unless the hand fit passes mask, depth, pose-bound, scale-bound, and visual checks. On keyboard, that contract produces zero accepted hand rows, which is the correct failure signal.
+
 ### MANO Reprojection Diagnostic
 
 The contact window also shows that the MANO source-camera placement has nontrivial 2D disagreement with the hand detector boxes:
