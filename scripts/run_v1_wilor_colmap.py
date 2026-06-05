@@ -15,7 +15,6 @@ os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 import cv2
 import numpy as np
-import pycolmap
 import torch
 from scipy.spatial.transform import Rotation, Slerp
 
@@ -188,6 +187,8 @@ def copy_keyframes(dense_dir: Path, keyframe_dir: Path, keyframes: list[FrameSam
 
 
 def run_colmap(frame_dir: Path, output_dir: Path, reuse: bool) -> dict:
+    import pycolmap
+
     sfm_dir = output_dir / "sfm_colmap_keyframes"
     sparse = sfm_dir / "sparse"
     best = sparse / "best"
