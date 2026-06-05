@@ -25,6 +25,36 @@ def summarize(values: list[float] | np.ndarray) -> dict:
     }
 
 
+def summarize_by_mask_distance(depth_error: np.ndarray, mask_distance_px: np.ndarray) -> list[dict]:
+    bins = [
+        ("0_2px", 0.0, 2.0),
+        ("2_5px", 2.0, 5.0),
+        ("5_10px", 5.0, 10.0),
+        ("10_20px", 10.0, 20.0),
+        ("20_40px", 20.0, 40.0),
+        ("40px_plus", 40.0, np.inf),
+    ]
+    rows = []
+    for name, lo, hi in bins:
+        if np.isinf(hi):
+            take = mask_distance_px >= lo
+        else:
+            take = (mask_distance_px >= lo) & (mask_distance_px < hi)
+        err = depth_error[take]
+        rows.append(
+            {
+                "mask_distance_bin": name,
+                "distance_px_low": float(lo),
+                "distance_px_high": None if np.isinf(hi) else float(hi),
+                "signed_m": summarize(err),
+                "abs_m": summarize(np.abs(err)),
+                "closer_than_depth_fraction_5mm": float(np.mean(err < -0.005)) if len(err) else None,
+                "farther_than_depth_fraction_5mm": float(np.mean(err > 0.005)) if len(err) else None,
+            }
+        )
+    return rows
+
+
 def triangle_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, faces: np.ndarray, max_faces: int | None) -> np.ndarray:
     height, width = shape
     zbuf = np.full((height, width), np.inf, dtype=np.float32)
@@ -97,6 +127,8 @@ def draw_review(rgb: np.ndarray, object_mask: np.ndarray, silhouette: np.ndarray
 
 
 def run(args: argparse.Namespace) -> dict:
+    if args.max_faces is not None and int(args.max_faces) <= 0:
+        args.max_faces = None
     manifest = load_json(args.manifest)
     annotations = load_json(args.annotations)
     entries = manifest.get("frames")
@@ -153,6 +185,8 @@ def run(args: argparse.Namespace) -> dict:
         union = int(np.count_nonzero(silhouette | object_mask))
         valid_depth = silhouette & object_mask & np.isfinite(depth_m) & (depth_m > 0.0)
         depth_error = zbuf[valid_depth].astype(np.float64) - depth_m[valid_depth]
+        distance_to_mask_edge = cv2.distanceTransform(object_mask.astype(np.uint8), cv2.DIST_L2, 3)
+        depth_distance = distance_to_mask_edge[valid_depth].astype(np.float64)
         row = {
             "frame_idx": frame_idx,
             "silhouette_mask_iou": float(intersection / union) if union else 0.0,
@@ -164,9 +198,13 @@ def run(args: argparse.Namespace) -> dict:
         if len(depth_error):
             row.update(
                 {
+                    "zbuffer_depth_signed_m": summarize(depth_error),
                     "zbuffer_depth_median_m": float(np.median(depth_error)),
                     "zbuffer_depth_abs_median_m": float(np.median(np.abs(depth_error))),
                     "zbuffer_depth_abs_p95_m": float(np.percentile(np.abs(depth_error), 95.0)),
+                    "zbuffer_closer_than_depth_fraction_5mm": float(np.mean(depth_error < -0.005)),
+                    "zbuffer_farther_than_depth_fraction_5mm": float(np.mean(depth_error > 0.005)),
+                    "zbuffer_depth_by_mask_distance": summarize_by_mask_distance(depth_error, depth_distance),
                 }
             )
         rows.append(row)

@@ -277,6 +277,58 @@ def projection_terms(points: np.ndarray, frame: FrameData, args: argparse.Namesp
     return outside / float(args.sigma_silhouette_px), front / float(args.sigma_front_depth_m), inside
 
 
+def visible_depth_terms(points: np.ndarray, frame: FrameData, args: argparse.Namespace) -> tuple[np.ndarray, dict]:
+    if int(args.max_visible_depth_pixels) <= 0:
+        return np.zeros(0, dtype=np.float64), {"samples": 0}
+    positive = points[:, 2] > float(args.min_depth_m)
+    if not np.any(positive):
+        return np.zeros(0, dtype=np.float64), {"samples": 0}
+    uv = project_camera(points[positive], frame.intrinsics)
+    z = points[positive, 2].astype(np.float64)
+    xy = np.rint(uv).astype(np.int64)
+    in_bounds = (
+        (xy[:, 0] >= 0)
+        & (xy[:, 0] < frame.mask.shape[1])
+        & (xy[:, 1] >= 0)
+        & (xy[:, 1] < frame.mask.shape[0])
+    )
+    if not np.any(in_bounds):
+        return np.zeros(0, dtype=np.float64), {"samples": 0}
+    xy = xy[in_bounds]
+    z = z[in_bounds]
+    mask_hit = frame.mask[xy[:, 1], xy[:, 0]]
+    if not np.any(mask_hit):
+        return np.zeros(0, dtype=np.float64), {"samples": 0}
+    xy = xy[mask_hit]
+    z = z[mask_hit]
+    linear = xy[:, 1] * frame.mask.shape[1] + xy[:, 0]
+    order = np.lexsort((z, linear))
+    linear_sorted = linear[order]
+    first = np.r_[True, linear_sorted[1:] != linear_sorted[:-1]]
+    chosen = order[first]
+    if len(chosen) > int(args.max_visible_depth_pixels):
+        rng = np.random.default_rng(int(args.seed) + int(frame.frame_idx) + 17000)
+        chosen = chosen[rng.choice(len(chosen), size=int(args.max_visible_depth_pixels), replace=False)]
+    x = xy[chosen, 0]
+    y = xy[chosen, 1]
+    depth = frame.depth_m[y, x].astype(np.float64)
+    valid = np.isfinite(depth) & (depth > float(args.min_depth_m))
+    if not np.any(valid):
+        return np.zeros(0, dtype=np.float64), {"samples": 0}
+    err = z[chosen][valid] - depth[valid]
+    residual = np.clip(err, -float(args.max_visible_depth_residual_m), float(args.max_visible_depth_residual_m))
+    return residual / float(args.sigma_visible_depth_m), {
+        "samples": int(len(err)),
+        "signed_median_m": float(np.median(err)),
+        "signed_p05_m": float(np.percentile(err, 5.0)),
+        "signed_p95_m": float(np.percentile(err, 95.0)),
+        "abs_median_m": float(np.median(np.abs(err))),
+        "abs_p95_m": float(np.percentile(np.abs(err), 95.0)),
+        "closer_than_depth_fraction_5mm": float(np.mean(err < -0.005)),
+        "farther_than_depth_fraction_5mm": float(np.mean(err > 0.005)),
+    }
+
+
 def unpack(params: np.ndarray, frame_count: int) -> tuple[np.ndarray, np.ndarray]:
     pose = params.reshape(frame_count, 6)
     return pose[:, :3], pose[:, 3:6]
@@ -374,6 +426,9 @@ def residual_vector(
         outside, front, _inside = projection_terms(projection_points, frame, args)
         append_sample_block(residuals, outside)
         append_sample_block(residuals, front)
+        visible_depth, _visible_depth_metrics = visible_depth_terms(projection_points, frame, args)
+        if len(visible_depth):
+            append_sample_block(residuals, visible_depth)
         center_camera = transform_camera(pivot[None, :], pivot, rotvecs[i], translations[i])[0]
         object_centers_world.append(camera_to_world(center_camera[None, :], frame.T_world_camera)[0])
         object_rotations_world.append(rotation_world(rotvecs[i], frame.T_world_camera))
@@ -461,6 +516,7 @@ def frame_metrics(
         metric_args.sigma_silhouette_px = 1.0
         metric_args.sigma_front_depth_m = 1.0
         outside, front, inside = projection_terms(projection_points, frame, metric_args)
+        _visible_depth_residual, visible_depth_metrics = visible_depth_terms(projection_points, frame, metric_args)
         center_camera = transform_camera(pivot[None, :], pivot, rotvecs[i], translations[i])[0]
         center_world = camera_to_world(center_camera[None, :], frame.T_world_camera)[0]
         R_world = rotation_world(rotvecs[i], frame.T_world_camera)
@@ -473,6 +529,14 @@ def frame_metrics(
             "silhouette_outside_p95_px": float(np.percentile(outside, 95.0)),
             "front_depth_violation_median_m": float(np.median(front)),
             "front_depth_violation_p95_m": float(np.percentile(front, 95.0)),
+            "visible_depth_samples": int(visible_depth_metrics.get("samples", 0)),
+            "visible_depth_signed_median_m": visible_depth_metrics.get("signed_median_m"),
+            "visible_depth_signed_p05_m": visible_depth_metrics.get("signed_p05_m"),
+            "visible_depth_signed_p95_m": visible_depth_metrics.get("signed_p95_m"),
+            "visible_depth_abs_median_m": visible_depth_metrics.get("abs_median_m"),
+            "visible_depth_abs_p95_m": visible_depth_metrics.get("abs_p95_m"),
+            "visible_depth_closer_than_depth_fraction_5mm": visible_depth_metrics.get("closer_than_depth_fraction_5mm"),
+            "visible_depth_farther_than_depth_fraction_5mm": visible_depth_metrics.get("farther_than_depth_fraction_5mm"),
             "projection_inside_mask_fraction": float(np.mean(inside)),
             "center_world_m": center_world.astype(float).tolist(),
             "translation_camera_delta_m": translations[i].astype(float).tolist(),
@@ -557,6 +621,10 @@ def summary_from_rows(rows: dict[str, dict]) -> dict:
         "observed_to_prior_p95_m",
         "silhouette_outside_p95_px",
         "front_depth_violation_p95_m",
+        "visible_depth_abs_median_m",
+        "visible_depth_abs_p95_m",
+        "visible_depth_closer_than_depth_fraction_5mm",
+        "visible_depth_farther_than_depth_fraction_5mm",
         "projection_inside_mask_fraction",
         "world_center_speed_m_s_from_prev",
         "world_angular_speed_rad_s_from_prev",
@@ -685,6 +753,8 @@ def run(args: argparse.Namespace) -> dict:
             "sigma_observed_m": float(args.sigma_observed_m),
             "sigma_silhouette_px": float(args.sigma_silhouette_px),
             "sigma_front_depth_m": float(args.sigma_front_depth_m),
+            "sigma_visible_depth_m": float(args.sigma_visible_depth_m),
+            "max_visible_depth_pixels": int(args.max_visible_depth_pixels),
             "sigma_contact_m": float(args.sigma_contact_m),
             "sigma_volume_sdf_penetration_m": float(args.sigma_volume_sdf_penetration_m),
             "sigma_object_translation_prior_m": float(args.sigma_object_translation_prior_m),
@@ -724,6 +794,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sigma-observed-m", type=float, default=0.020)
     parser.add_argument("--sigma-silhouette-px", type=float, default=6.0)
     parser.add_argument("--sigma-front-depth-m", type=float, default=0.020)
+    parser.add_argument("--sigma-visible-depth-m", type=float, default=0.020)
     parser.add_argument("--depth-front-tolerance-m", type=float, default=0.008)
     parser.add_argument("--sigma-contact-m", type=float, default=0.006)
     parser.add_argument("--use-volume-sdf", action=argparse.BooleanOptionalAction, default=False)
@@ -745,6 +816,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-contact-residual-m", type=float, default=0.060)
     parser.add_argument("--max-silhouette-px", type=float, default=80.0)
     parser.add_argument("--max-front-depth-residual-m", type=float, default=0.120)
+    parser.add_argument("--max-visible-depth-residual-m", type=float, default=0.120)
+    parser.add_argument("--max-visible-depth-pixels", type=int, default=0)
     parser.add_argument("--min-depth-m", type=float, default=0.05)
     parser.add_argument("--signed-penetration-positive-m", type=float, default=0.001)
     parser.add_argument("--accept-contact-p95-m", type=float, default=0.006)
