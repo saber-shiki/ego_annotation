@@ -7,6 +7,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import open3d as o3d
 
 from compare_hand_streams_scale055_v3 import load_frame_window
 from diagnose_object_mesh_temporal_consistency_v3 import load_mesh_archive
@@ -19,6 +20,13 @@ from render_mesh_surface_contact_review_v3 import (
     draw_mesh_projection,
     draw_object_mask,
 )
+
+
+def unit(vector: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(vector))
+    if norm <= 1e-12 or not np.isfinite(norm):
+        raise RuntimeError("cannot normalize degenerate vector")
+    return np.asarray(vector, dtype=float) / norm
 
 
 def load_json(path: Path) -> dict:
@@ -84,6 +92,29 @@ def draw_polyline_3d(
         cv2.line(image, tuple(pts[-1]), tuple(pts[0]), color, thickness, cv2.LINE_AA)
 
 
+def simplify_mesh_for_display(vertices: np.ndarray, faces: np.ndarray, max_faces: int) -> tuple[np.ndarray, np.ndarray]:
+    if max_faces <= 0 or len(faces) <= max_faces:
+        return vertices, faces
+    mesh = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(vertices, dtype=float)),
+        o3d.utility.Vector3iVector(np.asarray(faces, dtype=np.int32)),
+    )
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=int(max_faces))
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    out_vertices = np.asarray(mesh.vertices, dtype=float)
+    out_faces = np.asarray(mesh.triangles, dtype=np.int32)
+    if out_vertices.ndim != 2 or out_vertices.shape[1] != 3 or out_faces.ndim != 2 or out_faces.shape[1] != 3:
+        raise RuntimeError("display mesh simplification produced invalid geometry")
+    if len(out_faces) == 0:
+        raise RuntimeError("display mesh simplification produced no faces")
+    return out_vertices, out_faces
+
+
 def draw_mesh_world(
     image: np.ndarray,
     vertices: np.ndarray,
@@ -93,30 +124,55 @@ def draw_mesh_world(
     radius: float,
     max_faces: int,
 ) -> None:
+    vertices, faces = simplify_mesh_for_display(vertices, faces, max_faces)
     face_ids = np.arange(len(faces), dtype=int)
-    if len(face_ids) > max_faces:
-        face_ids = face_ids[np.linspace(0, len(face_ids) - 1, max_faces, dtype=int)]
     xy, depth = project(vertices, center, basis, radius, (image.shape[1], image.shape[0]))
     hull = cv2.convexHull(xy.astype(np.float32)).astype(np.int32)
-    hull_overlay = image.copy()
-    cv2.fillConvexPoly(hull_overlay, hull, (86, 96, 224), cv2.LINE_AA)
-    cv2.addWeighted(hull_overlay, 0.26, image, 0.74, 0.0, image)
-    cv2.polylines(image, [hull], True, (48, 54, 170), 2, cv2.LINE_AA)
+    shadow = hull + np.asarray([12, 14], dtype=np.int32)[None, None, :]
+    shadow_overlay = image.copy()
+    cv2.fillConvexPoly(shadow_overlay, shadow, (214, 216, 210), cv2.LINE_AA)
+    cv2.addWeighted(shadow_overlay, 0.46, image, 0.54, 0.0, image)
     face_depth = depth[faces[face_ids]].mean(axis=1)
     order = face_ids[np.argsort(face_depth)]
     overlay = image.copy()
-    for face_id in order:
+    face_vertices = vertices[faces[order]]
+    normals = np.cross(face_vertices[:, 1] - face_vertices[:, 0], face_vertices[:, 2] - face_vertices[:, 0])
+    normal_norm = np.linalg.norm(normals, axis=1)
+    normals = normals / np.maximum(normal_norm[:, None], 1e-12)
+    light = unit(-0.70 * basis[2] - 0.45 * basis[1] + 0.22 * basis[0])
+    shade = 0.47 + 0.45 * np.clip(np.abs(normals @ light), 0.0, 1.0)
+    base = np.asarray([86.0, 102.0, 224.0], dtype=float)
+    for rank, face_id in enumerate(order):
         poly = xy[faces[int(face_id)]]
         if np.any(poly[:, 0] < -image.shape[1]) or np.any(poly[:, 0] > 2 * image.shape[1]):
             continue
         if np.any(poly[:, 1] < -image.shape[0]) or np.any(poly[:, 1] > 2 * image.shape[0]):
             continue
-        cv2.fillConvexPoly(overlay, poly.astype(np.int32), (72, 82, 214), cv2.LINE_AA)
-    cv2.addWeighted(overlay, 0.20, image, 0.80, 0.0, image)
-    edge_ids = order[np.linspace(0, len(order) - 1, min(len(order), 380), dtype=int)]
+        color = tuple(np.clip(base * shade[rank], 0, 255).astype(np.uint8).tolist())
+        cv2.fillConvexPoly(overlay, poly.astype(np.int32), color, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.58, image, 0.42, 0.0, image)
+    cv2.polylines(image, [hull], True, (44, 50, 165), 2, cv2.LINE_AA)
+    edge_ids = order[np.linspace(0, len(order) - 1, min(len(order), 320), dtype=int)]
     for face_id in edge_ids:
         poly = xy[faces[int(face_id)]].astype(np.int32)
-        cv2.polylines(image, [poly], True, (58, 62, 150), 1, cv2.LINE_AA)
+        cv2.polylines(image, [poly], True, (50, 56, 142), 1, cv2.LINE_AA)
+
+
+def draw_metric_axes(image: np.ndarray, center: np.ndarray, basis: np.ndarray, radius: float) -> None:
+    origin = center - 0.66 * radius * basis[0] - 0.62 * radius * basis[1]
+    scale = max(0.045, 0.20 * radius)
+    axes = [
+        ("X", np.asarray([1.0, 0.0, 0.0]), (40, 40, 210)),
+        ("Y", np.asarray([0.0, 1.0, 0.0]), (40, 150, 60)),
+        ("Z", np.asarray([0.0, 0.0, 1.0]), (210, 95, 35)),
+    ]
+    xy0, _ = project(origin[None, :], center, basis, radius, (image.shape[1], image.shape[0]))
+    p0 = tuple(xy0[0].astype(int))
+    for label, direction, color in axes:
+        xy1, _ = project((origin + scale * direction)[None, :], center, basis, radius, (image.shape[1], image.shape[0]))
+        p1 = tuple(xy1[0].astype(int))
+        cv2.arrowedLine(image, p0, p1, color, 2, cv2.LINE_AA, tipLength=0.18)
+        cv2.putText(image, label, (p1[0] + 4, p1[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
 
 def draw_camera_path(
@@ -224,6 +280,7 @@ def draw_world_panel(
     draw_camera_path(image, annotations, int(frame_idx), center, basis, radius)
     draw_camera(image, np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float), center, basis, radius, float(args.frustum_scale_m))
     draw_camera_inset(image, annotations, int(frame_idx), args)
+    draw_metric_axes(image, center, basis, radius)
     row = contact_by_frame.get(int(frame_idx))
     for i, hand in enumerate(ann.get("hands", [])):
         ids = row.get("best_patch_vertex_ids", []) if row is not None and int(row["hand_idx"]) == i else None
@@ -234,7 +291,7 @@ def draw_world_panel(
     sx, sy = 28, args.panel_height - 64
     cv2.line(image, (sx, sy), (sx + scale_px, sy), (25, 25, 25), 4, cv2.LINE_AA)
     cv2.putText(image, "0.10 m", (sx, sy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (25, 25, 25), 1, cv2.LINE_AA)
-    cv2.putText(image, "red object mesh   green/orange measured MANO   black current head camera", (20, args.panel_height - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.53, (45, 45, 45), 1, cv2.LINE_AA)
+    cv2.putText(image, "red shaded object mesh   green/orange MANO   black head camera/path", (20, args.panel_height - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.53, (45, 45, 45), 1, cv2.LINE_AA)
     return image
 
 
@@ -244,10 +301,30 @@ def frame_view(points: list[np.ndarray], padding: float) -> tuple[np.ndarray, np
     return center, basis, max(radius * padding, 1e-4)
 
 
+def oblique_frame_view(points: list[np.ndarray], padding: float) -> tuple[np.ndarray, np.ndarray, float]:
+    cloud = np.vstack(points)
+    center = np.median(cloud, axis=0)
+    centered = cloud - center
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    if np.linalg.det(vh) < 0:
+        vh[-1] *= -1.0
+    screen_x = unit(vh[0])
+    plane_normal = unit(vh[2])
+    in_plane = unit(vh[1])
+    view_dir = unit(0.58 * plane_normal + 0.82 * in_plane)
+    screen_y = unit(np.cross(view_dir, screen_x))
+    basis = np.vstack([screen_x, screen_y, view_dir])
+    if np.linalg.det(basis) < 0:
+        basis[1] *= -1.0
+    q = centered @ basis.T
+    radius = float(np.percentile(np.linalg.norm(q[:, :2], axis=1), 99.0))
+    return center, basis, max(radius * padding, 1e-4)
+
+
 def current_focus_view(ann: dict, mesh: tuple[np.ndarray, np.ndarray], args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, float]:
     points = []
     vertices = mesh[0]
-    points.append(vertices[np.linspace(0, len(vertices) - 1, min(len(vertices), 300), dtype=int)])
+    points.append(vertices[np.linspace(0, len(vertices) - 1, min(len(vertices), 900), dtype=int)])
     points.append(camera_frustum_points(np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float), float(args.frustum_scale_m)))
     for hand in ann.get("hands", []):
         if bool(hand.get("measurement_available", False)):
@@ -255,7 +332,7 @@ def current_focus_view(ann: dict, mesh: tuple[np.ndarray, np.ndarray], args: arg
     if len(points) == 1:
         for hand in ann.get("hands", []):
             points.append(world_joints(hand))
-    return frame_view(points, float(args.focus_radius_scale))
+    return oblique_frame_view(points, float(args.focus_radius_scale))
 
 
 def render_overlay_frame(
@@ -308,8 +385,11 @@ def run(args: argparse.Namespace) -> dict:
     fps = float(args.output_fps) if args.output_fps is not None else frame_source.fps()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     still_dir = args.output_dir / "stills"
+    world_still_dir = args.output_dir / "stills_world_3d"
     still_dir.mkdir(exist_ok=True)
+    world_still_dir.mkdir(exist_ok=True)
     video_path = args.output_dir / "world_reconstruction_side_by_side.mp4"
+    world_video_path = args.output_dir / "world_reconstruction_3d.mp4"
     writer = cv2.VideoWriter(
         str(video_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -318,7 +398,17 @@ def run(args: argparse.Namespace) -> dict:
     )
     if not writer.isOpened():
         raise RuntimeError(f"failed to open writer {video_path}")
+    world_writer = cv2.VideoWriter(
+        str(world_video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (int(args.panel_width), int(args.panel_height)),
+    )
+    if not world_writer.isOpened():
+        writer.release()
+        raise RuntimeError(f"failed to open writer {world_video_path}")
     written_stills = []
+    written_world_stills = []
     frames = list(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride)))
     try:
         for frame_idx in frames:
@@ -327,6 +417,7 @@ def run(args: argparse.Namespace) -> dict:
             overlay = render_overlay_frame(frame_source, ann, meshes[int(frame_idx)], row, int(frame_idx), args)
             center, basis, radius = current_focus_view(ann, meshes[int(frame_idx)], args)
             world = draw_world_panel(annotations, meshes, contact_by_frame, int(frame_idx), center, basis, radius, args)
+            world_writer.write(world)
             caption = str(ann.get("caption", "")).strip()
             if not caption:
                 raise RuntimeError(f"frame {frame_idx} has no semantic caption")
@@ -337,20 +428,28 @@ def run(args: argparse.Namespace) -> dict:
                 if not cv2.imwrite(str(path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 94]):
                     raise RuntimeError(f"failed to write {path}")
                 written_stills.append(str(path))
+                world_path = world_still_dir / f"frame_{frame_idx:06d}.jpg"
+                if not cv2.imwrite(str(world_path), world, [int(cv2.IMWRITE_JPEG_QUALITY), 94]):
+                    raise RuntimeError(f"failed to write {world_path}")
+                written_world_stills.append(str(world_path))
     finally:
         writer.release()
+        world_writer.release()
         frame_source.close()
     report = {
         "status": "ok",
         "method": "render_world_reconstruction_v3",
         "video": str(video_path),
+        "world_video": str(world_video_path),
         "stills_dir": str(still_dir),
+        "world_stills_dir": str(world_still_dir),
         "written_stills": written_stills,
+        "written_world_stills": written_world_stills,
         "frames": frames,
         "fps": fps,
         "contact_frames": sorted(contact_by_frame),
-        "world_view": "per-frame object-and-measured-hand focus in the stored metric world frame",
-        "interpretation": "The right panel is an orthographic third-person rendering of the stored metric world frame. It does not assert gravity alignment.",
+        "world_view": "per-frame oblique object-and-measured-hand focus in the stored metric world frame",
+        "interpretation": "The right panel is an orthographic third-person rendering over the metric SLAM frame; screen vertical follows the selected virtual view and the axis triad shows the stored metric axes.",
         "annotations": str(args.annotations),
         "object_mesh_npz": str(args.object_mesh_npz),
         "contact_report": str(args.contact_report),
