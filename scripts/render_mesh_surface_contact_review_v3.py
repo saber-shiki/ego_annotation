@@ -79,17 +79,21 @@ def read_frame(cap: cv2.VideoCapture, frame_idx: int) -> np.ndarray:
     return frame
 
 
-def manifest_rgb_by_frame(path: Path) -> dict[int, Path]:
+def manifest_paths_by_frame(path: Path) -> tuple[dict[int, Path], dict[int, Path]]:
     payload = load_json(path)
     frames = payload.get("frames")
     if not isinstance(frames, list):
         raise RuntimeError("manifest must contain frames list")
-    out: dict[int, Path] = {}
+    rgb_by_frame: dict[int, Path] = {}
+    mask_by_frame: dict[int, Path] = {}
     for entry in frames:
         if "frame_idx" not in entry or "rgb" not in entry:
             raise RuntimeError("manifest frame lacks frame_idx or rgb")
-        out[int(entry["frame_idx"])] = Path(entry["rgb"])
-    return out
+        frame_idx = int(entry["frame_idx"])
+        rgb_by_frame[frame_idx] = Path(entry["rgb"])
+        if entry.get("mask"):
+            mask_by_frame[frame_idx] = Path(entry["mask"])
+    return rgb_by_frame, mask_by_frame
 
 
 class FrameSource:
@@ -100,12 +104,13 @@ class FrameSource:
             raise RuntimeError("provide only one of --video or --manifest")
         self.cap = None
         self.rgb_by_frame: dict[int, Path] | None = None
+        self.mask_by_frame: dict[int, Path] | None = None
         if video is not None:
             self.cap = cv2.VideoCapture(str(video))
             if not self.cap.isOpened():
                 raise RuntimeError(f"failed to open video: {video}")
         else:
-            self.rgb_by_frame = manifest_rgb_by_frame(manifest)
+            self.rgb_by_frame, self.mask_by_frame = manifest_paths_by_frame(manifest)
 
     def fps(self) -> float:
         if self.cap is None:
@@ -128,13 +133,28 @@ class FrameSource:
         if self.cap is not None:
             self.cap.release()
 
+    def mask(self, frame_idx: int, shape: tuple[int, int]) -> np.ndarray | None:
+        if self.mask_by_frame is None:
+            return None
+        path = self.mask_by_frame.get(int(frame_idx))
+        if path is None:
+            return None
+        mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise RuntimeError(f"failed to read manifest mask frame {frame_idx}: {path}")
+        out = mask > 0
+        if out.shape != shape:
+            out = cv2.resize(out.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+        return out
 
-def draw_object_mask(frame: np.ndarray, ann: dict, args: argparse.Namespace) -> None:
-    obj = ann.get("object", {})
-    if not obj.get("mask_path"):
-        return
-    mask_path = localize_path(str(obj["mask_path"]), args.remote_output_root, args.local_output_root)
-    mask = resize_bool_mask(mask_path, tuple(int(x) for x in obj["mask_image_size"]))
+
+def draw_object_mask(frame: np.ndarray, ann: dict, args: argparse.Namespace, mask: np.ndarray | None = None) -> None:
+    if mask is None:
+        obj = ann.get("object", {})
+        if not obj.get("mask_path"):
+            return
+        mask_path = localize_path(str(obj["mask_path"]), args.remote_output_root, args.local_output_root)
+        mask = resize_bool_mask(mask_path, tuple(int(x) for x in obj["mask_image_size"]))
     if mask.shape != frame.shape[:2]:
         mask = cv2.resize(mask.astype(np.uint8), (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
     tint = np.zeros_like(frame)
@@ -245,7 +265,7 @@ def run(args: argparse.Namespace) -> dict:
             if ann is None:
                 continue
             image = frame_source.read(int(frame_idx))
-            draw_object_mask(image, ann, args)
+            draw_object_mask(image, ann, args, frame_source.mask(int(frame_idx), image.shape[:2]))
             if int(frame_idx) in meshes:
                 draw_mesh_projection(image, ann, meshes[int(frame_idx)], int(args.max_mesh_edges))
             row = contact_by_frame.get(int(frame_idx))

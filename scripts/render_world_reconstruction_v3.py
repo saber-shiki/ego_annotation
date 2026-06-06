@@ -346,7 +346,7 @@ def render_overlay_frame(
     args: argparse.Namespace,
 ) -> np.ndarray:
     image = frame_source.read(int(frame_idx))
-    draw_object_mask(image, ann, args)
+    draw_object_mask(image, ann, args, frame_source.mask(int(frame_idx), image.shape[:2]))
     draw_mesh_projection(image, ann, mesh, int(args.max_overlay_mesh_edges))
     for hand in ann.get("hands", []):
         draw_hand(image, hand)
