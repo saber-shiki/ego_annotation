@@ -164,3 +164,17 @@ Completed V4 deliverables:
 Visual inspection of the final frame confirms that 2550 follows the active stem. The top label marks it as `sam2_mask_seed_from_2549`, and the bottom caption states that frames 2520 to 2549 are measured while 2550 is a SAM2-mask-seed completion.
 
 This closes the first V4 tracker-based temporal-completion target for the wild-rice clip. The object-map fitting part of the V4 plan remains open. Remaining V4 limitations are still real: several measured frames, especially 2534 to 2536 and 2539, contain parallel stem or sheath ambiguity, and the current 3D view is an evidence render with weaker stakeholder presentation value.
+
+## Object-Map Fitting Falsification
+
+The first rigid canonical-map test used the completed 31-frame mesh archive as input to the existing multiview ICP/BPA map diagnostic. The test aligned per-frame measured surfaces into anchor frame 2535, fused a canonical point cloud, reconstructed a BPA mesh, and replayed that mesh through the recovered per-frame poses.
+
+The map was topologically and geometrically unsuitable as a delivered object mesh. The canonical mesh has 35,609 vertices and 16,204 faces, spans 0.239 x 0.449 x 0.309 m, and has open topology. Independent z-buffer replay strongly rejects it: median silhouette IoU drops from the completed per-frame archive's 0.964 to 0.373, median z-buffer absolute p95 rises from 3.42 mm to 80.1 mm, frame 2539 IoU is 0.147, and frame 2550 IoU is 0.309. Visual QC shows a broad merged surface covering multiple stem/sheath regions.
+
+This falsifies the rigid canonical-map hypothesis for this clip. The active-stem evidence is a changing partial visible surface under peeling, occlusion, and nearby parallel plant material. The next map branch needs a deformable or completed object-surface state with per-region visibility and uncertainty, while preserving the per-frame measured/completed sheet archive as the current accepted V4 geometry evidence.
+
+Rigid map falsification artifacts:
+
+- Canonical-map report and mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v4_canonical_rigid_map_icp_bpa_completed_2520_2550/`
+- Independent z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v4_canonical_rigid_map_icp_bpa_completed_zbuffer_qc_2520_2550/qc_mesh_zbuffer_projection_v3.json`
+- Visual failure frames: `/data2/ego_annotation_outputs/representative_wild_rice/v4_canonical_rigid_map_icp_bpa_completed_zbuffer_qc_2520_2550/frame_2539_qc.jpg` and `/data2/ego_annotation_outputs/representative_wild_rice/v4_canonical_rigid_map_icp_bpa_completed_zbuffer_qc_2520_2550/frame_2550_qc.jpg`
