@@ -1,4 +1,4 @@
-# Pipeline V4: Temporal Object Completion with Residual-Gated Geometry
+# Pipeline V4: Residual-Gated Object Tracks and Temporal Completion
 
 ## V3 Closure State
 
@@ -7,7 +7,12 @@ V3 now has two mesh-backed representative results:
 - Trash/lid, frames 858 to 880: 23-frame measured object mesh, MANO hands, contact rows, full-hand nonpenetration, overlay video, standalone 3D world animation, and side-by-side presentation.
 - Wild-rice stem, frames 2531 to 2537: seven-frame continuous mesh-backed evidence window with the same deliverable types and the same geometry/contact/SDF checks.
 
-The remaining limitation is temporal completeness. Wild-rice does not have an object mesh for every frame from 2520 to 2550 because the VLM/SAM/depth evidence rejects several frames. V3 correctly refuses to fabricate object geometry for those frames. V4 must solve that missing-frame problem with model-backed temporal completion and then preserve the V3 checks as the acceptance contract.
+The remaining limitation is object-track completeness under ambiguous visual evidence. The wild-rice branch exposed two different causes:
+
+- some frames need temporal completion because the manipulated object is partially occluded or identity-ambiguous;
+- some frames were lost before completion because hand-written component-count pruning rejected VLM-accepted masks.
+
+V4 therefore separates residual-gated measured recovery from temporal completion. A model-selected mask should first be tested against rendered depth, silhouette, hand contact, and SDF residuals. Completion is introduced only for frames where model evidence is absent or fails those residual checks.
 
 ## Research-Backed Design Decision
 
@@ -20,7 +25,7 @@ Released components support a practical V4:
 - V3 measured-sheet reconstruction can convert accepted masks and metric depth into watertight object meshes.
 - V3 z-buffer, mesh-surface contact, selected-contact SDF, full-hand SDF, and visual review already falsify wrong geometry.
 
-V4 should therefore make temporal object completion a residual-gated map problem, not a category-specific rule system and not a single generative-prior replacement.
+V4 should therefore make object-track construction a residual-gated map problem. Category-specific rule systems and single-frame generative replacements remain invalid for this project.
 
 Source links checked during V4 design:
 
@@ -95,15 +100,31 @@ The graph should use robust losses and explicit measurement weights. A frame wit
 Use wild-rice frames 2520 to 2550 because V3 already localized the missing mechanism there:
 
 - accepted measured frames have strong dense-sheet QC;
-- rejected frames expose the temporal-completion gap;
+- rejected frames expose both over-pruning and the real temporal-completion gap;
 - hand detections are lower confidence, so contact weighting must be honest.
 
-Experiment:
+Measured-recovery experiment:
 
 1. Use the existing dense measured masks and meshes as fixed evidence.
-2. Generate temporal mask proposals for the missing frames with the strongest available released tracker.
-3. Fit a temporally smooth object map/pose sequence over all frames, with measured frames as hard evidence and propagated frames as weaker evidence.
-4. Run V3 z-buffer/contact/SDF QC on measured frames and completion-specific silhouette/depth/motion QC on completed frames.
-5. Render two videos: measured-only evidence window and completed-sequence view, with completion status visible in the caption.
+2. Re-admit VLM-selected masks that rule pruning rejected, then test them with the V3 residual checks.
+3. Run V3 z-buffer/contact/SDF QC on measured frames and identify frames that still need temporal completion.
+4. Render the measured sequence with status visible in the caption.
 
-V4 can close only when the completed frames are model-backed, residual-checked, and visually inspected. A copied mesh, primitive, or unverified generative fill remains rejected.
+Temporal map fitting and completion follow this measured-recovery branch. They should consume measured/rejected/ambiguous status as data, not recreate the pruning rules.
+
+## First V4 Experiment Result
+
+The first V4 experiment used the VLM-selected SAM2 track for wild-rice frames 2520 to 2550 before the rule-pruning layer. The VLM selector accepted all 31 frames. The relaxed pruning report rejected ten of those frames, mostly through `too_many_components` or `large_secondary_component`; frame 2550 was the semantic rejection, where the VLM identified the mask as detached peel rather than the active stem.
+
+Residual-gated geometry recovered a continuous 30-frame measured run, frames 2520 to 2549. The all-face z-buffer report over frames 2520 to 2550 has median silhouette IoU 0.964, median visible-silhouette-inside-mask fraction 0.989, median z-buffer absolute median 0.42 mm, and median z-buffer absolute p95 3.91 mm. Formerly pruned frames 2520, 2521, 2524, 2528, 2530, 2538, 2539, and 2540 mostly pass the geometry residuals; frame 2539 remains weak with IoU 0.510 and should be treated as low-confidence measured evidence.
+
+Contact and SDF checks on the 30-frame measured run match the dense V3 branch: 15 reliable temporal contact rows, median contact patch p95 0.70 mm, median signed-gap p95 absolute 0.58 mm, selected-contact SDF penetration 0 percent, full-hand SDF penetration 0 percent, and selected-contact SDF p95 3.45 mm at 1 mm pitch.
+
+Final V4 measured-run deliverables:
+
+- Overlay video: `/data2/ego_annotation_outputs/representative_wild_rice/v4_mesh_surface_contact_review_unpruned_residual_gated_2520_2549/mesh_surface_contact_review.mp4`
+- Side-by-side video: `/data2/ego_annotation_outputs/representative_wild_rice/v4_world_reconstruction_unpruned_residual_gated_finalvis_2520_2549/world_reconstruction_side_by_side.mp4`
+- Standalone 3D video: `/data2/ego_annotation_outputs/representative_wild_rice/v4_world_reconstruction_unpruned_residual_gated_finalvis_2520_2549/world_reconstruction_3d.mp4`
+- Evidence manifest: `/data2/ego_annotation_outputs/v4_unpruned_wild_rice_evidence_manifest_20260606.json`
+
+This closes the residual-gated measured-recovery branch of V4 for the wild-rice clip. Temporal map fitting and completion remain open for frames where the model evidence is absent, semantically rejected, or too ambiguous after residual checks. The next V4 branch is a tracker/completion module that carries measured/completed/rejected status explicitly instead of pruning by visual-rule thresholds.

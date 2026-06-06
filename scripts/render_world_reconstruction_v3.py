@@ -319,7 +319,7 @@ def oblique_frame_view(points: list[np.ndarray], padding: float) -> tuple[np.nda
     if np.linalg.det(basis) < 0:
         basis[1] *= -1.0
     q = centered @ basis.T
-    radius = float(np.percentile(np.linalg.norm(q[:, :2], axis=1), 99.0))
+    radius = float(np.max(np.linalg.norm(q[:, :2], axis=1)))
     return center, basis, max(radius * padding, 1e-4)
 
 
