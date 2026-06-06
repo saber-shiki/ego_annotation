@@ -259,8 +259,10 @@ def draw_hand_world(
         vertices = world_vertices(hand)[np.asarray(contact_ids, dtype=int)]
         uv, _ = project(vertices, center, basis, radius, (image.shape[1], image.shape[0]))
         for point in uv:
-            cv2.circle(image, tuple(point.astype(int)), 7, (0, 215, 255), -1, cv2.LINE_AA)
-            cv2.circle(image, tuple(point.astype(int)), 9, (10, 10, 10), 1, cv2.LINE_AA)
+            p = tuple(point.astype(int))
+            cv2.circle(image, p, 13, (0, 0, 0), -1, cv2.LINE_AA)
+            cv2.circle(image, p, 10, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(image, p, 7, (255, 0, 255), -1, cv2.LINE_AA)
 
 
 def draw_world_panel(
@@ -370,7 +372,9 @@ def combine_panels(overlay: np.ndarray, world: np.ndarray, caption: str, args: a
     right = cv2.resize(world, (args.output_width - half, panel_h), interpolation=cv2.INTER_AREA)
     joined = np.hstack([left, right])
     bar = np.zeros((args.caption_height, args.output_width, 3), dtype=np.uint8)
-    cv2.putText(bar, caption, (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.78, (255, 255, 255), 2, cv2.LINE_AA)
+    prefix = str(getattr(args, "caption_prefix", "") or "").strip()
+    text = f"{prefix}: {caption}" if prefix else caption
+    cv2.putText(bar, text, (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.76, (255, 255, 255), 2, cv2.LINE_AA)
     return np.vstack([joined, bar])
 
 
@@ -481,6 +485,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frustum-scale-m", type=float, default=0.045)
     parser.add_argument("--max-mesh-faces", type=int, default=1200)
     parser.add_argument("--max-overlay-mesh-edges", type=int, default=260)
+    parser.add_argument("--caption-prefix", default="")
     parser.add_argument("--still-frames", type=int, nargs="*", default=[858, 866, 867, 868, 879, 880])
     parser.add_argument("--remote-output-root", type=Path, default=Path("/mnt/user-home/yiwen/ego_annotation_remote/data"))
     parser.add_argument("--local-output-root", type=Path, default=Path("/data2/ego_annotation_outputs"))

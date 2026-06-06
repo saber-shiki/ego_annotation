@@ -161,7 +161,8 @@ def draw_mesh_projection(frame: np.ndarray, ann: dict, mesh: tuple[np.ndarray, n
             continue
         if np.any(poly[:, 1] < -frame.shape[0]) or np.any(poly[:, 1] > 2 * frame.shape[0]):
             continue
-        cv2.polylines(frame, [poly], True, (60, 210, 210), 1, cv2.LINE_AA)
+        cv2.polylines(frame, [poly], True, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.polylines(frame, [poly], True, (70, 245, 255), 1, cv2.LINE_AA)
 
 
 def draw_hand(frame: np.ndarray, hand: dict) -> None:
@@ -204,8 +205,9 @@ def draw_contact_patch(frame: np.ndarray, hand: dict, row: dict) -> None:
     uv = project_points(vertices[np.asarray(ids, dtype=int)], intr)
     for point in uv:
         p = tuple(np.rint(point).astype(int))
-        cv2.circle(frame, p, 9, (0, 255, 255), -1, cv2.LINE_AA)
-        cv2.circle(frame, p, 11, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.circle(frame, p, 15, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(frame, p, 12, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(frame, p, 9, (255, 0, 255), -1, cv2.LINE_AA)
 
 
 def put_label(frame: np.ndarray, frame_idx: int, row: dict | None) -> None:
