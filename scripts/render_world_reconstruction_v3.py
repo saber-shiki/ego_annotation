@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
+import pickle
 from pathlib import Path
 
 import cv2
@@ -22,6 +24,21 @@ from render_mesh_surface_contact_review_v3 import (
 )
 
 
+STATE_LABELS = {
+    "map_observable_measured_geometry": "observable mesh",
+    "ambiguous_measured_geometry": "ambiguous mesh",
+    "ambiguous_contact_geometry": "contact-ambiguous mesh",
+    "completed_geometry": "completed mesh",
+}
+
+STATE_COLORS = {
+    "map_observable_measured_geometry": (72, 138, 72),
+    "ambiguous_measured_geometry": (70, 118, 186),
+    "ambiguous_contact_geometry": (72, 72, 198),
+    "completed_geometry": (154, 95, 42),
+}
+
+
 def unit(vector: np.ndarray) -> np.ndarray:
     norm = float(np.linalg.norm(vector))
     if norm <= 1e-12 or not np.isfinite(norm):
@@ -31,6 +48,47 @@ def unit(vector: np.ndarray) -> np.ndarray:
 
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def monkeypatch_chumpy_numpy() -> None:
+    if not hasattr(inspect, "getargspec"):
+        inspect.getargspec = inspect.getfullargspec  # type: ignore[attr-defined]
+    for name, value in {
+        "bool": bool,
+        "int": int,
+        "float": float,
+        "complex": complex,
+        "object": object,
+        "unicode": str,
+        "str": str,
+    }.items():
+        if not hasattr(np, name):
+            setattr(np, name, value)
+
+
+def load_mano_faces(path: Path) -> np.ndarray:
+    monkeypatch_chumpy_numpy()
+    with path.open("rb") as handle:
+        data = pickle.load(handle, encoding="latin1")
+    faces = np.asarray(data.get("f"), dtype=np.int32)
+    if faces.ndim != 2 or faces.shape[1] != 3 or faces.min() < 0:
+        raise RuntimeError(f"invalid MANO face topology in {path}")
+    return faces
+
+
+def load_state_rows(path: Path | None) -> dict[int, dict]:
+    if path is None:
+        return {}
+    data = load_json(path)
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"V5 state JSON has no rows list: {path}")
+    out = {}
+    for row in rows:
+        if not isinstance(row, dict) or "frame_idx" not in row:
+            raise RuntimeError(f"invalid V5 state row in {path}")
+        out[int(row["frame_idx"])] = row
+    return out
 
 
 def reliable_contact_rows(contact: dict) -> dict[int, dict]:
@@ -115,6 +173,57 @@ def simplify_mesh_for_display(vertices: np.ndarray, faces: np.ndarray, max_faces
     return out_vertices, out_faces
 
 
+def draw_triangle_mesh_world(
+    image: np.ndarray,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    center: np.ndarray,
+    basis: np.ndarray,
+    radius: float,
+    max_faces: int,
+    base_bgr: tuple[int, int, int],
+    edge_bgr: tuple[int, int, int],
+    alpha: float,
+    edge_count: int,
+    shadow: bool,
+) -> None:
+    vertices, faces = simplify_mesh_for_display(vertices, faces, max_faces)
+    face_ids = np.arange(len(faces), dtype=int)
+    xy, depth = project(vertices, center, basis, radius, (image.shape[1], image.shape[0]))
+    if shadow:
+        hull = cv2.convexHull(xy.astype(np.float32)).astype(np.int32)
+        shadow_poly = hull + np.asarray([14, 16], dtype=np.int32)[None, None, :]
+        shadow_overlay = image.copy()
+        cv2.fillConvexPoly(shadow_overlay, shadow_poly, (210, 213, 206), cv2.LINE_AA)
+        cv2.addWeighted(shadow_overlay, 0.46, image, 0.54, 0.0, image)
+    face_depth = depth[faces[face_ids]].mean(axis=1)
+    order = face_ids[np.argsort(face_depth)]
+    overlay = image.copy()
+    face_vertices = vertices[faces[order]]
+    normals = np.cross(face_vertices[:, 1] - face_vertices[:, 0], face_vertices[:, 2] - face_vertices[:, 0])
+    normal_norm = np.linalg.norm(normals, axis=1)
+    normals = normals / np.maximum(normal_norm[:, None], 1e-12)
+    light = unit(-0.70 * basis[2] - 0.45 * basis[1] + 0.22 * basis[0])
+    shade = 0.48 + 0.48 * np.clip(np.abs(normals @ light), 0.0, 1.0)
+    base = np.asarray(base_bgr, dtype=float)
+    for rank, face_id in enumerate(order):
+        poly = xy[faces[int(face_id)]]
+        if np.any(poly[:, 0] < -image.shape[1]) or np.any(poly[:, 0] > 2 * image.shape[1]):
+            continue
+        if np.any(poly[:, 1] < -image.shape[0]) or np.any(poly[:, 1] > 2 * image.shape[0]):
+            continue
+        color = tuple(np.clip(base * shade[rank], 0, 255).astype(np.uint8).tolist())
+        cv2.fillConvexPoly(overlay, poly.astype(np.int32), color, cv2.LINE_AA)
+    cv2.addWeighted(overlay, float(alpha), image, 1.0 - float(alpha), 0.0, image)
+    hull = cv2.convexHull(xy.astype(np.float32)).astype(np.int32)
+    cv2.polylines(image, [hull], True, edge_bgr, 2, cv2.LINE_AA)
+    if edge_count > 0:
+        edge_ids = order[np.linspace(0, len(order) - 1, min(len(order), edge_count), dtype=int)]
+        for face_id in edge_ids:
+            poly = xy[faces[int(face_id)]].astype(np.int32)
+            cv2.polylines(image, [poly], True, edge_bgr, 1, cv2.LINE_AA)
+
+
 def draw_mesh_world(
     image: np.ndarray,
     vertices: np.ndarray,
@@ -124,43 +233,25 @@ def draw_mesh_world(
     radius: float,
     max_faces: int,
 ) -> None:
-    vertices, faces = simplify_mesh_for_display(vertices, faces, max_faces)
-    face_ids = np.arange(len(faces), dtype=int)
-    xy, depth = project(vertices, center, basis, radius, (image.shape[1], image.shape[0]))
-    hull = cv2.convexHull(xy.astype(np.float32)).astype(np.int32)
-    shadow = hull + np.asarray([12, 14], dtype=np.int32)[None, None, :]
-    shadow_overlay = image.copy()
-    cv2.fillConvexPoly(shadow_overlay, shadow, (214, 216, 210), cv2.LINE_AA)
-    cv2.addWeighted(shadow_overlay, 0.46, image, 0.54, 0.0, image)
-    face_depth = depth[faces[face_ids]].mean(axis=1)
-    order = face_ids[np.argsort(face_depth)]
-    overlay = image.copy()
-    face_vertices = vertices[faces[order]]
-    normals = np.cross(face_vertices[:, 1] - face_vertices[:, 0], face_vertices[:, 2] - face_vertices[:, 0])
-    normal_norm = np.linalg.norm(normals, axis=1)
-    normals = normals / np.maximum(normal_norm[:, None], 1e-12)
-    light = unit(-0.70 * basis[2] - 0.45 * basis[1] + 0.22 * basis[0])
-    shade = 0.47 + 0.45 * np.clip(np.abs(normals @ light), 0.0, 1.0)
-    base = np.asarray([86.0, 102.0, 224.0], dtype=float)
-    for rank, face_id in enumerate(order):
-        poly = xy[faces[int(face_id)]]
-        if np.any(poly[:, 0] < -image.shape[1]) or np.any(poly[:, 0] > 2 * image.shape[1]):
-            continue
-        if np.any(poly[:, 1] < -image.shape[0]) or np.any(poly[:, 1] > 2 * image.shape[0]):
-            continue
-        color = tuple(np.clip(base * shade[rank], 0, 255).astype(np.uint8).tolist())
-        cv2.fillConvexPoly(overlay, poly.astype(np.int32), color, cv2.LINE_AA)
-    cv2.addWeighted(overlay, 0.58, image, 0.42, 0.0, image)
-    cv2.polylines(image, [hull], True, (44, 50, 165), 2, cv2.LINE_AA)
-    edge_ids = order[np.linspace(0, len(order) - 1, min(len(order), 320), dtype=int)]
-    for face_id in edge_ids:
-        poly = xy[faces[int(face_id)]].astype(np.int32)
-        cv2.polylines(image, [poly], True, (50, 56, 142), 1, cv2.LINE_AA)
+    draw_triangle_mesh_world(
+        image,
+        vertices,
+        faces,
+        center,
+        basis,
+        radius,
+        max_faces,
+        (76, 98, 224),
+        (43, 48, 154),
+        0.70,
+        110,
+        True,
+    )
 
 
 def draw_metric_axes(image: np.ndarray, center: np.ndarray, basis: np.ndarray, radius: float) -> None:
-    origin = center - 0.66 * radius * basis[0] - 0.62 * radius * basis[1]
-    scale = max(0.045, 0.20 * radius)
+    origin = center - 0.76 * radius * basis[0] - 0.68 * radius * basis[1]
+    scale = max(0.035, 0.16 * radius)
     axes = [
         ("X", np.asarray([1.0, 0.0, 0.0]), (40, 40, 210)),
         ("Y", np.asarray([0.0, 1.0, 0.0]), (40, 150, 60)),
@@ -222,18 +313,53 @@ def draw_camera_inset(
     frames = sorted(annotations)
     path = np.asarray([annotations[f]["camera"]["position_world_m"] for f in frames], dtype=float)
     current = np.asarray(annotations[int(frame_idx)]["camera"]["T_world_camera_metric"], dtype=float)
-    frustum = camera_frustum_points(current, float(args.frustum_scale_m) * 2.8)
-    center, basis, radius = frame_view([path, frustum], 1.8)
-    h, w = 180, 250
-    x0 = image.shape[1] - w - 22
-    y0 = image.shape[0] - h - 58
-    inset = image[y0 : y0 + h, x0 : x0 + w].copy()
-    panel = np.full_like(inset, (238, 240, 236))
-    cv2.rectangle(panel, (0, 0), (w - 1, h - 1), (80, 80, 80), 1, cv2.LINE_AA)
+    frustum = camera_frustum_points(current, float(args.frustum_scale_m) * 3.6)
+    center, basis, radius = frame_view([path, frustum], 1.65)
+    h, w = 214, 330
+    x0 = image.shape[1] - w - 26
+    y0 = image.shape[0] - h - 76
+    panel = np.full((h, w, 3), (252, 253, 249), dtype=np.uint8)
+    cv2.rectangle(panel, (0, 0), (w - 1, h - 1), (70, 70, 70), 1, cv2.LINE_AA)
     draw_camera_path(panel, annotations, int(frame_idx), center, basis, radius)
-    draw_camera(panel, current, center, basis, radius, float(args.frustum_scale_m) * 2.8, label=False)
-    cv2.putText(panel, "head path", (12, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (25, 25, 25), 1, cv2.LINE_AA)
+    draw_camera(panel, current, center, basis, radius, float(args.frustum_scale_m) * 3.6, label=False)
+    cv2.putText(panel, "head camera trajectory", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.53, (25, 25, 25), 1, cv2.LINE_AA)
+    cv2.putText(panel, "black: elapsed path", (12, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (45, 45, 45), 1, cv2.LINE_AA)
     image[y0 : y0 + h, x0 : x0 + w] = panel
+
+
+def draw_state_badge(image: np.ndarray, state_row: dict | None, frame_idx: int) -> None:
+    cv2.putText(
+        image,
+        f"metric 3D manipulation view  frame {frame_idx}",
+        (22, 34),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.70,
+        (25, 25, 25),
+        2,
+        cv2.LINE_AA,
+    )
+    if state_row is None:
+        return
+    state = str(state_row.get("geometry_state", "unknown"))
+    label = STATE_LABELS.get(state, state)
+    color = STATE_COLORS.get(state, (70, 70, 70))
+    x0, y0 = 22, 52
+    text = f"V5 state: {label}"
+    (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.54, 1)
+    cv2.rectangle(image, (x0, y0), (x0 + min(tw + 28, image.shape[1] - x0 - 24), y0 + 34), color, -1, cv2.LINE_AA)
+    cv2.putText(image, text, (x0 + 12, y0 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
+    reasons = state_row.get("state_reasons") or []
+    if reasons:
+        text = "evidence flags: " + ", ".join(str(item) for item in reasons[:3])
+        cv2.putText(image, text, (x0, y0 + 56), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (40, 40, 40), 1, cv2.LINE_AA)
+
+
+def draw_scale_bar(image: np.ndarray, radius: float, args: argparse.Namespace) -> None:
+    scale_px = int(round(0.10 * 0.42 * min(image.shape[1], image.shape[0]) / radius))
+    scale_px = max(28, min(scale_px, 220))
+    sx, sy = 32, args.panel_height - 48
+    cv2.line(image, (sx, sy), (sx + scale_px, sy), (25, 25, 25), 5, cv2.LINE_AA)
+    cv2.putText(image, "0.10 m", (sx, sy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (25, 25, 25), 1, cv2.LINE_AA)
 
 
 def draw_hand_world(
@@ -243,21 +369,44 @@ def draw_hand_world(
     basis: np.ndarray,
     radius: float,
     contact_ids: list[int] | None,
+    mano_faces: np.ndarray | None,
+    max_mano_faces: int,
 ) -> None:
     joints = world_joints(hand)
     measured = bool(hand.get("measurement_available", False))
     if not measured:
         return
     side = str(hand.get("side", "unknown"))
-    color = (40, 180, 70) if side == "right" else (215, 130, 45)
+    color = (38, 172, 70) if side == "right" else (220, 136, 46)
+    vertices = world_vertices(hand)
+    if mano_faces is not None:
+        if int(mano_faces.max()) >= len(vertices):
+            raise RuntimeError("MANO face topology references vertices not present in annotation")
+        edge = (26, 120, 46) if side == "right" else (164, 91, 35)
+        draw_triangle_mesh_world(
+            image,
+            vertices,
+            mano_faces,
+            center,
+            basis,
+            radius,
+            int(max_mano_faces),
+            color,
+            edge,
+            0.34,
+            36,
+            False,
+        )
     xy, _ = project(joints, center, basis, radius, (image.shape[1], image.shape[0]))
     for a, b in HAND_EDGES:
+        cv2.line(image, tuple(xy[a].astype(int)), tuple(xy[b].astype(int)), (18, 18, 18), 5, cv2.LINE_AA)
         cv2.line(image, tuple(xy[a].astype(int)), tuple(xy[b].astype(int)), color, 3, cv2.LINE_AA)
     for point in xy:
+        cv2.circle(image, tuple(point.astype(int)), 5, (18, 18, 18), -1, cv2.LINE_AA)
         cv2.circle(image, tuple(point.astype(int)), 3, color, -1, cv2.LINE_AA)
     if contact_ids:
-        vertices = world_vertices(hand)[np.asarray(contact_ids, dtype=int)]
-        uv, _ = project(vertices, center, basis, radius, (image.shape[1], image.shape[0]))
+        contact_vertices = vertices[np.asarray(contact_ids, dtype=int)]
+        uv, _ = project(contact_vertices, center, basis, radius, (image.shape[1], image.shape[0]))
         for point in uv:
             p = tuple(point.astype(int))
             cv2.circle(image, p, 13, (0, 0, 0), -1, cv2.LINE_AA)
@@ -269,31 +418,36 @@ def draw_world_panel(
     annotations: dict[int, dict],
     meshes: dict[int, tuple[np.ndarray, np.ndarray]],
     contact_by_frame: dict[int, dict],
+    state_by_frame: dict[int, dict],
+    mano_faces: np.ndarray | None,
     frame_idx: int,
     center: np.ndarray,
     basis: np.ndarray,
     radius: float,
     args: argparse.Namespace,
 ) -> np.ndarray:
-    image = np.full((args.panel_height, args.panel_width, 3), (247, 248, 244), dtype=np.uint8)
+    image = np.full((args.panel_height, args.panel_width, 3), (244, 246, 241), dtype=np.uint8)
     ann = annotations[int(frame_idx)]
     vertices, faces = meshes[int(frame_idx)]
     draw_mesh_world(image, vertices, faces, center, basis, radius, int(args.max_mesh_faces))
-    draw_camera_path(image, annotations, int(frame_idx), center, basis, radius)
-    draw_camera(image, np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float), center, basis, radius, float(args.frustum_scale_m))
-    draw_camera_inset(image, annotations, int(frame_idx), args)
-    draw_metric_axes(image, center, basis, radius)
     row = contact_by_frame.get(int(frame_idx))
     for i, hand in enumerate(ann.get("hands", [])):
         ids = row.get("best_patch_vertex_ids", []) if row is not None and int(row["hand_idx"]) == i else None
-        draw_hand_world(image, hand, center, basis, radius, ids)
-    cv2.putText(image, f"metric world reconstruction  frame {frame_idx}", (20, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (25, 25, 25), 2, cv2.LINE_AA)
-    scale_px = int(round(0.10 * 0.42 * min(image.shape[1], image.shape[0]) / radius))
-    scale_px = max(20, min(scale_px, 180))
-    sx, sy = 28, args.panel_height - 64
-    cv2.line(image, (sx, sy), (sx + scale_px, sy), (25, 25, 25), 4, cv2.LINE_AA)
-    cv2.putText(image, "0.10 m", (sx, sy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (25, 25, 25), 1, cv2.LINE_AA)
-    cv2.putText(image, "red shaded object mesh   green/orange MANO   black head camera/path", (20, args.panel_height - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.53, (45, 45, 45), 1, cv2.LINE_AA)
+        draw_hand_world(image, hand, center, basis, radius, ids, mano_faces, int(args.max_mano_faces))
+    draw_camera_inset(image, annotations, int(frame_idx), args)
+    draw_metric_axes(image, center, basis, radius)
+    draw_scale_bar(image, radius, args)
+    draw_state_badge(image, state_by_frame.get(int(frame_idx)), int(frame_idx))
+    cv2.putText(
+        image,
+        "object mesh | MANO surfaces | contact patch | head path inset",
+        (258, args.panel_height - 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.46,
+        (45, 45, 45),
+        1,
+        cv2.LINE_AA,
+    )
     return image
 
 
@@ -327,10 +481,10 @@ def current_focus_view(ann: dict, mesh: tuple[np.ndarray, np.ndarray], args: arg
     points = []
     vertices = mesh[0]
     points.append(vertices[np.linspace(0, len(vertices) - 1, min(len(vertices), 900), dtype=int)])
-    points.append(camera_frustum_points(np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float), float(args.frustum_scale_m)))
     for hand in ann.get("hands", []):
         if bool(hand.get("measurement_available", False)):
-            points.append(world_joints(hand))
+            hand_vertices = world_vertices(hand)
+            points.append(hand_vertices[np.linspace(0, len(hand_vertices) - 1, min(len(hand_vertices), 240), dtype=int)])
     if len(points) == 1:
         for hand in ann.get("hands", []):
             points.append(world_joints(hand))
@@ -342,6 +496,7 @@ def render_overlay_frame(
     ann: dict,
     mesh: tuple[np.ndarray, np.ndarray],
     row: dict | None,
+    state_row: dict | None,
     frame_idx: int,
     args: argparse.Namespace,
 ) -> np.ndarray:
@@ -356,6 +511,9 @@ def render_overlay_frame(
     status_source = frame_source.status(int(frame_idx))
     if status_source:
         label += f"  {status_source}"
+    if state_row is not None:
+        state = str(state_row.get("geometry_state", "unknown"))
+        label += f"  {STATE_LABELS.get(state, state)}"
     if row is None:
         label += "  no reliable mesh-surface contact"
     else:
@@ -377,7 +535,10 @@ def combine_panels(overlay: np.ndarray, world: np.ndarray, caption: str, args: a
     bar = np.zeros((args.caption_height, args.output_width, 3), dtype=np.uint8)
     prefix = str(getattr(args, "caption_prefix", "") or "").strip()
     text = f"{prefix}: {caption}" if prefix else caption
-    cv2.putText(bar, text, (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.76, (255, 255, 255), 2, cv2.LINE_AA)
+    max_chars = 138
+    if len(text) > max_chars:
+        text = text[: max_chars - 3].rstrip() + "..."
+    cv2.putText(bar, text, (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.70, (255, 255, 255), 2, cv2.LINE_AA)
     return np.vstack([joined, bar])
 
 
@@ -388,6 +549,12 @@ def run(args: argparse.Namespace) -> dict:
     if missing_mesh:
         raise RuntimeError(f"mesh archive missing frames: {missing_mesh[:8]}")
     contact_by_frame = reliable_contact_rows(load_json(args.contact_report))
+    state_by_frame = load_state_rows(args.v5_state_json)
+    frames = list(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride)))
+    missing_state = sorted(set(frames).difference(state_by_frame)) if args.v5_state_json is not None else []
+    if missing_state:
+        raise RuntimeError(f"V5 state JSON missing rendered frames: {missing_state[:8]}")
+    mano_faces = load_mano_faces(args.mano_model) if args.mano_model is not None else None
     frame_source = FrameSource(args.video, args.manifest)
     fps = float(args.output_fps) if args.output_fps is not None else frame_source.fps()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -416,14 +583,14 @@ def run(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"failed to open writer {world_video_path}")
     written_stills = []
     written_world_stills = []
-    frames = list(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride)))
     try:
         for frame_idx in frames:
             ann = annotations[int(frame_idx)]
             row = contact_by_frame.get(int(frame_idx))
-            overlay = render_overlay_frame(frame_source, ann, meshes[int(frame_idx)], row, int(frame_idx), args)
+            state_row = state_by_frame.get(int(frame_idx))
+            overlay = render_overlay_frame(frame_source, ann, meshes[int(frame_idx)], row, state_row, int(frame_idx), args)
             center, basis, radius = current_focus_view(ann, meshes[int(frame_idx)], args)
-            world = draw_world_panel(annotations, meshes, contact_by_frame, int(frame_idx), center, basis, radius, args)
+            world = draw_world_panel(annotations, meshes, contact_by_frame, state_by_frame, mano_faces, int(frame_idx), center, basis, radius, args)
             world_writer.write(world)
             caption = str(ann.get("caption", "")).strip()
             if not caption:
@@ -455,11 +622,14 @@ def run(args: argparse.Namespace) -> dict:
         "frames": frames,
         "fps": fps,
         "contact_frames": sorted(contact_by_frame),
-        "world_view": "per-frame oblique object-and-measured-hand focus in the stored metric world frame",
-        "interpretation": "The right panel is an orthographic third-person rendering over the metric SLAM frame; screen vertical follows the selected virtual view and the axis triad shows the stored metric axes.",
+        "state_frames": sorted(state_by_frame) if state_by_frame else [],
+        "world_view": "large metric manipulation close-up with separate head-camera trajectory inset",
+        "interpretation": "The right panel is an orthographic third-person rendering of the current object mesh and MANO surfaces in metric world coordinates. The inset renders the head-camera trajectory at its own scale.",
         "annotations": str(args.annotations),
         "object_mesh_npz": str(args.object_mesh_npz),
         "contact_report": str(args.contact_report),
+        "v5_state_json": str(args.v5_state_json) if args.v5_state_json is not None else None,
+        "mano_model": str(args.mano_model) if args.mano_model is not None else None,
         "video_source": str(args.video) if args.video is not None else None,
         "manifest_source": str(args.manifest) if args.manifest is not None else None,
     }
@@ -475,6 +645,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--object-mesh-npz", type=Path, required=True)
     parser.add_argument("--contact-report", type=Path, required=True)
+    parser.add_argument("--v5-state-json", type=Path)
+    parser.add_argument("--mano-model", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
@@ -486,7 +658,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caption-height", type=int, default=58)
     parser.add_argument("--focus-radius-scale", type=float, default=1.28)
     parser.add_argument("--frustum-scale-m", type=float, default=0.045)
-    parser.add_argument("--max-mesh-faces", type=int, default=1200)
+    parser.add_argument("--max-mesh-faces", type=int, default=1700)
+    parser.add_argument("--max-mano-faces", type=int, default=650)
     parser.add_argument("--max-overlay-mesh-edges", type=int, default=260)
     parser.add_argument("--caption-prefix", default="")
     parser.add_argument("--still-frames", type=int, nargs="*", default=[858, 866, 867, 868, 879, 880])

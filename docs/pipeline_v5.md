@@ -71,7 +71,7 @@ The solver must expose residuals by frame and by source. A generated full mesh t
    - Acceptance: generated prior must improve unobserved/full-shape plausibility without degrading measured-frame z-buffer/contact/SDF QC.
 
 4. Upgrade the presentation renderer.
-   - Replace diagnostic line-plot styling with a stakeholder 3D scene: fixed camera choreography, shaded MANO meshes, shaded object mesh, head-camera frustum, contact close-up inset, and readable semantic captions.
+   - Replace diagnostic line-plot styling with a stakeholder 3D scene: shaded MANO surfaces, shaded object mesh, contact markers, V5 object-state badges, readable captions, and a separate head-camera trajectory inset.
    - Acceptance: side-by-side and standalone 3D must immediately communicate head pose, two hands, manipulated object mesh, and contact state.
 
 ## Current V5 Binary State
@@ -118,3 +118,16 @@ The ambiguous contact frames are 2533, 2534, 2535, 2536, 2546, and 2547. They co
 State package:
 
 - `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_state_completed_2520_2550/v5_dynamic_surface_state.json`
+
+## Presentation Upgrade
+
+The V5 renderer now consumes the state package directly. If a V5 state file is supplied, every rendered frame must have a state row. The world panel renders a large manipulation close-up in metric world coordinates, with the head-camera trajectory in a separately scaled inset. MANO surfaces use the real MANO face topology from `/data/dex_home/yiwen/hand_trajectory_loader/assets/mano/models/MANO_RIGHT.pkl`; the annotation stream supplies the per-frame MANO vertices. The object mesh remains the accepted completed V4 per-frame mesh archive.
+
+Rendered artifacts:
+
+- side-by-side video: `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/world_reconstruction_side_by_side.mp4`
+- standalone 3D video: `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/world_reconstruction_3d.mp4`
+- render manifest: `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/render_manifest.json`
+- inspected stills: `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/stills/frame_002520.jpg`, `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/stills/frame_002535.jpg`, and `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/stills/frame_002550.jpg`
+
+The videos contain 31 frames at 6 fps. The side-by-side render is 1920 x 778 and the standalone 3D render is 960 x 720. Visual inspection of measured, contact-ambiguous, and completed frames shows that the object mesh, MANO surfaces, contact patch, V5 state, semantic caption, and head trajectory are readable in the same frame.
