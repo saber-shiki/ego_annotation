@@ -207,6 +207,8 @@ The sparse-track edge diagnostic converts the stronger middle-query CoTracker ru
 
 These edges are the first V5 signal that can support a sparse dynamic factor graph. They do not replace the per-frame measured meshes and do not prove dense material correspondence. The next graph should keep the per-frame repaired mesh archive as the delivered geometry and use these sparse edges only as a regularizer or diagnostic factor, with z-buffer/contact/SDF replay required after any deformation.
 
+Local rigidity QC is mixed. Across consecutive frame pairs, the sparse tracks have median rigid-fit residual 5.0 mm and median pairwise length error 3.39 mm, but p95 pairwise length error is 15.3 mm. The strongest pair is 2535 to 2536, with rigid RMSD 3.78 mm and pairwise length-error p95 9.71 mm. The weakest early pair, 2532 to 2533, has rigid RMSD 16.2 mm and pairwise length-error p95 49.4 mm. The learned tracks can therefore be robust sparse factors after residual clipping or confidence weighting. They should not be used as hard material constraints across the whole window.
+
 Artifacts:
 
 - frame-2532 seed QC report: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/qc_cotracker_object_tracks_v5.json`
@@ -214,4 +216,5 @@ Artifacts:
 - middle-query track archive: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/cotracker_object_tracks_v5.npz`
 - middle-query overlay video: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/cotracker_tracks_overlay.mp4`
 - sparse correspondence edges: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_sparse_edges_midquery2535_2532_2537/cotracker_sparse_correspondence_edges_v5.json`
+- local rigidity QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_sparse_edges_midquery2535_2532_2537/qc_cotracker_local_rigidity_v5.json`
 - inspected stills: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/stills/frame_002532.jpg`, `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/stills/frame_002536.jpg`, and `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/stills/frame_002537.jpg`
