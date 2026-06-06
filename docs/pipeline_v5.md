@@ -103,3 +103,18 @@ Artifacts:
 - Rigid map report and archive: `/data2/ego_annotation_outputs/representative_wild_rice/v5_observable_window_rigid_map_icp_bpa_2525_2529/`
 - Independent z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_observable_window_rigid_map_icp_bpa_zbuffer_qc_2525_2529/qc_mesh_zbuffer_projection_v3.json`
 - Visual failure frame: `/data2/ego_annotation_outputs/representative_wild_rice/v5_observable_window_rigid_map_icp_bpa_zbuffer_qc_2525_2529/frame_2527_qc.jpg`
+
+## Dynamic-Surface State Package
+
+The current V5 object state preserves the completed V4 per-frame mesh archive as accepted geometry and adds explicit per-frame map-observability labels. The package classifies frames as:
+
+- 12 map-observable measured geometry frames;
+- 12 ambiguous measured geometry frames;
+- 6 ambiguous contact geometry frames;
+- 1 completed geometry frame, 2550 from `sam2_mask_seed_from_2549`.
+
+The ambiguous contact frames are 2533, 2534, 2535, 2536, 2546, and 2547. They contain reliable contact rows, while their object geometry lacks stable dynamic-map support. Downstream optimization should consume their contact evidence with uncertainty.
+
+State package:
+
+- `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_state_completed_2520_2550/v5_dynamic_surface_state.json`
