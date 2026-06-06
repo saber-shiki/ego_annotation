@@ -280,11 +280,20 @@ def projection_terms(points: np.ndarray, frame: FrameData, args: argparse.Namesp
 def visible_depth_terms(points: np.ndarray, frame: FrameData, args: argparse.Namespace) -> tuple[np.ndarray, dict]:
     if int(args.max_visible_depth_pixels) <= 0:
         return np.zeros(0, dtype=np.float64), {"samples": 0}
-    positive = points[:, 2] > float(args.min_depth_m)
-    if not np.any(positive):
+    if len(points) == 0:
         return np.zeros(0, dtype=np.float64), {"samples": 0}
-    uv = project_camera(points[positive], frame.intrinsics)
-    z = points[positive, 2].astype(np.float64)
+    if len(points) > int(args.max_visible_depth_pixels):
+        rng = np.random.default_rng(int(args.seed) + int(frame.frame_idx) + 17000)
+        point_ids = np.sort(rng.choice(len(points), size=int(args.max_visible_depth_pixels), replace=False))
+    else:
+        point_ids = np.arange(len(points), dtype=np.int64)
+    selected = points[point_ids]
+    residual = np.zeros(len(selected), dtype=np.float64)
+    positive = selected[:, 2] > float(args.min_depth_m)
+    if not np.any(positive):
+        return residual, {"samples": 0}
+    uv = project_camera(selected[positive], frame.intrinsics)
+    z = selected[positive, 2].astype(np.float64)
     xy = np.rint(uv).astype(np.int64)
     in_bounds = (
         (xy[:, 0] >= 0)
@@ -293,30 +302,25 @@ def visible_depth_terms(points: np.ndarray, frame: FrameData, args: argparse.Nam
         & (xy[:, 1] < frame.mask.shape[0])
     )
     if not np.any(in_bounds):
-        return np.zeros(0, dtype=np.float64), {"samples": 0}
-    xy = xy[in_bounds]
-    z = z[in_bounds]
-    mask_hit = frame.mask[xy[:, 1], xy[:, 0]]
+        return residual, {"samples": 0}
+    positive_ids = np.flatnonzero(positive)
+    xy_valid = xy[in_bounds]
+    z_valid = z[in_bounds]
+    selected_valid = positive_ids[in_bounds]
+    mask_hit = frame.mask[xy_valid[:, 1], xy_valid[:, 0]]
     if not np.any(mask_hit):
-        return np.zeros(0, dtype=np.float64), {"samples": 0}
-    xy = xy[mask_hit]
-    z = z[mask_hit]
-    linear = xy[:, 1] * frame.mask.shape[1] + xy[:, 0]
-    order = np.lexsort((z, linear))
-    linear_sorted = linear[order]
-    first = np.r_[True, linear_sorted[1:] != linear_sorted[:-1]]
-    chosen = order[first]
-    if len(chosen) > int(args.max_visible_depth_pixels):
-        rng = np.random.default_rng(int(args.seed) + int(frame.frame_idx) + 17000)
-        chosen = chosen[rng.choice(len(chosen), size=int(args.max_visible_depth_pixels), replace=False)]
-    x = xy[chosen, 0]
-    y = xy[chosen, 1]
+        return residual, {"samples": 0}
+    xy_valid = xy_valid[mask_hit]
+    z_valid = z_valid[mask_hit]
+    selected_valid = selected_valid[mask_hit]
+    x = xy_valid[:, 0]
+    y = xy_valid[:, 1]
     depth = frame.depth_m[y, x].astype(np.float64)
     valid = np.isfinite(depth) & (depth > float(args.min_depth_m))
     if not np.any(valid):
-        return np.zeros(0, dtype=np.float64), {"samples": 0}
-    err = z[chosen][valid] - depth[valid]
-    residual = np.clip(err, -float(args.max_visible_depth_residual_m), float(args.max_visible_depth_residual_m))
+        return residual, {"samples": 0}
+    err = z_valid[valid] - depth[valid]
+    residual[selected_valid[valid]] = np.clip(err, -float(args.max_visible_depth_residual_m), float(args.max_visible_depth_residual_m))
     return residual / float(args.sigma_visible_depth_m), {
         "samples": int(len(err)),
         "signed_median_m": float(np.median(err)),
@@ -704,13 +708,21 @@ def run(args: argparse.Namespace) -> dict:
     save_world_archive(archive_path, frames, mesh_vertices, mesh_faces, pivot, result.x)
     contact_p95 = after_summary["contact_distance_p95_m"].get("median")
     surface_p95 = after_summary["observed_to_prior_p95_m"].get("median")
+    visible_depth_p95 = after_summary["visible_depth_abs_p95_m"].get("median")
+    contact_volume_penetration_p95 = after_summary["contact_volume_sdf_penetration_fraction"].get("p95")
     speed = after_summary["world_center_speed_m_s_from_prev"].get("median")
     projection_inside = after_summary["projection_inside_mask_fraction"].get("median")
     status = "diagnostic_contact_patch_object_pose_unsolved"
     if contact_p95 is not None and surface_p95 is not None and speed is not None and projection_inside is not None:
+        visible_depth_ok = visible_depth_p95 is None or float(visible_depth_p95) <= float(args.accept_visible_depth_p95_m)
+        contact_volume_ok = contact_volume_penetration_p95 is None or float(contact_volume_penetration_p95) <= float(
+            args.accept_contact_volume_penetration_p95
+        )
         if (
             float(contact_p95) <= float(args.accept_contact_p95_m)
             and float(surface_p95) <= float(args.accept_surface_p95_m)
+            and visible_depth_ok
+            and contact_volume_ok
             and float(speed) <= float(args.accept_world_speed_m_s)
             and float(projection_inside) >= float(args.accept_projection_inside_fraction)
         ):
@@ -745,6 +757,8 @@ def run(args: argparse.Namespace) -> dict:
         "acceptance": {
             "accept_contact_p95_m": float(args.accept_contact_p95_m),
             "accept_surface_p95_m": float(args.accept_surface_p95_m),
+            "accept_visible_depth_p95_m": float(args.accept_visible_depth_p95_m),
+            "accept_contact_volume_penetration_p95": float(args.accept_contact_volume_penetration_p95),
             "accept_world_speed_m_s": float(args.accept_world_speed_m_s),
             "accept_projection_inside_fraction": float(args.accept_projection_inside_fraction),
         },
@@ -822,6 +836,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--signed-penetration-positive-m", type=float, default=0.001)
     parser.add_argument("--accept-contact-p95-m", type=float, default=0.006)
     parser.add_argument("--accept-surface-p95-m", type=float, default=0.030)
+    parser.add_argument("--accept-visible-depth-p95-m", type=float, default=0.030)
+    parser.add_argument("--accept-contact-volume-penetration-p95", type=float, default=0.05)
     parser.add_argument("--accept-world-speed-m-s", type=float, default=0.35)
     parser.add_argument("--accept-projection-inside-fraction", type=float, default=0.80)
     parser.add_argument("--max-nfev", type=int, default=70)
