@@ -31,6 +31,15 @@ def load_track_ids(path: Path) -> np.ndarray:
     return np.asarray(sorted({int(edge["track_id"]) for edge in edges}), dtype=np.int64)
 
 
+def selected_track_ids(path: Path | None, track_count: int) -> np.ndarray:
+    if path is None:
+        return np.arange(track_count, dtype=np.int64)
+    ids = load_track_ids(path)
+    if ids.size and int(np.max(ids)) >= track_count:
+        raise RuntimeError("sparse edge track ids exceed CoTracker archive track dimension")
+    return ids
+
+
 def weighted_kabsch(source: np.ndarray, target: np.ndarray, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if source.shape != target.shape or source.ndim != 2 or source.shape[1] != 3:
         raise RuntimeError("invalid Kabsch inputs")
@@ -87,9 +96,7 @@ def run(args: argparse.Namespace) -> dict:
     frame_idx = np.asarray(tracks["frame_idx"], dtype=np.int64)
     accepted = np.asarray(tracks["accepted"], dtype=bool)
     world = np.asarray(tracks["world_xyz"], dtype=np.float64)
-    usable_ids = load_track_ids(args.sparse_edges_json)
-    if usable_ids.size and int(np.max(usable_ids)) >= accepted.shape[1]:
-        raise RuntimeError("sparse edge track ids exceed CoTracker archive track dimension")
+    usable_ids = selected_track_ids(args.sparse_edges_json, accepted.shape[1])
 
     pair_rows = []
     all_inlier_residuals = []
@@ -140,7 +147,7 @@ def run(args: argparse.Namespace) -> dict:
         "method": "fit_cotracker_pairwise_rigid_factors_v6",
         "claim_tested": "robust SE3 factors on learned sparse object tracks identify frame pairs where material motion is coherent enough to use as a graph factor",
         "cotracker_npz": str(args.cotracker_npz),
-        "sparse_edges_json": str(args.sparse_edges_json),
+        "sparse_edges_json": str(args.sparse_edges_json) if args.sparse_edges_json is not None else None,
         "frames": [int(frame) for frame in frame_idx.tolist()],
         "usable_track_count": int(len(usable_ids)),
         "pair_count": int(len(pair_rows)),
@@ -166,7 +173,7 @@ def run(args: argparse.Namespace) -> dict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cotracker-npz", type=Path, required=True)
-    parser.add_argument("--sparse-edges-json", type=Path, required=True)
+    parser.add_argument("--sparse-edges-json", type=Path)
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--min-pair-tracks", type=int, default=12)
     parser.add_argument("--min-inlier-tracks", type=int, default=12)

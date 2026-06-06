@@ -138,3 +138,34 @@ Target-frame z-buffer replay gives low depth residual but poor full-silhouette a
 | 2537 | 0.629 | 0.912 | 9.54 mm |
 
 This is the expected distinction between material-patch tracking and full object-mask propagation. The ready CoTracker factors are valid sparse temporal factors for a stable common surface region. They are not a full propagated mesh annotation, because the visible support changes enough that the transported source mesh misses or overdraws target-frame silhouette regions. V6 should use these factors for local pose/deformation regularization and missing-patch support, then keep measured target masks/depth as the authority for delivered mesh coverage.
+
+## Wider Ambiguity-Bridge Test
+
+The wider CoTracker run uses the completed V4 sequence from 2532 to 2550 and queries the same clean source frame 2535. This tests whether learned sparse correspondence can carry object evidence from the repaired contact interval into later ambiguous or completed frames.
+
+Artifacts:
+
+- wide CoTracker run: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_wide_midquery2535_2532_2550/`
+- wide mesh-anchored sparse edges: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_wide_sparse_edges_midquery2535_2532_2550/cotracker_sparse_correspondence_edges_v6.json`
+- wide pairwise factor report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_wide_pairwise_rigid_factors_meshanchored_2532_2550/qc_cotracker_pairwise_rigid_factors_v6.json`
+- wide transport residual report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_wide_transport_ready_pairs_2534_2538/qc_transport_ready_pair_meshes_v6.json`
+- wide transported-mesh z-buffer replay: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_wide_transport_ready_pairs_zbuffer_qc_2535_2538/qc_mesh_zbuffer_projection_v3.json`
+
+The tracker does not produce long-range all-frame tracks. Accepted track count is strong from 2533 to 2537, drops to 39 at 2538, and falls below the 12-track factor threshold after 2541. After mesh-surface anchoring, 88 tracks remain usable and 421 neighboring-frame edges survive.
+
+Mesh-anchored pairwise factor readiness:
+
+| Pair | Tracks | Inliers | Ready | Inlier p95 |
+| --- | ---: | ---: | --- | ---: |
+| 2532 to 2533 | 37 | 24 | no | 11.00 mm |
+| 2533 to 2534 | 72 | 53 | no | 10.48 mm |
+| 2534 to 2535 | 85 | 79 | yes | 9.59 mm |
+| 2535 to 2536 | 87 | 83 | yes | 6.90 mm |
+| 2536 to 2537 | 74 | 70 | yes | 7.64 mm |
+| 2537 to 2538 | 32 | 29 | yes | 9.67 mm |
+
+The new useful fact is the 2537 to 2538 bridge: visual inspection of the 2538 overlay shows retained tracks on the active stem mask, and the pair passes the strict residual criterion. This extends sparse temporal evidence into the first later ambiguous measured frame.
+
+Transport replay still rejects the transported source meshes as full target annotations. The four ready-pair transported surfaces have bidirectional surface medians between 1.32 and 1.99 mm, and p95 residuals between 4.89 and 8.29 mm. However, full z-buffer replay over target frames 2535 to 2538 gives median silhouette IoU 0.681 and median z-buffer p95 20.46 mm. Frame 2538 has IoU 0.701, visible-inside-mask 0.856, and z-buffer p95 21.55 mm.
+
+V6 conclusion after the wide run: learned sparse factors can bridge stable local surface patches from the repaired contact interval into frame 2538. They cannot fill the rest of 2539 to 2550 because track support collapses, and they cannot replace per-frame mask/depth geometry even where the pair factor is ready. The next valid solver should use these factors as local temporal priors with measured target masks/depth as hard replay checks.
