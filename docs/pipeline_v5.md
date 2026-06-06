@@ -77,3 +77,17 @@ The solver must expose residuals by frame and by source. A generated full mesh t
 ## Current V5 Binary State
 
 V5 is open. The rigid canonical-map branch has been falsified. The next concrete implementation target is the dynamic-surface observability diagnostic, followed by a deformable short-window fit only if the diagnostic finds stable surface regions.
+
+## Dynamic-Surface Observability Result
+
+The first V5 diagnostic measured which frames in the completed V4 archive are observable enough for dynamic surface fitting. A frame must pass three tests: accepted z-buffer residuals, PCA extent consistency against the track median, and stable nearest-neighbor surface overlap with at least one adjacent frame after local ICP.
+
+The report marks 13 observable frames: 2522, 2523, 2525 to 2529, 2531, 2532, 2542, 2545, 2549, and 2550. The only contiguous window of length at least four is 2525 to 2529. This window has median z-buffer p95 1.71 mm, stable neighbor support for every frame, and one reliable contact row.
+
+The contact-rich 2533 to 2537 interval is rejected for dynamic-map anchoring despite good per-frame z-buffer residuals. Frames 2534 to 2537 are extent outliers, and frame 2533 lacks stable temporal overlap. This matches the visual failure mode: the selected measured masks include parallel stem/sheath surfaces, so the frames are contact evidence with ambiguity, not a stable object-map anchor.
+
+Diagnostic artifact:
+
+- `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_observability_completed_2520_2550/qc_dynamic_surface_observability_v5.json`
+
+The next V5 implementation should fit the first dynamic surface on frames 2525 to 2529 as a geometry-first window. Contact-rich ambiguous frames should enter later with uncertainty weights or segmentation repair.
