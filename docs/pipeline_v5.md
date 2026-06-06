@@ -160,3 +160,27 @@ Artifact:
 - `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_transport_edges_2525_2529/dynamic_surface_transport_edges_v5.json`
 
 Current V5 conclusion: the deliverable geometry should remain the per-frame measured/completed mesh archive with V5 state labels. Dynamic regularization is still open. The next valid mechanism is segmentation repair plus visibility-aware local patch tracking, or a stronger released hand-object reconstruction baseline such as HOLD, evaluated by the same z-buffer/contact/SDF replay. A canonical rigid mesh, a shared simplified topology, or dense transport edges should not be presented as solved object pose for this wild-rice window.
+
+## Segmentation-Repair Contact Window
+
+The first V5 repair branch targets the contact-rich but object-ambiguous interval 2532 to 2537. The input seed is the clean active-stem mask at frame 2532. SAM2 video propagation tracks that instance through frames 2532 to 2537, and visual inspection of frames 2534 and 2536 shows that the repaired mask follows the held stem while removing much of the adjacent parallel stem/sheath support that made the V4 state contact-ambiguous.
+
+The repaired mask stream was converted through the same category-agnostic geometry path as the accepted V4 meshes: RGB/mask manifest, UniDepth metric depth, annotation VGGT intrinsics, observed mask-depth surface, 1 mm watertight sheet solidification, z-buffer replay, mesh-surface contact, selected-contact SDF, and full-hand SDF. The repair-specific state package marks the six frames as `segmentation_repaired_geometry`; the renderer displays this as `repaired mesh`.
+
+Repair artifacts:
+
+- SAM2 mask track: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_seed2532_2531_2537/sam2_mask_seed_track_local.json`
+- mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_seed2532_solidified_thick001_2532_2537/solidified_sheet_object_meshes_world.npz`
+- z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_seed2532_zbuffer_qc_2532_2537/qc_mesh_zbuffer_projection_v3.json`
+- contact QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_seed2532_solidified_thick001_2532_2537/mesh_surface_contact_recomputed_det015.json`
+- selected-contact SDF QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_seed2532_solidified_thick001_2532_2537/volume_sdf_contact_recomputed_det015_pitch001_qc.json`
+- full-hand SDF QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_seed2532_solidified_thick001_2532_2537/full_hand_sdf_penetration_recomputed_det015_pitch001_qc.json`
+- repair state package: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_seed2532_state_2532_2537/v5_segmentation_repair_state.json`
+- side-by-side video: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_world_reconstruction_2532_2537/world_reconstruction_side_by_side.mp4`
+- standalone 3D video: `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_world_reconstruction_2532_2537/world_reconstruction_3d.mp4`
+
+The repaired stream improves the exact 2532 to 2537 image/depth contract relative to the V4 completed stream. V4 completed gives median silhouette IoU 0.979 and median z-buffer p95 2.56 mm on this window. The repaired stream gives median silhouette IoU 0.991 and median z-buffer p95 1.46 mm. Mesh-surface contact remains accepted for both hands on every frame: 12 of 12 geometry-backed rows are reliable temporal contact rows. Selected-contact SDF has 0 percent penetration, median absolute SDF 1.19 mm, and p95 absolute SDF 8.54 mm over 64 selected contact samples. Full-hand SDF has 0 percent penetration over 4,611 sampled MANO vertices, with median signed distance 17.1 mm outside the object.
+
+Structural render QC confirms both repair videos contain six frames at 6 fps. The side-by-side render is 1920 x 778, and the standalone 3D render is 960 x 720. Visual inspection of frames 2534 and 2536 shows the repaired object mesh, two MANO surfaces, contact patch marker, semantic caption, repaired-mesh badge, and head-camera trajectory inset in the same frame.
+
+This branch closes a bounded V5 segmentation-repair result for frames 2532 to 2537. It does not close dynamic material correspondence, full-sequence object completion, or a global deformable object model. Those remain open V5 mechanisms after the rigid map, shared-topology dynamic fit, and dense transport-edge branches were falsified.

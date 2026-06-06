@@ -29,6 +29,7 @@ STATE_LABELS = {
     "ambiguous_measured_geometry": "ambiguous mesh",
     "ambiguous_contact_geometry": "contact-ambiguous mesh",
     "completed_geometry": "completed mesh",
+    "segmentation_repaired_geometry": "repaired mesh",
 }
 
 STATE_COLORS = {
@@ -36,6 +37,7 @@ STATE_COLORS = {
     "ambiguous_measured_geometry": (70, 118, 186),
     "ambiguous_contact_geometry": (72, 72, 198),
     "completed_geometry": (154, 95, 42),
+    "segmentation_repaired_geometry": (42, 142, 154),
 }
 
 
