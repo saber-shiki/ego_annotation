@@ -149,9 +149,10 @@ def run(args: argparse.Namespace) -> dict:
     missing_state = [frame for frame in frames if frame not in states]
     if missing_state:
         raise RuntimeError(f"state package missing frames: {missing_state[:8]}")
-    bad_state = [frame for frame in frames if states[frame].get("geometry_state") != "map_observable_measured_geometry"]
+    allowed_states = {str(item) for item in args.allowed_geometry_state}
+    bad_state = [frame for frame in frames if states[frame].get("geometry_state") not in allowed_states]
     if bad_state:
-        raise RuntimeError(f"transport edge build requires observable measured frames, got: {bad_state[:8]}")
+        raise RuntimeError(f"transport edge build got disallowed geometry states: {bad_state[:8]}")
     pairs = [build_pair(a, b, meshes, args) for a, b in zip(frames[:-1], frames[1:])]
     stable_pairs = [pair for pair in pairs if bool(pair["stable_transport_pair"])]
     payload = {
@@ -168,6 +169,7 @@ def run(args: argparse.Namespace) -> dict:
             "max_edges_per_pair": int(args.max_edges_per_pair),
             "icp_threshold_m": float(args.icp_threshold_m),
             "icp_voxel_m": float(args.icp_voxel_m),
+            "allowed_geometry_state": sorted(allowed_states),
         },
         "pair_count": int(len(pairs)),
         "stable_pair_count": int(len(stable_pairs)),
@@ -197,6 +199,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--icp-threshold-m", type=float, default=0.035)
     parser.add_argument("--icp-voxel-m", type=float, default=0.003)
     parser.add_argument("--icp-iterations", type=int, default=80)
+    parser.add_argument(
+        "--allowed-geometry-state",
+        action="append",
+        default=["map_observable_measured_geometry"],
+    )
     return parser.parse_args()
 
 

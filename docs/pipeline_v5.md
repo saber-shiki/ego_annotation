@@ -184,3 +184,13 @@ The repaired stream improves the exact 2532 to 2537 image/depth contract relativ
 Structural render QC confirms both repair videos contain six frames at 6 fps. The side-by-side render is 1920 x 778, and the standalone 3D render is 960 x 720. Visual inspection of frames 2534 and 2536 shows the repaired object mesh, two MANO surfaces, contact patch marker, semantic caption, repaired-mesh badge, and head-camera trajectory inset in the same frame.
 
 This branch closes a bounded V5 segmentation-repair result for frames 2532 to 2537. It does not close dynamic material correspondence, full-sequence object completion, or a global deformable object model. Those remain open V5 mechanisms after the rigid map, shared-topology dynamic fit, and dense transport-edge branches were falsified.
+
+## Repaired-Window Transport Falsification
+
+The repaired 2532 to 2537 mesh archive was tested with the same transport-edge diagnostic, with `segmentation_repaired_geometry` supplied as an explicit allowed state. This keeps the accepted repaired per-frame meshes unchanged and asks only whether local temporal correspondences are stable enough for a dynamic material map.
+
+The result still rejects dense material transport. The diagnostic found 54,617 proximity edges over five neighboring frame pairs, but no pair reached the 0.45 stable-overlap threshold. Median accepted overlap is 0.15. Median source-to-target p95 distance is 6.64 mm, and median target-to-source p95 distance is 7.71 mm. The repaired segmentation improves per-frame instance identity and physical contact evidence, but the visible thin-stem surface still lacks enough repeated material support for dense correspondence.
+
+Artifact:
+
+- `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_transport_edges_2532_2537/dynamic_surface_transport_edges_v5.json`
