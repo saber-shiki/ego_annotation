@@ -38,6 +38,19 @@ def surface_residual(source_vertices: np.ndarray, target_vertices: np.ndarray, m
     }
 
 
+def pair_factor_rows(report: dict, path: Path) -> list[dict]:
+    method = report.get("method")
+    rows = report.get("pair_rows")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"pair factor report has no pair_rows list: {path}")
+    if method not in {
+        "fit_cotracker_pairwise_rigid_factors_v6",
+        "merge_cotracker_pair_factors_v6",
+    }:
+        raise RuntimeError(f"unsupported pair factor report method {method!r}: {path}")
+    return rows
+
+
 def write_mesh_archive(path: Path, rows: list[tuple[int, np.ndarray, np.ndarray]]) -> None:
     if not rows:
         raise RuntimeError("no transported meshes to write")
@@ -76,7 +89,7 @@ def run(args: argparse.Namespace) -> dict:
     transported_rows = []
     report_rows = []
 
-    for row in pair_report.get("pair_rows", []):
+    for row in pair_factor_rows(pair_report, args.pair_factors_json):
         if not row.get("rigid_factor_ready") and not args.include_rejected_pairs:
             continue
         source_frame = int(row["source_frame"])
