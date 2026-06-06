@@ -131,3 +131,32 @@ Rendered artifacts:
 - inspected stills: `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/stills/frame_002520.jpg`, `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/stills/frame_002535.jpg`, and `/data2/ego_annotation_outputs/representative_wild_rice/v5_world_reconstruction_state_presentation_2520_2550/stills/frame_002550.jpg`
 
 The videos contain 31 frames at 6 fps. The side-by-side render is 1920 x 778 and the standalone 3D render is 960 x 720. Visual inspection of measured, contact-ambiguous, and completed frames shows that the object mesh, MANO surfaces, contact patch, V5 state, semantic caption, and head trajectory are readable in the same frame.
+
+## First Dynamic-Topology Fit Falsification
+
+A first category-agnostic dynamic-surface graph was tested on the observable window 2525 to 2529. The graph used frame 2527 as an anchor, simplified its measured mesh to one 3960-vertex, 8000-face topology, initialized each frame by rigid ICP, then solved vertex positions with measured-surface nearest-neighbor residuals, Laplacian preservation, and temporal smoothness. The solved archive is:
+
+- `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_graph_observable_2525_2529/dynamic_surface_meshes_world.npz`
+- `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_graph_observable_2525_2529/qc_dynamic_surface_graph_v5.json`
+
+Independent z-buffer replay rejects this topology-sharing fit as delivered geometry. On the same 2525 to 2529 window and the same UniDepth/VGGT projection contract, the measured per-frame mesh baseline has median silhouette IoU 0.975 and median z-buffer p95 1.71 mm. The dynamic-topology fit has median silhouette IoU 0.840 and median z-buffer p95 8.55 mm. Frame 2528 drops to IoU 0.779 and z-buffer p95 16.2 mm. The visual failure is a smoothed/shrunken thin-stem surface: the shared topology and nearest-neighbor correspondences preserve median depth but lose silhouette support.
+
+Artifacts:
+
+- dynamic-fit z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_graph_observable_zbuffer_qc_2525_2529/qc_mesh_zbuffer_projection_v3.json`
+- measured baseline z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_measured_baseline_zbuffer_qc_2525_2529/qc_mesh_zbuffer_projection_v3.json`
+- failure still: `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_graph_observable_zbuffer_qc_2525_2529/stills/frame_002527.png`
+
+This falsifies the first shared-topology dynamic fit. V5 should keep the per-frame measured/completed meshes as delivered geometry and place temporal reasoning in correspondence or transport edges between stable surface samples, then use those edges for smoothing or repair only when replay QC does not degrade.
+
+## Strict Transport-Edge Diagnostic
+
+A second V5 diagnostic kept the accepted per-frame measured meshes unchanged and attempted to add only temporal transport edges. For each neighboring pair in 2525 to 2529, it aligned sampled surfaces by local ICP and kept mutual nearest-neighbor edges below 6 mm. This avoids changing the delivered object geometry.
+
+The strict transport diagnostic also rejects dense dynamic-state closure on this window. It stores 48,000 proximity edges, capped at 12,000 per pair, but the accepted overlap fraction is only about 0.18 median and no neighboring pair reaches the 0.45 stable-pair threshold. Source-to-target p95 is 8.16 mm median and target-to-source p95 is 12.76 mm median. The thin peeled-stem surfaces support local proximity edges, not a dense material correspondence map.
+
+Artifact:
+
+- `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_transport_edges_2525_2529/dynamic_surface_transport_edges_v5.json`
+
+Current V5 conclusion: the deliverable geometry should remain the per-frame measured/completed mesh archive with V5 state labels. Dynamic regularization is still open. The next valid mechanism is segmentation repair plus visibility-aware local patch tracking, or a stronger released hand-object reconstruction baseline such as HOLD, evaluated by the same z-buffer/contact/SDF replay. A canonical rigid mesh, a shared simplified topology, or dense transport edges should not be presented as solved object pose for this wild-rice window.
