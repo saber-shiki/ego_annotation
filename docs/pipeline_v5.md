@@ -194,3 +194,18 @@ The result still rejects dense material transport. The diagnostic found 54,617 p
 Artifact:
 
 - `/data2/ego_annotation_outputs/representative_wild_rice/v5_segmentation_repair_transport_edges_2532_2537/dynamic_surface_transport_edges_v5.json`
+
+## Learned Point-Track Diagnostic
+
+A first learned correspondence branch runs CoTracker3 on the repaired 2532 to 2537 RGB/mask sequence. Query points are sampled inside the repaired frame-2532 mask, tracked by the official `facebookresearch/co-tracker` PyTorch Hub model `cotracker3_offline`, then filtered by CoTracker visibility, repaired mask support, and UniDepth validity. Accepted tracks are lifted to metric world coordinates with the same annotation VGGT intrinsics and camera poses used by the mesh pipeline.
+
+CoTracker produces sparse material-candidate tracks, not dense correspondence closure. With a 28 px query grid, 58 seed points are tracked. Eighteen tracks remain accepted through all six frames. Accepted track counts per frame are 58, 49, 28, 25, 25, and 26. The median valid-frames-per-track count is 3.0, and the p95 is 6.0. The accepted consecutive world-step median is 12.1 mm, with p95 62.9 mm. Visual inspection of frames 2534, 2536, and 2537 shows the retained tracks mostly stay on the active stem; lost/rejected tracks occur near occlusion, mask edges, and the small bottom fragment.
+
+This is useful evidence for a future sparse correspondence factor, because it supplies model-produced temporal point hypotheses where geometry-only nearest neighbors had no stable dense overlap. It is not enough to declare a dynamic material map: the accepted track set is sparse, and p95 world motion is too large to use as an unqualified rigid/deformable regularizer. The next V5 graph should consume these tracks as confidence-weighted sparse factors alongside mask/depth/SDF residuals, with explicit rejection of tracks that leave the repaired mask or jump in world space.
+
+Artifacts:
+
+- QC report: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/qc_cotracker_object_tracks_v5.json`
+- track archive: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/cotracker_object_tracks_v5.npz`
+- overlay video: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/cotracker_tracks_overlay.mp4`
+- inspected stills: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/stills/frame_002534.jpg`, `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/stills/frame_002536.jpg`, and `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/stills/frame_002537.jpg`
