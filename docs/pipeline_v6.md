@@ -112,3 +112,29 @@ The next V6 graph should add these pair-local factors without changing the accep
 5. render only graph states that pass the same visual and metric QC used by V4/V5.
 
 The first solve should target frames 2535 to 2537, because both neighboring factors pass the strict residual criterion. Frames 2532 to 2535 need weaker correspondence handling or additional perception evidence before they can support temporal smoothing.
+
+## Transport Replay Test
+
+The first graph-use test transports the accepted source-frame mesh through each ready CoTracker SE3 factor and indexes the transported mesh by the target frame. It then compares the transported surface to the accepted target-frame mesh before any image replay.
+
+Artifacts:
+
+- transported mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_transport_ready_pairs_2535_2537/transported_ready_pair_meshes_world.npz`
+- transport residual report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_transport_ready_pairs_2535_2537/qc_transport_ready_pair_meshes_v6.json`
+- z-buffer replay report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_transport_ready_pairs_zbuffer_qc_2536_2537/qc_mesh_zbuffer_projection_v3.json`
+
+Surface transport succeeds on the common visible surface:
+
+| Pair | Bidirectional median | Bidirectional p95 |
+| --- | ---: | ---: |
+| 2535 to 2536 | 0.85 mm | 3.14 mm |
+| 2536 to 2537 | 1.69 mm | 5.34 mm |
+
+Target-frame z-buffer replay gives low depth residual but poor full-silhouette agreement:
+
+| Target frame | Silhouette IoU | Visible inside mask | Z-buffer p95 |
+| --- | ---: | ---: | ---: |
+| 2536 | 0.710 | 0.939 | 6.45 mm |
+| 2537 | 0.629 | 0.912 | 9.54 mm |
+
+This is the expected distinction between material-patch tracking and full object-mask propagation. The ready CoTracker factors are valid sparse temporal factors for a stable common surface region. They are not a full propagated mesh annotation, because the visible support changes enough that the transported source mesh misses or overdraws target-frame silhouette regions. V6 should use these factors for local pose/deformation regularization and missing-patch support, then keep measured target masks/depth as the authority for delivered mesh coverage.
