@@ -92,36 +92,89 @@ def annotation_by_frame(path: Path) -> dict[int, dict]:
     return out
 
 
-def mesh_from_entry(entry: dict, dataset: Path, K: np.ndarray, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, dict]:
+def intrinsics_from_annotation(annotation: dict, source: str) -> np.ndarray:
+    if source == "vggt":
+        raw = annotation.get("camera", {}).get("vggt_source_intrinsics_fx_fy_cx_cy")
+    elif source == "annotation":
+        raw = annotation.get("camera", {}).get("intrinsics_fx_fy_cx_cy")
+    else:
+        raise RuntimeError(f"unsupported annotation intrinsics source: {source}")
+    if raw is None:
+        raise RuntimeError(f"annotation frame {annotation.get('frame_idx')} lacks {source} intrinsics")
+    values = np.asarray(raw, dtype=np.float64)
+    if values.shape != (4,) or not np.isfinite(values).all():
+        raise RuntimeError(f"invalid {source} intrinsics for frame {annotation.get('frame_idx')}: {raw}")
+    fx, fy, cx, cy = values.tolist()
+    return np.asarray([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+
+def load_metric_depth_npz(path: Path) -> dict[int, np.ndarray]:
+    blob = np.load(path)
+    required = {"frame_idx", "depth"}
+    missing = required.difference(blob.files)
+    if missing:
+        raise RuntimeError(f"{path} missing keys: {sorted(missing)}")
+    frame_idx = blob["frame_idx"].astype(int)
+    depth = blob["depth"].astype(np.float64)
+    if depth.ndim != 3 or len(frame_idx) != depth.shape[0]:
+        raise RuntimeError(f"{path} has invalid frame/depth shapes: {frame_idx.shape}, {depth.shape}")
+    out: dict[int, np.ndarray] = {}
+    for i, idx in enumerate(frame_idx.tolist()):
+        if int(idx) in out:
+            raise RuntimeError(f"{path} has duplicate frame {idx}")
+        frame_depth = depth[i]
+        if frame_depth.ndim != 2 or not np.isfinite(frame_depth).all():
+            raise RuntimeError(f"{path} frame {idx} has invalid depth")
+        out[int(idx)] = frame_depth
+    return out
+
+
+def mesh_from_entry(
+    entry: dict,
+    dataset: Path,
+    K: np.ndarray,
+    args: argparse.Namespace,
+    metric_depth_by_frame: dict[int, np.ndarray] | None,
+) -> tuple[np.ndarray, np.ndarray, dict]:
     idx = int(entry["index"])
     frame_idx = int(entry["frame_idx"])
     depth_path = entry_path(entry, "depth", dataset / "depth" / f"{idx:06d}.png")
     mask_path = entry_path(entry, "mask", dataset / "masks" / f"{idx:06d}.png")
-    depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-    if depth is None or mask is None:
-        raise RuntimeError(f"failed to read depth/mask for frame {frame_idx}")
-    if depth.shape != mask.shape:
-        raise RuntimeError(f"depth/mask shape mismatch for frame {frame_idx}: {depth.shape} vs {mask.shape}")
+    if mask is None:
+        raise RuntimeError(f"failed to read mask for frame {frame_idx}: {mask_path}")
+    if metric_depth_by_frame is None:
+        depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+        if depth is None:
+            raise RuntimeError(f"failed to read depth for frame {frame_idx}: {depth_path}")
+        depth_m = depth.astype(np.float64) / 1000.0
+        depth_source = str(depth_path)
+    else:
+        if frame_idx not in metric_depth_by_frame:
+            raise RuntimeError(f"metric depth archive lacks frame {frame_idx}")
+        depth_m = metric_depth_by_frame[frame_idx].astype(np.float64)
+        depth_source = str(args.metric_depth_npz)
+    if depth_m.shape != mask.shape:
+        raise RuntimeError(f"depth/mask shape mismatch for frame {frame_idx}: {depth_m.shape} vs {mask.shape}")
     if args.mask_erode_px > 0:
         kernel = np.ones((2 * args.mask_erode_px + 1, 2 * args.mask_erode_px + 1), dtype=np.uint8)
         mask_bool = cv2.erode((mask > 0).astype(np.uint8), kernel, iterations=1) > 0
     else:
         mask_bool = mask > 0
-    depth_m = depth.astype(np.float64) / 1000.0
     values = depth_m[mask_bool & np.isfinite(depth_m) & (depth_m > args.min_depth_m) & (depth_m < args.max_depth_m)]
     if values.size < int(args.min_depth_pixels):
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32), {
             "frame_idx": frame_idx,
             "status": "skipped_too_few_depth_pixels",
+            "depth_source": depth_source,
             "depth_pixels": int(values.size),
         }
     lo = float(np.quantile(values, args.depth_low_quantile))
     hi = float(np.quantile(values, args.depth_high_quantile))
     keep = mask_bool & np.isfinite(depth_m) & (depth_m >= lo) & (depth_m <= hi)
 
-    ys = np.arange(0, depth.shape[0], int(args.mask_stride), dtype=np.int32)
-    xs = np.arange(0, depth.shape[1], int(args.mask_stride), dtype=np.int32)
+    ys = np.arange(0, depth_m.shape[0], int(args.mask_stride), dtype=np.int32)
+    xs = np.arange(0, depth_m.shape[1], int(args.mask_stride), dtype=np.int32)
     grid_x, grid_y = np.meshgrid(xs, ys)
     sampled_keep = keep[np.ix_(ys, xs)]
     depth_sample = depth_m[np.ix_(ys, xs)]
@@ -150,6 +203,7 @@ def mesh_from_entry(entry: dict, dataset: Path, K: np.ndarray, args: argparse.Na
     return vertices, faces, {
         "frame_idx": frame_idx,
         "status": "ok",
+        "depth_source": depth_source,
         "mask_pixels": int(np.count_nonzero(mask_bool)),
         "depth_pixels": int(values.size),
         "depth_low_m": lo,
@@ -184,12 +238,17 @@ def run(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"{args.manifest} must contain nonempty frames list")
     dataset_K = None
     intrinsics_source = "manifest_row"
-    if any("intrinsics_fx_fy_cx_cy" not in entry for entry in entries):
+    if args.intrinsics_source.startswith("annotation-"):
+        if args.annotations is None:
+            raise RuntimeError(f"--annotations is required for --intrinsics-source {args.intrinsics_source}")
+        intrinsics_source = args.intrinsics_source
+    elif any("intrinsics_fx_fy_cx_cy" not in entry for entry in entries):
         dataset_K = load_intrinsics(args.dataset)
         intrinsics_source = "dataset_cam_K"
     annotations = annotation_by_frame(args.annotations) if args.annotations is not None else {}
     if args.coordinate == "world" and args.annotations is None:
         raise RuntimeError("--annotations is required when --coordinate world")
+    metric_depth_by_frame = load_metric_depth_npz(args.metric_depth_npz) if args.metric_depth_npz is not None else None
     frame_indices = []
     vertices_world = []
     faces_all = []
@@ -200,12 +259,17 @@ def run(args: argparse.Namespace) -> dict:
             continue
         if args.coordinate == "world" and frame_idx not in annotations:
             raise RuntimeError(f"missing annotation frame {frame_idx}")
-        K = intrinsics_from_entry(entry)
-        if K is None:
-            if dataset_K is None:
-                raise RuntimeError(f"missing per-frame intrinsics and dataset cam_K for frame {frame_idx}")
-            K = dataset_K
-        vertices_camera, faces, row = mesh_from_entry(entry, args.dataset, K, args)
+        if args.intrinsics_source == "annotation-vggt":
+            K = intrinsics_from_annotation(annotations[frame_idx], "vggt")
+        elif args.intrinsics_source == "annotation":
+            K = intrinsics_from_annotation(annotations[frame_idx], "annotation")
+        else:
+            K = intrinsics_from_entry(entry)
+            if K is None:
+                if dataset_K is None:
+                    raise RuntimeError(f"missing per-frame intrinsics and dataset cam_K for frame {frame_idx}")
+                K = dataset_K
+        vertices_camera, faces, row = mesh_from_entry(entry, args.dataset, K, args, metric_depth_by_frame)
         if row["status"] != "ok":
             rows.append(row)
             continue
@@ -236,6 +300,7 @@ def run(args: argparse.Namespace) -> dict:
         "dataset": str(args.dataset),
         "manifest": str(args.manifest),
         "annotations": str(args.annotations) if args.annotations is not None else None,
+        "metric_depth_npz": str(args.metric_depth_npz) if args.metric_depth_npz is not None else None,
         "archive": str(archive),
         "frames": int(len(frame_indices)),
         "first_frame": int(frame_indices[0]),
@@ -254,10 +319,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--annotations", type=Path)
+    parser.add_argument("--metric-depth-npz", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--coordinate", choices=["world", "camera"], default="world")
+    parser.add_argument("--intrinsics-source", choices=["manifest", "annotation", "annotation-vggt"], default="manifest")
     parser.add_argument("--mask-stride", type=int, default=5)
     parser.add_argument("--mask-erode-px", type=int, default=1)
     parser.add_argument("--depth-low-quantile", type=float, default=0.02)

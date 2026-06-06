@@ -253,28 +253,163 @@ def save_pose_archive(path: Path, mesh: trimesh.Trimesh, poses_json: Path, frame
     }
 
 
-def run(args: argparse.Namespace) -> dict:
-    raw_mesh = load_mesh(args.canonical_mesh)
-    mesh, cleanup_report = clean_open_surface(raw_mesh)
-    vertices = np.asarray(mesh.vertices, dtype=np.float64)
-    center, axes, ratios = pca_sheet_frame(vertices)
-    if float(ratios[2]) > float(args.max_sheet_planarity_ratio):
-        raise RuntimeError(
-            f"mesh is not sheet-like enough for measured-surface solidification: "
-            f"smallest PCA ratio {float(ratios[2]):.6f} > {float(args.max_sheet_planarity_ratio):.6f}"
-        )
-    normal = axes[2].copy()
-    depth_axis = camera_depth_axis(args.annotations, args.anchor_frame)
-    if depth_axis is not None and float(np.dot(normal, depth_axis)) < 0.0:
-        normal *= -1.0
-    normal_coordinates = (vertices - center[None, :]) @ normal
+def load_mesh_archive(path: Path) -> list[tuple[int, trimesh.Trimesh]]:
+    blob = np.load(path)
+    required = {"frame_idx", "vertex_offsets", "face_offsets", "vertices", "faces"}
+    missing = required.difference(blob.files)
+    if missing:
+        raise RuntimeError(f"{path} missing keys: {sorted(missing)}")
+    frame_idx = blob["frame_idx"].astype(int)
+    vertex_offsets = blob["vertex_offsets"].astype(np.int64)
+    face_offsets = blob["face_offsets"].astype(np.int64)
+    vertices = blob["vertices"].astype(np.float64)
+    faces = blob["faces"].astype(np.int32)
+    if len(vertex_offsets) != len(frame_idx) + 1 or len(face_offsets) != len(frame_idx) + 1:
+        raise RuntimeError(f"{path} has invalid offset lengths")
+    out = []
+    for i, idx in enumerate(frame_idx.tolist()):
+        v = vertices[vertex_offsets[i] : vertex_offsets[i + 1]]
+        f = faces[face_offsets[i] : face_offsets[i + 1]]
+        if len(v) == 0 or len(f) == 0:
+            raise RuntimeError(f"{path} frame {idx} is empty")
+        out.append((int(idx), trimesh.Trimesh(vertices=v, faces=f, process=False)))
+    return out
+
+
+def save_mesh_archive(path: Path, frame_meshes: list[tuple[int, trimesh.Trimesh]]) -> dict:
+    frame_indices = []
+    vertices_all = []
+    faces_all = []
+    vertex_offsets = [0]
+    face_offsets = [0]
+    for frame_idx, mesh in frame_meshes:
+        vertices = np.asarray(mesh.vertices, dtype=np.float32)
+        faces = np.asarray(mesh.faces, dtype=np.int32)
+        frame_indices.append(int(frame_idx))
+        vertices_all.append(vertices)
+        faces_all.append(faces)
+        vertex_offsets.append(vertex_offsets[-1] + len(vertices))
+        face_offsets.append(face_offsets[-1] + len(faces))
+    if not frame_indices:
+        raise RuntimeError("no frame meshes selected")
+    np.savez_compressed(
+        path,
+        frame_idx=np.asarray(frame_indices, dtype=np.int32),
+        vertex_offsets=np.asarray(vertex_offsets, dtype=np.int64),
+        face_offsets=np.asarray(face_offsets, dtype=np.int64),
+        vertices=np.vstack(vertices_all).astype(np.float32),
+        faces=np.vstack(faces_all).astype(np.int32),
+    )
+    return {
+        "archive": str(path),
+        "frames": int(len(frame_indices)),
+        "first_frame": int(frame_indices[0]),
+        "last_frame": int(frame_indices[-1]),
+    }
+
+
+def sheet_thickness(vertices: np.ndarray, normal: np.ndarray, args: argparse.Namespace) -> tuple[float, float]:
+    normal_coordinates = (vertices - np.median(vertices, axis=0)[None, :]) @ normal
     normal_extent = float(np.quantile(normal_coordinates, 0.95) - np.quantile(normal_coordinates, 0.05))
     thickness = float(args.thickness_m) if args.thickness_m is not None else float(
         np.clip(normal_extent * float(args.thickness_scale), float(args.min_thickness_m), float(args.max_thickness_m))
     )
     if not np.isfinite(thickness) or thickness <= 0.0:
         raise RuntimeError(f"invalid closure thickness {thickness}")
-    solid, topology = solidify_sheet(mesh, normal, thickness)
+    return thickness, normal_extent
+
+
+def solidify_mesh(mesh: trimesh.Trimesh, args: argparse.Namespace, depth_axis: np.ndarray | None = None) -> tuple[trimesh.Trimesh, dict]:
+    cleaned, cleanup_report = clean_open_surface(mesh)
+    vertices = np.asarray(cleaned.vertices, dtype=np.float64)
+    _center, axes, ratios = pca_sheet_frame(vertices)
+    if float(ratios[2]) > float(args.max_sheet_planarity_ratio):
+        raise RuntimeError(
+            f"mesh is not sheet-like enough for measured-surface solidification: "
+            f"smallest PCA ratio {float(ratios[2]):.6f} > {float(args.max_sheet_planarity_ratio):.6f}"
+        )
+    normal = axes[2].copy()
+    if depth_axis is not None and float(np.dot(normal, depth_axis)) < 0.0:
+        normal *= -1.0
+    thickness, normal_extent = sheet_thickness(vertices, normal, args)
+    solid, topology = solidify_sheet(cleaned, normal, thickness)
+    ext = np.asarray(solid.vertices, dtype=np.float64).max(axis=0) - np.asarray(solid.vertices, dtype=np.float64).min(axis=0)
+    report = {
+        "pca_ratios": ratios.astype(float).tolist(),
+        "normal": normal.astype(float).tolist(),
+        "normal_extent_5_95_m": normal_extent,
+        "thickness_m": thickness,
+        "extent_m": ext.astype(float).tolist(),
+        "topology": topology,
+        "input_cleanup": cleanup_report,
+    }
+    return solid, report
+
+
+def run_archive(args: argparse.Namespace) -> dict:
+    frame_meshes = load_mesh_archive(args.input_archive)
+    annotations = annotations_by_frame(args.annotations) if args.annotations is not None else {}
+    solids = []
+    rows = []
+    for frame_idx, mesh in frame_meshes:
+        if frame_idx < int(args.frame_start) or frame_idx > int(args.frame_end):
+            continue
+        depth_axis = None
+        if args.annotations is not None:
+            if frame_idx not in annotations:
+                raise RuntimeError(f"annotations missing frame {frame_idx}")
+            transform = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
+            if transform.shape != (4, 4) or not np.isfinite(transform).all():
+                raise RuntimeError(f"frame {frame_idx} has invalid camera transform")
+            axis = transform[:3, 2]
+            norm = float(np.linalg.norm(axis))
+            if not np.isfinite(norm) or norm <= 0.0:
+                raise RuntimeError(f"frame {frame_idx} has invalid camera depth axis")
+            depth_axis = axis / norm
+        solid, row = solidify_mesh(mesh, args, depth_axis)
+        row["frame_idx"] = int(frame_idx)
+        rows.append(row)
+        solids.append((int(frame_idx), solid))
+    if len(solids) < int(args.min_frames):
+        raise RuntimeError(f"only {len(solids)} solidified frames selected")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    archive_report = save_mesh_archive(args.output_dir / "solidified_sheet_object_meshes_world.npz", solids)
+    thicknesses = np.asarray([row["thickness_m"] for row in rows], dtype=np.float64)
+    report = {
+        "status": "ok",
+        "annotation_ready": False,
+        "method": "solidify_sheet_mesh_archive_v3",
+        "claim_tested": "per-frame measured open surfaces that are geometrically sheet-like can be closed by data-derived small-thickness shells without category-specific primitives",
+        "input_archive": str(args.input_archive),
+        "annotations": str(args.annotations) if args.annotations is not None else None,
+        "mesh_archive": archive_report["archive"],
+        "frames": archive_report["frames"],
+        "first_frame": archive_report["first_frame"],
+        "last_frame": archive_report["last_frame"],
+        "thickness_median_m": float(np.median(thicknesses)),
+        "thickness_p05_m": float(np.percentile(thicknesses, 5.0)),
+        "thickness_p95_m": float(np.percentile(thicknesses, 95.0)),
+        "rows": rows,
+        "parameters": {
+            "max_sheet_planarity_ratio": float(args.max_sheet_planarity_ratio),
+            "thickness_m": float(args.thickness_m) if args.thickness_m is not None else None,
+            "thickness_scale": float(args.thickness_scale),
+            "min_thickness_m": float(args.min_thickness_m),
+            "max_thickness_m": float(args.max_thickness_m),
+        },
+    }
+    (args.output_dir / "qc_solidify_sheet_mesh_archive_v3.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps({k: v for k, v in report.items() if k != "rows"}, indent=2))
+    return report
+
+
+def run(args: argparse.Namespace) -> dict:
+    if args.input_archive is not None:
+        return run_archive(args)
+    if args.canonical_mesh is None or args.poses_json is None:
+        raise RuntimeError("--canonical-mesh and --poses-json are required without --input-archive")
+    raw_mesh = load_mesh(args.canonical_mesh)
+    solid, solid_report = solidify_mesh(raw_mesh, args, camera_depth_axis(args.annotations, args.anchor_frame))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     canonical_path = args.output_dir / "solidified_sheet_canonical_mesh.obj"
@@ -299,13 +434,13 @@ def run(args: argparse.Namespace) -> dict:
         "frames": archive_report["frames"],
         "first_frame": archive_report["first_frame"],
         "last_frame": archive_report["last_frame"],
-        "pca_ratios": ratios.astype(float).tolist(),
-        "normal": normal.astype(float).tolist(),
-        "normal_extent_5_95_m": normal_extent,
-        "thickness_m": thickness,
+        "pca_ratios": solid_report["pca_ratios"],
+        "normal": solid_report["normal"],
+        "normal_extent_5_95_m": solid_report["normal_extent_5_95_m"],
+        "thickness_m": solid_report["thickness_m"],
         "extent_m": ext.astype(float).tolist(),
-        "topology": topology,
-        "input_cleanup": cleanup_report,
+        "topology": solid_report["topology"],
+        "input_cleanup": solid_report["input_cleanup"],
         "parameters": {
             "max_sheet_planarity_ratio": float(args.max_sheet_planarity_ratio),
             "thickness_m": float(args.thickness_m) if args.thickness_m is not None else None,
@@ -321,13 +456,15 @@ def run(args: argparse.Namespace) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--canonical-mesh", type=Path, required=True)
-    parser.add_argument("--poses-json", type=Path, required=True)
+    parser.add_argument("--canonical-mesh", type=Path)
+    parser.add_argument("--poses-json", type=Path)
+    parser.add_argument("--input-archive", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--annotations", type=Path)
     parser.add_argument("--anchor-frame", type=int)
+    parser.add_argument("--min-frames", type=int, default=1)
     parser.add_argument("--max-sheet-planarity-ratio", type=float, default=0.12)
     parser.add_argument("--thickness-m", type=float)
     parser.add_argument("--thickness-scale", type=float, default=0.50)
