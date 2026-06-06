@@ -244,3 +244,63 @@ Selected visual stills confirm the mechanism. Frame 2535 overlays a doubled and 
 V6 has added a real temporal smoothing signal: 14 graph-ready pair factors across frames 2534 to 2550, with strict inlier p95 below 10 mm. Those factors are suitable as sparse motion/deformation priors for a factor graph. V6 has also falsified direct mesh transport as an object annotation path, because full image replay fails on silhouette and tail depth even when nearest-surface residuals pass.
 
 The next implementation step is a graph solve that keeps measured per-frame object meshes as the observation source and uses ready CoTracker factors as auxiliary constraints. The graph must keep the 2538 to 2540 gap explicit, because the current perception evidence does not support a temporal factor there. A solved archive can only enter deliverables after the same replay suite passes: all-face z-buffer, mesh-surface contact, selected-contact SDF, full-hand SDF, and visual render inspection.
+
+## Conservative Factor-Graph Solve
+
+V6 then implemented a small correction graph over the multi-anchor ready-factor frames. The graph estimates state corrections for existing measured object meshes. It keeps the completed V4 measured mesh archive as the observation source and estimates one small SE3 correction per mesh-backed frame.
+
+Nodes:
+
+- one six-parameter correction for each selected object frame: rotation vector plus translation;
+- selected frames are the endpoints of ready CoTracker pairs: 2534 to 2538 and 2540 to 2550, excluding 2539 because no ready factor crosses 2538 to 2539 or 2539 to 2540.
+
+Edges:
+
+- measurement edges keep sampled vertices close to their original measured positions;
+- CoTracker factor edges bind source and target mesh vertices from sparse correspondence edge files, using the merged pair SE3 as the motion observation;
+- smoothness edges penalize adjacent-frame correction jumps where frame indices are consecutive.
+
+Objective:
+
+```text
+min_delta  rho(
+  sum_f ||T_f(v_f) - v_f||^2 / sigma_obs^2
+  + sum_(i,j,k) ||T_i(v_i,k) R_ij + t_ij - T_j(v_j,k)||^2 / sigma_factor^2
+  + sum_(i,i+1) ||delta_i+1 - delta_i||^2 / sigma_smooth^2
+)
+```
+
+`rho` is the soft-L1 loss used by `scipy.optimize.least_squares`. The measurement edge is intentionally strong because the measured mesh already passes image, contact, and penetration QC; the CoTracker factors regularize temporal state under the observed object geometry.
+
+Artifacts:
+
+- graph script: `scripts/fit_cotracker_factor_graph_v6.py`
+- graph report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor_2534_2550/qc_cotracker_factor_graph_v6.json`
+- graph mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor_2534_2550/cotracker_factor_graph_meshes_world.npz`
+
+Result:
+
+- status: `diagnostic_factor_compatible_no_material_correction`
+- accepted graph pairs: 14
+- accepted sparse correspondence edges: 435
+- edge p95 median before solve: 6.64 mm
+- edge p95 median after solve: 6.64 mm
+- correction displacement p95 median: 0.003 mm
+- maximum frame correction displacement p95: 0.009 mm
+
+The graph result proves the current CoTracker factors are compatible with the measured geometry under a strong observation prior. The measured meshes already sit at the factor-compatible optimum within micron-scale corrections.
+
+## Z-Buffer QC Hardening
+
+The first replay of the graph archive exposed a QC bug. The graph and baseline mesh archives differed by only microns, yet the original triangle-only z-buffer reported silhouette collapse on frames 2538, 2543, and 2550. A single-frame reproduction showed the mechanism: dense sheet meshes contain projection-thin triangles, and tiny perturbations can make the triangle fill path skip large regions. Vertex-depth splatting over the same mesh vertices restored graph and baseline agreement on frame 2538.
+
+`scripts/render_mesh_zbuffer_qc_v3.py` now combines triangle depth with a configurable vertex z-buffer. The default `--vertex-splat-radius-px 0` adds only the projected vertex pixels, preserving a tight silhouette measurement.
+
+Patched graph-vs-baseline replay on the same 16 frames:
+
+| Archive | Median IoU | Median visible inside mask | Median depth p95 |
+| --- | ---: | ---: | ---: |
+| completed V4 measured mesh | 0.965 | 0.977 | 4.22 mm |
+| V6 graph-corrected mesh | 0.965 | 0.977 | 4.21 mm |
+
+Per-frame deltas confirm that the graph archive preserves the measured mesh replay within measurement noise. The V6 graph archive is a factor-compatible diagnostic copy of the measured archive. The delivered geometry remains the completed V4/V5 measured mesh stream, with V6 factors attached as auxiliary temporal priors for future missing-frame or local-deformation solves.

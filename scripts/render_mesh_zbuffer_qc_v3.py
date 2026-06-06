@@ -101,6 +101,37 @@ def triangle_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, face
     return zbuf
 
 
+def vertex_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, radius_px: int) -> np.ndarray:
+    height, width = shape
+    zbuf = np.full((height, width), np.inf, dtype=np.float32)
+    valid = np.all(np.isfinite(uv), axis=1) & np.isfinite(z) & (z > 0.0)
+    if not np.any(valid):
+        return zbuf
+    xy = np.rint(uv[valid]).astype(np.int64)
+    depth = z[valid].astype(np.float32)
+    radius = int(radius_px)
+    offsets = [
+        (dx, dy)
+        for dy in range(-radius, radius + 1)
+        for dx in range(-radius, radius + 1)
+        if dx * dx + dy * dy <= radius * radius
+    ]
+    for dx, dy in offsets:
+        x = xy[:, 0] + dx
+        y = xy[:, 1] + dy
+        inside = (x >= 0) & (x < width) & (y >= 0) & (y < height)
+        np.minimum.at(zbuf, (y[inside], x[inside]), depth[inside])
+    return zbuf
+
+
+def mesh_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, faces: np.ndarray, max_faces: int | None, vertex_radius_px: int) -> np.ndarray:
+    zbuf = triangle_zbuffer(shape, uv, z, faces, max_faces)
+    if int(vertex_radius_px) < 0:
+        raise RuntimeError("vertex z-buffer radius must be non-negative")
+    vertex_buf = vertex_zbuffer(shape, uv, z, int(vertex_radius_px))
+    return np.minimum(zbuf, vertex_buf)
+
+
 def draw_review(rgb: np.ndarray, object_mask: np.ndarray, silhouette: np.ndarray, zbuf: np.ndarray, row: dict) -> np.ndarray:
     image = rgb.copy()
     overlay = image.copy()
@@ -179,7 +210,7 @@ def run(args: argparse.Namespace) -> dict:
         positive = z > 0.0
         uv[positive, 0] = K[0, 0] * vertices_camera[positive, 0] / z[positive] + K[0, 2]
         uv[positive, 1] = K[1, 1] * vertices_camera[positive, 1] / z[positive] + K[1, 2]
-        zbuf = triangle_zbuffer(object_mask.shape, uv, z, faces, args.max_faces)
+        zbuf = mesh_zbuffer(object_mask.shape, uv, z, faces, args.max_faces, int(args.vertex_splat_radius_px))
         silhouette = np.isfinite(zbuf)
         intersection = int(np.count_nonzero(silhouette & object_mask))
         union = int(np.count_nonzero(silhouette | object_mask))
@@ -234,6 +265,7 @@ def run(args: argparse.Namespace) -> dict:
         "annotations": str(args.annotations),
         "intrinsics_source": str(args.intrinsics_source),
         "metric_depth_npz": str(args.metric_depth_npz) if args.metric_depth_npz is not None else None,
+        "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
         "frames": int(len(rows)),
         "silhouette_mask_iou": summarize([row["silhouette_mask_iou"] for row in rows]),
         "visible_silhouette_inside_mask_fraction": summarize([row["visible_silhouette_inside_mask_fraction"] for row in rows]),
@@ -261,6 +293,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--max-faces", type=int, default=60000)
+    parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
     parser.add_argument("--still-frames", type=int, nargs="*", default=[])
     return parser.parse_args()
 
