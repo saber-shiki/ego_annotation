@@ -91,3 +91,15 @@ Diagnostic artifact:
 - `/data2/ego_annotation_outputs/representative_wild_rice/v5_dynamic_surface_observability_completed_2520_2550/qc_dynamic_surface_observability_v5.json`
 
 The next V5 implementation should fit the first dynamic surface on frames 2525 to 2529 as a geometry-first window. Contact-rich ambiguous frames should enter later with uncertainty weights or segmentation repair.
+
+## Observable-Window Rigid Map Falsification
+
+The 2525 to 2529 observable window was tested with the same ICP/BPA rigid-map replay. This smaller window still fails the delivered-geometry contract. The reconstructed canonical map is open, spans 0.139 x 0.317 x 0.214 m, and independent z-buffer replay gives median silhouette IoU 0.563 and median z-buffer p95 24.1 mm over five frames. The measured-sheet baseline for the same window has median z-buffer p95 1.71 mm.
+
+The failure frame at 2527 shows a broad reconstructed surface over the held stem. This rejects another round of rigid-map tuning. V5 should preserve per-frame measured meshes as the delivered object geometry, then add temporal regularization, segmentation repair, and deformable/local surface correspondences around that geometry.
+
+Artifacts:
+
+- Rigid map report and archive: `/data2/ego_annotation_outputs/representative_wild_rice/v5_observable_window_rigid_map_icp_bpa_2525_2529/`
+- Independent z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v5_observable_window_rigid_map_icp_bpa_zbuffer_qc_2525_2529/qc_mesh_zbuffer_projection_v3.json`
+- Visual failure frame: `/data2/ego_annotation_outputs/representative_wild_rice/v5_observable_window_rigid_map_icp_bpa_zbuffer_qc_2525_2529/frame_2527_qc.jpg`
