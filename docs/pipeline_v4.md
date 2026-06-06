@@ -128,3 +128,39 @@ Final V4 measured-run deliverables:
 - Evidence manifest: `/data2/ego_annotation_outputs/v4_unpruned_wild_rice_evidence_manifest_20260606.json`
 
 This closes the residual-gated measured-recovery branch of V4 for the wild-rice clip. Temporal map fitting and completion remain open for frames where the model evidence is absent, semantically rejected, or too ambiguous after residual checks. The next V4 branch is a tracker/completion module that carries measured/completed/rejected status explicitly instead of pruning by visual-rule thresholds.
+
+## Temporal Completion Result: Wild-Rice Frame 2550
+
+Frame 2550 was the concrete temporal-completion target in the first V4 clip. Direct per-frame recovery selected the wrong object twice:
+
+- the original VLM-selected SAM2 candidate selected a detached peel;
+- a refined VLM point prompt placed positives on the active stem and negatives on the detached peel, while per-frame SAM2 still selected the detached peel or merged noise.
+
+SAM2 video propagation from the last measured frame corrected the object identity. The completion run used the measured 2549 active-stem mask as a seed and propagated it through a two-frame clip ending at source frame 2550. The regenerated mask is full source resolution, 1920 x 1080, and visually follows the active held stem.
+
+The propagated 2550 mask entered the same geometry path as measured frames:
+
+1. export source-frame RGB and mask;
+2. reconstruct an observed surface from the mask, UniDepth depth, VGGT intrinsics, and VGGT camera pose;
+3. solidify the measured surface as a 1 mm sheet mesh;
+4. run all-face z-buffer projection QC against the propagated mask and metric depth.
+
+Frame 2550 passes this residual check: silhouette IoU 0.950, visible-silhouette-inside-mask fraction 1.000, z-buffer absolute median 0.24 mm, and z-buffer absolute p95 1.95 mm. The z-buffer shows the mesh on the active stem and excludes the detached peel.
+
+The completed 31-frame archive replaces only frame 2550 in the measured V4 mesh archive. Its provenance file marks frames 2520 to 2549 as `measured` and frame 2550 as `sam2_mask_seed_from_2549`.
+
+The assembled 31-frame z-buffer report combines the already completed all-face measured-frame report for frames 2520 to 2549 with the new all-face completion-frame report for frame 2550. Over frames 2520 to 2550, the median silhouette IoU is 0.964, median visible-silhouette-inside-mask fraction is 0.989, median z-buffer absolute median is 0.41 mm, and median z-buffer absolute p95 is 3.42 mm.
+
+Contact and SDF evidence remains valid under the assembled archive because the replacement frame has no reliable contact row. The recomputed contact report samples reliable temporal contact only on frames 2522, 2523, 2526, 2531, 2532, 2533, 2534, 2535, 2536, 2546, and 2547. The mesh arrays for those frames are byte-identical between the previous measured archive and the assembled archive; only frame 2550 differs. The composed 1 mm SDF reports therefore preserve the same physical evidence: selected-contact penetration 0 percent, selected-contact abs SDF p95 3.45 mm, full-hand penetration 0 percent, and full-hand median SDF 14.30 mm.
+
+Completed V4 deliverables:
+
+- Overlay video with MANO, object mesh, contact markers, and per-frame provenance: `/data2/ego_annotation_outputs/representative_wild_rice/v4_mesh_surface_contact_review_completed_measurement_plus_sam2seed_2520_2550/mesh_surface_contact_review.mp4`
+- Side-by-side video with semantic caption and 3D reconstruction: `/data2/ego_annotation_outputs/representative_wild_rice/v4_world_reconstruction_completed_measurement_plus_sam2seed_finalvis_2520_2550/world_reconstruction_side_by_side.mp4`
+- Standalone 3D world animation: `/data2/ego_annotation_outputs/representative_wild_rice/v4_world_reconstruction_completed_measurement_plus_sam2seed_finalvis_2520_2550/world_reconstruction_3d.mp4`
+- Assembled mesh and manifest: `/data2/ego_annotation_outputs/representative_wild_rice/v4_active_stem_completed_measurement_plus_sam2seed_2520_2550/`
+- Completed evidence manifest: `/data2/ego_annotation_outputs/v4_completed_wild_rice_evidence_manifest_20260606.json`
+
+Visual inspection of the final frame confirms that 2550 follows the active stem. The top label marks it as `sam2_mask_seed_from_2549`, and the bottom caption states that frames 2520 to 2549 are measured while 2550 is a SAM2-mask-seed completion.
+
+This closes the first V4 tracker-based temporal-completion target for the wild-rice clip. The object-map fitting part of the V4 plan remains open. Remaining V4 limitations are still real: several measured frames, especially 2534 to 2536 and 2539, contain parallel stem or sheath ambiguity, and the current 3D view is an evidence render with weaker stakeholder presentation value.

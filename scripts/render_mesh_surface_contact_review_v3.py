@@ -79,13 +79,14 @@ def read_frame(cap: cv2.VideoCapture, frame_idx: int) -> np.ndarray:
     return frame
 
 
-def manifest_paths_by_frame(path: Path) -> tuple[dict[int, Path], dict[int, Path]]:
+def manifest_paths_by_frame(path: Path) -> tuple[dict[int, Path], dict[int, Path], dict[int, str]]:
     payload = load_json(path)
     frames = payload.get("frames")
     if not isinstance(frames, list):
         raise RuntimeError("manifest must contain frames list")
     rgb_by_frame: dict[int, Path] = {}
     mask_by_frame: dict[int, Path] = {}
+    status_by_frame: dict[int, str] = {}
     for entry in frames:
         if "frame_idx" not in entry or "rgb" not in entry:
             raise RuntimeError("manifest frame lacks frame_idx or rgb")
@@ -93,7 +94,9 @@ def manifest_paths_by_frame(path: Path) -> tuple[dict[int, Path], dict[int, Path
         rgb_by_frame[frame_idx] = Path(entry["rgb"])
         if entry.get("mask"):
             mask_by_frame[frame_idx] = Path(entry["mask"])
-    return rgb_by_frame, mask_by_frame
+        if entry.get("track_status_source"):
+            status_by_frame[frame_idx] = str(entry["track_status_source"])
+    return rgb_by_frame, mask_by_frame, status_by_frame
 
 
 class FrameSource:
@@ -105,12 +108,13 @@ class FrameSource:
         self.cap = None
         self.rgb_by_frame: dict[int, Path] | None = None
         self.mask_by_frame: dict[int, Path] | None = None
+        self.status_by_frame: dict[int, str] = {}
         if video is not None:
             self.cap = cv2.VideoCapture(str(video))
             if not self.cap.isOpened():
                 raise RuntimeError(f"failed to open video: {video}")
         else:
-            self.rgb_by_frame, self.mask_by_frame = manifest_paths_by_frame(manifest)
+            self.rgb_by_frame, self.mask_by_frame, self.status_by_frame = manifest_paths_by_frame(manifest)
 
     def fps(self) -> float:
         if self.cap is None:
@@ -146,6 +150,9 @@ class FrameSource:
         if out.shape != shape:
             out = cv2.resize(out.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST) > 0
         return out
+
+    def status(self, frame_idx: int) -> str | None:
+        return self.status_by_frame.get(int(frame_idx))
 
 
 def draw_object_mask(frame: np.ndarray, ann: dict, args: argparse.Namespace, mask: np.ndarray | None = None) -> None:
@@ -230,14 +237,15 @@ def draw_contact_patch(frame: np.ndarray, hand: dict, row: dict) -> None:
         cv2.circle(frame, p, 9, (255, 0, 255), -1, cv2.LINE_AA)
 
 
-def put_label(frame: np.ndarray, frame_idx: int, row: dict | None) -> None:
+def put_label(frame: np.ndarray, frame_idx: int, row: dict | None, status_source: str | None = None) -> None:
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 42), (0, 0, 0), -1)
+    status = f"{status_source}  " if status_source else ""
     if row is None:
-        text = f"frame {frame_idx}  no reliable mesh-surface contact"
+        text = f"frame {frame_idx}  {status}no reliable mesh-surface contact"
     else:
         confidence = "detector-backed" if bool(row.get("reliable_for_contact", False)) else "geometry-backed"
         text = (
-            f"frame {frame_idx}  {row['side']} hand {confidence} mesh contact  "
+            f"frame {frame_idx}  {status}{row['side']} hand {confidence} mesh contact  "
             f"reproj {row['median_joint_reprojection_px']:.1f}px  "
             f"surface p95 {row['best_patch_distance_p95_m']*1000:.1f}mm  "
             f"signed p95 {row['best_patch_signed_gap_p95_abs_m']*1000:.1f}mm"
@@ -274,7 +282,7 @@ def run(args: argparse.Namespace) -> dict:
             if row is not None:
                 hand = ann["hands"][int(row["hand_idx"])]
                 draw_contact_patch(image, hand, row)
-            put_label(image, int(frame_idx), row)
+            put_label(image, int(frame_idx), row, frame_source.status(int(frame_idx)))
             if args.render_width and image.shape[1] != int(args.render_width):
                 height = int(round(int(args.render_width) * image.shape[0] / image.shape[1]))
                 image = cv2.resize(image, (int(args.render_width), height), interpolation=cv2.INTER_AREA)

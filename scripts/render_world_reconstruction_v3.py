@@ -353,6 +353,9 @@ def render_overlay_frame(
     if row is not None:
         draw_contact_patch(image, ann["hands"][int(row["hand_idx"])], row)
     label = f"frame {frame_idx}"
+    status_source = frame_source.status(int(frame_idx))
+    if status_source:
+        label += f"  {status_source}"
     if row is None:
         label += "  no reliable mesh-surface contact"
     else:
