@@ -203,10 +203,15 @@ CoTracker produces sparse material-candidate tracks, not dense correspondence cl
 
 This is useful evidence for a future sparse correspondence factor, because it supplies model-produced temporal point hypotheses where geometry-only nearest neighbors had no stable dense overlap. It is not enough to declare a dynamic material map: the accepted track set is sparse, and p95 world motion is too large to use as an unqualified rigid/deformable regularizer. The next V5 graph should consume these tracks as confidence-weighted sparse factors alongside mask/depth/SDF residuals, with explicit rejection of tracks that leave the repaired mask or jump in world space.
 
+The sparse-track edge diagnostic converts the stronger middle-query CoTracker run into mesh-anchored correspondence edges without changing any delivered mesh. Each accepted world point is attached to the nearest repaired mesh vertex in each frame. Tracks must have at least four accepted frames, stay within 4 mm of the repaired mesh, and form consecutive-frame edges with world step below 40 mm. This yields 69 usable tracks, including 29 tracks visible across all six frames, and 272 consecutive correspondence edges. Edge world-step median is 10.4 mm and p95 is 27.3 mm. Edge surface-distance median is 0.17 mm and p95 is 0.30 mm.
+
+These edges are the first V5 signal that can support a sparse dynamic factor graph. They do not replace the per-frame measured meshes and do not prove dense material correspondence. The next graph should keep the per-frame repaired mesh archive as the delivered geometry and use these sparse edges only as a regularizer or diagnostic factor, with z-buffer/contact/SDF replay required after any deformation.
+
 Artifacts:
 
 - frame-2532 seed QC report: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_2532_2537/qc_cotracker_object_tracks_v5.json`
 - middle-query QC report: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/qc_cotracker_object_tracks_v5.json`
 - middle-query track archive: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/cotracker_object_tracks_v5.npz`
 - middle-query overlay video: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/cotracker_tracks_overlay.mp4`
+- sparse correspondence edges: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_sparse_edges_midquery2535_2532_2537/cotracker_sparse_correspondence_edges_v5.json`
 - inspected stills: `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/stills/frame_002532.jpg`, `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/stills/frame_002536.jpg`, and `/data2/ego_annotation_outputs/representative_wild_rice/v5_cotracker_repaired_object_tracks_midquery2535_2532_2537/stills/frame_002537.jpg`
