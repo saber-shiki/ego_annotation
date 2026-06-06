@@ -61,6 +61,7 @@ def run(args: argparse.Namespace) -> dict:
     meshes = load_mesh_archive(args.mesh_archive)
     rows = []
     all_sdf = []
+    sdf_by_frame: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     contact_keys = {(int(row["frame_idx"]), int(row["hand_idx"])) for row in contact_rows(args.contact_report)}
     for frame_idx, hand_idx in sorted(contact_keys):
         if frame_idx < int(args.frame_start) or frame_idx > int(args.frame_end):
@@ -71,10 +72,12 @@ def run(args: argparse.Namespace) -> dict:
         T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
         hand_vertices = hand_camera_vertices(hand, T_world_camera)
         labels = region_vertex_labels(hand, len(hand_vertices))
-        mesh_world, mesh_faces = meshes[frame_idx]
-        mesh_camera = camera_points(mesh_world, T_world_camera)
-        mesh = trimesh.Trimesh(vertices=mesh_camera.astype(np.float32), faces=np.asarray(mesh_faces, dtype=np.int32), process=True)
-        sdf, transform, occ = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
+        if frame_idx not in sdf_by_frame:
+            mesh_world, mesh_faces = meshes[frame_idx]
+            mesh_camera = camera_points(mesh_world, T_world_camera)
+            mesh = trimesh.Trimesh(vertices=mesh_camera.astype(np.float32), faces=np.asarray(mesh_faces, dtype=np.int32), process=True)
+            sdf_by_frame[frame_idx] = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
+        sdf, transform, occ = sdf_by_frame[frame_idx]
         values = sample_sdf(hand_vertices, sdf, transform)
         finite_mask = np.isfinite(values)
         finite = values[finite_mask]

@@ -96,6 +96,7 @@ def run(args: argparse.Namespace) -> dict:
     rows = []
     all_sdf = []
     all_abs_sdf = []
+    sdf_by_frame: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for row in contact_rows(args.contact_report):
         frame_idx = int(row["frame_idx"])
         if frame_idx < int(args.frame_start) or frame_idx > int(args.frame_end):
@@ -109,11 +110,13 @@ def run(args: argparse.Namespace) -> dict:
         if int(patch_ids.max()) >= len(vertices_camera):
             raise RuntimeError(f"frame {frame_idx} hand {hand_idx} patch id exceeds MANO vertex count")
         patch_camera = vertices_camera[patch_ids]
-        mesh_world, mesh_faces = meshes[frame_idx]
-        T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
-        mesh_camera = camera_points(mesh_world, T_world_camera)
-        mesh = trimesh.Trimesh(vertices=mesh_camera.astype(np.float32), faces=np.asarray(mesh_faces, dtype=np.int32), process=True)
-        sdf, transform, occ = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
+        if frame_idx not in sdf_by_frame:
+            mesh_world, mesh_faces = meshes[frame_idx]
+            T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
+            mesh_camera = camera_points(mesh_world, T_world_camera)
+            mesh = trimesh.Trimesh(vertices=mesh_camera.astype(np.float32), faces=np.asarray(mesh_faces, dtype=np.int32), process=True)
+            sdf_by_frame[frame_idx] = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
+        sdf, transform, occ = sdf_by_frame[frame_idx]
         values = sample_sdf(patch_camera, sdf, transform)
         finite = values[np.isfinite(values)]
         if len(finite) == 0:
