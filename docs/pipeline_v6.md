@@ -137,7 +137,7 @@ Target-frame z-buffer replay gives low depth residual but poor full-silhouette a
 | 2536 | 0.710 | 0.939 | 6.45 mm |
 | 2537 | 0.629 | 0.912 | 9.54 mm |
 
-This is the expected distinction between material-patch tracking and full object-mask propagation. The ready CoTracker factors are valid sparse temporal factors for a stable common surface region. They are not a full propagated mesh annotation, because the visible support changes enough that the transported source mesh misses or overdraws target-frame silhouette regions. V6 should use these factors for local pose/deformation regularization and missing-patch support, then keep measured target masks/depth as the authority for delivered mesh coverage.
+This is the expected distinction between material-patch tracking and full object-mask propagation. The ready CoTracker factors are valid sparse temporal factors for a stable common surface region. The transported source mesh misses or overdraws target-frame silhouette regions when the visible support changes. V6 should use these factors for local pose/deformation regularization and missing-patch support, then keep measured target masks/depth as the authority for delivered mesh coverage.
 
 ## Wider Ambiguity-Bridge Test
 
@@ -168,7 +168,7 @@ The new useful fact is the 2537 to 2538 bridge: visual inspection of the 2538 ov
 
 Transport replay still rejects the transported source meshes as full target annotations. The four ready-pair transported surfaces have bidirectional surface medians between 1.32 and 1.99 mm, and p95 residuals between 4.89 and 8.29 mm. However, full z-buffer replay over target frames 2535 to 2538 gives median silhouette IoU 0.681 and median z-buffer p95 20.46 mm. Frame 2538 has IoU 0.701, visible-inside-mask 0.856, and z-buffer p95 21.55 mm.
 
-V6 conclusion after the wide run: learned sparse factors can bridge stable local surface patches from the repaired contact interval into frame 2538. They cannot fill the rest of 2539 to 2550 because track support collapses, and they cannot replace per-frame mask/depth geometry even where the pair factor is ready. The next valid solver should use these factors as local temporal priors with measured target masks/depth as hard replay checks.
+V6 conclusion after the wide run: learned sparse factors bridge stable local surface patches from the repaired contact interval into frame 2538. Track support collapses through the later interval, and per-frame mask/depth geometry remains the source of delivered mesh coverage even where a pair factor is ready. The next valid solver should use these factors as local temporal priors with measured target masks/depth as hard replay checks.
 
 ## Multi-Anchor Factor Coverage
 
@@ -209,26 +209,83 @@ The merged report has 18 neighboring pairs, 14 ready pairs, and 4 rejected pairs
 | 2548 to 2549 | anchor 2542 | 17 | 17 | 2.81 mm |
 | 2549 to 2550 | anchor 2542 | 19 | 19 | 2.54 mm |
 
-The two rejected gaps, 2538 to 2539 and 2539 to 2540, are true observation gaps for the current model stack: all four anchor reports have too little support there. The graph should keep those pairs unlinked unless another learned tracker or segmentation run produces new evidence.
+The four-anchor report left 2538 to 2539 and 2539 to 2540 unlinked because all four tested anchors had too little support there. The next test therefore queried CoTracker inside that interval instead of treating the missing factors as a final perception limit.
 
-## Multi-Anchor Transport Replay
+## Gap-Query Anchor
 
-The merged ready factors were replayed as a falsification test by transporting the accepted source-frame mesh into each target frame.
+The rejected 2538 to 2540 interval was then tested directly by querying CoTracker inside the gap at frame 2539. The first A800 attempt failed before tracking because the TripoSR virtualenv now raises a native bus error while importing PyTorch. The run was repeated in the TRELLIS virtualenv, which imports PyTorch 2.4.0+cu121 and loads the cached CoTracker model.
 
 Artifacts:
 
-- transported mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor_transport_ready_pairs_2534_2550/transported_ready_pair_meshes_world.npz`
-- transport residual report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor_transport_ready_pairs_2534_2550/qc_transport_ready_pair_meshes_v6.json`
-- selected-frame z-buffer replay: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor_transport_zbuffer_qc_selected_2535_2550/qc_mesh_zbuffer_projection_v3.json`
+- frame-2539 CoTracker run: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_anchor2539_2532_2550/`
+- frame-2539 sparse edges: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_anchor2539_sparse_edges_2532_2550/cotracker_sparse_correspondence_edges_v6.json`
+- frame-2539 pair factors: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_anchor2539_pairwise_rigid_factors_meshanchored_2532_2550/qc_cotracker_pairwise_rigid_factors_v6.json`
+- five-anchor merged factor report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor5_merged_pair_factors_2532_2550/qc_merged_pair_factors_v6.json`
 
-Common-surface transport looks strong in nearest-surface space:
+The frame-2539 query produced 51 query points and 17 mesh-anchored usable tracks. It added two strict ready factors:
+
+| Pair | Tracks | Inliers | Inlier median | Inlier p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 2538 to 2539 | 13 | 12 | 5.31 mm | 9.01 mm |
+| 2539 to 2540 | 15 | 15 | 2.90 mm | 5.89 mm |
+
+The five-anchor merge now has 18 neighboring pairs, 16 ready pairs, and 2 rejected early pairs. The ready-pair inlier p95 median stays 6.57 mm, with p95 of the ready-pair p95 values at 9.61 mm. The ready chain is continuous from 2534 to 2550:
+
+| Pair | Anchor | Inliers | Inlier p95 |
+| --- | --- | ---: | ---: |
+| 2532 to 2533 | wide 2535 | 24 | 11.00 mm |
+| 2533 to 2534 | wide 2535 | 53 | 10.48 mm |
+| 2534 to 2535 | wide 2535 | 79 | 9.59 mm |
+| 2535 to 2536 | wide 2535 | 83 | 6.90 mm |
+| 2536 to 2537 | wide 2535 | 70 | 7.64 mm |
+| 2537 to 2538 | wide 2535 | 29 | 9.67 mm |
+| 2538 to 2539 | anchor 2539 | 12 | 9.01 mm |
+| 2539 to 2540 | anchor 2539 | 15 | 5.89 mm |
+| 2540 to 2541 | anchor 2542 | 23 | 8.58 mm |
+| 2541 to 2542 | anchor 2542 | 27 | 6.24 mm |
+| 2542 to 2543 | anchor 2542 | 28 | 3.46 mm |
+| 2543 to 2544 | anchor 2542 | 25 | 5.63 mm |
+| 2544 to 2545 | anchor 2542 | 17 | 8.62 mm |
+| 2545 to 2546 | anchor 2545 | 18 | 9.48 mm |
+| 2546 to 2547 | anchor 2545 | 24 | 4.08 mm |
+| 2547 to 2548 | anchor 2542 | 17 | 3.29 mm |
+| 2548 to 2549 | anchor 2542 | 17 | 2.81 mm |
+| 2549 to 2550 | anchor 2542 | 19 | 2.54 mm |
+
+Frame 2539 remains visually and geometrically ambiguous. The gap-query anchor supplies sparse temporal constraints through it, while the delivered mesh quality for that frame remains controlled by the measured segmentation and depth evidence.
+
+## Multi-Anchor Transport Replay
+
+The merged ready factors were replayed as a falsification test by transporting the accepted source-frame mesh into each target frame. The four-anchor replay tested 14 factors, and the five-anchor replay tested 16 factors including the 2538 to 2540 gap.
+
+Artifacts:
+
+- four-anchor transported mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor_transport_ready_pairs_2534_2550/transported_ready_pair_meshes_world.npz`
+- four-anchor transport residual report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor_transport_ready_pairs_2534_2550/qc_transport_ready_pair_meshes_v6.json`
+- four-anchor selected-frame z-buffer replay: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor_transport_zbuffer_qc_selected_2535_2550/qc_mesh_zbuffer_projection_v3.json`
+- five-anchor transported mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor5_transport_ready_pairs_2534_2550/transported_ready_pair_meshes_world.npz`
+- five-anchor transport residual report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor5_transport_ready_pairs_2534_2550/qc_transport_ready_pair_meshes_v6.json`
+- five-anchor all-frame z-buffer replay: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_multianchor5_transport_zbuffer_splat0_qc_2535_2550/qc_mesh_zbuffer_projection_v3.json`
+
+Four-anchor common-surface transport looks strong in nearest-surface space:
 
 - transported pair count: 14
 - bidirectional median, across pairs: 1.36 mm
 - bidirectional p95, across pairs: median 7.42 mm
 - bidirectional p95, across pairs: p95 30.18 mm
 
-Full target-frame replay rejects the transported meshes as deliverable annotations:
+Five-anchor common-surface transport keeps a low median but exposes large tail error on the two newly linked gap pairs:
+
+- transported pair count: 16
+- bidirectional median, across pairs: 1.47 mm
+- bidirectional p95, across pairs: median 7.41 mm
+- bidirectional p95, across pairs: p95 118.59 mm
+- 2538 to 2539 bidirectional p95: 142.29 mm
+- 2539 to 2540 bidirectional p95: 110.69 mm
+
+Full target-frame replay rejects the transported meshes as deliverable annotations.
+
+Four-anchor selected replay:
 
 - target frames replayed: 14
 - median silhouette IoU: 0.655
@@ -237,13 +294,22 @@ Full target-frame replay rejects the transported meshes as deliverable annotatio
 - median z-buffer depth p95: 21.68 mm
 - p95 of z-buffer depth p95 values: 94.94 mm
 
-Selected visual stills confirm the mechanism. Frame 2535 overlays a doubled and shifted stem surface. Frame 2544 covers a narrow stem strip while the visible manipulated object includes a different surface. Frame 2550 has a millimeter median depth on overlap, yet its full silhouette still misses target-frame coverage. These results show that the pair factors track stable local material patches and do not determine the full visible object mesh.
+Five-anchor all-frame replay:
+
+- target frames replayed: 16
+- median silhouette IoU: 0.811
+- median visible silhouette inside target mask: 0.891
+- median z-buffer depth median: 2.13 mm
+- median z-buffer depth p95: 23.32 mm
+- p95 of z-buffer depth p95 values: 90.22 mm
+
+Selected visual stills confirm the mechanism. Frame 2535 overlays a doubled and shifted stem surface. Frame 2539 aligns a local patch but overdraws the target active-stem support, giving IoU 0.277 in the transported replay. Frame 2544 covers a narrow stem strip while the visible manipulated object includes a different surface. Frame 2550 has a millimeter median depth on overlap, yet its full silhouette still misses target-frame coverage. These results show that the pair factors track stable local material patches and do not determine the full visible object mesh.
 
 ## Current V6 State
 
-V6 has added a real temporal smoothing signal: 14 graph-ready pair factors across frames 2534 to 2550, with strict inlier p95 below 10 mm. Those factors are suitable as sparse motion/deformation priors for a factor graph. V6 has also falsified direct mesh transport as an object annotation path, because full image replay fails on silhouette and tail depth even when nearest-surface residuals pass.
+V6 has added a real temporal smoothing signal: 16 graph-ready pair factors forming a continuous chain from 2534 to 2550, with strict inlier p95 below 10 mm. Those factors are suitable as sparse motion/deformation priors for a factor graph. V6 has also falsified direct mesh transport as an object annotation path, because full image replay fails on silhouette and tail depth even when nearest-surface residuals pass.
 
-The next implementation step is a graph solve that keeps measured per-frame object meshes as the observation source and uses ready CoTracker factors as auxiliary constraints. The graph must keep the 2538 to 2540 gap explicit, because the current perception evidence does not support a temporal factor there. A solved archive can only enter deliverables after the same replay suite passes: all-face z-buffer, mesh-surface contact, selected-contact SDF, full-hand SDF, and visual render inspection.
+The graph solve keeps measured per-frame object meshes as the observation source and uses ready CoTracker factors as auxiliary constraints. A solved archive can only enter deliverables after the same replay suite passes: all-face z-buffer, mesh-surface contact, selected-contact SDF, full-hand SDF, and visual render inspection.
 
 ## Conservative Factor-Graph Solve
 
@@ -252,7 +318,7 @@ V6 then implemented a small correction graph over the multi-anchor ready-factor 
 Nodes:
 
 - one six-parameter correction for each selected object frame: rotation vector plus translation;
-- selected frames are the endpoints of ready CoTracker pairs: 2534 to 2538 and 2540 to 2550, excluding 2539 because no ready factor crosses 2538 to 2539 or 2539 to 2540.
+- selected frames are the endpoints of five-anchor ready CoTracker pairs: 2534 to 2550.
 
 Edges:
 
@@ -275,10 +341,12 @@ min_delta  rho(
 Artifacts:
 
 - graph script: `scripts/fit_cotracker_factor_graph_v6.py`
-- graph report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor_2534_2550/qc_cotracker_factor_graph_v6.json`
-- graph mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor_2534_2550/cotracker_factor_graph_meshes_world.npz`
+- four-anchor graph report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor_2534_2550/qc_cotracker_factor_graph_v6.json`
+- four-anchor graph mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor_2534_2550/cotracker_factor_graph_meshes_world.npz`
+- five-anchor graph report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor5_2534_2550/qc_cotracker_factor_graph_v6.json`
+- five-anchor graph mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_cotracker_factor_graph_multianchor5_2534_2550/cotracker_factor_graph_meshes_world.npz`
 
-Result:
+Four-anchor result:
 
 - status: `diagnostic_factor_compatible_no_material_correction`
 - accepted graph pairs: 14
@@ -287,6 +355,17 @@ Result:
 - edge p95 median after solve: 6.64 mm
 - correction displacement p95 median: 0.003 mm
 - maximum frame correction displacement p95: 0.009 mm
+
+Five-anchor result:
+
+- status: `diagnostic_factor_compatible_no_material_correction`
+- selected frames: 2534 to 2550
+- accepted graph pairs: 16
+- accepted sparse correspondence edges: 462
+- edge p95 median before solve: 6.64 mm
+- edge p95 median after solve: 6.64 mm
+- correction displacement p95 median: 0.003 mm
+- maximum frame correction displacement p95: 0.011 mm
 
 The graph result proves the current CoTracker factors are compatible with the measured geometry under a strong observation prior. The measured meshes already sit at the factor-compatible optimum within micron-scale corrections.
 
@@ -304,3 +383,13 @@ Patched graph-vs-baseline replay on the same 16 frames:
 | V6 graph-corrected mesh | 0.965 | 0.977 | 4.21 mm |
 
 Per-frame deltas confirm that the graph archive preserves the measured mesh replay within measurement noise. The V6 graph archive is a factor-compatible diagnostic copy of the measured archive. The delivered geometry remains the completed V4/V5 measured mesh stream, with V6 factors attached as auxiliary temporal priors for future missing-frame or local-deformation solves.
+
+The five-anchor graph archive was replayed over frames 2534 to 2550 with the same hardened all-face z-buffer QC:
+
+- replay frames: 17
+- median silhouette IoU: 0.965
+- median visible silhouette inside mask: 0.976
+- median z-buffer depth p95: 3.96 mm
+- p95 of z-buffer depth p95 values: 12.09 mm
+
+Visual spot checks show frame 2540 has a clean long active-stem surface, while frame 2539 remains a narrow ambiguous measured surface with IoU 0.536. The graph preserves the measured evidence. Ambiguous segmentation repair belongs to the perception and mesh-reconstruction layer, while V6 closes the factor layer: sparse temporal factors are continuous and metric-compatible, and delivered object geometry still comes from the measured mesh stream and its visual/depth QC.
