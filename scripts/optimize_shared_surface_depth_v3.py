@@ -357,7 +357,7 @@ def hand_clearance_block(
         order = np.argsort(signed)[: int(args.max_hand_clearance_pairs)]
         vertex_ids = vertex_ids[order]
         signed = signed[order]
-    vals = np.full(len(vertex_ids), -1.0 / float(args.sigma_hand_clearance_m), dtype=np.float64)
+    vals = np.full(len(vertex_ids), 1.0 / float(args.sigma_hand_clearance_m), dtype=np.float64)
     rhs = (signed - float(args.hand_clearance_m)) / float(args.sigma_hand_clearance_m)
     block = sparse_rows(len(vertex_ids), vertex_ids.astype(np.int64), vals, len(prior_vertices))
     return block, rhs.astype(np.float64), {
