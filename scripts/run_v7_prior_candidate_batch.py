@@ -49,6 +49,34 @@ def parse_candidate(raw: str) -> tuple[str, str, Path, str]:
     return target_id, name, Path(mesh), note
 
 
+def read_candidate_file(path: Path) -> list[str]:
+    if not path.exists():
+        raise RuntimeError(f"candidate file does not exist: {path}")
+    rows = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            continue
+        try:
+            parse_candidate(stripped)
+        except RuntimeError as exc:
+            raise RuntimeError(f"{path}:{line_number}: {exc}") from exc
+        rows.append(stripped)
+    return rows
+
+
+def candidate_rows(args: argparse.Namespace) -> list[str]:
+    rows = []
+    for path in args.candidate_file:
+        rows.extend(read_candidate_file(path))
+    rows.extend(args.candidate)
+    if not rows:
+        raise RuntimeError("provide at least one --candidate or --candidate-file row")
+    return rows
+
+
 def shell_token(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
@@ -244,9 +272,10 @@ def write_matrix(args: argparse.Namespace, results: list[dict]) -> None:
 def run(args: argparse.Namespace) -> dict:
     targets_payload = load_json(args.targets_json)
     targets = {target_id: validate_target(target_id, raw) for target_id, raw in targets_payload.items()}
+    raw_candidates = candidate_rows(args)
     args.output_root.mkdir(parents=True, exist_ok=True)
     results = []
-    for raw in args.candidate:
+    for raw in raw_candidates:
         target_id, name, mesh, note = parse_candidate(raw)
         if target_id not in targets:
             raise RuntimeError(f"candidate {name} references unknown target_id: {target_id}")
@@ -260,6 +289,7 @@ def run(args: argparse.Namespace) -> dict:
         "status": "dry_run" if args.dry_run else "ok",
         "method": "run_v7_prior_candidate_batch",
         "targets_json": str(args.targets_json),
+        "candidate_files": [str(path) for path in args.candidate_file],
         "output_root": str(args.output_root),
         "replay_controls": {
             "samples": int(args.samples),
@@ -280,7 +310,8 @@ def run(args: argparse.Namespace) -> dict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--targets-json", type=Path, default=REPO_DIR / "configs" / "v7_prior_replay_targets.json")
-    parser.add_argument("--candidate", action="append", required=True)
+    parser.add_argument("--candidate", action="append", default=[])
+    parser.add_argument("--candidate-file", type=Path, action="append", default=[])
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--scripts-dir", type=Path, default=SCRIPT_DIR)
     parser.add_argument("--samples", type=int, default=12000)
