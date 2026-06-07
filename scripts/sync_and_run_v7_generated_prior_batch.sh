@@ -6,6 +6,7 @@ REMOTE_ROOT=${REMOTE_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote}
 LOCAL_ROOT=${LOCAL_ROOT:-/data2/ego_annotation_outputs}
 OUTPUT_ROOT=${OUTPUT_ROOT:-$LOCAL_ROOT/v7_generated_candidate_batch_$(date +%Y%m%d_%H%M%S)}
 PY=${PY:-.venv/bin/python}
+SSH_CMD=${SSH_CMD:-ssh -o IPQoS=none -o ConnectTimeout=10}
 
 mkdir -p \
   "$LOCAL_ROOT/v7_triposg_prior_outputs" \
@@ -14,10 +15,10 @@ mkdir -p \
   "$LOCAL_ROOT/v7_spar3d_prior_outputs" \
   "$OUTPUT_ROOT"
 
-rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_triposg_prior_outputs/" "$LOCAL_ROOT/v7_triposg_prior_outputs/"
-rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_hunyuan_prior_outputs/" "$LOCAL_ROOT/v7_hunyuan_prior_outputs/"
-rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_instantmesh_prior_outputs/" "$LOCAL_ROOT/v7_instantmesh_prior_outputs/"
-rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_spar3d_prior_outputs/" "$LOCAL_ROOT/v7_spar3d_prior_outputs/"
+rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_triposg_prior_outputs/" "$LOCAL_ROOT/v7_triposg_prior_outputs/"
+rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_hunyuan_prior_outputs/" "$LOCAL_ROOT/v7_hunyuan_prior_outputs/"
+rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_instantmesh_prior_outputs/" "$LOCAL_ROOT/v7_instantmesh_prior_outputs/"
+rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_spar3d_prior_outputs/" "$LOCAL_ROOT/v7_spar3d_prior_outputs/"
 
 DISCOVERY_DIR="$OUTPUT_ROOT/discovery"
 "$PY" scripts/discover_v7_generated_prior_candidates.py \
