@@ -203,6 +203,8 @@ The physics wrapper treats contact as an evidence-dependent claim. It runs selec
 
 `scripts/write_v7_cotracker_factor_remote_job.sh` packages the same temporal-factor path for trash and mop. The remote job runs CoTracker on the existing model-produced object masks, lifts tracks through the accepted metric depth and camera annotations, attaches them to the measured target mesh archive, and fits pairwise rigid factors. If those reports produce enough ready factors, the target JSON can add the same `track_qc` block used by wild-rice. This keeps temporal consistency evidence model-driven and target-data driven rather than encoded as object-category logic.
 
+`scripts/localize_v7_cotracker_factor_report.py` rewrites synced remote CoTracker report paths to local paths before they enter target config. Pair-factor reports reference sparse-edge JSON files, and sparse-edge reports reference the measured mesh archive used for vertex attachment. The localizer updates those provenance paths together so the topology-aware track checker consumes the local synced evidence rather than stale A800 absolute paths.
+
 `scripts/render_v7_candidate_deliverables.py` is the final V7 delivery wrapper for an accepted candidate. It refuses any replay or physics report whose status is not `accepted` and `annotation_ready`, and it also refuses diagnostic replay controls. The wrapper then calls the existing overlay and world-coordinate renderers. The wrapper writes:
 
 - MANO/object overlay video: `overlay/mesh_surface_contact_review.mp4`
