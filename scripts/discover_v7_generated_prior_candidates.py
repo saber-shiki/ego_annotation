@@ -64,7 +64,9 @@ def discover_source(source_name: str, raw: object) -> list[dict]:
             case = case_name(mesh_path, root)
             target = target_for_case(case, mapping)
             if target is None:
-                continue
+                raise RuntimeError(
+                    f"source {source_name} produced unmapped mesh {mesh_path} with inferred case {case}"
+                )
             rows.append(
                 {
                     "target_id": target,
@@ -84,6 +86,11 @@ def candidate_arg(row: dict) -> str:
 
 def run(args: argparse.Namespace) -> dict:
     sources = load_json(args.sources_json)
+    if args.source:
+        missing_sources = sorted(set(args.source).difference(sources))
+        if missing_sources:
+            raise RuntimeError(f"requested sources are not configured: {', '.join(missing_sources)}")
+        sources = {name: sources[name] for name in args.source}
     rows = []
     for source_name, raw in sources.items():
         rows.extend(discover_source(str(source_name), raw))
@@ -110,6 +117,7 @@ def run(args: argparse.Namespace) -> dict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sources-json", type=Path, default=REPO_DIR / "configs" / "v7_generated_candidate_sources.json")
+    parser.add_argument("--source", action="append", default=[])
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--output-args", type=Path)
     parser.add_argument("--require-candidates", action="store_true")
