@@ -26,6 +26,7 @@ FRAME_START=${FRAME_START:-702}
 FRAME_END=${FRAME_END:-708}
 ANCHOR_FRAME=${ANCHOR_FRAME:-705}
 QUERY_FRAME_INDEX=${QUERY_FRAME_INDEX:-3}
+HAND_TRACK_ID=${HAND_TRACK_ID:-visible_gloved_hand_gripping_mop}
 MAX_USED_MB=${MAX_USED_MB:-2000}
 POLL_SECONDS=${POLL_SECONDS:-300}
 GPU_SELECT_LOCK=${GPU_SELECT_LOCK:-$REMOTE_ROOT/v7_gpu_wait_select.lock}
@@ -225,7 +226,7 @@ run_stage mano_articulation_mask_depth_refit \
     --mano-model-root "$MANO_MODEL_ROOT" \
     --frame-start "$FRAME_START" \
     --frame-end "$FRAME_END" \
-    --track-id "right_visible_gloved_hand" \
+    --track-id "$HAND_TRACK_ID" \
     --side any \
     --source-width 1920 \
     --source-height 1080 \
@@ -241,6 +242,18 @@ run_stage hand_selection \
     --output-qc "$OUT_ROOT/hand_selection/qc_selected_hand_metric_refit_702_708.json" \
     --frame-start "$FRAME_START" \
     --frame-end "$FRAME_END"
+
+"$HAWOR_PY" - <<'PY'
+import json
+from pathlib import Path
+
+qc_path = Path("$OUT_ROOT/hand_selection/qc_selected_hand_metric_refit_702_708.json")
+qc = json.loads(qc_path.read_text(encoding="utf-8"))
+expected = int("$FRAME_END") - int("$FRAME_START") + 1
+selected = int(qc.get("selected_frames", -1))
+if qc.get("status") != "ok" or selected != expected:
+    raise RuntimeError(f"hand selection did not produce one measured hand per frame: status={qc.get('status')} selected={selected} expected={expected}")
+PY
 
 run_stage observed_mesh \
   "$HAWOR_PY" scripts/export_mask_depth_observed_mesh_archive_v3.py \
