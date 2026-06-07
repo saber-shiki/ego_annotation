@@ -363,12 +363,23 @@ def run(args: argparse.Namespace) -> dict:
     targets_payload = load_json(args.targets_json)
     targets = {target_id: validate_target(target_id, raw) for target_id, raw in targets_payload.items()}
     raw_candidates = candidate_rows(args)
+    output_dirs = {}
+    for raw in raw_candidates:
+        target_id, name, mesh, _note = parse_candidate(raw)
+        if target_id not in targets:
+            raise RuntimeError(f"candidate {name} references unknown target_id: {target_id}")
+        out_dir = candidate_output_dir(args.output_root, target_id, name)
+        previous = output_dirs.get(out_dir)
+        if previous is not None:
+            raise RuntimeError(
+                "multiple V7 candidates resolve to the same output directory: "
+                f"{out_dir} for {previous} and {target_id}|{name}|{mesh}"
+            )
+        output_dirs[out_dir] = f"{target_id}|{name}|{mesh}"
     args.output_root.mkdir(parents=True, exist_ok=True)
     results = []
     for raw in raw_candidates:
         target_id, name, mesh, note = parse_candidate(raw)
-        if target_id not in targets:
-            raise RuntimeError(f"candidate {name} references unknown target_id: {target_id}")
         target = targets[target_id]
         result = run_replay(args, target_id, name, mesh, note, target)
         physics = run_physics(args, result, target)
