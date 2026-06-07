@@ -29,6 +29,10 @@ cd "$REPO"
 git fetch --depth 1 origin main
 git checkout -q FETCH_HEAD
 git rev-parse HEAD | tee "$OUT_ROOT/mesh4d_git_head.txt"
+if ! grep -Fq "cythonize(ext_modules, force=True" "$REPO/hy3dshape/setup_im2mesh.py"; then
+  perl -0pi -e "s/ext_modules=cythonize\\(ext_modules\\),/ext_modules=cythonize(ext_modules, force=True, compiler_directives={'language_level': '3'}),/" "$REPO/hy3dshape/setup_im2mesh.py"
+fi
+grep -F "cythonize(ext_modules, force=True" "$REPO/hy3dshape/setup_im2mesh.py"
 python3 -m pip install --user virtualenv
 rm -rf "$ENV_DIR"
 rm -f "$SETUP_COMPLETE"
