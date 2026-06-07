@@ -52,24 +52,35 @@ export HF_HUB_ETAG_TIMEOUT=120
 export HF_HUB_DOWNLOAD_TIMEOUT=120
 "$ENV_PY" - <<'PY'
 from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub.constants import HUGGINGFACE_HUB_CACHE
+import shutil
+from pathlib import Path
+
+for repo_id in ("sudo-ai/zero123plus-v1.2", "TencentARC/InstantMesh"):
+    repo_cache = Path(HUGGINGFACE_HUB_CACHE) / ("models--" + repo_id.replace("/", "--"))
+    if repo_cache.exists():
+        shutil.rmtree(repo_cache)
 
 snapshot_download(
     repo_id="sudo-ai/zero123plus-v1.2",
     repo_type="model",
     max_workers=1,
-    resume_download=True,
+    force_download=True,
+    resume_download=False,
 )
 hf_hub_download(
     repo_id="TencentARC/InstantMesh",
     filename="diffusion_pytorch_model.bin",
     repo_type="model",
-    resume_download=True,
+    force_download=True,
+    resume_download=False,
 )
 hf_hub_download(
     repo_id="TencentARC/InstantMesh",
     filename="instant_mesh_large.ckpt",
     repo_type="model",
-    resume_download=True,
+    force_download=True,
+    resume_download=False,
 )
 print("instantmesh_model_cache_ready")
 PY
