@@ -265,6 +265,8 @@ def run(args: argparse.Namespace) -> dict:
         "annotations": str(args.annotations),
         "intrinsics_source": str(args.intrinsics_source),
         "metric_depth_npz": str(args.metric_depth_npz) if args.metric_depth_npz is not None else None,
+        "max_faces": None if args.max_faces is None else int(args.max_faces),
+        "full_fidelity_zbuffer": bool(args.max_faces is None),
         "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
         "frames": int(len(rows)),
         "silhouette_mask_iou": summarize([row["silhouette_mask_iou"] for row in rows]),

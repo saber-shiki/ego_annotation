@@ -106,6 +106,43 @@ def run_command(argv: list[str], dry_run: bool) -> None:
     subprocess.run(argv, check=True)
 
 
+def run_observed_target_cache(args: argparse.Namespace, target_id: str, target: dict) -> dict:
+    cache_dir = args.output_root / "_observed_target_zbuffer_cache" / target_id
+    report_path = cache_dir / "qc_mesh_zbuffer_projection_v3.json"
+    video_path = cache_dir / "mesh_zbuffer_projection_qc.mp4"
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "render_mesh_zbuffer_qc_v3.py"),
+        "--mesh-archive",
+        str(target["observed_mesh_archive"]),
+        "--manifest",
+        str(target["manifest"]),
+        "--annotations",
+        str(target["annotations"]),
+        "--metric-depth-npz",
+        str(target["metric_depth_npz"]),
+        "--intrinsics-source",
+        str(target["intrinsics_source"]),
+        "--frame-start",
+        str(target["frame_start"]),
+        "--frame-end",
+        str(target["frame_end"]),
+        "--max-faces",
+        str(args.max_faces),
+        "--vertex-splat-radius-px",
+        str(args.vertex_splat_radius_px),
+        "--output-dir",
+        str(cache_dir),
+    ]
+    run_command(argv, bool(args.dry_run))
+    return {
+        "target_id": target_id,
+        "report": str(report_path),
+        "video": str(video_path),
+        "status": "dry_run" if args.dry_run else "ok",
+    }
+
+
 def validate_target(target_id: str, raw: object) -> dict:
     if not isinstance(raw, dict):
         raise RuntimeError(f"target {target_id} must be a JSON object")
@@ -181,7 +218,15 @@ def candidate_output_dir(root: Path, target_id: str, name: str) -> Path:
     return root / target_id / safe
 
 
-def run_replay(args: argparse.Namespace, target_id: str, name: str, mesh: Path, note: str, target: dict) -> dict:
+def run_replay(
+    args: argparse.Namespace,
+    target_id: str,
+    name: str,
+    mesh: Path,
+    note: str,
+    target: dict,
+    observed_cache: dict | None,
+) -> dict:
     if not mesh.exists():
         raise RuntimeError(f"candidate mesh does not exist: {mesh}")
     out_dir = candidate_output_dir(args.output_root, target_id, name)
@@ -209,6 +254,10 @@ def run_replay(args: argparse.Namespace, target_id: str, name: str, mesh: Path, 
         "--samples",
         str(args.samples),
     ]
+    baseline_zbuffer_json = target["baseline_zbuffer_json"]
+    if observed_cache is not None:
+        argv.extend(["--observed-target-zbuffer-report", str(observed_cache["report"])])
+        baseline_zbuffer_json = Path(str(observed_cache["report"]))
     if args.max_faces:
         argv.extend(["--max-faces", str(args.max_faces)])
     if args.vertex_splat_radius_px:
@@ -222,7 +271,7 @@ def run_replay(args: argparse.Namespace, target_id: str, name: str, mesh: Path, 
         "mesh_prior": str(mesh),
         "output_dir": str(out_dir),
         "report": str(report_path),
-        "baseline_zbuffer_json": str(target["baseline_zbuffer_json"]),
+        "baseline_zbuffer_json": str(baseline_zbuffer_json),
         "replay_controls": {
             "samples": int(args.samples),
             "max_faces": int(args.max_faces),
@@ -555,11 +604,16 @@ def run(args: argparse.Namespace) -> dict:
             )
         output_dirs[out_dir] = f"{target_id}|{name}|{mesh}"
     args.output_root.mkdir(parents=True, exist_ok=True)
+    target_ids = sorted({parse_candidate(raw)[0] for raw in raw_candidates})
+    observed_caches = {}
+    if not args.dry_run:
+        for target_id in target_ids:
+            observed_caches[target_id] = run_observed_target_cache(args, target_id, targets[target_id])
     results = []
     for raw in raw_candidates:
         target_id, name, mesh, note = parse_candidate(raw)
         target = targets[target_id]
-        result = run_replay(args, target_id, name, mesh, note, target)
+        result = run_replay(args, target_id, name, mesh, note, target, observed_caches.get(target_id))
         track = run_track_qc(args, result, target)
         if track is not None:
             result["track_qc"] = track
@@ -585,6 +639,7 @@ def run(args: argparse.Namespace) -> dict:
         "track_qc_enabled": any(target.get("track_qc") is not None for target in targets.values()),
         "physics_enabled": bool(args.run_physics),
         "deliverable_rendering_enabled": bool(args.render_deliverables),
+        "observed_target_zbuffer_cache": observed_caches,
         "candidates": results,
     }
     report_path = args.output_root / "qc_v7_prior_candidate_batch.json"

@@ -56,6 +56,78 @@ def run_zbuffer(args: argparse.Namespace, mesh_archive: Path, output_dir: Path) 
     return load_json(output_dir / "qc_mesh_zbuffer_projection_v3.json")
 
 
+def same_path(actual: object, expected: Path, key: str) -> None:
+    if not isinstance(actual, str) or not actual:
+        raise RuntimeError(f"observed target cache lacks {key}")
+    actual_path = Path(actual)
+    if not actual_path.exists():
+        raise RuntimeError(f"observed target cache {key} does not exist: {actual_path}")
+    if actual_path.resolve() != expected.resolve():
+        raise RuntimeError(f"observed target cache {key} mismatch: {actual_path} != {expected}")
+
+
+def manifest_frame_indices(path: Path, frame_start: int, frame_end: int) -> list[int]:
+    payload = load_json(path)
+    frames = payload.get("frames")
+    if not isinstance(frames, list) or not frames:
+        raise RuntimeError(f"{path} must contain a nonempty frames list")
+    out = []
+    for frame in frames:
+        idx = int(frame["frame_idx"])
+        if int(frame_start) <= idx <= int(frame_end):
+            out.append(idx)
+    if not out:
+        raise RuntimeError(f"{path} has no frames in range {frame_start}-{frame_end}")
+    return out
+
+
+def validate_observed_zbuffer_cache(args: argparse.Namespace, path: Path) -> tuple[dict, Path, Path]:
+    if not path.exists():
+        raise RuntimeError(f"observed target z-buffer report does not exist: {path}")
+    report = load_json(path)
+    if report.get("status") != "ok":
+        raise RuntimeError(f"observed target z-buffer report is not ok: {path}")
+    if report.get("method") != "mesh_zbuffer_projection_qc_v3":
+        raise RuntimeError(f"observed target z-buffer report has wrong method: {path}")
+    same_path(report.get("mesh_archive"), args.observed_mesh_archive, "mesh_archive")
+    same_path(report.get("manifest"), args.manifest, "manifest")
+    same_path(report.get("annotations"), args.annotations, "annotations")
+    same_path(report.get("metric_depth_npz"), args.metric_depth_npz, "metric_depth_npz")
+    if str(report.get("intrinsics_source")) != str(args.intrinsics_source):
+        raise RuntimeError("observed target z-buffer report intrinsics_source mismatch")
+    if int(report.get("vertex_splat_radius_px", -1)) != int(args.vertex_splat_radius_px):
+        raise RuntimeError("observed target z-buffer report vertex_splat_radius_px mismatch")
+    if "full_fidelity_zbuffer" not in report or "max_faces" not in report:
+        raise RuntimeError("observed target z-buffer report lacks full-fidelity render contract")
+    expected_full_fidelity = bool(int(args.max_faces) == 0)
+    if bool(report["full_fidelity_zbuffer"]) != expected_full_fidelity:
+        raise RuntimeError("observed target z-buffer report full_fidelity_zbuffer mismatch")
+    expected_max_faces = None if int(args.max_faces) == 0 else int(args.max_faces)
+    actual_max_faces = report.get("max_faces")
+    if actual_max_faces is None:
+        normalized_actual_max_faces = None
+    else:
+        normalized_actual_max_faces = int(actual_max_faces)
+    if normalized_actual_max_faces != expected_max_faces:
+        raise RuntimeError("observed target z-buffer report max_faces mismatch")
+    expected_frames = manifest_frame_indices(args.manifest, int(args.frame_start), int(args.frame_end))
+    rows = report.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("observed target z-buffer report lacks rows")
+    actual_frames = [int(row["frame_idx"]) for row in rows]
+    if actual_frames != expected_frames:
+        raise RuntimeError(f"observed target z-buffer report frame rows mismatch: {actual_frames} != {expected_frames}")
+    if int(report.get("frames", -1)) != len(expected_frames):
+        raise RuntimeError("observed target z-buffer report frame count mismatch")
+    video_raw = report.get("video")
+    if not isinstance(video_raw, str) or not video_raw:
+        raise RuntimeError("observed target z-buffer report lacks video")
+    video = Path(video_raw)
+    if not video.exists():
+        raise RuntimeError(f"observed target z-buffer video does not exist: {video}")
+    return report, path, video
+
+
 def write_report(path: Path, report: dict) -> dict:
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -68,7 +140,21 @@ def run(args: argparse.Namespace) -> dict:
     align_report = args.output_dir / "qc_aligned_mesh_prior_v7.json"
     observed_zbuffer_dir = args.output_dir / "observed_target_zbuffer_qc"
     zbuffer_dir = args.output_dir / "zbuffer_qc"
-    observed_zbuffer = run_zbuffer(args, args.observed_mesh_archive, observed_zbuffer_dir)
+    if args.observed_target_zbuffer_report is None:
+        observed_zbuffer = run_zbuffer(args, args.observed_mesh_archive, observed_zbuffer_dir)
+        observed_zbuffer_report_path = observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"
+        observed_zbuffer_video_path = observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"
+        observed_target_cache = {"used": False}
+    else:
+        observed_zbuffer, observed_zbuffer_report_path, observed_zbuffer_video_path = validate_observed_zbuffer_cache(
+            args,
+            args.observed_target_zbuffer_report,
+        )
+        observed_target_cache = {
+            "used": True,
+            "report": str(observed_zbuffer_report_path),
+            "video": str(observed_zbuffer_video_path),
+        }
     observed_iou = metric(observed_zbuffer, "silhouette_mask_iou", "median")
     observed_visible_inside = metric(observed_zbuffer, "visible_silhouette_inside_mask_fraction", "median")
     observed_zbuffer_abs_p95 = metric(observed_zbuffer, "zbuffer_depth_abs_p95_m", "median")
@@ -107,8 +193,9 @@ def run(args: argparse.Namespace) -> dict:
                 "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its observed target replay is internally consistent and the prior replay passes",
                 "mesh_prior": str(mesh_source),
                 "observed_mesh_archive": str(args.observed_mesh_archive),
-                "observed_target_zbuffer_report": str(observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
-                "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
+                "observed_target_zbuffer_report": str(observed_zbuffer_report_path),
+                "observed_target_zbuffer_video": str(observed_zbuffer_video_path),
+                "observed_target_zbuffer_cache": observed_target_cache,
                 "frame_start": int(args.frame_start),
                 "frame_end": int(args.frame_end),
                 "replay_controls": replay_controls,
@@ -214,8 +301,9 @@ def run(args: argparse.Namespace) -> dict:
             "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its visible surface covers measured geometry and image-depth replay passes",
             "mesh_prior": str(mesh_source),
             "observed_mesh_archive": str(args.observed_mesh_archive),
-            "observed_target_zbuffer_report": str(observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
-            "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
+            "observed_target_zbuffer_report": str(observed_zbuffer_report_path),
+            "observed_target_zbuffer_video": str(observed_zbuffer_video_path),
+            "observed_target_zbuffer_cache": observed_target_cache,
             "aligned_mesh_archive": str(aligned_archive),
             "alignment_report": str(align_report),
             "zbuffer_report": None,
@@ -282,8 +370,9 @@ def run(args: argparse.Namespace) -> dict:
         "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its visible surface covers measured geometry and image-depth replay passes",
         "mesh_prior": str(mesh_source),
         "observed_mesh_archive": str(args.observed_mesh_archive),
-        "observed_target_zbuffer_report": str(observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
-        "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
+        "observed_target_zbuffer_report": str(observed_zbuffer_report_path),
+        "observed_target_zbuffer_video": str(observed_zbuffer_video_path),
+        "observed_target_zbuffer_cache": observed_target_cache,
         "aligned_mesh_archive": str(aligned_archive),
         "alignment_report": str(align_report),
         "zbuffer_report": str(zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
@@ -334,6 +423,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prealigned-mesh-archive", type=Path)
     parser.add_argument("--prealigned-report", type=Path)
     parser.add_argument("--observed-mesh-archive", type=Path, required=True)
+    parser.add_argument("--observed-target-zbuffer-report", type=Path)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--metric-depth-npz", type=Path, required=True)
