@@ -20,6 +20,22 @@ def load_json(path: Path) -> dict:
     return payload
 
 
+def load_triangle_mesh(path: Path) -> trimesh.Trimesh:
+    loaded = trimesh.load(path, force="scene", process=False)
+    if isinstance(loaded, trimesh.Scene):
+        meshes = [geom for geom in loaded.geometry.values() if isinstance(geom, trimesh.Trimesh) and len(geom.vertices) > 0 and len(geom.faces) > 0]
+        if not meshes:
+            raise RuntimeError(f"mesh prior scene contains no triangle geometry: {path}")
+        mesh = trimesh.util.concatenate(meshes)
+    elif isinstance(loaded, trimesh.Trimesh):
+        mesh = loaded
+    else:
+        raise RuntimeError(f"unsupported mesh prior type {type(loaded).__name__}: {path}")
+    if len(mesh.vertices) == 0 or len(mesh.faces) == 0:
+        raise RuntimeError(f"prior mesh has no triangle surface: {path}")
+    return trimesh.Trimesh(vertices=np.asarray(mesh.vertices, dtype=np.float64), faces=np.asarray(mesh.faces, dtype=np.int32), process=False)
+
+
 def select_frames(meshes: dict[int, tuple[np.ndarray, np.ndarray]], args: argparse.Namespace) -> list[int]:
     available = sorted(meshes)
     if args.frames:
@@ -101,11 +117,7 @@ def transform_row(prior_mesh: trimesh.Trimesh, observed_vertices: np.ndarray, ob
 
 
 def run(args: argparse.Namespace) -> dict:
-    prior_mesh = trimesh.load(args.mesh_prior, force="mesh", process=False)
-    if not isinstance(prior_mesh, trimesh.Trimesh):
-        raise RuntimeError(f"prior path did not load as a triangle mesh: {args.mesh_prior}")
-    if len(prior_mesh.vertices) == 0 or len(prior_mesh.faces) == 0:
-        raise RuntimeError(f"prior mesh has no triangle surface: {args.mesh_prior}")
+    prior_mesh = load_triangle_mesh(args.mesh_prior)
     observed_meshes = load_mesh_archive(args.observed_mesh_archive)
     frames = select_frames(observed_meshes, args)
 
