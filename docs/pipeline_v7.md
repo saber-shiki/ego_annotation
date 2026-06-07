@@ -159,6 +159,17 @@ Artifacts:
 
 The rejected result proves the harness is live: a visually plausible generated mesh becomes object pose only after metric alignment and image-depth replay agree with the observed video.
 
+`scripts/run_v7_generated_prior_replay_qc.py` wraps the same acceptance logic for future SAM 3D Objects, Hunyuan3D, TRELLIS, or Mesh4D outputs. It runs prior alignment, z-buffer replay, and a single accept/reject report. The TRELLIS negative-control wrapper report rejects the prior with all four image-geometry checks failing:
+
+- alignment bidirectional p95: 0.906 m, threshold 0.010 m;
+- median silhouette IoU: 0.152, threshold 0.900;
+- median visible-inside fraction: 0.152, threshold 0.900;
+- median z-buffer p95 depth error: 0.124 m, threshold 0.010 m.
+
+Wrapper artifact:
+
+- report: `/data2/ego_annotation_outputs/representative_wild_rice/v7_generated_prior_replay_trellis_negative_control_2538_2540/qc_v7_generated_prior_replay.json`
+
 ### Visibility-Aware Surfel Graph
 
 `scripts/fit_visibility_surfel_graph_v7.py` builds temporal surfel nodes from mesh-attached learned point tracks. It consumes the V6 merged pair-factor report and the accepted V6 mesh archive, rejects duplicate observation conflicts explicitly, and solves:
