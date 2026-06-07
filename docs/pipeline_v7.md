@@ -185,19 +185,25 @@ Command:
 
 Result:
 
-- surfel nodes: 634;
-- accepted CoTracker edges: 475;
-- smooth triples: 320;
-- rejected early pairs: 2;
-- pair residual p95 before solve: 8.35 mm;
-- pair residual p95 after solve: 6.96 mm;
+- surfel nodes: 695;
+- accepted CoTracker edges: 509;
+- smooth triples: 325;
+- rejected pairs: 0;
+- pair residual p95 before solve: 8.36 mm;
+- pair residual p95 after solve: 6.93 mm;
 - correction displacement p95: 0.91 mm;
 - solver evaluations: 5;
 - status: `annotation_ready: false`.
 
 Artifacts:
 
-- report: `/data2/ego_annotation_outputs/representative_wild_rice/v7_visibility_surfel_graph_multianchor5_2534_2550/qc_visibility_surfel_graph_v7.json`
-- solved surfel positions: `/data2/ego_annotation_outputs/representative_wild_rice/v7_visibility_surfel_graph_multianchor5_2534_2550/visibility_surfel_positions_v7.npz`
+- repaired-archive sparse edges for frame-2539 anchor: `/data2/ego_annotation_outputs/representative_wild_rice/v7_cotracker_anchor2539_sparse_edges_repaired_archive_2532_2550/cotracker_sparse_correspondence_edges_v7.json`
+- repaired-archive pair factors: `/data2/ego_annotation_outputs/representative_wild_rice/v7_cotracker_anchor2539_pairwise_repaired_archive_2532_2550/qc_cotracker_pairwise_rigid_factors_v7.json`
+- merged pair factors: `/data2/ego_annotation_outputs/representative_wild_rice/v7_cotracker_multianchor5_repaired_archive_merged_pair_factors_2532_2550/qc_merged_pair_factors_v7.json`
+- report: `/data2/ego_annotation_outputs/representative_wild_rice/v7_visibility_surfel_graph_repaired_archive_multianchor5_2534_2550/qc_visibility_surfel_graph_v7.json`
+- solved surfel positions: `/data2/ego_annotation_outputs/representative_wild_rice/v7_visibility_surfel_graph_repaired_archive_multianchor5_2534_2550/visibility_surfel_positions_v7.npz`
+- visual review video: `/data2/ego_annotation_outputs/representative_wild_rice/v7_visibility_surfel_review_repaired_archive_multianchor5_2534_2550/visibility_surfel_review_v7.mp4`
 
-This closes the first V7 temporal-state evidence: the V6 CoTracker factors support a visibility-aware surfel graph over observed patches with sub-millimeter correction magnitude. The graph represents observed temporal patches and serves as a state prior for later mesh completion.
+The first surfel run exposed a provenance bug: frame 2539 disappeared because gap sparse-edge vertex indices came from the pre-repair factor-graph mesh archive, while V7 consumed the repaired V6 mesh archive. V7 now fails fast when sparse-edge provenance points to a different mesh archive. Reattaching the frame-2539 CoTracker world points to the repaired archive restores continuous surfel support through 2539.
+
+This closes the first V7 temporal-state evidence: the repaired-archive CoTracker factors support a visibility-aware surfel graph over observed patches with sub-millimeter correction magnitude. The graph represents observed temporal patches and serves as a state prior for later mesh completion.

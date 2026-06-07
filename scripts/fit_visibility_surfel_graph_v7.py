@@ -78,6 +78,15 @@ def collect_observations(
         if source_frame not in meshes or target_frame not in meshes:
             raise RuntimeError(f"mesh archive lacks ready pair {source_frame}->{target_frame}")
         edge_json = sparse_edges_path(row, pair_report, pair_report_path)
+        edge_report = load_json(edge_json)
+        edge_mesh_archive = edge_report.get("mesh_archive")
+        if edge_mesh_archive is None:
+            raise RuntimeError(f"sparse edge report lacks mesh_archive provenance: {edge_json}")
+        if Path(edge_mesh_archive).resolve() != args.mesh_archive.resolve():
+            raise RuntimeError(
+                "sparse edge vertex indices were built against a different mesh archive: "
+                f"{edge_mesh_archive} vs {args.mesh_archive}"
+            )
         source_vertices, _ = meshes[source_frame]
         target_vertices, _ = meshes[target_frame]
         accepted_count = 0
