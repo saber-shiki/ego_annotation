@@ -243,17 +243,17 @@ Remote A800 job package:
 - runner: `scripts/remote_run_sam3d_objects_mesh_v7.py`
 - job writer: `scripts/write_v7_sam3d_objects_remote_job.sh`
 - remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_sam3d_objects_outputs`
-- setup tmux session: `ego_v7_sam3d_setup`
+- setup tmux session: `ego_v7_sam3d_objects_setup`
 
 The job evaluates the same representative classes already used by the guarded replay matrix:
 
 - wild-rice active stem frames 2539 and 2545;
 - trash lid frame 880;
-- mop frame 750.
+- mop frame 759 from the current V7 replay target.
 
 The SAM 3D Objects output is a generated complete-object mesh candidate, not an accepted annotation. Each exported mesh must pass `run_v7_generated_prior_replay_qc.py` against the corresponding observed target archive before it can enter contact or final-render checks.
 
-Current A800 setup evidence: `ego_v7_sam3d_setup` reached the Hugging Face checkpoint download and returned `GatedRepoError` 403 for `facebook/sam-3d-objects`. The remote token exists, but Hugging Face reported that the account lacks access to the gated model. SAM 3D Objects can resume from the same job package after checkpoint access is granted or the checkpoint directory is supplied.
+Current A800 setup evidence: `ego_v7_sam3d_objects_setup` reached the Hugging Face checkpoint download and returned `GatedRepoError` 403 for `facebook/sam-3d-objects`. The remote token exists, but Hugging Face reported that the account lacks access to the gated model. The waiter was stopped so an access-blocked setup cannot consume the next free GPU. SAM 3D Objects can resume from the same job package after checkpoint access is granted or the checkpoint directory is supplied.
 
 ### TripoSG Candidate Source
 
