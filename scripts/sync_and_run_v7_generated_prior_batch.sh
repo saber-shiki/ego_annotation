@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_HOST=${REMOTE_HOST:-192.168.11.220}
+REMOTE_ROOT=${REMOTE_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote}
+LOCAL_ROOT=${LOCAL_ROOT:-/data2/ego_annotation_outputs}
+OUTPUT_ROOT=${OUTPUT_ROOT:-$LOCAL_ROOT/v7_generated_candidate_batch_$(date +%Y%m%d_%H%M%S)}
+PY=${PY:-.venv/bin/python}
+
+mkdir -p \
+  "$LOCAL_ROOT/v7_triposg_prior_outputs" \
+  "$LOCAL_ROOT/v7_hunyuan_prior_outputs" \
+  "$LOCAL_ROOT/v7_instantmesh_prior_outputs" \
+  "$LOCAL_ROOT/v7_spar3d_prior_outputs" \
+  "$OUTPUT_ROOT"
+
+rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_triposg_prior_outputs/" "$LOCAL_ROOT/v7_triposg_prior_outputs/"
+rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_hunyuan_prior_outputs/" "$LOCAL_ROOT/v7_hunyuan_prior_outputs/"
+rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_instantmesh_prior_outputs/" "$LOCAL_ROOT/v7_instantmesh_prior_outputs/"
+rsync -a "$REMOTE_HOST:$REMOTE_ROOT/v7_spar3d_prior_outputs/" "$LOCAL_ROOT/v7_spar3d_prior_outputs/"
+
+DISCOVERY_DIR="$OUTPUT_ROOT/discovery"
+"$PY" scripts/discover_v7_generated_prior_candidates.py \
+  --output-json "$DISCOVERY_DIR/qc_discovered_candidates.json" \
+  --output-args "$DISCOVERY_DIR/candidate_args.txt" \
+  --require-candidates
+
+"$PY" scripts/run_v7_prior_candidate_batch.py \
+  --candidate-file "$DISCOVERY_DIR/candidate_args.txt" \
+  --output-root "$OUTPUT_ROOT/replay_batch" \
+  --run-physics \
+  --render-deliverables
