@@ -191,6 +191,27 @@ Guarded replay matrix:
 
 The guarded matrix separates target validity from generated-prior validity. The observed target archives pass their own replay checks on wild-rice, trash, and mop. TRELLIS and Hunyuan priors are still rejected because the generated visible surface misses measured geometry and image-depth replay fails. This means V7 has a working acceptance harness and valid measured targets, but it has not accepted a generated complete object mesh prior.
 
+### SAM 3D Objects Candidate Source
+
+SAM 3D Objects is the next complete-mesh source tested by V7. Its official setup requires a Linux NVIDIA GPU with at least 32 GB VRAM, Hugging Face checkpoint access for `facebook/sam-3d-objects`, and the `hf` checkpoint directory containing `pipeline.yaml`. The official single-object API accepts an RGB image plus a mask and the underlying pipeline decodes both `mesh` and `gaussian` representations. V7 exports the decoded triangle mesh directly and keeps the GLB and Gaussian only as secondary visual evidence.
+
+Remote A800 job package:
+
+- runner: `scripts/remote_run_sam3d_objects_mesh_v7.py`
+- job writer: `scripts/write_v7_sam3d_objects_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_sam3d_objects_outputs`
+- setup tmux session: `ego_v7_sam3d_setup`
+
+The job evaluates the same representative classes already used by the guarded replay matrix:
+
+- wild-rice active stem frames 2539 and 2545;
+- trash lid frame 880;
+- mop frame 750.
+
+The SAM 3D Objects output is a generated complete-object mesh candidate, not an accepted annotation. Each exported mesh must pass `run_v7_generated_prior_replay_qc.py` against the corresponding observed target archive before it can enter contact or final-render checks.
+
+Current A800 setup evidence: `ego_v7_sam3d_setup` reached the Hugging Face checkpoint download and returned `GatedRepoError` 403 for `facebook/sam-3d-objects`. The remote token exists, but Hugging Face reported that the account lacks access to the gated model. SAM 3D Objects can resume from the same job package after checkpoint access is granted or the checkpoint directory is supplied.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
