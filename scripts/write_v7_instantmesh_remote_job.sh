@@ -127,6 +127,7 @@ print("instantmesh_runtime_imports_ok", rembg.__name__)
 PY
 INPUT_DIR="$OUT_ROOT/input_images"
 RUN_ROOT="$OUT_ROOT/generated"
+rm -rf "\$INPUT_DIR" "\$RUN_ROOT"
 mkdir -p "\$INPUT_DIR" "\$RUN_ROOT"
 cp "$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_crop_rgba.png" "\$INPUT_DIR/wild_rice_2539.png"
 cp "$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_crop_rgba.png" "\$INPUT_DIR/wild_rice_2545.png"
