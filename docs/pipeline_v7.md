@@ -565,8 +565,19 @@ Delivered videos:
 - trash side-by-side: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/trash/video_mesh_v3_solidified_unidepth_vggt_865_870/deliverables/world/world_reconstruction_side_by_side.mp4`
 - trash 3D: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/trash/video_mesh_v3_solidified_unidepth_vggt_865_870/deliverables/world/world_reconstruction_3d.mp4`
 
-The render pass was visually inspected on middle frames. The updated presentation shows the current head camera frustum, head path, MANO hand surfaces, object mesh, contact patch when present, metric scale, and action caption. This is a presentation-layer improvement over the earlier diagnostic-looking world plot; the mesh and physics status still come from the replay, track, and SDF reports above.
+The render pass was rerun after the presentation patch in commit `0a4c76b`. The world panel now fits the current head-camera frustum and full head trajectory in the same metric 3D scene as the object mesh and MANO hands. Labels moved to a compact legend so they do not cover the object or hand. The side-by-side caption prefix now says `V7 mesh-backed reconstruction`, which matches measured video-derived archives instead of implying a generated prior.
+
+Visual inspection artifacts:
+
+- wild-rice side-by-side still: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/visual_inspection_stills_after_render/wild_rice/side_mid.jpg`
+- wild-rice 3D still: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/visual_inspection_stills_after_render/wild_rice/world_mid.jpg`
+- trash side-by-side still: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/visual_inspection_stills_after_render/trash/side_mid.jpg`
+- trash 3D still: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/visual_inspection_stills_after_render/trash/world_mid.jpg`
+
+The rendered head frustum is a metric camera-pose cue, not a physical object. It can overlap the object in image space when the camera lies above the manipulated surface in the selected 3D view. The latest renderer keeps the cue thin enough that the hand-object geometry remains readable.
 
 Interpretation:
 
-V7 has a full local delivery chain for video-derived measured mesh archives on two representative clips. Single-image complete generated-prior acceptance remains zero across the current representative set. The mop representative remains open because hand evidence is missing in the selected clip window. The next V7 work item is measured MANO recovery for frames 759 to 765, or selection of a mop window whose object mesh and hand stream both satisfy the same replay, track, and physics contract.
+V7 has a full local delivery chain for video-derived measured mesh archives on two representative clips. Single-image complete generated-prior acceptance remains zero across the current representative set. The original mop window 759 to 765 remains rejected: replay and CoTracker track QC passed, but the frame window lacked a physically compatible measured MANO stream. V7 therefore moved the mop representative to frames 702 to 708 from source clip `/data2/egoscale_demo_30h/egoscale_tasks/20251210_0002_Rec4afc_P0_S296a7f_task_4/20251210_0002_Rec4afc_P0_S296a7f_task_4.mp4`.
+
+The 702 to 708 remote A800 measurement job is queued under tmux session `ego_v7_mop_702_708_wait`. It runs the full chain rather than a placeholder: VLM point prompts, SAM2 object and hand masks, UniDepth metric depth, VGGT camera, HaMeR projection measurement, MANO mask/depth articulation refit, hand hypothesis selection, observed mesh export, CoTracker factors, replay QC, topology-aware track QC, physics QC, and final deliverable rendering. The job is waiting for an A800 GPU below the memory threshold because all GPUs are currently occupied by another user's active training process.
