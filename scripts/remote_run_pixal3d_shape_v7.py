@@ -151,8 +151,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resolution", type=int, default=1024)
     parser.add_argument("--fov", type=float, default=0.8575560450553894)
-    parser.add_argument("--attn-backend", default="sdpa")
-    parser.add_argument("--sparse-attn-backend", default="sdpa")
+    parser.add_argument("--attn-backend", default="flash_attn_3")
+    parser.add_argument("--sparse-attn-backend", default="flash_attn_3")
     parser.add_argument("--min-alpha-pixels", type=int, default=100)
     return parser.parse_args()
 

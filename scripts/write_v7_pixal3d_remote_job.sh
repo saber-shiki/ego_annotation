@@ -80,8 +80,8 @@ python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install https://github.com/LDYang694/Storages/releases/download/20260430/utils3d-0.0.2-py3-none-any.whl
 export HF_HOME="$WORK_ROOT/hf_cache"
 export TORCH_HOME="$WORK_ROOT/torch_cache"
-export ATTN_BACKEND=sdpa
-export SPARSE_ATTN_BACKEND=sdpa
+export ATTN_BACKEND=flash_attn_3
+export SPARSE_ATTN_BACKEND=flash_attn_3
 export PIXAL3D_REQUIRE_PREMASKED_RGBA=1
 export HF_HUB_DOWNLOAD_TIMEOUT=120
 export HF_HUB_ETAG_TIMEOUT=120
@@ -93,11 +93,16 @@ print("pixal3d_model_cache_ready")
 PY
 "$ENV_PY" - <<'PY'
 import torch.hub
+import flash_attn_3
 import o_voxel, torch, torchvision, trimesh
 from pixal3d.pipelines import Pixal3DImageTo3DPipeline
+from pixal3d.modules.sparse import config as sparse_config
 from pixal3d.trainers.flow_matching.mixins.image_conditioned_proj import DinoV3ProjFeatureExtractor
 from PIL import Image
 import numpy as np
+
+if sparse_config.ATTN != "flash_attn_3":
+    raise RuntimeError(f"Pixal3D sparse attention backend mismatch: {sparse_config.ATTN}")
 
 probe = DinoV3ProjFeatureExtractor(
     model_name="camenduru/dinov3-vitl16-pretrain-lvd1689m",
@@ -117,6 +122,7 @@ if loaded.rembg_model is not None:
     raise RuntimeError("Pixal3D RGBA-only patch did not disable rembg_model")
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
 print("torchvision", torchvision.__version__, "trimesh", trimesh.__version__)
+print("flash_attn_3", flash_attn_3.__name__)
 print("pixal3d_pipeline", Pixal3DImageTo3DPipeline.__name__)
 print("o_voxel", o_voxel.__name__)
 PY
@@ -130,8 +136,8 @@ set -euo pipefail
 export CUDA_VISIBLE_DEVICES="\${GPU_ID:-$GPU_ID}"
 export HF_HOME="$WORK_ROOT/hf_cache"
 export TORCH_HOME="$WORK_ROOT/torch_cache"
-export ATTN_BACKEND=sdpa
-export SPARSE_ATTN_BACKEND=sdpa
+export ATTN_BACKEND=flash_attn_3
+export SPARSE_ATTN_BACKEND=flash_attn_3
 export PIXAL3D_REQUIRE_PREMASKED_RGBA=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "$REPO"
