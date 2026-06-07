@@ -258,6 +258,8 @@ Remote A800 job package:
 
 The InstantMesh setup is allowed to run while A800 GPUs are occupied because it prepares the repo and venv. The inference waiter uses the same per-GPU lock as Hunyuan and TripoSG, so the first free GPU is reserved by one V7 job without preventing a second V7 job from using a different free GPU.
 
+Current runtime repair: InstantMesh imports `rembg` at module load even when `--no_rembg` is passed. The previous setup checked diffusion and reconstruction imports but missed `rembg -> onnxruntime`, so inference failed after a free GPU was selected. The setup now installs `onnxruntime==1.16.3` and imports `rembg` during setup and again at runtime before invoking `run.py`.
+
 ### Hunyuan3D 2.1 Candidate Source
 
 Hunyuan3D 2.1 is queued as a stronger successor to the existing Hunyuan3D-2mini candidate source. The official repository describes Hunyuan3D-Shape-v2-1 as an image-to-shape model and reports about 10 GB VRAM for shape generation. V7 uses the shape-only path and feeds the same representative RGBA object crops as every other generated prior source.

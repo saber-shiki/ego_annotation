@@ -45,12 +45,14 @@ triton==2.1.0
 xformers==0.0.22.post7
 CONSTRAINTS
 "$ENV_PY" -m pip install --no-build-isolation -c "$OUT_ROOT/instantmesh_constraints.txt" -r requirements.txt
+"$ENV_PY" -m pip install onnxruntime==1.16.3
 "$ENV_PY" - <<'PY'
-import diffusers, torch, torchvision, trimesh
+import diffusers, rembg, torch, torchvision, trimesh
 from diffusers import DiffusionPipeline
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
 print("torchvision", torchvision.__version__, "diffusers", diffusers.__version__)
 print("pipeline_import", DiffusionPipeline.__name__)
+print("rembg_import", rembg.__name__)
 PY
 EOF
 chmod +x "$OUT_ROOT/setup_instantmesh_v7.sh"
@@ -63,6 +65,10 @@ cd "$REPO"
 if [[ ! -x "$ENV_PY" ]]; then
   flock "$OUT_ROOT/setup.lock" bash "$OUT_ROOT/setup_instantmesh_v7.sh"
 fi
+"$ENV_PY" - <<'PY'
+import rembg
+print("instantmesh_runtime_imports_ok", rembg.__name__)
+PY
 INPUT_DIR="$OUT_ROOT/input_images"
 RUN_ROOT="$OUT_ROOT/generated"
 mkdir -p "\$INPUT_DIR" "\$RUN_ROOT"
