@@ -34,11 +34,11 @@ from pathlib import Path
 
 path = Path("pixal3d/pipelines/pixal3d_image_to_3d.py")
 text = path.read_text(encoding="utf-8")
-needle = "import copy\n"
-if "import os\nimport copy\n" not in text:
+needle = "import torch\n"
+if "import os\nimport torch\n" not in text:
     if needle not in text:
         raise RuntimeError(f"unexpected Pixal3D import layout in {path}")
-    text = text.replace(needle, "import os\nimport copy\n", 1)
+    text = text.replace(needle, "import os\nimport torch\n", 1)
 old = "        pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])\n"
 new = (
     "        if os.environ.get('PIXAL3D_REQUIRE_PREMASKED_RGBA') == '1':\n"
