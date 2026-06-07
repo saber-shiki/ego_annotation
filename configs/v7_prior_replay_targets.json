@@ -8,7 +8,18 @@
     "frame_end": 2540,
     "intrinsics_source": "annotation-vggt",
     "physics_intrinsics_source": "annotation-vggt",
-    "baseline_zbuffer_json": "/data2/ego_annotation_outputs/representative_wild_rice/v7_generated_prior_replay_trellis_negative_control_guarded_2538_2540/observed_target_zbuffer_qc/qc_mesh_zbuffer_projection_v3.json"
+    "baseline_zbuffer_json": "/data2/ego_annotation_outputs/representative_wild_rice/v7_generated_prior_replay_trellis_negative_control_guarded_2538_2540/observed_target_zbuffer_qc/qc_mesh_zbuffer_projection_v3.json",
+    "track_qc": {
+      "pair_factors_json": "/data2/ego_annotation_outputs/representative_wild_rice/v7_cotracker_multianchor5_repaired_archive_merged_pair_factors_2532_2550/qc_merged_pair_factors_v7.json",
+      "frame_start": 2538,
+      "frame_end": 2540,
+      "min_tracks": 24,
+      "min_edges": 24,
+      "max_pair_factor_residual_m": 0.012,
+      "max_track_surface_distance_m": 0.012,
+      "max_pair_residual_p95_m": 0.009,
+      "max_correction_displacement_p95_m": 0.002
+    }
   },
   "trash": {
     "observed_mesh_archive": "/data2/ego_annotation_outputs/representative_trash/v3_observed_unidepth_vggtK_solidified_perframe_thick001_865_870/solidified_sheet_object_meshes_world.npz",

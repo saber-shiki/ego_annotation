@@ -39,6 +39,24 @@ def require_path(raw: object, key: str) -> Path:
     return path
 
 
+def require_float(raw: object, key: str) -> float:
+    if isinstance(raw, bool):
+        raise RuntimeError(f"{key} must be a number")
+    value = float(raw)
+    if not value > 0.0:
+        raise RuntimeError(f"{key} must be positive")
+    return value
+
+
+def require_int(raw: object, key: str) -> int:
+    if isinstance(raw, bool):
+        raise RuntimeError(f"{key} must be an integer")
+    value = int(raw)
+    if value <= 0:
+        raise RuntimeError(f"{key} must be positive")
+    return value
+
+
 def parse_candidate(raw: str) -> tuple[str, str, Path, str]:
     parts = raw.split("|")
     if len(parts) != 4:
@@ -105,7 +123,55 @@ def validate_target(target_id: str, raw: object) -> dict:
         raise RuntimeError(f"target {target_id} has invalid intrinsics_source: {target['intrinsics_source']}")
     if target["physics_intrinsics_source"] not in {"annotation-vggt", "hand", "cli"}:
         raise RuntimeError(f"target {target_id} has invalid physics_intrinsics_source: {target['physics_intrinsics_source']}")
+    if "track_qc" in target:
+        target["track_qc"] = validate_track_qc(target_id, target["track_qc"])
     return target
+
+
+def validate_track_qc(target_id: str, raw: object) -> dict | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"target {target_id}.track_qc must be a JSON object or null")
+    required = (
+        "pair_factors_json",
+        "frame_start",
+        "frame_end",
+        "min_tracks",
+        "min_edges",
+        "max_pair_factor_residual_m",
+        "max_track_surface_distance_m",
+        "max_pair_residual_p95_m",
+        "max_correction_displacement_p95_m",
+    )
+    missing = [key for key in required if key not in raw]
+    if missing:
+        raise RuntimeError(f"target {target_id}.track_qc lacks keys: {', '.join(missing)}")
+    track_qc = dict(raw)
+    track_qc["pair_factors_json"] = require_path(track_qc["pair_factors_json"], f"{target_id}.track_qc.pair_factors_json")
+    track_qc["frame_start"] = int(track_qc["frame_start"])
+    track_qc["frame_end"] = int(track_qc["frame_end"])
+    if track_qc["frame_end"] < track_qc["frame_start"]:
+        raise RuntimeError(f"target {target_id}.track_qc has inverted frame range")
+    track_qc["min_tracks"] = require_int(track_qc["min_tracks"], f"{target_id}.track_qc.min_tracks")
+    track_qc["min_edges"] = require_int(track_qc["min_edges"], f"{target_id}.track_qc.min_edges")
+    track_qc["max_pair_factor_residual_m"] = require_float(
+        track_qc["max_pair_factor_residual_m"],
+        f"{target_id}.track_qc.max_pair_factor_residual_m",
+    )
+    track_qc["max_track_surface_distance_m"] = require_float(
+        track_qc["max_track_surface_distance_m"],
+        f"{target_id}.track_qc.max_track_surface_distance_m",
+    )
+    track_qc["max_pair_residual_p95_m"] = require_float(
+        track_qc["max_pair_residual_p95_m"],
+        f"{target_id}.track_qc.max_pair_residual_p95_m",
+    )
+    track_qc["max_correction_displacement_p95_m"] = require_float(
+        track_qc["max_correction_displacement_p95_m"],
+        f"{target_id}.track_qc.max_correction_displacement_p95_m",
+    )
+    return track_qc
 
 
 def candidate_output_dir(root: Path, target_id: str, name: str) -> Path:
@@ -173,7 +239,109 @@ def run_replay(args: argparse.Namespace, target_id: str, name: str, mesh: Path, 
     return result
 
 
-def run_physics(args: argparse.Namespace, replay_result: dict, target: dict) -> dict | None:
+def summary_value(report: dict, section: str, key: str) -> float:
+    payload = report.get(section)
+    if not isinstance(payload, dict) or key not in payload:
+        raise RuntimeError(f"track QC report lacks {section}.{key}")
+    return float(payload[key])
+
+
+def run_track_qc(args: argparse.Namespace, replay_result: dict, target: dict) -> dict | None:
+    track_qc = target.get("track_qc")
+    if track_qc is None:
+        return None
+    track_dir = Path(replay_result["output_dir"]) / "track_qc"
+    track_report = track_dir / "qc_v7_candidate_track_surface.json"
+    replay_status = replay_result.get("status")
+    if args.dry_run and replay_status is None:
+        return {
+            "status": "dry_run_replay_not_executed",
+            "reason": "dry-run mode prints the replay command without creating the replay report required by track QC",
+            "output_dir": str(track_dir),
+            "report": str(track_report),
+        }
+    if replay_status != "accepted" or not bool(replay_result.get("annotation_ready", False)):
+        return {
+            "status": "skipped_replay_not_accepted",
+            "reason": f"track QC requires accepted replay, got {replay_status}",
+            "output_dir": str(track_dir),
+            "report": str(track_report),
+        }
+    replay_controls = replay_result.get("replay_controls", {})
+    if not bool(replay_controls.get("full_fidelity_zbuffer", False)):
+        return {
+            "status": "skipped_diagnostic_replay",
+            "reason": "track QC requires full-fidelity z-buffer replay; bounded-face replay is diagnostic only",
+            "output_dir": str(track_dir),
+            "report": str(track_report),
+        }
+    replay_report = load_json(Path(replay_result["report"]))
+    aligned_mesh_archive = replay_report.get("aligned_mesh_archive")
+    if not isinstance(aligned_mesh_archive, str) or not aligned_mesh_archive:
+        raise RuntimeError(f"accepted replay report lacks aligned_mesh_archive: {replay_result['report']}")
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "check_v7_candidate_track_surface_qc.py"),
+        "--candidate-mesh-archive",
+        aligned_mesh_archive,
+        "--pair-factors-json",
+        str(track_qc["pair_factors_json"]),
+        "--frame-start",
+        str(track_qc["frame_start"]),
+        "--frame-end",
+        str(track_qc["frame_end"]),
+        "--max-track-surface-distance-m",
+        str(track_qc["max_track_surface_distance_m"]),
+        "--max-pair-factor-residual-m",
+        str(track_qc["max_pair_factor_residual_m"]),
+        "--min-edges",
+        str(track_qc["min_edges"]),
+        "--output-dir",
+        str(track_dir),
+    ]
+    run_command(argv, bool(args.dry_run))
+    if args.dry_run:
+        return {
+            "status": "dry_run",
+            "output_dir": str(track_dir),
+            "report": str(track_report),
+        }
+    report = load_json(track_report)
+    accepted_edge_count = int(report.get("accepted_edge_count", 0))
+    track_count = int(report.get("track_count", 0))
+    pair_p95 = summary_value(report, "pair_residual_m", "p95")
+    correction_p95 = summary_value(report, "correction_displacement_m", "p95")
+    checks = {
+        "min_tracks": track_count >= int(track_qc["min_tracks"]),
+        "min_edges": accepted_edge_count >= int(track_qc["min_edges"]),
+        "pair_residual_p95": pair_p95 <= float(track_qc["max_pair_residual_p95_m"]),
+        "correction_displacement_p95": correction_p95 <= float(track_qc["max_correction_displacement_p95_m"]),
+    }
+    accepted = all(checks.values())
+    return {
+        "status": "accepted" if accepted else "rejected",
+        "annotation_ready": bool(accepted),
+        "output_dir": str(track_dir),
+        "report": str(track_report),
+        "metrics": {
+            "track_count": track_count,
+            "accepted_edge_count": accepted_edge_count,
+            "pair_residual_p95_m": pair_p95,
+            "correction_displacement_p95_m": correction_p95,
+        },
+        "thresholds": {
+            "min_tracks": int(track_qc["min_tracks"]),
+            "min_edges": int(track_qc["min_edges"]),
+            "max_pair_factor_residual_m": float(track_qc["max_pair_factor_residual_m"]),
+            "max_track_surface_distance_m": float(track_qc["max_track_surface_distance_m"]),
+            "max_pair_residual_p95_m": float(track_qc["max_pair_residual_p95_m"]),
+            "max_correction_displacement_p95_m": float(track_qc["max_correction_displacement_p95_m"]),
+        },
+        "pass": checks,
+    }
+
+
+def run_physics(args: argparse.Namespace, replay_result: dict, target: dict, track_qc: dict | None) -> dict | None:
     if not args.run_physics:
         return None
     physics_dir = Path(replay_result["output_dir"]) / "physics_qc"
@@ -190,6 +358,16 @@ def run_physics(args: argparse.Namespace, replay_result: dict, target: dict) -> 
         return {
             "status": "skipped_replay_not_accepted",
             "reason": f"physics QC requires accepted replay, got {replay_status}",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
+    if target.get("track_qc") is not None and (
+        track_qc is None or track_qc.get("status") != "accepted" or not bool(track_qc.get("annotation_ready", False))
+    ):
+        track_status = None if track_qc is None else track_qc.get("status")
+        return {
+            "status": "skipped_track_not_accepted",
+            "reason": f"physics QC requires accepted track QC for this target, got {track_status}",
             "output_dir": str(physics_dir),
             "report": str(physics_report),
         }
@@ -382,7 +560,10 @@ def run(args: argparse.Namespace) -> dict:
         target_id, name, mesh, note = parse_candidate(raw)
         target = targets[target_id]
         result = run_replay(args, target_id, name, mesh, note, target)
-        physics = run_physics(args, result, target)
+        track = run_track_qc(args, result, target)
+        if track is not None:
+            result["track_qc"] = track
+        physics = run_physics(args, result, target, track)
         if physics is not None:
             result["physics_qc"] = physics
         deliverables = run_deliverables(args, result, physics, target)
@@ -401,6 +582,7 @@ def run(args: argparse.Namespace) -> dict:
             "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
             "full_fidelity_zbuffer": bool(args.max_faces == 0),
         },
+        "track_qc_enabled": any(target.get("track_qc") is not None for target in targets.values()),
         "physics_enabled": bool(args.run_physics),
         "deliverable_rendering_enabled": bool(args.render_deliverables),
         "candidates": results,

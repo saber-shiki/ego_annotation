@@ -108,7 +108,7 @@ For any V7 candidate archive:
 - mesh-surface contact must be recomputed on the candidate archive;
 - selected-contact SDF must show near-surface contact and object exterior consistency;
 - full-hand SDF must show hand/object exterior consistency;
-- sparse track residuals must remain within the V6 factor tolerance on ready pairs;
+- sparse track residuals must remain within the V6 factor tolerance on ready pairs when the target has model-produced temporal factors;
 - stakeholder render must show head trajectory, MANO hands, object mesh, contact markers, and captions clearly.
 
 ## First Implemented Artifact
@@ -198,6 +198,8 @@ Candidate rows must resolve to unique output directories before any replay runs.
 `scripts/run_v7_candidate_physics_qc.py` is the second-stage acceptance wrapper. It refuses replay reports whose status is not `accepted` and also refuses bounded-face diagnostic replay. Physics QC runs only after full-fidelity z-buffer replay. The wrapper requires mesh-surface contact diagnostics to read the object-mask and hand evidence, uses the V6-validated contact threshold contract by default, runs selected-contact local-crop SDF at 1 mm pitch when contact evidence exists, and always runs full-window hand/object SDF nonpenetration at 3 mm pitch on the aligned mesh archive. The batch driver can call this stage with `--run-physics`; rejected replay reports and diagnostic replay reports receive explicit skipped-physics records instead of running contact checks against failed or non-delivery evidence. A generated mesh can become an object-pose candidate for delivery only after both visible replay and this physics wrapper pass.
 
 The physics wrapper treats contact as an evidence-dependent claim. It runs selected-contact SDF only when mesh-surface contact diagnosis finds reliable or geometry-backed temporal contact rows. A window whose hand/object rows support no contact can pass nonpenetration without claiming contact; a contact-supported window must also pass near-surface selected-contact checks.
+
+`scripts/check_v7_candidate_track_surface_qc.py` is the topology-aware track-consistency wrapper. Sparse CoTracker edge reports store vertex indices from the observed measured mesh archive, while generated candidate meshes have unrelated topology. The wrapper therefore uses those vertex indices only to recover the model-produced 3D track observations on the observed archive, then queries the candidate archive by nearest surface in each frame. It reports candidate-surface correction and cross-frame residuals under the same rigid pair factors used by the V6/V7 track graph. The wild-rice target now requires this check before physics because frames 2538 to 2540 have ready repaired-archive factors: the accepted measured archive gives 42 accepted edges, p95 pair residual 8.29 mm, and p95 surface correction 0 mm. V7 accepts a wild-rice generated mesh only if it keeps at least 24 tracks and 24 edges, p95 pair residual at most 9 mm, and p95 surface correction at most 2 mm.
 
 `scripts/render_v7_candidate_deliverables.py` is the final V7 delivery wrapper for an accepted candidate. It refuses any replay or physics report whose status is not `accepted` and `annotation_ready`, and it also refuses diagnostic replay controls. The wrapper then calls the existing overlay and world-coordinate renderers. The wrapper writes:
 
