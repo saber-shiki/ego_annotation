@@ -121,7 +121,7 @@ mkdir -p "\$INPUT_DIR" "\$RUN_ROOT"
 cp "$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_crop_rgba.png" "\$INPUT_DIR/wild_rice_2539.png"
 cp "$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_crop_rgba.png" "\$INPUT_DIR/wild_rice_2545.png"
 cp "$REMOTE_ROOT/v7_sam3d_object_prior_inputs_trash_frame880/frame_000880_crop_rgba.png" "\$INPUT_DIR/trash_0880.png"
-cp "$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame750/frame_000750_crop_rgba.png" "\$INPUT_DIR/mop_0750.png"
+cp "$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame759/frame_000759_crop_rgba.png" "\$INPUT_DIR/mop_0759.png"
 "$ENV_PY" run.py configs/instant-mesh-large.yaml "\$INPUT_DIR" \\
   --output_path "\$RUN_ROOT" \\
   --no_rembg \\

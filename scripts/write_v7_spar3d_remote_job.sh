@@ -94,7 +94,7 @@ fi
   --case "wild_rice_2539|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_crop_rgba.png" \\
   --case "wild_rice_2545|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_crop_rgba.png" \\
   --case "trash_0880|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_trash_frame880/frame_000880_crop_rgba.png" \\
-  --case "mop_0750|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame750/frame_000750_crop_rgba.png" \\
+  --case "mop_0759|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame759/frame_000759_crop_rgba.png" \\
   --output-dir "$OUT_ROOT/generated_meshes" \\
   --low-vram-mode
 EOF

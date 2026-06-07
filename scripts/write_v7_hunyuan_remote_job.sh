@@ -22,7 +22,7 @@ cases=(
   "wild_rice_2539|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_crop_rgba.png|2539"
   "wild_rice_2545|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_crop_rgba.png|2545"
   "trash_0880|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_trash_frame880/frame_000880_crop_rgba.png|880"
-  "mop_0750|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame750/frame_000750_crop_rgba.png|750"
+  "mop_0759|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame759/frame_000759_crop_rgba.png|759"
 )
 for raw_case in "\${cases[@]}"; do
   IFS='|' read -r case_name image_path seed <<<"\$raw_case"
