@@ -2,8 +2,7 @@
   "triposg": {
     "root": "/data2/ego_annotation_outputs/v7_triposg_prior_outputs/generated_meshes",
     "mesh_globs": [
-      "*/triposg_mesh.ply",
-      "*/triposg_mesh.glb"
+      "*/triposg_mesh.ply"
     ],
     "case_targets": {
       "wild_rice_2539": "wild_rice",
