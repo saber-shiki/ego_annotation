@@ -32,7 +32,7 @@ python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install --upgrade pip setuptools==69.5.1 wheel ninja
 "$ENV_PY" -m pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
 "$ENV_PY" -m pip install xformers==0.0.22.post7
-"$ENV_PY" -m pip install -r requirements.txt
+"$ENV_PY" -m pip install --no-build-isolation -r requirements.txt
 "$ENV_PY" - <<'PY'
 import torch, trimesh
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
