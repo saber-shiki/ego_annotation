@@ -7,6 +7,7 @@ REPO=${REPO:-$WORK_ROOT/InstantMesh}
 OUT_ROOT=${OUT_ROOT:-$REMOTE_ROOT/v7_instantmesh_prior_outputs}
 ENV_DIR=${ENV_DIR:-$WORK_ROOT/instantmesh_env}
 ENV_PY=${ENV_PY:-$ENV_DIR/bin/python}
+SETUP_COMPLETE=${SETUP_COMPLETE:-$OUT_ROOT/setup_complete.marker}
 GPU_ID=${GPU_ID:-0}
 MAX_USED_MB=${MAX_USED_MB:-2000}
 POLL_SECONDS=${POLL_SECONDS:-300}
@@ -29,6 +30,7 @@ git checkout -q FETCH_HEAD
 git rev-parse HEAD | tee "$OUT_ROOT/instantmesh_git_head.txt"
 python3 -m pip install --user virtualenv
 rm -rf "$ENV_DIR"
+rm -f "$SETUP_COMPLETE"
 python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install --upgrade pip setuptools==69.5.1 wheel ninja
 "$ENV_PY" -m pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
@@ -79,6 +81,7 @@ print("torchvision", torchvision.__version__, "diffusers", diffusers.__version__
 print("pipeline_import", DiffusionPipeline.__name__)
 print("rembg_import", rembg.__name__)
 PY
+date '+%Y-%m-%d %H:%M:%S setup complete' > "$SETUP_COMPLETE"
 EOF
 chmod +x "$OUT_ROOT/setup_instantmesh_v7.sh"
 
@@ -90,8 +93,12 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export DIFFUSERS_OFFLINE=1
 cd "$REPO"
-if [[ ! -x "$ENV_PY" ]]; then
+if [[ ! -f "$SETUP_COMPLETE" ]]; then
   flock "$OUT_ROOT/setup.lock" bash "$OUT_ROOT/setup_instantmesh_v7.sh"
+fi
+if [[ ! -f "$SETUP_COMPLETE" ]]; then
+  echo "InstantMesh setup did not produce $SETUP_COMPLETE" >&2
+  exit 1
 fi
 "$ENV_PY" - <<'PY'
 import rembg
