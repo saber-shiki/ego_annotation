@@ -5,6 +5,7 @@ REMOTE_ROOT=${REMOTE_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote}
 OUT_ROOT=${OUT_ROOT:-$REMOTE_ROOT/v7_cotracker_factor_outputs}
 INPUT_ROOT=${INPUT_ROOT:-$REMOTE_ROOT/v7_cotracker_factor_inputs}
 REPO_DIR=${REPO_DIR:-$REMOTE_ROOT/repo}
+TRACKER_REPO=${TRACKER_REPO:-$REMOTE_ROOT/cotracker_work/co-tracker}
 ENV_DIR=${ENV_DIR:-$REMOTE_ROOT/cotracker_env}
 ENV_PY=${ENV_PY:-$ENV_DIR/bin/python}
 MAX_USED_MB=${MAX_USED_MB:-2000}
@@ -17,7 +18,11 @@ mkdir -p "$OUT_ROOT"
 cat > "$OUT_ROOT/setup_cotracker_factor_v7.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-mkdir -p "$OUT_ROOT" "$REPO_DIR" "$GPU_LOCK_DIR"
+mkdir -p "$OUT_ROOT" "$REPO_DIR" "$GPU_LOCK_DIR" "$(dirname "$TRACKER_REPO")"
+if [[ ! -d "$TRACKER_REPO/.git" ]]; then
+  git clone --depth 1 https://github.com/facebookresearch/co-tracker.git "$TRACKER_REPO"
+fi
+git -C "$TRACKER_REPO" rev-parse HEAD | tee "$OUT_ROOT/cotracker_git_head.txt"
 if [[ ! -x "$ENV_PY" ]]; then
   python3 -m pip install --user virtualenv
   python3 -m virtualenv "$ENV_DIR"
@@ -102,9 +107,9 @@ run_case() {
     --max-points 384 \\
     --output-fps 6 \\
     --still-frames \$stills \\
-    --torchhub-repo facebookresearch/co-tracker \\
+    --torchhub-repo "$TRACKER_REPO" \\
     --torchhub-model cotracker3_offline \\
-    --torchhub-source github \\
+    --torchhub-source local \\
     --backward-tracking \\
     --require-cuda \\
     --output-dir "\$case_root/tracks"
