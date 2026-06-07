@@ -124,7 +124,7 @@ def run(args: argparse.Namespace) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     SPAR3D, foreground_crop = load_spar3d(args.repo)
     if args.device == "cuda" and not torch.cuda.is_available():
-        args.device = "cpu"
+        raise RuntimeError("CUDA was requested for SPAR3D, but torch reports no CUDA device")
     model = SPAR3D.from_pretrained(
         args.pretrained_model,
         config_name="config.yaml",

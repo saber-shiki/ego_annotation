@@ -62,5 +62,17 @@
       "trash_0880": "trash",
       "mop_0750": "mop"
     }
+  },
+  "pixal3d": {
+    "root": "/data2/ego_annotation_outputs/v7_pixal3d_prior_outputs/generated_meshes",
+    "mesh_globs": [
+      "*/pixal3d_mesh.ply"
+    ],
+    "case_targets": {
+      "wild_rice_2539": "wild_rice",
+      "wild_rice_2545": "wild_rice",
+      "trash_0880": "trash",
+      "mop_0750": "mop"
+    }
   }
 }

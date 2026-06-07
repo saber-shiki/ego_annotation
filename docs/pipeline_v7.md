@@ -327,6 +327,20 @@ Remote A800 job package:
 
 SPAR3D's official model `stabilityai/stable-point-aware-3d` is gated on Hugging Face. The remote setup now imports SPAR3D successfully after making the background-remover import lazy for pre-masked RGBA inputs. The checkpoint access check still returns `GatedRepoError` 403 for `config.yaml`, so SPAR3D is queued but access-blocked until the token/account is authorized. The V7 job keeps that as an explicit outcome: if access is missing, first inference fails visibly instead of substituting a weaker mesh source.
 
+### Pixal3D Candidate Source
+
+Pixal3D is a public TencentARC single-image mesh source. The current public repository runs image-to-GLB inference through `inference.py`, accepts RGBA alpha masks directly during preprocessing, supports low-VRAM mode, and can use PyTorch SDPA attention when flash-attn is unavailable. V7 feeds Pixal3D the same model-produced RGBA object crops as the other complete-mesh sources and exports the resulting GLB as a triangle PLY for guarded replay.
+
+Remote A800 job package:
+
+- runner: `scripts/remote_run_pixal3d_shape_v7.py`
+- job writer: `scripts/write_v7_pixal3d_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_pixal3d_prior_outputs`
+- setup tmux session: `ego_v7_pixal3d_setup`
+- inference waiter tmux session: `ego_v7_pixal3d_wait`
+
+The Pixal3D model repository is public and about 22.4 GiB. The A800 host has Python 3.10 and a CUDA-capable driver compatible with the repository's public Hugging Face demo wheels. The setup path therefore uses the official demo wheel stack plus `ATTN_BACKEND=sdpa`, writes a setup marker only after Pixal3D, `o_voxel`, torch, torchvision, and trimesh import, then queues inference behind the same per-GPU lock used by the other V7 model sources. Pixal3D output remains a complete-object mesh hypothesis until guarded replay, physics QC, and render inspection accept it.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
