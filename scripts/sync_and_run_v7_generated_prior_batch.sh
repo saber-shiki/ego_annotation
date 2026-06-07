@@ -11,12 +11,14 @@ SSH_CMD=${SSH_CMD:-ssh -o IPQoS=none -o ConnectTimeout=10}
 mkdir -p \
   "$LOCAL_ROOT/v7_triposg_prior_outputs" \
   "$LOCAL_ROOT/v7_hunyuan_prior_outputs" \
+  "$LOCAL_ROOT/v7_hunyuan21_prior_outputs" \
   "$LOCAL_ROOT/v7_instantmesh_prior_outputs" \
   "$LOCAL_ROOT/v7_spar3d_prior_outputs" \
   "$OUTPUT_ROOT"
 
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_triposg_prior_outputs/" "$LOCAL_ROOT/v7_triposg_prior_outputs/"
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_hunyuan_prior_outputs/" "$LOCAL_ROOT/v7_hunyuan_prior_outputs/"
+rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_hunyuan21_prior_outputs/" "$LOCAL_ROOT/v7_hunyuan21_prior_outputs/"
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_instantmesh_prior_outputs/" "$LOCAL_ROOT/v7_instantmesh_prior_outputs/"
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_spar3d_prior_outputs/" "$LOCAL_ROOT/v7_spar3d_prior_outputs/"
 

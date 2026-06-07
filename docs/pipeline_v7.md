@@ -256,6 +256,20 @@ Remote A800 job package:
 
 The InstantMesh setup is allowed to run while A800 GPUs are occupied because it prepares the repo and venv. The inference waiter uses the same per-GPU lock as Hunyuan and TripoSG, so the first free GPU is reserved by one V7 job without preventing a second V7 job from using a different free GPU.
 
+### Hunyuan3D 2.1 Candidate Source
+
+Hunyuan3D 2.1 is queued as a stronger successor to the existing Hunyuan3D-2mini candidate source. The official repository describes Hunyuan3D-Shape-v2-1 as an image-to-shape model and reports about 10 GB VRAM for shape generation. V7 uses the shape-only path and feeds the same representative RGBA object crops as every other generated prior source.
+
+Remote A800 job package:
+
+- runner: `scripts/remote_run_hunyuan21_shape_v7.py`
+- job writer: `scripts/write_v7_hunyuan21_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_hunyuan21_prior_outputs`
+- setup tmux session: `ego_v7_hunyuan21_setup`
+- inference waiter tmux session: `ego_v7_hunyuan21_wait`
+
+The output remains a complete-object mesh hypothesis until the guarded replay, physics QC, and render inspection accept it.
+
 ### SPAR3D Candidate Source
 
 SPAR3D is an official Stability AI single-image object mesh source that writes GLB meshes and point clouds from image inputs. It is queued as another complete-mesh prior, using the same model-produced RGBA object crops and the same downstream replay contract as TripoSG and InstantMesh.

@@ -27,6 +27,18 @@
       "mop_0750_single": "mop"
     }
   },
+  "hunyuan21": {
+    "root": "/data2/ego_annotation_outputs/v7_hunyuan21_prior_outputs/generated_meshes",
+    "mesh_globs": [
+      "*/hunyuan21_mesh.ply"
+    ],
+    "case_targets": {
+      "wild_rice_2539": "wild_rice",
+      "wild_rice_2545": "wild_rice",
+      "trash_0880": "trash",
+      "mop_0750": "mop"
+    }
+  },
   "instantmesh": {
     "root": "/data2/ego_annotation_outputs/v7_instantmesh_prior_outputs/generated/instant-mesh-large/meshes",
     "mesh_globs": [
