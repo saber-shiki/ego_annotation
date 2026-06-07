@@ -180,9 +180,27 @@ def run(args: argparse.Namespace) -> dict:
     source_tracks = defaultdict(set)
     for row in rows:
         source_tracks[(row["track_source"], int(row["track_id"]))].update([int(row["source_frame"]), int(row["target_frame"])])
+    track_count = int(len(source_tracks))
+    accepted_edge_count = int(len(rows))
+    factor_summary = finite_summary(factor_residuals)
+    pair_summary = finite_summary(pair_residuals)
+    source_summary = finite_summary(source_dist)
+    target_summary = finite_summary(target_dist)
+    correction_summary = finite_summary(correction)
+    checks = {
+        "min_tracks": track_count >= int(args.min_tracks),
+        "min_edges": accepted_edge_count >= int(args.min_edges),
+        "pair_residual_p95": True
+        if args.max_pair_residual_p95_m is None
+        else float(pair_summary["p95"]) <= float(args.max_pair_residual_p95_m),
+        "correction_displacement_p95": True
+        if args.max_correction_displacement_p95_m is None
+        else float(correction_summary["p95"]) <= float(args.max_correction_displacement_p95_m),
+    }
+    accepted = all(checks.values())
     report = {
-        "status": "ok",
-        "annotation_ready": False,
+        "status": "accepted" if accepted else "rejected",
+        "annotation_ready": bool(accepted),
         "method": "check_v7_candidate_track_surface_qc",
         "claim_tested": "candidate mesh surface must support the model-produced 3D track observations without sharing measured-mesh topology",
         "candidate_mesh_archive": str(args.candidate_mesh_archive),
@@ -190,18 +208,26 @@ def run(args: argparse.Namespace) -> dict:
         "pair_factors_json": str(args.pair_factors_json),
         "frame_start": min(frames),
         "frame_end": max(frames),
-        "track_count": int(len(source_tracks)),
-        "accepted_edge_count": int(len(rows)),
+        "track_count": track_count,
+        "accepted_edge_count": accepted_edge_count,
         "rejected_pair_count": int(len(rejected_pairs)),
-        "factor_residual_m": finite_summary(factor_residuals),
-        "pair_residual_m": finite_summary(pair_residuals),
-        "source_surface_distance_m": finite_summary(source_dist),
-        "target_surface_distance_m": finite_summary(target_dist),
-        "correction_displacement_m": finite_summary(correction),
+        "factor_residual_m": factor_summary,
+        "pair_residual_m": pair_summary,
+        "source_surface_distance_m": source_summary,
+        "target_surface_distance_m": target_summary,
+        "correction_displacement_m": correction_summary,
+        "pass": checks,
         "parameters": {
             "max_pair_factor_residual_m": float(args.max_pair_factor_residual_m),
             "max_track_surface_distance_m": float(args.max_track_surface_distance_m),
             "min_edges": int(args.min_edges),
+            "min_tracks": int(args.min_tracks),
+            "max_pair_residual_p95_m": None
+            if args.max_pair_residual_p95_m is None
+            else float(args.max_pair_residual_p95_m),
+            "max_correction_displacement_p95_m": None
+            if args.max_correction_displacement_p95_m is None
+            else float(args.max_correction_displacement_p95_m),
         },
         "edges": rows,
         "rejected_pairs": rejected_pairs,
@@ -210,6 +236,9 @@ def run(args: argparse.Namespace) -> dict:
     output_json = args.output_dir / "qc_v7_candidate_track_surface.json"
     output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in report.items() if k not in {"edges", "rejected_pairs"}}, indent=2))
+    if args.fail_on_rejected and not accepted:
+        failed = [name for name, passed in checks.items() if not passed]
+        raise RuntimeError(f"track surface QC rejected candidate; failed checks: {failed}")
     return report
 
 
@@ -223,6 +252,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-track-surface-distance-m", type=float, default=0.012)
     parser.add_argument("--max-pair-factor-residual-m", type=float, default=0.012)
     parser.add_argument("--min-edges", type=int, default=24)
+    parser.add_argument("--min-tracks", type=int, default=1)
+    parser.add_argument("--max-pair-residual-p95-m", type=float)
+    parser.add_argument("--max-correction-displacement-p95-m", type=float)
+    parser.add_argument("--fail-on-rejected", action="store_true")
     return parser.parse_args()
 
 

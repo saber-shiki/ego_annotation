@@ -79,7 +79,11 @@ TRACK_QC_DIR="$RUN_ROOT/track_surface_qc"
   --frame-end "$FRAME_END" \
   --max-track-surface-distance-m 0.012 \
   --max-pair-factor-residual-m 0.012 \
-  --min-edges 24
+  --min-edges 200 \
+  --min-tracks 40 \
+  --max-pair-residual-p95-m 0.010 \
+  --max-correction-displacement-p95-m 0.002 \
+  --fail-on-rejected
 
 PHYSICS_DIR="$RUN_ROOT/physics"
 "$PY" scripts/run_v7_candidate_physics_qc.py \

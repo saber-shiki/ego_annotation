@@ -403,6 +403,12 @@ def run_track_qc(args: argparse.Namespace, replay_result: dict, target: dict) ->
         str(track_qc["max_pair_factor_residual_m"]),
         "--min-edges",
         str(track_qc["min_edges"]),
+        "--min-tracks",
+        str(track_qc["min_tracks"]),
+        "--max-pair-residual-p95-m",
+        str(track_qc["max_pair_residual_p95_m"]),
+        "--max-correction-displacement-p95-m",
+        str(track_qc["max_correction_displacement_p95_m"]),
         "--output-dir",
         str(track_dir),
     ]
@@ -418,13 +424,10 @@ def run_track_qc(args: argparse.Namespace, replay_result: dict, target: dict) ->
     track_count = int(report.get("track_count", 0))
     pair_p95 = summary_value(report, "pair_residual_m", "p95")
     correction_p95 = summary_value(report, "correction_displacement_m", "p95")
-    checks = {
-        "min_tracks": track_count >= int(track_qc["min_tracks"]),
-        "min_edges": accepted_edge_count >= int(track_qc["min_edges"]),
-        "pair_residual_p95": pair_p95 <= float(track_qc["max_pair_residual_p95_m"]),
-        "correction_displacement_p95": correction_p95 <= float(track_qc["max_correction_displacement_p95_m"]),
-    }
-    accepted = all(checks.values())
+    checks = report.get("pass")
+    if not isinstance(checks, dict):
+        raise RuntimeError(f"track QC report lacks pass checks: {track_report}")
+    accepted = report.get("status") == "accepted" and bool(report.get("annotation_ready", False))
     return {
         "status": "accepted" if accepted else "rejected",
         "annotation_ready": bool(accepted),
