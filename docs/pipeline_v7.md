@@ -195,6 +195,15 @@ The guarded matrix separates target validity from generated-prior validity. The 
 
 `scripts/run_v7_candidate_physics_qc.py` is the second-stage acceptance wrapper. It refuses replay reports whose status is not `accepted`, then runs mesh-surface contact, selected-contact SDF, and full-hand SDF on the aligned mesh archive. The batch driver can call this stage with `--run-physics`; rejected replay reports receive an explicit skipped-physics record instead of running contact checks against a failed mesh. A generated mesh can become an object-pose candidate for delivery only after both visible replay and this physics wrapper pass.
 
+`scripts/render_v7_candidate_deliverables.py` is the final V7 delivery wrapper for an accepted candidate. It refuses any replay or physics report whose status is not `accepted` and `annotation_ready`, then calls the existing overlay and world-coordinate renderers. The wrapper writes:
+
+- MANO/object overlay video: `overlay/mesh_surface_contact_review.mp4`
+- side-by-side annotated video plus 3D reconstruction: `world/world_reconstruction_side_by_side.mp4`
+- standalone 3D world animation: `world/world_reconstruction_3d.mp4`
+- delivery manifest with structural video QC: `v7_candidate_deliverables_manifest.json`
+
+This command is intentionally downstream of replay and physics acceptance, so a rejected generated mesh cannot become a stakeholder render by accident.
+
 `scripts/fuse_v7_sim3_prior_observed_surfaces.py` is the repair path for a generated prior that is close enough to align but still misses visible surface detail. It maps model-produced mask/depth observations back into the prior's canonical coordinates using the same per-frame Sim3 rows from the replay alignment report, fuses those observations with sampled prior surface points, and rearchives the fused mesh through the original Sim3 rows. It fails before meshing when the canonical observed extent or Sim3 scale drift is physically implausible. Existing trash TRELLIS replay hits this failure: the observed depth points spread to a 10.9 m canonical extent, so fusion would only hide the bad prior alignment.
 
 ### SAM 3D Objects Candidate Source
