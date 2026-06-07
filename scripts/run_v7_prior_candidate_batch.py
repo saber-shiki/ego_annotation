@@ -193,6 +193,14 @@ def run_physics(args: argparse.Namespace, replay_result: dict, target: dict) -> 
             "output_dir": str(physics_dir),
             "report": str(physics_report),
         }
+    replay_controls = replay_result.get("replay_controls", {})
+    if not bool(replay_controls.get("full_fidelity_zbuffer", False)):
+        return {
+            "status": "skipped_diagnostic_replay",
+            "reason": "physics QC requires full-fidelity z-buffer replay; bounded-face replay is diagnostic only",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
     argv = [
         sys.executable,
         str(args.scripts_dir / "run_v7_candidate_physics_qc.py"),

@@ -82,8 +82,15 @@ def accepted_report(path: Path, label: str) -> dict:
     return report
 
 
+def require_full_fidelity_replay(report: dict, path: Path) -> None:
+    replay_controls = report.get("replay_controls", {})
+    if not bool(replay_controls.get("full_fidelity_zbuffer", False)):
+        raise RuntimeError(f"deliverable rendering requires full-fidelity replay, got diagnostic replay controls: {path}")
+
+
 def run(args: argparse.Namespace) -> dict:
     replay = accepted_report(args.replay_report, "replay")
+    require_full_fidelity_replay(replay, args.replay_report)
     physics = accepted_report(args.physics_report, "physics")
     mesh_archive = require_path(replay.get("aligned_mesh_archive"), "replay.aligned_mesh_archive")
     contact_report = require_path(physics.get("contact_report"), "physics.contact_report")

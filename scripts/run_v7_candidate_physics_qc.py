@@ -44,6 +44,9 @@ def run(args: argparse.Namespace) -> dict:
     replay = load_json(args.replay_report)
     if replay.get("status") != "accepted":
         raise RuntimeError(f"physics QC requires accepted replay report, got {replay.get('status')}: {args.replay_report}")
+    replay_controls = replay.get("replay_controls", {})
+    if not bool(replay_controls.get("full_fidelity_zbuffer", False)):
+        raise RuntimeError(f"physics QC requires full-fidelity z-buffer replay, got diagnostic replay controls: {args.replay_report}")
     mesh_archive = require_path(replay.get("aligned_mesh_archive"), "replay.aligned_mesh_archive")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     contact_json = args.output_dir / "mesh_surface_contact_qc.json"
