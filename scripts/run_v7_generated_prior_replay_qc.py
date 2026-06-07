@@ -51,6 +51,8 @@ def run(args: argparse.Namespace) -> dict:
             str(args.samples),
             "--max-bidirectional-p95-m",
             str(args.max_alignment_p95_m),
+            "--max-visible-surface-p95-m",
+            str(args.max_visible_surface_p95_m),
         ]
     )
     run_command(
@@ -82,21 +84,30 @@ def run(args: argparse.Namespace) -> dict:
     align = load_json(align_report)
     zbuffer = load_json(zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json")
     alignment_p95 = metric(align, "alignment_bidirectional_p95_m", "p95")
+    visible_surface_p95 = metric(align, "visible_surface_coverage_p95_m", "p95")
+    hidden_surface_p95 = metric(align, "hidden_surface_conflict_p95_m", "p95")
     iou_median = metric(zbuffer, "silhouette_mask_iou", "median")
     visible_inside_median = metric(zbuffer, "visible_silhouette_inside_mask_fraction", "median")
     zbuffer_abs_p95_median = metric(zbuffer, "zbuffer_depth_abs_p95_m", "median")
     pass_rows = {
-        "alignment_p95": bool(alignment_p95 <= float(args.max_alignment_p95_m)),
+        "strict_full_surface_alignment_p95": bool(alignment_p95 <= float(args.max_alignment_p95_m)),
+        "visible_surface_coverage_p95": bool(visible_surface_p95 <= float(args.max_visible_surface_p95_m)),
         "silhouette_iou_median": bool(iou_median >= float(args.min_iou_median)),
         "visible_inside_median": bool(visible_inside_median >= float(args.min_visible_inside_median)),
         "zbuffer_abs_p95_median": bool(zbuffer_abs_p95_median <= float(args.max_zbuffer_abs_p95_median_m)),
     }
-    accepted = all(pass_rows.values())
+    delivery_pass_keys = [
+        "visible_surface_coverage_p95",
+        "silhouette_iou_median",
+        "visible_inside_median",
+        "zbuffer_abs_p95_median",
+    ]
+    accepted = all(pass_rows[key] for key in delivery_pass_keys)
     report = {
         "status": "accepted" if accepted else "rejected",
         "annotation_ready": bool(accepted),
         "method": "run_v7_generated_prior_replay_qc",
-        "claim_tested": "a generated object mesh prior can be accepted as object geometry only after metric alignment and image-depth replay pass",
+        "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its visible surface covers measured geometry and image-depth replay passes",
         "mesh_prior": str(args.mesh_prior),
         "observed_mesh_archive": str(args.observed_mesh_archive),
         "aligned_mesh_archive": str(aligned_archive),
@@ -107,17 +118,22 @@ def run(args: argparse.Namespace) -> dict:
         "frame_end": int(args.frame_end),
         "metrics": {
             "alignment_bidirectional_p95_m": alignment_p95,
+            "visible_surface_coverage_p95_m": visible_surface_p95,
+            "hidden_surface_conflict_p95_m": hidden_surface_p95,
             "silhouette_iou_median": iou_median,
             "visible_inside_median": visible_inside_median,
             "zbuffer_abs_p95_median_m": zbuffer_abs_p95_median,
         },
         "thresholds": {
             "max_alignment_p95_m": float(args.max_alignment_p95_m),
+            "max_visible_surface_p95_m": float(args.max_visible_surface_p95_m),
             "min_iou_median": float(args.min_iou_median),
             "min_visible_inside_median": float(args.min_visible_inside_median),
             "max_zbuffer_abs_p95_median_m": float(args.max_zbuffer_abs_p95_median_m),
         },
         "pass": pass_rows,
+        "strict_full_surface_alignment_is_diagnostic": True,
+        "delivery_pass_keys": delivery_pass_keys,
         "next_required_if_accepted": [
             "mesh-surface contact recomputation",
             "selected-contact SDF",
@@ -147,6 +163,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-faces", type=int, default=0)
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
     parser.add_argument("--max-alignment-p95-m", type=float, default=0.010)
+    parser.add_argument("--max-visible-surface-p95-m", type=float, default=0.010)
     parser.add_argument("--min-iou-median", type=float, default=0.900)
     parser.add_argument("--min-visible-inside-median", type=float, default=0.900)
     parser.add_argument("--max-zbuffer-abs-p95-median-m", type=float, default=0.010)

@@ -34,7 +34,7 @@ For each generated prior mesh `P`, V7 estimates a per-frame metric similarity tr
 X_t = s_t R_t P + p_t
 ```
 
-where `s_t` is scale, `R_t` is a proper rotation, and `p_t` is translation in world coordinates. The first harness uses robust PCA and bidirectional nearest-neighbor distance to align the prior to each measured frame. The resulting archive is marked `annotation_ready: false` until downstream replay passes.
+where `s_t` is scale, `R_t` is a proper rotation, and `p_t` is translation in world coordinates. The first harness uses robust PCA and nearest-neighbor distances to align the prior to each measured frame. It reports both visible-surface coverage and hidden-surface conflict. Visible coverage asks whether the measured camera-visible sheet lies on the prior. Hidden conflict asks how much generated prior surface is unsupported by the measured sheet. Hidden conflict is diagnostic for completion quality, while delivery readiness comes from visible coverage plus image-depth, contact, SDF, and visual replay.
 
 ### Visibility-Aware Surface State
 
@@ -95,7 +95,7 @@ min_X
 
 V7 uses two solver tiers:
 
-1. Mesh-prior replay harness: alignment-only prior testing. Align each candidate mesh to measured surfaces, archive it, then run existing z-buffer/contact/SDF QC. This tests SAM3D/Hunyuan/TRELLIS/Mesh4D candidates before GPU-heavy inference work expands.
+1. Mesh-prior replay harness: align each candidate mesh to measured surfaces, archive it, then run existing z-buffer/contact/SDF QC. Complete priors are judged by visible-surface coverage and image-depth replay; hidden-surface conflict remains in the report because a full mesh can contain unseen geometry that the video cannot refute in one view.
 2. Dynamic surfel graph: optimize low-dimensional per-frame motion and surfel offsets with SciPy or PyTorch least squares on bounded frame windows. The first target is the V6 wild-rice 2534 to 2550 interval, because it has continuous sparse track factors and verified measured geometry.
 
 The solver keeps measurements fixed while testing prior completion only where measured evidence and visibility allow it.
@@ -146,6 +146,7 @@ Negative-control run:
 The TRELLIS prior is rejected before contact checks:
 
 - alignment bidirectional p95 median: 0.842 m;
+- visible-surface coverage p95 median: 0.022 m;
 - alignment threshold: 0.010 m;
 - z-buffer replay median silhouette IoU: 0.152;
 - z-buffer replay median depth absolute error: 0.083 m;
@@ -157,11 +158,12 @@ Artifacts:
 - z-buffer report: `/data2/ego_annotation_outputs/representative_wild_rice/v7_trellis_prior_replay_negative_control_2538_2540/zbuffer_qc/qc_mesh_zbuffer_projection_v3.json`
 - z-buffer video: `/data2/ego_annotation_outputs/representative_wild_rice/v7_trellis_prior_replay_negative_control_2538_2540/zbuffer_qc/mesh_zbuffer_projection_qc.mp4`
 
-The rejected result proves the harness is live: a visually plausible generated mesh becomes object pose only after metric alignment and image-depth replay agree with the observed video.
+The rejected result proves the harness is live: a visually plausible generated mesh becomes object pose only after visible-surface coverage and image-depth replay agree with the observed video.
 
-`scripts/run_v7_generated_prior_replay_qc.py` wraps the same acceptance logic for future SAM 3D Objects, Hunyuan3D, TRELLIS, or Mesh4D outputs. It runs prior alignment, z-buffer replay, and a single accept/reject report. The TRELLIS negative-control wrapper report rejects the prior with all four image-geometry checks failing:
+`scripts/run_v7_generated_prior_replay_qc.py` wraps the same acceptance logic for future SAM 3D Objects, Hunyuan3D, TRELLIS, or Mesh4D outputs. It runs prior alignment, z-buffer replay, and a single accept/reject report. The TRELLIS negative-control wrapper report rejects the prior because visible-surface coverage and every replay check fail:
 
 - alignment bidirectional p95: 0.906 m, threshold 0.010 m;
+- visible-surface coverage p95: 0.023 m, threshold 0.010 m;
 - median silhouette IoU: 0.152, threshold 0.900;
 - median visible-inside fraction: 0.152, threshold 0.900;
 - median z-buffer p95 depth error: 0.124 m, threshold 0.010 m.
@@ -169,6 +171,49 @@ The rejected result proves the harness is live: a visually plausible generated m
 Wrapper artifact:
 
 - report: `/data2/ego_annotation_outputs/representative_wild_rice/v7_generated_prior_replay_trellis_negative_control_2538_2540/qc_v7_generated_prior_replay.json`
+
+Corrected visible-surface replay artifact:
+
+- report: `/data2/ego_annotation_outputs/representative_wild_rice/v7_generated_prior_replay_trellis_negative_control_visible_semantics_2538_2540/qc_v7_generated_prior_replay.json`
+- z-buffer video: `/data2/ego_annotation_outputs/representative_wild_rice/v7_generated_prior_replay_trellis_negative_control_visible_semantics_2538_2540/zbuffer_qc/mesh_zbuffer_projection_qc.mp4`
+
+The corrected report keeps strict full-surface alignment as a diagnostic and uses these delivery checks: visible-surface coverage p95, silhouette IoU, visible-inside fraction, and z-buffer p95 depth. The TRELLIS prior remains rejected:
+
+- visible-surface coverage p95: 0.025 m, threshold 0.010 m;
+- median silhouette IoU: 0.158, threshold 0.900;
+- median visible-inside fraction: 0.159, threshold 0.900;
+- median z-buffer p95 depth error: 0.123 m, threshold 0.010 m.
+
+### Representative Trash Prior Replay
+
+V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
+
+- measured archive: `/data2/ego_annotation_outputs/representative_trash/v3_observed_unidepth_vggtK_solidified_perframe_thick001_865_870/solidified_sheet_object_meshes_world.npz`
+- manifest: `/data2/ego_annotation_outputs/representative_trash/v3_samwise_pink_lid_bundlesdf_dataset_858_880/manifest.json`
+- hand/camera annotations: `/data2/ego_annotation_outputs/representative_trash/v3_mano_side_metric_refit_858_880/annotations_side_metric_refit.json`
+- metric depth: `/data2/ego_annotation_outputs/representative_trash/v3_unidepth_metric_source_858_880/unidepth_metric_depth_v3.npz`
+
+This measured sheet archive is visible-surface evidence only. It is not treated as closed object pose.
+
+TRELLIS frame-880 prior replay:
+
+- report: `/data2/ego_annotation_outputs/representative_trash/v7_generated_prior_replay_trellis_frame880_865_870/qc_v7_generated_prior_replay.json`
+- visual check: `/data2/ego_annotation_outputs/representative_trash/v7_generated_prior_replay_trellis_frame880_865_870/visual_check/contact_sheet.png`
+- visible-surface coverage p95: 0.0248 m;
+- median silhouette IoU: 0.404;
+- median visible-inside fraction: 0.918;
+- median z-buffer p95 depth error: 0.0531 m.
+
+Hunyuan3D-mv prior replay:
+
+- report: `/data2/ego_annotation_outputs/representative_trash/v7_generated_prior_replay_hunyuan_mv_depthgrown_865_870/qc_v7_generated_prior_replay.json`
+- visual check: `/data2/ego_annotation_outputs/representative_trash/v7_generated_prior_replay_hunyuan_mv_depthgrown_865_870/visual_check/contact_sheet.png`
+- visible-surface coverage p95: 0.0549 m;
+- median silhouette IoU: 0.315;
+- median visible-inside fraction: 0.885;
+- median z-buffer p95 depth error: 0.0940 m.
+
+Visual inspection shows both generated priors become smooth cap or bowl-like surfaces over the lid and miss the rim/interior depth structure. V7 therefore rejects both as object-pose annotations.
 
 ### Visibility-Aware Surfel Graph
 

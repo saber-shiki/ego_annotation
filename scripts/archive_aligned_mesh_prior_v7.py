@@ -77,10 +77,9 @@ def transform_row(prior_mesh: trimesh.Trimesh, observed_vertices: np.ndarray, ob
     sim, alignment = choose_alignment(prior_points, observed_points)
     transformed = sim.apply(np.asarray(prior_mesh.vertices, dtype=np.float64))
     selected = alignment.get("selected", {})
-    p95 = [
-        float(selected.get("p95_prior_to_observed_m", np.nan)),
-        float(selected.get("p95_observed_to_prior_m", np.nan)),
-    ]
+    prior_to_observed_p95 = float(selected.get("p95_prior_to_observed_m", np.nan))
+    observed_to_prior_p95 = float(selected.get("p95_observed_to_prior_m", np.nan))
+    p95 = [prior_to_observed_p95, observed_to_prior_p95]
     row = {
         "frame_idx": int(frame_idx),
         "observed_vertices": int(len(observed_vertices)),
@@ -89,6 +88,8 @@ def transform_row(prior_mesh: trimesh.Trimesh, observed_vertices: np.ndarray, ob
         "prior_faces": int(len(prior_mesh.faces)),
         "selected_alignment": selected,
         "candidate_count": int(len(alignment.get("candidates", []))),
+        "visible_surface_coverage_p95_m": observed_to_prior_p95,
+        "hidden_surface_conflict_p95_m": prior_to_observed_p95,
         "bidirectional_p95_m": float(np.nanmax(p95)),
         "sim3": {
             "scale": float(sim.scale),
@@ -119,6 +120,8 @@ def run(args: argparse.Namespace) -> dict:
 
     write_mesh_archive(args.output_mesh_archive, archive_rows)
     p95 = np.asarray([row["bidirectional_p95_m"] for row in rows], dtype=np.float64)
+    visible_p95 = np.asarray([row["visible_surface_coverage_p95_m"] for row in rows], dtype=np.float64)
+    hidden_p95 = np.asarray([row["hidden_surface_conflict_p95_m"] for row in rows], dtype=np.float64)
     scales = np.asarray([row["sim3"]["scale"] for row in rows], dtype=np.float64)
     report = {
         "status": "ok",
@@ -132,10 +135,14 @@ def run(args: argparse.Namespace) -> dict:
         "first_frame": int(frames[0]),
         "last_frame": int(frames[-1]),
         "alignment_bidirectional_p95_m": summarize(p95),
+        "visible_surface_coverage_p95_m": summarize(visible_p95),
+        "hidden_surface_conflict_p95_m": summarize(hidden_p95),
         "alignment_scale": summarize(scales),
         "acceptance_policy": {
-            "alignment_pass": bool(np.all(p95 <= float(args.max_bidirectional_p95_m))),
+            "strict_full_surface_alignment_pass": bool(np.all(p95 <= float(args.max_bidirectional_p95_m))),
+            "visible_surface_coverage_pass": bool(np.all(visible_p95 <= float(args.max_visible_surface_p95_m))),
             "max_bidirectional_p95_m": float(args.max_bidirectional_p95_m),
+            "max_visible_surface_p95_m": float(args.max_visible_surface_p95_m),
             "delivery_requires_downstream_replay": [
                 "z-buffer silhouette and depth",
                 "mesh-surface contact",
@@ -164,6 +171,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=7807)
     parser.add_argument("--max-bidirectional-p95-m", type=float, default=0.010)
+    parser.add_argument("--max-visible-surface-p95-m", type=float, default=0.010)
     return parser.parse_args()
 
 
