@@ -271,6 +271,18 @@ The output has the same status as every generated prior: it is a complete-object
 
 Current evidence: the repository requirements leave `transformers` unpinned, which first installed `transformers 5.10.2`. That version imports `torch.float8_e8m0fnu`, a dtype absent from the A800 venv's `torch 2.5.1+cu121`, so the real failure was a Hugging Face stack incompatibility before model loading. The official TripoSG Hugging Face Space pins `transformers==4.49.0`; V7 pins `transformers==4.49.0`, `trimesh==4.5.3`, `scipy==1.11.4`, and `huggingface_hub<1.0`. After that repair, TripoSG produced four PLY/GLB mesh candidates for mop, trash, and wild-rice. The full-fidelity V7 candidate batch rejected all four by replay before physics or deliverable rendering.
 
+### PartCrafter Candidate Source
+
+PartCrafter is a public structured mesh generator whose Hugging Face model metadata reports `gated=False` for `wgsxm/PartCrafter`; the weights total about 4.0 GB. The model produces part-level meshes from a single image. V7 uses it as another generated complete-mesh prior source, because its compositional latent representation differs from Hunyuan3D, TripoSG, Pixal3D, and InstantMesh.
+
+Remote A800 job package:
+
+- runner: `scripts/remote_run_partcrafter_shape_v7.py`
+- job writer: `scripts/write_v7_partcrafter_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_partcrafter_prior_outputs`
+
+The V7 runner calls the PartCrafter pipeline directly and rejects `None`, tiny, degenerate, or non-finite part meshes. This is stricter than the official script, which substitutes a dummy triangle mesh on decode failure. Each merged part composition is exported as `partcrafter_mesh.ply` and must pass the same generated-prior replay, track, physics, and deliverable checks as every other candidate source.
+
 ### InstantMesh Candidate Source
 
 InstantMesh is another complete-mesh source queued for V7. Its official command-line path accepts image inputs, can skip background removal with `--no_rembg`, and exports OBJ meshes. V7 feeds it the same model-produced RGBA object crops used by TripoSG, so the downstream replay contract remains unchanged.
