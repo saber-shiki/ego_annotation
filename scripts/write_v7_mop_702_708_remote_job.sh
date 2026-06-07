@@ -188,7 +188,7 @@ run_stage hamer_maskbox \
     --local-root "$LOCAL_DATA_ROOT" \
     --remote-root "$DATA_REMOTE_ROOT" \
     --device cuda:0 \
-    --measurement-source rtmlib-keypoints \
+    --measurement-source hamer-full-projection \
     --min-keypoint-score 0.2 \
     --min-valid-keypoints 12 \
     --min-mean-score 0.30 \
