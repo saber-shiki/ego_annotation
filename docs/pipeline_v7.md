@@ -396,14 +396,15 @@ V7 tests a third representative class: a long-handled mop. This stresses long, t
 Measured evidence:
 
 - measured archive: `/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_759_765/observed_mask_depth_meshes_world.npz`
+- stride-1 measured archive: `/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_stride1_759_765/observed_mask_depth_meshes_world.npz`
 - manifest: `/data2/ego_annotation_outputs/representative_mop/v3_mop_depth_manifold_dataset_735_765/manifest.json`
 - hand/camera annotations: `/data2/ego_annotation_outputs/representative_mop/v3_vggt_object_skeleton_735_765/annotations_v3_vggt_object_skeleton.json`
 - metric depth: `/data2/ego_annotation_outputs/representative_mop/v3_unidepth_dense_735_765/unidepth_full_frame_depth_v3.npz`
-- measured replay baseline: `/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_zbuffer_759_765/qc_mesh_zbuffer_projection_v3.json`
+- measured replay baseline: `/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_stride1_zbuffer_759_765/qc_mesh_zbuffer_projection_v3.json`
 
-The earlier mop baseline mixed a per-row depth PNG and fixed intrinsics at export time with full-frame UniDepth and annotation-VGGT intrinsics at replay time, producing a false failure. Re-exporting the same model-produced masks with the same UniDepth and VGGT contract used by replay gives live measured visible-surface evidence: median silhouette IoU is 0.808, median visible-inside fraction is 1.000, and median z-buffer p95 depth error is 0.0016 m. This remains visible-surface evidence, not closed object-pose delivery.
+The earlier mop baseline mixed a per-row depth PNG and fixed intrinsics at export time with full-frame UniDepth and annotation-VGGT intrinsics at replay time, producing a false failure. Re-exporting the same model-produced masks with the same UniDepth and VGGT contract used by replay fixed the metric-depth mismatch, but stride-5 pixel sampling still underfilled the thin mop silhouette: median silhouette IoU was 0.808 while every rendered pixel lay inside the mask and median z-buffer p95 depth error was 0.0016 m. Exporting the same mask-depth evidence at stride 1 removes that sampling artifact: median silhouette IoU is 0.9995, median visible-inside fraction is 1.000, and median z-buffer p95 depth error is 0.0010 m. This remains measured visible-surface evidence, not closed object-pose delivery.
 
-The guarded wrapper now reproduces this diagnosis: running the stale archive through the corrected replay contract returns `invalid_observed_target` with median visible-inside fraction 0.352 and median z-buffer p95 depth error 0.048 m. Running the corrected archive passes observed-target replay and continues to prior rejection.
+The guarded wrapper now separates three mechanisms. Running the stale archive through the corrected replay contract returns `invalid_observed_target` with median visible-inside fraction 0.352 and median z-buffer p95 depth error 0.048 m. Running the stride-5 UniDepth/VGGT archive returns `invalid_observed_target` because it is a downsampled surface that underfills the silhouette. Running the stride-1 archive passes observed-target replay and makes generated-prior rejection interpretable.
 
 TRELLIS frame-750 prior replay:
 

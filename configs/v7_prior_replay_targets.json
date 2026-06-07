@@ -44,7 +44,7 @@
     }
   },
   "mop": {
-    "observed_mesh_archive": "/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_759_765/observed_mask_depth_meshes_world.npz",
+    "observed_mesh_archive": "/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_stride1_759_765/observed_mask_depth_meshes_world.npz",
     "manifest": "/data2/ego_annotation_outputs/representative_mop/v3_mop_depth_manifold_dataset_735_765/manifest.json",
     "annotations": "/data2/ego_annotation_outputs/representative_mop/v3_vggt_object_skeleton_735_765/annotations_v3_vggt_object_skeleton.json",
     "metric_depth_npz": "/data2/ego_annotation_outputs/representative_mop/v3_unidepth_dense_735_765/unidepth_full_frame_depth_v3.npz",
@@ -52,7 +52,7 @@
     "frame_end": 765,
     "intrinsics_source": "annotation-vggt",
     "physics_intrinsics_source": "annotation-vggt",
-    "baseline_zbuffer_json": "/data2/ego_annotation_outputs/representative_mop/v7_generated_prior_replay_trellis_frame750_contract_unidepth_vggt_guarded_759_765/observed_target_zbuffer_qc/qc_mesh_zbuffer_projection_v3.json",
+    "baseline_zbuffer_json": "/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_stride1_zbuffer_759_765/qc_mesh_zbuffer_projection_v3.json",
     "track_qc": {
       "pair_factors_json": "/data2/ego_annotation_outputs/v7_cotracker_factor_outputs/mop_759_765_localized/pair_factors/qc_cotracker_pairwise_rigid_factors_v6.json",
       "frame_start": 759,
