@@ -208,6 +208,17 @@ This command is intentionally downstream of replay and physics acceptance, so a 
 
 `scripts/fuse_v7_sim3_prior_observed_surfaces.py` is the repair path for a generated prior that is close enough to align but still misses visible surface detail. It maps model-produced mask/depth observations back into the prior's canonical coordinates using the same per-frame Sim3 rows from the replay alignment report, fuses those observations with sampled prior surface points, and rearchives the fused mesh through the original Sim3 rows. It fails before meshing when the canonical observed extent or Sim3 scale drift is physically implausible. Existing trash TRELLIS replay hits this failure: the observed depth points spread to a 10.9 m canonical extent, so fusion would only hide the bad prior alignment.
 
+Full generated-candidate batch:
+
+- batch root: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_20260607_180135/replay_batch`
+- matrix: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_20260607_180135/replay_batch/qc_v7_prior_candidate_batch_matrix.md`
+- candidates: 12 complete-mesh priors from Hunyuan3D, Hunyuan3D 2.1, and TripoSG across mop, trash, and wild-rice;
+- outcome: 12 rejected, 0 accepted;
+- observed targets: all replayed successfully before candidate evaluation;
+- physics and deliverables: skipped for every candidate because replay did not accept any generated prior.
+
+The batch falsifies single-image complete priors as V7 closure for the current representative set. Mop priors miss long thin tool geometry, trash priors overlap the lid silhouette but are 56 to 111 mm wrong in depth, and wild-rice priors cover only a small fraction of the active stem. V7 therefore moves to video-conditioned geometry sources before considering final delivery.
+
 ### SAM 3D Objects Candidate Source
 
 SAM 3D Objects is the next complete-mesh source tested by V7. Its official setup requires a Linux NVIDIA GPU with at least 32 GB VRAM, Hugging Face checkpoint access for `facebook/sam-3d-objects`, and the `hf` checkpoint directory containing `pipeline.yaml`. The official single-object API accepts an RGB image plus a mask and the underlying pipeline decodes both `mesh` and `gaussian` representations. V7 exports the decoded triangle mesh directly and keeps the GLB and Gaussian only as secondary visual evidence.
@@ -273,6 +284,20 @@ Remote A800 job package:
 - inference waiter tmux session: `ego_v7_hunyuan21_wait`
 
 The output remains a complete-object mesh hypothesis until the guarded replay, physics QC, and render inspection accept it.
+
+### Mesh4D Candidate Source
+
+Mesh4D is the next V7 mechanism after the single-image prior batch. Its public inference contract accepts an in-the-wild segmented RGBA image sequence with a white background and predicts a complete animated mesh over a six-frame window. This matches the failure mode seen in the generated-prior matrix: independent single-image priors miss thin long geometry, visible surface coverage, or metric depth even when the measured target replay passes.
+
+`scripts/export_mesh4d_rgba_sequence_v7.py` packages model-produced object masks into Mesh4D's `DATA/<group>/<sequence>/<frame>.png` layout without category-specific visual logic. The exporter writes RGBA frames and a review sheet, and preserves source frame indices for replay mapping.
+
+Current exported inputs:
+
+- wild-rice active stem: `/data2/ego_annotation_outputs/representative_wild_rice/v7_mesh4d_rgba_input_2538_2548`
+- trash lid: `/data2/ego_annotation_outputs/representative_trash/v7_mesh4d_rgba_input_865_870`
+- mop: `/data2/ego_annotation_outputs/representative_mop/v7_mesh4d_rgba_input_759_765`
+
+Visual review accepts these three input sequences as model-produced evidence for Mesh4D. Mesh4D outputs will still enter the same guarded replay, physics QC, and render inspection path as every generated prior.
 
 ### SPAR3D Candidate Source
 
