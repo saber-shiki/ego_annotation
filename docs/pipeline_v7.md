@@ -212,10 +212,13 @@ Full generated-candidate batch:
 
 - batch root: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_20260607_180135/replay_batch`
 - matrix: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_20260607_180135/replay_batch/qc_v7_prior_candidate_batch_matrix.md`
+- visual QC sheet: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_20260607_180135/replay_batch/qc_v7_prior_candidate_batch_visual_sheet.png`
 - candidates: 12 complete-mesh priors from Hunyuan3D, Hunyuan3D 2.1, and TripoSG across mop, trash, and wild-rice;
 - outcome: 12 rejected, 0 accepted;
 - observed targets: all replayed successfully before candidate evaluation;
 - physics and deliverables: skipped for every candidate because replay did not accept any generated prior.
+
+`scripts/render_v7_prior_batch_visual_qc.py` renders the observed-target replay and generated-prior replay side by side for every candidate in a batch report. The sheet ties visual inspection to the same metrics used for rejection, so the rejection reason stays anchored to the video evidence.
 
 The batch falsifies single-image complete priors as V7 closure for the current representative set. Mop priors miss long thin tool geometry, trash priors overlap the lid silhouette but are 56 to 111 mm wrong in depth, and wild-rice priors cover only a small fraction of the active stem. V7 therefore moves to video-conditioned geometry sources before considering final delivery.
 
