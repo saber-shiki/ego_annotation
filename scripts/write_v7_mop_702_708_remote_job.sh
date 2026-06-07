@@ -21,6 +21,7 @@ COTRACKER_PY=${COTRACKER_PY:-$REMOTE_ROOT/cotracker_env/bin/python}
 COTRACKER_REPO=${COTRACKER_REPO:-$REMOTE_ROOT/cotracker_work/co-tracker}
 HAMER_ROOT=${HAMER_ROOT:-/dev/shm/ego_annotation_hamer_keyboard/hamer}
 HAMER_CHECKPOINT=${HAMER_CHECKPOINT:-$HAMER_ROOT/_DATA/hamer_ckpts/checkpoints/hamer.ckpt}
+MANO_MODEL_ROOT=${MANO_MODEL_ROOT:-/mnt/user-home/yiwen/data/dex_home/yiwen/arctic/data/body_models/mano}
 FRAME_START=${FRAME_START:-702}
 FRAME_END=${FRAME_END:-708}
 ANCHOR_FRAME=${ANCHOR_FRAME:-705}
@@ -54,7 +55,7 @@ for required_path in \
   fi
 done
 
-mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,hamer,mano_refit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
+mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,hamer,mano_refit,mano_mask_depth_fit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
 
 run_stage() {
   local name="\$1"
@@ -205,9 +206,31 @@ run_stage mano_metric_refit \
     --min-depth-joints 12 \
     --min-rows 7
 
+run_stage mano_articulation_mask_depth_refit \
+  "$HAWOR_PY" scripts/refit_mano_articulation_mask_depth_v3.py \
+    --annotations "$OUT_ROOT/mano_refit/annotations_hamer_maskbox_metric_refit_702_708.json" \
+    --mask-track "$OUT_ROOT/sam2_hand/sam2_track.json" \
+    --metric-depth-npz "$OUT_ROOT/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+    --output-annotations "$OUT_ROOT/mano_mask_depth_fit/annotations_articulation_mask_depth_refit_702_708.json" \
+    --output-qc "$OUT_ROOT/mano_mask_depth_fit/qc_articulation_mask_depth_refit_702_708.json" \
+    --video "$SOURCE_CLIP" \
+    --review-dir "$OUT_ROOT/mano_mask_depth_fit/review" \
+    --mano-wrapper-root "$REPO_DIR/third_party/WiLoR" \
+    --mano-model-root "$MANO_MODEL_ROOT" \
+    --frame-start "$FRAME_START" \
+    --frame-end "$FRAME_END" \
+    --track-id "right_visible_gloved_hand" \
+    --side any \
+    --source-width 1920 \
+    --source-height 1080 \
+    --remote-output-root "$OUT_ROOT/sam2_hand" \
+    --local-output-root "$OUT_ROOT/sam2_hand" \
+    --min-observations 7 \
+    --still-frames "$FRAME_START" "$ANCHOR_FRAME" "$FRAME_END"
+
 run_stage hand_selection \
   "$HAWOR_PY" scripts/select_hand_hypotheses_by_residual_v7.py \
-    --annotations "$OUT_ROOT/mano_refit/annotations_hamer_maskbox_metric_refit_702_708.json" \
+    --annotations "$OUT_ROOT/mano_mask_depth_fit/annotations_articulation_mask_depth_refit_702_708.json" \
     --output-annotations "$OUT_ROOT/hand_selection/annotations_selected_hand_metric_refit_702_708.json" \
     --output-qc "$OUT_ROOT/hand_selection/qc_selected_hand_metric_refit_702_708.json" \
     --frame-start "$FRAME_START" \
