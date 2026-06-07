@@ -309,6 +309,8 @@ Remote A800 job package:
 
 The runner follows Mesh4D's public inference contract: it loads one six-frame RGBA sequence from `DATA/<group>/<sequence>/`, generates an initial Hunyuan3D-2.1 mesh from the first RGBA frame, runs Mesh4D's video deformation model, and writes six generated OBJ meshes with source-frame mapping in `qc_mesh4d_sequence_v7.json`. The Mesh4D result is an animated complete-mesh hypothesis. V7 still must align each generated frame to the measured target, replay image-depth evidence, recompute physics/contact checks, and inspect stakeholder renders before any Mesh4D output can be used as object-pose annotation.
 
+`scripts/archive_mesh4d_sequence_prior_v7.py` converts a Mesh4D six-mesh report into the same per-frame mesh archive schema used by the existing replay tools. It aligns each generated frame to the corresponding measured visible surface and writes both the archive and alignment rows. `scripts/run_v7_generated_prior_replay_qc.py` accepts this prealigned archive through `--prealigned-mesh-archive` plus `--prealigned-report`, so Mesh4D follows the same observed-target replay, z-buffer replay, thresholding, physics QC, and render path as static generated priors.
+
 ### SPAR3D Candidate Source
 
 SPAR3D is an official Stability AI single-image object mesh source that writes GLB meshes and point clouds from image inputs. It is queued as another complete-mesh prior, using the same model-produced RGBA object crops and the same downstream replay contract as TripoSG and InstantMesh.

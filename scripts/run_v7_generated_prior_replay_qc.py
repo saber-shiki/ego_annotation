@@ -81,6 +81,14 @@ def run(args: argparse.Namespace) -> dict:
         "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
         "full_fidelity_zbuffer": bool(args.max_faces == 0),
     }
+    mesh_source = args.mesh_prior if args.mesh_prior is not None else args.prealigned_mesh_archive
+    if mesh_source is None:
+        raise RuntimeError("either --mesh-prior or --prealigned-mesh-archive must be supplied")
+    if (args.prealigned_mesh_archive is None) != (args.prealigned_report is None):
+        raise RuntimeError("--prealigned-mesh-archive and --prealigned-report must be supplied together")
+    if args.mesh_prior is not None and args.prealigned_mesh_archive is not None:
+        raise RuntimeError("--mesh-prior and --prealigned-mesh-archive are mutually exclusive")
+
     if not all(observed_target_pass.values()):
         return write_report(
             args.output_dir / "qc_v7_generated_prior_replay.json",
@@ -89,7 +97,7 @@ def run(args: argparse.Namespace) -> dict:
                 "annotation_ready": False,
                 "method": "run_v7_generated_prior_replay_qc",
                 "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its observed target replay is internally consistent and the prior replay passes",
-                "mesh_prior": str(args.mesh_prior),
+                "mesh_prior": str(mesh_source),
                 "observed_mesh_archive": str(args.observed_mesh_archive),
                 "observed_target_zbuffer_report": str(observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
                 "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
@@ -108,30 +116,38 @@ def run(args: argparse.Namespace) -> dict:
                 "reason": "observed target mesh does not replay against the supplied mask/depth/camera contract, so prior acceptance would be causally uninterpretable",
             },
         )
-    run_command(
-        [
-            sys.executable,
-            str(args.scripts_dir / "archive_aligned_mesh_prior_v7.py"),
-            "--mesh-prior",
-            str(args.mesh_prior),
-            "--observed-mesh-archive",
-            str(args.observed_mesh_archive),
-            "--frame-start",
-            str(args.frame_start),
-            "--frame-end",
-            str(args.frame_end),
-            "--output-mesh-archive",
-            str(aligned_archive),
-            "--output-json",
-            str(align_report),
-            "--samples",
-            str(args.samples),
-            "--max-bidirectional-p95-m",
-            str(args.max_alignment_p95_m),
-            "--max-visible-surface-p95-m",
-            str(args.max_visible_surface_p95_m),
-        ]
-    )
+    if args.prealigned_mesh_archive is None:
+        run_command(
+            [
+                sys.executable,
+                str(args.scripts_dir / "archive_aligned_mesh_prior_v7.py"),
+                "--mesh-prior",
+                str(args.mesh_prior),
+                "--observed-mesh-archive",
+                str(args.observed_mesh_archive),
+                "--frame-start",
+                str(args.frame_start),
+                "--frame-end",
+                str(args.frame_end),
+                "--output-mesh-archive",
+                str(aligned_archive),
+                "--output-json",
+                str(align_report),
+                "--samples",
+                str(args.samples),
+                "--max-bidirectional-p95-m",
+                str(args.max_alignment_p95_m),
+                "--max-visible-surface-p95-m",
+                str(args.max_visible_surface_p95_m),
+            ]
+        )
+    else:
+        if not args.prealigned_mesh_archive.exists():
+            raise RuntimeError(f"prealigned mesh archive does not exist: {args.prealigned_mesh_archive}")
+        if not args.prealigned_report.exists():
+            raise RuntimeError(f"prealigned report does not exist: {args.prealigned_report}")
+        aligned_archive = args.prealigned_mesh_archive
+        align_report = args.prealigned_report
     zbuffer = run_zbuffer(args, aligned_archive, zbuffer_dir)
     align = load_json(align_report)
     alignment_p95 = metric(align, "alignment_bidirectional_p95_m", "p95")
@@ -159,7 +175,7 @@ def run(args: argparse.Namespace) -> dict:
         "annotation_ready": bool(accepted),
         "method": "run_v7_generated_prior_replay_qc",
         "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its visible surface covers measured geometry and image-depth replay passes",
-        "mesh_prior": str(args.mesh_prior),
+        "mesh_prior": str(mesh_source),
         "observed_mesh_archive": str(args.observed_mesh_archive),
         "observed_target_zbuffer_report": str(observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
         "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
@@ -206,7 +222,9 @@ def run(args: argparse.Namespace) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mesh-prior", type=Path, required=True)
+    parser.add_argument("--mesh-prior", type=Path)
+    parser.add_argument("--prealigned-mesh-archive", type=Path)
+    parser.add_argument("--prealigned-report", type=Path)
     parser.add_argument("--observed-mesh-archive", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
