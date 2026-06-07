@@ -55,18 +55,21 @@ lazy_call = (
 )
 missing = [
     name
-    for name, needle in (
-        ("transparent_background import", import_line),
-        ("Remover annotation", annotation),
-        ("background removal call", eager_call),
+    for name, source, patched in (
+        ("transparent_background import", import_line, "from typing import Any\n\n"),
+        ("Remover annotation", annotation, "bg_remover: Any = None,"),
+        ("background removal call", eager_call, lazy_call),
     )
-    if needle not in text
+    if source not in text and patched not in text
 ]
 if missing:
     raise RuntimeError(f"SPAR3D utils patch source mismatch: {missing}")
-text = text.replace(import_line, "from typing import Any\n\n", 1)
-text = text.replace(annotation, "bg_remover: Any = None,", 1)
-text = text.replace(eager_call, lazy_call, 1)
+if import_line in text:
+    text = text.replace(import_line, "from typing import Any\n\n", 1)
+if annotation in text:
+    text = text.replace(annotation, "bg_remover: Any = None,", 1)
+if eager_call in text:
+    text = text.replace(eager_call, lazy_call, 1)
 utils_path.write_text(text, encoding="utf-8")
 PY
 "$ENV_PY" - <<'PY'
