@@ -268,7 +268,7 @@ Remote A800 job package:
 - setup tmux session: `ego_v7_spar3d_setup`
 - inference waiter tmux session: `ego_v7_spar3d_wait`
 
-SPAR3D's official model `stabilityai/stable-point-aware-3d` is gated on Hugging Face. The V7 job keeps that as an explicit setup outcome: if access is missing, the setup or first inference fails visibly instead of substituting a weaker mesh source.
+SPAR3D's official model `stabilityai/stable-point-aware-3d` is gated on Hugging Face. The remote setup now imports SPAR3D successfully after making the background-remover import lazy for pre-masked RGBA inputs. The checkpoint access check still returns `GatedRepoError` 403 for `config.yaml`, so SPAR3D is queued but access-blocked until the token/account is authorized. The V7 job keeps that as an explicit outcome: if access is missing, first inference fails visibly instead of substituting a weaker mesh source.
 
 ### Representative Trash Prior Replay
 
