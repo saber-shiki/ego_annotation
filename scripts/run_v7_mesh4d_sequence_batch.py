@@ -192,6 +192,126 @@ def replay_sequence(args: argparse.Namespace, row: dict, target: dict, archive: 
     return result
 
 
+def run_physics(args: argparse.Namespace, replay_result: dict, target: dict) -> dict | None:
+    if not args.run_physics:
+        return None
+    physics_dir = Path(replay_result["output_dir"]) / "physics_qc"
+    physics_report = physics_dir / "qc_v7_candidate_physics.json"
+    replay_status = replay_result.get("status")
+    if args.dry_run and replay_status is None:
+        return {
+            "status": "dry_run_replay_not_executed",
+            "reason": "dry-run mode prints the replay command without creating the replay report required by physics QC",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
+    if replay_status != "accepted":
+        return {
+            "status": "skipped_replay_not_accepted",
+            "reason": f"physics QC requires accepted replay, got {replay_status}",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
+    replay_controls = replay_result.get("replay_controls", {})
+    if not bool(replay_controls.get("full_fidelity_zbuffer", False)):
+        return {
+            "status": "skipped_diagnostic_replay",
+            "reason": "physics QC requires full-fidelity z-buffer replay; bounded-face replay is diagnostic only",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "run_v7_candidate_physics_qc.py"),
+        "--replay-report",
+        str(replay_result["report"]),
+        "--annotations",
+        str(target["annotations"]),
+        "--metric-depth-npz",
+        str(target["metric_depth_npz"]),
+        "--intrinsics-source",
+        str(target["physics_intrinsics_source"]),
+        "--output-dir",
+        str(physics_dir),
+        "--output-json",
+        str(physics_report),
+        "--selected-contact-sdf-pitch-m",
+        str(args.selected_contact_sdf_pitch_m),
+        "--full-window-sdf-pitch-m",
+        str(args.full_window_sdf_pitch_m),
+        "--max-selected-contact-abs-sdf-p95-m",
+        str(args.max_selected_contact_abs_sdf_p95_m),
+        "--min-selected-contact-near-surface-fraction",
+        str(args.min_selected_contact_near_surface_fraction),
+        "--max-selected-contact-penetration-fraction",
+        str(args.max_selected_contact_penetration_fraction),
+        "--max-full-hand-penetration-fraction",
+        str(args.max_full_hand_penetration_fraction),
+    ]
+    run_command(argv, bool(args.dry_run))
+    if args.dry_run:
+        return {"status": "dry_run", "output_dir": str(physics_dir), "report": str(physics_report)}
+    physics = load_json(physics_report)
+    return {
+        "status": physics.get("status"),
+        "annotation_ready": bool(physics.get("annotation_ready", False)),
+        "output_dir": str(physics_dir),
+        "report": str(physics_report),
+        "metrics": physics.get("metrics"),
+        "pass": physics.get("pass"),
+    }
+
+
+def run_deliverables(args: argparse.Namespace, row: dict, replay_result: dict, physics: dict | None, target: dict) -> dict | None:
+    if not args.render_deliverables:
+        return None
+    render_dir = Path(replay_result["output_dir"]) / "deliverables"
+    render_report = render_dir / "v7_candidate_deliverables_manifest.json"
+    if physics is None:
+        return {
+            "status": "skipped_physics_not_requested",
+            "reason": "delivery rendering requires --run-physics and accepted physics QC",
+            "output_dir": str(render_dir),
+            "report": str(render_report),
+        }
+    if physics.get("status") != "accepted" or not bool(physics.get("annotation_ready", False)):
+        return {
+            "status": "skipped_physics_not_accepted",
+            "reason": f"delivery rendering requires accepted physics QC, got {physics.get('status')}",
+            "output_dir": str(render_dir),
+            "report": str(render_report),
+        }
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "render_v7_candidate_deliverables.py"),
+        "--replay-report",
+        str(replay_result["report"]),
+        "--physics-report",
+        str(physics["report"]),
+        "--manifest",
+        str(target["manifest"]),
+        "--annotations",
+        str(target["annotations"]),
+        "--output-dir",
+        str(render_dir),
+        "--output-fps",
+        str(args.render_fps),
+        "--caption-prefix",
+        f"V7 accepted Mesh4D mesh: {row['name']}",
+    ]
+    run_command(argv, bool(args.dry_run))
+    if args.dry_run:
+        return {"status": "dry_run", "output_dir": str(render_dir), "report": str(render_report)}
+    rendered = load_json(render_report)
+    return {
+        "status": rendered.get("status"),
+        "output_dir": str(render_dir),
+        "report": str(render_report),
+        "videos": rendered.get("videos"),
+        "structural_qc": rendered.get("structural_qc"),
+    }
+
+
 def run(args: argparse.Namespace) -> dict:
     targets_raw = load_json(args.targets_json)
     targets = {key: validate_target(key, value) for key, value in targets_raw.items()}
@@ -205,7 +325,9 @@ def run(args: argparse.Namespace) -> dict:
         out_dir = args.output_root / row["target_id"] / safe_name(row["name"])
         archive = archive_sequence(args, row, target, out_dir)
         replay = replay_sequence(args, row, target, archive, out_dir)
-        results.append({**row, "output_dir": str(out_dir), "archive": archive, "replay": replay})
+        physics = run_physics(args, replay, target)
+        deliverables = run_deliverables(args, row, replay, physics, target)
+        results.append({**row, "output_dir": str(out_dir), "archive": archive, "replay": replay, "physics": physics, "deliverables": deliverables})
     status_counts = {}
     for row in results:
         status = str(row.get("replay", {}).get("status", "dry_run"))
@@ -235,9 +357,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=6000)
     parser.add_argument("--max-faces", type=int, default=0)
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
+    parser.add_argument("--run-physics", action="store_true")
+    parser.add_argument("--render-deliverables", action="store_true")
+    parser.add_argument("--render-fps", type=float, default=6.0)
+    parser.add_argument("--sdf-pitch-m", type=float, default=None)
+    parser.add_argument("--selected-contact-sdf-pitch-m", type=float, default=0.001)
+    parser.add_argument("--full-window-sdf-pitch-m", type=float, default=0.003)
+    parser.add_argument("--max-selected-contact-abs-sdf-p95-m", type=float, default=0.006)
+    parser.add_argument("--min-selected-contact-near-surface-fraction", type=float, default=0.75)
+    parser.add_argument("--max-selected-contact-penetration-fraction", type=float, default=0.10)
+    parser.add_argument("--max-full-hand-penetration-fraction", type=float, default=0.02)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--require-sequences", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sdf_pitch_m is not None:
+        args.selected_contact_sdf_pitch_m = float(args.sdf_pitch_m)
+        args.full_window_sdf_pitch_m = float(args.sdf_pitch_m)
+    return args
 
 
 if __name__ == "__main__":
