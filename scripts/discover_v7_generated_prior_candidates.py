@@ -37,7 +37,9 @@ def target_for_case(case: str, mapping: dict) -> str | None:
 
 def candidate_name(source_name: str, case: str, mesh_path: Path) -> str:
     suffix = mesh_path.suffix.lower().lstrip(".") or "mesh"
-    return f"{source_name}_{case}_{suffix}"
+    path_key = "_".join(mesh_path.with_suffix("").parts[-3:])
+    safe_key = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in path_key)
+    return f"{source_name}_{case}_{safe_key}_{suffix}"
 
 
 def discover_source(source_name: str, raw: object) -> list[dict]:
