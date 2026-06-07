@@ -30,7 +30,7 @@ python3 -m pip install --user virtualenv
 python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install --upgrade pip setuptools wheel
 "$ENV_PY" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-"$ENV_PY" -m pip install -r requirements.txt
+"$ENV_PY" -m pip install --no-build-isolation -r requirements.txt
 "$ENV_PY" - <<'PY'
 import torch, trimesh
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())

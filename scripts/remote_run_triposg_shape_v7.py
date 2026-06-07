@@ -100,7 +100,7 @@ def run(args: argparse.Namespace) -> dict:
             raise RuntimeError(f"{name}: RGBA alpha mask has too few object pixels")
         mesh = run_triposg(
             pipe=pipe,
-            image_input=input_image,
+            image_input=str(image_path),
             rmbg_net=rmbg_net,
             seed=int(seed),
             num_inference_steps=int(args.num_inference_steps),
