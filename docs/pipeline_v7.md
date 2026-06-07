@@ -256,6 +256,20 @@ Remote A800 job package:
 
 The InstantMesh setup is allowed to run while A800 GPUs are occupied because it prepares the repo and venv. The inference waiter uses the same per-GPU lock as Hunyuan and TripoSG, so the first free GPU is reserved by one V7 job without preventing a second V7 job from using a different free GPU.
 
+### SPAR3D Candidate Source
+
+SPAR3D is an official Stability AI single-image object mesh source that writes GLB meshes and point clouds from image inputs. It is queued as another complete-mesh prior, using the same model-produced RGBA object crops and the same downstream replay contract as TripoSG and InstantMesh.
+
+Remote A800 job package:
+
+- runner: `scripts/remote_run_spar3d_shape_v7.py`
+- job writer: `scripts/write_v7_spar3d_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_spar3d_prior_outputs`
+- setup tmux session: `ego_v7_spar3d_setup`
+- inference waiter tmux session: `ego_v7_spar3d_wait`
+
+SPAR3D's official model `stabilityai/stable-point-aware-3d` is gated on Hugging Face. The V7 job keeps that as an explicit setup outcome: if access is missing, the setup or first inference fails visibly instead of substituting a weaker mesh source.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
