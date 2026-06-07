@@ -96,12 +96,12 @@ def run(args: argparse.Namespace) -> dict:
     all_rows: dict[int, list[dict]] = {}
     skipped: list[dict] = []
     if args.left_track is not None:
-        rows, skip = frame_rows(args.left_track, "left_visible_gloved_hand", "left", args)
+        rows, skip = frame_rows(args.left_track, args.left_track_id, "left", args)
         skipped.extend(skip)
         for row in rows:
             all_rows.setdefault(int(row["frame_idx"]), []).append(row)
     if args.right_track is not None:
-        rows, skip = frame_rows(args.right_track, "right_visible_gloved_hand", "right", args)
+        rows, skip = frame_rows(args.right_track, args.right_track_id, "right", args)
         skipped.extend(skip)
         for row in rows:
             all_rows.setdefault(int(row["frame_idx"]), []).append(row)
@@ -122,6 +122,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--left-track", type=Path)
     parser.add_argument("--right-track", type=Path)
+    parser.add_argument("--left-track-id", default="left_visible_gloved_hand")
+    parser.add_argument("--right-track-id", default="right_visible_gloved_hand")
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)

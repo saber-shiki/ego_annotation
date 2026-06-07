@@ -171,6 +171,7 @@ run_stage annotations \
 run_stage hand_maskbox \
   "$HAWOR_PY" scripts/build_hand_mask_box_evidence_v3.py \
     --right-track "$OUT_ROOT/sam2_hand/sam2_track.json" \
+    --right-track-id "$HAND_TRACK_ID" \
     --output-json "$OUT_ROOT/hand_maskbox/hand_mask_box_evidence_702_708.json" \
     --frame-start "$FRAME_START" \
     --frame-end "$FRAME_END" \
