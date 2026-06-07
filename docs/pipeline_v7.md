@@ -215,6 +215,32 @@ Hunyuan3D-mv prior replay:
 
 Visual inspection shows both generated priors become smooth cap or bowl-like surfaces over the lid and miss the rim/interior depth structure. V7 therefore rejects both as object-pose annotations.
 
+### Representative Mop Prior Replay
+
+V7 tests a third representative class: a long-handled mop. This stresses long, thin tool geometry and large perspective changes.
+
+Measured evidence:
+
+- measured archive: `/data2/ego_annotation_outputs/representative_mop/v3_mop_depth_manifold_observed_world_759_765/observed_mask_depth_meshes_world.npz`
+- manifest: `/data2/ego_annotation_outputs/representative_mop/v3_mop_depth_manifold_dataset_735_765/manifest.json`
+- hand/camera annotations: `/data2/ego_annotation_outputs/representative_mop/v3_vggt_object_skeleton_735_765/annotations_v3_vggt_object_skeleton.json`
+- metric depth: `/data2/ego_annotation_outputs/representative_mop/v3_unidepth_dense_735_765/unidepth_full_frame_depth_v3.npz`
+- measured replay baseline: `/data2/ego_annotation_outputs/representative_mop/v7_measured_observed_surface_zbuffer_baseline_759_765/qc_mesh_zbuffer_projection_v3.json`
+
+The measured baseline is weak visible evidence, not object-pose delivery: median silhouette IoU is 0.215 and median z-buffer p95 depth error is 0.048 m. The visual check shows it follows the mop head and handle in view, but coverage is sparse and depth is loose.
+
+TRELLIS frame-750 prior replay:
+
+- report: `/data2/ego_annotation_outputs/representative_mop/v7_generated_prior_replay_trellis_frame750_759_765/qc_v7_generated_prior_replay.json`
+- visual check: `/data2/ego_annotation_outputs/representative_mop/v7_generated_prior_replay_trellis_frame750_759_765/visual_check/contact_sheet.png`
+- visible-surface coverage p95: 0.155 m;
+- hidden-surface conflict p95: 0.867 m;
+- median silhouette IoU: 0.129;
+- median visible-inside fraction: 0.139;
+- median z-buffer p95 depth error: 0.0732 m.
+
+Visual inspection shows the generated prior becomes a long diagonal plank crossing the room instead of the mop head and handle. V7 rejects it as object-pose annotation.
+
 ### Visibility-Aware Surfel Graph
 
 `scripts/fit_visibility_surfel_graph_v7.py` builds temporal surfel nodes from mesh-attached learned point tracks. It consumes the V6 merged pair-factor report and the accepted V6 mesh archive, rejects duplicate observation conflicts explicitly, and solves:
