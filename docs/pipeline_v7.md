@@ -234,6 +234,19 @@ The output has the same status as every generated prior: it is a complete-object
 
 Current setup evidence: the repository requirements leave `transformers` unpinned, which installed `transformers 5.10.2`. That version imports `torch.float8_e8m0fnu`, a dtype absent from the A800 venv's `torch 2.5.1+cu121`, so the real failure was a Hugging Face stack incompatibility before model loading. The official TripoSG Hugging Face Space pins `transformers==4.49.0`; V7 now pins `transformers==4.49.0`, `trimesh==4.5.3`, `scipy==1.11.4`, and `huggingface_hub<1.0` around the repo requirement install. The remote import probe now loads `TripoSGPipeline` and `run_triposg`. `ego_v7_triposg_wait` is live and will launch inference when an A800 GPU falls below the configured memory threshold.
 
+### InstantMesh Candidate Source
+
+InstantMesh is another complete-mesh source queued for V7. Its official command-line path accepts image inputs, can skip background removal with `--no_rembg`, and exports OBJ meshes. V7 feeds it the same model-produced RGBA object crops used by TripoSG, so the downstream replay contract remains unchanged.
+
+Remote A800 job package:
+
+- job writer: `scripts/write_v7_instantmesh_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_instantmesh_prior_outputs`
+- setup tmux session: `ego_v7_instantmesh_setup`
+- inference waiter tmux session: `ego_v7_instantmesh_wait`
+
+The InstantMesh setup is allowed to run while A800 GPUs are occupied because it prepares the repo and venv. The inference waiter uses the same per-GPU lock as Hunyuan and TripoSG, so the first free GPU is reserved by one V7 job without preventing a second V7 job from using a different free GPU.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
