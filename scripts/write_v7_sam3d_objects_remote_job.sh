@@ -76,7 +76,7 @@ fi
   --case "wild_rice_2539|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_image.png|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_mask.png|2539" \\
   --case "wild_rice_2545|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_image.png|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_mask.png|2545" \\
   --case "trash_0880|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_trash_frame880/frame_000880_image.png|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_trash_frame880/frame_000880_mask.png|880" \\
-  --case "mop_0750|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame750/frame_000750_image.png|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame750/frame_000750_mask.png|750" \\
+  --case "mop_0759|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame759/frame_000759_image.png|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame759/frame_000759_mask.png|759" \\
   --output-dir "$OUT_ROOT/generated_meshes"
 EOF
 chmod +x "$OUT_ROOT/run_sam3d_objects_v7.sh"
