@@ -344,6 +344,8 @@ Remote A800 job package:
 
 The Pixal3D model repository is public and about 22.4 GiB. The A800 host has Python 3.10 and a CUDA-capable driver compatible with the repository's public Hugging Face demo wheels. The setup path therefore uses the official demo wheel stack plus `ATTN_BACKEND=sdpa`, writes a setup marker only after Pixal3D, `o_voxel`, torch, torchvision, and trimesh import, then queues inference behind the same per-GPU lock used by the other V7 model sources. Pixal3D output remains a complete-object mesh hypothesis until guarded replay, physics QC, and render inspection accept it.
 
+Current setup repair: Pixal3D's public pipeline constructs a background-removal model during `from_pretrained`, even though its preprocessing uses non-opaque RGBA alpha directly and V7 supplies pre-masked RGBA crops. The public `briaai/RMBG-2.0` dependency is gated and returned 401 on A800. V7 patches the cloned Pixal3D source under `PIXAL3D_REQUIRE_PREMASKED_RGBA=1` so `rembg_model` is disabled and non-alpha inputs fail loudly instead of invoking a separate segmentation path. The setup marker is written only after `Pixal3DImageTo3DPipeline.from_pretrained("TencentARC/Pixal3D")` instantiates with `rembg_model is None`.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:

@@ -29,6 +29,48 @@ cd "$REPO"
 git fetch --depth 1 origin master
 git checkout -q FETCH_HEAD
 git rev-parse HEAD | tee "$OUT_ROOT/pixal3d_git_head.txt"
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("pixal3d/pipelines/pixal3d_image_to_3d.py")
+text = path.read_text(encoding="utf-8")
+needle = "import copy\n"
+if "import os\nimport copy\n" not in text:
+    if needle not in text:
+        raise RuntimeError(f"unexpected Pixal3D import layout in {path}")
+    text = text.replace(needle, "import os\nimport copy\n", 1)
+old = "        pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])\n"
+new = (
+    "        if os.environ.get('PIXAL3D_REQUIRE_PREMASKED_RGBA') == '1':\n"
+    "            pipeline.rembg_model = None\n"
+    "        else:\n"
+    "            pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])\n"
+)
+if new not in text:
+    if old not in text:
+        raise RuntimeError(f"unexpected Pixal3D rembg construction layout in {path}")
+    text = text.replace(old, new, 1)
+old = (
+    "        else:\n"
+    "            input = input.convert('RGB')\n"
+    "            if self.low_vram:\n"
+    "                self.rembg_model.to(self.device)\n"
+)
+new = (
+    "        else:\n"
+    "            if self.rembg_model is None:\n"
+    "                raise RuntimeError('Pixal3D V7 requires pre-masked RGBA input with non-opaque alpha; background removal is disabled')\n"
+    "            input = input.convert('RGB')\n"
+    "            if self.low_vram:\n"
+    "                self.rembg_model.to(self.device)\n"
+)
+if new not in text:
+    if old not in text:
+        raise RuntimeError(f"unexpected Pixal3D preprocessing layout in {path}")
+    text = text.replace(old, new, 1)
+path.write_text(text, encoding="utf-8")
+print("pixal3d_rgba_only_patch_applied")
+PY
 python3 -m pip install --user virtualenv
 rm -rf "$ENV_DIR"
 rm -f "$SETUP_COMPLETE"
@@ -40,12 +82,12 @@ export HF_HOME="$WORK_ROOT/hf_cache"
 export TORCH_HOME="$WORK_ROOT/torch_cache"
 export ATTN_BACKEND=sdpa
 export SPARSE_ATTN_BACKEND=sdpa
+export PIXAL3D_REQUIRE_PREMASKED_RGBA=1
 export HF_HUB_DOWNLOAD_TIMEOUT=120
 export HF_HUB_ETAG_TIMEOUT=120
 "$ENV_PY" - <<'PY'
 from huggingface_hub import snapshot_download
 snapshot_download(repo_id="TencentARC/Pixal3D", repo_type="model", max_workers=1)
-snapshot_download(repo_id="briaai/RMBG-2.0", repo_type="model", max_workers=1)
 snapshot_download(repo_id="camenduru/dinov3-vitl16-pretrain-lvd1689m", repo_type="model", max_workers=1)
 print("pixal3d_model_cache_ready")
 PY
@@ -54,7 +96,8 @@ import torch.hub
 import o_voxel, torch, torchvision, trimesh
 from pixal3d.pipelines import Pixal3DImageTo3DPipeline
 from pixal3d.trainers.flow_matching.mixins.image_conditioned_proj import DinoV3ProjFeatureExtractor
-from pixal3d.pipelines.rembg.BiRefNet import BiRefNet
+from PIL import Image
+import numpy as np
 
 probe = DinoV3ProjFeatureExtractor(
     model_name="camenduru/dinov3-vitl16-pretrain-lvd1689m",
@@ -64,7 +107,14 @@ probe = DinoV3ProjFeatureExtractor(
 )
 probe.eval()
 torch.hub.load("valeoai/NAF", "naf", pretrained=True, device="cpu", trust_repo=True)
-BiRefNet(model_name="briaai/RMBG-2.0")
+rgba = Image.fromarray(np.dstack([np.zeros((8, 8, 3), dtype=np.uint8), np.eye(8, dtype=np.uint8) * 255]), mode="RGBA")
+pipeline = Pixal3DImageTo3DPipeline.__new__(Pixal3DImageTo3DPipeline)
+pipeline.low_vram = True
+pipeline.rembg_model = None
+pipeline.preprocess_image(rgba)
+loaded = Pixal3DImageTo3DPipeline.from_pretrained("TencentARC/Pixal3D")
+if loaded.rembg_model is not None:
+    raise RuntimeError("Pixal3D RGBA-only patch did not disable rembg_model")
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
 print("torchvision", torchvision.__version__, "trimesh", trimesh.__version__)
 print("pixal3d_pipeline", Pixal3DImageTo3DPipeline.__name__)
@@ -82,6 +132,7 @@ export HF_HOME="$WORK_ROOT/hf_cache"
 export TORCH_HOME="$WORK_ROOT/torch_cache"
 export ATTN_BACKEND=sdpa
 export SPARSE_ATTN_BACKEND=sdpa
+export PIXAL3D_REQUIRE_PREMASKED_RGBA=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "$REPO"
 if [[ ! -f "$SETUP_COMPLETE" ]]; then
