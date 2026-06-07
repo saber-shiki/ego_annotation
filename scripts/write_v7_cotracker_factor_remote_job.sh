@@ -24,7 +24,16 @@ if [[ ! -x "$ENV_PY" ]]; then
   "$ENV_PY" -m pip install --upgrade pip setuptools wheel
   "$ENV_PY" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 fi
-"$ENV_PY" -m pip install -q numpy scipy opencv-python-headless pillow trimesh tqdm imageio imageio-ffmpeg
+"$ENV_PY" -m pip install \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple \
+  --trusted-host pypi.tuna.tsinghua.edu.cn \
+  numpy==1.26.4 \
+  scipy==1.11.4 \
+  opencv-python-headless==4.9.0.80 \
+  trimesh==4.5.3 \
+  imageio==2.34.1 \
+  imageio-ffmpeg==0.4.9 \
+  tqdm==4.66.4
 "$ENV_PY" - <<'PY'
 import cv2, numpy, scipy, torch, trimesh
 print("cotracker_env", "torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
