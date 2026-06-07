@@ -232,6 +232,19 @@ Full generated-candidate batch:
 
 The batch falsifies single-image complete priors as V7 closure for the current representative set. Mop priors miss long thin tool geometry, trash priors overlap the lid silhouette but are 56 to 111 mm wrong in depth, and wild-rice priors cover only a small fraction of the active stem. V7 therefore moves to video-conditioned geometry sources before considering final delivery.
 
+PartCrafter generated-candidate batch:
+
+- batch root: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_partcrafter_20260608_004553/replay_batch`
+- matrix: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_partcrafter_20260608_004553/replay_batch/qc_v7_prior_candidate_batch_matrix.md`
+- visual QC sheet: `/data2/ego_annotation_outputs/v7_generated_candidate_batch_partcrafter_20260608_004553/replay_batch/qc_v7_prior_candidate_batch_visual_sheet.png`
+- candidates: four complete-mesh priors from PartCrafter across mop, trash, and wild-rice;
+- outcome: four rejected, zero accepted;
+- observed targets: all replayed successfully before candidate evaluation;
+- best generated visible-surface p95: trash at 17.7 mm, still above the 10 mm delivery threshold;
+- physics and deliverables: skipped for every candidate because replay did not accept any generated prior.
+
+The PartCrafter batch expands the falsification beyond Hunyuan3D, Hunyuan3D 2.1, and TripoSG. It also shows that producing a structured part mesh is not enough: the visible surface still has to land on the measured video geometry within the V7 tolerance before temporal factors or contact physics can be meaningful.
+
 BundleSDF was rechecked as the direct RGB-D object-reconstruction path because its input contract matches RGB frames, depth PNGs, masks, and one `cam_K.txt`. `scripts/export_bundlesdf_dataset_v3.py` now supports the newer frame-indexed depth NPZ schema and can read annotation-VGGT intrinsics, but it refuses export when those intrinsics vary across the sequence. The mop V7 target frames 759 to 765 have annotation-VGGT focal spread of about 29 px in fx and 27 px in fy, so a single-`cam_K.txt` BundleSDF dataset would silently change the accepted replay camera model. BundleSDF remains available for targets with constant intrinsics or a justified constant-K source; it is not a valid V7 completion route for this mop contract.
 
 ### SAM 3D Objects Candidate Source
@@ -286,7 +299,7 @@ Remote A800 job package:
 
 The V7 runner calls the PartCrafter pipeline directly and rejects `None`, tiny, degenerate, or non-finite part meshes. This is stricter than the official script, which substitutes a dummy triangle mesh on decode failure. Each merged part composition is exported as `partcrafter_mesh.ply` and must pass the same generated-prior replay, track, physics, and deliverable checks as every other candidate source.
 
-Current A800 setup evidence: the first PartCrafter setup installed `transformers 5.10.2`, which imports `torch.float8_e8m0fnu` and failed against `torch 2.5.1+cu121` before pipeline construction. V7 now pins `transformers==4.49.0` and `huggingface_hub<1.0` after upstream requirements. The repaired setup log `setup_partcrafter_transformers449.log` ends with `EXIT:0`, writes `setup_complete.marker`, confirms the `wgsxm/PartCrafter` snapshot is cached, and imports `PartCrafterPipeline` with CUDA-visible torch. The active waiter is `ego_v7_partcrafter_wait`; it has produced no meshes yet because A800 GPUs are still occupied by other jobs above the configured memory threshold.
+Current A800 evidence: the first PartCrafter setup installed `transformers 5.10.2`, which imports `torch.float8_e8m0fnu` and failed against `torch 2.5.1+cu121` before pipeline construction. V7 pins `transformers==4.49.0` and `huggingface_hub<1.0` after upstream requirements. The repaired setup log `setup_partcrafter_transformers449.log` ended with `EXIT:0`, wrote `setup_complete.marker`, confirmed the `wgsxm/PartCrafter` snapshot was cached, and imported `PartCrafterPipeline` with CUDA-visible torch. The completed run wrote four merged `partcrafter_mesh.ply` candidates. The full-fidelity V7 batch rejected all four by visible-surface alignment before track QC, physics QC, or deliverable rendering.
 
 ### InstantMesh Candidate Source
 
@@ -301,7 +314,7 @@ Remote A800 job package:
 
 The InstantMesh setup is allowed to run while A800 GPUs are occupied because it prepares the repo and venv. The inference waiter uses the same per-GPU lock as Hunyuan and TripoSG, so the first free GPU is reserved by one V7 job without preventing a second V7 job from using a different free GPU.
 
-Current runtime repair: InstantMesh imports `rembg` at module load even when `--no_rembg` is passed. The previous setup checked diffusion and reconstruction imports but missed `rembg -> onnxruntime`, so inference failed after a free GPU was selected. The setup now installs `onnxruntime==1.16.3` and imports `rembg` during setup and again at runtime before invoking `run.py`. A later setup run failed while caching `sudo-ai/zero123plus-v1.2` because Hugging Face reported a partial `model.safetensors` blob: expected 1,264,217,240 bytes, got 398,785,453 bytes. The setup now deletes the exact InstantMesh and zero123plus cache directories and force-downloads those files before writing `setup_complete.marker`.
+Current runtime repair: InstantMesh imports `rembg` at module load even when `--no_rembg` is passed. The previous setup checked diffusion and reconstruction imports but missed `rembg -> onnxruntime`, so inference failed after a free GPU was selected. The setup now installs `onnxruntime==1.16.3` and imports `rembg` during setup and again at runtime before invoking `run.py`. A later setup run failed while caching `sudo-ai/zero123plus-v1.2` because Hugging Face reported a partial `model.safetensors` blob: expected 1,264,217,240 bytes, got 398,785,453 bytes. The setup deletes the exact InstantMesh and zero123plus cache directories and force-downloads those files before writing `setup_complete.marker`. The next inference failure came from the reconstruction model loading `facebook/dino-vitb16` in offline mode without a verified local PyTorch snapshot. The setup now also force-caches `facebook/dino-vitb16` and import-tests `ViTModel.from_pretrained("facebook/dino-vitb16", add_pooling_layer=False)` before writing the marker. The repaired setup is running in A800 tmux session `ego_v7_instantmesh_setup_dino`; inference remains unlaunched until the setup marker exists.
 
 ### Hunyuan3D 2.1 Candidate Source
 
@@ -361,7 +374,7 @@ SPAR3D's official model `stabilityai/stable-point-aware-3d` is gated on Hugging 
 
 ### Pixal3D Candidate Source
 
-Pixal3D is a public TencentARC single-image mesh source. The current public repository runs image-to-GLB inference through `inference.py`, accepts RGBA alpha masks directly during preprocessing, supports low-VRAM mode, and can use PyTorch SDPA attention when flash-attn is unavailable. V7 feeds Pixal3D the same model-produced RGBA object crops as the other complete-mesh sources and exports the resulting GLB as a triangle PLY for guarded replay.
+Pixal3D is a public TencentARC single-image mesh source. The current public repository runs image-to-GLB inference through `inference.py`, accepts RGBA alpha masks directly during preprocessing, supports low-VRAM mode, and exposes attention backend selection through environment variables. V7 feeds Pixal3D the same model-produced RGBA object crops as the other complete-mesh sources and exports the resulting GLB as a triangle PLY for guarded replay.
 
 Remote A800 job package:
 
@@ -371,9 +384,9 @@ Remote A800 job package:
 - setup tmux session: `ego_v7_pixal3d_setup`
 - inference waiter tmux session: `ego_v7_pixal3d_wait`
 
-The Pixal3D model repository is public and about 22.4 GiB. The A800 host has Python 3.10 and a CUDA-capable driver compatible with the repository's public Hugging Face demo wheels. The setup path therefore uses the official demo wheel stack plus `ATTN_BACKEND=sdpa`, writes a setup marker only after Pixal3D, `o_voxel`, torch, torchvision, and trimesh import, then queues inference behind the same per-GPU lock used by the other V7 model sources. Pixal3D output remains a complete-object mesh hypothesis until guarded replay, physics QC, and render inspection accept it.
+The Pixal3D model repository is public and about 22.4 GiB. The A800 host has Python 3.10 and a CUDA-capable driver compatible with the repository's public Hugging Face demo wheels. The setup path uses the official demo wheel stack plus `ATTN_BACKEND=flash_attn_3` and `SPARSE_ATTN_BACKEND=flash_attn_3`, writes a setup marker only after Pixal3D, `flash_attn_3`, `o_voxel`, torch, torchvision, and trimesh import, then queues inference behind the same per-GPU lock used by the other V7 model sources. Pixal3D output remains a complete-object mesh hypothesis until guarded replay, physics QC, and render inspection accept it.
 
-Current setup repair: Pixal3D's public pipeline constructs a background-removal model during `from_pretrained`, even though its preprocessing uses non-opaque RGBA alpha directly and V7 supplies pre-masked RGBA crops. The public `briaai/RMBG-2.0` dependency is gated and returned 401 on A800. V7 patches the cloned Pixal3D source under `PIXAL3D_REQUIRE_PREMASKED_RGBA=1` so `rembg_model` is disabled and non-alpha inputs fail loudly instead of invoking a separate segmentation path. The setup marker is written only after `Pixal3DImageTo3DPipeline.from_pretrained("TencentARC/Pixal3D")` instantiates with `rembg_model is None`.
+Current setup repair: Pixal3D's public pipeline constructs a background-removal model during `from_pretrained`, even though its preprocessing uses non-opaque RGBA alpha directly and V7 supplies pre-masked RGBA crops. The public `briaai/RMBG-2.0` dependency is gated and returned 401 on A800. V7 patches the cloned Pixal3D source under `PIXAL3D_REQUIRE_PREMASKED_RGBA=1` so `rembg_model` is disabled and non-alpha inputs fail loudly instead of invoking a separate segmentation path. The first inference run selected SDPA in Pixal3D's own dense and sparse config logs but still failed inside the official `natten 0.21.0+torch2.6cu124` wheel with `no kernel image is available for execution on the device`. The A800 venv also imports `flash_attn_3`, and Pixal3D's config accepts that backend. V7 now selects `flash_attn_3` for both dense and sparse attention and verifies the selected sparse backend before writing the setup marker. The repaired setup is running in A800 tmux session `ego_v7_pixal3d_setup_flash3`; inference remains unlaunched until the setup marker exists.
 
 ### CRM Candidate Source
 
