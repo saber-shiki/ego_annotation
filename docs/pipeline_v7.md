@@ -222,8 +222,11 @@ Remote A800 job package:
 - job writer: `scripts/write_v7_triposg_remote_job.sh`
 - remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_triposg_prior_outputs`
 - setup tmux session: `ego_v7_triposg_setup`
+- inference waiter tmux session: `ego_v7_triposg_wait`
 
 The output has the same status as every generated prior: it is a complete-object mesh hypothesis until `run_v7_generated_prior_replay_qc.py` accepts it against measured target replay.
+
+Current setup evidence: the repository requirements leave `transformers` unpinned, which installed `transformers 5.10.2`. That version imports `torch.float8_e8m0fnu`, a dtype absent from the A800 venv's `torch 2.5.1+cu121`, so the real failure was a Hugging Face stack incompatibility before model loading. The official TripoSG Hugging Face Space pins `transformers==4.49.0`; V7 now pins `transformers==4.49.0`, `trimesh==4.5.3`, `scipy==1.11.4`, and `huggingface_hub<1.0` around the repo requirement install. The remote import probe now loads `TripoSGPipeline` and `run_triposg`. `ego_v7_triposg_wait` is live and will launch inference when an A800 GPU falls below the configured memory threshold.
 
 ### Representative Trash Prior Replay
 
