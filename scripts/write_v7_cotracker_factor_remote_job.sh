@@ -164,7 +164,7 @@ for name in ("trash_865_870", "mop_759_765"):
         "sparse_edges_json": str(sparse),
         "pair_factors_json": str(pair),
         "pair_count": payload.get("pair_count"),
-        "ready_pair_count": len(payload.get("rigid_factor_ready_pairs", [])),
+        "ready_pair_count": payload.get("rigid_factor_ready_pairs"),
         "ready_pair_inlier_residual_m": payload.get("ready_pair_inlier_residual_m"),
     }
 report = {"status": "ok", "method": "v7_cotracker_factor_remote_job", "cases": cases}
