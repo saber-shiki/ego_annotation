@@ -333,6 +333,32 @@ def write_matrix(args: argparse.Namespace, results: list[dict]) -> None:
     run_command(argv, False)
 
 
+def write_visual_qc(args: argparse.Namespace) -> None:
+    if args.dry_run or args.skip_visual_qc:
+        return
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "render_v7_prior_batch_visual_qc.py"),
+        "--batch-json",
+        str(args.output_root / "qc_v7_prior_candidate_batch.json"),
+        "--output-png",
+        str(args.output_root / "qc_v7_prior_candidate_batch_visual_sheet.png"),
+        "--output-json",
+        str(args.output_root / "qc_v7_prior_candidate_batch_visual_sheet.json"),
+        "--tile-width",
+        str(args.visual_qc_tile_width),
+        "--tile-height",
+        str(args.visual_qc_tile_height),
+        "--label-height",
+        str(args.visual_qc_label_height),
+        "--label-chars",
+        str(args.visual_qc_label_chars),
+        "--label-scale",
+        str(args.visual_qc_label_scale),
+    ]
+    run_command(argv, False)
+
+
 def run(args: argparse.Namespace) -> dict:
     targets_payload = load_json(args.targets_json)
     targets = {target_id: validate_target(target_id, raw) for target_id, raw in targets_payload.items()}
@@ -371,6 +397,7 @@ def run(args: argparse.Namespace) -> dict:
     report_path = args.output_root / "qc_v7_prior_candidate_batch.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     write_matrix(args, results)
+    write_visual_qc(args)
     print(json.dumps(report, indent=2))
     return report
 
@@ -388,6 +415,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-physics", action="store_true")
     parser.add_argument("--render-deliverables", action="store_true")
     parser.add_argument("--render-fps", type=float, default=6.0)
+    parser.add_argument("--skip-visual-qc", action="store_true")
+    parser.add_argument("--visual-qc-tile-width", type=int, default=640)
+    parser.add_argument("--visual-qc-tile-height", type=int, default=360)
+    parser.add_argument("--visual-qc-label-height", type=int, default=145)
+    parser.add_argument("--visual-qc-label-chars", type=int, default=92)
+    parser.add_argument("--visual-qc-label-scale", type=float, default=0.60)
     parser.add_argument("--sdf-pitch-m", type=float, default=None)
     parser.add_argument("--selected-contact-sdf-pitch-m", type=float, default=0.001)
     parser.add_argument("--full-window-sdf-pitch-m", type=float, default=0.003)

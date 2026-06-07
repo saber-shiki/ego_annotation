@@ -218,7 +218,7 @@ Full generated-candidate batch:
 - observed targets: all replayed successfully before candidate evaluation;
 - physics and deliverables: skipped for every candidate because replay did not accept any generated prior.
 
-`scripts/render_v7_prior_batch_visual_qc.py` renders the observed-target replay and generated-prior replay side by side for every candidate in a batch report. The sheet ties visual inspection to the same metrics used for rejection, so the rejection reason stays anchored to the video evidence.
+`scripts/render_v7_prior_batch_visual_qc.py` renders the observed-target replay and generated-prior replay side by side for every candidate in a batch report. The sheet ties visual inspection to the same metrics used for rejection, so the rejection reason stays anchored to the video evidence. `scripts/run_v7_prior_candidate_batch.py` writes this sheet after real batch runs unless `--skip-visual-qc` is supplied.
 
 The batch falsifies single-image complete priors as V7 closure for the current representative set. Mop priors miss long thin tool geometry, trash priors overlap the lid silhouette but are 56 to 111 mm wrong in depth, and wild-rice priors cover only a small fraction of the active stem. V7 therefore moves to video-conditioned geometry sources before considering final delivery.
 
