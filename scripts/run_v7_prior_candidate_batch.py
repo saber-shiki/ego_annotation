@@ -237,6 +237,60 @@ def run_physics(args: argparse.Namespace, replay_result: dict, target: dict) -> 
     }
 
 
+def run_deliverables(args: argparse.Namespace, replay_result: dict, physics: dict | None, target: dict) -> dict | None:
+    if not args.render_deliverables:
+        return None
+    render_dir = Path(replay_result["output_dir"]) / "deliverables"
+    render_report = render_dir / "v7_candidate_deliverables_manifest.json"
+    if physics is None:
+        return {
+            "status": "skipped_physics_not_requested",
+            "reason": "delivery rendering requires --run-physics and accepted physics QC",
+            "output_dir": str(render_dir),
+            "report": str(render_report),
+        }
+    if physics.get("status") != "accepted" or not bool(physics.get("annotation_ready", False)):
+        return {
+            "status": "skipped_physics_not_accepted",
+            "reason": f"delivery rendering requires accepted physics QC, got {physics.get('status')}",
+            "output_dir": str(render_dir),
+            "report": str(render_report),
+        }
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "render_v7_candidate_deliverables.py"),
+        "--replay-report",
+        str(replay_result["report"]),
+        "--physics-report",
+        str(physics["report"]),
+        "--manifest",
+        str(target["manifest"]),
+        "--annotations",
+        str(target["annotations"]),
+        "--output-dir",
+        str(render_dir),
+        "--output-fps",
+        str(args.render_fps),
+        "--caption-prefix",
+        f"V7 accepted generated mesh: {replay_result['candidate_name']}",
+    ]
+    run_command(argv, bool(args.dry_run))
+    if args.dry_run:
+        return {
+            "status": "dry_run",
+            "output_dir": str(render_dir),
+            "report": str(render_report),
+        }
+    rendered = load_json(render_report)
+    return {
+        "status": rendered.get("status"),
+        "output_dir": str(render_dir),
+        "report": str(render_report),
+        "videos": rendered.get("videos"),
+        "structural_qc": rendered.get("structural_qc"),
+    }
+
+
 def write_matrix(args: argparse.Namespace, results: list[dict]) -> None:
     if args.dry_run:
         return
@@ -284,6 +338,9 @@ def run(args: argparse.Namespace) -> dict:
         physics = run_physics(args, result, target)
         if physics is not None:
             result["physics_qc"] = physics
+        deliverables = run_deliverables(args, result, physics, target)
+        if deliverables is not None:
+            result["deliverables"] = deliverables
         results.append(result)
     report = {
         "status": "dry_run" if args.dry_run else "ok",
@@ -298,6 +355,7 @@ def run(args: argparse.Namespace) -> dict:
             "full_fidelity_zbuffer": bool(args.max_faces == 0),
         },
         "physics_enabled": bool(args.run_physics),
+        "deliverable_rendering_enabled": bool(args.render_deliverables),
         "candidates": results,
     }
     report_path = args.output_root / "qc_v7_prior_candidate_batch.json"
@@ -318,6 +376,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-faces", type=int, default=0)
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
     parser.add_argument("--run-physics", action="store_true")
+    parser.add_argument("--render-deliverables", action="store_true")
+    parser.add_argument("--render-fps", type=float, default=6.0)
     parser.add_argument("--sdf-pitch-m", type=float, default=0.003)
     parser.add_argument("--max-selected-contact-abs-sdf-p95-m", type=float, default=0.006)
     parser.add_argument("--min-selected-contact-near-surface-fraction", type=float, default=0.75)
