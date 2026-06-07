@@ -92,11 +92,13 @@ def candidate_label(candidate: dict, replay: dict, max_chars: int) -> list[str]:
         failed = [key for key, value in pass_rows.items() if value is False]
         not_evaluated = [key for key, value in pass_rows.items() if value is None]
     name = short_name(str(candidate.get("candidate_name", "candidate")), max_chars)
+    kind = str(candidate.get("candidate_kind") or "generated_prior")
     stage = replay.get("rejection_stage") or "replay"
-    first = f"{candidate.get('target_id')} | {candidate.get('status')} | {stage} | {name}"
+    first = f"{candidate.get('target_id')} | {kind} | {candidate.get('status')} | {stage} | {name}"
     observed_failure = replay.get("invalid_observed_target_keys") or []
+    visible_p95 = metrics.get("visible_surface_coverage_p95_m")
     numbers = (
-        f"visible_p95={format_optional_metric(metrics.get('visible_surface_coverage_p95_m'), 3)}m "
+        f"visible_p95={format_optional_metric(visible_p95, 3)}m "
         f"IoU={format_optional_metric(metrics.get('silhouette_iou_median'), 3)} "
         f"depth_p95={format_optional_metric(metrics.get('zbuffer_abs_p95_median_m'), 3)}m"
     )
@@ -111,7 +113,14 @@ def candidate_label(candidate: dict, replay: dict, max_chars: int) -> list[str]:
 
 def render_row(candidate: dict, args: argparse.Namespace) -> tuple[np.ndarray, dict]:
     replay = load_json(require_path(candidate.get("report"), "candidate.report"))
-    observed_path = require_path(replay.get("observed_target_zbuffer_video"), "replay.observed_target_zbuffer_video")
+    kind = str(candidate.get("candidate_kind") or "generated_prior")
+    if kind == "video_mesh":
+        observed_video_key = "zbuffer_video"
+        candidate_header = "video mesh replay"
+    else:
+        observed_video_key = "observed_target_zbuffer_video"
+        candidate_header = "generated prior replay"
+    observed_path = require_path(replay.get(observed_video_key), f"replay.{observed_video_key}")
     observed, observed_shape = read_video_frame(observed_path, args.frame_index)
     prior_path = replay.get("zbuffer_video")
     if isinstance(prior_path, str) and prior_path:
@@ -140,11 +149,12 @@ def render_row(candidate: dict, args: argparse.Namespace) -> tuple[np.ndarray, d
     row = np.full((row_h, row_w, 3), 245, dtype=np.uint8)
     row[: args.tile_height, : args.tile_width] = observed
     row[: args.tile_height, args.tile_width :] = prior
-    cv2.putText(row, "observed target replay", (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 3, cv2.LINE_AA)
-    cv2.putText(row, "observed target replay", (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (20, 20, 20), 1, cv2.LINE_AA)
+    observed_header = "video mesh replay" if kind == "video_mesh" else "observed target replay"
+    cv2.putText(row, observed_header, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 3, cv2.LINE_AA)
+    cv2.putText(row, observed_header, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (20, 20, 20), 1, cv2.LINE_AA)
     cv2.putText(
         row,
-        "generated prior replay",
+        candidate_header,
         (args.tile_width + 14, 28),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.65,

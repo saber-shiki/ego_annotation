@@ -67,7 +67,9 @@ def summarize_entry(name: str, baseline_path: Path, prior_path: Path, note: str)
             "path": str(prior_path),
             "status": prior.get("status"),
             "annotation_ready": bool(prior.get("annotation_ready", False)),
+            "source_kind": "video_mesh" if prior.get("method") == "run_v7_video_mesh_replay_qc" else "generated_prior",
             "mesh_prior": prior.get("mesh_prior"),
+            "video_mesh_archive": prior.get("video_mesh_archive"),
             "frame_start": prior.get("frame_start"),
             "frame_end": prior.get("frame_end"),
             "metrics": metrics,
@@ -82,8 +84,8 @@ def summarize_entry(name: str, baseline_path: Path, prior_path: Path, note: str)
 
 def write_markdown(path: Path, report: dict) -> None:
     rows = [
-        "| Sample | Baseline IoU | Baseline depth p95 m | Prior status | Observed-control failure | Visible p95 m | Prior IoU | Prior depth p95 m | Failed or unevaluated delivery keys | Note |",
-        "| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- | --- |",
+        "| Sample | Source | Baseline IoU | Baseline depth p95 m | Candidate status | Observed-control failure | Visible p95 m | Candidate IoU | Candidate depth p95 m | Failed or unevaluated delivery keys | Note |",
+        "| --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- | --- |",
     ]
     for entry in report["entries"]:
         baseline = entry["baseline"]
@@ -93,8 +95,9 @@ def write_markdown(path: Path, report: dict) -> None:
         delivery_keys = prior.get("delivery_pass_keys") or []
         observed_failure = ", ".join(prior.get("invalid_observed_target_keys") or [])
         rows.append(
-            "| {name} | {biou:.3f} | {bdepth:.4f} | {status} | {observed_failure} | {visible} | {piou} | {pdepth} | {failed} | {note} |".format(
+            "| {name} | {source} | {biou:.3f} | {bdepth:.4f} | {status} | {observed_failure} | {visible} | {piou} | {pdepth} | {failed} | {note} |".format(
                 name=entry["name"],
+                source=prior.get("source_kind") or "unknown",
                 biou=float(baseline["silhouette_iou_median"]),
                 bdepth=float(baseline["zbuffer_abs_p95_median_m"]),
                 status=prior["status"],
@@ -117,7 +120,7 @@ def run(args: argparse.Namespace) -> dict:
     report = {
         "status": "ok",
         "method": "summarize_v7_prior_replay_matrix",
-        "claim_tested": "generated object mesh priors must pass visible-surface coverage and image-depth replay across representative manipulation classes",
+        "claim_tested": "object mesh candidates must pass their source-appropriate replay contract across representative manipulation clips",
         "entries": entries,
     }
     args.output_json.parent.mkdir(parents=True, exist_ok=True)

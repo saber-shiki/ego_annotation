@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -83,6 +84,33 @@ def read_candidate_file(path: Path) -> list[str]:
             raise RuntimeError(f"{path}:{line_number}: {exc}") from exc
         rows.append(stripped)
     return rows
+
+
+def read_observed_cache_file(path: Path) -> dict[str, dict]:
+    if not path.exists():
+        raise RuntimeError(f"observed-cache file does not exist: {path}")
+    caches = {}
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = [part.strip() for part in stripped.split("|")]
+        if len(parts) not in {2, 3}:
+            raise RuntimeError(f"{path}:{line_number}: row must have target_id|report_path or target_id|report_path|video_path")
+        target_id, report_path = parts[:2]
+        if not target_id or not report_path:
+            raise RuntimeError(f"{path}:{line_number}: target_id and report_path must be non-empty")
+        if target_id in caches:
+            raise RuntimeError(f"{path}:{line_number}: duplicate observed-cache target_id: {target_id}")
+        report = require_path(report_path, f"{path}:{line_number}.report")
+        video = parts[2] if len(parts) == 3 else ""
+        caches[target_id] = {
+            "target_id": target_id,
+            "report": str(report),
+            "video": video,
+            "status": "cached",
+        }
+    return caches
 
 
 def candidate_rows(args: argparse.Namespace) -> list[str]:
@@ -230,45 +258,75 @@ def run_replay(
     if not mesh.exists():
         raise RuntimeError(f"candidate mesh does not exist: {mesh}")
     out_dir = candidate_output_dir(args.output_root, target_id, name)
-    argv = [
-        sys.executable,
-        str(args.scripts_dir / "run_v7_generated_prior_replay_qc.py"),
-        "--mesh-prior",
-        str(mesh),
-        "--observed-mesh-archive",
-        str(target["observed_mesh_archive"]),
-        "--manifest",
-        str(target["manifest"]),
-        "--annotations",
-        str(target["annotations"]),
-        "--metric-depth-npz",
-        str(target["metric_depth_npz"]),
-        "--frame-start",
-        str(target["frame_start"]),
-        "--frame-end",
-        str(target["frame_end"]),
-        "--intrinsics-source",
-        str(target["intrinsics_source"]),
-        "--output-dir",
-        str(out_dir),
-        "--samples",
-        str(args.samples),
-    ]
+    if args.candidate_kind == "generated_prior":
+        argv = [
+            sys.executable,
+            str(args.scripts_dir / "run_v7_generated_prior_replay_qc.py"),
+            "--mesh-prior",
+            str(mesh),
+            "--observed-mesh-archive",
+            str(target["observed_mesh_archive"]),
+            "--manifest",
+            str(target["manifest"]),
+            "--annotations",
+            str(target["annotations"]),
+            "--metric-depth-npz",
+            str(target["metric_depth_npz"]),
+            "--frame-start",
+            str(target["frame_start"]),
+            "--frame-end",
+            str(target["frame_end"]),
+            "--intrinsics-source",
+            str(target["intrinsics_source"]),
+            "--output-dir",
+            str(out_dir),
+            "--samples",
+            str(args.samples),
+        ]
+        report_path = out_dir / "qc_v7_generated_prior_replay.json"
+    elif args.candidate_kind == "video_mesh":
+        argv = [
+            sys.executable,
+            str(args.scripts_dir / "run_v7_video_mesh_replay_qc.py"),
+            "--video-mesh-archive",
+            str(mesh),
+            "--manifest",
+            str(target["manifest"]),
+            "--annotations",
+            str(target["annotations"]),
+            "--metric-depth-npz",
+            str(target["metric_depth_npz"]),
+            "--frame-start",
+            str(target["frame_start"]),
+            "--frame-end",
+            str(target["frame_end"]),
+            "--intrinsics-source",
+            str(target["intrinsics_source"]),
+            "--output-dir",
+            str(out_dir),
+        ]
+        report_path = out_dir / "qc_v7_video_mesh_replay.json"
+    else:
+        raise RuntimeError(f"unsupported candidate_kind: {args.candidate_kind}")
     baseline_zbuffer_json = target["baseline_zbuffer_json"]
     if observed_cache is not None:
-        argv.extend(["--observed-target-zbuffer-report", str(observed_cache["report"])])
+        if args.candidate_kind == "generated_prior":
+            argv.extend(["--observed-target-zbuffer-report", str(observed_cache["report"])])
+        else:
+            argv.extend(["--video-mesh-zbuffer-report", str(observed_cache["report"])])
         baseline_zbuffer_json = Path(str(observed_cache["report"]))
     if args.max_faces:
         argv.extend(["--max-faces", str(args.max_faces)])
     if args.vertex_splat_radius_px:
         argv.extend(["--vertex-splat-radius-px", str(args.vertex_splat_radius_px)])
     run_command(argv, bool(args.dry_run))
-    report_path = out_dir / "qc_v7_generated_prior_replay.json"
     result = {
         "target_id": target_id,
         "candidate_name": name,
         "note": note,
-        "mesh_prior": str(mesh),
+        "candidate_kind": args.candidate_kind,
+        "mesh_prior": str(mesh) if args.candidate_kind == "generated_prior" else None,
+        "video_mesh_archive": str(mesh) if args.candidate_kind == "video_mesh" else None,
         "output_dir": str(out_dir),
         "report": str(report_path),
         "baseline_zbuffer_json": str(baseline_zbuffer_json),
@@ -435,6 +493,8 @@ def run_physics(args: argparse.Namespace, replay_result: dict, target: dict, tra
         str(replay_result["report"]),
         "--annotations",
         str(target["annotations"]),
+        "--manifest",
+        str(target["manifest"]),
         "--metric-depth-npz",
         str(target["metric_depth_npz"]),
         "--intrinsics-source",
@@ -456,7 +516,21 @@ def run_physics(args: argparse.Namespace, replay_result: dict, target: dict, tra
         "--max-full-hand-penetration-fraction",
         str(args.max_full_hand_penetration_fraction),
     ]
-    run_command(argv, bool(args.dry_run))
+    try:
+        run_command(argv, bool(args.dry_run))
+    except subprocess.CalledProcessError as exc:
+        if not physics_report.exists():
+            raise
+        physics = load_json(physics_report)
+        return {
+            "status": physics.get("status", "error"),
+            "annotation_ready": bool(physics.get("annotation_ready", False)),
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+            "metrics": physics.get("metrics"),
+            "pass": physics.get("pass"),
+            "error": str(exc),
+        }
     if args.dry_run:
         return {
             "status": "dry_run",
@@ -503,13 +577,13 @@ def run_deliverables(args: argparse.Namespace, replay_result: dict, physics: dic
         "--manifest",
         str(target["manifest"]),
         "--annotations",
-        str(target["annotations"]),
+        str(load_json(Path(physics["report"])).get("annotations") or target["annotations"]),
         "--output-dir",
         str(render_dir),
         "--output-fps",
         str(args.render_fps),
         "--caption-prefix",
-        f"V7 accepted generated mesh: {replay_result['candidate_name']}",
+        "V7 mesh-backed reconstruction",
     ]
     run_command(argv, bool(args.dry_run))
     if args.dry_run:
@@ -526,6 +600,76 @@ def run_deliverables(args: argparse.Namespace, replay_result: dict, physics: dic
         "videos": rendered.get("videos"),
         "structural_qc": rendered.get("structural_qc"),
     }
+
+
+def fmt_metric(value: object, scale: float = 1.0, digits: int = 3) -> str:
+    if value is None:
+        return ""
+    try:
+        number = float(value) * float(scale)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(number):
+        return ""
+    return f"{number:.{digits}f}"
+
+
+def write_batch_summary(args: argparse.Namespace, report: dict) -> None:
+    if args.dry_run:
+        return
+    rows = []
+    delivered = 0
+    physics_rejected = 0
+    for result in report["candidates"]:
+        track = result.get("track_qc") or {}
+        physics = result.get("physics_qc") or {}
+        deliverables = result.get("deliverables") or {}
+        full_delivery = (
+            result.get("status") == "accepted"
+            and track.get("status") in {None, "accepted"}
+            and physics.get("status") == "accepted"
+            and deliverables.get("status") == "ok"
+        )
+        if full_delivery:
+            delivered += 1
+        if physics.get("status") == "rejected":
+            physics_rejected += 1
+        metrics = result.get("metrics") or {}
+        track_metrics = track.get("metrics") or {}
+        physics_metrics = physics.get("metrics") or {}
+        rows.append(
+            [
+                result["target_id"],
+                result["candidate_name"],
+                result.get("candidate_kind", ""),
+                "yes" if full_delivery else "no",
+                str(result.get("status", "")),
+                str(track.get("status", "")),
+                str(physics.get("status", "")),
+                str(deliverables.get("status", "")),
+                fmt_metric(metrics.get("silhouette_iou_median"), digits=3),
+                fmt_metric(metrics.get("zbuffer_abs_p95_median_m"), scale=1000.0, digits=2),
+                fmt_metric(track_metrics.get("pair_residual_p95_m"), scale=1000.0, digits=2),
+                fmt_metric(physics_metrics.get("reliable_temporal_contact_rows"), digits=0),
+                fmt_metric(physics_metrics.get("selected_contact_abs_sdf_p95_m"), scale=1000.0, digits=2),
+                fmt_metric(physics_metrics.get("full_window_hand_penetration_fraction"), scale=100.0, digits=2),
+            ]
+        )
+    lines = [
+        "# V7 Candidate Batch Summary",
+        "",
+        f"Batch root: `{args.output_root}`",
+        "",
+        f"Full-delivery rows: {delivered}/{len(report['candidates'])}",
+        f"Physics-rejected rows: {physics_rejected}/{len(report['candidates'])}",
+        "",
+        "| Target | Candidate | Source | Full delivery | Replay | Track | Physics | Deliverables | Replay IoU | Replay depth p95 mm | Track p95 mm | Contact rows | Contact SDF p95 mm | Full-hand penetration % |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(row) + " |")
+    summary_md = args.output_root / "qc_v7_prior_candidate_batch_summary.md"
+    summary_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_matrix(args: argparse.Namespace, results: list[dict]) -> None:
@@ -606,8 +750,15 @@ def run(args: argparse.Namespace) -> dict:
     args.output_root.mkdir(parents=True, exist_ok=True)
     target_ids = sorted({parse_candidate(raw)[0] for raw in raw_candidates})
     observed_caches = {}
+    for path in args.observed_cache_file:
+        file_caches = read_observed_cache_file(path)
+        for target_id, cache in file_caches.items():
+            if target_id in observed_caches:
+                raise RuntimeError(f"duplicate observed-cache target_id across files: {target_id}")
+            observed_caches[target_id] = cache
     if not args.dry_run:
-        for target_id in target_ids:
+        missing_cache_targets = [target_id for target_id in target_ids if target_id not in observed_caches]
+        for target_id in missing_cache_targets:
             observed_caches[target_id] = run_observed_target_cache(args, target_id, targets[target_id])
     results = []
     for raw in raw_candidates:
@@ -629,6 +780,7 @@ def run(args: argparse.Namespace) -> dict:
         "method": "run_v7_prior_candidate_batch",
         "targets_json": str(args.targets_json),
         "candidate_files": [str(path) for path in args.candidate_file],
+        "candidate_kind": args.candidate_kind,
         "output_root": str(args.output_root),
         "replay_controls": {
             "samples": int(args.samples),
@@ -644,6 +796,7 @@ def run(args: argparse.Namespace) -> dict:
     }
     report_path = args.output_root / "qc_v7_prior_candidate_batch.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_batch_summary(args, report)
     write_matrix(args, results)
     write_visual_qc(args)
     print(json.dumps(report, indent=2))
@@ -655,6 +808,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--targets-json", type=Path, default=REPO_DIR / "configs" / "v7_prior_replay_targets.json")
     parser.add_argument("--candidate", action="append", default=[])
     parser.add_argument("--candidate-file", type=Path, action="append", default=[])
+    parser.add_argument("--candidate-kind", choices=("generated_prior", "video_mesh"), default="generated_prior")
+    parser.add_argument("--observed-cache-file", type=Path, action="append", default=[])
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--scripts-dir", type=Path, default=SCRIPT_DIR)
     parser.add_argument("--samples", type=int, default=12000)

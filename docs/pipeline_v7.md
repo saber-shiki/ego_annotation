@@ -526,3 +526,47 @@ Artifacts:
 The first surfel run exposed a provenance bug: frame 2539 disappeared because gap sparse-edge vertex indices came from the pre-repair factor-graph mesh archive, while V7 consumed the repaired V6 mesh archive. V7 now fails fast when sparse-edge provenance points to a different mesh archive. Reattaching the frame-2539 CoTracker world points to the repaired archive restores continuous surfel support through 2539.
 
 This closes the first V7 temporal-state evidence: the repaired-archive CoTracker factors support a visibility-aware surfel graph over observed patches with sub-millimeter correction magnitude. The graph represents observed temporal patches and serves as a state prior for later mesh completion.
+
+## Current V7 Full-Chain Status
+
+The current V7 delivery batch tests video-derived object mesh archives through the same guarded chain used for generated priors:
+
+```bash
+.venv/bin/python scripts/run_v7_prior_candidate_batch.py \
+  --candidate-kind video_mesh \
+  --candidate-file configs/v7_video_mesh_candidates.tsv \
+  --observed-cache-file configs/v7_observed_zbuffer_cache_full_fidelity.tsv \
+  --output-root /data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238 \
+  --run-physics \
+  --render-deliverables
+```
+
+Artifacts:
+
+- batch report: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/qc_v7_prior_candidate_batch.json`
+- full-chain summary: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/qc_v7_prior_candidate_batch_summary.md`
+- replay matrix: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/qc_v7_prior_candidate_batch_matrix.md`
+- visual replay sheet: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/qc_v7_prior_candidate_batch_visual_sheet.png`
+
+Results:
+
+| Target | Full delivery | Replay IoU | Replay depth p95 | Track p95 | Contact rows | Contact SDF p95 | Full-hand penetration | Outcome |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| wild-rice | yes | 0.934 | 4.47 mm | 8.29 mm | 0 | n/a | 0.67 percent | Delivered without a contact claim; full-window hand/object nonpenetration passes. |
+| trash | yes | 0.949 | 0.53 mm | 7.80 mm | 6 | 1.25 mm | 1.18 percent | Delivered with geometry-backed temporal contact. |
+| mop | no | 0.999 | 1.46 mm | 9.20 mm | n/a | n/a | n/a | Rejected at physics because the selected annotations contain zero MANO hand rows in frames 759 to 765. |
+
+Delivered videos:
+
+- wild-rice overlay: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/wild_rice/video_mesh_v6_repaired_measured_2538_2540/deliverables/overlay/mesh_surface_contact_review.mp4`
+- wild-rice side-by-side: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/wild_rice/video_mesh_v6_repaired_measured_2538_2540/deliverables/world/world_reconstruction_side_by_side.mp4`
+- wild-rice 3D: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/wild_rice/video_mesh_v6_repaired_measured_2538_2540/deliverables/world/world_reconstruction_3d.mp4`
+- trash overlay: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/trash/video_mesh_v3_solidified_unidepth_vggt_865_870/deliverables/overlay/mesh_surface_contact_review.mp4`
+- trash side-by-side: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/trash/video_mesh_v3_solidified_unidepth_vggt_865_870/deliverables/world/world_reconstruction_side_by_side.mp4`
+- trash 3D: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/trash/video_mesh_v3_solidified_unidepth_vggt_865_870/deliverables/world/world_reconstruction_3d.mp4`
+
+The render pass was visually inspected on middle frames. The updated presentation shows the current head camera frustum, head path, MANO hand surfaces, object mesh, contact patch when present, metric scale, and action caption. This is a presentation-layer improvement over the earlier diagnostic-looking world plot; the mesh and physics status still come from the replay, track, and SDF reports above.
+
+Interpretation:
+
+V7 has a full local delivery chain for video-derived measured mesh archives on two representative clips. Single-image complete generated-prior acceptance remains zero across the current representative set. The mop representative remains open because hand evidence is missing in the selected clip window. The next V7 work item is measured MANO recovery for frames 759 to 765, or selection of a mop window whose object mesh and hand stream both satisfy the same replay, track, and physics contract.

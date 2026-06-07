@@ -166,6 +166,7 @@ def run(args: argparse.Namespace) -> dict:
         str(args.max_overlay_mesh_edges),
         "--caption-prefix",
         args.caption_prefix,
+        "--include-camera-in-focus",
     ]
     run_command(overlay_cmd, bool(args.dry_run))
     run_command(world_cmd, bool(args.dry_run))
@@ -198,7 +199,7 @@ def run(args: argparse.Namespace) -> dict:
     report = {
         "status": "dry_run" if args.dry_run else "ok",
         "method": "render_v7_candidate_deliverables",
-        "claim_tested": "an accepted V7 generated object mesh candidate can be rendered as MANO/object overlay, standalone world 3D animation, and side-by-side presentation with semantic captions",
+        "claim_tested": "an accepted V7 object mesh candidate can be rendered as MANO/object overlay, standalone world 3D animation, and side-by-side presentation with semantic captions",
         "replay_report": str(args.replay_report),
         "physics_report": str(args.physics_report),
         "mesh_archive": str(mesh_archive),

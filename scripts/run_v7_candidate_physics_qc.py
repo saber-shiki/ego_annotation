@@ -40,6 +40,54 @@ def summary_number(report: dict, path: tuple[str, ...]) -> float:
     return float(cur)
 
 
+def hand_rows(path: Path, frame_start: int, frame_end: int) -> int:
+    payload = load_json(path)
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        raise RuntimeError(f"annotations lacks frames list: {path}")
+    total = 0
+    for frame in frames:
+        frame_idx = int(frame["frame_idx"])
+        if int(frame_start) <= frame_idx <= int(frame_end):
+            hands = frame.get("hands")
+            if isinstance(hands, list):
+                total += len(hands)
+    return total
+
+
+def write_physics_rejection(
+    args: argparse.Namespace,
+    replay: dict,
+    mesh_archive: Path,
+    contact_annotations: Path,
+    normalization_report: str | None,
+    reason: str,
+    metrics: dict,
+) -> dict:
+    report = {
+        "status": "rejected",
+        "annotation_ready": False,
+        "method": "run_v7_candidate_physics_qc",
+        "claim_tested": "an image-replay-accepted object mesh must have MANO hand evidence before physical consistency can be judged",
+        "replay_report": str(args.replay_report),
+        "mesh_archive": str(mesh_archive),
+        "annotations": str(contact_annotations),
+        "annotation_normalization": normalization_report,
+        "contact_report": None,
+        "selected_contact_sdf_report": None,
+        "full_window_hand_object_sdf_report": None,
+        "frame_start": int(replay["frame_start"]),
+        "frame_end": int(replay["frame_end"]),
+        "contact_claim_active": False,
+        "metrics": metrics,
+        "pass": {"hand_evidence_available": False},
+        "reason": reason,
+    }
+    args.output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def run(args: argparse.Namespace) -> dict:
     replay = load_json(args.replay_report)
     if replay.get("status") != "accepted":
@@ -49,6 +97,47 @@ def run(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"physics QC requires full-fidelity z-buffer replay, got diagnostic replay controls: {args.replay_report}")
     mesh_archive = require_path(replay.get("aligned_mesh_archive"), "replay.aligned_mesh_archive")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    contact_annotations = args.annotations
+    normalization_report = None
+    if args.manifest is not None:
+        normalized_annotations = args.output_dir / "annotations_with_manifest_object_masks.json"
+        run_command(
+            [
+                sys.executable,
+                str(args.scripts_dir / "normalize_v7_annotations_from_manifest_masks.py"),
+                "--annotations",
+                str(args.annotations),
+                "--manifest",
+                str(args.manifest),
+                "--frame-start",
+                str(replay["frame_start"]),
+                "--frame-end",
+                str(replay["frame_end"]),
+                "--output-json",
+                str(normalized_annotations),
+            ]
+        )
+        contact_annotations = normalized_annotations
+        normalization_report = str(normalized_annotations)
+    total_hand_rows = hand_rows(contact_annotations, int(replay["frame_start"]), int(replay["frame_end"]))
+    if total_hand_rows == 0:
+        return write_physics_rejection(
+            args,
+            replay,
+            mesh_archive,
+            contact_annotations,
+            normalization_report,
+            "physics QC requires MANO hand rows; this target has none in the requested frame window",
+            {
+                "hand_rows": 0,
+                "reliable_temporal_contact_rows": None,
+                "geometry_backed_temporal_contact_rows": None,
+                "selected_contact_abs_sdf_p95_m": None,
+                "selected_contact_near_surface_fraction": None,
+                "selected_contact_penetration_fraction": None,
+                "full_window_hand_penetration_fraction": None,
+            },
+        )
     contact_json = args.output_dir / "mesh_surface_contact_qc.json"
     selected_sdf_json = args.output_dir / "selected_contact_sdf_qc.json"
     full_window_sdf_json = args.output_dir / "full_window_hand_object_sdf_qc.json"
@@ -57,7 +146,7 @@ def run(args: argparse.Namespace) -> dict:
             sys.executable,
             str(args.scripts_dir / "diagnose_mesh_surface_contact_v3.py"),
             "--annotations",
-            str(args.annotations),
+            str(contact_annotations),
             "--metric-depth-npz",
             str(args.metric_depth_npz),
             "--object-mesh-npz",
@@ -114,12 +203,32 @@ def run(args: argparse.Namespace) -> dict:
     contact = load_json(contact_json)
     reliable_rows = int(contact.get("reliable_temporal_contact_rows", 0))
     geometry_rows = int(contact.get("geometry_backed_temporal_contact_rows", 0))
+    measured_rows = int(contact.get("measured_rows", 0))
+    if measured_rows == 0:
+        return write_physics_rejection(
+            args,
+            replay,
+            mesh_archive,
+            contact_annotations,
+            normalization_report,
+            "physics QC requires measured MANO hand rows; this target has hand geometry but no measured hand evidence in the requested frame window",
+            {
+                "hand_rows": total_hand_rows,
+                "measured_rows": 0,
+                "reliable_temporal_contact_rows": reliable_rows,
+                "geometry_backed_temporal_contact_rows": geometry_rows,
+                "selected_contact_abs_sdf_p95_m": None,
+                "selected_contact_near_surface_fraction": None,
+                "selected_contact_penetration_fraction": None,
+                "full_window_hand_penetration_fraction": None,
+            },
+        )
     run_command(
         [
             sys.executable,
             str(args.scripts_dir / "diagnose_full_window_hand_object_sdf_v7.py"),
             "--annotations",
-            str(args.annotations),
+            str(contact_annotations),
             "--mesh-archive",
             str(mesh_archive),
             "--frame-start",
@@ -147,7 +256,7 @@ def run(args: argparse.Namespace) -> dict:
                 sys.executable,
                 str(args.scripts_dir / "diagnose_volume_sdf_contact_v3.py"),
                 "--annotations",
-                str(args.annotations),
+                str(contact_annotations),
                 "--mesh-archive",
                 str(mesh_archive),
                 "--contact-report",
@@ -182,9 +291,11 @@ def run(args: argparse.Namespace) -> dict:
         "status": "accepted" if accepted else "rejected",
         "annotation_ready": bool(accepted),
         "method": "run_v7_candidate_physics_qc",
-        "claim_tested": "an image-replay-accepted generated object mesh satisfies full-window hand/object nonpenetration, and satisfies selected-contact SDF only when contact evidence is present",
+        "claim_tested": "an image-replay-accepted object mesh satisfies full-window hand/object nonpenetration, and satisfies selected-contact SDF only when contact evidence is present",
         "replay_report": str(args.replay_report),
         "mesh_archive": str(mesh_archive),
+        "annotations": str(contact_annotations),
+        "annotation_normalization": normalization_report,
         "contact_report": str(contact_json),
         "selected_contact_sdf_report": str(selected_sdf_json) if has_contact_evidence else None,
         "full_window_hand_object_sdf_report": str(full_window_sdf_json),
@@ -241,6 +352,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--replay-report", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--metric-depth-npz", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
