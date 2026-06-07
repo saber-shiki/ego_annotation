@@ -725,7 +725,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caption-height", type=int, default=58)
     parser.add_argument("--focus-radius-scale", type=float, default=1.28)
     parser.add_argument("--frustum-scale-m", type=float, default=0.045)
-    parser.add_argument("--world-frustum-visual-scale", type=float, default=2.2)
+    parser.add_argument("--world-frustum-visual-scale", type=float, default=1.35)
     parser.add_argument("--include-camera-in-focus", action="store_true")
     parser.add_argument("--show-camera-inset", action="store_true")
     parser.add_argument("--max-mesh-faces", type=int, default=1700)

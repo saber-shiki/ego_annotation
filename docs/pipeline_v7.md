@@ -574,7 +574,7 @@ Visual inspection artifacts:
 - trash side-by-side still: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/visual_inspection_stills_after_render/trash/side_mid.jpg`
 - trash 3D still: `/data2/ego_annotation_outputs/v7_video_mesh_candidate_batch_20260608_0238/visual_inspection_stills_after_render/trash/world_mid.jpg`
 
-The rendered head frustum is a metric camera-pose cue, not a physical object. It can overlap the object in image space when the camera lies above the manipulated surface in the selected 3D view. The latest renderer keeps the cue thin enough that the hand-object geometry remains readable.
+The rendered head frustum is a metric camera-pose cue, not a physical object. It can overlap the object in image space when the camera lies above the manipulated surface in the selected 3D view. The latest renderer uses a smaller world-frustum visual scale so the hand-object geometry remains the primary visual signal while the head pose stays visible.
 
 Interpretation:
 
