@@ -6,6 +6,7 @@ WORK_ROOT=${WORK_ROOT:-$REMOTE_ROOT/partcrafter_work}
 REPO=${REPO:-$WORK_ROOT/PartCrafter}
 OUT_ROOT=${OUT_ROOT:-$REMOTE_ROOT/v7_partcrafter_prior_outputs}
 RUNNER=${RUNNER:-$REMOTE_ROOT/scripts/remote_run_partcrafter_shape_v7.py}
+CASE_PLAN=${CASE_PLAN:-$OUT_ROOT/partcrafter_case_plan_v7.args}
 ENV_DIR=${ENV_DIR:-$WORK_ROOT/partcrafter_env}
 ENV_PY=${ENV_PY:-$ENV_DIR/bin/python}
 SETUP_COMPLETE=${SETUP_COMPLETE:-$OUT_ROOT/setup_complete.marker}
@@ -72,12 +73,21 @@ if [[ ! -f "$SETUP_COMPLETE" ]]; then
   echo "PartCrafter setup did not produce $SETUP_COMPLETE" >&2
   exit 1
 fi
+if [[ ! -s "$CASE_PLAN" ]]; then
+  echo "PartCrafter case plan is missing: $CASE_PLAN" >&2
+  exit 1
+fi
+case_args=()
+while IFS= read -r raw_case; do
+  [[ -n "\$raw_case" ]] && case_args+=(--case "\$raw_case")
+done < "$CASE_PLAN"
+if [[ "\${#case_args[@]}" -eq 0 ]]; then
+  echo "PartCrafter case plan contains no cases: $CASE_PLAN" >&2
+  exit 1
+fi
 "$ENV_PY" "$RUNNER" \\
   --repo "$REPO" \\
-  --case "wild_rice_2539|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_crop_rgba.png|2539|2" \\
-  --case "wild_rice_2545|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_crop_rgba.png|2545|2" \\
-  --case "trash_0880|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_trash_frame880/frame_000880_crop_rgba.png|880|2" \\
-  --case "mop_0759|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame759/frame_000759_crop_rgba.png|759|2" \\
+  "\${case_args[@]}" \\
   --output-dir "$OUT_ROOT/generated_meshes" \\
   --num-inference-steps 50 \\
   --guidance-scale 7.0
