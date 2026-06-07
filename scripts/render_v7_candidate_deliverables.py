@@ -243,7 +243,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--world-panel-height", type=int, default=720)
     parser.add_argument("--caption-height", type=int, default=58)
     parser.add_argument("--max-overlay-mesh-edges", type=int, default=260)
-    parser.add_argument("--caption-prefix", default="V7 accepted generated mesh candidate")
+    parser.add_argument("--caption-prefix", default="V7 mesh-backed reconstruction")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 

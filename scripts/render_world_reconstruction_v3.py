@@ -275,15 +275,20 @@ def draw_camera_path(
     center: np.ndarray,
     basis: np.ndarray,
     radius: float,
+    *,
+    full_color: tuple[int, int, int] = (122, 122, 116),
+    current_color: tuple[int, int, int] = (25, 25, 25),
+    full_thickness: int = 2,
+    current_thickness: int = 4,
 ) -> None:
     frames = sorted(annotations)
     path = np.asarray([annotations[f]["camera"]["position_world_m"] for f in frames], dtype=float)
     xy, _ = project(path, center, basis, radius, (image.shape[1], image.shape[0]))
-    cv2.polylines(image, [xy.astype(np.int32)], False, (122, 122, 116), 2, cv2.LINE_AA)
+    cv2.polylines(image, [xy.astype(np.int32)], False, full_color, full_thickness, cv2.LINE_AA)
     cur_i = frames.index(int(frame_idx))
     if cur_i > 0:
-        cv2.polylines(image, [xy[: cur_i + 1].astype(np.int32)], False, (25, 25, 25), 4, cv2.LINE_AA)
-    cv2.circle(image, tuple(xy[cur_i].astype(int)), 5, (25, 25, 25), -1, cv2.LINE_AA)
+        cv2.polylines(image, [xy[: cur_i + 1].astype(np.int32)], False, current_color, current_thickness, cv2.LINE_AA)
+    cv2.circle(image, tuple(xy[cur_i].astype(int)), max(5, current_thickness + 2), current_color, -1, cv2.LINE_AA)
 
 
 def draw_camera(
@@ -294,17 +299,41 @@ def draw_camera(
     radius: float,
     scale: float,
     label: bool = True,
+    color: tuple[int, int, int] = (36, 36, 36),
+    thickness: int = 2,
 ) -> None:
     frustum = camera_frustum_points(t_world_camera, scale)
     origin = frustum[0]
     corners = frustum[1:]
     for corner in corners:
-        draw_polyline_3d(image, np.vstack([origin, corner]), center, basis, radius, (36, 36, 36), 2)
-    draw_polyline_3d(image, np.vstack([corners, corners[0]]), center, basis, radius, (36, 36, 36), 2, closed=False)
+        draw_polyline_3d(image, np.vstack([origin, corner]), center, basis, radius, color, thickness)
+    draw_polyline_3d(image, np.vstack([corners, corners[0]]), center, basis, radius, color, thickness, closed=False)
     xy, _ = project(frustum[:1], center, basis, radius, (image.shape[1], image.shape[0]))
-    cv2.circle(image, tuple(xy[0].astype(int)), 6, (36, 36, 36), -1, cv2.LINE_AA)
+    cv2.circle(image, tuple(xy[0].astype(int)), max(6, thickness + 4), color, -1, cv2.LINE_AA)
     if label:
-        cv2.putText(image, "head camera", tuple((xy[0] + np.asarray([8, -8])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (25, 25, 25), 1, cv2.LINE_AA)
+        cv2.putText(image, "head camera", tuple((xy[0] + np.asarray([9, -10])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.56, color, 2, cv2.LINE_AA)
+
+
+def draw_head_legend(image: np.ndarray) -> None:
+    x0 = image.shape[1] - 244
+    y0 = image.shape[0] - 104
+    cv2.rectangle(image, (x0, y0), (image.shape[1] - 24, image.shape[0] - 24), (244, 246, 241), -1, cv2.LINE_AA)
+    cv2.line(image, (x0 + 18, y0 + 32), (x0 + 72, y0 + 32), (25, 25, 25), 4, cv2.LINE_AA)
+    cv2.circle(image, (x0 + 72, y0 + 32), 7, (25, 25, 25), -1, cv2.LINE_AA)
+    cv2.putText(image, "head trajectory", (x0 + 86, y0 + 38), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (25, 25, 25), 1, cv2.LINE_AA)
+    glyph = np.asarray(
+        [
+            [x0 + 26, y0 + 58],
+            [x0 + 54, y0 + 49],
+            [x0 + 58, y0 + 76],
+            [x0 + 26, y0 + 58],
+            [x0 + 54, y0 + 76],
+        ],
+        dtype=np.int32,
+    )
+    cv2.polylines(image, [glyph], False, (36, 36, 36), 3, cv2.LINE_AA)
+    cv2.circle(image, (x0 + 26, y0 + 58), 5, (36, 36, 36), -1, cv2.LINE_AA)
+    cv2.putText(image, "head camera", (x0 + 86, y0 + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (25, 25, 25), 1, cv2.LINE_AA)
 
 
 def draw_egocentric_view_ray(
@@ -461,13 +490,17 @@ def draw_world_panel(
     vertices, faces = meshes[int(frame_idx)]
     draw_mesh_world(image, vertices, faces, center, basis, radius, int(args.max_mesh_faces))
     camera_pose = np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float)
-    draw_camera(image, camera_pose, center, basis, radius, float(args.frustum_scale_m), label=True)
+    draw_camera_path(image, annotations, int(frame_idx), center, basis, radius, full_thickness=2, current_thickness=4)
+    world_frustum_scale = float(args.frustum_scale_m) * float(args.world_frustum_visual_scale)
+    draw_camera(image, camera_pose, center, basis, radius, world_frustum_scale, label=False, thickness=2)
     draw_egocentric_view_ray(image, annotations, int(frame_idx), center, basis, radius)
     row = contact_by_frame.get(int(frame_idx))
     for i, hand in enumerate(ann.get("hands", [])):
         ids = row.get("best_patch_vertex_ids", []) if row is not None and int(row["hand_idx"]) == i else None
         draw_hand_world(image, hand, center, basis, radius, ids, mano_faces, int(args.max_mano_faces))
-    draw_camera_inset(image, annotations, int(frame_idx), args)
+    if bool(args.show_camera_inset):
+        draw_camera_inset(image, annotations, int(frame_idx), args)
+    draw_head_legend(image)
     draw_metric_axes(image, center, basis, radius)
     draw_scale_bar(image, radius, args)
     draw_state_badge(image, state_by_frame.get(int(frame_idx)), int(frame_idx))
@@ -500,7 +533,12 @@ def oblique_frame_view(points: list[np.ndarray], padding: float) -> tuple[np.nda
     return center, basis, max(radius * padding, 1e-4)
 
 
-def current_focus_view(ann: dict, mesh: tuple[np.ndarray, np.ndarray], args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, float]:
+def current_focus_view(
+    annotations: dict[int, dict],
+    ann: dict,
+    mesh: tuple[np.ndarray, np.ndarray],
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray, float]:
     points = []
     vertices = mesh[0]
     points.append(vertices[np.linspace(0, len(vertices) - 1, min(len(vertices), 900), dtype=int)])
@@ -514,8 +552,9 @@ def current_focus_view(ann: dict, mesh: tuple[np.ndarray, np.ndarray], args: arg
     center, basis, radius = oblique_frame_view(points, float(args.focus_radius_scale))
     if bool(getattr(args, "include_camera_in_focus", False)):
         camera_pose = np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float)
-        frustum = camera_frustum_points(camera_pose, float(args.frustum_scale_m))
-        center, basis, radius = oblique_frame_view(points + [frustum], float(args.focus_radius_scale))
+        frustum = camera_frustum_points(camera_pose, float(args.frustum_scale_m) * float(args.world_frustum_visual_scale))
+        path = np.asarray([annotations[f]["camera"]["position_world_m"] for f in sorted(annotations)], dtype=float)
+        center, basis, radius = oblique_frame_view(points + [path, frustum], float(args.focus_radius_scale))
     return center, basis, radius
 
 
@@ -617,7 +656,7 @@ def run(args: argparse.Namespace) -> dict:
             row = contact_by_frame.get(int(frame_idx))
             state_row = state_by_frame.get(int(frame_idx))
             overlay = render_overlay_frame(frame_source, ann, meshes[int(frame_idx)], row, state_row, int(frame_idx), args)
-            center, basis, radius = current_focus_view(ann, meshes[int(frame_idx)], args)
+            center, basis, radius = current_focus_view(annotations, ann, meshes[int(frame_idx)], args)
             world = draw_world_panel(annotations, meshes, contact_by_frame, state_by_frame, mano_faces, int(frame_idx), center, basis, radius, args)
             world_writer.write(world)
             caption = str(ann.get("caption", "")).strip()
@@ -651,8 +690,8 @@ def run(args: argparse.Namespace) -> dict:
         "fps": fps,
         "contact_frames": sorted(contact_by_frame),
         "state_frames": sorted(state_by_frame) if state_by_frame else [],
-        "world_view": "world-coordinate manipulation reconstruction with head-camera frustum, view ray, MANO surfaces, object mesh, and trajectory inset",
-        "interpretation": "The right panel renders the reconstructed object mesh, MANO surfaces, current head-camera frustum, view ray, and trajectory in metric world coordinates.",
+        "world_view": "world-coordinate manipulation reconstruction with head-camera trajectory, current head-camera frustum, view ray, MANO surfaces, and object mesh",
+        "interpretation": "The right panel renders the reconstructed object mesh, MANO surfaces, current head-camera frustum, view ray, and head trajectory in metric world coordinates.",
         "annotations": str(args.annotations),
         "object_mesh_npz": str(args.object_mesh_npz),
         "contact_report": str(args.contact_report),
@@ -686,7 +725,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caption-height", type=int, default=58)
     parser.add_argument("--focus-radius-scale", type=float, default=1.28)
     parser.add_argument("--frustum-scale-m", type=float, default=0.045)
+    parser.add_argument("--world-frustum-visual-scale", type=float, default=2.2)
     parser.add_argument("--include-camera-in-focus", action="store_true")
+    parser.add_argument("--show-camera-inset", action="store_true")
     parser.add_argument("--max-mesh-faces", type=int, default=1700)
     parser.add_argument("--max-mano-faces", type=int, default=650)
     parser.add_argument("--max-overlay-mesh-edges", type=int, default=260)
