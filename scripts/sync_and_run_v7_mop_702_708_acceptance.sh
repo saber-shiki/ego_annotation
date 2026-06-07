@@ -124,16 +124,25 @@ import sys
 
 root = Path(sys.argv[1])
 paths = {
-    "replay": root / "replay" / "qc_v7_video_mesh_replay.json",
-    "track_surface": root / "track_surface_qc" / "qc_v7_candidate_track_surface.json",
-    "physics": root / "physics" / "qc_v7_candidate_physics.json",
-    "deliverables": root / "deliverables" / "v7_candidate_deliverables_manifest.json",
+    "replay": (root / "replay" / "qc_v7_video_mesh_replay.json", "accepted"),
+    "track_surface": (root / "track_surface_qc" / "qc_v7_candidate_track_surface.json", "accepted"),
+    "physics": (root / "physics" / "qc_v7_candidate_physics.json", "accepted"),
+    "deliverables": (root / "deliverables" / "v7_candidate_deliverables_manifest.json", "ok"),
 }
 report = {"status": "ok", "method": "sync_and_run_v7_mop_702_708_acceptance", "reports": {}}
-for name, path in paths.items():
+failed = {}
+for name, (path, expected_status) in paths.items():
     payload = json.loads(path.read_text(encoding="utf-8"))
-    report["reports"][name] = {"path": str(path), "status": payload.get("status")}
+    status = payload.get("status")
+    report["reports"][name] = {"path": str(path), "status": status, "expected_status": expected_status}
+    if status != expected_status:
+        failed[name] = {"path": str(path), "status": status, "expected_status": expected_status}
+if failed:
+    report["status"] = "rejected"
+    report["failed_reports"] = failed
 out = root / "qc_v7_mop_702_708_acceptance_summary.json"
 out.write_text(json.dumps(report, indent=2), encoding="utf-8")
 print(json.dumps(report, indent=2))
+if failed:
+    raise SystemExit(1)
 PY
