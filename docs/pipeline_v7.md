@@ -277,9 +277,12 @@ PartCrafter is a public structured mesh generator whose Hugging Face model metad
 
 Remote A800 job package:
 
+- case-plan builder: `scripts/build_partcrafter_case_plan_v7.py`
 - runner: `scripts/remote_run_partcrafter_shape_v7.py`
 - job writer: `scripts/write_v7_partcrafter_remote_job.sh`
 - remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_partcrafter_prior_outputs`
+
+`scripts/build_partcrafter_case_plan_v7.py` asks a VLM to choose the PartCrafter `num_parts` conditioning variable from the masked RGBA crops, then writes a case-argument file consumed by the A800 job. The current OCC Responses plan selected these counts from visible crop geometry: wild-rice frame 2539 has 4 parts, wild-rice frame 2545 has 5 parts, trash frame 880 has 3 parts, and mop frame 759 has 3 parts. These counts are model-produced data, not object-family branch logic.
 
 The V7 runner calls the PartCrafter pipeline directly and rejects `None`, tiny, degenerate, or non-finite part meshes. This is stricter than the official script, which substitutes a dummy triangle mesh on decode failure. Each merged part composition is exported as `partcrafter_mesh.ply` and must pass the same generated-prior replay, track, physics, and deliverable checks as every other candidate source.
 
