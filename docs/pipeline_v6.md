@@ -392,7 +392,7 @@ The five-anchor graph archive was replayed over frames 2534 to 2550 with the sam
 - median z-buffer depth p95: 3.96 mm
 - p95 of z-buffer depth p95 values: 12.09 mm
 
-Visual spot checks show frame 2540 has a clean long active-stem surface, while frame 2539 remains a narrow ambiguous measured surface with IoU 0.536. The graph preserves the measured evidence. Ambiguous segmentation repair belongs to the perception and mesh-reconstruction layer, while V6 closes the factor layer: sparse temporal factors are continuous and metric-compatible, and delivered object geometry still comes from the measured mesh stream and its visual/depth QC.
+Visual spot checks of the graph replay show frame 2540 has a clean long active-stem surface, while the pre-repair frame 2539 measured surface remains narrow and ambiguous with IoU 0.536. The graph preserves the measured evidence. Frame-2539 repair therefore belongs to the perception and mesh-reconstruction layer, while the factor layer contributes sparse temporal priors that are continuous and metric-compatible.
 
 ## Frame-2539 Perception Repair Attempt
 
@@ -413,6 +413,99 @@ Results:
 - Among box-conditioned raw candidates, candidate 1 had strong image-depth replay after forced geometry testing, with silhouette IoU 0.883 and z-buffer p95 1.71 mm, but it hit the semantic negative point and visually merged the adjacent strip. Candidates 0 and 2 avoided negatives but were partial fragments with IoU about 0.32.
 - No-box SAM2 selected a mask that satisfied the sparse point contract, but geometry falsified it: observed extent 0.277 x 0.402 x 0.243 m and sheet PCA ratio 0.326. The point contract missed a horizontal unrelated stem leak.
 
-Mechanism:
+The first VLM verifier iteration rejected the no-box mask with 0.92 confidence. Its correction points were initially appended to the stale positives, and that produced no accepted SAM2 candidate. The failure mechanism was contradictory positive evidence: the verifier had changed the target support, while the old positives still forced SAM2 toward merged same-category surfaces.
 
-Frame 2539 is not fixed by denser CoTracker factors or by a simple VLM-point/SAM2 rerun. SAM2 can satisfy sparse point evidence while merging physically distinct, same-category stems when the image boundary is weak. The next repair layer must use stronger semantic mask verification or temporal/multimodal segmentation evidence that rejects same-category merged surfaces before metric mesh reconstruction.
+The accepted iteration used the verifier positives as replacement positives and retained the semantic negatives. Box-conditioned SAM2 then selected candidate 0 for frame 2539. The candidate passed the point contract and the independent image-depth replay:
+
+- replacement prompt artifact: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_mask_verifier_iter1_replacement_points/visual_track_point_prompts_vlm.json`
+- accepted SAM2 image run: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_repair_sam2_replace_iter1_box/qc_sam2_image_points.json`
+- selected one-frame dataset: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_repair_sam2_replace_iter1_box_selected_dataset/manifest.json`
+- selected one-frame solidified mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_repair_sam2_replace_iter1_box_selected_solidified_thick001/solidified_sheet_object_meshes_world.npz`
+- selected one-frame z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_repair_sam2_replace_iter1_box_selected_zbuffer_qc/qc_mesh_zbuffer_projection_v3.json`
+
+Frame-2539 accepted metrics:
+
+- silhouette IoU: 0.948
+- visible silhouette inside mask: 0.960
+- z-buffer absolute median: 0.24 mm
+- z-buffer absolute p95: 4.47 mm
+- mask area: 23,712 px
+- mesh silhouette area: 24,355 px
+
+## V6 Repaired 31-Frame Archive
+
+The accepted frame-2539 mesh was assembled into the completed wild-rice track while preserving every other frame from the completed V4 measured stream.
+
+Artifacts:
+
+- assembled manifest: `/data2/ego_annotation_outputs/representative_wild_rice/v6_completed_plus_verified_repair2539_2520_2550/manifest.json`
+- assembled mesh archive: `/data2/ego_annotation_outputs/representative_wild_rice/v6_completed_plus_verified_repair2539_2520_2550/solidified_sheet_object_meshes_world.npz`
+- all-frame z-buffer QC: `/data2/ego_annotation_outputs/representative_wild_rice/v6_completed_plus_verified_repair2539_zbuffer_qc_2520_2550/qc_mesh_zbuffer_projection_v3.json`
+- exact-threshold contact QC: `/data2/ego_annotation_outputs/representative_wild_rice/v6_completed_plus_verified_repair2539_2520_2550/mesh_surface_contact_recomputed_det015_exact_v4thresholds.json`
+- contact-frame mesh identity proof: `/data2/ego_annotation_outputs/representative_wild_rice/v6_completed_plus_verified_repair2539_2520_2550/qc_contact_frame_mesh_identity_v6.json`
+- selected-contact SDF report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_completed_plus_verified_repair2539_2520_2550/volume_sdf_contact_recomputed_det015_exact_v4thresholds_pitch001_qc_composed.json`
+- full-hand SDF report: `/data2/ego_annotation_outputs/representative_wild_rice/v6_completed_plus_verified_repair2539_2520_2550/full_hand_sdf_penetration_recomputed_det015_exact_v4thresholds_pitch001_qc_composed.json`
+- V6 state package: `/data2/ego_annotation_outputs/representative_wild_rice/v6_repaired_track_state_2520_2550/v6_repaired_track_state.json`
+
+State counts:
+
+- measured mesh geometry: 29 frames
+- verified VLM/SAM2 repaired geometry: 1 frame, frame 2539
+- completed tracked geometry: 1 frame, frame 2550
+
+All-frame image-depth replay over frames 2520 to 2550:
+
+- frames: 31
+- median silhouette IoU: 0.967
+- p05 silhouette IoU: 0.919
+- median visible silhouette inside mask: 0.979
+- median z-buffer absolute median: 0.49 mm
+- median z-buffer absolute p95: 4.47 mm
+- p95 of z-buffer absolute p95 values: 12.16 mm
+- max z-buffer absolute p95: 13.16 mm
+
+The physical-contact report was recomputed under the same thresholds as the accepted V4 evidence path: detector score at least 0.15, median reprojection at most 18 px, absolute hand-depth bias at most 20 mm, contact patch distance p95 at most 25 mm, signed gap p95 at most 25 mm, and temporal patch gap at most 6 frames. The repaired archive preserves the V4 contact evidence:
+
+- reliable temporal contact rows: 15
+- reliable geometry contact rows: 17
+- geometry-backed observation rows: 22
+- reliable-row median contact patch p95: 0.70 mm
+- reliable-row p95 contact patch p95: 4.66 mm
+- reliable-row median signed-gap p95 absolute: 0.58 mm
+- reliable-row p95 signed-gap p95 absolute: 3.91 mm
+- reliable-row penetration fraction: 0 percent
+
+Frame 2539 has no reliable contact row. The SDF reports therefore use a machine-checked composition proof over unchanged contact-frame meshes. `qc_contact_frame_mesh_identity_v6.json` proves that the assembled archive changes only frame 2539 and changes zero reliable-contact frames. The selected-contact and full-hand SDF values are consequently unchanged from the source V4 measured SDF reports:
+
+- selected-contact penetration fraction: 0 percent
+- selected-contact absolute SDF median: 0.96 mm
+- selected-contact absolute SDF p95: 3.45 mm
+- full-hand penetration fraction: 0 percent
+- full-hand signed SDF median: 14.30 mm
+- full-hand signed SDF p05: 1.48 mm
+
+## V6 Deliverables
+
+V6 renders the repaired 31-frame archive through the stakeholder-grade world renderer introduced in V5. The right panel is a shaded metric manipulation view with the object mesh, MANO surfaces, contact points, metric scale, and a separate head-camera trajectory inset.
+
+Artifacts:
+
+- overlay video: `/data2/ego_annotation_outputs/representative_wild_rice/v6_mesh_surface_contact_review_repaired2539_2520_2550/mesh_surface_contact_review.mp4`
+- side-by-side annotated video plus 3D reconstruction: `/data2/ego_annotation_outputs/representative_wild_rice/v6_world_reconstruction_repaired2539_2520_2550/world_reconstruction_side_by_side.mp4`
+- standalone 3D world animation: `/data2/ego_annotation_outputs/representative_wild_rice/v6_world_reconstruction_repaired2539_2520_2550/world_reconstruction_3d.mp4`
+- render manifest: `/data2/ego_annotation_outputs/representative_wild_rice/v6_world_reconstruction_repaired2539_2520_2550/render_manifest.json`
+- visual QC contact sheet for frames 2538 to 2540: `/data2/ego_annotation_outputs/representative_wild_rice/v6_world_reconstruction_repaired2539_2520_2550/qc_contact_sheet_2538_2540.jpg`
+
+Structural QC:
+
+- overlay video: 1280 x 720, 31 frames, 6 fps
+- side-by-side video: 1920 x 778, 31 frames, 6 fps
+- standalone 3D video: 960 x 720, 31 frames, 6 fps
+
+Visual inspection of the contact sheet accepts the repaired frame 2539 presentation. The overlay shows a narrow active-stem mask after removing the previous broad merged two-stem surface. The 3D panel shows the object mesh, MANO hand surfaces, contact points, metric scale, and head-camera inset as readable geometry.
+
+## V6 Status
+
+V6 closes two concrete gaps in the previous state. First, the sparse CoTracker factor chain now spans frames 2534 to 2550 and is compatible with the measured geometry under the conservative graph objective. Second, frame 2539 has a verified VLM/SAM2 perception repair and a reconstructed object mesh that passes one-frame z-buffer replay and full-archive replay.
+
+The delivered V6 object geometry remains a per-frame reconstructed mesh stream. The current evidence still rejects direct full-mesh transport and rigid canonical-map replacement, because those hypotheses fail image replay. The sparse factors are temporal priors for future missing-frame and local-deformation solves; the delivered mesh surfaces continue to come from model-produced masks, UniDepth, camera pose, and 1 mm mesh reconstruction.
