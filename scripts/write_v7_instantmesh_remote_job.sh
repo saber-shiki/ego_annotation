@@ -46,6 +46,31 @@ xformers==0.0.22.post7
 CONSTRAINTS
 "$ENV_PY" -m pip install --no-build-isolation -c "$OUT_ROOT/instantmesh_constraints.txt" -r requirements.txt
 "$ENV_PY" -m pip install onnxruntime==1.16.3
+export HF_HUB_ETAG_TIMEOUT=120
+export HF_HUB_DOWNLOAD_TIMEOUT=120
+"$ENV_PY" - <<'PY'
+from huggingface_hub import hf_hub_download, snapshot_download
+
+snapshot_download(
+    repo_id="sudo-ai/zero123plus-v1.2",
+    repo_type="model",
+    max_workers=1,
+    resume_download=True,
+)
+hf_hub_download(
+    repo_id="TencentARC/InstantMesh",
+    filename="diffusion_pytorch_model.bin",
+    repo_type="model",
+    resume_download=True,
+)
+hf_hub_download(
+    repo_id="TencentARC/InstantMesh",
+    filename="instant_mesh_large.ckpt",
+    repo_type="model",
+    resume_download=True,
+)
+print("instantmesh_model_cache_ready")
+PY
 "$ENV_PY" - <<'PY'
 import diffusers, rembg, torch, torchvision, trimesh
 from diffusers import DiffusionPipeline
@@ -61,6 +86,9 @@ cat > "$OUT_ROOT/run_instantmesh_v7.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export CUDA_VISIBLE_DEVICES="\${GPU_ID:-$GPU_ID}"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export DIFFUSERS_OFFLINE=1
 cd "$REPO"
 if [[ ! -x "$ENV_PY" ]]; then
   flock "$OUT_ROOT/setup.lock" bash "$OUT_ROOT/setup_instantmesh_v7.sh"
