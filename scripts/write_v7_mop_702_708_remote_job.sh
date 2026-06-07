@@ -41,6 +41,10 @@ export PYTHONUNBUFFERED=1
 cd "$REPO_DIR"
 
 for required_path in \
+  "$HAWOR_PY" \
+  "$UNIDEPTH_PY" \
+  "$VGGT_PY" \
+  "$COTRACKER_PY" \
   "$SOURCE_CLIP" \
   "$FULL_SCENE_MANIFEST" \
   "$OBJECT_PROMPTS" \
@@ -48,6 +52,8 @@ for required_path in \
   "$SAM2_CHECKPOINT" \
   "$HAMER_ROOT" \
   "$HAMER_CHECKPOINT" \
+  "$REPO_DIR/third_party/WiLoR/wilor/models/mano_wrapper.py" \
+  "$MANO_MODEL_ROOT/MANO_RIGHT.pkl" \
   "$COTRACKER_REPO"; do
   if [[ ! -e "\$required_path" ]]; then
     echo "required input is missing: \$required_path" >&2
