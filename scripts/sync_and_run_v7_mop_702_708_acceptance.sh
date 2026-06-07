@@ -96,7 +96,7 @@ DELIVERABLES_DIR="$RUN_ROOT/deliverables"
   --annotations "$ANNOTATIONS" \
   --mano-model "$MANO_RIGHT" \
   --output-dir "$DELIVERABLES_DIR" \
-  --caption-prefix "V7 accepted video-derived mop mesh candidate"
+  --caption-prefix "V7 mesh-backed reconstruction"
 
 "$PY" - "$RUN_ROOT" <<'PY'
 import json
