@@ -269,7 +269,7 @@ Remote A800 job package:
 
 The InstantMesh setup is allowed to run while A800 GPUs are occupied because it prepares the repo and venv. The inference waiter uses the same per-GPU lock as Hunyuan and TripoSG, so the first free GPU is reserved by one V7 job without preventing a second V7 job from using a different free GPU.
 
-Current runtime repair: InstantMesh imports `rembg` at module load even when `--no_rembg` is passed. The previous setup checked diffusion and reconstruction imports but missed `rembg -> onnxruntime`, so inference failed after a free GPU was selected. The setup now installs `onnxruntime==1.16.3` and imports `rembg` during setup and again at runtime before invoking `run.py`.
+Current runtime repair: InstantMesh imports `rembg` at module load even when `--no_rembg` is passed. The previous setup checked diffusion and reconstruction imports but missed `rembg -> onnxruntime`, so inference failed after a free GPU was selected. The setup now installs `onnxruntime==1.16.3` and imports `rembg` during setup and again at runtime before invoking `run.py`. A later setup run failed while caching `sudo-ai/zero123plus-v1.2` because Hugging Face reported a partial `model.safetensors` blob: expected 1,264,217,240 bytes, got 398,785,453 bytes. The setup now deletes the exact InstantMesh and zero123plus cache directories and force-downloads those files before writing `setup_complete.marker`.
 
 ### Hunyuan3D 2.1 Candidate Source
 
@@ -311,7 +311,7 @@ The runner follows Mesh4D's public inference contract: it loads one six-frame RG
 
 `scripts/archive_mesh4d_sequence_prior_v7.py` converts a Mesh4D six-mesh report into the same per-frame mesh archive schema used by the existing replay tools. It aligns each generated frame to the corresponding measured visible surface and writes both the archive and alignment rows. `scripts/run_v7_generated_prior_replay_qc.py` accepts this prealigned archive through `--prealigned-mesh-archive` plus `--prealigned-report`, so Mesh4D follows the same observed-target replay, z-buffer replay, thresholding, physics QC, and render path as static generated priors.
 
-`scripts/run_v7_mesh4d_sequence_batch.py` discovers completed Mesh4D reports under a local sync root, maps each report to the same representative target contracts through `configs/v7_mesh4d_case_targets.json`, archives the six generated meshes, and runs guarded replay. The script intentionally stops at replay; physics QC and delivery rendering remain downstream of an accepted full-fidelity replay report.
+`scripts/run_v7_mesh4d_sequence_batch.py` discovers completed Mesh4D reports under a local sync root, maps each report to the same representative target contracts through `configs/v7_mesh4d_case_targets.json`, archives the six generated meshes, and runs guarded replay. With `--run-physics --render-deliverables`, the same batch continues into the V7 physics wrapper and delivery renderer only after an accepted full-fidelity replay report.
 
 ### SPAR3D Candidate Source
 
