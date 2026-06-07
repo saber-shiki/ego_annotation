@@ -299,6 +299,16 @@ Current exported inputs:
 
 Visual review accepts these three input sequences as model-produced evidence for Mesh4D. Mesh4D outputs will still enter the same guarded replay, physics QC, and render inspection path as every generated prior.
 
+Remote A800 job package:
+
+- runner: `scripts/remote_run_mesh4d_sequence_v7.py`
+- job writer: `scripts/write_v7_mesh4d_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_mesh4d_outputs`
+- setup tmux session: `ego_v7_mesh4d_setup`
+- inference waiter tmux session: `ego_v7_mesh4d_wait`
+
+The runner follows Mesh4D's public inference contract: it loads one six-frame RGBA sequence from `DATA/<group>/<sequence>/`, generates an initial Hunyuan3D-2.1 mesh from the first RGBA frame, runs Mesh4D's video deformation model, and writes six generated OBJ meshes with source-frame mapping in `qc_mesh4d_sequence_v7.json`. The Mesh4D result is an animated complete-mesh hypothesis. V7 still must align each generated frame to the measured target, replay image-depth evidence, recompute physics/contact checks, and inspect stakeholder renders before any Mesh4D output can be used as object-pose annotation.
+
 ### SPAR3D Candidate Source
 
 SPAR3D is an official Stability AI single-image object mesh source that writes GLB meshes and point clouds from image inputs. It is queued as another complete-mesh prior, using the same model-produced RGBA object crops and the same downstream replay contract as TripoSG and InstantMesh.
