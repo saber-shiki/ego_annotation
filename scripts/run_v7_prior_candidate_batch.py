@@ -216,8 +216,10 @@ def run_physics(args: argparse.Namespace, replay_result: dict, target: dict) -> 
         str(physics_dir),
         "--output-json",
         str(physics_report),
-        "--sdf-pitch-m",
-        str(args.sdf_pitch_m),
+        "--selected-contact-sdf-pitch-m",
+        str(args.selected_contact_sdf_pitch_m),
+        "--full-window-sdf-pitch-m",
+        str(args.full_window_sdf_pitch_m),
         "--max-selected-contact-abs-sdf-p95-m",
         str(args.max_selected_contact_abs_sdf_p95_m),
         "--min-selected-contact-near-surface-fraction",
@@ -386,13 +388,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-physics", action="store_true")
     parser.add_argument("--render-deliverables", action="store_true")
     parser.add_argument("--render-fps", type=float, default=6.0)
-    parser.add_argument("--sdf-pitch-m", type=float, default=0.003)
+    parser.add_argument("--sdf-pitch-m", type=float, default=None)
+    parser.add_argument("--selected-contact-sdf-pitch-m", type=float, default=0.001)
+    parser.add_argument("--full-window-sdf-pitch-m", type=float, default=0.003)
     parser.add_argument("--max-selected-contact-abs-sdf-p95-m", type=float, default=0.006)
     parser.add_argument("--min-selected-contact-near-surface-fraction", type=float, default=0.75)
     parser.add_argument("--max-selected-contact-penetration-fraction", type=float, default=0.10)
     parser.add_argument("--max-full-hand-penetration-fraction", type=float, default=0.02)
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sdf_pitch_m is not None:
+        args.selected_contact_sdf_pitch_m = float(args.sdf_pitch_m)
+        args.full_window_sdf_pitch_m = float(args.sdf_pitch_m)
+    return args
 
 
 if __name__ == "__main__":

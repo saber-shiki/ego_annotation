@@ -49,6 +49,36 @@ def voxel_sdf(mesh: trimesh.Trimesh, pitch: float, pad_voxels: int) -> tuple[np.
     return sdf.astype(np.float32), transform, occ_pad
 
 
+def crop_mesh_around_points(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    points: np.ndarray,
+    margin_m: float,
+    min_faces: int,
+) -> trimesh.Trimesh:
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+        raise RuntimeError("local SDF crop requires one or more 3D points")
+    lo = np.min(points, axis=0) - float(margin_m)
+    hi = np.max(points, axis=0) + float(margin_m)
+    face_vertices = vertices[np.asarray(faces, dtype=np.int64)]
+    keep = np.any(np.all((face_vertices >= lo[None, None, :]) & (face_vertices <= hi[None, None, :]), axis=2), axis=1)
+    kept_faces = np.flatnonzero(keep)
+    if int(len(kept_faces)) < int(min_faces):
+        center = np.mean(points, axis=0)
+        face_centers = np.mean(face_vertices, axis=1)
+        distance = np.linalg.norm(face_centers - center[None, :], axis=1)
+        take = np.argsort(distance)[: int(min_faces)]
+        keep[take] = True
+        kept_faces = np.flatnonzero(keep)
+    if len(kept_faces) == 0:
+        raise RuntimeError("local SDF crop found no object faces near contact patch")
+    mesh = trimesh.Trimesh(vertices=vertices.astype(np.float32), faces=np.asarray(faces, dtype=np.int32), process=False)
+    cropped = mesh.submesh([kept_faces], append=True, repair=False)
+    if len(cropped.vertices) == 0 or len(cropped.faces) == 0:
+        raise RuntimeError("local SDF crop produced an empty mesh")
+    return cropped
+
+
 def sample_sdf(points: np.ndarray, sdf: np.ndarray, transform: np.ndarray) -> np.ndarray:
     pitch = float(transform[0, 0])
     if pitch <= 0.0:
@@ -96,7 +126,7 @@ def run(args: argparse.Namespace) -> dict:
     rows = []
     all_sdf = []
     all_abs_sdf = []
-    sdf_by_frame: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    frame_meshes: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for row in contact_rows(args.contact_report):
         frame_idx = int(row["frame_idx"])
         if frame_idx < int(args.frame_start) or frame_idx > int(args.frame_end):
@@ -110,13 +140,23 @@ def run(args: argparse.Namespace) -> dict:
         if int(patch_ids.max()) >= len(vertices_camera):
             raise RuntimeError(f"frame {frame_idx} hand {hand_idx} patch id exceeds MANO vertex count")
         patch_camera = vertices_camera[patch_ids]
-        if frame_idx not in sdf_by_frame:
+        if frame_idx not in frame_meshes:
             mesh_world, mesh_faces = meshes[frame_idx]
             T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
             mesh_camera = camera_points(mesh_world, T_world_camera)
+            frame_meshes[frame_idx] = (mesh_camera.astype(np.float32), np.asarray(mesh_faces, dtype=np.int32))
+        mesh_camera, mesh_faces = frame_meshes[frame_idx]
+        if args.local_sdf_crop_margin_m > 0.0:
+            mesh = crop_mesh_around_points(
+                mesh_camera,
+                mesh_faces,
+                patch_camera,
+                float(args.local_sdf_crop_margin_m),
+                int(args.local_sdf_min_faces),
+            )
+        else:
             mesh = trimesh.Trimesh(vertices=mesh_camera.astype(np.float32), faces=np.asarray(mesh_faces, dtype=np.int32), process=True)
-            sdf_by_frame[frame_idx] = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
-        sdf, transform, occ = sdf_by_frame[frame_idx]
+        sdf, transform, occ = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
         values = sample_sdf(patch_camera, sdf, transform)
         finite = values[np.isfinite(values)]
         if len(finite) == 0:
@@ -137,6 +177,9 @@ def run(args: argparse.Namespace) -> dict:
                 "near_surface_fraction": float(np.mean(np.abs(finite) <= float(args.near_surface_m))),
                 "voxel_occupied": int(np.count_nonzero(occ)),
                 "voxel_shape": [int(v) for v in occ.shape],
+                "local_sdf_crop_margin_m": float(args.local_sdf_crop_margin_m),
+                "local_sdf_mesh_vertices": int(len(mesh.vertices)),
+                "local_sdf_mesh_faces": int(len(mesh.faces)),
             }
         )
     if not rows:
@@ -163,6 +206,8 @@ def run(args: argparse.Namespace) -> dict:
             "pad_voxels": int(args.pad_voxels),
             "penetration_tolerance_m": float(args.penetration_tolerance_m),
             "near_surface_m": float(args.near_surface_m),
+            "local_sdf_crop_margin_m": float(args.local_sdf_crop_margin_m),
+            "local_sdf_min_faces": int(args.local_sdf_min_faces),
         },
     }
     save_json(args.output_json, report)
@@ -182,6 +227,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pad-voxels", type=int, default=8)
     parser.add_argument("--penetration-tolerance-m", type=float, default=0.002)
     parser.add_argument("--near-surface-m", type=float, default=0.006)
+    parser.add_argument("--local-sdf-crop-margin-m", type=float, default=0.0)
+    parser.add_argument("--local-sdf-min-faces", type=int, default=256)
     return parser.parse_args()
 
 
