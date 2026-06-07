@@ -306,6 +306,32 @@ def draw_camera(
         cv2.putText(image, "head camera", tuple((xy[0] + np.asarray([8, -8])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (20, 20, 20), 1, cv2.LINE_AA)
 
 
+def draw_egocentric_view_ray(
+    image: np.ndarray,
+    annotations: dict[int, dict],
+    frame_idx: int,
+    center: np.ndarray,
+    basis: np.ndarray,
+    radius: float,
+) -> None:
+    camera_pose = np.asarray(annotations[int(frame_idx)]["camera"]["T_world_camera_metric"], dtype=float)
+    camera_origin = camera_pose[:3, 3]
+    focus = center
+    direction = focus - camera_origin
+    distance = float(np.linalg.norm(direction))
+    if distance <= 1e-9 or not np.isfinite(distance):
+        return
+    direction /= distance
+    segment_start = focus - min(distance, 0.55 * radius) * direction
+    points = np.vstack([segment_start, focus])
+    xy, _ = project(points, center, basis, radius, (image.shape[1], image.shape[0]))
+    overlay = image.copy()
+    cv2.arrowedLine(overlay, tuple(xy[0]), tuple(xy[1]), (70, 70, 70), 2, cv2.LINE_AA, tipLength=0.12)
+    xy_focus, _ = project(np.asarray([focus]), center, basis, radius, (image.shape[1], image.shape[0]))
+    cv2.circle(overlay, tuple(xy_focus[0]), 5, (70, 70, 70), -1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.72, image, 0.28, 0.0, dst=image)
+
+
 def draw_camera_inset(
     image: np.ndarray,
     annotations: dict[int, dict],
@@ -432,6 +458,7 @@ def draw_world_panel(
     ann = annotations[int(frame_idx)]
     vertices, faces = meshes[int(frame_idx)]
     draw_mesh_world(image, vertices, faces, center, basis, radius, int(args.max_mesh_faces))
+    draw_egocentric_view_ray(image, annotations, int(frame_idx), center, basis, radius)
     row = contact_by_frame.get(int(frame_idx))
     for i, hand in enumerate(ann.get("hands", [])):
         ids = row.get("best_patch_vertex_ids", []) if row is not None and int(row["hand_idx"]) == i else None
@@ -442,7 +469,7 @@ def draw_world_panel(
     draw_state_badge(image, state_by_frame.get(int(frame_idx)), int(frame_idx))
     cv2.putText(
         image,
-        "object mesh | MANO surfaces | contact patch | head path inset",
+        "object mesh | MANO surfaces | head view ray | contact patch",
         (258, args.panel_height - 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.46,
@@ -625,8 +652,8 @@ def run(args: argparse.Namespace) -> dict:
         "fps": fps,
         "contact_frames": sorted(contact_by_frame),
         "state_frames": sorted(state_by_frame) if state_by_frame else [],
-        "world_view": "large metric manipulation close-up with separate head-camera trajectory inset",
-        "interpretation": "The right panel is an orthographic third-person rendering of the current object mesh and MANO surfaces in metric world coordinates. The inset renders the head-camera trajectory at its own scale.",
+        "world_view": "metric manipulation close-up with egocentric head-camera view ray and trajectory inset",
+        "interpretation": "The right panel is an orthographic third-person rendering of the current object mesh, MANO surfaces, and the current head-camera viewing ray in metric world coordinates. The inset renders the full head-camera trajectory at its own scale.",
         "annotations": str(args.annotations),
         "object_mesh_npz": str(args.object_mesh_npz),
         "contact_report": str(args.contact_report),
