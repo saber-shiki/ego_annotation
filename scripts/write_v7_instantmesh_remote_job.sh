@@ -28,14 +28,29 @@ git fetch --depth 1 origin main
 git checkout -q FETCH_HEAD
 git rev-parse HEAD | tee "$OUT_ROOT/instantmesh_git_head.txt"
 python3 -m pip install --user virtualenv
+rm -rf "$ENV_DIR"
 python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install --upgrade pip setuptools==69.5.1 wheel ninja
 "$ENV_PY" -m pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
 "$ENV_PY" -m pip install xformers==0.0.22.post7
-"$ENV_PY" -m pip install --no-build-isolation -r requirements.txt
+cat > "$OUT_ROOT/instantmesh_constraints.txt" <<'CONSTRAINTS'
+accelerate==0.23.0
+bitsandbytes==0.41.1
+huggingface-hub==0.17.3
+numpy==1.26.4
+torch==2.1.0
+torchaudio==2.1.0
+torchvision==0.16.0
+triton==2.1.0
+xformers==0.0.22.post7
+CONSTRAINTS
+"$ENV_PY" -m pip install --no-build-isolation -c "$OUT_ROOT/instantmesh_constraints.txt" -r requirements.txt
 "$ENV_PY" - <<'PY'
-import torch, trimesh
+import diffusers, torch, torchvision, trimesh
+from diffusers import DiffusionPipeline
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
+print("torchvision", torchvision.__version__, "diffusers", diffusers.__version__)
+print("pipeline_import", DiffusionPipeline.__name__)
 PY
 EOF
 chmod +x "$OUT_ROOT/setup_instantmesh_v7.sh"

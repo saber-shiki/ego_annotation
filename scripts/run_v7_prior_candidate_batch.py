@@ -109,7 +109,13 @@ def run_replay(args: argparse.Namespace, target_id: str, name: str, mesh: Path, 
         str(target["intrinsics_source"]),
         "--output-dir",
         str(out_dir),
+        "--samples",
+        str(args.samples),
     ]
+    if args.max_faces:
+        argv.extend(["--max-faces", str(args.max_faces)])
+    if args.vertex_splat_radius_px:
+        argv.extend(["--vertex-splat-radius-px", str(args.vertex_splat_radius_px)])
     run_command(argv, bool(args.dry_run))
     report_path = out_dir / "qc_v7_generated_prior_replay.json"
     result = {
@@ -120,6 +126,12 @@ def run_replay(args: argparse.Namespace, target_id: str, name: str, mesh: Path, 
         "output_dir": str(out_dir),
         "report": str(report_path),
         "baseline_zbuffer_json": str(target["baseline_zbuffer_json"]),
+        "replay_controls": {
+            "samples": int(args.samples),
+            "max_faces": int(args.max_faces),
+            "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
+            "full_fidelity_zbuffer": bool(args.max_faces == 0),
+        },
     }
     if not args.dry_run:
         report = load_json(report_path)
@@ -177,6 +189,12 @@ def run(args: argparse.Namespace) -> dict:
         "method": "run_v7_prior_candidate_batch",
         "targets_json": str(args.targets_json),
         "output_root": str(args.output_root),
+        "replay_controls": {
+            "samples": int(args.samples),
+            "max_faces": int(args.max_faces),
+            "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
+            "full_fidelity_zbuffer": bool(args.max_faces == 0),
+        },
         "candidates": results,
     }
     report_path = args.output_root / "qc_v7_prior_candidate_batch.json"
@@ -192,6 +210,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate", action="append", required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--scripts-dir", type=Path, default=SCRIPT_DIR)
+    parser.add_argument("--samples", type=int, default=12000)
+    parser.add_argument("--max-faces", type=int, default=0)
+    parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 

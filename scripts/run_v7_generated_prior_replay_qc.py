@@ -75,6 +75,12 @@ def run(args: argparse.Namespace) -> dict:
         "observed_visible_inside_median": bool(observed_visible_inside >= float(args.min_observed_visible_inside_median)),
         "observed_zbuffer_abs_p95_median": bool(observed_zbuffer_abs_p95 <= float(args.max_observed_zbuffer_abs_p95_median_m)),
     }
+    replay_controls = {
+        "samples": int(args.samples),
+        "max_faces": int(args.max_faces),
+        "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
+        "full_fidelity_zbuffer": bool(args.max_faces == 0),
+    }
     if not all(observed_target_pass.values()):
         return write_report(
             args.output_dir / "qc_v7_generated_prior_replay.json",
@@ -89,6 +95,7 @@ def run(args: argparse.Namespace) -> dict:
                 "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
                 "frame_start": int(args.frame_start),
                 "frame_end": int(args.frame_end),
+                "replay_controls": replay_controls,
                 "observed_target_metrics": {
                     "visible_inside_median": observed_visible_inside,
                     "zbuffer_abs_p95_median_m": observed_zbuffer_abs_p95,
@@ -162,6 +169,7 @@ def run(args: argparse.Namespace) -> dict:
         "zbuffer_video": str(zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
         "frame_start": int(args.frame_start),
         "frame_end": int(args.frame_end),
+        "replay_controls": replay_controls,
         "metrics": {
             "observed_target_visible_inside_median": observed_visible_inside,
             "observed_target_zbuffer_abs_p95_median_m": observed_zbuffer_abs_p95,
@@ -184,6 +192,7 @@ def run(args: argparse.Namespace) -> dict:
         "pass": pass_rows,
         "observed_target_pass": observed_target_pass,
         "strict_full_surface_alignment_is_diagnostic": True,
+        "bounded_zbuffer_is_diagnostic": bool(args.max_faces != 0),
         "delivery_pass_keys": delivery_pass_keys,
         "next_required_if_accepted": [
             "mesh-surface contact recomputation",
