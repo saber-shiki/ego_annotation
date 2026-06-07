@@ -38,6 +38,7 @@ python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 "$ENV_PY" -m pip install torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 "$ENV_PY" -m pip install -r settings/requirements.txt
+"$ENV_PY" -m pip install "transformers==4.49.0" "huggingface_hub<1.0"
 export HF_HUB_ETAG_TIMEOUT=120
 export HF_HUB_DOWNLOAD_TIMEOUT=120
 "$ENV_PY" - <<'PY'
