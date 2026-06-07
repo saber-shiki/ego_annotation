@@ -49,13 +49,25 @@ MANIFEST="$LOCAL_OUT/object_metric_manifest/manifest.json"
 DEPTH_NPZ="$LOCAL_OUT/unidepth_full_frame/unidepth_full_frame_depth_v3.npz"
 MESH_ARCHIVE="$LOCAL_OUT/observed_mesh/observed_mask_depth_meshes_world.npz"
 PAIR_FACTORS="$LOCAL_OUT/cotracker_pair_factors/qc_cotracker_pairwise_rigid_factors_v6.json"
+REMOTE_MEASUREMENT_REPORT="$LOCAL_OUT/qc_v7_mop_702_708_remote_measurement_job.json"
 
-for required_path in "$ANNOTATIONS" "$MANIFEST" "$DEPTH_NPZ" "$MESH_ARCHIVE" "$PAIR_FACTORS" "$MANO_RIGHT"; do
+for required_path in "$REMOTE_MEASUREMENT_REPORT" "$ANNOTATIONS" "$MANIFEST" "$DEPTH_NPZ" "$MESH_ARCHIVE" "$PAIR_FACTORS" "$MANO_RIGHT"; do
   if [[ ! -f "$required_path" ]]; then
     echo "required acceptance input is missing: $required_path" >&2
     exit 1
   fi
 done
+
+"$PY" - "$REMOTE_MEASUREMENT_REPORT" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+if payload.get("status") != "ok":
+    raise RuntimeError(f"remote measurement report is not ok: {path}: {payload.get('status')}")
+PY
 
 REPLAY_DIR="$RUN_ROOT/replay"
 "$PY" scripts/run_v7_video_mesh_replay_qc.py \
