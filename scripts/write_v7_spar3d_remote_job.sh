@@ -31,9 +31,9 @@ git rev-parse HEAD | tee "$OUT_ROOT/spar3d_git_head.txt"
 python3 -m pip install --user virtualenv
 rm -rf "$ENV_DIR"
 python3 -m virtualenv "$ENV_DIR"
-"$ENV_PY" -m pip install --upgrade pip setuptools wheel
+"$ENV_PY" -m pip install --upgrade pip setuptools==69.5.1 wheel
 "$ENV_PY" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-"$ENV_PY" -m pip install -r requirements.txt
+"$ENV_PY" -m pip install --no-build-isolation -r requirements.txt
 "$ENV_PY" -m pip install trimesh pillow pygltflib
 "$ENV_PY" - <<'PY'
 import torch, trimesh
