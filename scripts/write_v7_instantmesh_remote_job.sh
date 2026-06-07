@@ -56,7 +56,7 @@ from huggingface_hub.constants import HUGGINGFACE_HUB_CACHE
 import shutil
 from pathlib import Path
 
-for repo_id in ("sudo-ai/zero123plus-v1.2", "TencentARC/InstantMesh"):
+for repo_id in ("sudo-ai/zero123plus-v1.2", "TencentARC/InstantMesh", "facebook/dino-vitb16"):
     repo_cache = Path(HUGGINGFACE_HUB_CACHE) / ("models--" + repo_id.replace("/", "--"))
     if repo_cache.exists():
         shutil.rmtree(repo_cache)
@@ -82,15 +82,25 @@ hf_hub_download(
     force_download=True,
     resume_download=False,
 )
+snapshot_download(
+    repo_id="facebook/dino-vitb16",
+    repo_type="model",
+    max_workers=1,
+    force_download=True,
+    resume_download=False,
+)
 print("instantmesh_model_cache_ready")
 PY
 "$ENV_PY" - <<'PY'
 import diffusers, rembg, torch, torchvision, trimesh
 from diffusers import DiffusionPipeline
+from transformers import ViTModel
+ViTModel.from_pretrained("facebook/dino-vitb16", add_pooling_layer=False)
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
 print("torchvision", torchvision.__version__, "diffusers", diffusers.__version__)
 print("pipeline_import", DiffusionPipeline.__name__)
 print("rembg_import", rembg.__name__)
+print("dino_vit_import", ViTModel.__name__)
 PY
 date '+%Y-%m-%d %H:%M:%S setup complete' > "$SETUP_COMPLETE"
 EOF
