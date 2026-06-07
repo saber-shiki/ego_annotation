@@ -375,6 +375,12 @@ The Pixal3D model repository is public and about 22.4 GiB. The A800 host has Pyt
 
 Current setup repair: Pixal3D's public pipeline constructs a background-removal model during `from_pretrained`, even though its preprocessing uses non-opaque RGBA alpha directly and V7 supplies pre-masked RGBA crops. The public `briaai/RMBG-2.0` dependency is gated and returned 401 on A800. V7 patches the cloned Pixal3D source under `PIXAL3D_REQUIRE_PREMASKED_RGBA=1` so `rembg_model` is disabled and non-alpha inputs fail loudly instead of invoking a separate segmentation path. The setup marker is written only after `Pixal3DImageTo3DPipeline.from_pretrained("TencentARC/Pixal3D")` instantiates with `rembg_model is None`.
 
+### CRM Candidate Source
+
+CRM is a public single-image mesh source from `thu-ml/CRM`. The official README states that it generates a textured 3D mesh from one image, and the command-line path writes an `output3d.zip` containing OBJ, MTL, and texture files. The official Hugging Face model `Zhengyi/CRM` is public and not gated; metadata reports about 12.8 GB of weights across `CRM.pth`, `pixel-diffusion.pth`, and `ccm-diffusion.pth`.
+
+CRM is not queued before Pixal3D, InstantMesh, and PartCrafter finish or fail. Its official environment contract is Python 3.9 with `torch==1.13.0+cu117`, `kaolin==0.14.0`, `nvdiffrast`, and `xformers`; creating that environment would add another large venv and checkpoint set while `/mnt/user-home` is already 99 percent used. CRM remains the next public source to package if the already setup-complete waiters fail or produce rejected priors.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
