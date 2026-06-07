@@ -15,6 +15,8 @@ mkdir -p \
   "$LOCAL_ROOT/v7_instantmesh_prior_outputs" \
   "$LOCAL_ROOT/v7_spar3d_prior_outputs" \
   "$LOCAL_ROOT/v7_pixal3d_prior_outputs" \
+  "$LOCAL_ROOT/v7_sam3d_objects_outputs" \
+  "$LOCAL_ROOT/v7_partcrafter_prior_outputs" \
   "$OUTPUT_ROOT"
 
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_triposg_prior_outputs/" "$LOCAL_ROOT/v7_triposg_prior_outputs/"
@@ -23,6 +25,8 @@ rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_hunyuan21_prior_outputs/" "
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_instantmesh_prior_outputs/" "$LOCAL_ROOT/v7_instantmesh_prior_outputs/"
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_spar3d_prior_outputs/" "$LOCAL_ROOT/v7_spar3d_prior_outputs/"
 rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_pixal3d_prior_outputs/" "$LOCAL_ROOT/v7_pixal3d_prior_outputs/"
+rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_sam3d_objects_outputs/" "$LOCAL_ROOT/v7_sam3d_objects_outputs/"
+rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_ROOT/v7_partcrafter_prior_outputs/" "$LOCAL_ROOT/v7_partcrafter_prior_outputs/"
 
 DISCOVERY_DIR="$OUTPUT_ROOT/discovery"
 "$PY" scripts/discover_v7_generated_prior_candidates.py \
