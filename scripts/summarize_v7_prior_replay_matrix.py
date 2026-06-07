@@ -30,6 +30,19 @@ def parse_entry(raw: str) -> tuple[str, Path, Path, str]:
     return name.strip(), Path(baseline), Path(prior), note.strip()
 
 
+def format_optional_float(value: object, digits: int) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.{digits}f}"
+
+
+def failed_or_not_evaluated(pass_rows: dict, delivery_keys: list[str]) -> str:
+    failed = [key for key in delivery_keys if pass_rows.get(key) is False]
+    not_evaluated = [key for key in delivery_keys if pass_rows.get(key) is None]
+    labels = [*failed, *[f"{key}: not evaluated" for key in not_evaluated]]
+    return ", ".join(labels)
+
+
 def summarize_entry(name: str, baseline_path: Path, prior_path: Path, note: str) -> dict:
     baseline = load_json(baseline_path)
     prior = load_json(prior_path)
@@ -60,6 +73,7 @@ def summarize_entry(name: str, baseline_path: Path, prior_path: Path, note: str)
             "metrics": metrics,
             "thresholds": prior.get("thresholds"),
             "pass": pass_rows,
+            "invalid_observed_target_keys": prior.get("invalid_observed_target_keys") or [],
             "delivery_pass_keys": prior.get("delivery_pass_keys"),
             "zbuffer_video": prior.get("zbuffer_video"),
         },
@@ -68,8 +82,8 @@ def summarize_entry(name: str, baseline_path: Path, prior_path: Path, note: str)
 
 def write_markdown(path: Path, report: dict) -> None:
     rows = [
-        "| Sample | Baseline IoU | Baseline depth p95 m | Prior status | Visible p95 m | Prior IoU | Prior depth p95 m | Failed delivery keys | Note |",
-        "| --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |",
+        "| Sample | Baseline IoU | Baseline depth p95 m | Prior status | Observed-control failure | Visible p95 m | Prior IoU | Prior depth p95 m | Failed or unevaluated delivery keys | Note |",
+        "| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- | --- |",
     ]
     for entry in report["entries"]:
         baseline = entry["baseline"]
@@ -77,17 +91,18 @@ def write_markdown(path: Path, report: dict) -> None:
         metrics = prior["metrics"]
         pass_rows = prior["pass"]
         delivery_keys = prior.get("delivery_pass_keys") or []
-        failed = [key for key in delivery_keys if pass_rows.get(key) is False]
+        observed_failure = ", ".join(prior.get("invalid_observed_target_keys") or [])
         rows.append(
-            "| {name} | {biou:.3f} | {bdepth:.4f} | {status} | {visible:.4f} | {piou:.3f} | {pdepth:.4f} | {failed} | {note} |".format(
+            "| {name} | {biou:.3f} | {bdepth:.4f} | {status} | {observed_failure} | {visible} | {piou} | {pdepth} | {failed} | {note} |".format(
                 name=entry["name"],
                 biou=float(baseline["silhouette_iou_median"]),
                 bdepth=float(baseline["zbuffer_abs_p95_median_m"]),
                 status=prior["status"],
-                visible=float(metrics["visible_surface_coverage_p95_m"]),
-                piou=float(metrics["silhouette_iou_median"]),
-                pdepth=float(metrics["zbuffer_abs_p95_median_m"]),
-                failed=", ".join(failed),
+                observed_failure=observed_failure or "none",
+                visible=format_optional_float(metrics.get("visible_surface_coverage_p95_m"), 4),
+                piou=format_optional_float(metrics.get("silhouette_iou_median"), 3),
+                pdepth=format_optional_float(metrics.get("zbuffer_abs_p95_median_m"), 4),
+                failed=failed_or_not_evaluated(pass_rows, delivery_keys),
                 note=entry["note"],
             )
         )
