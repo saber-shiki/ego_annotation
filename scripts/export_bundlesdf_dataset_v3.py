@@ -9,15 +9,7 @@ import cv2
 import numpy as np
 
 from fuse_v1_full_fidelity import load_json, open_video, read_video_frame
-from reconstruct_object_mesh_v2 import localize_mask_path, load_metric_depth_archive
-
-
-MEASURED_OBJECT_STATUSES = {
-    "measured_sam_kalman",
-    "measured_plan_sam",
-    "measured_plan_sam_vlm_verified",
-    "measured_sam2_vlm_points",
-}
+from reconstruct_object_mesh_v2 import localize_mask_path
 
 
 def resize_metric_depth_to_source(depth: np.ndarray, source_size: tuple[int, int]) -> np.ndarray:
@@ -36,6 +28,23 @@ def mask_to_source(mask: np.ndarray, mask_size: tuple[int, int], source_size: tu
     return cv2.resize((mask > 0).astype(np.uint8) * 255, (source_w, source_h), interpolation=cv2.INTER_NEAREST)
 
 
+def load_metric_depth(path: Path) -> dict:
+    blob = np.load(path)
+    required = {"frame_idx", "depth"}
+    missing = required.difference(blob.files)
+    if missing:
+        raise RuntimeError(f"{path} missing keys: {sorted(missing)}")
+    frames = blob["frame_idx"].astype(int)
+    depth = blob["depth"].astype(np.float64)
+    if depth.ndim != 3 or len(frames) != depth.shape[0]:
+        raise RuntimeError(f"{path} has invalid frame/depth shapes: {frames.shape}, {depth.shape}")
+    return {
+        "frame_to_i": {int(frame_idx): i for i, frame_idx in enumerate(frames)},
+        "depth": depth,
+        "source_size": tuple(int(v) for v in blob["source_size"].tolist()) if "source_size" in blob.files else None,
+    }
+
+
 def selected_frames(annotations: dict, frame_start: int, frame_end: int, track_id: str | None) -> list[dict]:
     frames = []
     for frame in annotations["frames"]:
@@ -43,7 +52,8 @@ def selected_frames(annotations: dict, frame_start: int, frame_end: int, track_i
         obj = frame.get("object") or {}
         if frame_idx < frame_start or frame_idx > frame_end:
             continue
-        if obj.get("status") not in MEASURED_OBJECT_STATUSES or not obj.get("mask_path"):
+        status = str(obj.get("status") or "")
+        if not status.startswith("measured_") or not obj.get("mask_path"):
             continue
         if track_id is not None and obj.get("track_id") != track_id:
             continue
@@ -59,7 +69,7 @@ def write_cam_k(path: Path, intrinsics: np.ndarray) -> None:
     np.savetxt(path, K, fmt="%.10f")
 
 
-def load_intrinsics(path: Path) -> np.ndarray:
+def load_npz_intrinsics(path: Path) -> np.ndarray:
     blob = np.load(path)
     for key in ("intrinsics_source", "intrinsics"):
         if key in blob.files:
@@ -69,11 +79,40 @@ def load_intrinsics(path: Path) -> np.ndarray:
     raise RuntimeError(f"{path} lacks finite source intrinsics")
 
 
+def load_annotation_intrinsics(frames: list[dict]) -> np.ndarray:
+    rows = []
+    for frame in frames:
+        camera = frame.get("camera")
+        if not isinstance(camera, dict) or "vggt_source_intrinsics_fx_fy_cx_cy" not in camera:
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} lacks camera.vggt_source_intrinsics_fx_fy_cx_cy"
+            )
+        vals = np.asarray(camera["vggt_source_intrinsics_fx_fy_cx_cy"], dtype=np.float64)
+        if vals.shape != (4,) or not np.isfinite(vals).all():
+            raise RuntimeError(f"frame {frame.get('frame_idx')} has invalid annotation intrinsics: {vals}")
+        rows.append(vals)
+    intrinsics = np.asarray(rows, dtype=np.float64)
+    spread = np.ptp(intrinsics, axis=0)
+    if np.max(spread) > 1e-5:
+        raise RuntimeError(f"BundleSDF export requires constant intrinsics, got spread {spread.tolist()}")
+    return intrinsics[0]
+
+
+def load_intrinsics(args: argparse.Namespace, frames: list[dict]) -> tuple[np.ndarray, str]:
+    if args.intrinsics_source == "droid-npz":
+        if args.droid_npz is None:
+            raise RuntimeError("--droid-npz is required when --intrinsics-source=droid-npz")
+        return load_npz_intrinsics(args.droid_npz), f"droid-npz:{args.droid_npz}"
+    if args.intrinsics_source == "annotation-vggt":
+        return load_annotation_intrinsics(frames), "annotation-vggt"
+    raise RuntimeError(f"unsupported intrinsics source: {args.intrinsics_source}")
+
+
 def run(args: argparse.Namespace) -> dict:
     annotations = load_json(args.annotations)
     frames = selected_frames(annotations, int(args.frame_start), int(args.frame_end), args.track_id)
-    metric_depth = load_metric_depth_archive(args.metric_depth_npz)
-    intrinsics = load_intrinsics(args.droid_npz)
+    metric_depth = load_metric_depth(args.metric_depth_npz)
+    intrinsics, intrinsics_source = load_intrinsics(args, frames)
     if intrinsics.shape != (4,) or not np.isfinite(intrinsics).all():
         raise RuntimeError(f"invalid source intrinsics: {intrinsics}")
     cap, info = open_video(args.clip)
@@ -140,13 +179,14 @@ def run(args: argparse.Namespace) -> dict:
         "clip": str(args.clip),
         "annotations": str(args.annotations),
         "metric_depth_npz": str(args.metric_depth_npz),
-        "droid_npz": str(args.droid_npz),
+        "droid_npz": str(args.droid_npz) if args.droid_npz is not None else None,
         "output_dir": str(out),
         "frames": len(manifest),
         "first_frame": int(manifest[0]["frame_idx"]),
         "last_frame": int(manifest[-1]["frame_idx"]),
         "source_size": [int(source_size[0]), int(source_size[1])],
         "intrinsics_fx_fy_cx_cy": intrinsics.astype(float).tolist(),
+        "intrinsics_source": intrinsics_source,
         "mask_area_median_px": float(np.median(mask_areas)),
         "mask_area_min_px": int(np.min(mask_areas)),
         "depth_median_m": float(np.median(depth_medians)),
@@ -165,7 +205,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clip", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--metric-depth-npz", type=Path, required=True)
-    parser.add_argument("--droid-npz", type=Path, required=True)
+    parser.add_argument("--droid-npz", type=Path)
+    parser.add_argument("--intrinsics-source", choices=("droid-npz", "annotation-vggt"), default="droid-npz")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, required=True)
     parser.add_argument("--frame-end", type=int, required=True)

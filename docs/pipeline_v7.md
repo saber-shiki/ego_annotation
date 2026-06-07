@@ -224,6 +224,8 @@ Full generated-candidate batch:
 
 The batch falsifies single-image complete priors as V7 closure for the current representative set. Mop priors miss long thin tool geometry, trash priors overlap the lid silhouette but are 56 to 111 mm wrong in depth, and wild-rice priors cover only a small fraction of the active stem. V7 therefore moves to video-conditioned geometry sources before considering final delivery.
 
+BundleSDF was rechecked as the direct RGB-D object-reconstruction path because its input contract matches RGB frames, depth PNGs, masks, and one `cam_K.txt`. `scripts/export_bundlesdf_dataset_v3.py` now supports the newer frame-indexed depth NPZ schema and can read annotation-VGGT intrinsics, but it refuses export when those intrinsics vary across the sequence. The mop V7 target frames 759 to 765 have annotation-VGGT focal spread of about 29 px in fx and 27 px in fy, so a single-`cam_K.txt` BundleSDF dataset would silently change the accepted replay camera model. BundleSDF remains available for targets with constant intrinsics or a justified constant-K source; it is not a valid V7 completion route for this mop contract.
+
 ### SAM 3D Objects Candidate Source
 
 SAM 3D Objects is the next complete-mesh source tested by V7. Its official setup requires a Linux NVIDIA GPU with at least 32 GB VRAM, Hugging Face checkpoint access for `facebook/sam-3d-objects`, and the `hf` checkpoint directory containing `pipeline.yaml`. The official single-object API accepts an RGB image plus a mask and the underlying pipeline decodes both `mesh` and `gaussian` representations. V7 exports the decoded triangle mesh directly and keeps the GLB and Gaussian only as secondary visual evidence.
