@@ -195,6 +195,8 @@ The guarded matrix separates target validity from generated-prior validity. The 
 
 `scripts/run_v7_candidate_physics_qc.py` is the second-stage acceptance wrapper. It refuses replay reports whose status is not `accepted`, then runs mesh-surface contact, selected-contact SDF, and full-hand SDF on the aligned mesh archive. A generated mesh can become an object-pose candidate for delivery only after both visible replay and this physics wrapper pass.
 
+`scripts/fuse_v7_sim3_prior_observed_surfaces.py` is the repair path for a generated prior that is close enough to align but still misses visible surface detail. It maps model-produced mask/depth observations back into the prior's canonical coordinates using the same per-frame Sim3 rows from the replay alignment report, fuses those observations with sampled prior surface points, and rearchives the fused mesh through the original Sim3 rows. It fails before meshing when the canonical observed extent or Sim3 scale drift is physically implausible. Existing trash TRELLIS replay hits this failure: the observed depth points spread to a 10.9 m canonical extent, so fusion would only hide the bad prior alignment.
+
 ### SAM 3D Objects Candidate Source
 
 SAM 3D Objects is the next complete-mesh source tested by V7. Its official setup requires a Linux NVIDIA GPU with at least 32 GB VRAM, Hugging Face checkpoint access for `facebook/sam-3d-objects`, and the `hf` checkpoint directory containing `pipeline.yaml`. The official single-object API accepts an RGB image plus a mask and the underlying pipeline decodes both `mesh` and `gaussian` representations. V7 exports the decoded triangle mesh directly and keeps the GLB and Gaussian only as secondary visual evidence.
