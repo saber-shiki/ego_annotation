@@ -13,41 +13,38 @@ GPU_SELECT_LOCK=${GPU_SELECT_LOCK:-$REMOTE_ROOT/v7_gpu_wait_select.lock}
 GPU_LOCK_DIR=${GPU_LOCK_DIR:-$REMOTE_ROOT/v7_gpu_locks}
 
 mkdir -p "$OUT_ROOT"
-cat > "$OUT_ROOT/run_hunyuan_v7_frame2539_2545.sh" <<EOF
+cat > "$OUT_ROOT/run_hunyuan_v7_representatives.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export CUDA_VISIBLE_DEVICES="\${GPU_ID:-$GPU_ID}"
 cd "$REMOTE_ROOT"
-"$ENV_PY" "$RUNNER" \\
-  --repo "$REPO" \\
-  --mode single \\
-  --image "$REMOTE_ROOT/v7_sam3d_prior_inputs_frame2539/frame_002539_crop_rgba.png" \\
-  --output-dir "$OUT_ROOT/frame2539_single" \\
-  --model tencent/Hunyuan3D-2mini \\
-  --subfolder hunyuan3d-dit-v2-mini-fast \\
-  --steps 5 \\
-  --octree-resolution 256 \\
-  --num-chunks 12000 \\
-  --seed 2539 \\
-  --mesh-name mesh.glb
-"$ENV_PY" "$RUNNER" \\
-  --repo "$REPO" \\
-  --mode single \\
-  --image "$REMOTE_ROOT/v7_sam3d_prior_inputs_frame2545/frame_002545_crop_rgba.png" \\
-  --output-dir "$OUT_ROOT/frame2545_single" \\
-  --model tencent/Hunyuan3D-2mini \\
-  --subfolder hunyuan3d-dit-v2-mini-fast \\
-  --steps 5 \\
-  --octree-resolution 256 \\
-  --num-chunks 12000 \\
-  --seed 2545 \\
-  --mesh-name mesh.glb
+cases=(
+  "wild_rice_2539|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2539/frame_002539_crop_rgba.png|2539"
+  "wild_rice_2545|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_frame2545/frame_002545_crop_rgba.png|2545"
+  "trash_0880|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_trash_frame880/frame_000880_crop_rgba.png|880"
+  "mop_0750|$REMOTE_ROOT/v7_sam3d_object_prior_inputs_mop_frame750/frame_000750_crop_rgba.png|750"
+)
+for raw_case in "\${cases[@]}"; do
+  IFS='|' read -r case_name image_path seed <<<"\$raw_case"
+  "$ENV_PY" "$RUNNER" \\
+    --repo "$REPO" \\
+    --mode single \\
+    --image "\$image_path" \\
+    --output-dir "$OUT_ROOT/\${case_name}_single" \\
+    --model tencent/Hunyuan3D-2mini \\
+    --subfolder hunyuan3d-dit-v2-mini-fast \\
+    --steps 5 \\
+    --octree-resolution 256 \\
+    --num-chunks 12000 \\
+    --seed "\$seed" \\
+    --mesh-name mesh.glb
+done
 EOF
-chmod +x "$OUT_ROOT/run_hunyuan_v7_frame2539_2545.sh"
-cat > "$OUT_ROOT/wait_and_run_hunyuan_v7_frame2539_2545.sh" <<EOF
+chmod +x "$OUT_ROOT/run_hunyuan_v7_representatives.sh"
+cat > "$OUT_ROOT/wait_and_run_hunyuan_v7_representatives.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-RUN_SCRIPT="$OUT_ROOT/run_hunyuan_v7_frame2539_2545.sh"
+RUN_SCRIPT="$OUT_ROOT/run_hunyuan_v7_representatives.sh"
 MAX_USED_MB="\${MAX_USED_MB:-$MAX_USED_MB}"
 POLL_SECONDS="\${POLL_SECONDS:-$POLL_SECONDS}"
 GPU_SELECT_LOCK="\${GPU_SELECT_LOCK:-$GPU_SELECT_LOCK}"
@@ -83,5 +80,5 @@ while true; do
   sleep "\$POLL_SECONDS"
 done
 EOF
-chmod +x "$OUT_ROOT/wait_and_run_hunyuan_v7_frame2539_2545.sh"
-printf '%s\n%s\n' "$OUT_ROOT/run_hunyuan_v7_frame2539_2545.sh" "$OUT_ROOT/wait_and_run_hunyuan_v7_frame2539_2545.sh"
+chmod +x "$OUT_ROOT/wait_and_run_hunyuan_v7_representatives.sh"
+printf '%s\n%s\n' "$OUT_ROOT/run_hunyuan_v7_representatives.sh" "$OUT_ROOT/wait_and_run_hunyuan_v7_representatives.sh"

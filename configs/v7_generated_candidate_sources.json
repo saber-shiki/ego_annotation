@@ -20,7 +20,11 @@
     ],
     "case_targets": {
       "frame2539": "wild_rice",
-      "frame2545": "wild_rice"
+      "frame2545": "wild_rice",
+      "wild_rice_2539_single": "wild_rice",
+      "wild_rice_2545_single": "wild_rice",
+      "trash_0880_single": "trash",
+      "mop_0750_single": "mop"
     }
   },
   "instantmesh": {
