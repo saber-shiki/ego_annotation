@@ -184,6 +184,13 @@ The corrected report keeps strict full-surface alignment as a diagnostic and use
 - median visible-inside fraction: 0.159, threshold 0.900;
 - median z-buffer p95 depth error: 0.123 m, threshold 0.010 m.
 
+Guarded replay matrix:
+
+- matrix JSON: `/data2/ego_annotation_outputs/v7_generated_prior_replay_matrix_guarded_20260607.json`
+- matrix Markdown: `/data2/ego_annotation_outputs/v7_generated_prior_replay_matrix_guarded_20260607.md`
+
+The guarded matrix separates target validity from generated-prior validity. The observed target archives pass their own replay checks on wild-rice, trash, and mop. TRELLIS and Hunyuan priors are still rejected because the generated visible surface misses measured geometry and image-depth replay fails. This means V7 has a working acceptance harness and valid measured targets, but it has not accepted a generated complete object mesh prior.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
@@ -242,6 +249,17 @@ TRELLIS frame-750 prior replay:
 - median z-buffer p95 depth error: 0.0730 m.
 
 Visual inspection shows the generated prior becomes a long diagonal plank crossing the room instead of the mop head and handle. V7 rejects it as object-pose annotation.
+
+### Measured Shell Evidence
+
+The trash representative has a watertight measured shell archive:
+
+- archive: `/data2/ego_annotation_outputs/representative_trash/v3_observed_unidepth_vggtK_solidified_stride2_perframe_thick001_865_870/solidified_sheet_object_meshes_world.npz`
+- z-buffer report: `/data2/ego_annotation_outputs/representative_trash/v3_observed_unidepth_vggtK_solidified_stride2_thick001_allfaces_zbuffer_qc_865_870/qc_mesh_zbuffer_projection_v3.json`
+- contact SDF report: `/data2/ego_annotation_outputs/representative_trash/v3_observed_unidepth_vggtK_solidified_stride2_perframe_thick001_865_870/volume_sdf_contact_recomputed_pitch001_qc.json`
+- full-hand SDF report: `/data2/ego_annotation_outputs/representative_trash/v3_observed_unidepth_vggtK_solidified_stride2_perframe_thick001_865_870/full_hand_sdf_penetration_recomputed_pitch001_qc.json`
+
+It is watertight, one connected component per frame, and replays well: median silhouette IoU is 0.983, median visible-inside fraction is 1.000, and median z-buffer p95 depth error is 0.0011 m. The selected-contact SDF report has 0 percent penetration and near-surface contact. This archive is still a measured thin shell, with median thickness 0.001 m. It is valid measured object geometry for a flat lid surface, but it is not evidence that V7 solved generic complete object mesh reconstruction.
 
 ### Visibility-Aware Surfel Graph
 
