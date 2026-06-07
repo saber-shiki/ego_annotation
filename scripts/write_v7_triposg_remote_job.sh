@@ -11,6 +11,8 @@ ENV_PY=${ENV_PY:-$ENV_DIR/bin/python}
 GPU_ID=${GPU_ID:-0}
 MAX_USED_MB=${MAX_USED_MB:-2000}
 POLL_SECONDS=${POLL_SECONDS:-300}
+GPU_SELECT_LOCK=${GPU_SELECT_LOCK:-$REMOTE_ROOT/v7_gpu_wait_select.lock}
+GPU_LOCK_DIR=${GPU_LOCK_DIR:-$REMOTE_ROOT/v7_gpu_locks}
 
 mkdir -p "$OUT_ROOT"
 
@@ -66,13 +68,34 @@ set -euo pipefail
 RUN_SCRIPT="$OUT_ROOT/run_triposg_v7.sh"
 MAX_USED_MB="\${MAX_USED_MB:-$MAX_USED_MB}"
 POLL_SECONDS="\${POLL_SECONDS:-$POLL_SECONDS}"
+GPU_SELECT_LOCK="\${GPU_SELECT_LOCK:-$GPU_SELECT_LOCK}"
+GPU_LOCK_DIR="\${GPU_LOCK_DIR:-$GPU_LOCK_DIR}"
+mkdir -p "\$GPU_LOCK_DIR"
 while true; do
-  GPU_ID=\$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F, -v max="\$MAX_USED_MB" '{gsub(/[[:space:]]/, "", \$1); gsub(/[[:space:]]/, "", \$2); if ((\$2 + 0) <= (max + 0)) {print \$1; exit}}')
+  GPU_ID=""
+  exec 9>"\$GPU_SELECT_LOCK"
+  flock -x 9
+  while IFS=, read -r gpu_idx used_mb; do
+    gpu_idx="\${gpu_idx//[[:space:]]/}"
+    used_mb="\${used_mb//[[:space:]]/}"
+    if [[ -n "\$gpu_idx" && -n "\$used_mb" && "\$used_mb" -le "\$MAX_USED_MB" ]]; then
+      exec 8>"\$GPU_LOCK_DIR/gpu_\${gpu_idx}.lock"
+      if flock -n 8; then
+        GPU_ID="\$gpu_idx"
+        break
+      fi
+      exec 8>&-
+    fi
+  done < <(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits)
   if [[ -n "\$GPU_ID" ]]; then
     export GPU_ID
+    flock -u 9
+    exec 9>&-
     date '+%Y-%m-%d %H:%M:%S selected GPU '"\$GPU_ID"
     exec bash "\$RUN_SCRIPT"
   fi
+  flock -u 9
+  exec 9>&-
   date '+%Y-%m-%d %H:%M:%S no GPU below memory threshold; sleeping'
   nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
   sleep "\$POLL_SECONDS"
