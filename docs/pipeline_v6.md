@@ -393,3 +393,26 @@ The five-anchor graph archive was replayed over frames 2534 to 2550 with the sam
 - p95 of z-buffer depth p95 values: 12.09 mm
 
 Visual spot checks show frame 2540 has a clean long active-stem surface, while frame 2539 remains a narrow ambiguous measured surface with IoU 0.536. The graph preserves the measured evidence. Ambiguous segmentation repair belongs to the perception and mesh-reconstruction layer, while V6 closes the factor layer: sparse temporal factors are continuous and metric-compatible, and delivered object geometry still comes from the measured mesh stream and its visual/depth QC.
+
+## Frame-2539 Perception Repair Attempt
+
+V6 then tested whether the remaining ambiguous frame 2539 could be repaired by stronger model-produced mask evidence. The repair target was the one continuous active stem held between the hands. The rejected alternatives were not used as replacement geometry.
+
+Artifacts:
+
+- strict VLM repair points: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_repair_points_strict_vlm/visual_track_point_prompts_vlm.json`
+- strict box-conditioned SAM2 candidates: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_repair_sam2_strict/qc_sam2_image_points.json`
+- strict no-box SAM2 candidates: `/data2/ego_annotation_outputs/representative_wild_rice/v6_frame2539_repair_sam2_strict_nobox/qc_sam2_image_points.json`
+- propagated seed branch: `/data2/ego_annotation_outputs/representative_wild_rice/v6_sam2_gap_seed2538_2538_2540/qc_sam2_mask_seed_track_v4.json`
+
+Results:
+
+- SAM2 seed propagation from frame 2538 visually merged two long stem surfaces. Its observed surface extent was 0.161 x 0.454 x 0.250 m, and 1 mm sheet solidification failed the 0.120 sheet PCA threshold with ratio 0.150.
+- The existing VLM-selected candidate 0 for frame 2539 was semantically closer but still depth-mixed: observed extent 0.118 x 0.321 x 0.239 m, sheet PCA ratio 0.168 under the stricter repair contract.
+- The stricter frame-local VLM prompt placed positive points along the held active stem and negative points on the adjacent parallel strip, both hands, background stems, countertop glare, and basket/background. Box-conditioned SAM2 produced no candidate satisfying all positives and zero negatives.
+- Among box-conditioned raw candidates, candidate 1 had strong image-depth replay after forced geometry testing, with silhouette IoU 0.883 and z-buffer p95 1.71 mm, but it hit the semantic negative point and visually merged the adjacent strip. Candidates 0 and 2 avoided negatives but were partial fragments with IoU about 0.32.
+- No-box SAM2 selected a mask that satisfied the sparse point contract, but geometry falsified it: observed extent 0.277 x 0.402 x 0.243 m and sheet PCA ratio 0.326. The point contract missed a horizontal unrelated stem leak.
+
+Mechanism:
+
+Frame 2539 is not fixed by denser CoTracker factors or by a simple VLM-point/SAM2 rerun. SAM2 can satisfy sparse point evidence while merging physically distinct, same-category stems when the image boundary is weak. The next repair layer must use stronger semantic mask verification or temporal/multimodal segmentation evidence that rejects same-category merged surfaces before metric mesh reconstruction.
