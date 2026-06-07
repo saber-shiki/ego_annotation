@@ -18,6 +18,7 @@ REQUIRED_TARGET_KEYS = (
     "frame_start",
     "frame_end",
     "intrinsics_source",
+    "physics_intrinsics_source",
     "baseline_zbuffer_json",
 )
 
@@ -74,6 +75,8 @@ def validate_target(target_id: str, raw: object) -> dict:
         raise RuntimeError(f"target {target_id} has inverted frame range")
     if target["intrinsics_source"] not in {"manifest", "annotation-vggt"}:
         raise RuntimeError(f"target {target_id} has invalid intrinsics_source: {target['intrinsics_source']}")
+    if target["physics_intrinsics_source"] not in {"annotation-vggt", "hand", "cli"}:
+        raise RuntimeError(f"target {target_id} has invalid physics_intrinsics_source: {target['physics_intrinsics_source']}")
     return target
 
 
@@ -142,6 +145,70 @@ def run_replay(args: argparse.Namespace, target_id: str, name: str, mesh: Path, 
     return result
 
 
+def run_physics(args: argparse.Namespace, replay_result: dict, target: dict) -> dict | None:
+    if not args.run_physics:
+        return None
+    physics_dir = Path(replay_result["output_dir"]) / "physics_qc"
+    physics_report = physics_dir / "qc_v7_candidate_physics.json"
+    replay_status = replay_result.get("status")
+    if args.dry_run and replay_status is None:
+        return {
+            "status": "dry_run_replay_not_executed",
+            "reason": "dry-run mode prints the replay command without creating the replay report required by physics QC",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
+    if replay_status != "accepted":
+        return {
+            "status": "skipped_replay_not_accepted",
+            "reason": f"physics QC requires accepted replay, got {replay_status}",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "run_v7_candidate_physics_qc.py"),
+        "--replay-report",
+        str(replay_result["report"]),
+        "--annotations",
+        str(target["annotations"]),
+        "--metric-depth-npz",
+        str(target["metric_depth_npz"]),
+        "--intrinsics-source",
+        str(target["physics_intrinsics_source"]),
+        "--output-dir",
+        str(physics_dir),
+        "--output-json",
+        str(physics_report),
+        "--sdf-pitch-m",
+        str(args.sdf_pitch_m),
+        "--max-selected-contact-abs-sdf-p95-m",
+        str(args.max_selected_contact_abs_sdf_p95_m),
+        "--min-selected-contact-near-surface-fraction",
+        str(args.min_selected_contact_near_surface_fraction),
+        "--max-selected-contact-penetration-fraction",
+        str(args.max_selected_contact_penetration_fraction),
+        "--max-full-hand-penetration-fraction",
+        str(args.max_full_hand_penetration_fraction),
+    ]
+    run_command(argv, bool(args.dry_run))
+    if args.dry_run:
+        return {
+            "status": "dry_run",
+            "output_dir": str(physics_dir),
+            "report": str(physics_report),
+        }
+    physics = load_json(physics_report)
+    return {
+        "status": physics.get("status"),
+        "annotation_ready": bool(physics.get("annotation_ready", False)),
+        "output_dir": str(physics_dir),
+        "report": str(physics_report),
+        "metrics": physics.get("metrics"),
+        "pass": physics.get("pass"),
+    }
+
+
 def write_matrix(args: argparse.Namespace, results: list[dict]) -> None:
     if args.dry_run:
         return
@@ -183,7 +250,12 @@ def run(args: argparse.Namespace) -> dict:
         target_id, name, mesh, note = parse_candidate(raw)
         if target_id not in targets:
             raise RuntimeError(f"candidate {name} references unknown target_id: {target_id}")
-        results.append(run_replay(args, target_id, name, mesh, note, targets[target_id]))
+        target = targets[target_id]
+        result = run_replay(args, target_id, name, mesh, note, target)
+        physics = run_physics(args, result, target)
+        if physics is not None:
+            result["physics_qc"] = physics
+        results.append(result)
     report = {
         "status": "dry_run" if args.dry_run else "ok",
         "method": "run_v7_prior_candidate_batch",
@@ -195,6 +267,7 @@ def run(args: argparse.Namespace) -> dict:
             "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
             "full_fidelity_zbuffer": bool(args.max_faces == 0),
         },
+        "physics_enabled": bool(args.run_physics),
         "candidates": results,
     }
     report_path = args.output_root / "qc_v7_prior_candidate_batch.json"
@@ -213,6 +286,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=12000)
     parser.add_argument("--max-faces", type=int, default=0)
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
+    parser.add_argument("--run-physics", action="store_true")
+    parser.add_argument("--sdf-pitch-m", type=float, default=0.003)
+    parser.add_argument("--max-selected-contact-abs-sdf-p95-m", type=float, default=0.006)
+    parser.add_argument("--min-selected-contact-near-surface-fraction", type=float, default=0.75)
+    parser.add_argument("--max-selected-contact-penetration-fraction", type=float, default=0.10)
+    parser.add_argument("--max-full-hand-penetration-fraction", type=float, default=0.02)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 

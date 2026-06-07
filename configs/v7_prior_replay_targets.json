@@ -7,6 +7,7 @@
     "frame_start": 2538,
     "frame_end": 2540,
     "intrinsics_source": "annotation-vggt",
+    "physics_intrinsics_source": "annotation-vggt",
     "baseline_zbuffer_json": "/data2/ego_annotation_outputs/representative_wild_rice/v7_generated_prior_replay_trellis_negative_control_guarded_2538_2540/observed_target_zbuffer_qc/qc_mesh_zbuffer_projection_v3.json"
   },
   "trash": {
@@ -17,6 +18,7 @@
     "frame_start": 865,
     "frame_end": 870,
     "intrinsics_source": "annotation-vggt",
+    "physics_intrinsics_source": "annotation-vggt",
     "baseline_zbuffer_json": "/data2/ego_annotation_outputs/representative_trash/v7_generated_prior_replay_trellis_frame880_guarded_865_870/observed_target_zbuffer_qc/qc_mesh_zbuffer_projection_v3.json"
   },
   "mop": {
@@ -27,6 +29,7 @@
     "frame_start": 759,
     "frame_end": 765,
     "intrinsics_source": "annotation-vggt",
+    "physics_intrinsics_source": "annotation-vggt",
     "baseline_zbuffer_json": "/data2/ego_annotation_outputs/representative_mop/v7_generated_prior_replay_trellis_frame750_contract_unidepth_vggt_guarded_759_765/observed_target_zbuffer_qc/qc_mesh_zbuffer_projection_v3.json"
   }
 }
