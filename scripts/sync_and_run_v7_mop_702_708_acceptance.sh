@@ -17,23 +17,26 @@ rsync -a -e "$SSH_CMD" "$REMOTE_HOST:$REMOTE_OUT/" "$LOCAL_OUT/"
 
 REMOTE_PREFIX="$REMOTE_OUT"
 LOCAL_PREFIX="$LOCAL_OUT"
+REMOTE_DATA_PREFIX="$REMOTE_ROOT/data2"
+LOCAL_DATA_PREFIX="/data2"
 
-"$PY" - "$LOCAL_OUT" "$REMOTE_PREFIX" "$LOCAL_PREFIX" <<'PY'
+"$PY" - "$LOCAL_OUT" "$REMOTE_PREFIX" "$LOCAL_PREFIX" "$REMOTE_DATA_PREFIX" "$LOCAL_DATA_PREFIX" <<'PY'
 import json
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
-remote_prefix = sys.argv[2]
-local_prefix = sys.argv[3]
+prefix_pairs = ((sys.argv[2], sys.argv[3]), (sys.argv[4], sys.argv[5]))
 
 def rewrite(obj):
     if isinstance(obj, dict):
         return {key: rewrite(value) for key, value in obj.items()}
     if isinstance(obj, list):
         return [rewrite(value) for value in obj]
-    if isinstance(obj, str) and obj.startswith(remote_prefix):
-        return local_prefix + obj[len(remote_prefix):]
+    if isinstance(obj, str):
+        for remote_prefix, local_prefix in prefix_pairs:
+            if obj.startswith(remote_prefix):
+                return local_prefix + obj[len(remote_prefix):]
     return obj
 
 for path in root.rglob("*.json"):
