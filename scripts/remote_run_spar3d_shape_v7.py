@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
+import torch
 import trimesh
 from PIL import Image
 
@@ -56,7 +57,15 @@ def mesh_stats(mesh: trimesh.Trimesh) -> dict:
     }
 
 
-def run_case(args: argparse.Namespace, name: str, image_path: Path) -> dict:
+def load_spar3d(repo: Path):
+    sys.path.insert(0, str(repo))
+    from spar3d.system import SPAR3D
+    from spar3d.utils import foreground_crop
+
+    return SPAR3D, foreground_crop
+
+
+def run_case(args: argparse.Namespace, model, foreground_crop, name: str, image_path: Path) -> dict:
     if not image_path.exists():
         raise RuntimeError(f"{name}: image does not exist: {image_path}")
     input_image = Image.open(image_path).convert("RGBA")
@@ -65,29 +74,30 @@ def run_case(args: argparse.Namespace, name: str, image_path: Path) -> dict:
         raise RuntimeError(f"{name}: RGBA alpha mask has too few object pixels")
     case_dir = args.output_dir / name
     case_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        sys.executable,
-        str(args.repo / "run.py"),
-        str(image_path),
-        "--device",
-        args.device,
-        "--pretrained-model",
-        args.pretrained_model,
-        "--foreground-ratio",
-        str(args.foreground_ratio),
-        "--output-dir",
-        str(case_dir),
-        "--texture-resolution",
-        str(args.texture_resolution),
-        "--remesh_option",
-        args.remesh_option,
-        "--batch_size",
-        "1",
-    ]
-    if args.low_vram_mode:
-        cmd.append("--low-vram-mode")
-    subprocess.run(cmd, check=True, cwd=str(args.repo))
+    processed_image = foreground_crop(input_image, args.foreground_ratio)
+    run_dir = case_dir / "0"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    processed_image.save(run_dir / "input.png")
+    device_type = "cuda" if args.device.startswith("cuda") else args.device
+    with torch.no_grad():
+        with (
+            torch.autocast(device_type=device_type, dtype=torch.bfloat16)
+            if device_type == "cuda"
+            else nullcontext()
+        ):
+            mesh, glob_dict = model.run_image(
+                processed_image,
+                bake_resolution=args.texture_resolution,
+                remesh=args.remesh_option,
+                vertex_count=-1,
+                return_points=True,
+            )
     mesh_path = case_dir / "0" / "mesh.glb"
+    points_path = case_dir / "0" / "points.ply"
+    mesh.export(mesh_path, include_normals=True)
+    point_clouds = glob_dict.get("point_clouds", [])
+    if point_clouds:
+        point_clouds[0].export(points_path)
     points_path = case_dir / "0" / "points.ply"
     if not mesh_path.exists():
         raise RuntimeError(f"{name}: SPAR3D did not write expected mesh: {mesh_path}")
@@ -112,7 +122,18 @@ def run_case(args: argparse.Namespace, name: str, image_path: Path) -> dict:
 
 def run(args: argparse.Namespace) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    case_reports = [run_case(args, *parse_case(raw)) for raw in args.case]
+    SPAR3D, foreground_crop = load_spar3d(args.repo)
+    if args.device == "cuda" and not torch.cuda.is_available():
+        args.device = "cpu"
+    model = SPAR3D.from_pretrained(
+        args.pretrained_model,
+        config_name="config.yaml",
+        weight_name="model.safetensors",
+        low_vram_mode=args.low_vram_mode,
+    )
+    model.to(args.device)
+    model.eval()
+    case_reports = [run_case(args, model, foreground_crop, *parse_case(raw)) for raw in args.case]
     report = {
         "status": "ok",
         "method": "remote_run_spar3d_shape_v7",

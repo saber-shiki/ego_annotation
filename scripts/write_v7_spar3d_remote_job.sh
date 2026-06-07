@@ -36,6 +36,40 @@ python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install --no-build-isolation -r requirements.txt
 "$ENV_PY" -m pip install trimesh pillow pygltflib
 "$ENV_PY" - <<'PY'
+from pathlib import Path
+
+utils_path = Path("spar3d/utils.py")
+text = utils_path.read_text(encoding="utf-8")
+import_line = "from transparent_background import Remover\n\n"
+annotation = "bg_remover: Remover = None,"
+eager_call = (
+    '    if do_remove:\n        image = bg_remover.process(\n'
+    '            image.convert("RGB"), **transparent_background_kwargs\n        )\n'
+)
+lazy_call = (
+    '    if do_remove:\n        if bg_remover is None:\n'
+    '            from transparent_background import Remover\n\n'
+    '            bg_remover = Remover(device=get_device())\n'
+    '        image = bg_remover.process(\n'
+    '            image.convert("RGB"), **transparent_background_kwargs\n        )\n'
+)
+missing = [
+    name
+    for name, needle in (
+        ("transparent_background import", import_line),
+        ("Remover annotation", annotation),
+        ("background removal call", eager_call),
+    )
+    if needle not in text
+]
+if missing:
+    raise RuntimeError(f"SPAR3D utils patch source mismatch: {missing}")
+text = text.replace(import_line, "from typing import Any\n\n", 1)
+text = text.replace(annotation, "bg_remover: Any = None,", 1)
+text = text.replace(eager_call, lazy_call, 1)
+utils_path.write_text(text, encoding="utf-8")
+PY
+"$ENV_PY" - <<'PY'
 import torch, trimesh
 from spar3d.system import SPAR3D
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available(), "devices", torch.cuda.device_count())
