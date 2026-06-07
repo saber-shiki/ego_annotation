@@ -3,6 +3,7 @@ set -euo pipefail
 
 REMOTE_ROOT=${REMOTE_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote}
 OUT_ROOT=${OUT_ROOT:-$REMOTE_ROOT/v7_cotracker_factor_outputs}
+INPUT_ROOT=${INPUT_ROOT:-$REMOTE_ROOT/v7_cotracker_factor_inputs}
 REPO_DIR=${REPO_DIR:-$REMOTE_ROOT/repo}
 ENV_DIR=${ENV_DIR:-$REMOTE_ROOT/cotracker_env}
 ENV_PY=${ENV_PY:-$ENV_DIR/bin/python}
@@ -42,6 +43,32 @@ if [[ ! -f "$OUT_ROOT/setup_complete.marker" ]]; then
   flock "$OUT_ROOT/setup.lock" bash "$OUT_ROOT/setup_cotracker_factor_v7.sh"
 fi
 mkdir -p "$OUT_ROOT"
+
+localize_manifest() {
+  local src="\$1"
+  local dst="\$2"
+  local local_root="\$3"
+  "$ENV_PY" - "\$src" "\$dst" "\$local_root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+local_root = Path(sys.argv[3])
+payload = json.loads(src.read_text(encoding="utf-8"))
+frames = payload.get("frames")
+if not isinstance(frames, list):
+    raise RuntimeError(f"manifest lacks frames list: {src}")
+for frame in frames:
+    for key in ("rgb", "depth", "mask"):
+        path = Path(frame[key])
+        frame[key] = str(local_root / path.parent.name / path.name)
+dst.parent.mkdir(parents=True, exist_ok=True)
+dst.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+print(dst)
+PY
+}
 
 run_case() {
   local name="\$1"
@@ -93,18 +120,18 @@ run_case() {
 
 run_case \\
   trash_865_870 \\
-  /data2/ego_annotation_outputs/representative_trash/v3_samwise_pink_lid_bundlesdf_dataset_858_880/manifest.json \\
-  /data2/ego_annotation_outputs/representative_trash/v3_mano_side_metric_refit_858_880/annotations_side_metric_refit.json \\
-  /data2/ego_annotation_outputs/representative_trash/v3_unidepth_metric_source_858_880/unidepth_metric_depth_v3.npz \\
-  /data2/ego_annotation_outputs/representative_trash/v3_observed_unidepth_vggtK_solidified_perframe_thick001_865_870/solidified_sheet_object_meshes_world.npz \\
+  "\$(localize_manifest "$INPUT_ROOT/trash_dataset/manifest.json" "$OUT_ROOT/trash_865_870/localized_manifest.json" "$INPUT_ROOT/trash_dataset")" \\
+  "$INPUT_ROOT/trash_annotations/annotations_side_metric_refit.json" \\
+  "$INPUT_ROOT/trash_depth/unidepth_metric_depth_v3.npz" \\
+  "$INPUT_ROOT/trash_mesh/solidified_sheet_object_meshes_world.npz" \\
   865 870 3 "865 868 870"
 
 run_case \\
   mop_759_765 \\
-  /data2/ego_annotation_outputs/representative_mop/v3_mop_depth_manifold_dataset_735_765/manifest.json \\
-  /data2/ego_annotation_outputs/representative_mop/v3_vggt_object_skeleton_735_765/annotations_v3_vggt_object_skeleton.json \\
-  /data2/ego_annotation_outputs/representative_mop/v3_unidepth_dense_735_765/unidepth_full_frame_depth_v3.npz \\
-  /data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_759_765/observed_mask_depth_meshes_world.npz \\
+  "\$(localize_manifest "$INPUT_ROOT/mop_dataset/manifest.json" "$OUT_ROOT/mop_759_765/localized_manifest.json" "$INPUT_ROOT/mop_dataset")" \\
+  "$INPUT_ROOT/mop_annotations/annotations_v3_vggt_object_skeleton.json" \\
+  "$INPUT_ROOT/mop_depth/unidepth_full_frame_depth_v3.npz" \\
+  "$INPUT_ROOT/mop_mesh/observed_mask_depth_meshes_world.npz" \\
   759 765 3 "759 762 765"
 
 "$ENV_PY" - <<'PY'
