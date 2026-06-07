@@ -160,7 +160,7 @@ Artifacts:
 
 The rejected result proves the harness is live: a visually plausible generated mesh becomes object pose only after visible-surface coverage and image-depth replay agree with the observed video.
 
-`scripts/run_v7_generated_prior_replay_qc.py` wraps the same acceptance logic for future SAM 3D Objects, Hunyuan3D, TRELLIS, or Mesh4D outputs. It runs prior alignment, z-buffer replay, and a single accept/reject report. The TRELLIS negative-control wrapper report rejects the prior because visible-surface coverage and every replay check fail:
+`scripts/run_v7_generated_prior_replay_qc.py` wraps the same acceptance logic for future SAM 3D Objects, Hunyuan3D, TRELLIS, or Mesh4D outputs. It first replays the observed target archive against the supplied mask, metric depth, camera pose, and intrinsics contract. If that measured target fails visible-inside or depth thresholds, the wrapper returns `invalid_observed_target` before prior alignment, because prior acceptance would otherwise mix target-contract failure with generated-mesh failure. After the observed target passes, the wrapper runs prior alignment, z-buffer replay, and a single accept/reject report. The TRELLIS negative-control wrapper report rejects the prior because visible-surface coverage and every replay check fail:
 
 - alignment bidirectional p95: 0.906 m, threshold 0.010 m;
 - visible-surface coverage p95: 0.023 m, threshold 0.010 m;
@@ -228,6 +228,8 @@ Measured evidence:
 - measured replay baseline: `/data2/ego_annotation_outputs/representative_mop/v7_mop_observed_surface_contract_unidepth_vggt_zbuffer_759_765/qc_mesh_zbuffer_projection_v3.json`
 
 The earlier mop baseline mixed a per-row depth PNG and fixed intrinsics at export time with full-frame UniDepth and annotation-VGGT intrinsics at replay time, producing a false failure. Re-exporting the same model-produced masks with the same UniDepth and VGGT contract used by replay gives live measured visible-surface evidence: median silhouette IoU is 0.808, median visible-inside fraction is 1.000, and median z-buffer p95 depth error is 0.0016 m. This remains visible-surface evidence, not closed object-pose delivery.
+
+The guarded wrapper now reproduces this diagnosis: running the stale archive through the corrected replay contract returns `invalid_observed_target` with median visible-inside fraction 0.352 and median z-buffer p95 depth error 0.048 m. Running the corrected archive passes observed-target replay and continues to prior rejection.
 
 TRELLIS frame-750 prior replay:
 

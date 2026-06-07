@@ -26,11 +26,81 @@ def run_command(argv: list[str]) -> None:
     subprocess.run(argv, check=True)
 
 
+def run_zbuffer(args: argparse.Namespace, mesh_archive: Path, output_dir: Path) -> dict:
+    run_command(
+        [
+            sys.executable,
+            str(args.scripts_dir / "render_mesh_zbuffer_qc_v3.py"),
+            "--mesh-archive",
+            str(mesh_archive),
+            "--manifest",
+            str(args.manifest),
+            "--annotations",
+            str(args.annotations),
+            "--metric-depth-npz",
+            str(args.metric_depth_npz),
+            "--intrinsics-source",
+            args.intrinsics_source,
+            "--frame-start",
+            str(args.frame_start),
+            "--frame-end",
+            str(args.frame_end),
+            "--max-faces",
+            str(args.max_faces),
+            "--vertex-splat-radius-px",
+            str(args.vertex_splat_radius_px),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+    return load_json(output_dir / "qc_mesh_zbuffer_projection_v3.json")
+
+
+def write_report(path: Path, report: dict) -> dict:
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def run(args: argparse.Namespace) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     aligned_archive = args.output_dir / "aligned_prior_meshes_world.npz"
     align_report = args.output_dir / "qc_aligned_mesh_prior_v7.json"
+    observed_zbuffer_dir = args.output_dir / "observed_target_zbuffer_qc"
     zbuffer_dir = args.output_dir / "zbuffer_qc"
+    observed_zbuffer = run_zbuffer(args, args.observed_mesh_archive, observed_zbuffer_dir)
+    observed_visible_inside = metric(observed_zbuffer, "visible_silhouette_inside_mask_fraction", "median")
+    observed_zbuffer_abs_p95 = metric(observed_zbuffer, "zbuffer_depth_abs_p95_m", "median")
+    observed_target_pass = {
+        "observed_visible_inside_median": bool(observed_visible_inside >= float(args.min_observed_visible_inside_median)),
+        "observed_zbuffer_abs_p95_median": bool(observed_zbuffer_abs_p95 <= float(args.max_observed_zbuffer_abs_p95_median_m)),
+    }
+    if not all(observed_target_pass.values()):
+        return write_report(
+            args.output_dir / "qc_v7_generated_prior_replay.json",
+            {
+                "status": "invalid_observed_target",
+                "annotation_ready": False,
+                "method": "run_v7_generated_prior_replay_qc",
+                "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its observed target replay is internally consistent and the prior replay passes",
+                "mesh_prior": str(args.mesh_prior),
+                "observed_mesh_archive": str(args.observed_mesh_archive),
+                "observed_target_zbuffer_report": str(observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
+                "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
+                "frame_start": int(args.frame_start),
+                "frame_end": int(args.frame_end),
+                "observed_target_metrics": {
+                    "visible_inside_median": observed_visible_inside,
+                    "zbuffer_abs_p95_median_m": observed_zbuffer_abs_p95,
+                },
+                "thresholds": {
+                    "min_observed_visible_inside_median": float(args.min_observed_visible_inside_median),
+                    "max_observed_zbuffer_abs_p95_median_m": float(args.max_observed_zbuffer_abs_p95_median_m),
+                },
+                "pass": observed_target_pass,
+                "reason": "observed target mesh does not replay against the supplied mask/depth/camera contract, so prior acceptance would be causally uninterpretable",
+            },
+        )
     run_command(
         [
             sys.executable,
@@ -55,34 +125,8 @@ def run(args: argparse.Namespace) -> dict:
             str(args.max_visible_surface_p95_m),
         ]
     )
-    run_command(
-        [
-            sys.executable,
-            str(args.scripts_dir / "render_mesh_zbuffer_qc_v3.py"),
-            "--mesh-archive",
-            str(aligned_archive),
-            "--manifest",
-            str(args.manifest),
-            "--annotations",
-            str(args.annotations),
-            "--metric-depth-npz",
-            str(args.metric_depth_npz),
-            "--intrinsics-source",
-            args.intrinsics_source,
-            "--frame-start",
-            str(args.frame_start),
-            "--frame-end",
-            str(args.frame_end),
-            "--max-faces",
-            str(args.max_faces),
-            "--vertex-splat-radius-px",
-            str(args.vertex_splat_radius_px),
-            "--output-dir",
-            str(zbuffer_dir),
-        ]
-    )
+    zbuffer = run_zbuffer(args, aligned_archive, zbuffer_dir)
     align = load_json(align_report)
-    zbuffer = load_json(zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json")
     alignment_p95 = metric(align, "alignment_bidirectional_p95_m", "p95")
     visible_surface_p95 = metric(align, "visible_surface_coverage_p95_m", "p95")
     hidden_surface_p95 = metric(align, "hidden_surface_conflict_p95_m", "p95")
@@ -110,6 +154,8 @@ def run(args: argparse.Namespace) -> dict:
         "claim_tested": "a generated object mesh prior can be accepted as object geometry only after its visible surface covers measured geometry and image-depth replay passes",
         "mesh_prior": str(args.mesh_prior),
         "observed_mesh_archive": str(args.observed_mesh_archive),
+        "observed_target_zbuffer_report": str(observed_zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
+        "observed_target_zbuffer_video": str(observed_zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"),
         "aligned_mesh_archive": str(aligned_archive),
         "alignment_report": str(align_report),
         "zbuffer_report": str(zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"),
@@ -117,6 +163,8 @@ def run(args: argparse.Namespace) -> dict:
         "frame_start": int(args.frame_start),
         "frame_end": int(args.frame_end),
         "metrics": {
+            "observed_target_visible_inside_median": observed_visible_inside,
+            "observed_target_zbuffer_abs_p95_median_m": observed_zbuffer_abs_p95,
             "alignment_bidirectional_p95_m": alignment_p95,
             "visible_surface_coverage_p95_m": visible_surface_p95,
             "hidden_surface_conflict_p95_m": hidden_surface_p95,
@@ -125,6 +173,8 @@ def run(args: argparse.Namespace) -> dict:
             "zbuffer_abs_p95_median_m": zbuffer_abs_p95_median,
         },
         "thresholds": {
+            "min_observed_visible_inside_median": float(args.min_observed_visible_inside_median),
+            "max_observed_zbuffer_abs_p95_median_m": float(args.max_observed_zbuffer_abs_p95_median_m),
             "max_alignment_p95_m": float(args.max_alignment_p95_m),
             "max_visible_surface_p95_m": float(args.max_visible_surface_p95_m),
             "min_iou_median": float(args.min_iou_median),
@@ -132,6 +182,7 @@ def run(args: argparse.Namespace) -> dict:
             "max_zbuffer_abs_p95_median_m": float(args.max_zbuffer_abs_p95_median_m),
         },
         "pass": pass_rows,
+        "observed_target_pass": observed_target_pass,
         "strict_full_surface_alignment_is_diagnostic": True,
         "delivery_pass_keys": delivery_pass_keys,
         "next_required_if_accepted": [
@@ -141,10 +192,7 @@ def run(args: argparse.Namespace) -> dict:
             "stakeholder render inspection",
         ],
     }
-    output_json = args.output_dir / "qc_v7_generated_prior_replay.json"
-    output_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps(report, indent=2))
-    return report
+    return write_report(args.output_dir / "qc_v7_generated_prior_replay.json", report)
 
 
 def parse_args() -> argparse.Namespace:
@@ -162,6 +210,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=12000)
     parser.add_argument("--max-faces", type=int, default=0)
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
+    parser.add_argument("--min-observed-visible-inside-median", type=float, default=0.900)
+    parser.add_argument("--max-observed-zbuffer-abs-p95-median-m", type=float, default=0.010)
     parser.add_argument("--max-alignment-p95-m", type=float, default=0.010)
     parser.add_argument("--max-visible-surface-p95-m", type=float, default=0.010)
     parser.add_argument("--min-iou-median", type=float, default=0.900)
