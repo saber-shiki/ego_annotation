@@ -311,6 +311,8 @@ The runner follows Mesh4D's public inference contract: it loads one six-frame RG
 
 `scripts/archive_mesh4d_sequence_prior_v7.py` converts a Mesh4D six-mesh report into the same per-frame mesh archive schema used by the existing replay tools. It aligns each generated frame to the corresponding measured visible surface and writes both the archive and alignment rows. `scripts/run_v7_generated_prior_replay_qc.py` accepts this prealigned archive through `--prealigned-mesh-archive` plus `--prealigned-report`, so Mesh4D follows the same observed-target replay, z-buffer replay, thresholding, physics QC, and render path as static generated priors.
 
+`scripts/run_v7_mesh4d_sequence_batch.py` discovers completed Mesh4D reports under a local sync root, maps each report to the same representative target contracts through `configs/v7_mesh4d_case_targets.json`, archives the six generated meshes, and runs guarded replay. The script intentionally stops at replay; physics QC and delivery rendering remain downstream of an accepted full-fidelity replay report.
+
 ### SPAR3D Candidate Source
 
 SPAR3D is an official Stability AI single-image object mesh source that writes GLB meshes and point clouds from image inputs. It is queued as another complete-mesh prior, using the same model-produced RGBA object crops and the same downstream replay contract as TripoSG and InstantMesh.
