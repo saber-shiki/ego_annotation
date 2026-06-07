@@ -193,6 +193,8 @@ The guarded matrix separates target validity from generated-prior validity. The 
 
 `configs/v7_prior_replay_targets.json` stores the measured target contracts for the current representative samples. `scripts/run_v7_prior_candidate_batch.py` consumes generated mesh candidates as `target_id|candidate_name|mesh_path|note`, runs the same guarded replay wrapper, and writes a compact matrix with `summarize_v7_prior_replay_matrix.py`. This keeps candidate evaluation data-driven: TripoSG, Hunyuan, SAM 3D Objects, or another model all enter through the same target contract and acceptance report.
 
+`scripts/run_v7_candidate_physics_qc.py` is the second-stage acceptance wrapper. It refuses replay reports whose status is not `accepted`, then runs mesh-surface contact, selected-contact SDF, and full-hand SDF on the aligned mesh archive. A generated mesh can become an object-pose candidate for delivery only after both visible replay and this physics wrapper pass.
+
 ### SAM 3D Objects Candidate Source
 
 SAM 3D Objects is the next complete-mesh source tested by V7. Its official setup requires a Linux NVIDIA GPU with at least 32 GB VRAM, Hugging Face checkpoint access for `facebook/sam-3d-objects`, and the `hf` checkpoint directory containing `pipeline.yaml`. The official single-object API accepts an RGB image plus a mask and the underlying pipeline decodes both `mesh` and `gaussian` representations. V7 exports the decoded triangle mesh directly and keeps the GLB and Gaussian only as secondary visual evidence.
