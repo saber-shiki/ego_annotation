@@ -212,6 +212,19 @@ The SAM 3D Objects output is a generated complete-object mesh candidate, not an 
 
 Current A800 setup evidence: `ego_v7_sam3d_setup` reached the Hugging Face checkpoint download and returned `GatedRepoError` 403 for `facebook/sam-3d-objects`. The remote token exists, but Hugging Face reported that the account lacks access to the gated model. SAM 3D Objects can resume from the same job package after checkpoint access is granted or the checkpoint directory is supplied.
 
+### TripoSG Candidate Source
+
+TripoSG is the next accessible complete-mesh source. Its official inference script downloads `VAST-AI/TripoSG` and `briaai/RMBG-1.4`, runs image-conditioned shape synthesis, and exports a triangle mesh as GLB. The V7 wrapper uses the already model-produced object alpha crops rather than category-specific preprocessing, then writes both GLB and PLY for replay.
+
+Remote A800 job package:
+
+- runner: `scripts/remote_run_triposg_shape_v7.py`
+- job writer: `scripts/write_v7_triposg_remote_job.sh`
+- remote output root: `/mnt/user-home/yiwen/ego_annotation_remote/v7_triposg_prior_outputs`
+- setup tmux session: `ego_v7_triposg_setup`
+
+The output has the same status as every generated prior: it is a complete-object mesh hypothesis until `run_v7_generated_prior_replay_qc.py` accepts it against measured target replay.
+
 ### Representative Trash Prior Replay
 
 V7 also tests the generated-prior replay contract on the non-kitchen trash-lid representative. The measured input is the existing SAMWISE/UniDepth/VGGT-K solidified sheet archive for frames 865 to 870:
