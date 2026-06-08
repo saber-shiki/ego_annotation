@@ -584,8 +584,9 @@ def render_overlay_frame(
     if row is None:
         label += "  no reliable mesh-surface contact"
     else:
+        contact_label = str(row.get("display_contact_label") or "mesh")
         label += (
-            f"  {row['side']} hand mesh contact  reproj {row['median_joint_reprojection_px']:.1f}px"
+            f"  {row['side']} hand {contact_label} contact  reproj {row['median_joint_reprojection_px']:.1f}px"
             f"  surface p95 {row['best_patch_distance_p95_m'] * 1000.0:.1f}mm"
         )
     cv2.rectangle(image, (0, 0), (image.shape[1], 42), (0, 0, 0), -1)
