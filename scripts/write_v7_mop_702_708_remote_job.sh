@@ -88,7 +88,7 @@ run_stage sam2_object \
     --min-area-px 80 \
     --max-prompt-area-ratio 3.5 \
     --max-area-fraction 0.45 \
-    --min-positive-hit-fraction 0.50
+    --min-positive-hit-fraction 0.333
 
 run_stage sam2_hand \
   "$HAWOR_PY" scripts/run_sam2_vlm_points_image.py \
