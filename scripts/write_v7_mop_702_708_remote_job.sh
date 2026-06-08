@@ -62,7 +62,7 @@ for required_path in \
   fi
 done
 
-mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,hamer,mano_refit,mano_mask_depth_fit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
+mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,hamer,wilor,hand_candidates,mano_refit,mano_mask_depth_fit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
 
 run_stage() {
   local name="\$1"
@@ -205,9 +205,36 @@ run_stage hamer_maskbox \
     --min-mean-score 0.30 \
     --min-measured-hands 7
 
+run_stage wilor_maskbox \
+  "$HAWOR_PY" scripts/run_wilor_maskbox_hand_stream_v7.py \
+    --target-annotations "$OUT_ROOT/annotations/annotations_v3_vggt_object_skeleton.json" \
+    --frame-manifest "$FULL_SCENE_MANIFEST" \
+    --maskbox-json "$OUT_ROOT/hand_maskbox/hand_mask_box_evidence_702_708.json" \
+    --output-annotations "$OUT_ROOT/wilor/annotations_wilor_maskbox_702_708.json" \
+    --output-qc "$OUT_ROOT/wilor/qc_wilor_maskbox_702_708.json" \
+    --wilor-root "$REPO_DIR/third_party/WiLoR" \
+    --mano-right "$MANO_MODEL_ROOT/MANO_RIGHT.pkl" \
+    --frame-start "$FRAME_START" \
+    --frame-end "$FRAME_END" \
+    --local-root "$LOCAL_DATA_ROOT" \
+    --remote-root "$DATA_REMOTE_ROOT" \
+    --device cuda:0 \
+    --track-id "$HAND_TRACK_ID" \
+    --side any \
+    --min-measured-hands 7
+
+run_stage merge_hand_candidates \
+  "$HAWOR_PY" scripts/merge_hand_candidate_streams_v7.py \
+    --base-annotations "$OUT_ROOT/annotations/annotations_v3_vggt_object_skeleton.json" \
+    --hand-streams "$OUT_ROOT/hamer/annotations_hamer_maskbox_702_708.json" "$OUT_ROOT/wilor/annotations_wilor_maskbox_702_708.json" \
+    --output-annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox_702_708.json" \
+    --output-qc "$OUT_ROOT/hand_candidates/qc_hamer_wilor_maskbox_702_708.json" \
+    --frame-start "$FRAME_START" \
+    --frame-end "$FRAME_END"
+
 run_stage mano_metric_refit \
   "$HAWOR_PY" scripts/refit_mano_metric_depth_v3.py \
-    --annotations "$OUT_ROOT/hamer/annotations_hamer_maskbox_702_708.json" \
+    --annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox_702_708.json" \
     --metric-depth-npz "$OUT_ROOT/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
     --output-json "$OUT_ROOT/mano_refit/annotations_hamer_maskbox_metric_refit_702_708.json" \
     --frame-start "$FRAME_START" \
@@ -218,7 +245,7 @@ run_stage mano_metric_refit \
 
 run_stage mano_articulation_mask_depth_refit \
   "$HAWOR_PY" scripts/refit_mano_articulation_mask_depth_v3.py \
-    --annotations "$OUT_ROOT/hamer/annotations_hamer_maskbox_702_708.json" \
+    --annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox_702_708.json" \
     --mask-track "$OUT_ROOT/sam2_hand/sam2_track.json" \
     --metric-depth-npz "$OUT_ROOT/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
     --output-annotations "$OUT_ROOT/mano_mask_depth_fit/annotations_articulation_mask_depth_refit_702_708.json" \
