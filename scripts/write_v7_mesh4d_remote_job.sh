@@ -43,6 +43,7 @@ python3 -m virtualenv "$ENV_DIR"
 "$ENV_PY" -m pip install Cython==3.0.12
 "$ENV_PY" -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 "$ENV_PY" -m pip install --no-build-isolation -r requirements.txt
+"$ENV_PY" -m pip install torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 "$ENV_PY" -m pip install \
   "huggingface_hub<1.0" \
   transformers==4.49.0 \
@@ -51,7 +52,8 @@ python3 -m virtualenv "$ENV_DIR"
   pymeshlab==2022.2.post3 \
   pycpd==2.0.0 \
   omegaconf==2.3.0 \
-  munch==4.0.0
+  munch==4.0.0 \
+  plyfile==1.1.3
 cd "$REPO/hy3dshape"
 "$ENV_PY" ./setup_im2mesh.py build_ext --inplace
 cd "$REPO"
