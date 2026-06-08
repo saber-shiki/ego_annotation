@@ -34,6 +34,7 @@ if ! grep -Fq "cythonize(ext_modules, force=True" "$REPO/hy3dshape/setup_im2mesh
 fi
 perl -0pi -e "s#im2mesh/utils/libkdtree/pykdtree/kdtree\\.c#im2mesh/utils/libkdtree/pykdtree/kdtree.pyx#g" "$REPO/hy3dshape/setup_im2mesh.py"
 perl -0pi -e "s/^\\s*pykdtree,\\n//m" "$REPO/hy3dshape/setup_im2mesh.py"
+perl -0pi -e "s/^from tkinter import S\\n//m" "$REPO/hy3dshape/dataset/custom_dataloader.py"
 cat > "$REPO/hy3dshape/im2mesh/utils/libkdtree/__init__.py" <<'PY'
 import numpy as np
 from scipy.spatial import cKDTree
@@ -58,6 +59,7 @@ PY
 grep -F "im2mesh/utils/libkdtree/pykdtree/kdtree.pyx" "$REPO/hy3dshape/setup_im2mesh.py"
 grep -F "cythonize(ext_modules, force=True" "$REPO/hy3dshape/setup_im2mesh.py"
 grep -F "pykdtree," "$REPO/hy3dshape/setup_im2mesh.py" && exit 1 || true
+grep -F "from tkinter import S" "$REPO/hy3dshape/dataset/custom_dataloader.py" && exit 1 || true
 python3 -m pip install --user virtualenv
 rm -rf "$ENV_DIR"
 rm -f "$SETUP_COMPLETE"
@@ -76,7 +78,8 @@ python3 -m virtualenv "$ENV_DIR"
   pycpd==2.0.0 \
   omegaconf==2.3.0 \
   munch==4.0.0 \
-  plyfile==1.1.3
+  plyfile==1.1.3 \
+  timm==1.0.22
 cd "$REPO/hy3dshape"
 "$ENV_PY" ./setup_im2mesh.py build_ext --inplace
 cd "$REPO"
