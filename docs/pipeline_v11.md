@@ -79,12 +79,12 @@ Evidence:
 Videos:
 
 ```text
-/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables/overlay/mesh_surface_contact_review.mp4
-/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables/world/world_reconstruction_3d.mp4
-/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables/world/world_reconstruction_side_by_side.mp4
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables_preferred/overlay/mesh_surface_contact_review.mp4
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables_preferred/world/world_reconstruction_3d.mp4
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables_preferred/world/world_reconstruction_side_by_side.mp4
 ```
 
-Visual inspection found the overlay and side-by-side coherent: the red object mesh stays on the pink lid, MANO follows the right hand, and magenta contact markers stay on the measured contact patch in all frames. The world view is legible with object mesh, MANO hand, contact marker, head camera, axes, and scale. The hidden mesh appears as a flat internal patch in the standalone world view; the video remains usable, and the next renderer revision should make hidden/completed surfaces visually distinct from observed visible surfaces.
+Visual inspection found the overlay and side-by-side coherent: the red object mesh stays on the pink lid, MANO follows the right hand, and magenta contact markers stay on the measured contact patch in all frames. The preferred world render separates the measured object surface from the temporally fused hidden surface, with a legend, head-camera glyph, head trajectory, axes, and metric scale. The side-by-side video carries the V11 label and the semantic caption fits within the caption band.
 
 ### Wild Rice 2538-2543
 
@@ -164,4 +164,4 @@ V11 adds temporal hidden-surface stability for object mesh completion on wild ri
 
 V11 produces evidence-supported meshes. The hidden surface is accepted where multi-frame support, replay, tracks, hand-object SDF, and visual inspection agree. Surfaces without observation, motion support, or contact support remain uncertain.
 
-The next version should target contact-rich object mesh completion: use the V11 temporal hidden-surface fusion path on a sample where the MANO hand is physically close to the manipulated object and the contact factor is active, then require selected-contact SDF, nonpenetration, hidden temporal QC, replay, track QC, and visual deliverables to pass together.
+The next version should target a stronger physical model for contact-rich manipulation. V11 verifies geometric contact and nonpenetration, but it does not yet explain the contact as a force-bearing event in a temporal dynamics model. V12 should add a factor graph that jointly optimizes head pose, object pose, MANO pose, contact state, object surface support, temporal smoothness, and force/acceleration consistency while preserving the same mesh-level replay and hidden-surface evidence.
