@@ -48,6 +48,48 @@ def refit_metric(hand: dict, key: str) -> float | None:
 
 
 def hypothesis_score(hand: dict, args: argparse.Namespace) -> tuple[float, dict]:
+    articulation = hand.get("v3_mano_articulation_mask_depth_refit")
+    if isinstance(articulation, dict):
+        rtmlib = finite(articulation.get("rtmlib_joint_reprojection_median_px"))
+        silhouette = finite(articulation.get("silhouette_distance_p95_px"))
+        mask_depth = finite(articulation.get("mano_minus_mask_depth_median_m"))
+        depth = finite(articulation.get("depth_acceptance_value_m"))
+        bone = finite(articulation.get("hand_bone_m"))
+        pose = finite(articulation.get("pose_delta_abs_max_rad"))
+        scale = finite(articulation.get("scale"))
+        if silhouette is None or mask_depth is None or depth is None or bone is None or pose is None or scale is None:
+            return float("inf"), {"status": "missing_required_articulation_metric"}
+        reproj_term = 0.0 if rtmlib is None else (rtmlib / float(args.sigma_articulation_rtmlib_px)) ** 2
+        score = (
+            reproj_term
+            + (silhouette / float(args.sigma_articulation_silhouette_px)) ** 2
+            + (mask_depth / float(args.sigma_depth_m)) ** 2
+            + (depth / float(args.sigma_articulation_vertex_depth_m)) ** 2
+            + ((bone - float(args.hand_bone_prior_m)) / float(args.sigma_bone_m)) ** 2
+            + (pose / float(args.sigma_articulation_pose_rad)) ** 2
+            + ((scale - 1.0) / float(args.sigma_articulation_scale)) ** 2
+        )
+        metrics = {
+            "status": "scored_articulation_refit",
+            "rtmlib_joint_reprojection_median_px": rtmlib,
+            "silhouette_distance_p95_px": silhouette,
+            "mano_minus_mask_depth_median_m": mask_depth,
+            "depth_acceptance_value_m": depth,
+            "hand_bone_m": bone,
+            "pose_delta_abs_max_rad": pose,
+            "scale": scale,
+            "score": float(score),
+            "sigma_articulation_rtmlib_px": float(args.sigma_articulation_rtmlib_px),
+            "sigma_articulation_silhouette_px": float(args.sigma_articulation_silhouette_px),
+            "sigma_depth_m": float(args.sigma_depth_m),
+            "sigma_articulation_vertex_depth_m": float(args.sigma_articulation_vertex_depth_m),
+            "hand_bone_prior_m": float(args.hand_bone_prior_m),
+            "sigma_bone_m": float(args.sigma_bone_m),
+            "sigma_articulation_pose_rad": float(args.sigma_articulation_pose_rad),
+            "sigma_articulation_scale": float(args.sigma_articulation_scale),
+        }
+        return float(score), metrics
+
     reproj = refit_metric(hand, "median_reprojection_after_px")
     depth = refit_metric(hand, "mano_minus_unidepth_after_m")
     bone = refit_metric(hand, "hand_bone_after_m")
@@ -157,6 +199,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sigma-depth-m", type=float, default=0.020)
     parser.add_argument("--hand-bone-prior-m", type=float, default=0.150)
     parser.add_argument("--sigma-bone-m", type=float, default=0.030)
+    parser.add_argument("--sigma-articulation-rtmlib-px", type=float, default=18.0)
+    parser.add_argument("--sigma-articulation-silhouette-px", type=float, default=20.0)
+    parser.add_argument("--sigma-articulation-vertex-depth-m", type=float, default=0.060)
+    parser.add_argument("--sigma-articulation-pose-rad", type=float, default=0.75)
+    parser.add_argument("--sigma-articulation-scale", type=float, default=0.12)
     parser.add_argument("--required-side", choices=["left", "right"])
     return parser.parse_args()
 
