@@ -56,6 +56,8 @@ min_X
 
 The object-motion residual is interpreted as surface slip, because a human hand can slide across the manipulated surface while remaining in contact. Sticking is a special case where the slip p95 is below the sticking threshold. V12 therefore reports the contact motion regime instead of forcing all valid contact to be no-slip.
 
+The report contract requires at least three contact frames and at least one acceleration-consistency row. A two-frame crop can still be useful as a contact-distance diagnostic, but it cannot accept a dynamics claim.
+
 ## Trash 865-870 Result
 
 Output:
@@ -77,6 +79,7 @@ Evidence:
 
 - status: accepted;
 - contact motion regime: sliding;
+- evidence predicates: 6 contact frames and 4 acceleration-consistency rows;
 - graph nodes: 6 object contact points and 6 hand contact gaps;
 - graph edges: 6 object anchors, 6 hand anchors, 6 contact gaps, 5 object-motion edges, 5 relative-contact edges, 5 slip priors, and 4 acceleration-consistency edges;
 - contact gap p95: 0.77 mm;
