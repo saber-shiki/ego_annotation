@@ -162,6 +162,7 @@ def select_mask(
     max_negative_hits: int,
     prompt_area_margin_px: float,
     score_tie_margin: float,
+    selection_mode: str,
 ) -> tuple[np.ndarray | None, dict]:
     pos = points[labels == 1]
     neg = points[labels == 0]
@@ -196,27 +197,50 @@ def select_mask(
     valid_indices = [row["candidate"] for row in candidates if row["accepted_by_prompt_contract"]]
     if not valid_indices:
         return None, {"reason": "no_candidate_satisfies_prompt_contract", "candidates": candidates}
-    best_fraction = max(candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]) for idx in valid_indices)
-    near_best = [
-        idx
-        for idx in valid_indices
-        if candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]) >= best_fraction - float(score_tie_margin)
-    ]
-    best = max(
-        near_best,
-        key=lambda idx: (
-            candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]),
-            -candidates[idx]["negative_hits"],
-            float(scores[idx]),
-            -abs(
-                math.log(
-                    max(1.0, float(candidates[idx]["area_px"]))
-                    / max(1.0, float(candidates[idx]["prompt_extent_area_px"]))
-                )
+    if selection_mode == "prompt_hits":
+        best_fraction = max(candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]) for idx in valid_indices)
+        near_best = [
+            idx
+            for idx in valid_indices
+            if candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]) >= best_fraction - float(score_tie_margin)
+        ]
+        best = max(
+            near_best,
+            key=lambda idx: (
+                candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]),
+                -candidates[idx]["negative_hits"],
+                float(scores[idx]),
+                -abs(
+                    math.log(
+                        max(1.0, float(candidates[idx]["area_px"]))
+                        / max(1.0, float(candidates[idx]["prompt_extent_area_px"]))
+                    )
+                ),
             ),
-        ),
-    )
-    return masks[best].astype(bool), {"reason": "ok", "selected_candidate": int(best), "candidates": candidates}
+        )
+    elif selection_mode == "sam_score_compact":
+        best = max(
+            valid_indices,
+            key=lambda idx: (
+                float(scores[idx]),
+                -candidates[idx]["negative_hits"],
+                -abs(
+                    math.log(
+                        max(1.0, float(candidates[idx]["area_px"]))
+                        / max(1.0, float(candidates[idx]["prompt_extent_area_px"]))
+                    )
+                ),
+                candidates[idx]["positive_hits"] / max(1, candidates[idx]["positive_points"]),
+            ),
+        )
+    else:
+        raise RuntimeError(f"unknown SAM2 selection mode: {selection_mode}")
+    return masks[best].astype(bool), {
+        "reason": "ok",
+        "selected_candidate": int(best),
+        "selection_mode": selection_mode,
+        "candidates": candidates,
+    }
 
 
 def save_candidate_review(
@@ -320,6 +344,7 @@ def run_predictor(
                     int(args.max_negative_hits),
                     float(args.prompt_area_margin_px),
                     float(args.score_tie_margin),
+                    str(args.selection_mode),
                 )
                 report.update({"frame_idx": int(source_idx), "used_box": bool(box is not None)})
                 if args.save_candidate_masks:
@@ -419,6 +444,7 @@ def run(args: argparse.Namespace) -> dict:
         "max_negative_hits": int(args.max_negative_hits),
         "prompt_area_margin_px": float(args.prompt_area_margin_px),
         "score_tie_margin": float(args.score_tie_margin),
+        "selection_mode": str(args.selection_mode),
         "elapsed_s": time.time() - started,
         "outputs": {
             "sam2_track": str(args.output_dir / "sam2_track.json"),
@@ -451,6 +477,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-negative-hits", type=int, default=0)
     parser.add_argument("--prompt-area-margin-px", type=float, default=40.0)
     parser.add_argument("--score-tie-margin", type=float, default=0.08)
+    parser.add_argument("--selection-mode", choices=["prompt_hits", "sam_score_compact"], default="prompt_hits")
     parser.add_argument("--use-box", action="store_true")
     parser.add_argument("--save-candidate-masks", action="store_true")
     parser.add_argument("--source-width", type=int)

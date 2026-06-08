@@ -50,8 +50,14 @@ MIN_OBJECT_FRAMES=${MIN_OBJECT_FRAMES:-$((FRAME_END - FRAME_START + 1))}
 MIN_HAND_FRAMES=${MIN_HAND_FRAMES:-$((FRAME_END - FRAME_START + 1))}
 SAM2_OBJECT_MAX_NEGATIVE_HITS=${SAM2_OBJECT_MAX_NEGATIVE_HITS:-0}
 SAM2_OBJECT_MIN_POSITIVE_HIT_FRACTION=${SAM2_OBJECT_MIN_POSITIVE_HIT_FRACTION:-0.333}
+SAM2_OBJECT_SELECTION_MODE=${SAM2_OBJECT_SELECTION_MODE:-prompt_hits}
 SAM2_HAND_MAX_NEGATIVE_HITS=${SAM2_HAND_MAX_NEGATIVE_HITS:-0}
 SAM2_HAND_MIN_POSITIVE_HIT_FRACTION=${SAM2_HAND_MIN_POSITIVE_HIT_FRACTION:-0.75}
+SAM2_HAND_SELECTION_MODE=${SAM2_HAND_SELECTION_MODE:-prompt_hits}
+USE_RTMLIB_HAND_EVIDENCE=${USE_RTMLIB_HAND_EVIDENCE:-0}
+RTMLIB_PY=${RTMLIB_PY:-$REMOTE_ROOT/rtmlib_work/venv/bin/python}
+RTMLIB_DEVICE=${RTMLIB_DEVICE:-cuda}
+RTMLIB_BACKEND=${RTMLIB_BACKEND:-onnxruntime}
 VGGT_MIN_DEPTH_PIXELS=${VGGT_MIN_DEPTH_PIXELS:-500}
 MAX_USED_MB=${MAX_USED_MB:-2000}
 POLL_SECONDS=${POLL_SECONDS:-300}
@@ -99,7 +105,7 @@ for required_path in \
   fi
 done
 
-mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,hamer,wilor,hand_candidates,mano_refit,mano_mask_depth_fit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
+mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,rtmlib_hand2d,rtmlib_hand_prompts,hamer,wilor,hand_candidates,mano_refit,mano_mask_depth_fit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
 
 run_stage() {
   local name="\$1"
@@ -126,12 +132,42 @@ run_stage sam2_object \
     --max-prompt-area-ratio 3.5 \
     --max-area-fraction 0.45 \
     --min-positive-hit-fraction "$SAM2_OBJECT_MIN_POSITIVE_HIT_FRACTION" \
-    --max-negative-hits "$SAM2_OBJECT_MAX_NEGATIVE_HITS"
+    --max-negative-hits "$SAM2_OBJECT_MAX_NEGATIVE_HITS" \
+    --selection-mode "$SAM2_OBJECT_SELECTION_MODE"
+
+HAND_PROMPTS_FOR_SAM2="$HAND_PROMPTS"
+HAND_PROPOSAL_JSON="$OUT_ROOT/hand_maskbox/hand_mask_box_evidence.json"
+if [[ "$USE_RTMLIB_HAND_EVIDENCE" == "1" ]]; then
+  if [[ ! -x "$RTMLIB_PY" ]]; then
+    echo "RTMLib Python is missing or not executable: $RTMLIB_PY" >&2
+    exit 1
+  fi
+  run_stage rtmlib_hand2d \
+    "$RTMLIB_PY" scripts/run_rtmlib_hand2d_v3.py \
+      --clip "$SOURCE_CLIP" \
+      --output-dir "$OUT_ROOT/rtmlib_hand2d" \
+      --frame-start "$FRAME_START" \
+      --frame-end "$FRAME_END" \
+      --review-frames "$FRAME_START" "$ANCHOR_FRAME" "$FRAME_END" \
+      --device "$RTMLIB_DEVICE" \
+      --backend "$RTMLIB_BACKEND"
+
+  run_stage rtmlib_hand_prompts \
+    "$HAWOR_PY" scripts/build_rtmlib_sam2_hand_prompts_v7.py \
+      --rtmlib-json "$OUT_ROOT/rtmlib_hand2d/rtmlib_hand2d.json" \
+      --reference-prompts "$HAND_PROMPTS" \
+      --output-json "$OUT_ROOT/rtmlib_hand_prompts/visual_track_point_prompts_rtmlib_v7.json" \
+      --frame-start "$FRAME_START" \
+      --frame-end "$FRAME_END" \
+      --track-id "$HAND_TRACK_ID"
+  HAND_PROMPTS_FOR_SAM2="$OUT_ROOT/rtmlib_hand_prompts/visual_track_point_prompts_rtmlib_v7.json"
+  HAND_PROPOSAL_JSON="$OUT_ROOT/rtmlib_hand2d/rtmlib_hand2d.json"
+fi
 
 run_stage sam2_hand \
   "$HAWOR_PY" scripts/run_sam2_vlm_points_image.py \
     --clip "$SOURCE_CLIP" \
-    --point-prompts "$HAND_PROMPTS" \
+    --point-prompts "\$HAND_PROMPTS_FOR_SAM2" \
     --output-dir "$OUT_ROOT/sam2_hand" \
     --checkpoint "$SAM2_CHECKPOINT" \
     --model-cfg "$SAM2_MODEL_CFG" \
@@ -145,7 +181,8 @@ run_stage sam2_hand \
     --max-prompt-area-ratio 3.5 \
     --max-area-fraction 0.10 \
     --min-positive-hit-fraction "$SAM2_HAND_MIN_POSITIVE_HIT_FRACTION" \
-    --max-negative-hits "$SAM2_HAND_MAX_NEGATIVE_HITS"
+    --max-negative-hits "$SAM2_HAND_MAX_NEGATIVE_HITS" \
+    --selection-mode "$SAM2_HAND_SELECTION_MODE"
 
 run_stage object_rgb_dataset \
   "$HAWOR_PY" scripts/export_mask_track_rgb_dataset_v3.py \
@@ -229,7 +266,7 @@ run_stage hamer_maskbox \
   "$HAWOR_PY" scripts/run_hamer_rtmlib_hand_stream_v3.py \
     --target-annotations "$OUT_ROOT/annotations/annotations_v3_vggt_object_skeleton.json" \
     --frame-manifest "$FULL_SCENE_MANIFEST" \
-    --rtmlib-json "$OUT_ROOT/hand_maskbox/hand_mask_box_evidence.json" \
+    --rtmlib-json "\$HAND_PROPOSAL_JSON" \
     --output-annotations "$OUT_ROOT/hamer/annotations_hamer_maskbox.json" \
     --output-qc "$OUT_ROOT/hamer/qc_hamer_maskbox.json" \
     --hamer-root "$HAMER_ROOT" \
