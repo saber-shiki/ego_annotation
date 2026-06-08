@@ -197,7 +197,7 @@ The downstream optimizer remains category-agnostic: masks, depths, tracks, mesh 
 Results:
 
 - trash 865-870: status `no_hidden_geometry`; only one frame retained hidden faces, so this sample remains an observed-surface no-regression delivery;
-- wild rice 2538-2543: rejected; hidden-surface p95 distance 168 mm, hidden pair coverage 0.8, hidden-face count jump p95 above threshold, with hundreds to thousands of components per frame;
+- wild rice 2538-2543: rejected; hidden-surface p95 distance 179 mm under full multi-anchor motion coverage, hidden-face count jump p95 above threshold, with hundreds to thousands of components per frame;
 - mop 760-765: rejected; hidden-surface p95 distance 95 mm despite full pair coverage, with thousands of components per frame.
 
 The hidden-face diagnostic changes the V11 priority: object mesh completion needs temporally fused geometry and component continuity in addition to visible replay and visible-surface tracks. The next mesh step is a temporally fused completion state with component continuity before further per-frame hidden-face append runs.
