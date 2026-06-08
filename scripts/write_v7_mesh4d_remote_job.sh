@@ -33,8 +33,31 @@ if ! grep -Fq "cythonize(ext_modules, force=True" "$REPO/hy3dshape/setup_im2mesh
   perl -0pi -e "s/ext_modules=cythonize\\(ext_modules\\),/ext_modules=cythonize(ext_modules, force=True, compiler_directives={'language_level': '3'}),/" "$REPO/hy3dshape/setup_im2mesh.py"
 fi
 perl -0pi -e "s#im2mesh/utils/libkdtree/pykdtree/kdtree\\.c#im2mesh/utils/libkdtree/pykdtree/kdtree.pyx#g" "$REPO/hy3dshape/setup_im2mesh.py"
+perl -0pi -e "s/^\\s*pykdtree,\\n//m" "$REPO/hy3dshape/setup_im2mesh.py"
+cat > "$REPO/hy3dshape/im2mesh/utils/libkdtree/__init__.py" <<'PY'
+import numpy as np
+from scipy.spatial import cKDTree
+
+
+class KDTree:
+    def __init__(self, data_pts, leafsize=16):
+        self.data_pts = np.asarray(data_pts)
+        self.n = int(len(self.data_pts))
+        self._tree = cKDTree(self.data_pts, leafsize=int(leafsize))
+
+    def query(self, query_pts, k=1, eps=0, distance_upper_bound=None, sqr_dists=False):
+        upper = np.inf if distance_upper_bound is None else float(distance_upper_bound)
+        dist, idx = self._tree.query(query_pts, k=int(k), eps=float(eps), distance_upper_bound=upper)
+        if sqr_dists:
+            dist = np.square(dist)
+        return dist, idx
+
+
+__all__ = ["KDTree"]
+PY
 grep -F "im2mesh/utils/libkdtree/pykdtree/kdtree.pyx" "$REPO/hy3dshape/setup_im2mesh.py"
 grep -F "cythonize(ext_modules, force=True" "$REPO/hy3dshape/setup_im2mesh.py"
+grep -F "pykdtree," "$REPO/hy3dshape/setup_im2mesh.py" && exit 1 || true
 python3 -m pip install --user virtualenv
 rm -rf "$ENV_DIR"
 rm -f "$SETUP_COMPLETE"
