@@ -124,8 +124,20 @@ def vertex_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, radius
     return zbuf
 
 
-def mesh_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, faces: np.ndarray, max_faces: int | None, vertex_radius_px: int) -> np.ndarray:
+def mesh_zbuffer(
+    shape: tuple[int, int],
+    uv: np.ndarray,
+    z: np.ndarray,
+    faces: np.ndarray,
+    max_faces: int | None,
+    vertex_radius_px: int,
+    surface_mode: str = "triangles-plus-vertices",
+) -> np.ndarray:
     zbuf = triangle_zbuffer(shape, uv, z, faces, max_faces)
+    if surface_mode == "triangles":
+        return zbuf
+    if surface_mode != "triangles-plus-vertices":
+        raise RuntimeError(f"unknown z-buffer surface mode: {surface_mode}")
     if int(vertex_radius_px) < 0:
         raise RuntimeError("vertex z-buffer radius must be non-negative")
     vertex_buf = vertex_zbuffer(shape, uv, z, int(vertex_radius_px))
@@ -213,7 +225,15 @@ def run(args: argparse.Namespace) -> dict:
         positive = z > 0.0
         uv[positive, 0] = K[0, 0] * vertices_camera[positive, 0] / z[positive] + K[0, 2]
         uv[positive, 1] = K[1, 1] * vertices_camera[positive, 1] / z[positive] + K[1, 2]
-        zbuf = mesh_zbuffer(object_mask.shape, uv, z, faces, args.max_faces, int(args.vertex_splat_radius_px))
+        zbuf = mesh_zbuffer(
+            object_mask.shape,
+            uv,
+            z,
+            faces,
+            args.max_faces,
+            int(args.vertex_splat_radius_px),
+            str(args.zbuffer_surface_mode),
+        )
         silhouette = np.isfinite(zbuf)
         intersection = int(np.count_nonzero(silhouette & object_mask))
         union = int(np.count_nonzero(silhouette | object_mask))
@@ -270,6 +290,7 @@ def run(args: argparse.Namespace) -> dict:
         "metric_depth_npz": str(args.metric_depth_npz) if args.metric_depth_npz is not None else None,
         "max_faces": None if args.max_faces is None else int(args.max_faces),
         "full_fidelity_zbuffer": bool(args.max_faces is None),
+        "zbuffer_surface_mode": str(args.zbuffer_surface_mode),
         "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
         "frames": int(len(rows)),
         "silhouette_mask_iou": summarize([row["silhouette_mask_iou"] for row in rows]),
@@ -299,6 +320,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--max-faces", type=int, default=60000)
+    parser.add_argument("--zbuffer-surface-mode", choices=("triangles", "triangles-plus-vertices"), default="triangles-plus-vertices")
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
     parser.add_argument("--still-frames", type=int, nargs="*", default=[])
     return parser.parse_args()

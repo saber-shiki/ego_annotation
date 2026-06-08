@@ -204,8 +204,12 @@ def face_id_zbuffer(shape: tuple[int, int], uv: np.ndarray, z: np.ndarray, faces
 def append_faces(observed_vertices: np.ndarray, observed_faces: np.ndarray, prior_vertices: np.ndarray, prior_faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if len(prior_faces) == 0:
         return np.asarray(observed_vertices, dtype=np.float64), np.asarray(observed_faces, dtype=np.int32)
-    vertices = np.vstack([np.asarray(observed_vertices, dtype=np.float64), np.asarray(prior_vertices, dtype=np.float64)])
-    faces = np.vstack([np.asarray(observed_faces, dtype=np.int32), np.asarray(prior_faces, dtype=np.int32) + len(observed_vertices)])
+    prior_faces = np.asarray(prior_faces, dtype=np.int32)
+    used_vertices, compact_faces = np.unique(prior_faces.reshape(-1), return_inverse=True)
+    compact_faces = compact_faces.reshape(prior_faces.shape).astype(np.int32)
+    compact_prior_vertices = np.asarray(prior_vertices, dtype=np.float64)[used_vertices]
+    vertices = np.vstack([np.asarray(observed_vertices, dtype=np.float64), compact_prior_vertices])
+    faces = np.vstack([np.asarray(observed_faces, dtype=np.int32), compact_faces + len(observed_vertices)])
     return vertices, faces
 
 

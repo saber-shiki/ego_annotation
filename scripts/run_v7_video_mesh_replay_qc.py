@@ -67,6 +67,8 @@ def run_zbuffer(args: argparse.Namespace, mesh_archive: Path, output_dir: Path, 
         str(args.frame_end),
         "--max-faces",
         str(args.max_faces),
+        "--zbuffer-surface-mode",
+        args.zbuffer_surface_mode,
         "--vertex-splat-radius-px",
         str(args.vertex_splat_radius_px),
         "--output-dir",
@@ -123,6 +125,8 @@ def validate_zbuffer_report(args: argparse.Namespace, path: Path, mesh_archive: 
         raise RuntimeError("z-buffer report intrinsics_source mismatch")
     if int(report.get("vertex_splat_radius_px", -1)) != int(args.vertex_splat_radius_px):
         raise RuntimeError("z-buffer report vertex_splat_radius_px mismatch")
+    if str(report.get("zbuffer_surface_mode", "triangles-plus-vertices")) != str(args.zbuffer_surface_mode):
+        raise RuntimeError("z-buffer report zbuffer_surface_mode mismatch")
     if "full_fidelity_zbuffer" not in report or "max_faces" not in report:
         raise RuntimeError("z-buffer report lacks full-fidelity render contract")
     expected_full_fidelity = bool(int(args.max_faces) == 0)
@@ -194,6 +198,7 @@ def run(args: argparse.Namespace) -> dict:
         "samples": None,
         "max_faces": int(args.max_faces),
         "vertex_splat_radius_px": int(args.vertex_splat_radius_px),
+        "zbuffer_surface_mode": str(args.zbuffer_surface_mode),
         "full_fidelity_zbuffer": bool(args.max_faces == 0),
     }
     report = {
@@ -256,6 +261,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scripts-dir", type=Path, default=SCRIPT_DIR)
     parser.add_argument("--intrinsics-source", choices=["manifest", "annotation-vggt"], default="annotation-vggt")
     parser.add_argument("--max-faces", type=int, default=0)
+    parser.add_argument("--zbuffer-surface-mode", choices=("triangles", "triangles-plus-vertices"), default="triangles-plus-vertices")
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
     parser.add_argument("--archive-frames-only", action="store_true")
     parser.add_argument("--min-iou-median", type=float, default=0.900)
