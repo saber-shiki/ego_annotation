@@ -120,7 +120,7 @@ Inputs:
 - metric depth archive;
 - mesh-surface contact report;
 - optional RTMLib/WiLoR/HandDGP keypoint evidence;
-- optional VLM/MLM contact-label JSON.
+- optional VLM/MLLM contact-label JSON.
 
 Outputs:
 
