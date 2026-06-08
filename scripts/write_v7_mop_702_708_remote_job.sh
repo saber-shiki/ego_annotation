@@ -254,7 +254,6 @@ run_stage mano_articulation_mask_depth_refit \
     --review-dir "$OUT_ROOT/mano_mask_depth_fit/review" \
     --mano-wrapper-root "$REPO_DIR/third_party/WiLoR" \
     --mano-model-root "$MANO_MODEL_ROOT" \
-    --device cuda:0 \
     --frame-start "$FRAME_START" \
     --frame-end "$FRAME_END" \
     --track-id "$HAND_TRACK_ID" \
