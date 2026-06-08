@@ -60,6 +60,8 @@ SAM2_HAND_SELECTION_MODE=${SAM2_HAND_SELECTION_MODE:-prompt_hits}
 USE_RTMLIB_HAND_EVIDENCE=${USE_RTMLIB_HAND_EVIDENCE:-0}
 USE_RTMLIB_SAM2_HAND_PROMPTS=${USE_RTMLIB_SAM2_HAND_PROMPTS:-$USE_RTMLIB_HAND_EVIDENCE}
 USE_HANDDGP_HAND_EVIDENCE=${USE_HANDDGP_HAND_EVIDENCE:-0}
+HANDDGP_INVERSE_DEVICE=${HANDDGP_INVERSE_DEVICE:-cuda:0}
+MANO_ARTICULATION_DEVICE=${MANO_ARTICULATION_DEVICE:-cuda:0}
 RTMLIB_PY=${RTMLIB_PY:-$REMOTE_ROOT/rtmlib_work/venv/bin/python}
 RTMLIB_DEVICE=${RTMLIB_DEVICE:-cuda}
 RTMLIB_BACKEND=${RTMLIB_BACKEND:-onnxruntime}
@@ -343,6 +345,7 @@ if [[ "$USE_HANDDGP_HAND_EVIDENCE" == "1" ]]; then
       --frame-end "$FRAME_END" \
       --track-id "$HAND_TRACK_ID" \
       --side "$HAND_SIDE" \
+      --device "$HANDDGP_INVERSE_DEVICE" \
       --min-measured-hands "$MIN_HAND_FRAMES"
   run_stage merge_hand_candidates \
     "$HAWOR_PY" scripts/merge_hand_candidate_streams_v7.py \
@@ -388,6 +391,7 @@ articulation_refit_args=(
   --local-output-root "$OUT_ROOT/sam2_hand"
   --min-observations "$MIN_HAND_FRAMES"
   --still-frames "$FRAME_START" "$ANCHOR_FRAME" "$FRAME_END"
+  --device "$MANO_ARTICULATION_DEVICE"
 )
 if [[ "$USE_RTMLIB_HAND_EVIDENCE" == "1" ]]; then
   articulation_refit_args+=(
