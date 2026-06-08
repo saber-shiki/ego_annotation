@@ -200,4 +200,26 @@ Results:
 - wild rice 2538-2543: rejected; hidden-surface p95 distance 179 mm under full multi-anchor motion coverage, hidden-face count jump p95 above threshold, with hundreds to thousands of components per frame;
 - mop 760-765: rejected; hidden-surface p95 distance 95 mm despite full pair coverage, with thousands of components per frame.
 
-The hidden-face diagnostic changes the V11 priority: object mesh completion needs temporally fused geometry and component continuity in addition to visible replay and visible-surface tracks. The next mesh step is a temporally fused completion state with component continuity before further per-frame hidden-face append runs.
+The hidden-face diagnostic changes the V11 priority: object mesh completion needs temporally fused geometry and component continuity in addition to visible replay and visible-surface tracks.
+
+## V11 Temporal Fusion Result
+
+`scripts/fuse_v11_temporal_hidden_surface.py` implements the next mesh step for wild rice. It transforms per-frame hidden Mesh4D proposals into a reference frame using CoTracker-derived object motion, keeps hidden points with multi-frame support, builds one shared hidden surface, maps that surface back to each frame, then applies the same mask, depth, free-space, z-buffer, and measured-surface filter used by V10.
+
+Wild rice 2538-2543 accepted after temporal fusion and projection filtering:
+
+```text
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/wild_rice_2538_2543_filtered
+```
+
+Evidence:
+
+- fused hidden surface: 8,908 vertices and 55,465 faces before per-frame projection filtering;
+- retained hidden faces per frame: median 37,704.5;
+- hidden temporal QC accepted: symmetric hidden-surface p95 6.34 mm and hidden-face count log-step p95 0.059;
+- replay accepted: IoU median 0.9458, visible-inside median 0.9834, z-buffer p95 median 6.03 mm;
+- visible-surface track QC accepted for frames 2538 to 2541: 32 tracks, 67 edges, pair residual p95 8.02 mm;
+- nonpenetration physics accepted with no reliable temporal contact claim: full-window hand penetration fraction 0.00249;
+- rendered overlay, world 3D, and side-by-side videos each contain 6 frames at 6 fps, and all frames were inspected as contact sheets.
+
+This V11 result fixes the hidden-geometry temporal failure exposed by the diagnostic on wild rice while preserving visible replay and hand-object nonpenetration. Mop still needs MANO hand evidence before full annotation physics can be evaluated.

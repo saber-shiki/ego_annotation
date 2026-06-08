@@ -23,6 +23,8 @@ def load_json(path: Path) -> dict:
 
 def rows_by_frame(report: dict) -> dict[int, dict]:
     rows = report.get("rows")
+    if rows is None:
+        rows = report.get("output_frames")
     if not isinstance(rows, list) or not rows:
         raise RuntimeError("append report lacks nonempty rows")
     out: dict[int, dict] = {}
