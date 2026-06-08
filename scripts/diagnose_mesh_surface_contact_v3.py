@@ -799,6 +799,39 @@ def apply_geometry_temporal_support(row: dict, candidate: dict, track_key: str, 
     row["geometry_backed_selected_patch_track_key"] = track_key
 
 
+def apply_sliding_geometry_support(track_key: str, rows: list[dict], args: argparse.Namespace) -> None:
+    ordered = sorted(rows, key=lambda row: int(row["frame_idx"]))
+    clusters: list[list[dict]] = []
+    cur: list[dict] = []
+    for row in ordered:
+        if not cur:
+            cur = [row]
+        elif int(row["frame_idx"]) - int(cur[-1]["frame_idx"]) <= int(args.max_temporal_patch_gap_frames):
+            cur.append(row)
+        else:
+            clusters.append(cur)
+            cur = [row]
+    if cur:
+        clusters.append(cur)
+    for cluster in clusters:
+        if len(cluster) < int(args.min_temporal_patch_frames):
+            continue
+        frames = [int(row["frame_idx"]) for row in cluster]
+        if args.require_consecutive_temporal_patch_frames:
+            expected = list(range(min(frames), max(frames) + 1))
+            if sorted(set(frames)) != expected:
+                continue
+        for row in cluster:
+            previous = int(row.get("geometry_backed_patch_temporal_support_frames", 0) or 0)
+            if previous > len(set(frames)):
+                continue
+            row["geometry_backed_patch_temporal_support_frames"] = int(len(set(frames)))
+            row["geometry_backed_patch_temporal_support_span_frames"] = int(max(frames) - min(frames))
+            row["geometry_backed_patch_temporal_local_drift_m"] = None
+            row["geometry_backed_selected_patch_track_key"] = track_key
+            row["geometry_backed_temporal_support_mode"] = "sliding_patch"
+
+
 def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> None:
     for row in rows:
         row["patch_temporal_support_frames"] = 0
@@ -818,7 +851,12 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
 
     strict_groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
     geometry_groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
+    sliding_geometry_groups: dict[str, list[dict]] = {}
     for row in rows:
+        track = row.get("track_id")
+        track_key = f"{row.get('side')}:{row.get('hand_idx')}" if track is None else str(track)
+        if row_passes_geometry_backed_observation(row) and bool(row.get("contact_geometry_ok", False)):
+            sliding_geometry_groups.setdefault(track_key, []).append(row)
         for is_strict, groups in (
             (True, strict_groups),
             (False, geometry_groups),
@@ -831,8 +869,6 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
                 center = np.asarray(candidate.get("center"), dtype=float)
                 if center.shape != (3,) or not np.isfinite(center).all():
                     continue
-                track = row.get("track_id")
-                track_key = f"{row.get('side')}:{row.get('hand_idx')}" if track is None else str(track)
                 key = (track_key, str(candidate["source"]), str(candidate["region"]))
                 groups.setdefault(key, []).append((row, candidate))
 
@@ -842,6 +878,8 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
 
     apply_groups(strict_groups, False)
     apply_groups(geometry_groups, True)
+    for track_key, sliding_rows in sliding_geometry_groups.items():
+        apply_sliding_geometry_support(track_key, sliding_rows, args)
     for row in rows:
         row["reliable_geometry_contact"] = bool(row_passes_noncontact_checks(row) and row["contact_geometry_ok"])
         row["reliable_for_contact"] = bool(row["reliable_geometry_contact"] and row["patch_temporal_support_ok"])
@@ -914,6 +952,7 @@ def condition_counts(rows: list[dict]) -> dict:
         "patch_penetration_ok",
         "contact_geometry_ok",
         "patch_temporal_support_ok",
+        "geometry_backed_temporal_support_mode",
         "geometry_backed_observation",
         "geometry_backed_temporal_contact",
         "reliable_geometry_contact",

@@ -135,9 +135,14 @@ def hand_vertices_camera(hand: dict) -> np.ndarray:
 
 def contact_rows(path: Path) -> list[dict]:
     report = load_json(path)
-    rows = [row for row in report.get("rows_detail", []) if bool(row.get("reliable_for_contact", False))]
+    rows = [
+        row
+        for row in report.get("rows_detail", [])
+        if bool(row.get("reliable_for_contact", False))
+        or bool(row.get("geometry_backed_temporal_contact", False))
+    ]
     if not rows:
-        raise RuntimeError(f"{path} contains no reliable_for_contact rows")
+        raise RuntimeError(f"{path} contains no reliable or geometry-backed temporal contact rows")
     return sorted(rows, key=lambda row: (int(row["frame_idx"]), int(row["hand_idx"])))
 
 

@@ -34,18 +34,41 @@ def summarize(values: np.ndarray | list[float]) -> dict:
     }
 
 
-def voxel_sdf(mesh: trimesh.Trimesh, pitch: float, pad_voxels: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def voxel_sdf(
+    mesh: trimesh.Trimesh,
+    pitch: float,
+    pad_voxels: int,
+    cover_points: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     vox = mesh.voxelized(pitch=float(pitch)).fill()
     occ = np.asarray(vox.matrix, dtype=bool)
     if np.count_nonzero(occ) == 0:
         raise RuntimeError("voxelized mesh has no occupied cells")
     pad = int(pad_voxels)
-    occ_pad = np.pad(occ, pad_width=pad, mode="constant", constant_values=False)
+    before = np.full(3, pad, dtype=int)
+    after = np.full(3, pad, dtype=int)
+    transform = np.asarray(vox.transform, dtype=np.float64).copy()
+    if cover_points is not None:
+        points = np.asarray(cover_points, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 3:
+            raise RuntimeError("SDF coverage points must be Nx3")
+        coords = (points - transform[:3, 3][None, :]) / float(pitch)
+        finite = coords[np.isfinite(coords).all(axis=1)]
+        if len(finite):
+            lo = np.floor(np.min(finite, axis=0)).astype(int) - pad
+            hi = np.ceil(np.max(finite, axis=0)).astype(int) + pad + 2
+            before = np.maximum(before, -lo)
+            after = np.maximum(after, hi - np.asarray(occ.shape, dtype=int))
+    occ_pad = np.pad(
+        occ,
+        [(int(before[i]), int(after[i])) for i in range(3)],
+        mode="constant",
+        constant_values=False,
+    )
     outside = distance_transform_edt(~occ_pad, sampling=[float(pitch)] * 3)
     inside = distance_transform_edt(occ_pad, sampling=[float(pitch)] * 3)
     sdf = outside - inside
-    transform = np.asarray(vox.transform, dtype=np.float64).copy()
-    transform[:3, 3] -= float(pitch) * pad
+    transform[:3, 3] -= float(pitch) * before.astype(np.float64)
     return sdf.astype(np.float32), transform, occ_pad
 
 
@@ -156,7 +179,7 @@ def run(args: argparse.Namespace) -> dict:
             )
         else:
             mesh = trimesh.Trimesh(vertices=mesh_camera.astype(np.float32), faces=np.asarray(mesh_faces, dtype=np.int32), process=True)
-        sdf, transform, occ = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
+        sdf, transform, occ = voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels), patch_camera)
         values = sample_sdf(patch_camera, sdf, transform)
         finite = values[np.isfinite(values)]
         if len(finite) == 0:
