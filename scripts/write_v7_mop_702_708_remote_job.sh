@@ -218,7 +218,7 @@ run_stage mano_metric_refit \
 
 run_stage mano_articulation_mask_depth_refit \
   "$HAWOR_PY" scripts/refit_mano_articulation_mask_depth_v3.py \
-    --annotations "$OUT_ROOT/mano_refit/annotations_hamer_maskbox_metric_refit_702_708.json" \
+    --annotations "$OUT_ROOT/hamer/annotations_hamer_maskbox_702_708.json" \
     --mask-track "$OUT_ROOT/sam2_hand/sam2_track.json" \
     --metric-depth-npz "$OUT_ROOT/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
     --output-annotations "$OUT_ROOT/mano_mask_depth_fit/annotations_articulation_mask_depth_refit_702_708.json" \
