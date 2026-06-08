@@ -55,6 +55,7 @@ SAM2_HAND_MAX_NEGATIVE_HITS=${SAM2_HAND_MAX_NEGATIVE_HITS:-0}
 SAM2_HAND_MIN_POSITIVE_HIT_FRACTION=${SAM2_HAND_MIN_POSITIVE_HIT_FRACTION:-0.75}
 SAM2_HAND_SELECTION_MODE=${SAM2_HAND_SELECTION_MODE:-prompt_hits}
 USE_RTMLIB_HAND_EVIDENCE=${USE_RTMLIB_HAND_EVIDENCE:-0}
+USE_RTMLIB_SAM2_HAND_PROMPTS=${USE_RTMLIB_SAM2_HAND_PROMPTS:-$USE_RTMLIB_HAND_EVIDENCE}
 RTMLIB_PY=${RTMLIB_PY:-$REMOTE_ROOT/rtmlib_work/venv/bin/python}
 RTMLIB_DEVICE=${RTMLIB_DEVICE:-cuda}
 RTMLIB_BACKEND=${RTMLIB_BACKEND:-onnxruntime}
@@ -160,7 +161,9 @@ if [[ "$USE_RTMLIB_HAND_EVIDENCE" == "1" ]]; then
       --frame-start "$FRAME_START" \
       --frame-end "$FRAME_END" \
       --track-id "$HAND_TRACK_ID"
-  HAND_PROMPTS_FOR_SAM2="$OUT_ROOT/rtmlib_hand_prompts/visual_track_point_prompts_rtmlib_v7.json"
+  if [[ "$USE_RTMLIB_SAM2_HAND_PROMPTS" == "1" ]]; then
+    HAND_PROMPTS_FOR_SAM2="$OUT_ROOT/rtmlib_hand_prompts/visual_track_point_prompts_rtmlib_v7.json"
+  fi
   HAND_PROPOSAL_JSON="$OUT_ROOT/rtmlib_hand2d/rtmlib_hand2d.json"
 fi
 
