@@ -212,7 +212,7 @@ run_stage wilor_maskbox \
     --maskbox-json "$OUT_ROOT/hand_maskbox/hand_mask_box_evidence_702_708.json" \
     --output-annotations "$OUT_ROOT/wilor/annotations_wilor_maskbox_702_708.json" \
     --output-qc "$OUT_ROOT/wilor/qc_wilor_maskbox_702_708.json" \
-    --wilor-root "$REPO_DIR/third_party/WiLoR" \
+    --wilor-root "$REMOTE_ROOT/third_party/WiLoR" \
     --mano-right "$MANO_MODEL_ROOT/MANO_RIGHT.pkl" \
     --frame-start "$FRAME_START" \
     --frame-end "$FRAME_END" \
