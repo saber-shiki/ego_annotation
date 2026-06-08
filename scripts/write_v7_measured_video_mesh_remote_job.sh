@@ -35,6 +35,9 @@ LOCAL_DATA_ROOT=${LOCAL_DATA_ROOT:-/data2}
 SAM2_CHECKPOINT=${SAM2_CHECKPOINT:-$REMOTE_ROOT/data/sam2.1_hiera_small.pt}
 SAM2_MODEL_CFG=${SAM2_MODEL_CFG:-configs/sam2.1/sam2.1_hiera_s.yaml}
 HAWOR_PY=${HAWOR_PY:-$REMOTE_ROOT/hawor_work/.venv_hawor/bin/python}
+HANDDGP_ROOT=${HANDDGP_ROOT:-$REMOTE_ROOT/handdgp_work/HandDGP}
+HANDDGP_PY=${HANDDGP_PY:-$HANDDGP_ROOT/.venv/bin/python}
+HANDDGP_CHECKPOINT=${HANDDGP_CHECKPOINT:-$HANDDGP_ROOT/weights/handdgp_freihand.ckpt}
 UNIDEPTH_PY=${UNIDEPTH_PY:-$REMOTE_ROOT/unidepth_work/UniDepth/.venv/bin/python}
 UNIDEPTH_REPO=${UNIDEPTH_REPO:-$REMOTE_ROOT/unidepth_work/UniDepth}
 VGGT_PY=${VGGT_PY:-$REMOTE_ROOT/hunyuan3d_v3_env/bin/python}
@@ -56,6 +59,7 @@ SAM2_HAND_MIN_POSITIVE_HIT_FRACTION=${SAM2_HAND_MIN_POSITIVE_HIT_FRACTION:-0.75}
 SAM2_HAND_SELECTION_MODE=${SAM2_HAND_SELECTION_MODE:-prompt_hits}
 USE_RTMLIB_HAND_EVIDENCE=${USE_RTMLIB_HAND_EVIDENCE:-0}
 USE_RTMLIB_SAM2_HAND_PROMPTS=${USE_RTMLIB_SAM2_HAND_PROMPTS:-$USE_RTMLIB_HAND_EVIDENCE}
+USE_HANDDGP_HAND_EVIDENCE=${USE_HANDDGP_HAND_EVIDENCE:-0}
 RTMLIB_PY=${RTMLIB_PY:-$REMOTE_ROOT/rtmlib_work/venv/bin/python}
 RTMLIB_DEVICE=${RTMLIB_DEVICE:-cuda}
 RTMLIB_BACKEND=${RTMLIB_BACKEND:-onnxruntime}
@@ -106,7 +110,7 @@ for required_path in \
   fi
 done
 
-mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,rtmlib_hand2d,rtmlib_hand_prompts,hamer,wilor,hand_candidates,mano_refit,mano_mask_depth_fit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
+mkdir -p "$OUT_ROOT"/{sam2_object,sam2_hand,object_rgb_dataset,unidepth_full_frame,object_metric_manifest,vggt_native,annotations,hand_maskbox,rtmlib_hand2d,rtmlib_hand_prompts,hamer,wilor,hand_candidates,handdgp,handdgp_mano,mano_refit,mano_mask_depth_fit,hand_selection,observed_mesh,cotracker_tracks,cotracker_edges,cotracker_pair_factors}
 
 run_stage() {
   local name="\$1"
@@ -305,14 +309,53 @@ run_stage wilor_maskbox \
     --min-measured-hands "$MIN_HAND_FRAMES" \
     --allow-insufficient-measured-hands
 
-run_stage merge_hand_candidates \
+run_stage merge_hamer_wilor_candidates \
   "$HAWOR_PY" scripts/merge_hand_candidate_streams_v7.py \
     --base-annotations "$OUT_ROOT/annotations/annotations_v3_vggt_object_skeleton.json" \
     --hand-streams "$OUT_ROOT/hamer/annotations_hamer_maskbox.json" "$OUT_ROOT/wilor/annotations_wilor_maskbox.json" \
-    --output-annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox.json" \
-    --output-qc "$OUT_ROOT/hand_candidates/qc_hamer_wilor_maskbox.json" \
+    --output-annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox_initial.json" \
+    --output-qc "$OUT_ROOT/hand_candidates/qc_hamer_wilor_maskbox_initial.json" \
     --frame-start "$FRAME_START" \
     --frame-end "$FRAME_END"
+
+if [[ "$USE_HANDDGP_HAND_EVIDENCE" == "1" ]]; then
+  run_stage handdgp_export \
+    "$HANDDGP_PY" scripts/run_handdgp_export_v3.py \
+      --video "$SOURCE_CLIP" \
+      --annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox_initial.json" \
+      --handdgp-root "$HANDDGP_ROOT" \
+      --checkpoint "$HANDDGP_CHECKPOINT" \
+      --output-annotations "$OUT_ROOT/handdgp/annotations_handdgp.json" \
+      --output-raw-npz "$OUT_ROOT/handdgp/handdgp_raw.npz" \
+      --output-qc "$OUT_ROOT/handdgp/qc_handdgp.json" \
+      --frame-start "$FRAME_START" \
+      --frame-end "$FRAME_END" \
+      --batch-size 16 \
+      --min-score 0.10
+  run_stage handdgp_inverse_mano \
+    "$HAWOR_PY" scripts/convert_handdgp_to_mano_candidates_v7.py \
+      --annotations "$OUT_ROOT/handdgp/annotations_handdgp.json" \
+      --output-annotations "$OUT_ROOT/handdgp_mano/annotations_handdgp_mano.json" \
+      --output-qc "$OUT_ROOT/handdgp_mano/qc_handdgp_inverse_mano.json" \
+      --wilor-root "$WILOR_ROOT" \
+      --mano-right "$MANO_MODEL_ROOT/MANO_RIGHT.pkl" \
+      --frame-start "$FRAME_START" \
+      --frame-end "$FRAME_END" \
+      --track-id "$HAND_TRACK_ID" \
+      --side "$HAND_SIDE" \
+      --min-measured-hands "$MIN_HAND_FRAMES"
+  run_stage merge_hand_candidates \
+    "$HAWOR_PY" scripts/merge_hand_candidate_streams_v7.py \
+      --base-annotations "$OUT_ROOT/annotations/annotations_v3_vggt_object_skeleton.json" \
+      --hand-streams "$OUT_ROOT/hamer/annotations_hamer_maskbox.json" "$OUT_ROOT/wilor/annotations_wilor_maskbox.json" "$OUT_ROOT/handdgp_mano/annotations_handdgp_mano.json" \
+      --output-annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox.json" \
+      --output-qc "$OUT_ROOT/hand_candidates/qc_hamer_wilor_maskbox.json" \
+      --frame-start "$FRAME_START" \
+      --frame-end "$FRAME_END"
+else
+  cp "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox_initial.json" "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox.json"
+  cp "$OUT_ROOT/hand_candidates/qc_hamer_wilor_maskbox_initial.json" "$OUT_ROOT/hand_candidates/qc_hamer_wilor_maskbox.json"
+fi
 
 run_stage mano_metric_refit \
   "$HAWOR_PY" scripts/refit_mano_metric_depth_v3.py \
