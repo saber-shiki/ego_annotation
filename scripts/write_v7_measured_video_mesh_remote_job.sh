@@ -322,27 +322,41 @@ run_stage mano_metric_refit \
     --min-depth-joints 12 \
     --min-rows "$MIN_HAND_FRAMES"
 
+articulation_refit_args=(
+  --annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox.json"
+  --mask-track "$OUT_ROOT/sam2_hand/sam2_track.json"
+  --metric-depth-npz "$OUT_ROOT/unidepth_full_frame/unidepth_full_frame_depth_v3.npz"
+  --output-annotations "$OUT_ROOT/mano_mask_depth_fit/annotations_articulation_mask_depth_refit.json"
+  --output-qc "$OUT_ROOT/mano_mask_depth_fit/qc_articulation_mask_depth_refit.json"
+  --video "$SOURCE_CLIP"
+  --review-dir "$OUT_ROOT/mano_mask_depth_fit/review"
+  --mano-wrapper-root "$WILOR_ROOT"
+  --mano-model-root "$MANO_MODEL_ROOT"
+  --frame-start "$FRAME_START"
+  --frame-end "$FRAME_END"
+  --track-id "$HAND_TRACK_ID"
+  --side "$HAND_SIDE"
+  --source-width 1920
+  --source-height 1080
+  --remote-output-root "$OUT_ROOT/sam2_hand"
+  --local-output-root "$OUT_ROOT/sam2_hand"
+  --min-observations "$MIN_HAND_FRAMES"
+  --still-frames "$FRAME_START" "$ANCHOR_FRAME" "$FRAME_END"
+)
+if [[ "$USE_RTMLIB_HAND_EVIDENCE" == "1" ]]; then
+  articulation_refit_args+=(
+    --rtmlib-json "$OUT_ROOT/rtmlib_hand2d/rtmlib_hand2d.json"
+    --rtmlib-prompts "$OUT_ROOT/rtmlib_hand_prompts/visual_track_point_prompts_rtmlib_v7.json"
+    --w-rtmlib-keypoints 1.0
+    --sigma-rtmlib-keypoint-px 18.0
+    --rtmlib-min-score 0.30
+    --rtmlib-min-keypoints 12
+  )
+fi
+
 run_stage mano_articulation_mask_depth_refit \
   "$HAWOR_PY" scripts/refit_mano_articulation_mask_depth_v3.py \
-    --annotations "$OUT_ROOT/hand_candidates/annotations_hamer_wilor_maskbox.json" \
-    --mask-track "$OUT_ROOT/sam2_hand/sam2_track.json" \
-    --metric-depth-npz "$OUT_ROOT/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
-    --output-annotations "$OUT_ROOT/mano_mask_depth_fit/annotations_articulation_mask_depth_refit.json" \
-    --output-qc "$OUT_ROOT/mano_mask_depth_fit/qc_articulation_mask_depth_refit.json" \
-    --video "$SOURCE_CLIP" \
-    --review-dir "$OUT_ROOT/mano_mask_depth_fit/review" \
-    --mano-wrapper-root "$WILOR_ROOT" \
-    --mano-model-root "$MANO_MODEL_ROOT" \
-    --frame-start "$FRAME_START" \
-    --frame-end "$FRAME_END" \
-    --track-id "$HAND_TRACK_ID" \
-    --side "$HAND_SIDE" \
-    --source-width 1920 \
-    --source-height 1080 \
-    --remote-output-root "$OUT_ROOT/sam2_hand" \
-    --local-output-root "$OUT_ROOT/sam2_hand" \
-    --min-observations "$MIN_HAND_FRAMES" \
-    --still-frames "$FRAME_START" "$ANCHOR_FRAME" "$FRAME_END"
+    "\${articulation_refit_args[@]}"
 
 hand_selection_args=(
   --annotations "$OUT_ROOT/mano_mask_depth_fit/annotations_articulation_mask_depth_refit.json"
