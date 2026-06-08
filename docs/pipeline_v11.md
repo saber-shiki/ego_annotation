@@ -55,6 +55,37 @@ The unfiltered wild-rice run passed hidden temporal QC but failed replay with Io
 
 ## Accepted V11 Deliveries
 
+### Trash 865-870
+
+Root:
+
+```text
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered
+```
+
+Evidence:
+
+- input hidden source: V9 PartCrafter hidden-prior archive, which had active hand-object contact but failed hidden temporal QC before fusion;
+- pre-fusion hidden temporal QC rejected: hidden-surface p95 distance 76.9 mm and hidden pair coverage 0.8;
+- one object-motion pair, 868 to 869, was marginal under the original 10 mm p95 threshold and accepted only in an explicit diagnostic factor report with an 11 mm p95 threshold; its inlier p95 is 10.34 mm;
+- fused hidden surface support sample fraction: 0.897;
+- retained hidden faces per frame: median 8,289;
+- hidden temporal QC accepted: symmetric hidden-surface p95 6.47 mm, hidden pair coverage 1.0;
+- replay accepted: IoU median 0.9478, visible-inside median 1.0, z-buffer p95 median 0.534 mm;
+- track-surface QC accepted: 363 tracks, 1,792 edges, pair residual p95 9.32 mm;
+- contact physics accepted: 6 reliable temporal contact rows, selected-contact abs SDF p95 1.245 mm, near-surface fraction 1.0, selected-contact penetration 0.0, full-window hand penetration fraction 0.00557;
+- rendered overlay, world 3D, and side-by-side videos contain 6 frames at 6 fps.
+
+Videos:
+
+```text
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables/overlay/mesh_surface_contact_review.mp4
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables/world/world_reconstruction_3d.mp4
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/trash_partcrafter_865_870_filtered/deliverables/world/world_reconstruction_side_by_side.mp4
+```
+
+Visual inspection found the overlay and side-by-side coherent: the red object mesh stays on the pink lid, MANO follows the right hand, and magenta contact markers stay on the measured contact patch in all frames. The world view is legible with object mesh, MANO hand, contact marker, head camera, axes, and scale. The hidden mesh appears as a flat internal patch in the standalone world view; the video remains usable, and the next renderer revision should make hidden/completed surfaces visually distinct from observed visible surfaces.
+
 ### Wild Rice 2538-2543
 
 Root:
@@ -122,12 +153,12 @@ Verification:
 
 ## Relation To Prior Delivered Samples
 
-The contact-rich evidence still comes from the V8/V9/V10 accepted samples:
+Additional contact-rich evidence comes from the V8/V9/V10 accepted samples:
 
 - box-books 612 to 618 remains the V8 contact-aware MANO repair sample, with selected-contact abs SDF p95 3.84 mm and contact active on frames 614 to 616;
 - trash 865 to 870 remains the contact-rich object-mesh no-regression sample, with selected-contact abs SDF p95 1.245 mm and full-window penetration fraction 0.0118.
 
-V11 adds temporal hidden-surface stability for object mesh completion on wild rice and mop. The strongest current contact evidence still comes from box-books and trash.
+V11 adds temporal hidden-surface stability for object mesh completion on wild rice, mop, and trash. Trash is the current V11 contact-rich object-completion sample; box-books remains the strongest V8 hand-topology repair sample.
 
 ## Evidence Limit
 
