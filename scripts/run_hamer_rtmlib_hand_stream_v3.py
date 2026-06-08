@@ -560,7 +560,7 @@ def run(args: argparse.Namespace) -> dict:
     }
     save_json(args.output_qc, report)
     print(json.dumps({k: v for k, v in report.items() if k != "proposal_preview"}, indent=2))
-    if not enough_measured:
+    if not enough_measured and not args.allow_insufficient_measured_hands:
         raise RuntimeError(f"only {summary['measured_hand_rows']} measured HaMeR hands, min_measured_hands={args.min_measured_hands}")
     return report
 
@@ -598,6 +598,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-hand-bone-m", type=float, default=0.24)
     parser.add_argument("--max-vertices-per-hand", type=int, default=1600)
     parser.add_argument("--min-measured-hands", type=int, default=1)
+    parser.add_argument("--allow-insufficient-measured-hands", action="store_true")
     return parser.parse_args()
 
 
