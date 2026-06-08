@@ -797,39 +797,56 @@ def apply_geometry_temporal_support(row: dict, candidate: dict, track_key: str, 
     row["geometry_backed_patch_temporal_support_span_frames"] = int(max(frames) - min(frames))
     row["geometry_backed_patch_temporal_local_drift_m"] = float(drift)
     row["geometry_backed_selected_patch_track_key"] = track_key
+    if candidate["source"] == "anatomical_patch":
+        report = candidate.get("report") or select_anatomical_report(row, str(candidate["region"]))
+        if report is not None:
+            set_selected_anatomical_report(row, report)
+    else:
+        row["selected_patch_source"] = "best_patch"
+        row["selected_patch_region"] = None
 
 
-def apply_sliding_geometry_support(track_key: str, rows: list[dict], args: argparse.Namespace) -> None:
-    ordered = sorted(rows, key=lambda row: int(row["frame_idx"]))
+def apply_sliding_geometry_support(track_key: str, candidates: list[tuple[dict, dict]], args: argparse.Namespace) -> None:
+    ordered = sorted(candidates, key=lambda item: int(item[0]["frame_idx"]))
     clusters: list[list[dict]] = []
-    cur: list[dict] = []
-    for row in ordered:
+    cur: list[tuple[dict, dict]] = []
+    for item in ordered:
+        row = item[0]
         if not cur:
-            cur = [row]
-        elif int(row["frame_idx"]) - int(cur[-1]["frame_idx"]) <= int(args.max_temporal_patch_gap_frames):
-            cur.append(row)
+            cur = [item]
+        elif int(row["frame_idx"]) - int(cur[-1][0]["frame_idx"]) <= int(args.max_temporal_patch_gap_frames):
+            cur.append(item)
         else:
             clusters.append(cur)
-            cur = [row]
+            cur = [item]
     if cur:
         clusters.append(cur)
     for cluster in clusters:
         if len(cluster) < int(args.min_temporal_patch_frames):
             continue
-        frames = [int(row["frame_idx"]) for row in cluster]
+        frames = [int(row["frame_idx"]) for row, _candidate in cluster]
         if args.require_consecutive_temporal_patch_frames:
             expected = list(range(min(frames), max(frames) + 1))
             if sorted(set(frames)) != expected:
                 continue
-        for row in cluster:
-            previous = int(row.get("geometry_backed_patch_temporal_support_frames", 0) or 0)
-            if previous > len(set(frames)):
+        for row, candidate in cluster:
+            rank = support_rank(candidate, len(set(frames)), 0.0)
+            previous = row.get("_geometry_support_rank")
+            if previous is not None and tuple(previous) >= rank:
                 continue
+            row["_geometry_support_rank"] = list(rank)
             row["geometry_backed_patch_temporal_support_frames"] = int(len(set(frames)))
             row["geometry_backed_patch_temporal_support_span_frames"] = int(max(frames) - min(frames))
             row["geometry_backed_patch_temporal_local_drift_m"] = None
             row["geometry_backed_selected_patch_track_key"] = track_key
             row["geometry_backed_temporal_support_mode"] = "sliding_patch"
+            if candidate["source"] == "anatomical_patch":
+                report = candidate.get("report") or select_anatomical_report(row, str(candidate["region"]))
+                if report is not None:
+                    set_selected_anatomical_report(row, report)
+            else:
+                row["selected_patch_source"] = "best_patch"
+                row["selected_patch_region"] = None
 
 
 def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> None:
@@ -851,12 +868,10 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
 
     strict_groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
     geometry_groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
-    sliding_geometry_groups: dict[str, list[dict]] = {}
+    sliding_geometry_groups: dict[tuple[str, str, str], list[tuple[dict, dict]]] = {}
     for row in rows:
         track = row.get("track_id")
         track_key = f"{row.get('side')}:{row.get('hand_idx')}" if track is None else str(track)
-        if row_passes_geometry_backed_observation(row) and bool(row.get("contact_geometry_ok", False)):
-            sliding_geometry_groups.setdefault(track_key, []).append(row)
         for is_strict, groups in (
             (True, strict_groups),
             (False, geometry_groups),
@@ -871,6 +886,8 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
                     continue
                 key = (track_key, str(candidate["source"]), str(candidate["region"]))
                 groups.setdefault(key, []).append((row, candidate))
+                if not is_strict and bool(row.get("contact_geometry_ok", False)):
+                    sliding_geometry_groups.setdefault(key, []).append((row, candidate))
 
     def apply_groups(groups: dict[tuple[str, str, str], list[tuple[dict, dict]]], geometry_backed: bool) -> None:
         for (track_key, source, region), candidates in groups.items():
@@ -878,8 +895,8 @@ def annotate_temporal_support(rows: list[dict], args: argparse.Namespace) -> Non
 
     apply_groups(strict_groups, False)
     apply_groups(geometry_groups, True)
-    for track_key, sliding_rows in sliding_geometry_groups.items():
-        apply_sliding_geometry_support(track_key, sliding_rows, args)
+    for (track_key, _source, _region), sliding_candidates in sliding_geometry_groups.items():
+        apply_sliding_geometry_support(track_key, sliding_candidates, args)
     for row in rows:
         row["reliable_geometry_contact"] = bool(row_passes_noncontact_checks(row) and row["contact_geometry_ok"])
         row["reliable_for_contact"] = bool(row["reliable_geometry_contact"] and row["patch_temporal_support_ok"])

@@ -48,6 +48,19 @@ def augment_observations(obs: list[dict], rows: list[dict]) -> list[dict]:
     return out
 
 
+def filter_surface_supported_observations(obs: list[dict], args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
+    kept = []
+    rejected = []
+    for row in obs:
+        p95 = row.get("surface_distance_m", {}).get("p95")
+        ok = p95 is not None and float(p95) <= float(args.max_input_surface_distance_p95_m)
+        target = kept if ok else rejected
+        target.append(row)
+    if len(kept) == 0:
+        raise RuntimeError("no selected contact observations pass input surface-distance support")
+    return kept, rejected
+
+
 def frame_index_map(obs: list[dict]) -> dict[int, int]:
     out: dict[int, int] = {}
     for i, row in enumerate(obs):
@@ -222,7 +235,8 @@ def run(args: argparse.Namespace) -> dict:
     meshes = load_mesh_archive(args.object_mesh_npz)
     contact_report = load_json(args.contact_report)
     rows = reliable_contact_rows(contact_report, args.contact_row_mode)
-    obs = augment_observations(contact_observations(annotations, meshes, rows), rows)
+    obs_all = augment_observations(contact_observations(annotations, meshes, rows), rows)
+    obs, rejected_obs = filter_surface_supported_observations(obs_all, args)
     transforms = pair_transforms(args.pair_factor_report)
     edges, transitions = object_edge_rows_by_contact_mode(obs, transforms)
     x0 = build_initial_state(obs)
@@ -322,6 +336,7 @@ def run(args: argparse.Namespace) -> dict:
             "min_contact_frames": int(args.min_contact_frames),
             "min_continuous_contact_frames": int(args.min_continuous_contact_frames),
             "min_acceleration_rows": 1,
+            "max_input_surface_distance_p95_m": float(args.max_input_surface_distance_p95_m),
             "max_contact_gap_m": float(args.max_contact_gap_m),
             "max_relative_contact_residual_p95_m": float(args.max_relative_contact_residual_p95_m),
             "max_sticking_slip_p95_m": float(args.max_sticking_slip_p95_m),
@@ -346,6 +361,7 @@ def run(args: argparse.Namespace) -> dict:
         "contact_mode_segments": segments,
         "contact_mode_transitions": transitions,
         "observations": obs,
+        "input_rejected_observations": rejected_obs,
         "before": {
             "contact_gap_m": summarize(np.linalg.norm(before_gaps, axis=1)),
             "anchor_rows": before_anchor_rows,
@@ -383,6 +399,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w-slip-prior", type=float, default=30.0)
     parser.add_argument("--w-acceleration-consistency", type=float, default=0.18)
     parser.add_argument("--max-contact-gap-m", type=float, default=0.006)
+    parser.add_argument("--max-input-surface-distance-p95-m", type=float, default=0.006)
     parser.add_argument("--max-relative-contact-residual-p95-m", type=float, default=0.002)
     parser.add_argument("--max-sticking-slip-p95-m", type=float, default=0.003)
     parser.add_argument("--max-sliding-speed-p95-m-s", type=float, default=0.45)

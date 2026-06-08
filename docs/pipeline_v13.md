@@ -51,12 +51,20 @@ min_X
 
 V13 accepts when the window has at least three contact rows, at least one continuous contact segment with three frames, at least one temporal edge, and at least one acceleration row. This evidence contract ties acceptance to a measured temporal dynamics signal.
 
+The solver also filters selected contact observations by measured surface support before graph construction. The default predicate keeps rows whose selected MANO patch has object-surface distance p95 at most 6 mm and records rejected rows in `input_rejected_observations`.
+
 ## Trash 865-870 Control
 
 Report:
 
 ```text
 /data2/ego_annotation_outputs/v13_contact_dynamics_generalization/trash_865_870/qc_contact_mode_dynamics_factor_graph_v13.json
+```
+
+After adding the input surface-support predicate, the no-regression report is:
+
+```text
+/data2/ego_annotation_outputs/v14_contact_transfer/trash_865_870/qc_contact_mode_dynamics_factor_graph_v13_surface_filtered.json
 ```
 
 Status: accepted.
@@ -109,21 +117,30 @@ The V7 accepted crop 616 to 618 remains a negative dynamics diagnostic:
 
 It has two contact rows, zero acceleration rows, and slip speed p95 0.761 m/s across the single 616 to 617 edge. Contact gap and relative residual pass; temporal support and slip speed fail the dynamics claim.
 
-The V8 repaired branch supplies three supported contact frames, 614 to 616, with selected-contact SDF p95 3.84 mm:
+The first V8 repaired-branch diagnostic used a stale contact identity from the source contact report:
 
 ```text
 /data2/ego_annotation_outputs/v13_contact_dynamics_generalization/box_books_v8_614_616/qc_contact_mode_dynamics_factor_graph_v13_p95_012.json
 ```
 
-It still rejects under V13:
+That report labeled frame 615 as pinky contact while the selected anatomical patch vertices and anchor were middle-finger evidence. V14 fixed the source contact diagnostic so geometry-backed sliding support updates the selected patch identity from the candidate that earned support:
 
-- longest continuous contact mode: 2 frames;
+```text
+/data2/ego_annotation_outputs/v14_contact_transfer/box_books_probe_612_618_fixed_contact_identity/mesh_surface_contact_qc.json
+/data2/ego_annotation_outputs/v14_contact_transfer/box_books_probe_612_618_fixed_contact_identity/qc_contact_mode_dynamics_factor_graph_v13_surface_filtered_p95_012.json
+```
+
+The corrected branch rejects under V13:
+
+- kept rows: 614 pinky, 615 middle, 616 middle;
+- rejected rows by input surface support: frame 613 middle at 17.4 mm p95 and frame 617 pinky at 35.2 mm p95;
+- longest continuous contact mode: 2 frames, middle contact on 615 to 616;
 - acceleration rows: 0 after contact-mode segmentation;
-- transition: pinky anchor joint 20 on frames 614 to 615, then middle anchor joint 12 on frame 616;
-- continuous pinky edge slip speed: 0.556 m/s;
-- contact gap p95: 1.40 mm;
-- relative-contact residual: 1.23 mm;
+- transition: pinky anchor joint 20 on frame 614 to middle anchor joint 12 on frame 615;
+- continuous middle edge slip speed: 0.327 m/s;
+- contact gap p95: 1.86 mm;
+- relative-contact residual: 0.70 mm;
 - object and hand anchor shifts: under 1 mm;
 - object motion factors required a marginal 12 mm p95 diagnostic report.
 
-This rejection matches the evidence. The repaired branch has good surface contact and lacks a stable contact-mode segment long enough to support acceleration consistency. V14 should model contact transfer explicitly, with separate birth/death or handoff factors between contact modes, while keeping transfer frames as separate physical events.
+This rejection matches the corrected evidence. The branch has a plausible transfer from pinky to middle contact, followed by only two middle-contact frames. V14 should model contact transfer explicitly and decide whether a handoff plus short post-transfer segment is sufficient evidence for annotation, while keeping acceleration consistency reserved for segments with at least three frames.
