@@ -43,24 +43,24 @@ class FrameInput:
     maskbox_hands: list[dict]
 
 
-def metric_scale_from_raw(raw_frames: list[dict], target_span_m: float) -> dict:
-    spans = []
+def metric_scale_from_raw(raw_frames: list[dict], target_bone_m: float) -> dict:
+    bones = []
     for frame in raw_frames:
         for hand in frame["raw_hands"]:
             joints = np.asarray(hand["joints3d_camera"], dtype=float)
-            span = float(np.linalg.norm(joints[12] - joints[0]))
-            if 0.03 < span < 0.25:
-                spans.append(span)
-    if not spans:
-        raise RuntimeError("no plausible WiLoR local wrist-to-middle-tip spans")
-    arr = np.asarray(spans, dtype=float)
-    median_span = float(np.median(arr))
-    scale = float(target_span_m) / median_span
-    residual = arr * scale - float(target_span_m)
+            bone = hand_bone_scale_m(joints)
+            if 0.08 < bone < 0.24:
+                bones.append(bone)
+    if not bones:
+        raise RuntimeError("no plausible WiLoR local hand-bone scales")
+    arr = np.asarray(bones, dtype=float)
+    median_bone = float(np.median(arr))
+    scale = float(target_bone_m) / median_bone
+    residual = arr * scale - float(target_bone_m)
     return {
-        "status": "wilor_local_hand_geometry_scaled_by_wrist_to_middle_tip",
-        "target_wrist_to_middle_tip_m": float(target_span_m),
-        "median_wilor_wrist_to_middle_tip": median_span,
+        "status": "wilor_local_hand_geometry_scaled_by_median_finger_chain_bone",
+        "target_hand_bone_m": float(target_bone_m),
+        "median_wilor_hand_bone": median_bone,
         "wilor_local_to_meters": float(scale),
         "sample_count": int(len(arr)),
         "residual_iqr_m": [float(np.percentile(residual, 25)), float(np.percentile(residual, 75))],
@@ -305,7 +305,7 @@ def run(args: argparse.Namespace) -> dict:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    scale = metric_scale_from_raw(raw_frames, float(args.hand_span_target_m))
+    scale = metric_scale_from_raw(raw_frames, float(args.hand_bone_target_m))
     output_frames = []
     rejected = []
     for frame, raw in zip(inputs, raw_frames):
@@ -365,7 +365,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rescale-factor", type=float, default=2.0)
     parser.add_argument("--track-id", required=True)
     parser.add_argument("--side", choices=["left", "right", "any"], default="any")
-    parser.add_argument("--hand-span-target-m", type=float, default=0.175)
+    parser.add_argument("--hand-bone-target-m", type=float, default=0.165)
     parser.add_argument("--min-depth-m", type=float, default=0.12)
     parser.add_argument("--max-depth-m", type=float, default=2.2)
     parser.add_argument("--max-initial-reprojection-px", type=float, default=55.0)
