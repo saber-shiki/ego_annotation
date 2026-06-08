@@ -312,7 +312,7 @@ def metric_rows(
 
 
 def fit_one(model, item: ArticulationInput, args: argparse.Namespace) -> tuple[dict, dict]:
-    device = torch.device("cpu")
+    device = torch.device(args.device)
     model = model.to(device)
     sign = side_sign(item.side)
     with torch.no_grad():
@@ -725,6 +725,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-height", type=int, default=1080)
     parser.add_argument("--remote-output-root", type=Path, default=Path("/dev/shm/ego_annotation_keyboard_hand_masks/outputs"))
     parser.add_argument("--local-output-root", type=Path, default=Path("/data2/ego_annotation_outputs/representative_keyboard/v3_keyboard_hand_sam2_visual_tracks_60_75"))
+    parser.add_argument("--device", default="cpu")
     parser.add_argument("--min-observations", type=int, default=3)
     parser.add_argument("--max-hypotheses-per-frame", type=int, default=4)
     parser.add_argument("--max-sampled-vertices", type=int, default=384)
