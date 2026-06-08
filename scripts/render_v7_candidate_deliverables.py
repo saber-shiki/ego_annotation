@@ -142,6 +142,12 @@ def run(args: argparse.Namespace) -> dict:
         str(args.annotations),
         "--object-mesh-npz",
         str(mesh_archive),
+    ]
+    if args.append_report is not None:
+        if not args.append_report.exists():
+            raise RuntimeError(f"append report does not exist: {args.append_report}")
+        world_cmd.extend(["--append-report", str(args.append_report)])
+    world_cmd.extend([
         "--contact-report",
         str(contact_report),
         "--mano-model",
@@ -167,7 +173,7 @@ def run(args: argparse.Namespace) -> dict:
         "--caption-prefix",
         args.caption_prefix,
         "--include-camera-in-focus",
-    ]
+    ])
     run_command(overlay_cmd, bool(args.dry_run))
     run_command(world_cmd, bool(args.dry_run))
 
@@ -198,12 +204,13 @@ def run(args: argparse.Namespace) -> dict:
 
     report = {
         "status": "dry_run" if args.dry_run else "ok",
-        "method": "render_v7_candidate_deliverables",
-        "claim_tested": "an accepted V7 object mesh candidate can be rendered as MANO/object overlay, standalone world 3D animation, and side-by-side presentation with semantic captions",
+        "method": "render_mesh_candidate_deliverables",
+        "claim_tested": "an accepted object mesh candidate can be rendered as MANO/object overlay, standalone world 3D animation, and side-by-side presentation with semantic captions",
         "replay_report": str(args.replay_report),
         "physics_report": str(args.physics_report),
         "mesh_archive": str(mesh_archive),
         "contact_report": str(contact_report),
+        "append_report": str(args.append_report) if args.append_report is not None else None,
         "manifest": str(args.manifest),
         "annotations": str(args.annotations),
         "mano_model": str(args.mano_model),
@@ -233,6 +240,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physics-report", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
+    parser.add_argument("--append-report", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--scripts-dir", type=Path, default=SCRIPT_DIR)
     parser.add_argument("--mano-model", type=Path, default=DEFAULT_MANO_MODEL)

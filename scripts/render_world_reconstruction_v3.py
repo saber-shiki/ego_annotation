@@ -93,6 +93,23 @@ def load_state_rows(path: Path | None) -> dict[int, dict]:
     return out
 
 
+def load_append_rows(path: Path | None) -> dict[int, dict]:
+    if path is None:
+        return {}
+    data = load_json(path)
+    rows = data.get("rows")
+    if rows is None:
+        rows = data.get("output_frames")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"append report has no rows/output_frames list: {path}")
+    out = {}
+    for row in rows:
+        if not isinstance(row, dict) or "frame_idx" not in row:
+            raise RuntimeError(f"invalid append report row in {path}")
+        out[int(row["frame_idx"])] = row
+    return out
+
+
 def reliable_contact_rows(contact: dict) -> dict[int, dict]:
     rows = [
         row
@@ -251,6 +268,53 @@ def draw_mesh_world(
     )
 
 
+def draw_completed_mesh_world(
+    image: np.ndarray,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    append_row: dict | None,
+    center: np.ndarray,
+    basis: np.ndarray,
+    radius: float,
+    max_faces: int,
+) -> None:
+    if append_row is None:
+        draw_mesh_world(image, vertices, faces, center, basis, radius, max_faces)
+        return
+    observed_faces = int(append_row.get("observed_faces", len(faces)))
+    if observed_faces <= 0 or observed_faces >= len(faces):
+        draw_mesh_world(image, vertices, faces, center, basis, radius, max_faces)
+        return
+    draw_triangle_mesh_world(
+        image,
+        vertices,
+        faces[:observed_faces],
+        center,
+        basis,
+        radius,
+        max_faces,
+        (76, 98, 224),
+        (43, 48, 154),
+        0.68,
+        90,
+        True,
+    )
+    draw_triangle_mesh_world(
+        image,
+        vertices,
+        faces[observed_faces:],
+        center,
+        basis,
+        radius,
+        max(200, int(max_faces * 0.45)),
+        (155, 174, 226),
+        (86, 104, 174),
+        0.28,
+        38,
+        False,
+    )
+
+
 def draw_metric_axes(image: np.ndarray, center: np.ndarray, basis: np.ndarray, radius: float) -> None:
     origin = center - 0.76 * radius * basis[0] - 0.68 * radius * basis[1]
     scale = max(0.035, 0.16 * radius)
@@ -334,6 +398,22 @@ def draw_head_legend(image: np.ndarray) -> None:
     cv2.polylines(image, [glyph], False, (36, 36, 36), 3, cv2.LINE_AA)
     cv2.circle(image, (x0 + 26, y0 + 58), 5, (36, 36, 36), -1, cv2.LINE_AA)
     cv2.putText(image, "head camera", (x0 + 86, y0 + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (25, 25, 25), 1, cv2.LINE_AA)
+
+
+def draw_object_surface_legend(image: np.ndarray, append_row: dict | None) -> None:
+    if append_row is None:
+        return
+    observed_faces = int(append_row.get("observed_faces", 0))
+    archive_faces = int(append_row.get("archive_faces", 0))
+    if observed_faces <= 0 or archive_faces <= 0:
+        return
+    x0 = 18
+    y0 = 42
+    cv2.rectangle(image, (x0 - 10, y0 - 12), (x0 + 278, y0 + 58), (244, 246, 241), -1, cv2.LINE_AA)
+    cv2.rectangle(image, (x0, y0), (x0 + 38, y0 + 16), (76, 98, 224), -1, cv2.LINE_AA)
+    cv2.rectangle(image, (x0, y0 + 30), (x0 + 38, y0 + 46), (155, 174, 226), -1, cv2.LINE_AA)
+    cv2.putText(image, "observed object surface", (x0 + 52, y0 + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
+    cv2.putText(image, "completed hidden surface", (x0 + 52, y0 + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
 
 
 def draw_egocentric_view_ray(
@@ -476,6 +556,7 @@ def draw_hand_world(
 def draw_world_panel(
     annotations: dict[int, dict],
     meshes: dict[int, tuple[np.ndarray, np.ndarray]],
+    append_by_frame: dict[int, dict],
     contact_by_frame: dict[int, dict],
     state_by_frame: dict[int, dict],
     mano_faces: np.ndarray | None,
@@ -488,7 +569,16 @@ def draw_world_panel(
     image = np.full((args.panel_height, args.panel_width, 3), (244, 246, 241), dtype=np.uint8)
     ann = annotations[int(frame_idx)]
     vertices, faces = meshes[int(frame_idx)]
-    draw_mesh_world(image, vertices, faces, center, basis, radius, int(args.max_mesh_faces))
+    draw_completed_mesh_world(
+        image,
+        vertices,
+        faces,
+        append_by_frame.get(int(frame_idx)),
+        center,
+        basis,
+        radius,
+        int(args.max_mesh_faces),
+    )
     camera_pose = np.asarray(ann["camera"]["T_world_camera_metric"], dtype=float)
     draw_camera_path(image, annotations, int(frame_idx), center, basis, radius, full_thickness=2, current_thickness=4)
     world_frustum_scale = float(args.frustum_scale_m) * float(args.world_frustum_visual_scale)
@@ -501,6 +591,7 @@ def draw_world_panel(
     if bool(args.show_camera_inset):
         draw_camera_inset(image, annotations, int(frame_idx), args)
     draw_head_legend(image)
+    draw_object_surface_legend(image, append_by_frame.get(int(frame_idx)))
     draw_metric_axes(image, center, basis, radius)
     draw_scale_bar(image, radius, args)
     draw_state_badge(image, state_by_frame.get(int(frame_idx)), int(frame_idx))
@@ -663,6 +754,7 @@ def run(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"mesh archive missing frames: {missing_mesh[:8]}")
     contact_by_frame = reliable_contact_rows(load_json(args.contact_report))
     state_by_frame = load_state_rows(args.v5_state_json)
+    append_by_frame = load_append_rows(args.append_report)
     frames = list(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride)))
     missing_state = sorted(set(frames).difference(state_by_frame)) if args.v5_state_json is not None else []
     if missing_state:
@@ -703,7 +795,19 @@ def run(args: argparse.Namespace) -> dict:
             state_row = state_by_frame.get(int(frame_idx))
             overlay = render_overlay_frame(frame_source, ann, meshes[int(frame_idx)], row, state_row, int(frame_idx), args)
             center, basis, radius = current_focus_view(annotations, ann, meshes[int(frame_idx)], args)
-            world = draw_world_panel(annotations, meshes, contact_by_frame, state_by_frame, mano_faces, int(frame_idx), center, basis, radius, args)
+            world = draw_world_panel(
+                annotations,
+                meshes,
+                append_by_frame,
+                contact_by_frame,
+                state_by_frame,
+                mano_faces,
+                int(frame_idx),
+                center,
+                basis,
+                radius,
+                args,
+            )
             world_writer.write(world)
             caption = str(ann.get("caption", "")).strip()
             if not caption:
@@ -740,6 +844,7 @@ def run(args: argparse.Namespace) -> dict:
         "interpretation": "The right panel renders the reconstructed object mesh, MANO surfaces, current head-camera frustum, view ray, and head trajectory in metric world coordinates.",
         "annotations": str(args.annotations),
         "object_mesh_npz": str(args.object_mesh_npz),
+        "append_report": str(args.append_report) if args.append_report is not None else None,
         "contact_report": str(args.contact_report),
         "v5_state_json": str(args.v5_state_json) if args.v5_state_json is not None else None,
         "mano_model": str(args.mano_model) if args.mano_model is not None else None,
@@ -757,6 +862,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--object-mesh-npz", type=Path, required=True)
+    parser.add_argument("--append-report", type=Path)
     parser.add_argument("--contact-report", type=Path, required=True)
     parser.add_argument("--v5-state-json", type=Path)
     parser.add_argument("--mano-model", type=Path)
