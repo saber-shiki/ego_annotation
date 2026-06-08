@@ -593,6 +593,38 @@ def render_overlay_frame(
     return image
 
 
+def wrap_caption_lines(text: str, width_px: int, font_scale: float, thickness: int, max_lines: int) -> list[str]:
+    words = text.split()
+    lines: list[str] = []
+    cur = ""
+    overflow = False
+    for word_i, word in enumerate(words):
+        candidate = word if not cur else f"{cur} {word}"
+        candidate_width = cv2.getTextSize(candidate, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0][0]
+        if candidate_width <= int(width_px):
+            cur = candidate
+            continue
+        if cur:
+            lines.append(cur)
+            cur = word
+        else:
+            lines.append(word)
+            cur = ""
+        if len(lines) == int(max_lines):
+            overflow = bool(cur or word_i + 1 < len(words))
+            break
+    if cur and len(lines) < int(max_lines):
+        lines.append(cur)
+    if not lines:
+        return [""]
+    if overflow:
+        while cv2.getTextSize(lines[-1] + "...", cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0][0] > int(width_px) and lines[-1]:
+            lines[-1] = lines[-1][:-1].rstrip()
+        if lines[-1]:
+            lines[-1] = lines[-1] + "..."
+    return lines
+
+
 def combine_panels(overlay: np.ndarray, world: np.ndarray, caption: str, args: argparse.Namespace) -> np.ndarray:
     half = args.output_width // 2
     panel_h = args.panel_height
@@ -602,10 +634,23 @@ def combine_panels(overlay: np.ndarray, world: np.ndarray, caption: str, args: a
     bar = np.zeros((args.caption_height, args.output_width, 3), dtype=np.uint8)
     prefix = str(getattr(args, "caption_prefix", "") or "").strip()
     text = f"{prefix}: {caption}" if prefix else caption
-    max_chars = 150
-    if len(text) > max_chars:
-        text = text[: max_chars - 3].rstrip() + "..."
-    cv2.putText(bar, text, (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2, cv2.LINE_AA)
+    thickness = 2
+    font_scale = 0.60 if int(args.caption_height) < 84 else 0.66
+    line_gap = int(round(25 * font_scale + 8))
+    max_lines = max(1, min(2, (int(args.caption_height) - 12) // max(1, line_gap)))
+    lines = wrap_caption_lines(text, int(args.output_width) - 40, font_scale, thickness, max_lines)
+    y0 = 25 if len(lines) == 1 else 24
+    for line_i, line in enumerate(lines):
+        cv2.putText(
+            bar,
+            line,
+            (20, int(y0 + line_i * line_gap)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
     return np.vstack([joined, bar])
 
 
