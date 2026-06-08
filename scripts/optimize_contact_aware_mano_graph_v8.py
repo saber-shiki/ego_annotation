@@ -598,6 +598,9 @@ def solve(model, observations: list[V8Obs], args: argparse.Namespace) -> tuple[d
                 contact_term = torch.sqrt(contact_prob.clamp_min(1e-5)) * torch.abs(sdf[finite]) / float(args.sigma_contact_sdf_m)
                 penetration_term = torch.sqrt((1.0 - contact_prob).clamp_min(1e-5)) * torch.relu(-sdf[finite]) / float(args.sigma_penetration_m)
                 losses.append(float(args.w_contact) * robust_l1(contact_term).mean())
+                if float(args.w_contact_tail) > 0.0:
+                    contact_tail = torch.max(contact_term)
+                    losses.append(float(args.w_contact_tail) * robust_l1(contact_tail))
                 losses.append(float(args.w_penetration) * robust_l1(penetration_term).mean())
             prior = torch.tensor(contact_prior_logit(obs.contact_seed), dtype=torch.float32, device=device)
             losses.append(float(args.w_contact_prior) * robust_l1((contact_logit[i] - prior) / float(args.sigma_contact_logit)).mean())
@@ -1064,6 +1067,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w-silhouette", type=float, default=0.5)
     parser.add_argument("--w-depth", type=float, default=0.5)
     parser.add_argument("--w-contact", type=float, default=1.4)
+    parser.add_argument("--w-contact-tail", type=float, default=0.0)
     parser.add_argument("--w-penetration", type=float, default=2.0)
     parser.add_argument("--w-contact-prior", type=float, default=0.4)
     parser.add_argument("--w-span", type=float, default=0.4)
