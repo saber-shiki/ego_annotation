@@ -83,7 +83,7 @@ The durable launch path is `scripts/write_v10_mesh4d_consecutive_remote_job.sh`,
 
 ## Raw Mesh4D Replacement
 
-Raw Mesh4D mesh replacement did not satisfy the visible-surface contract on any representative sample:
+Raw Mesh4D mesh replacement failed the visible-surface contract on every representative sample:
 
 - trash visible-surface p95 median: 22.6 mm;
 - wild rice visible-surface p95 median: 35.2 mm;
@@ -186,6 +186,18 @@ V11 should keep the observed-surface-preserving completion contract and improve 
 1. repair missing MANO evidence for windows like mop 760-765, using WiLoR/HaMeR/RTMLib/SAM hand evidence in the contact-aware V8 factor graph;
 2. add hidden-face temporal continuity and component-stability checks, because current track factors constrain observed visible surfaces;
 3. improve generated object geometry by fusing multi-frame point evidence and learned completion under the same replay, track, and SDF constraints, instead of trusting raw generated visible surfaces;
-4. add explicit head-pose and caption QC, because V10 uses those streams in rendering but does not yet independently validate their accuracy.
+4. add explicit head-pose and caption QC, because V10 uses those streams in rendering while independent accuracy evidence remains pending.
 
 The downstream optimizer remains category-agnostic: masks, depths, tracks, mesh proposals, hand evidence, captions, and confidences enter as data; replay, temporal surface factors, contact SDF, nonpenetration, and rendering use one reconstruction path.
+
+## V11 First Diagnostic
+
+`scripts/check_v11_hidden_face_temporal_qc.py` measures appended hidden-face stability under the observed-surface motion factors. The diagnostic isolates appended Mesh4D faces from the archive using the append report, samples hidden surfaces, transforms consecutive-frame samples with CoTracker-derived object motion, and measures symmetric hidden-surface distance and hidden-face count jumps. Visible replay validates visible-image consistency; this diagnostic targets unseen geometry.
+
+Results:
+
+- trash 865-870: status `no_hidden_geometry`; only one frame retained hidden faces, so this sample remains an observed-surface no-regression delivery;
+- wild rice 2538-2543: rejected; hidden-surface p95 distance 168 mm, hidden pair coverage 0.8, hidden-face count jump p95 above threshold, with hundreds to thousands of components per frame;
+- mop 760-765: rejected; hidden-surface p95 distance 95 mm despite full pair coverage, with thousands of components per frame.
+
+The hidden-face diagnostic changes the V11 priority: object mesh completion needs temporally fused geometry and component continuity in addition to visible replay and visible-surface tracks. The next mesh step is a temporally fused completion state with component continuity before further per-frame hidden-face append runs.
