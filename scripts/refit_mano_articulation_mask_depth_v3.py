@@ -535,6 +535,7 @@ def apply_fits(annotations: dict, fits: dict[tuple[int, int], dict], rows: list[
             fitted["world_coordinate_status"] = "v3_mano_articulation_mask_depth_source_camera_to_existing_world_camera"
             fitted["v3_mano_articulation_mask_depth_refit"] = {
                 "silhouette_inside_fraction": row["silhouette_inside_fraction"],
+                "silhouette_distance_median_px": row["silhouette_distance_median_px"],
                 "silhouette_distance_p95_px": row["silhouette_distance_p95_px"],
                 "mano_minus_mask_depth_median_m": row["mano_minus_mask_depth_median_m"],
                 "sampled_vertex_minus_metric_depth_p95_abs_m": row["sampled_vertex_minus_metric_depth_p95_abs_m"],
@@ -653,7 +654,7 @@ def run(args: argparse.Namespace) -> dict:
     if not rows:
         raise RuntimeError(f"all articulation fits failed; skipped={skipped[:30]} fit_errors={fit_errors[:30]}")
     selected_fits, selected_rows = select_best_per_frame(fits, rows, args)
-    output = apply_fits(annotations, selected_fits, selected_rows, args)
+    output = apply_fits(annotations, fits, rows, args)
     save_json(args.output_annotations, output)
     review = render_review(args, output, selected_rows)
     report = {
