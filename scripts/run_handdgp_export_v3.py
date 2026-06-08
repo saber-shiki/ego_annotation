@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -100,37 +101,47 @@ def observed_hands(frame: dict, min_score: float) -> list[dict]:
 
 
 def load_handdgp(handdgp_root: Path, checkpoint: Path, batch_size: int, input_size: int, device: torch.device):
+    handdgp_root = handdgp_root.resolve()
+    checkpoint = checkpoint.resolve()
+    transform_cache = handdgp_root / "third_party" / "HandMesh" / "template" / "transform.pkl"
+    if not transform_cache.is_file():
+        raise RuntimeError(f"HandDGP transform cache is missing: {transform_cache}")
     sys.path.insert(0, str(handdgp_root))
-    from src.models.handdgp import HandDGP
+    prev_cwd = Path.cwd()
+    os.chdir(handdgp_root)
+    try:
+        from src.models.handdgp import HandDGP
 
-    model = HandDGP(
-        batch_size=batch_size,
-        latent_size=256,
-        spiral_len=(9, 9, 9, 9),
-        spiral_dilation=(1, 1, 1, 1),
-        spiral_out_channels=(32, 64, 128, 256),
-        variant="resnet50",
-        imagenet_pretrain=False,
-        input_size=input_size,
-    )
-    ckpt = torch.load(checkpoint, map_location="cpu")
-    state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
-    cleaned = {}
-    for key, value in state.items():
-        clean_key = str(key)
-        for prefix in ("model.", "module."):
-            if clean_key.startswith(prefix):
-                clean_key = clean_key[len(prefix) :]
-        cleaned[clean_key] = value
-    missing, unexpected = model.load_state_dict(cleaned, strict=False)
-    model_keys = set(model.state_dict())
-    loaded_keys = model_keys.intersection(cleaned)
-    if len(loaded_keys) < int(0.8 * len(model_keys)):
-        raise RuntimeError(
-            f"HandDGP checkpoint loaded too few model keys: {len(loaded_keys)}/{len(model_keys)} "
-            f"missing={missing[:20]} unexpected={unexpected[:20]}"
+        model = HandDGP(
+            batch_size=batch_size,
+            latent_size=256,
+            spiral_len=(9, 9, 9, 9),
+            spiral_dilation=(1, 1, 1, 1),
+            spiral_out_channels=(32, 64, 128, 256),
+            variant="resnet50",
+            imagenet_pretrain=False,
+            input_size=input_size,
         )
-    model.to(device).eval()
+        ckpt = torch.load(checkpoint, map_location="cpu")
+        state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+        cleaned = {}
+        for key, value in state.items():
+            clean_key = str(key)
+            for prefix in ("model.", "module."):
+                if clean_key.startswith(prefix):
+                    clean_key = clean_key[len(prefix) :]
+            cleaned[clean_key] = value
+        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        model_keys = set(model.state_dict())
+        loaded_keys = model_keys.intersection(cleaned)
+        if len(loaded_keys) < int(0.8 * len(model_keys)):
+            raise RuntimeError(
+                f"HandDGP checkpoint loaded too few model keys: {len(loaded_keys)}/{len(model_keys)} "
+                f"missing={missing[:20]} unexpected={unexpected[:20]}"
+            )
+        model.to(device).eval()
+    finally:
+        os.chdir(prev_cwd)
     return model
 
 
