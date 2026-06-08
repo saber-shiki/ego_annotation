@@ -243,7 +243,7 @@ def put_label(frame: np.ndarray, frame_idx: int, row: dict | None, status_source
     if row is None:
         text = f"frame {frame_idx}  {status}no reliable mesh-surface contact"
     else:
-        confidence = "detector-backed" if bool(row.get("reliable_for_contact", False)) else "geometry-backed"
+        confidence = str(row.get("display_contact_label") or ("detector-backed" if bool(row.get("reliable_for_contact", False)) else "geometry-backed"))
         text = (
             f"frame {frame_idx}  {status}{row['side']} hand {confidence} mesh contact  "
             f"reproj {row['median_joint_reprojection_px']:.1f}px  "
