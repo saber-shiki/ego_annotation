@@ -90,8 +90,26 @@ Evidence:
 
 The accepted interpretation is sliding contact. The hand remains geometrically and dynamically tied to the object surface, while the active patch moves across the surface. The graph does not claim a single material point is stuck to the hand across the whole window.
 
+Rendered deliverables:
+
+```text
+/data2/ego_annotation_outputs/v12_contact_dynamics/trash_865_870/deliverables_dynamics_final/overlay/mesh_surface_contact_review.mp4
+/data2/ego_annotation_outputs/v12_contact_dynamics/trash_865_870/deliverables_dynamics_final/world/world_reconstruction_3d.mp4
+/data2/ego_annotation_outputs/v12_contact_dynamics/trash_865_870/deliverables_dynamics_final/world/world_reconstruction_side_by_side.mp4
+```
+
+Visual inspection sheets:
+
+```text
+/data2/ego_annotation_outputs/v12_contact_dynamics/trash_865_870/visual_inspection_dynamics_final/overlay_sheet.jpg
+/data2/ego_annotation_outputs/v12_contact_dynamics/trash_865_870/visual_inspection_dynamics_final/world_sheet.jpg
+/data2/ego_annotation_outputs/v12_contact_dynamics/trash_865_870/visual_inspection_dynamics_final/side_by_side_sheet.jpg
+```
+
+The V12 world panel overlays the contact dynamics state without replacing the geometry: contact regime, active patch, gap, slip speed, and dynamics residual appear beside the object and hand reconstruction. The final side-by-side video keeps the V12 caption label and the semantic caption fits within the caption band.
+
 ## Relation To V11
 
 V12 adds a physical consistency layer on top of the V11 accepted geometry. It keeps the V11 mesh, MANO, contact rows, and object motion factors as evidence. It does not replace object mesh reconstruction, object pose, hand pose, replay, hidden-surface QC, SDF contact, or rendered deliverables.
 
-V12 should next produce a rendered dynamics overlay for accepted contact windows: contact mode segment, slip vector, contact gap, and acceleration residual should appear in the world panel without hiding MANO or object geometry.
+V13 should test the dynamics graph on additional contact-rich windows and use the graph output to refine MANO/object state, then rerun replay, hidden-surface QC, SDF contact, nonpenetration, dynamics QC, and rendered deliverables.

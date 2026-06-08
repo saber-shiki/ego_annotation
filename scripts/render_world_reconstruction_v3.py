@@ -110,6 +110,37 @@ def load_append_rows(path: Path | None) -> dict[int, dict]:
     return out
 
 
+def load_dynamics_rows(path: Path | None) -> tuple[dict[int, dict], dict]:
+    if path is None:
+        return {}, {}
+    data = load_json(path)
+    observations = data.get("observations")
+    after = data.get("after")
+    if not isinstance(observations, list) or not isinstance(after, dict):
+        raise RuntimeError(f"dynamics report lacks observations/after objects: {path}")
+    object_points = np.asarray(after.get("object_contact_point_world_m", []), dtype=float)
+    gaps = np.asarray(after.get("hand_contact_gap_world_m", []), dtype=float)
+    if object_points.ndim != 2 or object_points.shape[1] != 3:
+        raise RuntimeError(f"dynamics report has invalid object contact points: {path}")
+    if gaps.shape != object_points.shape or len(observations) != len(object_points):
+        raise RuntimeError(f"dynamics report observation/state count mismatch: {path}")
+    edge_by_source = {int(row["source_frame"]): row for row in after.get("edge_rows", [])}
+    acc_by_center = {int(row["center_frame"]): row for row in after.get("acceleration_rows", [])}
+    out = {}
+    for i, obs in enumerate(observations):
+        frame = int(obs["frame_idx"])
+        out[frame] = {
+            "frame_idx": frame,
+            "selected_patch_region": str(obs.get("selected_patch_region")),
+            "object_contact_point_world_m": object_points[i].astype(float).tolist(),
+            "hand_contact_point_world_m": (object_points[i] + gaps[i]).astype(float).tolist(),
+            "contact_gap_m": float(np.linalg.norm(gaps[i])),
+            "edge": edge_by_source.get(frame),
+            "acceleration": acc_by_center.get(frame),
+        }
+    return out, data
+
+
 def reliable_contact_rows(contact: dict) -> dict[int, dict]:
     rows = [
         row
@@ -416,6 +447,40 @@ def draw_object_surface_legend(image: np.ndarray, append_row: dict | None) -> No
     cv2.putText(image, "completed hidden surface", (x0 + 52, y0 + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
 
 
+def draw_dynamics_world(
+    image: np.ndarray,
+    row: dict | None,
+    dynamics_summary: dict,
+    center: np.ndarray,
+    basis: np.ndarray,
+    radius: float,
+) -> None:
+    if row is None:
+        return
+    object_point = np.asarray(row["object_contact_point_world_m"], dtype=float)
+    hand_point = np.asarray(row["hand_contact_point_world_m"], dtype=float)
+    points = np.vstack([object_point, hand_point])
+    xy, _ = project(points, center, basis, radius, (image.shape[1], image.shape[0]))
+    start = tuple(xy[0].astype(np.int32))
+    end = tuple(xy[1].astype(np.int32))
+    cv2.circle(image, start, 8, (18, 92, 195), -1, cv2.LINE_AA)
+    cv2.circle(image, end, 8, (200, 42, 166), -1, cv2.LINE_AA)
+    cv2.arrowedLine(image, start, end, (78, 38, 174), 3, cv2.LINE_AA, tipLength=0.25)
+    edge = row.get("edge") or {}
+    acc = row.get("acceleration") or {}
+    regime = str(dynamics_summary.get("contact_motion_regime", "contact"))
+    gap_mm = 1000.0 * float(row.get("contact_gap_m", 0.0))
+    slip_cm_s = 100.0 * float(edge.get("slip_speed_m_s", 0.0))
+    acc_res = float(acc.get("acceleration_consistency_residual_m_s2", 0.0))
+    x0 = image.shape[1] - 316
+    y0 = 46
+    cv2.rectangle(image, (x0 - 12, y0 - 16), (image.shape[1] - 22, y0 + 86), (244, 246, 241), -1, cv2.LINE_AA)
+    cv2.putText(image, f"contact: {regime}", (x0, y0 + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (25, 25, 25), 1, cv2.LINE_AA)
+    cv2.putText(image, f"patch: {row.get('selected_patch_region')}", (x0, y0 + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
+    cv2.putText(image, f"gap {gap_mm:.2f} mm  slip {slip_cm_s:.1f} cm/s", (x0, y0 + 52), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
+    cv2.putText(image, f"dyn residual {acc_res:.3f} m/s2", (x0, y0 + 76), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
+
+
 def draw_egocentric_view_ray(
     image: np.ndarray,
     annotations: dict[int, dict],
@@ -557,6 +622,8 @@ def draw_world_panel(
     annotations: dict[int, dict],
     meshes: dict[int, tuple[np.ndarray, np.ndarray]],
     append_by_frame: dict[int, dict],
+    dynamics_by_frame: dict[int, dict],
+    dynamics_summary: dict,
     contact_by_frame: dict[int, dict],
     state_by_frame: dict[int, dict],
     mano_faces: np.ndarray | None,
@@ -590,6 +657,7 @@ def draw_world_panel(
         draw_hand_world(image, hand, center, basis, radius, ids, mano_faces, int(args.max_mano_faces))
     if bool(args.show_camera_inset):
         draw_camera_inset(image, annotations, int(frame_idx), args)
+    draw_dynamics_world(image, dynamics_by_frame.get(int(frame_idx)), dynamics_summary, center, basis, radius)
     draw_head_legend(image)
     draw_object_surface_legend(image, append_by_frame.get(int(frame_idx)))
     draw_metric_axes(image, center, basis, radius)
@@ -755,6 +823,7 @@ def run(args: argparse.Namespace) -> dict:
     contact_by_frame = reliable_contact_rows(load_json(args.contact_report))
     state_by_frame = load_state_rows(args.v5_state_json)
     append_by_frame = load_append_rows(args.append_report)
+    dynamics_by_frame, dynamics_summary = load_dynamics_rows(args.dynamics_report)
     frames = list(range(args.frame_start, args.frame_end + 1, max(1, args.frame_stride)))
     missing_state = sorted(set(frames).difference(state_by_frame)) if args.v5_state_json is not None else []
     if missing_state:
@@ -799,6 +868,8 @@ def run(args: argparse.Namespace) -> dict:
                 annotations,
                 meshes,
                 append_by_frame,
+                dynamics_by_frame,
+                dynamics_summary,
                 contact_by_frame,
                 state_by_frame,
                 mano_faces,
@@ -845,6 +916,7 @@ def run(args: argparse.Namespace) -> dict:
         "annotations": str(args.annotations),
         "object_mesh_npz": str(args.object_mesh_npz),
         "append_report": str(args.append_report) if args.append_report is not None else None,
+        "dynamics_report": str(args.dynamics_report) if args.dynamics_report is not None else None,
         "contact_report": str(args.contact_report),
         "v5_state_json": str(args.v5_state_json) if args.v5_state_json is not None else None,
         "mano_model": str(args.mano_model) if args.mano_model is not None else None,
@@ -863,6 +935,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--object-mesh-npz", type=Path, required=True)
     parser.add_argument("--append-report", type=Path)
+    parser.add_argument("--dynamics-report", type=Path)
     parser.add_argument("--contact-report", type=Path, required=True)
     parser.add_argument("--v5-state-json", type=Path)
     parser.add_argument("--mano-model", type=Path)

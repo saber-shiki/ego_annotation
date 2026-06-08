@@ -147,6 +147,10 @@ def run(args: argparse.Namespace) -> dict:
         if not args.append_report.exists():
             raise RuntimeError(f"append report does not exist: {args.append_report}")
         world_cmd.extend(["--append-report", str(args.append_report)])
+    if args.dynamics_report is not None:
+        if not args.dynamics_report.exists():
+            raise RuntimeError(f"dynamics report does not exist: {args.dynamics_report}")
+        world_cmd.extend(["--dynamics-report", str(args.dynamics_report)])
     world_cmd.extend([
         "--contact-report",
         str(contact_report),
@@ -211,6 +215,7 @@ def run(args: argparse.Namespace) -> dict:
         "mesh_archive": str(mesh_archive),
         "contact_report": str(contact_report),
         "append_report": str(args.append_report) if args.append_report is not None else None,
+        "dynamics_report": str(args.dynamics_report) if args.dynamics_report is not None else None,
         "manifest": str(args.manifest),
         "annotations": str(args.annotations),
         "mano_model": str(args.mano_model),
@@ -241,6 +246,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--append-report", type=Path)
+    parser.add_argument("--dynamics-report", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--scripts-dir", type=Path, default=SCRIPT_DIR)
     parser.add_argument("--mano-model", type=Path, default=DEFAULT_MANO_MODEL)
