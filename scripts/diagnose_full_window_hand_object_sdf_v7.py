@@ -20,11 +20,17 @@ def save_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def frame_sdf(meshes: dict[int, tuple[np.ndarray, np.ndarray]], frame_idx: int, T_world_camera: np.ndarray, args: argparse.Namespace):
+def frame_sdf(
+    meshes: dict[int, tuple[np.ndarray, np.ndarray]],
+    frame_idx: int,
+    T_world_camera: np.ndarray,
+    args: argparse.Namespace,
+    cover_points: np.ndarray,
+):
     mesh_world, mesh_faces = meshes[frame_idx]
     mesh_camera = camera_points(mesh_world, T_world_camera)
     mesh = trimesh.Trimesh(vertices=mesh_camera.astype(np.float32), faces=np.asarray(mesh_faces, dtype=np.int32), process=True)
-    return voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels))
+    return voxel_sdf(mesh, float(args.pitch_m), int(args.pad_voxels), cover_points=cover_points)
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -37,14 +43,19 @@ def run(args: argparse.Namespace) -> dict:
         if frame_idx not in annotations or frame_idx not in meshes:
             continue
         T_world_camera = np.asarray(annotations[frame_idx]["camera"]["T_world_camera_metric"], dtype=np.float64)
-        if frame_idx not in sdf_by_frame:
-            sdf_by_frame[frame_idx] = frame_sdf(meshes, frame_idx, T_world_camera, args)
-        sdf, transform, occ = sdf_by_frame[frame_idx]
-        for hand_idx, hand in enumerate(annotations[frame_idx].get("hands", [])):
+        frame_hands = []
+        for hand in annotations[frame_idx].get("hands", []):
             try:
-                hand_vertices = hand_camera_vertices(hand, T_world_camera)
+                frame_hands.append((hand, hand_camera_vertices(hand, T_world_camera)))
             except RuntimeError:
                 continue
+        if not frame_hands:
+            continue
+        cover_points = np.concatenate([vertices for _, vertices in frame_hands], axis=0)
+        if frame_idx not in sdf_by_frame:
+            sdf_by_frame[frame_idx] = frame_sdf(meshes, frame_idx, T_world_camera, args, cover_points)
+        sdf, transform, occ = sdf_by_frame[frame_idx]
+        for hand_idx, (hand, hand_vertices) in enumerate(frame_hands):
             labels = region_vertex_labels(hand, len(hand_vertices))
             values = sample_sdf(hand_vertices, sdf, transform)
             finite_mask = np.isfinite(values)
