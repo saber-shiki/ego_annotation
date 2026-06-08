@@ -25,21 +25,46 @@ def load_json(path: Path) -> dict:
     return payload
 
 
-def mesh4d_frames(report: dict) -> list[dict]:
+def mesh4d_output_root(report: dict) -> Path:
+    initial_mesh = Path(str(report.get("initial_mesh", "")))
+    if not initial_mesh.name:
+        raise RuntimeError("Mesh4D report has no initial_mesh path for output-root mapping")
+    return initial_mesh.parent
+
+
+def resolve_mesh_path(mesh_path: Path, remote_output_root: Path, local_output_root: Path) -> tuple[Path, dict]:
+    if mesh_path.exists():
+        return mesh_path, {"path_resolution": "as_reported", "reported_mesh_path": str(mesh_path)}
+    try:
+        relative = mesh_path.relative_to(remote_output_root)
+    except ValueError as exc:
+        raise RuntimeError(f"Mesh4D mesh path is outside reported output root: {mesh_path}") from exc
+    local_mesh_path = local_output_root / relative
+    if not local_mesh_path.exists():
+        raise RuntimeError(f"Mesh4D mesh path does not exist after output-root relocation: {local_mesh_path}")
+    return local_mesh_path, {
+        "path_resolution": "relocated_output_root",
+        "reported_mesh_path": str(mesh_path),
+        "reported_output_root": str(remote_output_root),
+        "local_output_root": str(local_output_root),
+    }
+
+
+def mesh4d_frames(report: dict, report_path: Path) -> list[dict]:
     if report.get("status") != "ok":
         raise RuntimeError(f"Mesh4D report status is not ok: {report.get('status')}")
     rows = report.get("frames")
     if not isinstance(rows, list) or len(rows) != 6:
         raise RuntimeError("Mesh4D report must contain exactly six frame rows")
+    remote_output_root = mesh4d_output_root(report)
+    local_output_root = report_path.parent
     parsed = []
     for row in rows:
         if not isinstance(row, dict):
             raise RuntimeError("Mesh4D frame row is not an object")
         frame_idx = int(row["frame_idx"])
-        mesh_path = Path(str(row["mesh"]))
-        if not mesh_path.exists():
-            raise RuntimeError(f"Mesh4D mesh path does not exist: {mesh_path}")
-        parsed.append({**row, "frame_idx": frame_idx, "mesh_path": mesh_path})
+        mesh_path, path_row = resolve_mesh_path(Path(str(row["mesh"])), remote_output_root, local_output_root)
+        parsed.append({**row, **path_row, "frame_idx": frame_idx, "mesh_path": mesh_path})
     return sorted(parsed, key=lambda row: int(row["sequence_index"]))
 
 
@@ -76,7 +101,7 @@ def align_frame(prior_mesh: trimesh.Trimesh, observed_vertices: np.ndarray, obse
 def run(args: argparse.Namespace) -> dict:
     mesh4d_report = load_json(args.mesh4d_json)
     observed_meshes = load_mesh_archive(args.observed_mesh_archive)
-    frame_rows = mesh4d_frames(mesh4d_report)
+    frame_rows = mesh4d_frames(mesh4d_report, args.mesh4d_json)
 
     rows = []
     archive_rows = []
@@ -90,6 +115,8 @@ def run(args: argparse.Namespace) -> dict:
         row["sequence_index"] = int(frame_row["sequence_index"])
         row["source_index"] = int(frame_row["source_index"])
         row["mesh4d_mesh"] = str(frame_row["mesh_path"])
+        row["mesh4d_reported_mesh"] = str(frame_row["reported_mesh_path"])
+        row["mesh4d_path_resolution"] = frame_row["path_resolution"]
         rows.append(row)
         archive_rows.append((frame_idx, aligned_vertices, np.asarray(prior_mesh.faces, dtype=np.int32)))
 
