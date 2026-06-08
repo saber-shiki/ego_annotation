@@ -27,59 +27,165 @@ The generated stream `P_t` can come from Mesh4D, another video-conditioned recon
 
 ## Evidence Contract
 
-V10 delivery still requires the same observable agreement used by V7 through V9:
+V10 uses the same observable agreement used by V7 through V9. Raw replacement and hidden completion are separate candidate modes:
 
 1. measured target replay must pass before generated geometry is evaluated;
-2. generated visible surface must cover the measured visible mesh under the 10 mm p95 threshold;
-3. full-fidelity z-buffer replay must pass silhouette, visible-inside, and depth p95 thresholds;
-4. CoTracker surface factors must remain accepted on the generated candidate surface;
-5. mesh-surface contact and selected-contact SDF must agree where contact evidence exists;
-6. full-window hand-object SDF must keep hand penetration within threshold;
-7. stakeholder render must show head camera, MANO hand, object mesh, contact marker, axes, scale, and caption clearly.
+2. raw generated replacement candidates are a diagnostic path and must cover the measured visible mesh under the 10 mm p95 threshold before they can enter delivery;
+3. hidden-completion candidates must preserve the measured visible mesh and reject generated faces that become visible or contradict mask, depth, free space, z-buffer, or measured-surface evidence;
+4. full-fidelity z-buffer replay must pass silhouette, visible-inside, and depth p95 thresholds;
+5. CoTracker surface factors must remain accepted on the candidate visible surface;
+6. mesh-surface contact and selected-contact SDF must agree where contact evidence exists;
+7. full-window hand-object SDF must keep hand penetration within threshold;
+8. stakeholder render must show head camera, MANO hand, object mesh, contact marker, axes, scale, and caption clearly.
 
 Single-image priors remain useful as proposals and negative controls. They become delivered geometry through the same checks.
 
-## Implementation Plan
+## Implementation
 
-The first V10 executable path uses the existing Mesh4D wrappers:
+The first V10 executable path used Mesh4D as the accessible video-conditioned generator:
 
 ```text
 local RGBA sequence input
   -> A800 Mesh4D generation in tmux
   -> sync generated qc_mesh4d_sequence_v7.json and meshes
   -> archive_mesh4d_sequence_prior_v7.py
-  -> run_v7_generated_prior_replay_qc.py
+  -> run_v7_generated_prior_replay_qc.py for raw replacement diagnosis
+  -> append_v10_mesh4d_hidden_faces_to_observed_mesh.py for observed-surface-preserving completion
+  -> run_v7_video_mesh_replay_qc.py with triangle surface replay
+  -> check_v7_candidate_track_surface_qc.py
   -> run_v7_candidate_physics_qc.py
   -> render_v7_candidate_deliverables.py
 ```
 
-Current target windows:
+The evaluated V10 windows are:
 
-- wild rice frames 2538 to 2540, with Mesh4D input prepared from frames 2538 to 2548;
+- wild rice frames 2538 to 2543;
 - trash frames 865 to 870;
-- mop frames 759 to 765.
+- mop frames 760 to 765.
 
-The local acceptance wrapper is `scripts/run_v7_mesh4d_sequence_batch.py`. It discovers remote Mesh4D reports after sync, aligns each generated six-frame stream to the measured target, runs full-fidelity replay, then runs physics and render for accepted replay outputs.
+The local acceptance wrapper for raw generated streams is `scripts/run_v7_mesh4d_sequence_batch.py`. It discovers remote Mesh4D reports after sync, aligns each generated six-frame stream to the measured target, and runs full-fidelity replay. Hidden-face completion then preserves the measured visible mesh archive and appends only Mesh4D faces that pass the mask, depth, free-space, z-buffer, and measured-surface filters.
 
-## Remote Execution Status
+## Remote Execution Result
 
-A800 host `192.168.11.220` is reachable. The 4090 host `192.168.9.220` timed out on SSH during the current V10 run. Mesh4D is running under tmux session `ego_v10_mesh4d` on A800 GPU 6.
+A800 host `192.168.11.220` completed the Mesh4D jobs under tmux. The 4090 host `192.168.9.220` timed out on SSH during V10 troubleshooting, so heavy Mesh4D generation ran on A800.
 
 SAM 3D Objects currently lacks checkpoint access: Hugging Face returned HTTP 403 for `facebook/sam-3d-objects`. That route needs checkpoint authorization before it can generate object meshes.
 
-Mesh4D setup required two environment repairs:
+Mesh4D setup required these environment and runner repairs:
 
 - install `torch-cluster` for `torch_cluster.fps` in Mesh4D autoencoder blocks;
 - install `plyfile` for `im2mesh.utils.io`;
 - replace the bundled `im2mesh` pykdtree C extension with a SciPy `cKDTree` wrapper, because the bundled extension fails under Python 3.10 while Mesh4D uses KDTree query semantics.
+- install `timm` for Hunyuan3D shape denoiser imports;
+- pass the generated runtime `pipeline_cfg` into `Mesh4DPipeline`, because the source default latent shape produced `canonical_points.shape[1] != N`.
 
-## Acceptance for Closing V10
+The durable launch path is `scripts/write_v10_mesh4d_consecutive_remote_job.sh`, which prepares consecutive six-frame Mesh4D runs without local heavy compute.
 
-V10 closes after at least one generated video-conditioned mesh stream is evaluated through replay, track, physics, and visual inspection on the representative samples. Accepted delivery requires actual videos. Rejection is useful evidence when the generated stream fails for a localized mechanism, because that mechanism decides the V11 design.
+## Raw Mesh4D Replacement
 
-The likely V11 branch depends on the V10 failure mode:
+Raw Mesh4D mesh replacement did not satisfy the visible-surface contract on any representative sample:
 
-- if Mesh4D fails visible replay like single-image priors, move to multi-view VGGT/MoGe point fusion and learned completion constrained by masks;
-- if Mesh4D passes visible replay but fails track factors, optimize a temporal surface graph over `A_t` and surfel offsets;
-- if Mesh4D passes replay and tracks but fails contact physics, add contact-aware object-surface deformation before rendering;
-- if setup or checkpoint access remains the blocker, prioritize accessible video-conditioned or multi-view reconstruction repos over additional single-image generators.
+- trash visible-surface p95 median: 22.6 mm;
+- wild rice visible-surface p95 median: 35.2 mm;
+- mop visible-surface p95 median: 66.5 mm.
+
+The measured visible-mesh target replay still passed on these samples, so the rejection localizes to generated mesh geometry mismatch rather than to the depth/mask/camera target.
+
+## Hidden-Face Completion
+
+V10 therefore uses Mesh4D as a hidden-geometry proposal while preserving the measured visible mesh. Two implementation issues were fixed before interpreting the completion results:
+
+- sparse Mesh4D frames were evaluated only on their generated frame IDs, with no dense-frame interpolation;
+- appended Mesh4D vertices are compacted to vertices referenced by retained faces, and completed-mesh replay uses triangle surfaces so orphan vertices cannot create a false visible silhouette.
+
+Consecutive six-frame Mesh4D runs were needed for wild rice and mop because temporal track factors need consecutive evidence.
+
+The hidden-face yield is itself evidence:
+
+- trash kept a median of 0 Mesh4D faces per frame, with maximum 577, so its accepted delivery is mainly an observed-surface no-regression control after Mesh4D filtering;
+- wild rice kept a median of 28,500 Mesh4D faces per frame;
+- mop kept a median of 15,418 Mesh4D faces per frame.
+
+The current track-surface QC constrains the candidate surface where model-produced tracks land on the observed visible object. Hidden faces that remain unseen throughout the window still need temporal stability, shape correctness, and physical relevance checks.
+
+## Accepted Rendered Deliveries
+
+### Trash 865-870
+
+Root:
+
+```text
+/data2/ego_annotation_outputs/v10_mesh4d_outputs/fused_hidden/trash_mesh4d_hidden_865_870
+```
+
+Evidence:
+
+- hidden completion kept a median of 0 Mesh4D faces per frame and maximum 577;
+- replay accepted: IoU median 0.9478, visible-inside median 1.0, z-buffer p95 median 0.534 mm;
+- track-surface accepted: 363 tracks, 1437 edges, pair residual p95 7.80 mm, zero correction displacement;
+- contact physics accepted: 6 reliable contact rows, selected-contact abs SDF p95 1.245 mm, selected penetration 0, full-window hand penetration fraction 0.0118.
+
+Videos:
+
+```text
+deliverables/overlay/mesh_surface_contact_review.mp4
+deliverables/world/world_reconstruction_3d.mp4
+deliverables/world/world_reconstruction_side_by_side.mp4
+```
+
+All six rendered frames were inspected as overlay, world-view, and side-by-side contact sheets. The mesh stays on the visible manipulated object, the MANO hand stays at the contact region, and the world view shows object mesh, hand, head-camera cue, scale, and caption.
+
+### Wild Rice 2538-2543
+
+Root:
+
+```text
+/data2/ego_annotation_outputs/v10_mesh4d_consecutive_outputs/fused_hidden/wild_rice_mesh4d_hidden_compact_2538_2543
+```
+
+Evidence:
+
+- hidden completion kept a median of 28,500 Mesh4D faces per frame;
+- replay accepted: IoU median 0.9460, visible-inside median 0.9866, z-buffer p95 median 6.03 mm;
+- track-surface accepted on repaired single-archive factors for frames 2538 to 2541: 32 tracks, 67 edges, pair residual p95 8.02 mm, zero correction displacement;
+- nonpenetration physics accepted with no reliable temporal contact claim: full-window hand penetration fraction 0.00305.
+
+Videos:
+
+```text
+deliverables/overlay/mesh_surface_contact_review.mp4
+deliverables/world/world_reconstruction_3d.mp4
+deliverables/world/world_reconstruction_side_by_side.mp4
+```
+
+All six rendered frames were inspected as overlay, world-view, and side-by-side contact sheets. The overlay mesh stays on the active stem, MANO hands stay near the visible hands, the no-contact label is consistent with physics, and the standalone world view contains object mesh, hands, head-camera cue, scale, and caption.
+
+## Accepted Object Branch With Missing Hand Evidence
+
+Mop frames 760 to 765 produced an accepted object mesh replay and accepted temporal surface track:
+
+```text
+/data2/ego_annotation_outputs/v10_mesh4d_consecutive_outputs/fused_hidden/mop_mesh4d_hidden_compact_760_765
+```
+
+Evidence:
+
+- hidden completion kept a median of 15,418 Mesh4D faces per frame;
+- replay accepted: IoU median 0.9715, visible-inside median 1.0, z-buffer p95 median 1.95 mm;
+- track-surface accepted: 51 tracks, 227 edges, pair residual p95 9.64 mm, zero correction displacement;
+- physics rejected before SDF evaluation because the annotation table has zero MANO hand rows for frames 760 to 765.
+
+Mop supports object-only replay and visible-surface tracking on a third representative object. Full annotation for this window still requires the hand evidence needed for hand-object physics.
+
+## V11 Direction
+
+V10 answers a narrower object-mesh question: video-conditioned meshes can provide evidence-consistent hidden completion proposals after filtering, while direct generated mesh replacement remains too inaccurate on the visible surface. Trash mainly tests no-regression after filtering; wild rice and mop test nonzero hidden-face proposals.
+
+V11 should keep the observed-surface-preserving completion contract and improve the two causes exposed by V10:
+
+1. repair missing MANO evidence for windows like mop 760-765, using WiLoR/HaMeR/RTMLib/SAM hand evidence in the contact-aware V8 factor graph;
+2. add hidden-face temporal continuity and component-stability checks, because current track factors constrain observed visible surfaces;
+3. improve generated object geometry by fusing multi-frame point evidence and learned completion under the same replay, track, and SDF constraints, instead of trusting raw generated visible surfaces;
+4. add explicit head-pose and caption QC, because V10 uses those streams in rendering but does not yet independently validate their accuracy.
+
+The downstream optimizer remains category-agnostic: masks, depths, tracks, mesh proposals, hand evidence, captions, and confidences enter as data; replay, temporal surface factors, contact SDF, nonpenetration, and rendering use one reconstruction path.
