@@ -175,6 +175,13 @@ def run(args: argparse.Namespace) -> dict:
     static_conditioner = instantiate_non_trainable_model(config["model"]["params"]["cond_stage_config_2"])
     image_processor = instantiate_from_config(config["model"]["params"]["image_processor_cfg"])
     scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000)
+    pipeline_cfg = config["model"]["params"]["pipeline_cfg"]
+    if pipeline_cfg["target"] != "hy3dshape.pipelines_video_newvae_all_nonalign_infer.Hunyuan3DDiTFlowMatchingPipeline":
+        raise RuntimeError(f"unexpected Mesh4D pipeline target: {pipeline_cfg['target']}")
+    pipeline_params = dict(pipeline_cfg["params"])
+    latent_shape = tuple(int(value) for value in pipeline_params["latent_shape"])
+    if len(latent_shape) != 3:
+        raise RuntimeError(f"expected Mesh4D latent_shape to have 3 dimensions, got {latent_shape}")
     pipeline = Mesh4DPipeline(
         vae=vae,
         model=denoiser,
@@ -183,6 +190,7 @@ def run(args: argparse.Namespace) -> dict:
         image_processor=image_processor,
         cond_stage_model_2=static_conditioner,
         z_scale_factor=config["model"]["params"]["z_scale_factor"],
+        **pipeline_params,
     )
     pipeline.device = torch.device(args.device)
     pipeline.dtype = torch.float16
@@ -235,6 +243,7 @@ def run(args: argparse.Namespace) -> dict:
         "initial_mesh": str(initial_mesh),
         "model_name": model_name,
         "mesh_dir": str(mesh_dir),
+        "pipeline_params": json_ready(pipeline_params),
         "frames": frame_reports,
         "metrics": json_ready(metrics),
         "torch": {
