@@ -471,10 +471,10 @@ def fit_one(model, item: ArticulationInput, args: argparse.Namespace) -> tuple[d
     source_size = (int(args.source_width), int(args.source_height))
     depth_shape = tuple(int(x) for x in metric_depth.shape)
 
-    pose_delta = torch.zeros((1, 15, 3), dtype=torch.float32, requires_grad=True)
-    orient_delta = torch.zeros((1, 1, 3), dtype=torch.float32, requires_grad=True)
-    trans_delta = torch.zeros_like(item.base_cam_t, requires_grad=True)
-    log_scale = torch.zeros(1, dtype=torch.float32, requires_grad=True)
+    pose_delta = torch.zeros((1, 15, 3), dtype=torch.float32, device=device, requires_grad=True)
+    orient_delta = torch.zeros((1, 1, 3), dtype=torch.float32, device=device, requires_grad=True)
+    trans_delta = torch.zeros_like(item.base_cam_t, device=device, requires_grad=True)
+    log_scale = torch.zeros(1, dtype=torch.float32, device=device, requires_grad=True)
     optimizer = torch.optim.Adam([pose_delta, orient_delta, trans_delta, log_scale], lr=float(args.lr))
 
     best_loss = float("inf")
