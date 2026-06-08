@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -29,33 +31,51 @@ def run_command(argv: list[str]) -> None:
     subprocess.run(argv, check=True)
 
 
-def run_zbuffer(args: argparse.Namespace, mesh_archive: Path, output_dir: Path) -> dict:
-    run_command(
-        [
-            sys.executable,
-            str(args.scripts_dir / "render_mesh_zbuffer_qc_v3.py"),
-            "--mesh-archive",
-            str(mesh_archive),
-            "--manifest",
-            str(args.manifest),
-            "--annotations",
-            str(args.annotations),
-            "--metric-depth-npz",
-            str(args.metric_depth_npz),
-            "--intrinsics-source",
-            args.intrinsics_source,
-            "--frame-start",
-            str(args.frame_start),
-            "--frame-end",
-            str(args.frame_end),
-            "--max-faces",
-            str(args.max_faces),
-            "--vertex-splat-radius-px",
-            str(args.vertex_splat_radius_px),
-            "--output-dir",
-            str(output_dir),
-        ]
-    )
+def mesh_archive_frames(path: Path, frame_start: int, frame_end: int) -> list[int]:
+    with np.load(path, allow_pickle=False) as archive:
+        if "frame_idx" not in archive.files:
+            raise RuntimeError(f"mesh archive lacks frame_idx: {path}")
+        frames = [int(frame) for frame in archive["frame_idx"].tolist() if int(frame_start) <= int(frame) <= int(frame_end)]
+    if not frames:
+        raise RuntimeError(f"mesh archive has no frames in range {frame_start}-{frame_end}: {path}")
+    return frames
+
+
+def selected_frames(args: argparse.Namespace, mesh_archive: Path) -> list[int] | None:
+    if not args.archive_frames_only:
+        return None
+    return mesh_archive_frames(mesh_archive, int(args.frame_start), int(args.frame_end))
+
+
+def run_zbuffer(args: argparse.Namespace, mesh_archive: Path, output_dir: Path, frames: list[int] | None) -> dict:
+    argv = [
+        sys.executable,
+        str(args.scripts_dir / "render_mesh_zbuffer_qc_v3.py"),
+        "--mesh-archive",
+        str(mesh_archive),
+        "--manifest",
+        str(args.manifest),
+        "--annotations",
+        str(args.annotations),
+        "--metric-depth-npz",
+        str(args.metric_depth_npz),
+        "--intrinsics-source",
+        args.intrinsics_source,
+        "--frame-start",
+        str(args.frame_start),
+        "--frame-end",
+        str(args.frame_end),
+        "--max-faces",
+        str(args.max_faces),
+        "--vertex-splat-radius-px",
+        str(args.vertex_splat_radius_px),
+        "--output-dir",
+        str(output_dir),
+    ]
+    if frames is not None:
+        argv.append("--frames")
+        argv.extend(str(frame) for frame in frames)
+    run_command(argv)
     return load_json(output_dir / "qc_mesh_zbuffer_projection_v3.json")
 
 
@@ -69,14 +89,17 @@ def same_path(actual: object, expected: Path, key: str) -> None:
         raise RuntimeError(f"z-buffer report {key} mismatch: {actual_path} != {expected}")
 
 
-def manifest_frame_indices(path: Path, frame_start: int, frame_end: int) -> list[int]:
+def manifest_frame_indices(path: Path, frame_start: int, frame_end: int, requested_frames: list[int] | None = None) -> list[int]:
     payload = load_json(path)
-    frames = payload.get("frames")
-    if not isinstance(frames, list) or not frames:
+    manifest_rows = payload.get("frames")
+    if not isinstance(manifest_rows, list) or not manifest_rows:
         raise RuntimeError(f"{path} must contain a nonempty frames list")
     selected = []
-    for frame in frames:
+    requested = None if requested_frames is None else {int(frame) for frame in requested_frames}
+    for frame in manifest_rows:
         idx = int(frame["frame_idx"])
+        if requested is not None and idx not in requested:
+            continue
         if int(frame_start) <= idx <= int(frame_end):
             selected.append(idx)
     if not selected:
@@ -84,7 +107,7 @@ def manifest_frame_indices(path: Path, frame_start: int, frame_end: int) -> list
     return selected
 
 
-def validate_zbuffer_report(args: argparse.Namespace, path: Path, mesh_archive: Path) -> tuple[dict, Path, Path]:
+def validate_zbuffer_report(args: argparse.Namespace, path: Path, mesh_archive: Path, frames: list[int] | None) -> tuple[dict, Path, Path]:
     if not path.exists():
         raise RuntimeError(f"z-buffer report does not exist: {path}")
     report = load_json(path)
@@ -110,7 +133,7 @@ def validate_zbuffer_report(args: argparse.Namespace, path: Path, mesh_archive: 
     normalized_actual_max_faces = None if actual_max_faces is None else int(actual_max_faces)
     if normalized_actual_max_faces != expected_max_faces:
         raise RuntimeError("z-buffer report max_faces mismatch")
-    expected_frames = manifest_frame_indices(args.manifest, int(args.frame_start), int(args.frame_end))
+    expected_frames = manifest_frame_indices(args.manifest, int(args.frame_start), int(args.frame_end), frames)
     rows = report.get("rows")
     if not isinstance(rows, list) or not rows:
         raise RuntimeError("z-buffer report lacks rows")
@@ -139,8 +162,9 @@ def run(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"video mesh archive does not exist: {args.video_mesh_archive}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     zbuffer_dir = args.output_dir / "video_mesh_zbuffer_qc"
+    frames = selected_frames(args, args.video_mesh_archive)
     if args.video_mesh_zbuffer_report is None:
-        zbuffer = run_zbuffer(args, args.video_mesh_archive, zbuffer_dir)
+        zbuffer = run_zbuffer(args, args.video_mesh_archive, zbuffer_dir, frames)
         zbuffer_report_path = zbuffer_dir / "qc_mesh_zbuffer_projection_v3.json"
         zbuffer_video_path = zbuffer_dir / "mesh_zbuffer_projection_qc.mp4"
         zbuffer_cache = {"used": False}
@@ -149,6 +173,7 @@ def run(args: argparse.Namespace) -> dict:
             args,
             args.video_mesh_zbuffer_report,
             args.video_mesh_archive,
+            frames,
         )
         zbuffer_cache = {
             "used": True,
@@ -189,6 +214,7 @@ def run(args: argparse.Namespace) -> dict:
         "video_mesh_zbuffer_cache": zbuffer_cache,
         "frame_start": int(args.frame_start),
         "frame_end": int(args.frame_end),
+        "evaluated_frames": frames if frames is not None else None,
         "replay_controls": replay_controls,
         "metrics": {
             "silhouette_iou_median": iou_median,
@@ -231,6 +257,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intrinsics-source", choices=["manifest", "annotation-vggt"], default="annotation-vggt")
     parser.add_argument("--max-faces", type=int, default=0)
     parser.add_argument("--vertex-splat-radius-px", type=int, default=0)
+    parser.add_argument("--archive-frames-only", action="store_true")
     parser.add_argument("--min-iou-median", type=float, default=0.900)
     parser.add_argument("--min-visible-inside-median", type=float, default=0.900)
     parser.add_argument("--max-zbuffer-abs-p95-median-m", type=float, default=0.010)

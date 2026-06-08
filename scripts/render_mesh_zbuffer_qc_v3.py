@@ -174,8 +174,11 @@ def run(args: argparse.Namespace) -> dict:
     still_dir.mkdir(exist_ok=True)
     rows = []
     writer = None
+    selected_frame_set = None if args.frames is None else {int(frame) for frame in args.frames}
     for entry in entries:
         frame_idx = int(entry["frame_idx"])
+        if selected_frame_set is not None and frame_idx not in selected_frame_set:
+            continue
         if args.frame_start is not None and frame_idx < int(args.frame_start):
             continue
         if args.frame_end is not None and frame_idx > int(args.frame_end):
@@ -292,6 +295,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intrinsics-source", choices=["manifest", "annotation-vggt"], default="manifest")
     parser.add_argument("--frame-start", type=int)
     parser.add_argument("--frame-end", type=int)
+    parser.add_argument("--frames", type=int, nargs="*")
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--max-faces", type=int, default=60000)
