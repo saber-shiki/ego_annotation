@@ -32,9 +32,19 @@ def finite(value: object) -> float | None:
 
 def refit_metric(hand: dict, key: str) -> float | None:
     refit = hand.get("v3_target_similarity_refit")
-    if not isinstance(refit, dict):
+    if isinstance(refit, dict):
+        value = finite(refit.get(key))
+        if value is not None:
+            return value
+    articulation = hand.get("v3_mano_articulation_mask_depth_refit")
+    if not isinstance(articulation, dict):
         return None
-    return finite(refit.get(key))
+    mapped = {
+        "median_reprojection_after_px": "silhouette_distance_median_px",
+        "mano_minus_unidepth_after_m": "mano_minus_mask_depth_median_m",
+        "hand_bone_after_m": "hand_bone_m",
+    }
+    return finite(articulation.get(mapped.get(key, key)))
 
 
 def hypothesis_score(hand: dict, args: argparse.Namespace) -> tuple[float, dict]:
@@ -87,6 +97,8 @@ def run(args: argparse.Namespace) -> dict:
             if not side_allowed(hand, args):
                 continue
             score, metrics = hypothesis_score(hand, args)
+            if not math.isfinite(score):
+                continue
             candidates.append((score, hand_i, hand, metrics))
         if not candidates:
             out_frame["hands"] = []
