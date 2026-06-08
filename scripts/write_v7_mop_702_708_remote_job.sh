@@ -105,7 +105,8 @@ run_stage sam2_hand \
     --save-candidate-masks \
     --min-area-px 80 \
     --max-prompt-area-ratio 3.5 \
-    --max-area-fraction 0.08
+    --max-area-fraction 0.08 \
+    --min-positive-hit-fraction 0.75
 
 run_stage object_rgb_dataset \
   "$HAWOR_PY" scripts/export_mask_track_rgb_dataset_v3.py \
