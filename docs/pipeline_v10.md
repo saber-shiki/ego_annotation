@@ -223,3 +223,20 @@ Evidence:
 - rendered overlay, world 3D, and side-by-side videos each contain 6 frames at 6 fps, and all frames were inspected as contact sheets.
 
 This V11 result fixes the hidden-geometry temporal failure exposed by the diagnostic on wild rice while preserving visible replay and hand-object nonpenetration. Mop still needs MANO hand evidence before full annotation physics can be evaluated.
+
+Mop 760-765 also accepts on the object-only V11 mesh branch:
+
+```text
+/data2/ego_annotation_outputs/v11_temporal_fused_hidden/mop_760_765_filtered
+```
+
+Evidence:
+
+- fused hidden surface: 5,403 vertices and 33,821 faces before per-frame projection filtering;
+- retained hidden faces per frame: median 3,656.5;
+- hidden temporal QC accepted: symmetric hidden-surface p95 7.75 mm and hidden-face count log-step p95 0.138;
+- replay accepted: IoU median 0.9715, visible-inside median 1.0, z-buffer p95 median 1.95 mm;
+- visible-surface track QC accepted: 51 tracks, 227 edges, pair residual p95 9.64 mm;
+- physics still rejects before SDF with `hand_rows=0`.
+
+This result shows that V11 temporal fusion improves the object mesh branch on a second representative object. The full annotation result for mop remains blocked by missing MANO hand evidence in frames 760 to 765.
