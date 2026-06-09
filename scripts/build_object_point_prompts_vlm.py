@@ -216,11 +216,65 @@ def run(args: argparse.Namespace) -> dict:
     if not indices:
         raise RuntimeError("no source frames selected for point prompting")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_json = args.output_dir / "object_point_prompts_vlm.json"
+    partial_json = args.output_dir / "object_point_prompts_vlm.partial.json"
     all_prompts: list[dict] = []
     batches = []
+    selected_set = set(indices)
+
+    def payload(status: str, elapsed_s: float | None = None) -> dict:
+        return {
+            "status": status,
+            "backend": "VLM object point prompts for SAM",
+            "model": args.model,
+            "clip": str(args.clip),
+            "video": info.__dict__,
+            "object_plan": str(args.object_plan),
+            "object_index": int(args.object_index),
+            "track_id": object_plan["track_id"],
+            "description": object_plan["description"],
+            "prompt_image_width": int(args.image_width),
+            "frames_prompted": len(all_prompts),
+            "visible_frames": sum(1 for row in all_prompts if row["target_visible"]),
+            "point_prompts": all_prompts,
+            "batches": batches,
+            "elapsed_s": time.time() - started if elapsed_s is None else elapsed_s,
+        }
+
+    if args.resume_partial:
+        resume_path = partial_json if partial_json.exists() else output_json if output_json.exists() else None
+        if resume_path is not None:
+            previous = load_json(resume_path)
+            required = {
+                "model": args.model,
+                "clip": str(args.clip),
+                "object_plan": str(args.object_plan),
+                "object_index": int(args.object_index),
+                "track_id": object_plan["track_id"],
+                "prompt_image_width": int(args.image_width),
+            }
+            mismatches = {
+                key: {"expected": expected, "observed": previous.get(key)}
+                for key, expected in required.items()
+                if previous.get(key) != expected
+            }
+            if mismatches:
+                raise RuntimeError(f"cannot resume point prompts from incompatible file {resume_path}: {mismatches}")
+            all_prompts = [
+                dict(row)
+                for row in previous.get("point_prompts", [])
+                if int(row.get("frame_idx", -1)) in selected_set
+            ]
+            batches = [
+                {**dict(row), "frames": [int(frame) for frame in row.get("frames", []) if int(frame) in selected_set]}
+                for row in previous.get("batches", [])
+            ]
+            batches = [row for row in batches if row["frames"]]
+    completed = {int(row["frame_idx"]) for row in all_prompts}
+    remaining_indices = [idx for idx in indices if idx not in completed]
     try:
-        for batch_id, start in enumerate(range(0, len(indices), max(1, int(args.batch_size)))):
-            batch = indices[start : start + int(args.batch_size)]
+        for start in range(0, len(remaining_indices), max(1, int(args.batch_size))):
+            batch = remaining_indices[start : start + int(args.batch_size)]
             images = []
             prompt_size = None
             for idx in batch:
@@ -232,30 +286,14 @@ def run(args: argparse.Namespace) -> dict:
                 continue
             prompts = call_responses(args, object_plan, images, prompt_size)
             all_prompts.extend(prompts)
-            batches.append({"batch": batch_id, "frames": batch, "prompt_image_size": list(prompt_size)})
+            batches.append({"batch": len(batches), "frames": batch, "prompt_image_size": list(prompt_size)})
+            partial_json.write_text(json.dumps(payload("partial"), indent=2), encoding="utf-8")
     finally:
         cap.release()
-    payload = {
-        "status": "ok",
-        "backend": "VLM object point prompts for SAM",
-        "model": args.model,
-        "clip": str(args.clip),
-        "video": info.__dict__,
-        "object_plan": str(args.object_plan),
-        "object_index": int(args.object_index),
-        "track_id": object_plan["track_id"],
-        "description": object_plan["description"],
-        "prompt_image_width": int(args.image_width),
-        "frames_prompted": len(all_prompts),
-        "visible_frames": sum(1 for row in all_prompts if row["target_visible"]),
-        "point_prompts": all_prompts,
-        "batches": batches,
-        "elapsed_s": time.time() - started,
-    }
-    output_json = args.output_dir / "object_point_prompts_vlm.json"
-    output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps({k: v for k, v in payload.items() if k not in {"point_prompts", "batches"}}, indent=2))
-    return payload
+    final_payload = payload("ok")
+    output_json.write_text(json.dumps(final_payload, indent=2), encoding="utf-8")
+    print(json.dumps({k: v for k, v in final_payload.items() if k not in {"point_prompts", "batches"}}, indent=2))
+    return final_payload
 
 
 def parse_args() -> argparse.Namespace:
@@ -277,6 +315,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--detail", default="high")
     parser.add_argument("--timeout-s", type=float, default=180.0)
+    parser.add_argument("--resume-partial", action="store_true")
     return parser.parse_args()
 
 
