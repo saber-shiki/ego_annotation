@@ -25,6 +25,7 @@ class CaseSpec:
     sam2_multiobject_roots: tuple[Path, ...] = ()
     contact_measurement_paths: tuple[Path, ...] = ()
     rtmlib_hand2d_paths: tuple[Path, ...] = ()
+    hamer_measurement_paths: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -304,6 +305,51 @@ def measurements_from_hawor(annotation_paths: tuple[Path, ...]) -> tuple[list[di
                 "path": str(path),
                 "status": "loaded",
                 "measurement_count": source_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+            }
+        )
+    return measurements, by_frame, sources
+
+
+def measurements_from_hamer_summaries(
+    summary_paths: tuple[Path, ...],
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(summary_paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        rows = payload.get("measurements")
+        if not isinstance(rows, list):
+            raise RuntimeError(f"{path} has no measurements list")
+        source_rows = 0
+        measured_rows = 0
+        source_frames: list[int] = []
+        for row_i, raw in enumerate(rows):
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            idx = int(row["frame_idx"])
+            row["measurement_id"] = f"hamer_summary:{source_i}:{row_i}"
+            row["source_summary"] = str(path)
+            measurements.append(row)
+            by_frame.setdefault(idx, []).append(row)
+            source_rows += 1
+            if bool(row.get("measurement_available", False)):
+                measured_rows += 1
+            source_frames.append(idx)
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "source_annotations": payload.get("source_annotations"),
+                "measurement_count": source_rows,
+                "measured_hand_rows": measured_rows,
                 "active_frame_min": min(source_frames) if source_frames else None,
                 "active_frame_max": max(source_frames) if source_frames else None,
                 "active_frame_count": len(set(source_frames)),
@@ -670,6 +716,7 @@ def anchor_qc(
     frames: dict[int, dict[str, Any]],
     wilor_by_frame: dict[int, list[dict[str, Any]]],
     hawor_by_frame: dict[int, list[dict[str, Any]]],
+    hamer_by_frame: dict[int, list[dict[str, Any]]],
     v16_hand_by_frame: dict[int, list[dict[str, Any]]],
     rtmlib_by_frame: dict[int, list[dict[str, Any]]],
     object_by_frame: dict[int, list[dict[str, Any]]],
@@ -686,6 +733,12 @@ def anchor_qc(
         wilor_hands = wilor_by_frame.get(idx, [])
         hawor_hands = hawor_by_frame.get(idx, [])
         observed_hawor = [row for row in hawor_hands if row.get("measurement_available")]
+        hamer_hands = hamer_by_frame.get(idx, [])
+        measured_hamer = [row for row in hamer_hands if row.get("measurement_available")]
+        hamer_measured_crop_ids = {
+            row.get("detector_hand_idx") if row.get("detector_hand_idx") is not None else row.get("measurement_id")
+            for row in measured_hamer
+        }
         rtmlib_hands = rtmlib_by_frame.get(idx, [])
         object_measurements = object_by_frame.get(idx, [])
         contact_measurements = contact_by_frame.get(idx, [])
@@ -700,9 +753,10 @@ def anchor_qc(
             failures.append("v16_hand_state_lacks_source_confidence")
         if v16_hands and any(row.get("failure_reason") == "hand_measurement_unavailable" for row in v16_hands):
             failures.append("v16_hand_state_contains_unavailable_measurement")
-        if expected_visible is not None and len(wilor_hands) < expected_visible:
-            failures.append("wilor_measurements_missing_for_visible_hands")
-        if expected_visible is not None and not wilor_hands and not rtmlib_hands and not observed_hawor:
+        mano_source_count = max(len(wilor_hands), len(observed_hawor), len(hamer_measured_crop_ids))
+        if expected_visible is not None and mano_source_count < expected_visible:
+            failures.append("source_mano_measurements_missing_for_visible_hands")
+        if expected_visible is not None and not wilor_hands and not rtmlib_hands and not observed_hawor and not measured_hamer:
             failures.append("visible_hand_detector_measurement_missing")
         if expected_visible is not None and hawor_hands and len(hawor_hands) < expected_visible:
             failures.append("hawor_measurements_incomplete_for_visible_hands")
@@ -729,7 +783,7 @@ def anchor_qc(
         hand_repair_failures = {
             "visible_hands_missing_from_v16_state",
             "v16_hand_state_contains_unavailable_measurement",
-            "wilor_measurements_missing_for_visible_hands",
+            "source_mano_measurements_missing_for_visible_hands",
             "hawor_geometry_without_2d_observation_support",
             "contact_evidence_requires_hand_repair",
         }
@@ -745,6 +799,9 @@ def anchor_qc(
                 "expected_contact": spec.expected_contact.get(idx),
                 "v16_hand_count": len(v16_hands),
                 "wilor_raw_hand_count": len(wilor_hands),
+                "hamer_hand_count": len(hamer_hands),
+                "hamer_measured_hand_count": len(measured_hamer),
+                "hamer_measured_crop_count": len(hamer_measured_crop_ids),
                 "rtmlib_hand2d_count": len(rtmlib_hands),
                 "hawor_hand_count": len(hawor_hands),
                 "hawor_observed_hand_count": len(observed_hawor),
@@ -777,6 +834,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     frames = frame_state(annotations)
     wilor_measurements, wilor_by_frame = measurements_from_wilor(raw_wilor_path)
     hawor_measurements, hawor_by_frame, hawor_sources = measurements_from_hawor(spec.hawor_annotation_paths)
+    hamer_measurements, hamer_by_frame, hamer_sources = measurements_from_hamer_summaries(spec.hamer_measurement_paths)
     v16_hand_measurements, v16_hand_by_frame = measurements_from_v16_hands(frames)
     rtmlib_measurements, rtmlib_by_frame, rtmlib_sources = measurements_from_rtmlib(spec.rtmlib_hand2d_paths)
     object_measurements, object_by_frame = measurements_from_object_mesh_qc(object_qc_path, frames)
@@ -798,6 +856,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     measurements_dir = case_dir / "measurements_v17"
     write_json(measurements_dir / "wilor_measurements.json", wilor_measurements)
     write_json(measurements_dir / "hawor_measurements.json", hawor_measurements)
+    write_json(measurements_dir / "hamer_measurements.json", hamer_measurements)
     write_json(measurements_dir / "v16_hand_state_measurements.json", v16_hand_measurements)
     write_json(measurements_dir / "rtmlib_hand2d_measurements.json", rtmlib_measurements)
     write_json(measurements_dir / "object_mesh_measurements.json", object_measurements)
@@ -811,6 +870,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         frames,
         wilor_by_frame,
         hawor_by_frame,
+        hamer_by_frame,
         v16_hand_by_frame,
         rtmlib_by_frame,
         object_by_frame_combined,
@@ -827,6 +887,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "annotations": str(annotations_path),
         "wilor_raw": str(raw_wilor_path),
         "hawor_sources": hawor_sources,
+        "hamer_sources": hamer_sources,
         "rtmlib_hand2d_sources": rtmlib_sources,
         "object_plan_sources": object_plan_sources,
         "expected_object_coverage_sources": expected_coverage_sources,
@@ -836,6 +897,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "measurement_counts": {
             "wilor": len(wilor_measurements),
             "hawor": len(hawor_measurements),
+            "hamer": len(hamer_measurements),
             "v16_hand_state": len(v16_hand_measurements),
             "rtmlib_hand2d": len(rtmlib_measurements),
             "object_mesh": len(object_measurements),
@@ -882,6 +944,9 @@ def default_cases() -> list[CaseSpec]:
             ),
             rtmlib_hand2d_paths=(
                 Path("/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/rtmlib_full_r2/rtmlib_hand2d.json"),
+            ),
+            hamer_measurement_paths=(
+                Path("/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/hamer_full_r1/hamer_measurements_summary.json"),
             ),
         ),
         CaseSpec(

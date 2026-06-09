@@ -161,6 +161,7 @@ V17 uses a fixed measurement set:
 
 - HaWoR world-space hand motion and infilled hand trajectory measurements as the primary temporal hand-motion source;
 - WiLoR per-frame MANO measurements as an independent image-conditioned hand source;
+- HaMeR per-frame MANO measurements from RTMLib crop evidence, with explicit source-coordinate intrinsics and metric-translation residuals;
 - RTMLib 2D keypoints;
 - SAM 2 hand masks or another hand-mask source;
 - metric depth over visible hand regions;
@@ -168,7 +169,7 @@ V17 uses a fixed measurement set:
 
 The delivered hand state is a fixed-lag smoothed MANO trajectory. The solver can choose among measurements because the objective defines residuals, not because code branches on visual cases.
 
-HaWoR and WiLoR are not selected by a hard-coded preference. HaWoR contributes motion continuity, world-space trajectory, and missing-frame infill. WiLoR contributes per-frame MANO image evidence. The accepted hand state is the graph solution that best satisfies projection, mask, depth, temporal, and contact residuals. If HaWoR and WiLoR disagree, V17 records the disagreement and either repairs the state or marks it unresolved.
+HaWoR contributes motion continuity, world-space trajectory, and missing-frame infill. WiLoR and HaMeR contribute per-frame MANO image evidence through separate model families and crop contracts. The accepted hand state is the graph solution that best satisfies projection, mask, depth, temporal, and contact residuals. When hand sources disagree, V17 records the disagreement and either repairs the state or marks it unresolved.
 
 For each hand and frame, the state can be:
 
