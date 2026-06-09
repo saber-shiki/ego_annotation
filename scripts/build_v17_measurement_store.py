@@ -18,6 +18,9 @@ class CaseSpec:
     expected_contact: dict[int, str]
     expected_objects: tuple[str, ...]
     hawor_annotation_paths: tuple[Path, ...] = ()
+    object_plan_paths: tuple[Path, ...] = ()
+    expected_object_coverage_paths: tuple[Path, ...] = ()
+    sam2_multiobject_roots: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -267,6 +270,208 @@ def measurements_from_object_mesh_qc(qc_path: Path, frames: dict[int, dict[str, 
     return measurements, by_frame
 
 
+def interval_frames(intervals: Any) -> tuple[int | None, int | None, int]:
+    starts: list[int] = []
+    ends: list[int] = []
+    for interval in intervals if isinstance(intervals, list) else []:
+        if not isinstance(interval, dict):
+            continue
+        start = as_float(interval.get("start_frame"))
+        end = as_float(interval.get("end_frame"))
+        if start is None or end is None:
+            continue
+        starts.append(int(start))
+        ends.append(int(end))
+    if not starts or not ends:
+        return None, None, 0
+    frame_count = sum(max(0, end - start + 1) for start, end in zip(starts, ends, strict=False))
+    return min(starts), max(ends), frame_count
+
+
+def measurements_from_object_plans(plan_paths: tuple[Path, ...]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    roster_rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(plan_paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else payload
+        objects = plan.get("objects") if isinstance(plan, dict) else None
+        if not isinstance(objects, list):
+            sources.append({"path": str(path), "status": "invalid_no_objects"})
+            continue
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "backend": payload.get("backend"),
+                "model": payload.get("model"),
+                "object_count": len(objects),
+            }
+        )
+        for object_i, obj in enumerate(objects):
+            if not isinstance(obj, dict):
+                continue
+            track_id = str(obj.get("track_id") or f"object_plan_{source_i}_{object_i}")
+            start, end, count = interval_frames(obj.get("active_intervals"))
+            row = {
+                "measurement_id": f"object_plan:{source_i}:{object_i}",
+                "frame_idx": None,
+                "entity_type": "object",
+                "entity_id": f"object:{track_id}",
+                "measurement_type": "vlm_object_plan",
+                "source_model": payload.get("model") or payload.get("backend") or "vlm_object_plan",
+                "coordinate_frame": "video_timeline",
+                "confidence": as_float(obj.get("confidence")),
+                "description": obj.get("description"),
+                "open_vocabulary_prompts": obj.get("open_vocabulary_prompts") or [],
+                "active_intervals": obj.get("active_intervals") or [],
+                "physical_notes": obj.get("physical_notes"),
+                "failure_reason": None,
+            }
+            measurements.append(row)
+            roster_rows.append(
+                {
+                    "object_id": f"object:{track_id}",
+                    "name": track_id,
+                    "source": "vlm_object_plan",
+                    "active_frame_min": start,
+                    "active_frame_max": end,
+                    "active_frame_count": count,
+                    "role_status": "planned_from_vlm",
+                    "description": obj.get("description"),
+                    "confidence": as_float(obj.get("confidence")),
+                    "physical_notes": obj.get("physical_notes"),
+                }
+            )
+    return measurements, roster_rows, sources
+
+
+def local_mask_path(mask_path: Any, track_json: Path) -> str | None:
+    if not isinstance(mask_path, str) or not mask_path:
+        return None
+    path = Path(mask_path)
+    if path.exists():
+        return str(path)
+    candidate = track_json.parent / "sam2_masks" / path.name
+    return str(candidate) if candidate.exists() else str(path)
+
+
+def measurements_from_sam2_multiobject_roots(roots: tuple[Path, ...]) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for root_i, root in enumerate(roots):
+        summary_path = root / "qc_sam2_multiobject_points.json"
+        if not summary_path.exists():
+            sources.append({"path": str(root), "status": "missing_summary"})
+            continue
+        summary = load_json(summary_path)
+        track_ids = summary.get("track_ids") or []
+        if not isinstance(track_ids, list):
+            sources.append({"path": str(root), "status": "invalid_track_ids"})
+            continue
+        sources.append(
+            {
+                "path": str(root),
+                "status": summary.get("status", "loaded"),
+                "backend": summary.get("backend"),
+                "track_count": len(track_ids),
+                "frame_start": summary.get("frame_start"),
+                "frame_end": summary.get("frame_end"),
+                "frames": summary.get("frames"),
+            }
+        )
+        for track_id in track_ids:
+            track_json = root / str(track_id) / "sam2" / "sam2_track.json"
+            qc_json = root / str(track_id) / "sam2" / "qc_sam2_vlm_points_track.json"
+            if not track_json.exists():
+                continue
+            track_payload = load_json(track_json)
+            track_qc = load_json(qc_json) if qc_json.exists() else {}
+            for frame_key, row in track_payload.items():
+                if not isinstance(row, dict):
+                    continue
+                idx = int(frame_key)
+                visible = bool(row.get("visible", False))
+                bbox = compact_bbox(row.get("bbox_xyxy"))
+                entry = {
+                    "measurement_id": f"sam2:{root_i}:{track_id}:{idx}",
+                    "frame_idx": idx,
+                    "entity_type": "object",
+                    "entity_id": f"object:{track_id}",
+                    "measurement_type": "sam2_video_mask_track",
+                    "source_model": summary.get("backend") or "SAM2",
+                    "coordinate_frame": "source_image_pixels",
+                    "confidence": None,
+                    "visible": visible,
+                    "bbox_xyxy": bbox,
+                    "bbox_area_px2": bbox_area(bbox),
+                    "center_xy": row.get("center_xy") if visible else None,
+                    "mask_area_px": as_float(row.get("area_px")),
+                    "mask_path": local_mask_path(row.get("mask_path"), track_json) if visible else None,
+                    "prompt_frames": track_qc.get("prompt_frames"),
+                    "prompt_contract_reports": len(track_qc.get("prompt_contract_reports") or []),
+                    "failure_reason": None if visible else "sam2_track_not_visible",
+                }
+                measurements.append(entry)
+                if visible:
+                    by_frame.setdefault(idx, []).append(entry)
+    return measurements, by_frame, sources
+
+
+def measurements_from_expected_object_coverage(coverage_paths: tuple[Path, ...]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_expected: dict[str, dict[str, Any]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(coverage_paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        rows = payload.get("coverage")
+        if not isinstance(rows, list):
+            sources.append({"path": str(path), "status": "invalid_no_coverage"})
+            continue
+        sources.append(
+            {
+                "path": str(path),
+                "status": payload.get("status", "loaded"),
+                "backend": payload.get("backend"),
+                "model": payload.get("model"),
+                "coverage_count": len(rows),
+            }
+        )
+        for row_i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            expected_label = str(row.get("expected_label") or "")
+            if not expected_label:
+                continue
+            status = str(row.get("coverage_status") or "missing")
+            covered_by = [str(x) for x in row.get("covered_by_object_ids") or []]
+            entry = {
+                "measurement_id": f"expected_object_coverage:{source_i}:{row_i}",
+                "frame_idx": None,
+                "entity_type": "object",
+                "entity_id": f"expected_object:{expected_label}",
+                "measurement_type": "vlm_expected_object_coverage",
+                "source_model": payload.get("model") or payload.get("backend") or "vlm_expected_object_coverage",
+                "coordinate_frame": "object_roster_semantics",
+                "confidence": None,
+                "expected_label": expected_label,
+                "coverage_status": status,
+                "covered_by_object_ids": covered_by,
+                "reason": row.get("reason"),
+                "failure_reason": None if status in {"covered", "ambiguous"} else "expected_object_missing_from_vlm_plan",
+            }
+            measurements.append(entry)
+            by_expected[expected_label] = entry
+    return measurements, by_expected, sources
+
+
 def frame_state(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {int(frame["frame_idx"]): frame for frame in payload.get("frames", [])}
 
@@ -297,6 +502,55 @@ def object_roster_from_v16(frames: dict[int, dict[str, Any]], expected_objects: 
             }
         )
     return roster
+
+
+def merge_object_rosters(v16_roster: list[dict[str, Any]], plan_roster: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for row in v16_roster + plan_roster:
+        object_id = str(row["object_id"])
+        if object_id not in merged:
+            merged[object_id] = dict(row)
+            continue
+        current = merged[object_id]
+        current["source"] = "+".join(sorted(set(str(x) for x in [current.get("source"), row.get("source")] if x)))
+        for key in ("active_frame_min", "active_frame_max"):
+            a = current.get(key)
+            b = row.get(key)
+            if a is None:
+                current[key] = b
+            elif b is not None:
+                current[key] = min(a, b) if key.endswith("_min") else max(a, b)
+        current["active_frame_count"] = max(int(current.get("active_frame_count") or 0), int(row.get("active_frame_count") or 0))
+        if current.get("role_status") == "expected_missing_from_v16":
+            current["role_status"] = row.get("role_status", current["role_status"])
+    return sorted(merged.values(), key=lambda row: str(row["object_id"]))
+
+
+def apply_expected_object_coverage(roster: list[dict[str, Any]], coverage: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    by_object_id = {str(row["object_id"]): dict(row) for row in roster}
+    for expected_label, row in coverage.items():
+        expected_id = f"object:{expected_label}"
+        status = row.get("coverage_status")
+        covered_by = row.get("covered_by_object_ids") or []
+        if expected_id not in by_object_id:
+            by_object_id[expected_id] = {
+                "object_id": expected_id,
+                "name": expected_label,
+                "source": "expected_object_coverage",
+                "active_frame_min": None,
+                "active_frame_max": None,
+                "active_frame_count": 0,
+                "role_status": "expected_missing_from_v16",
+            }
+        target = by_object_id[expected_id]
+        target["expected_coverage_status"] = status
+        target["expected_covered_by_object_ids"] = [f"object:{obj_id}" for obj_id in covered_by]
+        target["expected_coverage_reason"] = row.get("reason")
+        if status == "covered":
+            target["role_status"] = "covered_by_vlm_plan"
+        elif status == "ambiguous" and target.get("role_status") == "expected_missing_from_v16":
+            target["role_status"] = "ambiguous_vlm_plan_coverage"
+    return sorted(by_object_id.values(), key=lambda row: str(row["object_id"]))
 
 
 def anchor_qc(
@@ -379,7 +633,18 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     hawor_measurements, hawor_by_frame, hawor_sources = measurements_from_hawor(spec.hawor_annotation_paths)
     v16_hand_measurements, v16_hand_by_frame = measurements_from_v16_hands(frames)
     object_measurements, object_by_frame = measurements_from_object_mesh_qc(object_qc_path, frames)
-    roster = object_roster_from_v16(frames, spec.expected_objects)
+    object_plan_measurements, plan_roster, object_plan_sources = measurements_from_object_plans(spec.object_plan_paths)
+    sam2_measurements, sam2_by_frame, sam2_sources = measurements_from_sam2_multiobject_roots(spec.sam2_multiobject_roots)
+    expected_coverage_measurements, expected_coverage, expected_coverage_sources = measurements_from_expected_object_coverage(
+        spec.expected_object_coverage_paths
+    )
+    object_by_frame_combined = {idx: list(rows) for idx, rows in object_by_frame.items()}
+    for idx, rows in sam2_by_frame.items():
+        object_by_frame_combined.setdefault(idx, []).extend(rows)
+    roster = apply_expected_object_coverage(
+        merge_object_rosters(object_roster_from_v16(frames, spec.expected_objects), plan_roster),
+        expected_coverage,
+    )
 
     case_dir = output_root / spec.name
     measurements_dir = case_dir / "measurements_v17"
@@ -387,8 +652,11 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "hawor_measurements.json", hawor_measurements)
     write_json(measurements_dir / "v16_hand_state_measurements.json", v16_hand_measurements)
     write_json(measurements_dir / "object_mesh_measurements.json", object_measurements)
+    write_json(measurements_dir / "object_plan_measurements.json", object_plan_measurements)
+    write_json(measurements_dir / "expected_object_coverage_measurements.json", expected_coverage_measurements)
+    write_json(measurements_dir / "sam2_object_mask_measurements.json", sam2_measurements)
     write_json(case_dir / "object_roster_v17.json", roster)
-    anchor = anchor_qc(spec, frames, wilor_by_frame, hawor_by_frame, v16_hand_by_frame, object_by_frame, roster)
+    anchor = anchor_qc(spec, frames, wilor_by_frame, hawor_by_frame, v16_hand_by_frame, object_by_frame_combined, roster)
     write_json(case_dir / "v17_anchor_qc.json", anchor)
 
     report = {
@@ -399,12 +667,18 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "annotations": str(annotations_path),
         "wilor_raw": str(raw_wilor_path),
         "hawor_sources": hawor_sources,
+        "object_plan_sources": object_plan_sources,
+        "expected_object_coverage_sources": expected_coverage_sources,
+        "sam2_multiobject_sources": sam2_sources,
         "object_mesh_qc": str(object_qc_path),
         "measurement_counts": {
             "wilor": len(wilor_measurements),
             "hawor": len(hawor_measurements),
             "v16_hand_state": len(v16_hand_measurements),
             "object_mesh": len(object_measurements),
+            "object_plan": len(object_plan_measurements),
+            "expected_object_coverage": len(expected_coverage_measurements),
+            "sam2_object_mask": len(sam2_measurements),
         },
         "object_roster": str(case_dir / "object_roster_v17.json"),
         "anchor_qc": str(case_dir / "v17_anchor_qc.json"),
@@ -428,6 +702,15 @@ def default_cases() -> list[CaseSpec]:
                     "v3_hawor_camera_local_840_930/annotations_hawor_camera_local.json"
                 ),
             ),
+            object_plan_paths=(
+                Path("/data2/ego_annotation_outputs/representative_trash/v2_object_plan/object_plan_vlm.json"),
+            ),
+            expected_object_coverage_paths=(
+                Path("/data2/ego_annotation_outputs/v17_object_plan/trash_1050/expected_object_coverage_vlm.json"),
+            ),
+            sam2_multiobject_roots=(
+                Path("/data2/ego_annotation_outputs/representative_trash/v3_contact_surface_sam2_multi_840_930"),
+            ),
         ),
         CaseSpec(
             name="task5_tomato_960",
@@ -436,6 +719,12 @@ def default_cases() -> list[CaseSpec]:
             expected_visible_hands={480: 2, 720: 2, 760: 2},
             expected_contact={480: "contact", 720: "contact", 760: "contact"},
             expected_objects=("tomato", "bowl", "plate", "tray"),
+            object_plan_paths=(
+                Path("/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/object_plan_vlm.json"),
+            ),
+            expected_object_coverage_paths=(
+                Path("/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/expected_object_coverage_vlm.json"),
+            ),
         ),
     ]
 
