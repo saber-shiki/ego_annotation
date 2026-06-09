@@ -30,6 +30,8 @@ class CaseSpec:
     selected_hamer_repair_candidate_paths: tuple[Path, ...] = ()
     hand_repair_annotation_paths: tuple[Path, ...] = ()
     hand_repair_contact_measurement_paths: tuple[Path, ...] = ()
+    object_depth_repair_candidate_paths: tuple[Path, ...] = ()
+    object_depth_repair_contact_measurement_paths: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -803,6 +805,46 @@ def measurements_from_contact_measurements(paths: tuple[Path, ...]) -> tuple[lis
     return measurements, by_frame, sources
 
 
+def measurements_from_object_depth_repair_candidates(
+    paths: tuple[Path, ...],
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        if not isinstance(payload, list):
+            raise RuntimeError(f"{path} must contain a JSON list")
+        source_rows = 0
+        source_frames: list[int] = []
+        for row_i, raw in enumerate(payload):
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"{path} row {row_i} is not a JSON object")
+            row = dict(raw)
+            idx = required_json_int(row.get("frame_idx"), "frame_idx", f"{path} row {row_i}")
+            row["measurement_id"] = row.get("measurement_id") or f"object_depth_repair:{source_i}:{row_i}"
+            row["measurement_type"] = row.get("measurement_type") or "object_depth_repair_candidate"
+            row["source_file"] = str(path)
+            measurements.append(row)
+            by_frame.setdefault(idx, []).append(row)
+            source_rows += 1
+            source_frames.append(idx)
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "measurement_count": source_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+            }
+        )
+    return measurements, by_frame, sources
+
+
 def frame_state(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {int(frame["frame_idx"]): frame for frame in payload.get("frames", [])}
 
@@ -898,6 +940,8 @@ def anchor_qc(
     object_by_frame: dict[int, list[dict[str, Any]]],
     contact_by_frame: dict[int, list[dict[str, Any]]],
     hand_repair_contact_by_frame: dict[int, list[dict[str, Any]]],
+    object_depth_repair_by_frame: dict[int, list[dict[str, Any]]],
+    object_depth_repair_contact_by_frame: dict[int, list[dict[str, Any]]],
     roster: list[dict[str, Any]],
 ) -> dict[str, Any]:
     anchors = []
@@ -933,9 +977,14 @@ def anchor_qc(
         object_measurements = object_by_frame.get(idx, [])
         contact_measurements = contact_by_frame.get(idx, [])
         hand_repair_contact_measurements = hand_repair_contact_by_frame.get(idx, [])
+        object_depth_repair_candidates = object_depth_repair_by_frame.get(idx, [])
+        object_depth_repair_contact_measurements = object_depth_repair_contact_by_frame.get(idx, [])
         contact_states = sorted({str(row.get("contact_state_measurement")) for row in contact_measurements})
         hand_repair_contact_states = sorted(
             {str(row.get("contact_state_measurement")) for row in hand_repair_contact_measurements}
+        )
+        object_depth_repair_contact_states = sorted(
+            {str(row.get("contact_state_measurement")) for row in object_depth_repair_contact_measurements}
         )
         expected_visible = spec.expected_visible_hands.get(idx)
         hand_repair_covers_visible = expected_visible is not None and len(valid_hand_repair_states) >= expected_visible
@@ -997,7 +1046,10 @@ def anchor_qc(
             and "candidate_contact_image_and_metric" not in hand_repair_contact_states
             and "candidate_contact_metric_only" not in hand_repair_contact_states
         ):
-            failures.append("hand_repair_contact_lacks_metric_support")
+            if "candidate_contact_image_and_metric" in object_depth_repair_contact_states:
+                failures.append("object_depth_repair_candidate_requires_temporal_validation")
+            else:
+                failures.append("hand_repair_contact_lacks_metric_support")
         hand_repair_failures = {
             "visible_hands_missing_from_v16_state",
             "v16_hand_state_contains_unavailable_measurement",
@@ -1039,6 +1091,9 @@ def anchor_qc(
                 "contact_state_measurements": contact_states,
                 "hand_repair_contact_measurement_count": len(hand_repair_contact_measurements),
                 "hand_repair_contact_state_measurements": hand_repair_contact_states,
+                "object_depth_repair_candidate_count": len(object_depth_repair_candidates),
+                "object_depth_repair_contact_measurement_count": len(object_depth_repair_contact_measurements),
+                "object_depth_repair_contact_state_measurements": object_depth_repair_contact_states,
                 "failures": failures,
                 "status": "pass" if not failures else "fail",
             }
@@ -1091,6 +1146,16 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         hand_repair_contact_by_frame,
         hand_repair_contact_sources,
     ) = measurements_from_contact_measurements(spec.hand_repair_contact_measurement_paths)
+    (
+        object_depth_repair_measurements,
+        object_depth_repair_by_frame,
+        object_depth_repair_sources,
+    ) = measurements_from_object_depth_repair_candidates(spec.object_depth_repair_candidate_paths)
+    (
+        object_depth_repair_contact_measurements,
+        object_depth_repair_contact_by_frame,
+        object_depth_repair_contact_sources,
+    ) = measurements_from_contact_measurements(spec.object_depth_repair_contact_measurement_paths)
     object_by_frame_combined = {idx: list(rows) for idx, rows in object_by_frame.items()}
     for idx, rows in sam2_by_frame.items():
         object_by_frame_combined.setdefault(idx, []).extend(rows)
@@ -1115,6 +1180,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "sam2_object_mask_measurements.json", sam2_measurements)
     write_json(measurements_dir / "contact_measurements.json", contact_measurements)
     write_json(measurements_dir / "hand_repair_contact_measurements.json", hand_repair_contact_measurements)
+    write_json(measurements_dir / "object_depth_repair_candidate_measurements.json", object_depth_repair_measurements)
+    write_json(measurements_dir / "object_depth_repair_contact_measurements.json", object_depth_repair_contact_measurements)
     write_json(case_dir / "object_roster_v17.json", roster)
     anchor = anchor_qc(
         spec,
@@ -1130,6 +1197,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         object_by_frame_combined,
         contact_by_frame,
         hand_repair_contact_by_frame,
+        object_depth_repair_by_frame,
+        object_depth_repair_contact_by_frame,
         roster,
     )
     write_json(case_dir / "v17_anchor_qc.json", anchor)
@@ -1152,6 +1221,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "sam2_multiobject_sources": sam2_sources,
         "contact_measurement_sources": contact_sources,
         "hand_repair_contact_measurement_sources": hand_repair_contact_sources,
+        "object_depth_repair_sources": object_depth_repair_sources,
+        "object_depth_repair_contact_measurement_sources": object_depth_repair_contact_sources,
         "object_mesh_qc": str(object_qc_path),
         "measurement_counts": {
             "wilor": len(wilor_measurements),
@@ -1168,6 +1239,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
             "sam2_object_mask": len(sam2_measurements),
             "contact": len(contact_measurements),
             "hand_repair_contact": len(hand_repair_contact_measurements),
+            "object_depth_repair": len(object_depth_repair_measurements),
+            "object_depth_repair_contact": len(object_depth_repair_contact_measurements),
         },
         "object_roster": str(case_dir / "object_roster_v17.json"),
         "anchor_qc": str(case_dir / "v17_anchor_qc.json"),
@@ -1257,6 +1330,18 @@ def default_cases() -> list[CaseSpec]:
                 Path(
                     "/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/"
                     "contact_measurements_anchor_hamer_repair_v2.json"
+                ),
+            ),
+            object_depth_repair_candidate_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_object_plan/trash_1050/"
+                    "contact_depth_object_repair_white_bag_856/object_depth_repair_candidates.json"
+                ),
+            ),
+            object_depth_repair_contact_measurement_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/"
+                    "contact_measurements_anchor_hamer_repair_object_depth_candidate_856.json"
                 ),
             ),
         ),
