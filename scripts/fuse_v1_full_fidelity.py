@@ -1866,7 +1866,66 @@ def draw_hand_overlay(frame: np.ndarray, frame_ann: dict, sx: float, sy: float, 
             cv2.circle(frame, tuple(p.astype(int)), 4, color, 1, cv2.LINE_AA)
 
 
-def draw_object_overlay(frame: np.ndarray, frame_ann: dict, sx: float, sy: float) -> None:
+def source_intrinsics_from_frame(frame_ann: dict) -> np.ndarray | None:
+    obj = frame_ann.get("object", {})
+    if obj.get("source_intrinsics") is not None:
+        intrinsics = np.asarray(obj["source_intrinsics"], dtype=float)
+        if intrinsics.shape == (4,) and np.isfinite(intrinsics).all():
+            return intrinsics
+    for hand in frame_ann.get("hands", []):
+        if hand.get("source_intrinsics") is not None:
+            intrinsics = np.asarray(hand["source_intrinsics"], dtype=float)
+            if intrinsics.shape == (4,) and np.isfinite(intrinsics).all():
+                return intrinsics
+    return None
+
+
+def world_to_camera_points(points_world_m: np.ndarray, frame_ann: dict) -> np.ndarray:
+    T_wc = camera_transform(frame_ann)
+    T_cw = np.linalg.inv(T_wc)
+    hom = np.c_[np.asarray(points_world_m, dtype=float), np.ones(len(points_world_m), dtype=float)]
+    return (hom @ T_cw.T)[:, :3]
+
+
+def draw_projected_object_mesh_overlay(
+    frame: np.ndarray,
+    frame_ann: dict,
+    object_mesh: ObjectMeshFrame | None,
+    sx: float,
+    sy: float,
+) -> None:
+    if object_mesh is None or len(object_mesh.vertices) == 0 or len(object_mesh.faces) == 0:
+        return
+    intrinsics = source_intrinsics_from_frame(frame_ann)
+    if intrinsics is None:
+        return
+    camera_vertices = world_to_camera_points(object_mesh.vertices, frame_ann)
+    visible = np.isfinite(camera_vertices).all(axis=1) & (camera_vertices[:, 2] > 1e-4)
+    if int(visible.sum()) < 3:
+        return
+    projected = project_points(camera_vertices, intrinsics) * np.asarray([sx, sy], dtype=float)
+    faces = np.asarray(object_mesh.faces, dtype=np.int32)
+    face_visible = visible[faces].all(axis=1)
+    visible_faces = faces[face_visible]
+    if len(visible_faces) == 0:
+        return
+    edge_budget = min(len(visible_faces), 1200)
+    face_ids = np.linspace(0, len(visible_faces) - 1, edge_budget, dtype=int)
+    for face in visible_faces[face_ids]:
+        poly = projected[face].astype(np.int32)
+        if np.any(poly[:, 0] < -200) or np.any(poly[:, 0] >= frame.shape[1] + 200):
+            continue
+        if np.any(poly[:, 1] < -200) or np.any(poly[:, 1] >= frame.shape[0] + 200):
+            continue
+        cv2.polylines(frame, [poly], True, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.polylines(frame, [poly], True, OBJECT_COLOR, 1, cv2.LINE_AA)
+    mesh_center = project_points(camera_vertices[visible].mean(axis=0, keepdims=True), intrinsics)[0] * np.asarray([sx, sy], dtype=float)
+    center_xy = tuple(np.clip(mesh_center + np.asarray([8.0, 18.0]), [0, 18], [frame.shape[1] - 1, frame.shape[0] - 1]).astype(int))
+    cv2.putText(frame, "OBJECT MESH", center_xy, cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 3, cv2.LINE_AA)
+    cv2.putText(frame, "OBJECT MESH", center_xy, cv2.FONT_HERSHEY_SIMPLEX, 0.42, OBJECT_COLOR, 1, cv2.LINE_AA)
+
+
+def draw_object_overlay(frame: np.ndarray, frame_ann: dict, sx: float, sy: float, object_mesh: ObjectMeshFrame | None = None) -> None:
     obj = frame_ann.get("object", {})
     if obj.get("bbox_xyxy") is None or obj.get("status") == "not_visible":
         return
@@ -2486,8 +2545,10 @@ def render_outputs(args: argparse.Namespace, frames: list[dict], render: RenderS
         for i, frame_ann in enumerate(tqdm(frames, desc="render")):
             frame = read_video_frame(cap, int(frame_ann["frame_idx"]))
             frame = cv2.resize(frame, (render.width, render.height), interpolation=cv2.INTER_AREA)
-            draw_object_overlay(frame, frame_ann, sx, sy)
+            object_mesh = object_meshes.get(int(frame_ann["frame_idx"]))
+            draw_object_overlay(frame, frame_ann, sx, sy, object_mesh)
             draw_hand_overlay(frame, frame_ann, sx, sy, mano_edges)
+            draw_projected_object_mesh_overlay(frame, frame_ann, object_mesh, sx, sy)
             put_caption(frame, frame_ann["caption"], frame_ann["frame_idx"])
             panel = render_3d_frame(frames, i, camera_positions, (render.width, render.height), mano_edges, display_basis, object_meshes)
             overlay.write(frame)
