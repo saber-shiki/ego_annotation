@@ -96,7 +96,7 @@ def adapt_hand(
     else:
         raw2d = np.asarray(observed.get("joints2d_raw", []), dtype=float)
         if raw2d.shape != (21, 2):
-            raise RuntimeError(f"observed {side} hand has invalid joints2d_raw at frame {frame_idx}")
+            raise RuntimeError(f"observed {side} hand has invalid joints2d_raw at frame {source_frame_idx}")
         detector_score = float(observed.get("detector_score", 0.0))
         measurement_available = True
         bbox = observed.get("bbox_xyxy")

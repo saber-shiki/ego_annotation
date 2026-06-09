@@ -8,6 +8,8 @@ V17 implementation has started with the measurement store. The first implementat
 
 The current measurement-store implementation is the evidence layer for the full V17 solver. Model outputs remain traceable measurements with confidence, residual, source, and failure fields; missing hands, missing objects, missing contact states, and incomplete HaWoR/WiLoR coverage become explicit QC failures.
 
+The current HaWoR evidence path uses a compact full-video adapter input generated from V16 annotations. The compact file preserves frame indices, timestamps, source camera transforms, source intrinsics, measured V16 hand 2D keypoints, detector scores, and hand boxes, then reruns the HaWoR camera-local adapter against the full 0-1049 HaWoR NPZ. The adapter input therefore contains only the fields read by the HaWoR residual calculation.
+
 ## V16 Failure Analysis
 
 The failures are not isolated rendering bugs.

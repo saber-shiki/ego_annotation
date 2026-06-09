@@ -925,8 +925,8 @@ def default_cases() -> list[CaseSpec]:
             expected_hand_repair_frames=(182, 260, 856, 949, 970),
             hawor_annotation_paths=(
                 Path(
-                    "/data2/ego_annotation_outputs/representative_trash/"
-                    "v3_hawor_camera_local_840_930/annotations_hawor_camera_local.json"
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "hawor_compact_v1/annotations_hawor_camera_local_v17_compact.json"
                 ),
             ),
             object_plan_paths=(
