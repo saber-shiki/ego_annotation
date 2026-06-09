@@ -63,3 +63,16 @@ Bug fixes, threshold corrections, renderer improvements, and short diagnostic st
 ## Immediate Consequence
 
 The current repository contains zero v2-through-v15 deliverables under the full-raw-video standard. The current repository contains validated components and short evidence clips. The missing artifact is a v15-quality full raw-video deliverable. The next work item is to define the next real pipeline version upfront, then run it over complete source videos on representative samples.
+
+## Runnable Pipeline Status
+
+v2 through v15 also contain zero full runnable pipelines under the full-raw-video standard.
+
+The closest executable paths are component chains:
+
+- v2 has object-plan, segmentation, metric-depth, observed-surface mesh, and v1 renderer hooks. It relies on precomputed v1 hand/camera annotations and produces observed-surface mesh evidence, with no full-video mesh-completion, contact physics, or acceptance driver.
+- v3 through v6 scripts generally require explicit `--frame-start` and `--frame-end` inputs and operate on selected windows.
+- v7 batch wrappers require prebuilt target contracts: observed mesh archive, manifest, annotations, metric depth, baseline z-buffer report, and configured frame ranges.
+- v8 through v15 consume accepted short-window artifacts from earlier stages and solve local hand/contact/physics graphs.
+
+The only current source path that records a full source timeline check is the v1 fusion path. Running any v2-through-v15 script over a full raw video today would create another partial component output or crash on missing precomputed full-video contracts, and the result would fail the full-video deliverable standard.
