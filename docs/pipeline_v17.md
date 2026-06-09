@@ -78,6 +78,8 @@ The current literature supports a measurement-and-state design rather than a sin
 
 HaWoR is directly relevant because it targets egocentric world-space hand motion, combines camera trajectory estimation with hand reconstruction, and includes a motion infiller for missing frames. Its official repository also depends on masked DROID-SLAM and Metric3D, which matches the failure mode of moving egocentric cameras and missing hands. Source: https://github.com/ThunderVVV/HaWoR and https://arxiv.org/abs/2501.02973.
 
+The previous HaWoR branch did not prove HaWoR wrong. It proved the integration was incomplete: the raw camera-local HaWoR hands were partly plausible, while the tested bridge into the existing DROID/object world used a global Sim(3) alignment that produced severe reprojection and hand-scale errors. V17 therefore treats HaWoR as a primary measurement source for world-space hand motion and missing-frame infilling, while making the coordinate bridge itself a residual-checked graph variable.
+
 SAM 2 supports promptable video segmentation and mask propagation, including multi-object video tracking support in the official repository. V17 uses it as one segmentation measurement source, rather than the final object state. Source: https://github.com/facebookresearch/sam2 and https://arxiv.org/abs/2408.00714.
 
 VGGT predicts camera parameters, depth maps, point maps, and 3D point tracks from multiple views. V17 uses it as a geometry and track source for camera/object consistency checks, especially when DROID or monocular depth is unstable. Source: https://github.com/facebookresearch/vggt and https://arxiv.org/abs/2503.11651.
@@ -155,14 +157,16 @@ Open-vocabulary detection plus SAM 2/Cutie-style video segmentation produces mas
 
 V17 uses a fixed measurement set:
 
-- WiLoR MANO measurements;
-- HaWoR world-space hand motion and infilled hand trajectory measurements;
+- HaWoR world-space hand motion and infilled hand trajectory measurements as the primary temporal hand-motion source;
+- WiLoR per-frame MANO measurements as an independent image-conditioned hand source;
 - RTMLib 2D keypoints;
 - SAM 2 hand masks or another hand-mask source;
 - metric depth over visible hand regions;
-- temporal hand motion priors.
+- learned hand-motion and hand-object interaction priors.
 
 The delivered hand state is a fixed-lag smoothed MANO trajectory. The solver can choose among measurements because the objective defines residuals, not because code branches on visual cases.
+
+HaWoR and WiLoR are not selected by a hard-coded preference. HaWoR contributes motion continuity, world-space trajectory, and missing-frame infill. WiLoR contributes per-frame MANO image evidence. The accepted hand state is the graph solution that best satisfies projection, mask, depth, temporal, and contact residuals. If HaWoR and WiLoR disagree, V17 records the disagreement and either repairs the state or marks it unresolved.
 
 For each hand and frame, the state can be:
 
@@ -230,9 +234,9 @@ The graph estimates contact from:
 
 Contact cannot be asserted from nearest distance alone. Contact cannot be rejected when image/depth/track evidence supports contact but the current 3D state is inconsistent; that case becomes a state repair target.
 
-### Stage 7: Full-Timeline Smoother
+### Stage 7: Learned-Prior Full-Timeline Smoother
 
-V17 implements the Kalman-filter idea as a fixed-lag nonlinear smoother.
+V17 implements the prediction/update idea as a fixed-lag nonlinear factor graph. A simple constant-velocity or constant-acceleration prior is not the process model for hand-object manipulation. It can appear only as a weak local smoothness regularizer. The actual process terms are learned priors and physically grounded residuals.
 
 State variables:
 
@@ -240,6 +244,7 @@ State variables:
 T_wc_t                    camera pose
 H_h,t                     MANO hand pose/shape/global transform
 V_h,t                     hand velocity latent
+Z_h,t                     learned hand-motion latent
 G_o                       object canonical geometry
 T_wo,t                    object pose for near-rigid components
 D_o,t                     object deformation state
@@ -264,9 +269,14 @@ object shape-prior consistency
 hand-object nonpenetration
 contact equality / sliding / support residuals
 measurement confidence calibration
+HaWoR motion-infill prior
+hand-object correspondence prior
+hand-object generative plausibility prior
 ```
 
-The process model predicts through missing measurements with growing uncertainty. Measurements update the state only when their residuals are plausible. Outlier measurements remain in the measurement store but do not become accepted states.
+The learned process model predicts through missing measurements with growing uncertainty. For hands, HaWoR-style motion infilling provides the primary learned temporal proposal. For contact, TOCH-style spatio-temporal object-to-hand correspondence provides a learned contact refinement prior. For broader hand-object plausibility, a G-HOP-style diffusion prior can propose or score physically plausible hand-object states. These learned priors enter as factors in the objective; they do not override image, mask, depth, object-track, or nonpenetration evidence.
+
+Measurements update the state only when their residuals are plausible. Outlier measurements remain in the measurement store but do not become accepted states.
 
 ### Stage 8: QC
 
