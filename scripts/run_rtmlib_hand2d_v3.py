@@ -45,6 +45,8 @@ def require_rtmlib():
 def to_hands(keypoints: np.ndarray, scores: np.ndarray, min_points: int) -> list[dict]:
     keypoints = np.asarray(keypoints, dtype=float)
     scores = np.asarray(scores, dtype=float)
+    if keypoints.size == 0 and scores.size == 0:
+        return []
     if keypoints.ndim != 3 or keypoints.shape[1:] != (21, 2):
         raise RuntimeError(f"RTMLib returned invalid keypoint shape {keypoints.shape}")
     if scores.ndim == 3 and scores.shape[-1] == 1:
