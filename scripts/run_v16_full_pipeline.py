@@ -233,6 +233,51 @@ def make_depth_manifest_from_masks(annotations_path: Path, raw_manifest_path: Pa
     }
 
 
+def build_annotation_camera_qc(annotations_path: Path, clip: Path, output_dir: Path, info: VideoInfo) -> dict:
+    payload = load_json(annotations_path)
+    frames = payload.get("frames")
+    if not isinstance(frames, list) or len(frames) != info.frame_count:
+        raise RuntimeError(f"{annotations_path} does not contain one camera row per source frame")
+    positions = []
+    for expected_idx, frame in enumerate(frames):
+        idx = int(frame.get("frame_idx", -1))
+        if idx != expected_idx:
+            raise RuntimeError(f"annotation camera timeline is not source-contiguous at row {expected_idx}: {idx}")
+        camera = frame.get("camera", {})
+        T = np.asarray(camera.get("T_world_camera_metric"), dtype=np.float64)
+        pos = np.asarray(camera.get("position_world_m"), dtype=np.float64)
+        if T.shape != (4, 4) or not np.isfinite(T).all():
+            raise RuntimeError(f"frame {idx} has invalid T_world_camera_metric")
+        if pos.shape != (3,) or not np.isfinite(pos).all():
+            raise RuntimeError(f"frame {idx} has invalid position_world_m")
+        if np.linalg.norm(T[:3, 3] - pos) > 1e-4:
+            raise RuntimeError(f"frame {idx} camera position does not match T_world_camera_metric translation")
+        positions.append(pos)
+    xyz = np.vstack(positions)
+    steps = np.linalg.norm(np.diff(xyz, axis=0), axis=1) if len(xyz) > 1 else np.zeros(0, dtype=np.float64)
+    report = {
+        "status": "ok",
+        "method": "v16_annotation_camera_trajectory_qc",
+        "clip": str(clip),
+        "annotations": str(annotations_path),
+        "video": info.__dict__,
+        "processed_frames": int(len(frames)),
+        "dense_trajectory_frames": int(len(frames)),
+        "full_source_timeline": True,
+        "pose_convention": "T_world_camera_metric from annotation source, position_world_m equals translation",
+        "calibration_source": "inherited from full annotation camera stream",
+        "trajectory_path_length": float(steps.sum()),
+        "median_step": float(np.median(steps)) if len(steps) else 0.0,
+        "p95_step": float(np.percentile(steps, 95.0)) if len(steps) else 0.0,
+        "max_step": float(np.max(steps)) if len(steps) else 0.0,
+        "position_median_world_m": np.median(xyz, axis=0).astype(float).tolist(),
+        "position_extent_world_m": (xyz.max(axis=0) - xyz.min(axis=0)).astype(float).tolist(),
+    }
+    path = output_dir / "camera_qc_annotation_trajectory.json"
+    write_json(path, report)
+    return {"path": str(path), "report": report}
+
+
 def load_metric_depth(path: Path) -> dict:
     blob = np.load(path)
     required = {"frame_idx", "depth", "intrinsics_fx_fy_cx_cy"}
@@ -327,7 +372,18 @@ def mesh_from_mask_depth(
     valid = mask_bool & np.isfinite(depth_m) & (depth_m >= min_depth_m) & (depth_m <= max_depth_m)
     values = depth_m[valid]
     if values.size < min_vertices:
-        raise RuntimeError(f"frame {idx} has too few valid masked depth pixels: {values.size}")
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.int32),
+            {
+                "frame_idx": int(idx),
+                "status": "rejected_underconstrained_mask_depth",
+                "reason": "too_few_valid_masked_depth_pixels",
+                "valid_masked_depth_pixels": int(values.size),
+                "min_vertices": int(min_vertices),
+                "mask_path": str(mask_path),
+            },
+        )
     lo = float(np.quantile(values, depth_low_quantile))
     hi = float(np.quantile(values, depth_high_quantile))
     keep = valid & (depth_m >= lo) & (depth_m <= hi)
@@ -339,15 +395,65 @@ def mesh_from_mask_depth(
     flat_y = grid_y[sampled_keep].astype(np.float64)
     flat_z = depth_m[np.ix_(ys, xs)][sampled_keep].astype(np.float64)
     if len(flat_z) < min_vertices:
-        raise RuntimeError(f"frame {idx} has too few sampled mesh vertices: {len(flat_z)}")
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.int32),
+            {
+                "frame_idx": int(idx),
+                "status": "rejected_underconstrained_mask_depth",
+                "reason": "too_few_sampled_mesh_vertices",
+                "sampled_vertices": int(len(flat_z)),
+                "min_vertices": int(min_vertices),
+                "mask_path": str(mask_path),
+            },
+        )
     fx, fy, cx, cy = depth["intrinsics"][int(depth_i)].astype(float).tolist()
-    camera_vertices = np.column_stack(((flat_x - cx) * flat_z / fx, (flat_y - cy) * flat_z / fy, flat_z))
+    source_intrinsics = None
+    for hand in frame.get("hands", []):
+        if hand.get("source_intrinsics") is not None:
+            source_intrinsics = np.asarray(hand["source_intrinsics"], dtype=np.float64)
+            break
+    if source_intrinsics is None:
+        raise RuntimeError(f"frame {idx} has no source_intrinsics for source-camera object mesh")
+    if source_intrinsics.shape != (4,) or not np.isfinite(source_intrinsics).all():
+        raise RuntimeError(f"frame {idx} has invalid source_intrinsics")
+    sfx, sfy, scx, scy = source_intrinsics.astype(float).tolist()
+    source_w = float(frame.get("source_width", 0.0) or 0.0)
+    source_h = float(frame.get("source_height", 0.0) or 0.0)
+    if source_w <= 0.0 or source_h <= 0.0:
+        source_w = max(float(mask.shape[1]), float(scx * 2.0))
+        source_h = max(float(mask.shape[0]), float(scy * 2.0))
+    scale_x = source_w / float(mask.shape[1])
+    scale_y = source_h / float(mask.shape[0])
+    source_x = flat_x * scale_x
+    source_y = flat_y * scale_y
+    depth_ref = obj.get("depth_m")
+    if depth_ref is None:
+        depth_ref = float(np.median(values))
+    depth_ref = float(depth_ref)
+    if not np.isfinite(depth_ref) or depth_ref <= 0.0:
+        raise RuntimeError(f"frame {idx} has invalid object depth_m for source-camera mesh")
+    flat_z = flat_z * (depth_ref / max(1e-9, float(np.median(flat_z))))
+    camera_vertices = np.column_stack(((source_x - scx) * flat_z / sfx, (source_y - scy) * flat_z / sfy, flat_z))
     index_grid = np.full(sampled_keep.shape, -1, dtype=np.int32)
     index_grid[sampled_keep] = np.arange(len(camera_vertices), dtype=np.int32)
     faces = build_faces(index_grid, camera_vertices, max_triangle_edge_m)
     camera_vertices, faces = remove_unreferenced(camera_vertices, faces)
     if len(camera_vertices) < min_vertices or len(faces) < min_faces:
-        raise RuntimeError(f"frame {idx} produced underconstrained mesh: {len(camera_vertices)} vertices, {len(faces)} faces")
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.int32),
+            {
+                "frame_idx": int(idx),
+                "status": "rejected_underconstrained_mask_depth",
+                "reason": "too_few_vertices_or_faces_after_surface_connectivity",
+                "vertices": int(len(camera_vertices)),
+                "faces": int(len(faces)),
+                "min_vertices": int(min_vertices),
+                "min_faces": int(min_faces),
+                "mask_path": str(mask_path),
+            },
+        )
     T = np.asarray(frame["camera"]["T_world_camera_metric"], dtype=np.float64)
     if T.shape != (4, 4) or not np.isfinite(T).all():
         raise RuntimeError(f"frame {idx} has invalid camera pose")
@@ -361,6 +467,9 @@ def mesh_from_mask_depth(
         "depth_low_m": lo,
         "depth_high_m": hi,
         "depth_median_m": float(np.median(values)),
+        "annotation_depth_anchor_m": depth_ref,
+        "surface_depth_model": "unidepth_relative_depth_scaled_to_annotation_source_camera_depth",
+        "source_intrinsics": [float(sfx), float(sfy), float(scx), float(scy)],
         "world_extent_m": (vertices_world.max(axis=0) - vertices_world.min(axis=0)).astype(float).tolist(),
     }
     return vertices_world.astype(np.float32), faces.astype(np.int32), row
@@ -373,6 +482,13 @@ def nearest_measured_mesh(target_idx: int, measured_frames: list[int], max_gap: 
     if abs(nearest - target_idx) > max_gap:
         return None
     return int(nearest)
+
+
+def row_by_frame_status(rows: list[dict], frame_idx: int) -> str:
+    for row in rows:
+        if int(row.get("frame_idx", -1)) == int(frame_idx):
+            return str(row.get("status", "unknown"))
+    return "unknown"
 
 
 def build_full_mesh_stream(args: argparse.Namespace, annotations_path: Path, depth_npz: Path, output_dir: Path) -> dict:
@@ -405,12 +521,13 @@ def build_full_mesh_stream(args: argparse.Namespace, annotations_path: Path, dep
                 depth_low_quantile=float(args.object_mesh_depth_low_quantile),
                 depth_high_quantile=float(args.object_mesh_depth_high_quantile),
             )
-            measured_vertices[idx] = v
-            measured_faces[idx] = f
-            frame_indices.append(idx)
-            vertices_all.append(v)
-            faces_all.append(f)
-            row["delivered_state"] = "measured"
+            if row["status"] == "measured_mesh_from_mask_metric_depth":
+                measured_vertices[idx] = v
+                measured_faces[idx] = f
+                frame_indices.append(idx)
+                vertices_all.append(v)
+                faces_all.append(f)
+                row["delivered_state"] = "measured"
             rows.append(row)
         elif status == "outside_semantic_interval":
             rows.append({"frame_idx": idx, "status": "inactive_outside_delivered_object_stream"})
@@ -419,12 +536,15 @@ def build_full_mesh_stream(args: argparse.Namespace, annotations_path: Path, dep
     measured_frame_indices = sorted(measured_vertices)
     if not measured_frame_indices:
         raise RuntimeError("V16 object mesh stream has zero measured mesh frames")
-    active_without_mesh = [
-        row["frame_idx"]
-        for row in rows
-        if row["status"] == "no_mesh_measurement"
-        and str(frames[int(row["frame_idx"])]["object"].get("label", "")) not in {"", "None"}
-    ]
+    frame_by_idx = {int(frame["frame_idx"]): frame for frame in frames}
+    active_without_mesh = []
+    for row in rows:
+        row_idx = int(row["frame_idx"])
+        row_status = str(row["status"])
+        frame = frame_by_idx[row_idx]
+        label = str(frame["object"].get("label", ""))
+        if row_status in {"no_mesh_measurement", "rejected_underconstrained_mask_depth"} and label not in {"", "None"}:
+            active_without_mesh.append(row_idx)
     prediction_rows = []
     for idx in active_without_mesh:
         nearest = nearest_measured_mesh(int(idx), measured_frame_indices, int(args.object_mesh_prediction_max_gap))
@@ -441,6 +561,7 @@ def build_full_mesh_stream(args: argparse.Namespace, annotations_path: Path, dep
                 "status": "predicted_mesh_from_nearest_measured_surface",
                 "source_frame_idx": int(nearest),
                 "gap_frames": int(abs(nearest - int(idx))),
+                "reason": row_by_frame_status(rows, int(idx)),
                 "vertices": int(len(v)),
                 "faces": int(len(f)),
             }
@@ -674,8 +795,8 @@ def render_v16(args: argparse.Namespace, annotations_path: Path, mesh_archive: P
     }
 
 
-def unresolved_vlm_tracks(object_plan_path: Path, delivered_label: str) -> list[dict]:
-    if not object_plan_path.exists():
+def unresolved_vlm_tracks(object_plan_path: Path | None, delivered_label: str) -> list[dict]:
+    if object_plan_path is None or not object_plan_path.exists():
         return []
     plan = load_json(object_plan_path).get("plan", {})
     rows = []
@@ -697,17 +818,21 @@ def unresolved_vlm_tracks(object_plan_path: Path, delivered_label: str) -> list[
 def run(args: argparse.Namespace) -> dict:
     started = time.time()
     args.repo_root = Path(args.repo_root).resolve()
-    args.python = Path(args.python).resolve()
+    args.python = Path(args.python)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     info = video_info(args.clip)
     require_path(args.annotations, "full annotations")
-    require_path(args.droid_qc, "DROID QC")
+    if args.droid_qc is not None:
+        require_path(args.droid_qc, "DROID QC")
     require_path(args.wilor_qc, "WiLoR QC")
     if args.actions_json is not None:
         require_path(args.actions_json, "actions JSON")
     if args.object_plan is not None:
         require_path(args.object_plan, "object plan")
     raw_manifest = raw_frame_manifest(args.clip, args.output_dir, render_width=int(args.depth_manifest_width))
+    annotation_camera_qc = None
+    if args.droid_qc is None:
+        annotation_camera_qc = build_annotation_camera_qc(args.annotations, args.clip, args.output_dir, info)
     depth_request = make_depth_manifest_from_masks(args.annotations, Path(raw_manifest["manifest"]), args.output_dir)
     if args.depth_npz is None:
         raise RuntimeError(
@@ -741,7 +866,7 @@ def run(args: argparse.Namespace) -> dict:
         section["frame_count_match"]
         for section in (render_report["overlay"], render_report["world"], render_report["side_by_side"])
     )
-    droid_qc = load_json(args.droid_qc)
+    droid_qc = load_json(args.droid_qc) if args.droid_qc is not None else annotation_camera_qc["report"]
     wilor_qc = load_json(args.wilor_qc)
     unresolved_tracks = unresolved_vlm_tracks(args.object_plan, args.delivered_object_label or "")
     manifest = {
@@ -760,7 +885,7 @@ def run(args: argparse.Namespace) -> dict:
         "overlay_video": render_report["overlay"]["path"],
         "world_video": render_report["world"]["path"],
         "side_by_side_video": render_report["side_by_side"]["path"],
-        "camera_qc": str(args.droid_qc),
+        "camera_qc": str(args.droid_qc) if args.droid_qc is not None else annotation_camera_qc["path"],
         "hand_qc": str(args.wilor_qc),
         "object_mask_qc": str(args.object_mask_qc) if args.object_mask_qc else None,
         "object_mesh_qc": str(args.output_dir / "object_mesh_qc.json"),
@@ -795,7 +920,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--annotations", type=Path, required=True)
-    parser.add_argument("--droid-qc", type=Path, required=True)
+    parser.add_argument("--droid-qc", type=Path)
     parser.add_argument("--wilor-qc", type=Path, required=True)
     parser.add_argument("--object-plan", type=Path)
     parser.add_argument("--object-mask-qc", type=Path)

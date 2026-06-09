@@ -2033,6 +2033,20 @@ def draw_polyline(
         cv2.line(image, a, b, color, thickness, cv2.LINE_AA)
 
 
+def draw_scale_bar(image: np.ndarray, projector: WorldProjector, meters: float = 0.25) -> None:
+    width, height = image.shape[1], image.shape[0]
+    length_px = int(round(projector.pixels_per_meter * meters))
+    if length_px < 24:
+        return
+    length_px = min(length_px, 180)
+    x0 = width - length_px - 36
+    y0 = height - 30
+    cv2.line(image, (x0, y0), (x0 + length_px, y0), (35, 35, 35), 3, cv2.LINE_AA)
+    cv2.line(image, (x0, y0 - 7), (x0, y0 + 7), (35, 35, 35), 2, cv2.LINE_AA)
+    cv2.line(image, (x0 + length_px, y0 - 7), (x0 + length_px, y0 + 7), (35, 35, 35), 2, cv2.LINE_AA)
+    cv2.putText(image, f"{int(round(meters * 100))} cm", (x0, y0 - 11), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (35, 35, 35), 2, cv2.LINE_AA)
+
+
 def load_object_mesh_archive(path: Path | None) -> dict[int, ObjectMeshFrame]:
     if path is None:
         return {}
@@ -2088,6 +2102,94 @@ def draw_object_mesh(image: np.ndarray, mesh: ObjectMeshFrame, projector: WorldP
     center = project_world(vertices.mean(axis=0, keepdims=True), projector)[0]
     cv2.drawMarker(image, tuple(center), OBJECT_COLOR, cv2.MARKER_CROSS, 13, 2, cv2.LINE_AA)
     cv2.putText(image, "OBJECT MESH", tuple((center + np.asarray([9, 14])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, OBJECT_COLOR, 2, cv2.LINE_AA)
+
+
+def hand_mesh_gap_m(frame: dict, object_mesh: ObjectMeshFrame | None) -> tuple[float | None, str | None]:
+    if object_mesh is None or len(object_mesh.vertices) == 0:
+        return None, None
+    vertices = np.asarray(object_mesh.vertices, dtype=float)
+    best = math.inf
+    best_side: str | None = None
+    for hand in frame.get("hands", []):
+        hv = hand_vertices(hand, "_world_m")
+        if len(hv) == 0:
+            continue
+        d = np.linalg.norm(hv[:, None, :] - vertices[None, :, :], axis=2)
+        gap = float(d.min())
+        if gap < best:
+            best = gap
+            best_side = str(hand.get("side", "hand"))
+    if not np.isfinite(best):
+        return None, None
+    return best, best_side
+
+
+def draw_hand_world(
+    image: np.ndarray,
+    hand: dict,
+    projector: WorldProjector,
+    mano_edges: dict[int, np.ndarray],
+    *,
+    mesh_stride: int,
+    joint_radius: int,
+    label: bool,
+) -> None:
+    joints = np.asarray(hand["joints3d_world_m"], dtype=float)
+    verts = hand_vertices(hand, "_world_m")
+    color = LEFT_COLOR if hand["side"] == "left" else RIGHT_COLOR
+    mesh_color = tuple(int(0.50 * c + 0.50 * 244) for c in color)
+    edges = mano_edges.get(len(verts), np.empty((0, 2), dtype=int))
+    if len(edges):
+        for a, b in edges[:: max(1, mesh_stride)]:
+            draw_polyline(image, verts[[int(a), int(b)]], projector, mesh_color, 1)
+    joint_xy = project_world(joints, projector)
+    for a, b in HAND_EDGES:
+        cv2.line(image, tuple(joint_xy[a]), tuple(joint_xy[b]), color, 3, cv2.LINE_AA)
+    for point in joint_xy:
+        cv2.circle(image, tuple(point), joint_radius, color, -1, cv2.LINE_AA)
+    if label:
+        text = "L MANO" if hand["side"] == "left" else "R MANO"
+        cv2.putText(image, text, tuple((joint_xy[0] + np.asarray([7, -7])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 2, cv2.LINE_AA)
+
+
+def draw_manipulation_inset(
+    image: np.ndarray,
+    frame: dict,
+    object_mesh: ObjectMeshFrame | None,
+    mano_edges: dict[int, np.ndarray],
+    view_basis: np.ndarray,
+) -> None:
+    if object_mesh is None or not frame.get("hands"):
+        return
+    near_points = [np.asarray(object_mesh.vertices, dtype=float)]
+    for hand in frame["hands"]:
+        near_points.append(hand_vertices(hand, "_world_m"))
+        near_points.append(np.asarray(hand["joints3d_world_m"], dtype=float))
+    pts = np.concatenate(near_points, axis=0)
+    finite = np.isfinite(pts).all(axis=1)
+    if not finite.any():
+        return
+    width, height = image.shape[1], image.shape[0]
+    inset_w = min(330, width - 48)
+    inset_h = min(250, height - 128)
+    if inset_w < 220 or inset_h < 160:
+        return
+    x0 = width - inset_w - 18
+    y0 = 72
+    roi = np.full((inset_h, inset_w, 3), (251, 251, 247), dtype=np.uint8)
+    projector = build_world_projector(pts[finite], view_basis, (inset_w, inset_h))
+    draw_reference_grid(roi, projector, 0.35)
+    draw_object_mesh(roi, object_mesh, projector)
+    for hand in frame["hands"]:
+        draw_hand_world(roi, hand, projector, mano_edges, mesh_stride=2, joint_radius=2, label=False)
+    gap, side = hand_mesh_gap_m(frame, object_mesh)
+    cv2.rectangle(roi, (0, 0), (inset_w - 1, inset_h - 1), (55, 55, 55), 1)
+    cv2.putText(roi, "MANIPULATION DETAIL", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (25, 25, 25), 2, cv2.LINE_AA)
+    if gap is not None:
+        gap_mm = 1000.0 * gap
+        text = f"nearest {side} hand gap {gap_mm:.1f} mm"
+        cv2.putText(roi, text, (12, inset_h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 2, cv2.LINE_AA)
+    image[y0 : y0 + inset_h, x0 : x0 + inset_w] = roi
 
 
 def draw_reference_grid(image: np.ndarray, projector: WorldProjector, radius: float) -> None:
@@ -2333,24 +2435,24 @@ def render_3d_frame(
     elif obj.get("center_world_m") is not None:
         draw_object_extent(image, obj, projector, object_patch_points(obj, frame))
     for hand in frame["hands"]:
-        joints = np.asarray(hand["joints3d_world_m"], dtype=float)
-        verts = hand_vertices(hand, "_world_m")
-        color = LEFT_COLOR if hand["side"] == "left" else RIGHT_COLOR
-        mesh_color = tuple(int(0.55 * c + 0.45 * 244) for c in color)
-        edges = mano_edges.get(len(verts), np.empty((0, 2), dtype=int))
-        if len(edges):
-            for a, b in edges[::2]:
-                draw_polyline(image, verts[[int(a), int(b)]], projector, mesh_color, 1)
-        joint_xy = project_world(joints, projector)
-        for a, b in HAND_EDGES:
-            cv2.line(image, tuple(joint_xy[a]), tuple(joint_xy[b]), color, 3, cv2.LINE_AA)
-        for point in joint_xy:
-            cv2.circle(image, tuple(point), 3, color, -1, cv2.LINE_AA)
-        label = "L HAND" if hand["side"] == "left" else "R HAND"
-        cv2.putText(image, label, tuple((joint_xy[0] + np.asarray([7, -7])).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 2, cv2.LINE_AA)
+        draw_hand_world(image, hand, projector, mano_edges, mesh_stride=2, joint_radius=3, label=True)
     draw_camera_frustum(image, T, projector, radius)
-    cv2.putText(image, "WORLD RECONSTRUCTION", (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (20, 20, 20), 2, cv2.LINE_AA)
-    cv2.putText(image, "world coords, head-local view", (16, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (85, 85, 85), 1, cv2.LINE_AA)
+    draw_scale_bar(image, projector, 0.25)
+    draw_manipulation_inset(image, frame, object_mesh, mano_edges, view_basis)
+    gap, side = hand_mesh_gap_m(frame, object_mesh)
+    cv2.putText(image, "3D WORLD RECONSTRUCTION", (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (20, 20, 20), 2, cv2.LINE_AA)
+    cv2.putText(image, "head camera trajectory, MANO hands, object mesh", (16, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (85, 85, 85), 1, cv2.LINE_AA)
+    if gap is not None:
+        cv2.putText(
+            image,
+            f"nearest {side} hand-object gap {1000.0 * gap:.1f} mm",
+            (16, 78),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (60, 60, 60),
+            1,
+            cv2.LINE_AA,
+        )
     cv2.putText(image, f"frame {int(frame['frame_idx']):04d}", (16, height - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 80), 1, cv2.LINE_AA)
     return image
 
