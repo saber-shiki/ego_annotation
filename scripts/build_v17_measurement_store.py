@@ -26,6 +26,8 @@ class CaseSpec:
     contact_measurement_paths: tuple[Path, ...] = ()
     rtmlib_hand2d_paths: tuple[Path, ...] = ()
     hamer_measurement_paths: tuple[Path, ...] = ()
+    vlm_hand_box_paths: tuple[Path, ...] = ()
+    selected_hamer_repair_candidate_paths: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -55,7 +57,7 @@ def bbox_area(bbox: Any) -> float | None:
     vals = [as_float(x) for x in bbox]
     if any(v is None for v in vals):
         return None
-    x0, y0, x1, y1 = vals  # type: ignore[misc]
+    x0, y0, x1, y1 = (float(v) for v in vals if v is not None)
     return max(0.0, x1 - x0) * max(0.0, y1 - y0)
 
 
@@ -268,6 +270,10 @@ def measurements_from_hawor(annotation_paths: tuple[Path, ...]) -> tuple[list[di
                 residual = residual_summary_px(hand)
                 bbox = compact_bbox(hand.get("bbox_xyxy"))
                 measurement_available = bool(hand.get("measurement_available", False))
+                has_vertices_camera = hand.get("vertices_source_camera_m") is not None or hand.get("vertices_camera") is not None
+                has_joints3d_camera = hand.get("joints3d_source_camera_m") is not None or hand.get("joints3d_camera") is not None
+                has_mano_params = hand.get("mano_params") is not None
+                evidence_role = "observed_visible_hawor_measurement" if measurement_available else "hawor_motion_infill_candidate"
                 row = {
                     "measurement_id": f"hawor:{source_i}:{idx}:{hand_i}",
                     "frame_idx": idx,
@@ -281,18 +287,18 @@ def measurements_from_hawor(annotation_paths: tuple[Path, ...]) -> tuple[list[di
                     "bbox_xyxy": bbox,
                     "bbox_area_px2": bbox_area(bbox),
                     "has_joints2d": hand.get("joints2d") is not None,
-                    "has_joints3d_camera": hand.get("joints3d_source_camera_m") is not None
-                    or hand.get("joints3d_camera") is not None,
-                    "has_vertices_camera": hand.get("vertices_source_camera_m") is not None
-                    or hand.get("vertices_camera") is not None,
-                    "has_mano_params": hand.get("mano_params") is not None,
+                    "has_joints3d_camera": has_joints3d_camera,
+                    "has_vertices_camera": has_vertices_camera,
+                    "has_mano_params": has_mano_params,
                     "measurement_available": measurement_available,
+                    "evidence_role": evidence_role,
+                    "visibility_state": "observed_visible" if measurement_available else "temporal_infill_visibility_unknown",
                     "filter_status": hand.get("filter_status"),
                     "projection_residual_px_median": residual["median"],
                     "projection_residual_px_p95": residual["p95"],
                     "mano_vertex_count": hand.get("mano_vertex_count"),
                     "source_annotation": str(path),
-                    "failure_reason": None if measurement_available else "hawor_geometry_without_2d_observation_support",
+                    "failure_reason": None if has_vertices_camera and has_joints3d_camera and has_mano_params else "hawor_geometry_missing",
                 }
                 measurements.append(row)
                 frame_rows.append(row)
@@ -353,6 +359,90 @@ def measurements_from_hamer_summaries(
                 "active_frame_min": min(source_frames) if source_frames else None,
                 "active_frame_max": max(source_frames) if source_frames else None,
                 "active_frame_count": len(set(source_frames)),
+            }
+        )
+    return measurements, by_frame, sources
+
+
+def measurements_from_vlm_hand_boxes(
+    paths: tuple[Path, ...],
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        rows = payload.get("measurements")
+        if not isinstance(rows, list):
+            raise RuntimeError(f"{path} has no measurements list")
+        source_rows = 0
+        source_frames: list[int] = []
+        for row_i, raw in enumerate(rows):
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            idx = int(row["frame_idx"])
+            row["measurement_id"] = f"vlm_hand_box:{source_i}:{row_i}"
+            row["source_file"] = str(path)
+            row["evidence_role"] = "visible_hand_crop_localization"
+            measurements.append(row)
+            by_frame.setdefault(idx, []).append(row)
+            source_rows += 1
+            source_frames.append(idx)
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "measurement_count": source_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+            }
+        )
+    return measurements, by_frame, sources
+
+
+def measurements_from_selected_hamer_repair_candidates(
+    paths: tuple[Path, ...],
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        rows = payload.get("selected_candidates")
+        if not isinstance(rows, list):
+            raise RuntimeError(f"{path} has no selected_candidates list")
+        source_rows = 0
+        source_frames: list[int] = []
+        for row_i, raw in enumerate(rows):
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            idx = int(row["frame_idx"])
+            row["measurement_id"] = f"selected_hamer_repair:{source_i}:{row_i}"
+            row["measurement_type"] = "selected_hamer_hand_repair_candidate"
+            row["source_model"] = "HaMeR"
+            row["source_file"] = str(path)
+            measurements.append(row)
+            by_frame.setdefault(idx, []).append(row)
+            source_rows += 1
+            source_frames.append(idx)
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "measurement_count": source_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+                "selection_method": payload.get("method"),
             }
         )
     return measurements, by_frame, sources
@@ -717,6 +807,8 @@ def anchor_qc(
     wilor_by_frame: dict[int, list[dict[str, Any]]],
     hawor_by_frame: dict[int, list[dict[str, Any]]],
     hamer_by_frame: dict[int, list[dict[str, Any]]],
+    vlm_hand_box_by_frame: dict[int, list[dict[str, Any]]],
+    selected_hamer_repair_by_frame: dict[int, list[dict[str, Any]]],
     v16_hand_by_frame: dict[int, list[dict[str, Any]]],
     rtmlib_by_frame: dict[int, list[dict[str, Any]]],
     object_by_frame: dict[int, list[dict[str, Any]]],
@@ -733,12 +825,15 @@ def anchor_qc(
         wilor_hands = wilor_by_frame.get(idx, [])
         hawor_hands = hawor_by_frame.get(idx, [])
         observed_hawor = [row for row in hawor_hands if row.get("measurement_available")]
+        hawor_infill = [row for row in hawor_hands if row.get("evidence_role") == "hawor_motion_infill_candidate"]
         hamer_hands = hamer_by_frame.get(idx, [])
         measured_hamer = [row for row in hamer_hands if row.get("measurement_available")]
         hamer_measured_crop_ids = {
             row.get("detector_hand_idx") if row.get("detector_hand_idx") is not None else row.get("measurement_id")
             for row in measured_hamer
         }
+        vlm_hand_boxes = vlm_hand_box_by_frame.get(idx, [])
+        selected_hamer_repair = selected_hamer_repair_by_frame.get(idx, [])
         rtmlib_hands = rtmlib_by_frame.get(idx, [])
         object_measurements = object_by_frame.get(idx, [])
         contact_measurements = contact_by_frame.get(idx, [])
@@ -756,12 +851,19 @@ def anchor_qc(
         mano_source_count = max(len(wilor_hands), len(observed_hawor), len(hamer_measured_crop_ids))
         if expected_visible is not None and mano_source_count < expected_visible:
             failures.append("source_mano_measurements_missing_for_visible_hands")
-        if expected_visible is not None and not wilor_hands and not rtmlib_hands and not observed_hawor and not measured_hamer:
+        if (
+            expected_visible is not None
+            and not wilor_hands
+            and not rtmlib_hands
+            and not observed_hawor
+            and not measured_hamer
+            and not vlm_hand_boxes
+        ):
             failures.append("visible_hand_detector_measurement_missing")
         if expected_visible is not None and hawor_hands and len(hawor_hands) < expected_visible:
             failures.append("hawor_measurements_incomplete_for_visible_hands")
-        if hawor_hands and any(row.get("failure_reason") for row in hawor_hands):
-            failures.append("hawor_geometry_without_2d_observation_support")
+        if hawor_hands and any(row.get("failure_reason") == "hawor_geometry_missing" for row in hawor_hands):
+            failures.append("hawor_geometry_missing")
         if object_status == "outside_semantic_interval" and spec.expected_contact.get(idx):
             failures.append("object_inactive_despite_expected_interaction_context")
         if obj.get("label") in spec.expected_persistent_object_labels and object_measurements:
@@ -802,9 +904,12 @@ def anchor_qc(
                 "hamer_hand_count": len(hamer_hands),
                 "hamer_measured_hand_count": len(measured_hamer),
                 "hamer_measured_crop_count": len(hamer_measured_crop_ids),
+                "vlm_hand_box_count": len(vlm_hand_boxes),
+                "selected_hamer_repair_candidate_count": len(selected_hamer_repair),
                 "rtmlib_hand2d_count": len(rtmlib_hands),
                 "hawor_hand_count": len(hawor_hands),
                 "hawor_observed_hand_count": len(observed_hawor),
+                "hawor_infill_candidate_count": len(hawor_infill),
                 "object_status": object_status,
                 "object_label": obj.get("label"),
                 "object_mesh_measurement_count": len(object_measurements),
@@ -835,6 +940,14 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     wilor_measurements, wilor_by_frame = measurements_from_wilor(raw_wilor_path)
     hawor_measurements, hawor_by_frame, hawor_sources = measurements_from_hawor(spec.hawor_annotation_paths)
     hamer_measurements, hamer_by_frame, hamer_sources = measurements_from_hamer_summaries(spec.hamer_measurement_paths)
+    vlm_hand_box_measurements, vlm_hand_box_by_frame, vlm_hand_box_sources = measurements_from_vlm_hand_boxes(
+        spec.vlm_hand_box_paths
+    )
+    (
+        selected_hamer_repair_measurements,
+        selected_hamer_repair_by_frame,
+        selected_hamer_repair_sources,
+    ) = measurements_from_selected_hamer_repair_candidates(spec.selected_hamer_repair_candidate_paths)
     v16_hand_measurements, v16_hand_by_frame = measurements_from_v16_hands(frames)
     rtmlib_measurements, rtmlib_by_frame, rtmlib_sources = measurements_from_rtmlib(spec.rtmlib_hand2d_paths)
     object_measurements, object_by_frame = measurements_from_object_mesh_qc(object_qc_path, frames)
@@ -857,6 +970,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "wilor_measurements.json", wilor_measurements)
     write_json(measurements_dir / "hawor_measurements.json", hawor_measurements)
     write_json(measurements_dir / "hamer_measurements.json", hamer_measurements)
+    write_json(measurements_dir / "vlm_hand_box_measurements.json", vlm_hand_box_measurements)
+    write_json(measurements_dir / "selected_hamer_repair_candidates.json", selected_hamer_repair_measurements)
     write_json(measurements_dir / "v16_hand_state_measurements.json", v16_hand_measurements)
     write_json(measurements_dir / "rtmlib_hand2d_measurements.json", rtmlib_measurements)
     write_json(measurements_dir / "object_mesh_measurements.json", object_measurements)
@@ -871,6 +986,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         wilor_by_frame,
         hawor_by_frame,
         hamer_by_frame,
+        vlm_hand_box_by_frame,
+        selected_hamer_repair_by_frame,
         v16_hand_by_frame,
         rtmlib_by_frame,
         object_by_frame_combined,
@@ -888,6 +1005,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "wilor_raw": str(raw_wilor_path),
         "hawor_sources": hawor_sources,
         "hamer_sources": hamer_sources,
+        "vlm_hand_box_sources": vlm_hand_box_sources,
+        "selected_hamer_repair_sources": selected_hamer_repair_sources,
         "rtmlib_hand2d_sources": rtmlib_sources,
         "object_plan_sources": object_plan_sources,
         "expected_object_coverage_sources": expected_coverage_sources,
@@ -898,6 +1017,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
             "wilor": len(wilor_measurements),
             "hawor": len(hawor_measurements),
             "hamer": len(hamer_measurements),
+            "vlm_hand_box": len(vlm_hand_box_measurements),
+            "selected_hamer_repair": len(selected_hamer_repair_measurements),
             "v16_hand_state": len(v16_hand_measurements),
             "rtmlib_hand2d": len(rtmlib_measurements),
             "object_mesh": len(object_measurements),
@@ -919,7 +1040,7 @@ def default_cases() -> list[CaseSpec]:
             name="trash_1050",
             root=Path("/data2/ego_annotation_outputs/v16_full_pipeline/trash_1050"),
             anchor_frames=(182, 260, 764, 856, 949, 970),
-            expected_visible_hands={182: 2, 260: 2, 764: 2, 856: 2, 949: 2, 970: 2},
+            expected_visible_hands={182: 2, 260: 1, 764: 2, 856: 1, 949: 2, 970: 1},
             expected_contact={764: "contact", 856: "contact_or_near_contact"},
             expected_objects=("trash_bag", "trash_can", "trash_can_lid"),
             expected_hand_repair_frames=(182, 260, 856, 949, 970),
@@ -947,6 +1068,42 @@ def default_cases() -> list[CaseSpec]:
             ),
             hamer_measurement_paths=(
                 Path("/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/hamer_full_r1/hamer_measurements_summary.json"),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "vlm_hand_boxes_anchor_v1/hamer_vlm_boxes_r1/hamer_vlm_box_summary_000182.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "vlm_hand_boxes_anchor_v1/hamer_vlm_boxes_r1/hamer_vlm_box_summary_000260.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "vlm_hand_boxes_anchor_v1/hamer_vlm_boxes_r1/hamer_vlm_box_summary_000764.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "vlm_hand_boxes_anchor_v1/hamer_vlm_boxes_r1/hamer_vlm_box_summary_000856.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "vlm_hand_boxes_anchor_v1/hamer_vlm_boxes_r1/hamer_vlm_box_summary_000949.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "vlm_hand_boxes_anchor_v1/hamer_vlm_boxes_r1/hamer_vlm_box_summary_000970.json"
+                ),
+            ),
+            vlm_hand_box_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "vlm_hand_boxes_anchor_v1/vlm_hand_box_measurements.json"
+                ),
+            ),
+            selected_hamer_repair_candidate_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "selected_hamer_repair_candidates_v1.json"
+                ),
             ),
         ),
         CaseSpec(

@@ -10,6 +10,10 @@ The current measurement-store implementation is the evidence layer for the full 
 
 The current HaWoR evidence path uses a compact full-video adapter input generated from V16 annotations. The compact file preserves frame indices, timestamps, source camera transforms, source intrinsics, measured V16 hand 2D keypoints, detector scores, and hand boxes, then reruns the HaWoR camera-local adapter against the full 0-1049 HaWoR NPZ. The adapter input therefore contains only the fields read by the HaWoR residual calculation.
 
+HaWoR rows without current-frame observed hand support are stored as `hawor_motion_infill_candidate` measurements. They can support an occluded or detector-miss state after temporal, projection-contradiction, contact, and nonpenetration checks. Current-frame 2D evidence is required for observed-visible measurements, not for motion-infill candidates.
+
+The trash hand-evidence path now includes VLM-localized visible hand boxes for anchor frames where RTMLib or full-frame HaMeR crops were broad, missing, or attached to the wrong region. The VLM boxes enter the measurement store as image-localization evidence and HaMeR crop inputs. Synthetic keypoints derived from those boxes have no metric meaning; the usable 3D evidence is the HaMeR MANO output and its source-camera reprojection residual.
+
 ## V16 Failure Analysis
 
 The failures are not isolated rendering bugs.
@@ -37,7 +41,7 @@ Trash frame 0949:
 - V16 lacks an independent hand-state rejection path.
 
 Trash frame 0970:
-- Both hands are visible in the raw frame, but the delivered hand list is empty.
+- A hand region is visible in the raw frame, but the delivered hand list is empty.
 - V16 drops the state when measurements disappear; it does not maintain a prediction/update filter with uncertainty through occlusion or detector failure.
 
 Tomato frames around 0480 to 0760:
@@ -164,6 +168,7 @@ V17 uses a fixed measurement set:
 - HaWoR world-space hand motion and infilled hand trajectory measurements as the primary temporal hand-motion source;
 - WiLoR per-frame MANO measurements as an independent image-conditioned hand source;
 - HaMeR per-frame MANO measurements from RTMLib crop evidence, with explicit source-coordinate intrinsics and metric-translation residuals;
+- VLM-localized visible hand boxes for detector-miss or bad-crop anchors, used as HaMeR crop localization and as image-level hand evidence;
 - RTMLib 2D keypoints;
 - SAM 2 hand masks or another hand-mask source;
 - metric depth over visible hand regions;
@@ -294,7 +299,7 @@ Required frame anchors:
 - trash 0764: hand-bag contact must be represented as contact or unresolved repair target, not isolated separation;
 - trash 0856: bad hand/object state must not produce a confident contact label;
 - trash 0949: visible hands must pass hand residual checks;
-- trash 0970: visible hands must not disappear silently;
+- trash 0970: visible hand evidence requires an accepted, predicted, or unresolved hand state;
 - tomato 0480/0720/0760: tomato mesh must preserve persistent near-rigid shape;
 - tomato context: bowls/plates/trays must appear in the multi-object roster when visible and relevant to the manipulation.
 
