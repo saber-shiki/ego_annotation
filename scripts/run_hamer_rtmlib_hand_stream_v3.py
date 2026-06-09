@@ -204,11 +204,53 @@ def load_rtmlib(path: Path, frame_start: int, frame_end: int) -> dict[int, list[
     return out
 
 
+def valid_intrinsics(raw: object) -> np.ndarray | None:
+    intr = np.asarray(raw, dtype=float)
+    if intr.shape == (4,) and np.isfinite(intr).all():
+        return intr
+    return None
+
+
+def intrinsics_for_with_source(frame: dict, explicit_intrinsics: object | None = None) -> tuple[np.ndarray, str]:
+    candidates = []
+    explicit = valid_intrinsics(explicit_intrinsics)
+    if explicit is not None:
+        candidates.append(("--source-intrinsics-fx-fy-cx-cy", explicit))
+    camera = frame.get("camera", {})
+    obj = frame.get("object", {})
+    for source, raw in (
+        ("camera.vggt_source_intrinsics_fx_fy_cx_cy", camera.get("vggt_source_intrinsics_fx_fy_cx_cy")),
+        ("object.mesh_qc.source_intrinsics", obj.get("mesh_qc", {}).get("source_intrinsics")),
+        ("object.source_intrinsics", obj.get("source_intrinsics")),
+    ):
+        intr = valid_intrinsics(raw)
+        if intr is not None:
+            candidates.append((source, intr))
+    if not candidates:
+        raise RuntimeError(f"frame {frame.get('frame_idx')} missing valid source intrinsics")
+    source, intr = candidates[0]
+    for other_source, other_intr in candidates[1:]:
+        if not np.allclose(intr, other_intr, rtol=1e-6, atol=1e-6):
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} has conflicting source intrinsics: "
+                f"{source}={intr.tolist()} vs {other_source}={other_intr.tolist()}"
+            )
+    return intr, source
+
+
 def intrinsics_for(frame: dict) -> np.ndarray:
-    intr = np.asarray(frame.get("camera", {}).get("vggt_source_intrinsics_fx_fy_cx_cy", []), dtype=float)
-    if intr.shape != (4,) or not np.isfinite(intr).all():
-        raise RuntimeError(f"frame {frame.get('frame_idx')} missing valid VGGT source intrinsics")
-    return intr
+    return intrinsics_for_with_source(frame)[0]
+
+
+def validate_image_intrinsics_contract(frame: dict, image: np.ndarray, explicit_intrinsics: object | None = None) -> None:
+    intr, source = intrinsics_for_with_source(frame, explicit_intrinsics)
+    width, height = image.shape[1], image.shape[0]
+    cx, cy = float(intr[2]), float(intr[3])
+    if abs(cx - width / 2.0) > max(4.0, 0.1 * width) or abs(cy - height / 2.0) > max(4.0, 0.1 * height):
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')} RGB image size {(width, height)} is inconsistent with "
+            f"{source} principal point {(cx, cy)}"
+        )
 
 
 def load_frame_inputs(args: argparse.Namespace) -> list[FrameInput]:
@@ -223,6 +265,7 @@ def load_frame_inputs(args: argparse.Namespace) -> list[FrameInput]:
         image = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
         if image is None:
             raise RuntimeError(f"failed to read image {rgb_path}")
+        validate_image_intrinsics_contract(annotations[frame_idx], image, args.source_intrinsics_fx_fy_cx_cy)
         obj_size = np.asarray(annotations[frame_idx].get("object", {}).get("source_image_size", []), dtype=float)
         if obj_size.shape == (2,) and np.any(np.asarray([image.shape[1], image.shape[0]], dtype=float) != obj_size):
             raise RuntimeError(f"frame {frame_idx} RGB size {image.shape[1::-1]} differs from annotation source size {obj_size}")
@@ -409,7 +452,7 @@ def run_hamer_on_frame(model, cfg, device, frame: FrameInput, args: argparse.Nam
     hands: list[dict] = []
     frame_meta = [m for m in meta if bool(m.get("accepted_for_hamer", False)) and "hypothesis_side" in m]
     pred_i = 0
-    intr = intrinsics_for(frame.annotation)
+    intr, intr_source = intrinsics_for_with_source(frame.annotation, args.source_intrinsics_fx_fy_cx_cy)
     T_world_camera = transform_for(frame.annotation)
     for batch in loader:
         batch = recursive_to(batch, device)
@@ -471,6 +514,7 @@ def run_hamer_on_frame(model, cfg, device, frame: FrameInput, args: argparse.Nam
                 "source_camera_solve": {
                     "status": "least_squares_translation_from_hamer_local_geometry_and_rtmlib_2d_keypoints",
                     "measurement_source": args.measurement_source,
+                    "source_intrinsics_field": intr_source,
                     "hamer_virtual_focal_length": float(scaled_focal_np),
                     "hamer_virtual_cam_t_full": cam_t_full[n].astype(float).tolist(),
                     "median_reprojection_error_px": metrics["median_reprojection_error_px"],
@@ -578,6 +622,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--local-root", type=Path)
     parser.add_argument("--remote-root", type=Path)
+    parser.add_argument("--source-intrinsics-fx-fy-cx-cy", type=float, nargs=4)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--rescale-factor", type=float, default=2.0)
