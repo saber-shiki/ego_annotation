@@ -14,6 +14,8 @@ HaWoR rows without current-frame observed hand support are stored as `hawor_moti
 
 The trash hand-evidence path now includes VLM-localized visible hand boxes for anchor frames where RTMLib or full-frame HaMeR crops were broad, missing, or attached to the wrong region. The VLM boxes enter the measurement store as image-localization evidence and HaMeR crop inputs. Synthetic keypoints derived from those boxes have no metric meaning; the usable 3D evidence is the HaMeR MANO output and its source-camera reprojection residual.
 
+The trash anchor repair path now materializes selected VLM-box HaMeR hypotheses as V17 repair hand states for frames 0182, 0260, 0764, 0856, 0949, and 0970. The measurement store also ingests contact evidence recomputed from those repaired states. This clears the hand-state blockers at 0182, 0260, 0764, 0949, and 0970. Frame 0856 remains unresolved because the repaired hand has image adjacency to the object mask while metric mesh proximity is still absent; the remaining fault is object/contact geometry.
+
 ## V16 Failure Analysis
 
 The failures are not isolated rendering bugs.

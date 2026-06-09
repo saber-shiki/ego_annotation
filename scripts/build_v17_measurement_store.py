@@ -28,6 +28,8 @@ class CaseSpec:
     hamer_measurement_paths: tuple[Path, ...] = ()
     vlm_hand_box_paths: tuple[Path, ...] = ()
     selected_hamer_repair_candidate_paths: tuple[Path, ...] = ()
+    hand_repair_annotation_paths: tuple[Path, ...] = ()
+    hand_repair_contact_measurement_paths: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -49,6 +51,12 @@ def as_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
+
+
+def required_json_int(value: Any, field: str, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"{context} field {field} must be a JSON integer, got {value!r}")
+    return value
 
 
 def bbox_area(bbox: Any) -> float | None:
@@ -448,6 +456,81 @@ def measurements_from_selected_hamer_repair_candidates(
     return measurements, by_frame, sources
 
 
+def measurements_from_hand_repair_annotations(
+    paths: tuple[Path, ...],
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        frames = payload.get("frames")
+        if not isinstance(frames, list):
+            raise RuntimeError(f"{path} has no frames list")
+        source_rows = 0
+        source_frames: list[int] = []
+        for frame_i, frame in enumerate(frames):
+            if not isinstance(frame, dict):
+                raise RuntimeError(f"{path} frame row {frame_i} is not a JSON object")
+            idx = required_json_int(frame.get("frame_idx"), "frame_idx", f"{path} frame row {frame_i}")
+            hands = frame.get("hands")
+            if not isinstance(hands, list):
+                raise RuntimeError(f"{path} frame {idx} has no hands list")
+            for hand_i, hand in enumerate(hands):
+                if not isinstance(hand, dict):
+                    raise RuntimeError(f"{path} frame {idx} hand row {hand_i} is not a JSON object")
+                side = hand.get("side")
+                if not isinstance(side, str) or not side:
+                    raise RuntimeError(f"{path} frame {idx} hand row {hand_i} has no side")
+                residual = hand.get("projection_residual_to_measurement_px")
+                residual_median = None
+                residual_p95 = None
+                if isinstance(residual, dict):
+                    residual_median = as_float(residual.get("median"))
+                    residual_p95 = as_float(residual.get("p95"))
+                row = {
+                    "measurement_id": f"hand_repair_state:{source_i}:{idx}:{hand_i}",
+                    "frame_idx": idx,
+                    "entity_type": "hand",
+                    "entity_id": f"hand:{side}",
+                    "measurement_type": "v17_hand_repair_state",
+                    "source_model": hand.get("backend", "HaMeR"),
+                    "coordinate_frame": "v16_world_metric",
+                    "source_file": str(path),
+                    "hand_side": side,
+                    "hand_index": hand_i,
+                    "repair_state": hand.get("v17_repair_state"),
+                    "repair_candidate_id": hand.get("v17_repair_candidate_id"),
+                    "source_measurement_id": hand.get("v17_source_measurement_id"),
+                    "selection_status": hand.get("v17_selection_status"),
+                    "measurement_available": hand.get("measurement_available"),
+                    "confidence": as_float(hand.get("detector_score")),
+                    "projection_residual_px_median": residual_median,
+                    "projection_residual_px_p95": residual_p95,
+                    "has_vertices_world_m": isinstance(hand.get("vertices_world_m"), list),
+                    "has_joints3d_world_m": isinstance(hand.get("joints3d_world_m"), list),
+                }
+                measurements.append(row)
+                by_frame.setdefault(idx, []).append(row)
+                source_rows += 1
+                source_frames.append(idx)
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "measurement_count": source_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+                "method": payload.get("method"),
+            }
+        )
+    return measurements, by_frame, sources
+
+
 def measurements_from_object_mesh_qc(qc_path: Path, frames: dict[int, dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
     qc = load_json(qc_path)
     measurements: list[dict[str, Any]] = []
@@ -809,10 +892,12 @@ def anchor_qc(
     hamer_by_frame: dict[int, list[dict[str, Any]]],
     vlm_hand_box_by_frame: dict[int, list[dict[str, Any]]],
     selected_hamer_repair_by_frame: dict[int, list[dict[str, Any]]],
+    hand_repair_by_frame: dict[int, list[dict[str, Any]]],
     v16_hand_by_frame: dict[int, list[dict[str, Any]]],
     rtmlib_by_frame: dict[int, list[dict[str, Any]]],
     object_by_frame: dict[int, list[dict[str, Any]]],
     contact_by_frame: dict[int, list[dict[str, Any]]],
+    hand_repair_contact_by_frame: dict[int, list[dict[str, Any]]],
     roster: list[dict[str, Any]],
 ) -> dict[str, Any]:
     anchors = []
@@ -834,22 +919,45 @@ def anchor_qc(
         }
         vlm_hand_boxes = vlm_hand_box_by_frame.get(idx, [])
         selected_hamer_repair = selected_hamer_repair_by_frame.get(idx, [])
+        hand_repair_states = hand_repair_by_frame.get(idx, [])
+        valid_hand_repair_states = [
+            row
+            for row in hand_repair_states
+            if row.get("measurement_available") is not False
+            and row.get("repair_state") == "selected_hamer_anchor_repair_candidate"
+            and as_float(row.get("projection_residual_px_median")) is not None
+            and float(row["projection_residual_px_median"]) <= 45.0
+            and row.get("has_vertices_world_m") is True
+        ]
         rtmlib_hands = rtmlib_by_frame.get(idx, [])
         object_measurements = object_by_frame.get(idx, [])
         contact_measurements = contact_by_frame.get(idx, [])
+        hand_repair_contact_measurements = hand_repair_contact_by_frame.get(idx, [])
         contact_states = sorted({str(row.get("contact_state_measurement")) for row in contact_measurements})
+        hand_repair_contact_states = sorted(
+            {str(row.get("contact_state_measurement")) for row in hand_repair_contact_measurements}
+        )
         expected_visible = spec.expected_visible_hands.get(idx)
+        hand_repair_covers_visible = expected_visible is not None and len(valid_hand_repair_states) >= expected_visible
         obj = frame.get("object", {})
         object_status = obj.get("status")
         failures = []
-        if expected_visible is not None and len(v16_hands) < expected_visible:
+        if expected_visible is not None and len(v16_hands) < expected_visible and not hand_repair_covers_visible:
             failures.append("visible_hands_missing_from_v16_state")
-        if v16_hands and any(row.get("failure_reason") == "missing_source_confidence" for row in v16_hands):
+        if (
+            v16_hands
+            and any(row.get("failure_reason") == "missing_source_confidence" for row in v16_hands)
+            and not hand_repair_covers_visible
+        ):
             failures.append("v16_hand_state_lacks_source_confidence")
-        if v16_hands and any(row.get("failure_reason") == "hand_measurement_unavailable" for row in v16_hands):
+        if (
+            v16_hands
+            and any(row.get("failure_reason") == "hand_measurement_unavailable" for row in v16_hands)
+            and not hand_repair_covers_visible
+        ):
             failures.append("v16_hand_state_contains_unavailable_measurement")
         mano_source_count = max(len(wilor_hands), len(observed_hawor), len(hamer_measured_crop_ids))
-        if expected_visible is not None and mano_source_count < expected_visible:
+        if expected_visible is not None and mano_source_count < expected_visible and not hand_repair_covers_visible:
             failures.append("source_mano_measurements_missing_for_visible_hands")
         if (
             expected_visible is not None
@@ -872,16 +980,24 @@ def anchor_qc(
                 failures.append("persistent_object_shape_state_missing")
         if spec.expected_contact.get(idx) == "contact" and not object_measurements:
             failures.append("contact_anchor_without_object_mesh_measurement")
-        if spec.expected_contact.get(idx) and not contact_measurements:
+        if spec.expected_contact.get(idx) and not contact_measurements and not hand_repair_contact_measurements:
             failures.append("missing_contact_state_measurement")
         if (
             spec.expected_contact.get(idx) == "contact"
             and contact_measurements
             and "candidate_contact_image_and_metric" not in contact_states
+            and "candidate_contact_image_and_metric" not in hand_repair_contact_states
         ):
             failures.append("contact_anchor_lacks_joint_image_metric_support")
-        if "contact_evidence_requires_hand_repair" in contact_states:
+        if "contact_evidence_requires_hand_repair" in contact_states and not hand_repair_covers_visible:
             failures.append("contact_evidence_requires_hand_repair")
+        if (
+            spec.expected_contact.get(idx) == "contact_or_near_contact"
+            and hand_repair_contact_measurements
+            and "candidate_contact_image_and_metric" not in hand_repair_contact_states
+            and "candidate_contact_metric_only" not in hand_repair_contact_states
+        ):
+            failures.append("hand_repair_contact_lacks_metric_support")
         hand_repair_failures = {
             "visible_hands_missing_from_v16_state",
             "v16_hand_state_contains_unavailable_measurement",
@@ -889,7 +1005,11 @@ def anchor_qc(
             "hawor_geometry_without_2d_observation_support",
             "contact_evidence_requires_hand_repair",
         }
-        if idx in spec.expected_hand_repair_frames and not any(failure in hand_repair_failures for failure in failures):
+        if (
+            idx in spec.expected_hand_repair_frames
+            and not hand_repair_covers_visible
+            and not any(failure in hand_repair_failures for failure in failures)
+        ):
             failures.append("known_v16_hand_failure_needs_repair_state")
         if idx == 856 and object_measurements:
             failures.append("known_bad_state_can_still_emit_small_distance_contact_label")
@@ -906,6 +1026,8 @@ def anchor_qc(
                 "hamer_measured_crop_count": len(hamer_measured_crop_ids),
                 "vlm_hand_box_count": len(vlm_hand_boxes),
                 "selected_hamer_repair_candidate_count": len(selected_hamer_repair),
+                "v17_hand_repair_state_count": len(hand_repair_states),
+                "v17_valid_hand_repair_state_count": len(valid_hand_repair_states),
                 "rtmlib_hand2d_count": len(rtmlib_hands),
                 "hawor_hand_count": len(hawor_hands),
                 "hawor_observed_hand_count": len(observed_hawor),
@@ -915,6 +1037,8 @@ def anchor_qc(
                 "object_mesh_measurement_count": len(object_measurements),
                 "contact_measurement_count": len(contact_measurements),
                 "contact_state_measurements": contact_states,
+                "hand_repair_contact_measurement_count": len(hand_repair_contact_measurements),
+                "hand_repair_contact_state_measurements": hand_repair_contact_states,
                 "failures": failures,
                 "status": "pass" if not failures else "fail",
             }
@@ -948,6 +1072,11 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         selected_hamer_repair_by_frame,
         selected_hamer_repair_sources,
     ) = measurements_from_selected_hamer_repair_candidates(spec.selected_hamer_repair_candidate_paths)
+    (
+        hand_repair_measurements,
+        hand_repair_by_frame,
+        hand_repair_sources,
+    ) = measurements_from_hand_repair_annotations(spec.hand_repair_annotation_paths)
     v16_hand_measurements, v16_hand_by_frame = measurements_from_v16_hands(frames)
     rtmlib_measurements, rtmlib_by_frame, rtmlib_sources = measurements_from_rtmlib(spec.rtmlib_hand2d_paths)
     object_measurements, object_by_frame = measurements_from_object_mesh_qc(object_qc_path, frames)
@@ -957,6 +1086,11 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         spec.expected_object_coverage_paths
     )
     contact_measurements, contact_by_frame, contact_sources = measurements_from_contact_measurements(spec.contact_measurement_paths)
+    (
+        hand_repair_contact_measurements,
+        hand_repair_contact_by_frame,
+        hand_repair_contact_sources,
+    ) = measurements_from_contact_measurements(spec.hand_repair_contact_measurement_paths)
     object_by_frame_combined = {idx: list(rows) for idx, rows in object_by_frame.items()}
     for idx, rows in sam2_by_frame.items():
         object_by_frame_combined.setdefault(idx, []).extend(rows)
@@ -972,6 +1106,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "hamer_measurements.json", hamer_measurements)
     write_json(measurements_dir / "vlm_hand_box_measurements.json", vlm_hand_box_measurements)
     write_json(measurements_dir / "selected_hamer_repair_candidates.json", selected_hamer_repair_measurements)
+    write_json(measurements_dir / "hand_repair_state_measurements.json", hand_repair_measurements)
     write_json(measurements_dir / "v16_hand_state_measurements.json", v16_hand_measurements)
     write_json(measurements_dir / "rtmlib_hand2d_measurements.json", rtmlib_measurements)
     write_json(measurements_dir / "object_mesh_measurements.json", object_measurements)
@@ -979,6 +1114,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "expected_object_coverage_measurements.json", expected_coverage_measurements)
     write_json(measurements_dir / "sam2_object_mask_measurements.json", sam2_measurements)
     write_json(measurements_dir / "contact_measurements.json", contact_measurements)
+    write_json(measurements_dir / "hand_repair_contact_measurements.json", hand_repair_contact_measurements)
     write_json(case_dir / "object_roster_v17.json", roster)
     anchor = anchor_qc(
         spec,
@@ -988,10 +1124,12 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         hamer_by_frame,
         vlm_hand_box_by_frame,
         selected_hamer_repair_by_frame,
+        hand_repair_by_frame,
         v16_hand_by_frame,
         rtmlib_by_frame,
         object_by_frame_combined,
         contact_by_frame,
+        hand_repair_contact_by_frame,
         roster,
     )
     write_json(case_dir / "v17_anchor_qc.json", anchor)
@@ -1007,11 +1145,13 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "hamer_sources": hamer_sources,
         "vlm_hand_box_sources": vlm_hand_box_sources,
         "selected_hamer_repair_sources": selected_hamer_repair_sources,
+        "hand_repair_sources": hand_repair_sources,
         "rtmlib_hand2d_sources": rtmlib_sources,
         "object_plan_sources": object_plan_sources,
         "expected_object_coverage_sources": expected_coverage_sources,
         "sam2_multiobject_sources": sam2_sources,
         "contact_measurement_sources": contact_sources,
+        "hand_repair_contact_measurement_sources": hand_repair_contact_sources,
         "object_mesh_qc": str(object_qc_path),
         "measurement_counts": {
             "wilor": len(wilor_measurements),
@@ -1019,6 +1159,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
             "hamer": len(hamer_measurements),
             "vlm_hand_box": len(vlm_hand_box_measurements),
             "selected_hamer_repair": len(selected_hamer_repair_measurements),
+            "hand_repair_state": len(hand_repair_measurements),
             "v16_hand_state": len(v16_hand_measurements),
             "rtmlib_hand2d": len(rtmlib_measurements),
             "object_mesh": len(object_measurements),
@@ -1026,6 +1167,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
             "expected_object_coverage": len(expected_coverage_measurements),
             "sam2_object_mask": len(sam2_measurements),
             "contact": len(contact_measurements),
+            "hand_repair_contact": len(hand_repair_contact_measurements),
         },
         "object_roster": str(case_dir / "object_roster_v17.json"),
         "anchor_qc": str(case_dir / "v17_anchor_qc.json"),
@@ -1105,6 +1247,18 @@ def default_cases() -> list[CaseSpec]:
                     "selected_hamer_repair_candidates_v1.json"
                 ),
             ),
+            hand_repair_annotation_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_hand_evidence/trash_1050/"
+                    "anchor_hamer_repair_v2/annotations_v17_anchor_hamer_repair.json"
+                ),
+            ),
+            hand_repair_contact_measurement_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/"
+                    "contact_measurements_anchor_hamer_repair_v2.json"
+                ),
+            ),
         ),
         CaseSpec(
             name="task5_tomato_960",
@@ -1138,7 +1292,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     summary = {
         "status": "pass" if all(row["status"] == "pass" for row in reports) else "fail",
         "method": "build_v17_measurement_store",
-        "claim": "V17 measurement store preserves model outputs and exposes V16 anchor failures before graph optimization",
+        "claim": "V17 measurement store preserves model outputs, repaired hand states, and unresolved anchor failures before graph optimization",
         "cases": reports,
     }
     write_json(output_root / "v17_measurement_store_summary.json", summary)
