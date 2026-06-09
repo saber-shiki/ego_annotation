@@ -450,7 +450,7 @@ def run(args: argparse.Namespace) -> dict:
         "clip": str(args.clip),
         "point_root": str(args.point_root),
         "output_root": str(args.output_root),
-                "track_ids": [track.track_id for track in tracks],
+        "track_ids": [track.track_id for track in tracks],
         "active_intervals_by_track": {
             track.track_id: [[int(start), int(end)] for start, end in track.active_intervals] for track in tracks
         },
