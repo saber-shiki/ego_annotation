@@ -17,6 +17,8 @@ class CaseSpec:
     expected_visible_hands: dict[int, int]
     expected_contact: dict[int, str]
     expected_objects: tuple[str, ...]
+    expected_persistent_object_labels: tuple[str, ...] = ()
+    expected_hand_repair_frames: tuple[int, ...] = ()
     hawor_annotation_paths: tuple[Path, ...] = ()
     object_plan_paths: tuple[Path, ...] = ()
     expected_object_coverage_paths: tuple[Path, ...] = ()
@@ -199,6 +201,16 @@ def measurements_from_v16_hands(frames: dict[int, dict[str, Any]]) -> tuple[list
             if not isinstance(hand, dict):
                 continue
             bbox = compact_bbox(hand.get("bbox_xyxy"))
+            confidence = as_float(hand.get("score"))
+            if confidence is None:
+                confidence = as_float(hand.get("detector_score"))
+            residual = residual_summary_px(hand)
+            measurement_available = hand.get("measurement_available")
+            failure_reason = None
+            if confidence is None and hand.get("source") is None and hand.get("backend") is None:
+                failure_reason = "missing_source_confidence"
+            elif measurement_available is False:
+                failure_reason = "hand_measurement_unavailable"
             row = {
                 "measurement_id": f"v16_hand:{idx}:{hand_i}",
                 "frame_idx": idx,
@@ -207,14 +219,17 @@ def measurements_from_v16_hands(frames: dict[int, dict[str, Any]]) -> tuple[list
                 "measurement_type": "delivered_v16_hand_state",
                 "source_model": hand.get("backend") or hand.get("source") or "unknown_v16_hand_source",
                 "coordinate_frame": "v16_annotation_world_and_source_camera",
-                "confidence": as_float(hand.get("score")),
+                "confidence": confidence,
                 "bbox_xyxy": bbox,
                 "bbox_area_px2": bbox_area(bbox),
                 "has_joints2d": hand.get("joints2d") is not None,
                 "has_joints3d_camera": hand.get("joints3d_camera") is not None,
                 "has_vertices_camera": hand.get("vertices_camera") is not None or hand.get("vertices_camera_sample") is not None,
                 "has_mano_params": hand.get("mano_params") is not None,
-                "failure_reason": "missing_source_confidence" if hand.get("score") is None and hand.get("source") is None else None,
+                "measurement_available": measurement_available,
+                "projection_residual_px_median": residual["median"],
+                "projection_residual_px_p95": residual["p95"],
+                "failure_reason": failure_reason,
             }
             measurements.append(row)
             frame_rows.append(row)
@@ -683,6 +698,8 @@ def anchor_qc(
             failures.append("visible_hands_missing_from_v16_state")
         if v16_hands and any(row.get("failure_reason") == "missing_source_confidence" for row in v16_hands):
             failures.append("v16_hand_state_lacks_source_confidence")
+        if v16_hands and any(row.get("failure_reason") == "hand_measurement_unavailable" for row in v16_hands):
+            failures.append("v16_hand_state_contains_unavailable_measurement")
         if expected_visible is not None and len(wilor_hands) < expected_visible:
             failures.append("wilor_measurements_missing_for_visible_hands")
         if expected_visible is not None and not wilor_hands and not rtmlib_hands and not observed_hawor:
@@ -693,6 +710,10 @@ def anchor_qc(
             failures.append("hawor_geometry_without_2d_observation_support")
         if object_status == "outside_semantic_interval" and spec.expected_contact.get(idx):
             failures.append("object_inactive_despite_expected_interaction_context")
+        if obj.get("label") in spec.expected_persistent_object_labels and object_measurements:
+            has_persistent_state = any(row.get("measurement_type") == "object_persistent_canonical_mesh" for row in object_measurements)
+            if not has_persistent_state:
+                failures.append("persistent_object_shape_state_missing")
         if spec.expected_contact.get(idx) == "contact" and not object_measurements:
             failures.append("contact_anchor_without_object_mesh_measurement")
         if spec.expected_contact.get(idx) and not contact_measurements:
@@ -705,6 +726,15 @@ def anchor_qc(
             failures.append("contact_anchor_lacks_joint_image_metric_support")
         if "contact_evidence_requires_hand_repair" in contact_states:
             failures.append("contact_evidence_requires_hand_repair")
+        hand_repair_failures = {
+            "visible_hands_missing_from_v16_state",
+            "v16_hand_state_contains_unavailable_measurement",
+            "wilor_measurements_missing_for_visible_hands",
+            "hawor_geometry_without_2d_observation_support",
+            "contact_evidence_requires_hand_repair",
+        }
+        if idx in spec.expected_hand_repair_frames and not any(failure in hand_repair_failures for failure in failures):
+            failures.append("known_v16_hand_failure_needs_repair_state")
         if idx == 856 and object_measurements:
             failures.append("known_bad_state_can_still_emit_small_distance_contact_label")
         anchors.append(
@@ -830,6 +860,7 @@ def default_cases() -> list[CaseSpec]:
             expected_visible_hands={182: 2, 260: 2, 764: 2, 856: 2, 949: 2, 970: 2},
             expected_contact={764: "contact", 856: "contact_or_near_contact"},
             expected_objects=("trash_bag", "trash_can", "trash_can_lid"),
+            expected_hand_repair_frames=(182, 260, 856, 949, 970),
             hawor_annotation_paths=(
                 Path(
                     "/data2/ego_annotation_outputs/representative_trash/"
@@ -860,6 +891,7 @@ def default_cases() -> list[CaseSpec]:
             expected_visible_hands={480: 2, 720: 2, 760: 2},
             expected_contact={480: "contact", 720: "contact", 760: "contact"},
             expected_objects=("tomato", "bowl", "plate", "tray"),
+            expected_persistent_object_labels=("tomato",),
             object_plan_paths=(
                 Path("/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/object_plan_vlm.json"),
             ),
