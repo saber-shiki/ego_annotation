@@ -725,6 +725,9 @@ def default_cases() -> list[CaseSpec]:
             expected_object_coverage_paths=(
                 Path("/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/expected_object_coverage_vlm.json"),
             ),
+            sam2_multiobject_roots=(
+                Path("/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/sam2_multiobject_interval"),
+            ),
         ),
     ]
 
