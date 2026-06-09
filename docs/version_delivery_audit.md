@@ -1,6 +1,6 @@
 # Version Delivery Audit
 
-This audit uses the delivery standard from `PROMPT.md`: a deliverable video must cover a meaningful continuous action interval and show the annotated video, the 3D world reconstruction, MANO hands, head camera, object mesh, and semantic caption. Short clips of three to seven frames count as QC evidence for individual mechanisms.
+This audit uses the delivery standard from the user: a deliverable video must have the same duration and frame coverage as the original raw video. The rendered outputs must show the annotated video, the 3D world reconstruction, MANO hands, head camera, object mesh, and semantic caption over the full source clip. Any shorter render counts as QC evidence for individual mechanisms.
 
 ## Current Delivery Status
 
@@ -12,7 +12,7 @@ v1 produced full-clip videos. Its object representation is physically weak and u
 /data2/ego_annotation_outputs/representative_trash/fused_bagprompt_full_final/side_by_side.mp4
 ```
 
-v2 produced a 91-frame continuous contact-window video with observed object surface geometry. It is a milestone demo for observed-surface meshing.
+v2 produced a 91-frame contact-window video with observed object surface geometry. It is a QC demo for observed-surface meshing.
 
 ```text
 /data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_strict_render_840_930/side_by_side.mp4
@@ -20,7 +20,7 @@ v2 produced a 91-frame continuous contact-window video with observed object surf
 
 v3 produced investigation clips. It failed as a clean pipeline version because scope expanded during implementation around segmentation, mesh completion, depth scale, hand refit, and contact.
 
-v4 through v6 produced 31-frame wild-rice videos. These are useful continuous evidence windows for dynamic surface and sparse correspondence work, but they are still short relative to a complete action and represent selected problem intervals.
+v4 through v6 produced 31-frame wild-rice videos. These support dynamic surface and sparse correspondence inspection.
 
 ```text
 /data2/ego_annotation_outputs/representative_wild_rice/v4_world_reconstruction_completed_measurement_plus_sam2seed_finalvis_2520_2550/world_reconstruction_side_by_side.mp4
@@ -28,7 +28,7 @@ v4 through v6 produced 31-frame wild-rice videos. These are useful continuous ev
 /data2/ego_annotation_outputs/representative_wild_rice/v6_world_reconstruction_repaired2539_2520_2550/world_reconstruction_side_by_side.mp4
 ```
 
-v7 through v15 produced short QC/evidence clips, mostly three to seven frames. Those clips support inspection of mechanisms such as mesh replay, MANO repair, hidden-surface fusion, and contact dynamics. They remain below the task delivery standard.
+v7 through v15 produced short QC/evidence clips, mostly three to seven frames. Those clips support inspection of mechanisms such as mesh replay, MANO repair, hidden-surface fusion, and contact dynamics.
 
 Representative short evidence clips:
 
@@ -62,4 +62,4 @@ Bug fixes, threshold corrections, renderer improvements, and short diagnostic st
 
 ## Immediate Consequence
 
-The current repository contains many validated components and short evidence clips. The missing artifact is a v15-quality full action-window deliverable. The next work item is to define the next real pipeline version upfront, then run it over meaningful continuous intervals on representative samples.
+The current repository contains zero v2-through-v15 deliverables under the full-raw-video standard. The current repository contains validated components and short evidence clips. The missing artifact is a v15-quality full raw-video deliverable. The next work item is to define the next real pipeline version upfront, then run it over complete source videos on representative samples.
