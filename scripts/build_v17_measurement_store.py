@@ -17,6 +17,7 @@ class CaseSpec:
     expected_visible_hands: dict[int, int]
     expected_contact: dict[int, str]
     expected_objects: tuple[str, ...]
+    hawor_annotation_paths: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -117,11 +118,10 @@ def measurements_from_wilor(raw_path: Path) -> tuple[list[dict[str, Any]], dict[
     return measurements, by_frame
 
 
-def measurements_from_v16_hands(annotations_path: Path) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
-    payload = load_json(annotations_path)
+def measurements_from_v16_hands(frames: dict[int, dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
     measurements: list[dict[str, Any]] = []
     by_frame: dict[int, list[dict[str, Any]]] = {}
-    for frame in payload.get("frames", []):
+    for frame in frames.values():
         idx = int(frame["frame_idx"])
         frame_rows: list[dict[str, Any]] = []
         for hand_i, hand in enumerate(frame.get("hands") or []):
@@ -151,10 +151,83 @@ def measurements_from_v16_hands(annotations_path: Path) -> tuple[list[dict[str, 
     return measurements, by_frame
 
 
-def measurements_from_object_mesh_qc(qc_path: Path, annotations_path: Path) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+def residual_summary_px(hand: dict[str, Any]) -> dict[str, float | None]:
+    residual = hand.get("projection_residual_to_measurement_px")
+    if not isinstance(residual, dict):
+        return {"median": None, "p95": None}
+    return {
+        "median": as_float(residual.get("median")),
+        "p95": as_float(residual.get("p95")),
+    }
+
+
+def measurements_from_hawor(annotation_paths: tuple[Path, ...]) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(annotation_paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        source_rows = 0
+        source_frames: list[int] = []
+        for frame in payload.get("frames", []):
+            idx = int(frame["frame_idx"])
+            frame_rows: list[dict[str, Any]] = []
+            for hand_i, hand in enumerate(frame.get("hands") or []):
+                if not isinstance(hand, dict) or hand.get("backend") != "HaWoR":
+                    continue
+                residual = residual_summary_px(hand)
+                bbox = compact_bbox(hand.get("bbox_xyxy"))
+                measurement_available = bool(hand.get("measurement_available", False))
+                row = {
+                    "measurement_id": f"hawor:{source_i}:{idx}:{hand_i}",
+                    "frame_idx": idx,
+                    "entity_type": "hand",
+                    "entity_id": f"hand:{hand.get('side', 'unknown')}",
+                    "measurement_type": "mano_temporal_motion_prior",
+                    "source_model": "HaWoR",
+                    "coordinate_frame": hand.get("world_coordinate_status")
+                    or "hawor_camera_local_existing_camera_pose_bridge",
+                    "confidence": as_float(hand.get("detector_score")) if measurement_available else None,
+                    "bbox_xyxy": bbox,
+                    "bbox_area_px2": bbox_area(bbox),
+                    "has_joints2d": hand.get("joints2d") is not None,
+                    "has_joints3d_camera": hand.get("joints3d_source_camera_m") is not None
+                    or hand.get("joints3d_camera") is not None,
+                    "has_vertices_camera": hand.get("vertices_source_camera_m") is not None
+                    or hand.get("vertices_camera") is not None,
+                    "has_mano_params": hand.get("mano_params") is not None,
+                    "measurement_available": measurement_available,
+                    "filter_status": hand.get("filter_status"),
+                    "projection_residual_px_median": residual["median"],
+                    "projection_residual_px_p95": residual["p95"],
+                    "mano_vertex_count": hand.get("mano_vertex_count"),
+                    "source_annotation": str(path),
+                    "failure_reason": None if measurement_available else "hawor_geometry_without_2d_observation_support",
+                }
+                measurements.append(row)
+                frame_rows.append(row)
+                source_rows += 1
+            if frame_rows:
+                by_frame.setdefault(idx, []).extend(frame_rows)
+                source_frames.append(idx)
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "measurement_count": source_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+            }
+        )
+    return measurements, by_frame, sources
+
+
+def measurements_from_object_mesh_qc(qc_path: Path, frames: dict[int, dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
     qc = load_json(qc_path)
-    annotations = load_json(annotations_path)
-    ann_by_frame = {int(frame["frame_idx"]): frame for frame in annotations.get("frames", [])}
     measurements: list[dict[str, Any]] = []
     by_frame: dict[int, list[dict[str, Any]]] = {}
     rows = list(qc.get("rows") or []) + list(qc.get("prediction_rows") or [])
@@ -162,7 +235,7 @@ def measurements_from_object_mesh_qc(qc_path: Path, annotations_path: Path) -> t
         if not isinstance(row, dict):
             continue
         idx = int(row["frame_idx"])
-        ann_obj = ann_by_frame.get(idx, {}).get("object", {})
+        ann_obj = frames.get(idx, {}).get("object", {})
         object_status = ann_obj.get("status")
         state = row.get("delivered_state") or ann_obj.get("mesh_state")
         if object_status == "outside_semantic_interval":
@@ -194,8 +267,7 @@ def measurements_from_object_mesh_qc(qc_path: Path, annotations_path: Path) -> t
     return measurements, by_frame
 
 
-def frame_state(annotations_path: Path) -> dict[int, dict[str, Any]]:
-    payload = load_json(annotations_path)
+def frame_state(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {int(frame["frame_idx"]): frame for frame in payload.get("frames", [])}
 
 
@@ -231,6 +303,7 @@ def anchor_qc(
     spec: CaseSpec,
     frames: dict[int, dict[str, Any]],
     wilor_by_frame: dict[int, list[dict[str, Any]]],
+    hawor_by_frame: dict[int, list[dict[str, Any]]],
     v16_hand_by_frame: dict[int, list[dict[str, Any]]],
     object_by_frame: dict[int, list[dict[str, Any]]],
     roster: list[dict[str, Any]],
@@ -243,6 +316,7 @@ def anchor_qc(
             continue
         v16_hands = v16_hand_by_frame.get(idx, [])
         wilor_hands = wilor_by_frame.get(idx, [])
+        hawor_hands = hawor_by_frame.get(idx, [])
         object_measurements = object_by_frame.get(idx, [])
         expected_visible = spec.expected_visible_hands.get(idx)
         obj = frame.get("object", {})
@@ -254,6 +328,10 @@ def anchor_qc(
             failures.append("v16_hand_state_lacks_source_confidence")
         if expected_visible is not None and len(wilor_hands) < expected_visible:
             failures.append("wilor_measurements_missing_for_visible_hands")
+        if expected_visible is not None and hawor_hands and len(hawor_hands) < expected_visible:
+            failures.append("hawor_measurements_incomplete_for_visible_hands")
+        if hawor_hands and any(row.get("failure_reason") for row in hawor_hands):
+            failures.append("hawor_geometry_without_2d_observation_support")
         if object_status == "outside_semantic_interval" and spec.expected_contact.get(idx):
             failures.append("object_inactive_despite_expected_interaction_context")
         if spec.expected_contact.get(idx) == "contact" and not object_measurements:
@@ -270,6 +348,8 @@ def anchor_qc(
                 "expected_contact": spec.expected_contact.get(idx),
                 "v16_hand_count": len(v16_hands),
                 "wilor_raw_hand_count": len(wilor_hands),
+                "hawor_hand_count": len(hawor_hands),
+                "hawor_observed_hand_count": sum(1 for row in hawor_hands if row.get("measurement_available")),
                 "object_status": object_status,
                 "object_label": obj.get("label"),
                 "object_mesh_measurement_count": len(object_measurements),
@@ -293,19 +373,22 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     object_qc_path = source_path_from_manifest(manifest, "object_mesh_qc")
     raw_wilor_path = wilor_raw_path(manifest)
 
-    frames = frame_state(annotations_path)
+    annotations = load_json(annotations_path)
+    frames = frame_state(annotations)
     wilor_measurements, wilor_by_frame = measurements_from_wilor(raw_wilor_path)
-    v16_hand_measurements, v16_hand_by_frame = measurements_from_v16_hands(annotations_path)
-    object_measurements, object_by_frame = measurements_from_object_mesh_qc(object_qc_path, annotations_path)
+    hawor_measurements, hawor_by_frame, hawor_sources = measurements_from_hawor(spec.hawor_annotation_paths)
+    v16_hand_measurements, v16_hand_by_frame = measurements_from_v16_hands(frames)
+    object_measurements, object_by_frame = measurements_from_object_mesh_qc(object_qc_path, frames)
     roster = object_roster_from_v16(frames, spec.expected_objects)
 
     case_dir = output_root / spec.name
     measurements_dir = case_dir / "measurements_v17"
     write_json(measurements_dir / "wilor_measurements.json", wilor_measurements)
+    write_json(measurements_dir / "hawor_measurements.json", hawor_measurements)
     write_json(measurements_dir / "v16_hand_state_measurements.json", v16_hand_measurements)
     write_json(measurements_dir / "object_mesh_measurements.json", object_measurements)
     write_json(case_dir / "object_roster_v17.json", roster)
-    anchor = anchor_qc(spec, frames, wilor_by_frame, v16_hand_by_frame, object_by_frame, roster)
+    anchor = anchor_qc(spec, frames, wilor_by_frame, hawor_by_frame, v16_hand_by_frame, object_by_frame, roster)
     write_json(case_dir / "v17_anchor_qc.json", anchor)
 
     report = {
@@ -315,9 +398,11 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "manifest": str(manifest_path),
         "annotations": str(annotations_path),
         "wilor_raw": str(raw_wilor_path),
+        "hawor_sources": hawor_sources,
         "object_mesh_qc": str(object_qc_path),
         "measurement_counts": {
             "wilor": len(wilor_measurements),
+            "hawor": len(hawor_measurements),
             "v16_hand_state": len(v16_hand_measurements),
             "object_mesh": len(object_measurements),
         },
@@ -337,6 +422,12 @@ def default_cases() -> list[CaseSpec]:
             expected_visible_hands={182: 2, 260: 2, 764: 2, 856: 2, 949: 2, 970: 2},
             expected_contact={764: "contact", 856: "contact_or_near_contact"},
             expected_objects=("trash_bag", "trash_can", "trash_can_lid"),
+            hawor_annotation_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/representative_trash/"
+                    "v3_hawor_camera_local_840_930/annotations_hawor_camera_local.json"
+                ),
+            ),
         ),
         CaseSpec(
             name="task5_tomato_960",

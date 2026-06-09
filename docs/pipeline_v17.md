@@ -2,9 +2,11 @@
 
 ## Status
 
-V16 is closed only as the first full raw-video delivery. It produced full-length videos for two raw clips, but the annotations do not meet the quality requirement. V17 must not reuse V16's implicit assumption that a per-frame detector output is already an annotation.
+V16 is closed only as the first full raw-video delivery. It produced full-length videos for two raw clips, but the annotations do not meet the quality requirement. V17 treats every detector output as a measurement with residuals, confidence, and source evidence before the solver can accept an annotation state.
 
-V17 implementation has not started. This document defines the pipeline first.
+V17 implementation has started with the measurement store. The first implementation slice reads V16 full-video outputs and prior HaWoR/WiLoR artifacts as measurements, then emits anchor QC that exposes the known V16 failure frames before any graph solver can accept or repair them.
+
+The current measurement-store implementation is the evidence layer for the full V17 solver. Model outputs remain traceable measurements with confidence, residual, source, and failure fields; missing hands, missing objects, missing contact states, and incomplete HaWoR/WiLoR coverage become explicit QC failures.
 
 ## V16 Failure Analysis
 
@@ -44,7 +46,7 @@ Tomato frames around 0480 to 0760:
 World reconstruction:
 - Skeleton-only hands do not visually read as hands.
 - The camera frustum and trajectory do not explain the camera-hand-object relation.
-- The 3D panel looks like a diagnostic plot rather than a reconstruction. V17 must render shaded MANO surfaces, shaded object meshes, the current camera image plane/frustum, a local manipulation close-up, and a stable world/camera relationship.
+- The 3D panel looks like a diagnostic plot. V17 must render shaded MANO surfaces, shaded object meshes, the current camera image plane/frustum, a local manipulation close-up, and a stable world/camera relationship so the view reads as a reconstruction.
 
 ## Root Causes
 
@@ -74,13 +76,13 @@ The 3D panel must show what the annotation means. A line plot with labels cannot
 
 ## Research Conclusions
 
-The current literature supports a measurement-and-state design rather than a single replacement model.
+The current literature supports a measurement-and-state design over a single replacement model.
 
 HaWoR is directly relevant because it targets egocentric world-space hand motion, combines camera trajectory estimation with hand reconstruction, and includes a motion infiller for missing frames. Its official repository also depends on masked DROID-SLAM and Metric3D, which matches the failure mode of moving egocentric cameras and missing hands. Source: https://github.com/ThunderVVV/HaWoR and https://arxiv.org/abs/2501.02973.
 
 The previous HaWoR branch did not prove HaWoR wrong. It proved the integration was incomplete: the raw camera-local HaWoR hands were partly plausible, while the tested bridge into the existing DROID/object world used a global Sim(3) alignment that produced severe reprojection and hand-scale errors. V17 therefore treats HaWoR as a primary measurement source for world-space hand motion and missing-frame infilling, while making the coordinate bridge itself a residual-checked graph variable.
 
-SAM 2 supports promptable video segmentation and mask propagation, including multi-object video tracking support in the official repository. V17 uses it as one segmentation measurement source, rather than the final object state. Source: https://github.com/facebookresearch/sam2 and https://arxiv.org/abs/2408.00714.
+SAM 2 supports promptable video segmentation and mask propagation, including multi-object video tracking support in the official repository. V17 uses it as one segmentation measurement source; the graph estimates the final object state from masks, depth, tracks, geometry, and contact evidence. Source: https://github.com/facebookresearch/sam2 and https://arxiv.org/abs/2408.00714.
 
 VGGT predicts camera parameters, depth maps, point maps, and 3D point tracks from multiple views. V17 uses it as a geometry and track source for camera/object consistency checks, especially when DROID or monocular depth is unstable. Source: https://github.com/facebookresearch/vggt and https://arxiv.org/abs/2503.11651.
 
@@ -88,7 +90,7 @@ FoundationPose and BundleSDF are relevant for rigid or near-rigid object pose an
 
 TRELLIS, Hunyuan3D, and PartCrafter can propose complete meshes or structured object priors from images. V17 may use them as prior proposal sources, but any generated mesh must pass visible replay, temporal track support, and physical consistency before entering the delivered annotation. Sources: https://github.com/microsoft/TRELLIS, https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1, and https://github.com/wgsxm/PartCrafter.
 
-WHOLE and EgoGrasp point toward the correct formulation: world-space hand-object interaction reconstruction must model hands and objects jointly over time, especially under occlusion and object entries/exits. V17 implements this principle with available components and explicit residuals rather than relying on independent hand and object post-processing. Sources: https://arxiv.org/abs/2602.22209 and https://arxiv.org/abs/2601.01050.
+WHOLE and EgoGrasp point toward the correct formulation: world-space hand-object interaction reconstruction must model hands and objects jointly over time, especially under occlusion and object entries/exits. V17 implements this principle with available components, explicit residuals, and a joint hand-object graph. Sources: https://arxiv.org/abs/2602.22209 and https://arxiv.org/abs/2601.01050.
 
 ## V17 Pipeline Definition
 
@@ -103,7 +105,7 @@ The named failure frames become required QC anchors for trash: 0182, 0260, 0764,
 
 ### Stage 1: Measurement Store
 
-Every model output becomes a measurement record, not an annotation state.
+Every model output enters as a measurement record. The graph solver creates annotation states from residual-checked measurements.
 
 Each measurement stores:
 
@@ -312,7 +314,7 @@ The V17 world view must be rebuilt.
 
 The 3D panel must show:
 
-- shaded MANO hand meshes, not only skeletons;
+- shaded MANO hand meshes with skeleton overlays as secondary cues;
 - shaded object meshes with separate colors per object;
 - current camera frustum with textured image plane or raw-frame thumbnail plane;
 - a line of sight from camera to hand-object region;
