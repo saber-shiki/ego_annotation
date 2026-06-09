@@ -21,6 +21,7 @@ class CaseSpec:
     object_plan_paths: tuple[Path, ...] = ()
     expected_object_coverage_paths: tuple[Path, ...] = ()
     sam2_multiobject_roots: tuple[Path, ...] = ()
+    contact_measurement_paths: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -472,6 +473,35 @@ def measurements_from_expected_object_coverage(coverage_paths: tuple[Path, ...])
     return measurements, by_expected, sources
 
 
+def measurements_from_contact_measurements(paths: tuple[Path, ...]) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for path in paths:
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        if not isinstance(payload, list):
+            sources.append({"path": str(path), "status": "invalid_payload"})
+            continue
+        state_counts: dict[str, int] = {}
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            entry = dict(row)
+            idx = int(entry["frame_idx"])
+            entry["entity_type"] = "contact"
+            entry["measurement_type"] = entry.get("measurement_type") or "hand_object_contact_evidence"
+            entry["source_file"] = str(path)
+            measurements.append(entry)
+            by_frame.setdefault(idx, []).append(entry)
+            state = str(entry.get("contact_state_measurement"))
+            state_counts[state] = state_counts.get(state, 0) + 1
+        sources.append({"path": str(path), "status": "loaded", "measurement_count": len(payload), "contact_state_counts": state_counts})
+    return measurements, by_frame, sources
+
+
 def frame_state(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {int(frame["frame_idx"]): frame for frame in payload.get("frames", [])}
 
@@ -560,6 +590,7 @@ def anchor_qc(
     hawor_by_frame: dict[int, list[dict[str, Any]]],
     v16_hand_by_frame: dict[int, list[dict[str, Any]]],
     object_by_frame: dict[int, list[dict[str, Any]]],
+    contact_by_frame: dict[int, list[dict[str, Any]]],
     roster: list[dict[str, Any]],
 ) -> dict[str, Any]:
     anchors = []
@@ -572,6 +603,8 @@ def anchor_qc(
         wilor_hands = wilor_by_frame.get(idx, [])
         hawor_hands = hawor_by_frame.get(idx, [])
         object_measurements = object_by_frame.get(idx, [])
+        contact_measurements = contact_by_frame.get(idx, [])
+        contact_states = sorted({str(row.get("contact_state_measurement")) for row in contact_measurements})
         expected_visible = spec.expected_visible_hands.get(idx)
         obj = frame.get("object", {})
         object_status = obj.get("status")
@@ -590,8 +623,16 @@ def anchor_qc(
             failures.append("object_inactive_despite_expected_interaction_context")
         if spec.expected_contact.get(idx) == "contact" and not object_measurements:
             failures.append("contact_anchor_without_object_mesh_measurement")
-        if spec.expected_contact.get(idx):
+        if spec.expected_contact.get(idx) and not contact_measurements:
             failures.append("missing_contact_state_measurement")
+        if (
+            spec.expected_contact.get(idx) == "contact"
+            and contact_measurements
+            and "candidate_contact_image_and_metric" not in contact_states
+        ):
+            failures.append("contact_anchor_lacks_joint_image_metric_support")
+        if "contact_evidence_requires_hand_repair" in contact_states:
+            failures.append("contact_evidence_requires_hand_repair")
         if idx == 856 and object_measurements:
             failures.append("known_bad_state_can_still_emit_small_distance_contact_label")
         anchors.append(
@@ -607,6 +648,8 @@ def anchor_qc(
                 "object_status": object_status,
                 "object_label": obj.get("label"),
                 "object_mesh_measurement_count": len(object_measurements),
+                "contact_measurement_count": len(contact_measurements),
+                "contact_state_measurements": contact_states,
                 "failures": failures,
                 "status": "pass" if not failures else "fail",
             }
@@ -638,6 +681,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     expected_coverage_measurements, expected_coverage, expected_coverage_sources = measurements_from_expected_object_coverage(
         spec.expected_object_coverage_paths
     )
+    contact_measurements, contact_by_frame, contact_sources = measurements_from_contact_measurements(spec.contact_measurement_paths)
     object_by_frame_combined = {idx: list(rows) for idx, rows in object_by_frame.items()}
     for idx, rows in sam2_by_frame.items():
         object_by_frame_combined.setdefault(idx, []).extend(rows)
@@ -655,8 +699,18 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "object_plan_measurements.json", object_plan_measurements)
     write_json(measurements_dir / "expected_object_coverage_measurements.json", expected_coverage_measurements)
     write_json(measurements_dir / "sam2_object_mask_measurements.json", sam2_measurements)
+    write_json(measurements_dir / "contact_measurements.json", contact_measurements)
     write_json(case_dir / "object_roster_v17.json", roster)
-    anchor = anchor_qc(spec, frames, wilor_by_frame, hawor_by_frame, v16_hand_by_frame, object_by_frame_combined, roster)
+    anchor = anchor_qc(
+        spec,
+        frames,
+        wilor_by_frame,
+        hawor_by_frame,
+        v16_hand_by_frame,
+        object_by_frame_combined,
+        contact_by_frame,
+        roster,
+    )
     write_json(case_dir / "v17_anchor_qc.json", anchor)
 
     report = {
@@ -670,6 +724,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "object_plan_sources": object_plan_sources,
         "expected_object_coverage_sources": expected_coverage_sources,
         "sam2_multiobject_sources": sam2_sources,
+        "contact_measurement_sources": contact_sources,
         "object_mesh_qc": str(object_qc_path),
         "measurement_counts": {
             "wilor": len(wilor_measurements),
@@ -679,6 +734,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
             "object_plan": len(object_plan_measurements),
             "expected_object_coverage": len(expected_coverage_measurements),
             "sam2_object_mask": len(sam2_measurements),
+            "contact": len(contact_measurements),
         },
         "object_roster": str(case_dir / "object_roster_v17.json"),
         "anchor_qc": str(case_dir / "v17_anchor_qc.json"),
@@ -710,6 +766,10 @@ def default_cases() -> list[CaseSpec]:
             ),
             sam2_multiobject_roots=(
                 Path("/data2/ego_annotation_outputs/representative_trash/v3_contact_surface_sam2_multi_840_930"),
+                Path("/data2/ego_annotation_outputs/v17_object_plan/trash_1050/sam2_multiobject_full"),
+            ),
+            contact_measurement_paths=(
+                Path("/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/contact_measurements_anchor.json"),
             ),
         ),
         CaseSpec(
@@ -727,6 +787,9 @@ def default_cases() -> list[CaseSpec]:
             ),
             sam2_multiobject_roots=(
                 Path("/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/sam2_multiobject_interval"),
+            ),
+            contact_measurement_paths=(
+                Path("/data2/ego_annotation_outputs/v17_contact_measurements/task5_tomato_960/contact_measurements_anchor.json"),
             ),
         ),
     ]
