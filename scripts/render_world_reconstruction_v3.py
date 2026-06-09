@@ -125,7 +125,10 @@ def load_dynamics_rows(path: Path | None) -> tuple[dict[int, dict], dict]:
     if gaps.shape != object_points.shape or len(observations) != len(object_points):
         raise RuntimeError(f"dynamics report observation/state count mismatch: {path}")
     edge_by_source = {int(row["source_frame"]): row for row in after.get("edge_rows", [])}
+    edge_by_target = {int(row["target_frame"]): row for row in after.get("edge_rows", [])}
     handoff_by_source = {int(row["source_frame"]): row for row in after.get("handoff_rows", [])}
+    switch_by_source = {int(row["source_frame"]): row for row in after.get("switch_rows", [])}
+    switch_surface_by_source = {int(row["source_frame"]): row for row in after.get("switch_surface_rows", [])}
     acc_by_center = {int(row["center_frame"]): row for row in after.get("acceleration_rows", [])}
     out = {}
     for i, obs in enumerate(observations):
@@ -137,7 +140,10 @@ def load_dynamics_rows(path: Path | None) -> tuple[dict[int, dict], dict]:
             "hand_contact_point_world_m": (object_points[i] + gaps[i]).astype(float).tolist(),
             "contact_gap_m": float(np.linalg.norm(gaps[i])),
             "edge": edge_by_source.get(frame),
+            "incoming_edge": edge_by_target.get(frame),
             "handoff": handoff_by_source.get(frame),
+            "switch": switch_by_source.get(frame),
+            "switch_surface": switch_surface_by_source.get(frame),
             "acceleration": acc_by_center.get(frame),
         }
     return out, data
@@ -469,24 +475,36 @@ def draw_dynamics_world(
     cv2.circle(image, end, 8, (200, 42, 166), -1, cv2.LINE_AA)
     cv2.arrowedLine(image, start, end, (78, 38, 174), 3, cv2.LINE_AA, tipLength=0.25)
     edge = row.get("edge") or {}
+    incoming_edge = row.get("incoming_edge") or {}
     handoff = row.get("handoff") or {}
+    switch = row.get("switch") or {}
+    switch_surface = row.get("switch_surface") or {}
     acc = row.get("acceleration") or {}
     report_regime = str(dynamics_summary.get("contact_motion_regime", "contact"))
-    regime = "handoff" if handoff else ("sliding" if edge else report_regime if row.get("acceleration") else "contact")
+    active_edge = edge or incoming_edge
+    regime = "switch" if switch else ("handoff" if handoff else ("sliding" if active_edge else report_regime if row.get("acceleration") else "contact"))
     gap_mm = 1000.0 * float(row.get("contact_gap_m", 0.0))
     motion_cm_s = 100.0 * float(
-        handoff.get("object_motion_speed_m_s", edge.get("slip_speed_m_s", 0.0))
+        handoff.get("object_motion_speed_m_s", active_edge.get("slip_speed_m_s", 0.0))
     )
-    motion_label = "handoff" if handoff else "slip"
+    motion_label = "switch" if switch else ("handoff" if handoff else "slip")
     handoff_gap_mm = 1000.0 * float(handoff.get("gap_delta_m", 0.0))
+    switch_gap_mm = 1000.0 * float(switch.get("gap_delta_m", 0.0))
+    switch_surface_mm = 1000.0 * float((switch_surface.get("source_neighborhood_to_target_surface_m") or {}).get("p95", 0.0))
     acc_res = float(acc.get("acceleration_consistency_residual_m_s2", 0.0))
     x0 = image.shape[1] - 316
     y0 = 46
     cv2.rectangle(image, (x0 - 12, y0 - 16), (image.shape[1] - 22, y0 + 86), (244, 246, 241), -1, cv2.LINE_AA)
     cv2.putText(image, f"contact: {regime}", (x0, y0 + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (25, 25, 25), 1, cv2.LINE_AA)
     cv2.putText(image, f"patch: {row.get('selected_patch_region')}", (x0, y0 + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
-    cv2.putText(image, f"gap {gap_mm:.2f} mm  {motion_label} {motion_cm_s:.1f} cm/s", (x0, y0 + 52), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
-    if handoff:
+    if switch:
+        metric = f"{motion_label} surf p95 {switch_surface_mm:.1f} mm"
+    else:
+        metric = f"{motion_label} {motion_cm_s:.1f} cm/s"
+    cv2.putText(image, f"gap {gap_mm:.2f} mm  {metric}", (x0, y0 + 52), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (25, 25, 25), 1, cv2.LINE_AA)
+    if switch:
+        line = f"switch gap delta {switch_gap_mm:.2f} mm"
+    elif handoff:
         line = f"handoff gap delta {handoff_gap_mm:.2f} mm"
     else:
         line = f"dyn residual {acc_res:.3f} m/s2"

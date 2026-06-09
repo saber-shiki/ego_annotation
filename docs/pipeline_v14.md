@@ -139,4 +139,4 @@ Evidence:
 - handoff object-motion residual: 92.7 mm;
 - handoff object-motion speed: 0.556 m/s, above the 0.45 m/s threshold.
 
-The rejection localizes the remaining box-books failure to object motion or object pose over the 614 to 615 handoff. Contact identity, surface gap, hand gap continuity, and the following 615 to 616 middle-contact edge pass their current tests. Relaxing the speed threshold would erase the causal evidence; the next real mechanism to inspect is the object motion factor and the object representation around the transfer surface.
+The rejection localizes the failure of the same-material-point handoff claim. Contact identity, surface gap, hand gap continuity, and the following 615 to 616 middle-contact edge pass their current tests. V15 tests the separate physical claim that the hand changed contact point on one coherently moving object surface.
