@@ -53,7 +53,7 @@ Object state `O_t` is mesh-backed. A centroid, primitive, bounding box, or 2D pa
 V16 uses model-produced perception outputs and routes them through one uniform reconstruction path:
 
 - head pose from DROID-SLAM, VGGT, or a fused pose track;
-- hand pose from WiLoR/HaMeR/HaWoR/HandDGP candidates, RTMLib 2D keypoints, hand masks, and MANO model fitting;
+- hand pose from WiLoR as the selected MANO backbone, with RTMLib 2D keypoints, hand masks, metric depth, and object-contact geometry as independent measurement sources;
 - object plan from VLM action/video review;
 - object detection and segmentation from open-vocabulary detector plus SAM/SAM2/SAMWISE/SAM3-family video segmentation when available;
 - metric depth from UniDepth, Depth Anything metric, VGGT, or another depth source with source labels;
@@ -61,6 +61,26 @@ V16 uses model-produced perception outputs and routes them through one uniform r
 - generated or completed object mesh priors from video-conditioned or multi-view 3D models only after replay acceptance.
 
 The geometry, filtering, contact reasoning, and rendering stages consume masks, tracks, depths, meshes, poses, confidences, and captions through a category-agnostic schema.
+
+## Hand Model Decision
+
+V16 uses WiLoR as the delivered MANO backbone. The v1-v15 evidence supports this choice:
+
+- WiLoR already produced the full-video MANO contract needed by v16: handedness, joints, vertices, pose/shape parameters, and projection provenance.
+- RTMLib, hand masks, metric depth, and object SDF residuals exposed WiLoR failures under occlusion and contact, so v16 can correct or reject WiLoR states while preserving one hand model contract.
+- HaWoR produced plausible camera-local hand scale in probes, but the tested world alignment created severe reprojection and scale failures. HaWoR remains a research comparison until its coordinate contract is solved.
+- HaMeR helped the selected-right noncontact mop check, but prior tests did not establish a stronger full-video MANO contract than WiLoR.
+- HandDGP produced useful diagnostic geometry, but it did not satisfy the MANO pose-parameter contract required for v16 deliverables.
+
+The current evidence selects WiLoR for V16. A later version can use an LLM/agent to choose among hand backbones at runtime when the version design defines:
+
+- the allowed hand-model contracts;
+- the evidence each model must emit on every source frame;
+- the residuals used for comparison against image, depth, mask, temporal, and object-contact evidence;
+- the optimization objective that decides whether to switch, refit, or reject;
+- the audit trace that records the agent's observation and decision.
+
+V16's runtime agent judges WiLoR state quality, refit actions, occlusion prediction, and failure escalation inside one MANO contract. Hand-backbone selection stays a research item until comparative full-video evidence exists.
 
 ## Pipeline Stages
 
@@ -90,13 +110,14 @@ Acceptance:
 
 ### Stage 2: Full-Timeline Hand Evidence
 
-Run hand detectors/reconstructors over every source frame. Fuse candidates through a full-timeline hand graph using:
+Run WiLoR over every source frame as the hand reconstructor. Fit and filter one full-timeline MANO stream using:
 
-- MANO pose and shape priors;
+- WiLoR MANO pose, shape, joints, vertices, handedness, and projection metadata;
 - RTMLib 2D keypoints;
 - hand masks;
 - metric depth;
 - temporal velocity and acceleration priors;
+- object SDF contact and nonpenetration residuals;
 - prediction/update smoothing for occlusion and lost frames.
 
 Outputs:
@@ -108,10 +129,12 @@ hand_qc.json
 
 Acceptance:
 
-- every source frame has measured or explicitly predicted hand state;
+- every source frame has a WiLoR-measured or explicitly predicted MANO hand state;
 - predicted states preserve uncertainty and reason codes;
+- RTMLib, mask, depth, temporal, and contact residuals are stored for every active hand state;
+- physically unsupported WiLoR states are corrected when the residual graph has enough evidence and rejected when it does not;
 - hand overlays remain visually coherent on full-video inspection samples;
-- no component may silently replace missing MANO with 2D-only hand annotation.
+- 2D keypoints and masks appear only as measurement evidence and QC signals, never as the delivered hand annotation.
 
 ### Stage 3: Full-Timeline Object Plan And Segmentation
 
