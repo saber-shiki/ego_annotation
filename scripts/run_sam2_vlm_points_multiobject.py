@@ -53,6 +53,7 @@ class Track:
     description: str
     prompt_path: Path
     prompts: dict[int, dict]
+    active_intervals: tuple[tuple[int, int], ...]
     payload: dict
 
 
@@ -96,6 +97,31 @@ def prompt_rows(payload: dict) -> dict[int, dict]:
     return {int(row["frame_idx"]): row for row in rows}
 
 
+def active_intervals(payload: dict) -> tuple[tuple[int, int], ...]:
+    intervals = []
+    object_plan = payload.get("object_plan_payload") or payload.get("object_plan_record") or payload.get("target_object_plan")
+    if not isinstance(object_plan, dict):
+        object_plan = {}
+    for row in object_plan.get("active_intervals") or []:
+        if not isinstance(row, dict):
+            continue
+        start = int(row["start_frame"])
+        end = int(row["end_frame"])
+        if end < start:
+            raise RuntimeError(f"invalid active interval for {payload.get('track_id')}: {row}")
+        intervals.append((start, end))
+    if intervals:
+        return tuple(intervals)
+    prompt_indices = sorted(int(row["frame_idx"]) for row in payload.get("point_prompts", []))
+    if not prompt_indices:
+        raise RuntimeError(f"track {payload.get('track_id')} has no prompt frames")
+    return ((prompt_indices[0], prompt_indices[-1]),)
+
+
+def track_active(track: Track, frame_idx: int) -> bool:
+    return any(start <= frame_idx <= end for start, end in track.active_intervals)
+
+
 def load_tracks(point_root: Path) -> list[Track]:
     files = sorted(point_root.glob("*/object_point_prompts_vlm.json"))
     if not files:
@@ -115,6 +141,7 @@ def load_tracks(point_root: Path) -> list[Track]:
                 description=str(payload["description"]),
                 prompt_path=path,
                 prompts=prompt_rows(payload),
+                active_intervals=active_intervals(payload),
                 payload=payload,
             )
         )
@@ -281,6 +308,9 @@ def write_track_results(
         results: dict[int, dict] = {}
         for frame in frames:
             source_idx = int(frame["frame_idx"])
+            if not track_active(track, source_idx):
+                results[source_idx] = {"visible": False, "area_px": 0.0, "failure_reason": "outside_vlm_active_interval"}
+                continue
             mask = propagated.get(source_idx, {}).get(track.obj_id)
             if mask is None or int(mask.sum()) == 0:
                 results[source_idx] = {"visible": False, "area_px": 0.0}
@@ -310,6 +340,7 @@ def write_track_results(
             "frame_start": int(args.frame_start),
             "frame_end": int(args.frame_end),
             "frames": len(frames),
+            "active_intervals": [[int(start), int(end)] for start, end in track.active_intervals],
             "prompt_frames": prompt_frames,
             "visible_frames": visible,
             "checkpoint": str(args.checkpoint),
@@ -419,7 +450,10 @@ def run(args: argparse.Namespace) -> dict:
         "clip": str(args.clip),
         "point_root": str(args.point_root),
         "output_root": str(args.output_root),
-        "track_ids": [track.track_id for track in tracks],
+                "track_ids": [track.track_id for track in tracks],
+        "active_intervals_by_track": {
+            track.track_id: [[int(start), int(end)] for start, end in track.active_intervals] for track in tracks
+        },
         "frame_start": int(args.frame_start),
         "frame_end": int(args.frame_end),
         "frames": len(frames),

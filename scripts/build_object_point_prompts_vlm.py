@@ -233,6 +233,7 @@ def run(args: argparse.Namespace) -> dict:
             "object_index": int(args.object_index),
             "track_id": object_plan["track_id"],
             "description": object_plan["description"],
+            "object_plan_record": object_plan,
             "prompt_image_width": int(args.image_width),
             "frames_prompted": len(all_prompts),
             "visible_frames": sum(1 for row in all_prompts if row["target_visible"]),
