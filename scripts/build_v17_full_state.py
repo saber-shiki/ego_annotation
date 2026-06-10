@@ -338,6 +338,7 @@ def annotate_v17_captions(frames: list[dict[str, Any]]) -> None:
 def merged_mesh_archive(
     base_archive: Path,
     output_archive: Path,
+    frame_count: int,
     persistent_meshes: dict[int, tuple[np.ndarray, np.ndarray]],
     local_patch_meshes: dict[int, tuple[np.ndarray, np.ndarray]],
 ) -> dict[str, Any]:
@@ -358,7 +359,11 @@ def merged_mesh_archive(
         "accuracy_target_met": False,
         "v3_solver_complete": False,
         **OBJECT_LIMIT_FLAGS,
+        "frame_count": int(frame_count),
         "mesh_frames": len(frames),
+        "missing_mesh_frame_count": int(frame_count - len(frames)),
+        "first_frame": int(frames[0]) if frames else None,
+        "last_frame": int(frames[-1]) if frames else None,
         "mesh_semantics": OBJECT_GEOMETRY_SEMANTICS,
         "persistent_replaced_frames": len(persistent_meshes),
         "local_patch_replaced_frames": len(local_patch_meshes),
@@ -435,7 +440,7 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
     write_json(annotations_out, payload)
 
     mesh_archive = case_dir / "object_meshes_v17_full.npz"
-    mesh_report = merged_mesh_archive(base_archive, mesh_archive, persistent_meshes, local_meshes)
+    mesh_report = merged_mesh_archive(base_archive, mesh_archive, int(manifest["raw_frame_count"]), persistent_meshes, local_meshes)
     report = {
         "case": name,
         "status": "evidence_qc_state_built",
