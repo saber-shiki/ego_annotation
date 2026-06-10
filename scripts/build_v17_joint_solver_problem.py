@@ -30,6 +30,7 @@ class CaseInputs:
     object_material_pose_candidate_summary: Path
     object_material_surface_replay_summary: Path
     multi_object_contact_evidence_summary: Path
+    pairwise_contact_state_report: Path
     contact_ownership_problem_report: Path
     geometry_source_audit_report: Path
     object_geometry_hypothesis_state_report: Path
@@ -113,6 +114,7 @@ def case_inputs(
     object_material_pose_candidate_root: Path,
     object_material_surface_replay_root: Path,
     multi_object_contact_evidence_root: Path,
+    pairwise_contact_state_root: Path,
     contact_ownership_problem_root: Path,
     geometry_source_audit_root: Path,
     object_geometry_hypothesis_state_root: Path,
@@ -168,6 +170,10 @@ def case_inputs(
         multi_object_contact_evidence_root / case / "v17_multi_object_contact_evidence_report.json",
         f"{case} multi-object contact evidence report",
     )
+    pairwise_contact_state_report = existing_path(
+        pairwise_contact_state_root / case / "v17_pairwise_contact_state.json",
+        f"{case} pairwise contact state report",
+    )
     contact_ownership_problem_report = existing_path(
         contact_ownership_problem_root / case / "v17_contact_ownership_problem.json",
         f"{case} contact-ownership problem report",
@@ -221,6 +227,7 @@ def case_inputs(
         object_material_pose_candidate_summary=object_material_pose_candidate_summary,
         object_material_surface_replay_summary=object_material_surface_replay_summary,
         multi_object_contact_evidence_summary=multi_object_contact_evidence_summary,
+        pairwise_contact_state_report=pairwise_contact_state_report,
         contact_ownership_problem_report=contact_ownership_problem_report,
         geometry_source_audit_report=geometry_source_audit_report,
         object_geometry_hypothesis_state_report=object_geometry_hypothesis_state_report,
@@ -637,6 +644,63 @@ def multi_object_contact_evidence_counts(report: dict[str, Any]) -> dict[str, An
     }
 
 
+def pairwise_contact_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "pairwise contact frame_count"),
+        "pairwise_contact_variable_count": require_int(
+            report.get("pairwise_contact_variable_count"),
+            "pairwise contact variable count",
+        ),
+        "measured_image_pair_rows": require_int(
+            report.get("measured_image_pair_rows"),
+            "pairwise contact measured image rows",
+        ),
+        "unobserved_image_pair_rows": require_int(
+            report.get("unobserved_image_pair_rows"),
+            "pairwise contact unobserved image rows",
+        ),
+        "image_overlap_candidate_rows": require_int(
+            report.get("image_overlap_candidate_rows"),
+            "pairwise contact image overlap rows",
+        ),
+        "pair_contact_image_candidate_rows": require_int(
+            report.get("pair_contact_image_candidate_rows"),
+            "pairwise contact image candidate rows",
+        ),
+        "contact_owner_image_supported_candidate_rows": require_int(
+            report.get("contact_owner_image_supported_candidate_rows"),
+            "pairwise contact owner image-supported rows",
+        ),
+        "owner_image_variables_with_single_supported_candidate": require_int(
+            report.get("owner_image_variables_with_single_supported_candidate"),
+            "pairwise contact owner image single-supported rows",
+        ),
+        "owner_image_variables_with_ambiguous_supported_candidates": require_int(
+            report.get("owner_image_variables_with_ambiguous_supported_candidates"),
+            "pairwise contact owner image ambiguous-supported rows",
+        ),
+        "physical_contact_factor_ready_rows": require_int(
+            report.get("physical_contact_factor_ready_rows"),
+            "pairwise contact physical factor-ready rows",
+        ),
+        "pair_contact_state_counts": require_dict(
+            report.get("pair_contact_state_counts"),
+            "pairwise contact state counts",
+        ),
+        "owner_image_state_counts": require_dict(
+            report.get("owner_image_state_counts"),
+            "pairwise owner image state counts",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def contact_ownership_problem_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -664,6 +728,18 @@ def contact_ownership_problem_counts(report: dict[str, Any]) -> dict[str, Any]:
         "contact_owner_variables_with_geometry_supported_candidate": require_int(
             report.get("contact_owner_variables_with_geometry_supported_candidate"),
             "contact ownership geometry-supported variables",
+        ),
+        "contact_owner_image_supported_candidate_rows": require_int(
+            report.get("contact_owner_image_supported_candidate_rows"),
+            "contact ownership image-supported candidate rows",
+        ),
+        "owner_image_variables_with_single_supported_candidate": require_int(
+            report.get("owner_image_variables_with_single_supported_candidate"),
+            "contact ownership single image-supported variables",
+        ),
+        "owner_image_variables_with_ambiguous_supported_candidates": require_int(
+            report.get("owner_image_variables_with_ambiguous_supported_candidates"),
+            "contact ownership ambiguous image-supported variables",
         ),
         "contact_owner_variables_without_supported_candidate": require_int(
             report.get("contact_owner_variables_without_supported_candidate"),
@@ -1033,6 +1109,10 @@ def object_geometry_factor_problem_counts(report: dict[str, Any]) -> dict[str, A
             report.get("contact_owner_geometrically_supported_candidate_rows"),
             "object-geometry factor contact_owner_geometrically_supported_candidate_rows",
         ),
+        "contact_owner_image_supported_candidate_rows": require_int(
+            report.get("contact_owner_image_supported_candidate_rows"),
+            "object-geometry factor contact_owner_image_supported_candidate_rows",
+        ),
         "contact_owner_factor_ready_rows": require_int(
             report.get("contact_owner_factor_ready_rows"),
             "object-geometry factor contact_owner_factor_ready_rows",
@@ -1284,6 +1364,7 @@ def required_variable_families(
     object_material_pose_candidate: dict[str, Any],
     object_material_surface_replay: dict[str, Any],
     multi_object_contact_evidence: dict[str, Any],
+    pairwise_contact_state: dict[str, Any],
     contact_ownership_problem: dict[str, Any],
     geometry_source_audit: dict[str, Any],
     object_geometry_hypothesis_state: dict[str, Any],
@@ -1656,6 +1737,24 @@ def required_variable_families(
                 "multi_object_contact_factor_ready_rows": multi_object_contact_evidence[
                     "contact_factor_ready_rows"
                 ],
+                "pairwise_contact_variable_count": pairwise_contact_state[
+                    "pairwise_contact_variable_count"
+                ],
+                "pairwise_measured_image_pair_rows": pairwise_contact_state[
+                    "measured_image_pair_rows"
+                ],
+                "pairwise_image_overlap_candidate_rows": pairwise_contact_state[
+                    "image_overlap_candidate_rows"
+                ],
+                "pair_contact_image_candidate_rows": pairwise_contact_state[
+                    "pair_contact_image_candidate_rows"
+                ],
+                "pairwise_physical_contact_factor_ready_rows": pairwise_contact_state[
+                    "physical_contact_factor_ready_rows"
+                ],
+                "pairwise_contact_state_counts": pairwise_contact_state[
+                    "pair_contact_state_counts"
+                ],
                 "contact_owner_variable_count": contact_ownership_problem[
                     "contact_owner_variable_count"
                 ],
@@ -1673,6 +1772,15 @@ def required_variable_families(
                 ],
                 "contact_owner_variables_with_geometry_supported_candidate": contact_ownership_problem[
                     "contact_owner_variables_with_geometry_supported_candidate"
+                ],
+                "contact_owner_image_supported_candidate_rows": contact_ownership_problem[
+                    "contact_owner_image_supported_candidate_rows"
+                ],
+                "owner_image_variables_with_single_supported_candidate": contact_ownership_problem[
+                    "owner_image_variables_with_single_supported_candidate"
+                ],
+                "owner_image_variables_with_ambiguous_supported_candidates": contact_ownership_problem[
+                    "owner_image_variables_with_ambiguous_supported_candidates"
                 ],
                 "contact_owner_variables_without_supported_candidate": contact_ownership_problem[
                     "contact_owner_variables_without_supported_candidate"
@@ -1741,10 +1849,12 @@ def required_variable_families(
             [
                 "contact modes are estimated before the sparse geometry graph and then fixed",
                 "the full hand-object table measures visible-surface distance but does not estimate contact modes",
+                "pairwise image contact variables do not yet share metric object geometry or depth",
                 "accepted local contact-patch states are not unified with multi-object visible surfaces",
                 "contact-mode ready rows have no same-frame multi-object visible-surface contact candidates",
                 "object-centric contact factor blocks have zero factor-ready rows against multi-object geometry",
                 "contact-owner variables are materialized but no owner factor is ready against object geometry",
+                "pairwise image evidence supports contact ownership candidates without making metric contact factors ready",
                 "most contact-mode ready rows have no selected measurement that names an object",
                 "accepted reconstruction meshes have no near-contact hand rows under the current depth state",
                 "legacy contact factors are not object-id-owned in accepted reconstruction windows",
@@ -1845,6 +1955,9 @@ def required_variable_families(
                 "contact_owner_variables_with_geometry_supported_candidate": contact_ownership_problem[
                     "contact_owner_variables_with_geometry_supported_candidate"
                 ],
+                "contact_owner_image_supported_candidate_rows": contact_ownership_problem[
+                    "contact_owner_image_supported_candidate_rows"
+                ],
                 "contact_owner_factor_ready_rows": contact_ownership_problem[
                     "contact_owner_factor_ready_rows"
                 ],
@@ -1896,6 +2009,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.multi_object_contact_evidence_summary),
         f"{inputs.case} multi-object contact evidence report",
     )
+    pairwise_contact_state_report = require_dict(
+        load_json(inputs.pairwise_contact_state_report),
+        f"{inputs.case} pairwise contact state report",
+    )
     contact_ownership_problem_report = require_dict(
         load_json(inputs.contact_ownership_problem_report),
         f"{inputs.case} contact-ownership problem report",
@@ -1940,6 +2057,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     object_material_pose_candidate = object_material_pose_candidate_counts(object_material_pose_candidate_summary)
     object_material_surface_replay = object_material_surface_replay_counts(object_material_surface_replay_summary)
     multi_object_contact_evidence = multi_object_contact_evidence_counts(multi_object_contact_evidence_summary)
+    pairwise_contact_state = pairwise_contact_state_counts(pairwise_contact_state_report)
     contact_ownership_problem = contact_ownership_problem_counts(contact_ownership_problem_report)
     geometry_source_audit = geometry_source_audit_counts(geometry_source_audit_report)
     object_geometry_hypothesis_state = object_geometry_hypothesis_state_counts(
@@ -1965,6 +2083,8 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and mesh metadata")
     if frame_count != require_int(multi_object_contact_evidence["frame_count"], f"{inputs.case} multi-object contact frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and multi-object contact evidence")
+    if frame_count != require_int(pairwise_contact_state["frame_count"], f"{inputs.case} pairwise contact frame_count"):
+        raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and pairwise contact state")
     if frame_count != require_int(contact_ownership_problem["frame_count"], f"{inputs.case} contact ownership frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and contact ownership problem")
     if frame_count != require_int(geometry_source_audit["frame_count"], f"{inputs.case} geometry-source audit frame_count"):
@@ -2101,6 +2221,16 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} object-geometry factor contact factor rows",
     ):
         raise RuntimeError(f"{inputs.case} multi-object contact factors disagree with object-geometry factor problem")
+    if require_int(pairwise_contact_state["pairwise_contact_variable_count"], f"{inputs.case} pairwise contact rows") != require_int(
+        multi_object_contact_evidence["hand_object_rows"],
+        f"{inputs.case} multi-object hand-object rows",
+    ):
+        raise RuntimeError(f"{inputs.case} pairwise contact rows disagree with multi-object hand-object rows")
+    if require_int(
+        pairwise_contact_state["physical_contact_factor_ready_rows"],
+        f"{inputs.case} pairwise physical factor rows",
+    ) != 0:
+        raise RuntimeError(f"{inputs.case} pairwise image-contact layer must not emit physical contact factors")
     if require_int(contact["contact_factor_ready_count"], f"{inputs.case} contact ready rows") != require_int(
         contact_ownership_problem["contact_owner_variable_count"],
         f"{inputs.case} contact ownership variable count",
@@ -2130,6 +2260,22 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} object-geometry contact owner factor ready rows",
     ):
         raise RuntimeError(f"{inputs.case} contact ownership factor-ready rows disagree with object-geometry factor problem")
+    if require_int(
+        contact_ownership_problem["contact_owner_image_supported_candidate_rows"],
+        f"{inputs.case} contact ownership image-supported rows",
+    ) != require_int(
+        object_geometry_factor_problem["contact_owner_image_supported_candidate_rows"],
+        f"{inputs.case} object-geometry contact owner image-supported rows",
+    ):
+        raise RuntimeError(f"{inputs.case} contact ownership image-supported rows disagree with object-geometry factor problem")
+    if require_int(
+        contact_ownership_problem["contact_owner_image_supported_candidate_rows"],
+        f"{inputs.case} contact ownership image-supported rows",
+    ) != require_int(
+        pairwise_contact_state["contact_owner_image_supported_candidate_rows"],
+        f"{inputs.case} pairwise image-supported rows",
+    ):
+        raise RuntimeError(f"{inputs.case} contact ownership image-supported rows disagree with pairwise contact state")
     if require_int(
         object_track_dataset["total_exported_frames"],
         f"{inputs.case} object-track dataset exported frames",
@@ -2372,6 +2518,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_material_pose_candidate,
         object_material_surface_replay,
         multi_object_contact_evidence,
+        pairwise_contact_state,
         contact_ownership_problem,
         geometry_source_audit,
         object_geometry_hypothesis_state,
@@ -2419,6 +2566,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "multi_object_contact_evidence_report": source_summary(
                 inputs.multi_object_contact_evidence_summary, multi_object_contact_evidence_summary
             ),
+            "pairwise_contact_state_report": source_summary(
+                inputs.pairwise_contact_state_report, pairwise_contact_state_report
+            ),
             "contact_ownership_problem_report": source_summary(
                 inputs.contact_ownership_problem_report, contact_ownership_problem_report
             ),
@@ -2455,6 +2605,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_material_pose_candidates": object_material_pose_candidate,
         "current_object_material_surface_replay": object_material_surface_replay,
         "current_multi_object_contact_evidence": multi_object_contact_evidence,
+        "current_pairwise_contact_state": pairwise_contact_state,
         "current_contact_ownership_problem": contact_ownership_problem,
         "current_geometry_source_audit": geometry_source_audit,
         "current_object_geometry_hypothesis_state": object_geometry_hypothesis_state,
@@ -2503,6 +2654,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_material_pose_candidate_root,
             args.object_material_surface_replay_root,
             args.multi_object_contact_evidence_root,
+            args.pairwise_contact_state_root,
             args.contact_ownership_problem_root,
             args.geometry_source_audit_root,
             args.object_geometry_hypothesis_state_root,
@@ -2535,6 +2687,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_material_pose_candidate_root": str(args.object_material_pose_candidate_root),
         "object_material_surface_replay_root": str(args.object_material_surface_replay_root),
         "multi_object_contact_evidence_root": str(args.multi_object_contact_evidence_root),
+        "pairwise_contact_state_root": str(args.pairwise_contact_state_root),
         "contact_ownership_problem_root": str(args.contact_ownership_problem_root),
         "geometry_source_audit_root": str(args.geometry_source_audit_root),
         "object_geometry_hypothesis_state_root": str(args.object_geometry_hypothesis_state_root),
@@ -2617,6 +2770,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "multi_object_contact_factor_ready_rows": case[
                     "current_multi_object_contact_evidence"
                 ]["contact_factor_ready_rows"],
+                "pairwise_contact_variable_count": case[
+                    "current_pairwise_contact_state"
+                ]["pairwise_contact_variable_count"],
+                "pairwise_measured_image_pair_rows": case[
+                    "current_pairwise_contact_state"
+                ]["measured_image_pair_rows"],
+                "pairwise_image_overlap_candidate_rows": case[
+                    "current_pairwise_contact_state"
+                ]["image_overlap_candidate_rows"],
+                "pair_contact_image_candidate_rows": case[
+                    "current_pairwise_contact_state"
+                ]["pair_contact_image_candidate_rows"],
+                "pairwise_physical_contact_factor_ready_rows": case[
+                    "current_pairwise_contact_state"
+                ]["physical_contact_factor_ready_rows"],
                 "contact_owner_variable_count": case[
                     "current_contact_ownership_problem"
                 ]["contact_owner_variable_count"],
@@ -2635,6 +2803,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "contact_owner_variables_with_geometry_supported_candidate": case[
                     "current_contact_ownership_problem"
                 ]["contact_owner_variables_with_geometry_supported_candidate"],
+                "contact_owner_image_supported_candidate_rows": case[
+                    "current_contact_ownership_problem"
+                ]["contact_owner_image_supported_candidate_rows"],
+                "owner_image_variables_with_single_supported_candidate": case[
+                    "current_contact_ownership_problem"
+                ]["owner_image_variables_with_single_supported_candidate"],
+                "owner_image_variables_with_ambiguous_supported_candidates": case[
+                    "current_contact_ownership_problem"
+                ]["owner_image_variables_with_ambiguous_supported_candidates"],
                 "contact_owner_variables_without_supported_candidate": case[
                     "current_contact_ownership_problem"
                 ]["contact_owner_variables_without_supported_candidate"],
@@ -2773,6 +2950,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "object_geometry_factor_contact_owner_candidate_rows": case[
                     "current_object_geometry_factor_problem"
                 ]["contact_owner_candidate_rows"],
+                "object_geometry_factor_contact_owner_image_supported_rows": case[
+                    "current_object_geometry_factor_problem"
+                ]["contact_owner_image_supported_candidate_rows"],
                 "object_geometry_factor_contact_owner_factor_ready_rows": case[
                     "current_object_geometry_factor_problem"
                 ]["contact_owner_factor_ready_rows"],
@@ -2803,6 +2983,26 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             ]
             for case in case_outputs
         ),
+        "pairwise_contact_variable_count": sum(
+            case["current_pairwise_contact_state"]["pairwise_contact_variable_count"]
+            for case in case_outputs
+        ),
+        "pairwise_measured_image_pair_rows": sum(
+            case["current_pairwise_contact_state"]["measured_image_pair_rows"]
+            for case in case_outputs
+        ),
+        "pairwise_image_overlap_candidate_rows": sum(
+            case["current_pairwise_contact_state"]["image_overlap_candidate_rows"]
+            for case in case_outputs
+        ),
+        "pair_contact_image_candidate_rows": sum(
+            case["current_pairwise_contact_state"]["pair_contact_image_candidate_rows"]
+            for case in case_outputs
+        ),
+        "pairwise_physical_contact_factor_ready_rows": sum(
+            case["current_pairwise_contact_state"]["physical_contact_factor_ready_rows"]
+            for case in case_outputs
+        ),
         "contact_owner_variable_count": sum(
             case["current_contact_ownership_problem"]["contact_owner_variable_count"]
             for case in case_outputs
@@ -2825,6 +3025,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "contact_owner_variables_with_geometry_supported_candidate": sum(
             case["current_contact_ownership_problem"]["contact_owner_variables_with_geometry_supported_candidate"]
+            for case in case_outputs
+        ),
+        "contact_owner_image_supported_candidate_rows": sum(
+            case["current_contact_ownership_problem"]["contact_owner_image_supported_candidate_rows"]
+            for case in case_outputs
+        ),
+        "owner_image_variables_with_single_supported_candidate": sum(
+            case["current_contact_ownership_problem"]["owner_image_variables_with_single_supported_candidate"]
+            for case in case_outputs
+        ),
+        "owner_image_variables_with_ambiguous_supported_candidates": sum(
+            case["current_contact_ownership_problem"]["owner_image_variables_with_ambiguous_supported_candidates"]
             for case in case_outputs
         ),
         "contact_owner_variables_without_supported_candidate": sum(
@@ -2980,6 +3192,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             case["current_object_geometry_factor_problem"]["contact_owner_candidate_rows"]
             for case in case_outputs
         ),
+        "object_geometry_factor_contact_owner_image_supported_rows": sum(
+            case["current_object_geometry_factor_problem"]["contact_owner_image_supported_candidate_rows"]
+            for case in case_outputs
+        ),
         "object_geometry_factor_contact_owner_factor_ready_rows": sum(
             case["current_object_geometry_factor_problem"]["contact_owner_factor_ready_rows"]
             for case in case_outputs
@@ -3052,6 +3268,11 @@ def parse_args() -> argparse.Namespace:
         "--multi-object-contact-evidence-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_multi_object_contact_evidence"),
+    )
+    parser.add_argument(
+        "--pairwise-contact-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_pairwise_contact_state"),
     )
     parser.add_argument(
         "--contact-ownership-problem-root",

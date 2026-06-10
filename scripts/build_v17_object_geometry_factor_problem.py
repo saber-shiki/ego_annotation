@@ -533,10 +533,15 @@ def contact_ownership_by_object(report: dict[str, Any]) -> dict[str, list[dict[s
                         candidate.get("owner_supported_by_current_evidence") is True
                     ),
                     "owner_geometrically_supported": bool(candidate.get("owner_geometrically_supported") is True),
+                    "owner_image_supported": bool(candidate.get("owner_image_supported") is True),
                     "contact_owner_factor_ready": bool(candidate.get("contact_owner_factor_ready") is True),
                     "multi_object_visible_surface": require_dict(
                         candidate.get("multi_object_visible_surface"),
                         "multi_object_visible_surface",
+                    ),
+                    "pairwise_image_contact": require_dict(
+                        candidate.get("pairwise_image_contact"),
+                        "pairwise_image_contact",
                     ),
                     "accepted_reconstruction_contact": require_dict(
                         candidate.get("accepted_reconstruction_contact"),
@@ -558,6 +563,7 @@ def contact_ownership_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "geometrically_supported_candidate_rows": sum(
             1 for row in rows if row.get("owner_geometrically_supported") is True
         ),
+        "image_supported_candidate_rows": sum(1 for row in rows if row.get("owner_image_supported") is True),
         "contact_owner_factor_ready_rows": sum(1 for row in rows if row.get("contact_owner_factor_ready") is True),
         "owner_variable_state_counts": dict(
             sorted(Counter(require_str(row.get("owner_variable_state"), "owner_variable_state") for row in rows).items())
@@ -1211,6 +1217,12 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             for block in row["factor_blocks"]
             if block.get("factor_block") == "object_contact_ownership"
         ),
+        "contact_owner_image_supported_candidate_rows": sum(
+            require_int(block.get("image_supported_candidate_rows"), "contact owner image-supported rows")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "object_contact_ownership"
+        ),
         "contact_owner_factor_ready_rows": sum(
             require_int(block.get("contact_owner_factor_ready_rows"), "contact owner factor-ready rows")
             for row in object_rows
@@ -1306,6 +1318,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "contact owner factor-ready rows",
     ):
         raise RuntimeError(f"{case} contact owner factor-ready rows disagree with contact-ownership report")
+    if summary_counts["contact_owner_image_supported_candidate_rows"] != require_int(
+        contact_ownership.get("contact_owner_image_supported_candidate_rows"),
+        "contact owner image-supported rows",
+    ):
+        raise RuntimeError(f"{case} contact owner image-supported rows disagree with contact-ownership report")
     if summary_counts["geometry_source_conflict_count"] != len(
         require_list(audit.get("local_patch_visible_surface_conflicts"), "local_patch_visible_surface_conflicts")
     ):
@@ -1549,6 +1566,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("contact_owner_geometrically_supported_candidate_rows"),
                     "contact_owner_geometrically_supported_candidate_rows",
                 ),
+                "contact_owner_image_supported_candidate_rows": require_int(
+                    report.get("contact_owner_image_supported_candidate_rows"),
+                    "contact_owner_image_supported_candidate_rows",
+                ),
                 "contact_owner_factor_ready_rows": require_int(
                     report.get("contact_owner_factor_ready_rows"),
                     "contact_owner_factor_ready_rows",
@@ -1750,6 +1771,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 report.get("contact_owner_geometrically_supported_candidate_rows"),
                 "contact owner geometrically supported rows",
             )
+            for report in reports
+        ),
+        "contact_owner_image_supported_candidate_rows": sum(
+            require_int(report.get("contact_owner_image_supported_candidate_rows"), "contact owner image-supported rows")
             for report in reports
         ),
         "contact_owner_factor_ready_rows": sum(

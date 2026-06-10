@@ -153,6 +153,10 @@ def load_case_inputs(case: str, args: argparse.Namespace) -> dict[str, Any]:
             args.multi_object_contact_evidence_root / case / "v17_multi_object_contact_evidence_report.json",
             f"{case} multi-object contact evidence report",
         ),
+        "pairwise_contact_state": existing_path(
+            args.pairwise_contact_state_root / case / "v17_pairwise_contact_state.json",
+            f"{case} pairwise contact state report",
+        ),
         "object_geometry_hypothesis_state": existing_path(
             args.object_geometry_hypothesis_state_root / case / "v17_object_geometry_hypothesis_state_report.json",
             f"{case} object-geometry hypothesis state",
@@ -237,6 +241,20 @@ def multi_contact_indexes(report: dict[str, Any]) -> tuple[dict[tuple[int, str],
     return by_frame_side, by_object_side
 
 
+def pairwise_contact_index(report: dict[str, Any]) -> dict[tuple[int, str, str], dict[str, Any]]:
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for i, raw in enumerate(require_list(report.get("rows"), "pairwise contact rows")):
+        row = require_dict(raw, f"pairwise contact rows[{i}]")
+        frame_idx = require_int(row.get("frame_idx"), f"pairwise contact rows[{i}].frame_idx")
+        object_id = require_str(row.get("object_id"), f"pairwise contact rows[{i}].object_id")
+        side = require_str(row.get("hand_side"), f"pairwise contact rows[{i}].hand_side")
+        key = (frame_idx, object_id, side)
+        if key in out:
+            raise RuntimeError(f"duplicate pairwise contact row: {key}")
+        out[key] = row
+    return out
+
+
 def object_state_index(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for i, raw in enumerate(require_list(report.get("objects"), "object hypothesis rows")):
@@ -315,6 +333,7 @@ def candidate_row(
     side: str,
     selected_measurement: dict[str, Any],
     multi_contact: dict[str, Any] | None,
+    pairwise_contact: dict[str, Any] | None,
     object_state: dict[str, Any] | None,
     depth_contact: dict[str, Any] | None,
     near_distance_m: float,
@@ -361,10 +380,12 @@ def candidate_row(
     owner_supported = bool(
         contact_factor_ready
         or visible_distance_candidate
+        or (pairwise_contact is not None and pairwise_contact.get("contact_owner_image_supported") is True)
         or selected_support
         or reconstructed_contact
     )
     owner_geometrically_supported = bool(contact_factor_ready or visible_distance_candidate or reconstructed_contact)
+    owner_image_supported = bool(pairwise_contact is not None and pairwise_contact.get("contact_owner_image_supported") is True)
     contact_compatible_geometry = bool(
         object_state is not None and object_state.get("can_own_contact_factors") is True
     )
@@ -373,6 +394,8 @@ def candidate_row(
         evidence_state = "geometry_supported_owner_candidate"
     elif selected_support:
         evidence_state = "selected_measurement_names_candidate_without_geometry_support"
+    elif owner_image_supported:
+        evidence_state = "image_supported_candidate_without_metric_geometry"
     elif multi_state == "unobserved":
         evidence_state = "unobserved_candidate"
     elif min_distance is not None and min_distance > near_distance_m:
@@ -399,6 +422,31 @@ def candidate_row(
             "reconstructed_mesh_contact_candidate": reconstructed_contact,
             "min_symmetric_distance_m": reconstructed_distance,
         },
+        "pairwise_image_contact": {
+            "available": pairwise_contact is not None,
+            "image_overlap_candidate": bool(
+                pairwise_contact is not None and pairwise_contact.get("image_overlap_candidate") is True
+            ),
+            "pair_contact_image_candidate": bool(
+                pairwise_contact is not None and pairwise_contact.get("pair_contact_image_candidate") is True
+            ),
+            "contact_owner_image_supported": owner_image_supported,
+            "physical_contact_factor_ready": bool(
+                pairwise_contact is not None and pairwise_contact.get("physical_contact_factor_ready") is True
+            ),
+            "pair_contact_state": pairwise_contact.get("pair_contact_state") if pairwise_contact else None,
+            "mask_distance_p05_px": (
+                optional_finite_number(
+                    require_dict(
+                        pairwise_contact.get("image_plane_hand_mask_evidence"),
+                        "pairwise image evidence",
+                    ).get("mask_distance_p05_px"),
+                    "pairwise mask_distance_p05_px",
+                )
+                if pairwise_contact
+                else None
+            ),
+        },
         "object_readiness_checks": {
             "hidden_topology_reconstructed": accepted_reconstruction_count > 0,
             "can_own_contact_factors": contact_compatible_geometry,
@@ -407,6 +455,7 @@ def candidate_row(
         },
         "owner_supported_by_current_evidence": owner_supported,
         "owner_geometrically_supported": owner_geometrically_supported,
+        "owner_image_supported": owner_image_supported,
         "owner_has_contact_compatible_geometry": contact_compatible_geometry,
         "owner_evidence_state": evidence_state,
         "contact_owner_factor_ready": False,
@@ -420,6 +469,7 @@ def owner_variable_row(
     *,
     timeline: dict[int, list[dict[str, Any]]],
     multi_by_object_side: dict[tuple[int, str, str], dict[str, Any]],
+    pairwise_by_object_side: dict[tuple[int, str, str], dict[str, Any]],
     measurements: dict[str, list[dict[str, Any]]],
     object_states: dict[str, dict[str, Any]],
     depth_contact: dict[tuple[int, str, str], dict[str, Any]],
@@ -439,6 +489,7 @@ def owner_variable_row(
             side=side,
             selected_measurement=selected,
             multi_contact=multi_by_object_side.get((frame_idx, require_str(obj.get("object_id"), "timeline object_id"), side)),
+            pairwise_contact=pairwise_by_object_side.get((frame_idx, require_str(obj.get("object_id"), "timeline object_id"), side)),
             object_state=object_states.get(require_str(obj.get("object_id"), "timeline object_id")),
             depth_contact=depth_contact.get((frame_idx, require_str(obj.get("object_id"), "timeline object_id"), side)),
             near_distance_m=near_distance_m,
@@ -474,7 +525,7 @@ def owner_variable_row(
     elif len(geometrically_supported) > 1:
         owner_state = "ambiguous_geometry_supported_candidates"
     elif len(supported) == 1:
-        owner_state = "single_non_geometric_selected_candidate"
+        owner_state = "single_non_geometric_supported_candidate"
     elif len(supported) > 1:
         owner_state = "ambiguous_non_geometric_supported_candidates"
     else:
@@ -511,6 +562,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
     measurements, measurement_file_counts = contact_measurement_index(paths["measurement_store_dir"])
     timeline, frame_count, object_frame_rows = timeline_by_frame(payloads["multi_object_timeline"])
     _, multi_by_object_side = multi_contact_indexes(payloads["multi_object_contact"])
+    pairwise_by_object_side = pairwise_contact_index(payloads["pairwise_contact_state"])
     object_states = object_state_index(payloads["object_geometry_hypothesis_state"])
     depth_by_object_side = depth_contact_index(payloads["depth_contact_consistency"])
     ready_rows = contact_ready_rows(payloads["contact_mode"])
@@ -523,6 +575,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
             row,
             timeline=timeline,
             multi_by_object_side=multi_by_object_side,
+            pairwise_by_object_side=pairwise_by_object_side,
             measurements=measurements,
             object_states=object_states,
             depth_contact=depth_by_object_side,
@@ -579,6 +632,18 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "contact_owner_variables_with_geometry_supported_candidate": len(geometry_supported_variables),
         "contact_owner_variables_without_supported_candidate": len(variables) - len(supported_variables),
         "contact_owner_factor_ready_rows": factor_ready_rows,
+        "contact_owner_image_supported_candidate_rows": require_int(
+            payloads["pairwise_contact_state"].get("contact_owner_image_supported_candidate_rows"),
+            "pairwise contact owner image-supported rows",
+        ),
+        "owner_image_variables_with_single_supported_candidate": require_int(
+            payloads["pairwise_contact_state"].get("owner_image_variables_with_single_supported_candidate"),
+            "pairwise owner image single-supported variables",
+        ),
+        "owner_image_variables_with_ambiguous_supported_candidates": require_int(
+            payloads["pairwise_contact_state"].get("owner_image_variables_with_ambiguous_supported_candidates"),
+            "pairwise owner image ambiguous-supported variables",
+        ),
         "multi_object_visible_surface_distance_m": summarize(candidate_distances),
         "owner_variable_state_counts": dict(sorted(state_counts.items())),
         "candidate_evidence_state_counts": dict(sorted(candidate_state_counts.items())),
@@ -590,6 +655,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "unary_evidence": [
                 "legacy contact-mode readiness over frame and hand side",
                 "selected contact measurement object label when it is an explicit multi-object id",
+                "pairwise image-plane hand/object mask support",
                 "multi-object visible-surface hand distance",
                 "accepted reconstruction hand distance for matching reconstructed object id",
             ],
@@ -651,6 +717,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "contact_owner_variables_without_supported_candidate"
                 ],
                 "contact_owner_factor_ready_rows": report["contact_owner_factor_ready_rows"],
+                "contact_owner_image_supported_candidate_rows": report[
+                    "contact_owner_image_supported_candidate_rows"
+                ],
+                "owner_image_variables_with_single_supported_candidate": report[
+                    "owner_image_variables_with_single_supported_candidate"
+                ],
+                "owner_image_variables_with_ambiguous_supported_candidates": report[
+                    "owner_image_variables_with_ambiguous_supported_candidates"
+                ],
                 "owner_variable_state_counts": report["owner_variable_state_counts"],
                 "candidate_evidence_state_counts": report["candidate_evidence_state_counts"],
                 "selected_measurement_candidate_state_counts": report[
@@ -678,6 +753,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             report["contact_owner_variables_without_supported_candidate"] for report in reports
         ),
         "contact_owner_factor_ready_rows": sum(report["contact_owner_factor_ready_rows"] for report in reports),
+        "contact_owner_image_supported_candidate_rows": sum(
+            report["contact_owner_image_supported_candidate_rows"] for report in reports
+        ),
+        "owner_image_variables_with_single_supported_candidate": sum(
+            report["owner_image_variables_with_single_supported_candidate"] for report in reports
+        ),
+        "owner_image_variables_with_ambiguous_supported_candidates": sum(
+            report["owner_image_variables_with_ambiguous_supported_candidates"] for report in reports
+        ),
         **FALSE_READY,
     }
     write_json(args.output_root / "v17_contact_ownership_problem_summary.json", payload)
@@ -705,6 +789,11 @@ def parse_args() -> argparse.Namespace:
         "--multi-object-contact-evidence-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_multi_object_contact_evidence"),
+    )
+    parser.add_argument(
+        "--pairwise-contact-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_pairwise_contact_state"),
     )
     parser.add_argument(
         "--object-geometry-hypothesis-state-root",
