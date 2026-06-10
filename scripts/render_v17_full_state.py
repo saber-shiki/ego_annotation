@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +65,56 @@ def run_command(argv: list[str], cwd: Path) -> None:
     subprocess.run(argv, cwd=str(cwd), check=True)
 
 
+QC_BANNER_LINES = (
+    "V17 QC ONLY: duration check, not visual-quality pass",
+    "annotation_ready=false | v3_solver_complete=false | single-object stream",
+)
+
+
+def draw_qc_banner(frame: np.ndarray) -> np.ndarray:
+    out = frame.copy()
+    h, w = out.shape[:2]
+    scale = max(0.55, min(1.0, w / 1600.0))
+    line_h = int(round(30 * scale))
+    banner_h = int(round(18 * scale + line_h * len(QC_BANNER_LINES)))
+    overlay = out.copy()
+    cv2.rectangle(overlay, (0, 0), (w, banner_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.68, out, 0.32, 0.0, out)
+    y = int(round(24 * scale))
+    for line in QC_BANNER_LINES:
+        cv2.putText(out, line, (18, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 5, cv2.LINE_AA)
+        cv2.putText(out, line, (18, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 2, cv2.LINE_AA)
+        y += line_h
+    return out
+
+
+def write_qc_video(src: Path, dst: Path) -> None:
+    cap = cv2.VideoCapture(str(src))
+    if not cap.isOpened():
+        raise RuntimeError(f"failed to open video {src}")
+    tmp = dst.with_name(f"{dst.stem}.tmp{dst.suffix}")
+    try:
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if fps <= 0 or width <= 0 or height <= 0:
+            raise RuntimeError(f"invalid video metadata for {src}")
+        writer = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+        if not writer.isOpened():
+            raise RuntimeError(f"failed to open video writer {tmp}")
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                writer.write(draw_qc_banner(frame))
+        finally:
+            writer.release()
+    finally:
+        cap.release()
+    tmp.replace(dst)
+
+
 def inspection_frames(state: dict[str, Any], raw: VideoInfo) -> list[int]:
     frames = {0, raw.frame_count // 4, raw.frame_count // 2, (3 * raw.frame_count) // 4, raw.frame_count - 1}
     solver_report = state.get("solver_report")
@@ -111,8 +160,28 @@ def visual_inspection_sheet(video: Path, output: Path, frames: list[int]) -> dic
             thumb_w = 960
             thumb_h = int(round(thumb_w * frame.shape[0] / frame.shape[1]))
             thumb = cv2.resize(frame, (thumb_w, thumb_h), interpolation=cv2.INTER_AREA)
-            cv2.putText(thumb, f"frame {frame_idx}", (18, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 5, cv2.LINE_AA)
-            cv2.putText(thumb, f"frame {frame_idx}", (18, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            thumb = draw_qc_banner(thumb)
+            frame_label_y = thumb.shape[0] - 18
+            cv2.putText(
+                thumb,
+                f"frame {frame_idx}",
+                (18, frame_label_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 0, 0),
+                5,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                thumb,
+                f"frame {frame_idx}",
+                (18, frame_label_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
             thumbs.append(thumb)
     finally:
         cap.release()
@@ -142,10 +211,11 @@ def existing_render_source(final_dir: Path, dst_name: str) -> Path | None:
         "qc_side_by_side_v17.mp4": "side_by_side_v17.mp4",
     }
     legacy_name = legacy_names.get(dst_name)
-    if legacy_name is None:
-        return None
-    legacy = final_dir / legacy_name
-    return legacy if legacy.exists() else None
+    if legacy_name is not None:
+        legacy = final_dir / legacy_name
+        if legacy.exists():
+            return legacy
+    return dst if dst.exists() else None
 
 
 def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path) -> dict[str, Any]:
@@ -191,8 +261,7 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         dst = final_dir / dst_name
         if not src.exists():
             raise RuntimeError(f"renderer did not produce {src}")
-        if src.resolve() != dst.resolve():
-            shutil.copy2(src, dst)
+        write_qc_video(src, dst)
         render_qc[key] = check_video(dst, raw)
     duration_render_qc_pass = all(row["frame_count_match"] for row in render_qc.values())
     solver_report_path = Path(state["solver_report"]) if isinstance(state.get("solver_report"), str) else None
@@ -209,6 +278,8 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         "artifact_kind": "duration_qc_render",
         "delivery_role": "qc_only_not_v17_closure",
         "render_qc_scope": "duration_only_not_visual_quality",
+        "visible_qc_banner": True,
+        "qc_banner_text": list(QC_BANNER_LINES),
         "method": args.method_name,
         "clip": str(clip),
         "annotations": state["annotations"],
@@ -246,6 +317,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "artifact_kind": "duration_qc_render_collection",
         "delivery_role": "qc_only_not_v17_closure",
         "render_qc_scope": "duration_only_not_visual_quality",
+        "visible_qc_banner": True,
+        "qc_banner_text": list(QC_BANNER_LINES),
         "duration_render_qc_status": "pass" if duration_render_qc_pass else "fail",
         "visual_quality_qc_pass": False,
         "stage9_visual_deliverable_ready": False,

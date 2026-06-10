@@ -265,6 +265,12 @@ def annotate_v17_captions(frames: list[dict[str, Any]]) -> None:
             else:
                 caption = "Full-video V17 evidence/QC state; annotation closure remains open."
         frame["caption"] = f"{'; '.join(labels)}: {caption}"
+        frame["objects_status"] = {
+            "status": "single_manipulated_object_qc",
+            "multi_object_timeline_ready": False,
+            "missing_multi_object_roster_required": True,
+            "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
+        }
 
 
 def merged_mesh_archive(
@@ -348,6 +354,9 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
         "annotation_ready": False,
         "deliverable_ready": False,
         "v3_solver_complete": False,
+        "multi_object_timeline_ready": False,
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": True,
     }
     write_json(annotations_out, payload)
 
@@ -363,6 +372,9 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
         "annotation_ready": False,
         "deliverable_ready": False,
         "v3_solver_complete": False,
+        "multi_object_timeline_ready": False,
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": True,
         "v16_manifest": str(spec["v16_manifest"]),
         "raw_frame_count": int(manifest["raw_frame_count"]),
         "annotations": str(annotations_out),
@@ -390,6 +402,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "annotation_ready": False,
         "deliverable_ready": False,
         "v3_solver_complete": False,
+        "multi_object_timeline_ready": False,
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": True,
         "method": "build_v17_full_state",
         "cases": reports,
     }

@@ -924,6 +924,15 @@ def qc_caption(caption: object) -> str:
     )
 
 
+def object_schema_status_payload() -> dict[str, Any]:
+    return {
+        "status": "single_manipulated_object_qc",
+        "multi_object_timeline_ready": False,
+        "missing_multi_object_roster_required": True,
+        "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
+    }
+
+
 def write_corrected_annotations(path: Path, source_annotations: Path, graph: GraphData, params: np.ndarray, report: dict[str, Any]) -> None:
     payload = load_json(source_annotations)
     frames = payload.get("frames") if isinstance(payload, dict) else None
@@ -940,6 +949,7 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         idx = copied.get("frame_idx")
         if isinstance(idx, int):
             copied["caption"] = qc_caption(copied.get("caption"))
+            copied["objects_status"] = object_schema_status_payload()
             shift = object_shift_by_frame.get(idx)
             if shift is not None:
                 graph_frame = frame_by_idx.get(idx)
@@ -987,6 +997,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "annotation_ready": False,
         "deliverable_ready": False,
         "v3_solver_complete": False,
+        "multi_object_timeline_ready": False,
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": True,
     }
     payload["v17_full_timeline_factor_graph"] = {
         "status": report["status"],
@@ -999,6 +1012,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "solver_completeness": report["solver_completeness"],
         "hand_state_status_semantics": "list_presence_diagnostic_not_hand_state_estimate",
         "v3_solver_complete": False,
+        "multi_object_timeline_ready": False,
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": True,
         "report": report["report_path"],
     }
     write_json(path, payload)
@@ -1149,6 +1165,9 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "deliverable_ready": False,
         "solver_completeness": SOLVER_COMPLETENESS,
         "v3_solver_complete": False,
+        "multi_object_timeline_ready": False,
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": True,
         "method": "solve_v17_full_timeline_factor_graph",
         "semantics": {
             "optimized_variables": [
@@ -1244,6 +1263,9 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             "accuracy_target_met": False,
             "solver_completeness": report["solver_completeness"],
             "v3_solver_complete": False,
+            "multi_object_timeline_ready": False,
+            "object_schema_status": "single_manipulated_object_qc",
+            "missing_multi_object_roster_required": True,
             "solver_report": str(report_path),
         },
     )
@@ -1261,8 +1283,15 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
         "structural_consistency_status": "pass" if all(case["structural_consistency_pass"] for case in cases) else "fail",
         "sparse_graph_evidence_consistency_status": "pass" if all(case.get("sparse_graph_evidence_consistency_target_met") for case in cases) else "fail",
         "accuracy_target_status": "fail",
+        "annotation_ready": False,
+        "accuracy_target_met": False,
         "deliverable_ready": False,
         "deliverable_blocker": "complete_v3_joint_camera_mano_object_depth_contact_solver_remains_open",
+        "solver_completeness": SOLVER_COMPLETENESS,
+        "v3_solver_complete": False,
+        "multi_object_timeline_ready": False,
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": True,
         "method": "solve_v17_full_timeline_factor_graph",
         "cases": cases,
     }
@@ -1274,8 +1303,14 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
                 "artifact_status": summary["artifact_status"],
                 "artifact_kind": summary["artifact_kind"],
                 "delivery_role": summary["delivery_role"],
+                "annotation_ready": summary["annotation_ready"],
+                "accuracy_target_met": summary["accuracy_target_met"],
                 "deliverable_ready": summary["deliverable_ready"],
                 "deliverable_blocker": summary["deliverable_blocker"],
+                "solver_completeness": summary["solver_completeness"],
+                "v3_solver_complete": summary["v3_solver_complete"],
+                "multi_object_timeline_ready": summary["multi_object_timeline_ready"],
+                "object_schema_status": summary["object_schema_status"],
                 "cases": [
                     {
                         "case": c["case"],
