@@ -18,12 +18,13 @@ from scipy.spatial import cKDTree  # type: ignore[reportAttributeAccessIssue]
 
 from run_v16_full_pipeline import load_mesh_archive, save_mesh_archive
 
-ACCEPTED_STATUS = "structural_sparse_graph_qc_pass"
+ACCEPTED_STATUS = "sparse_evidence_qc_structurally_consistent"
 PARTIAL_STATUS = "partial_sparse_full_timeline_evidence_graph"
 REJECTED_STATUS = "rejected_sparse_full_timeline_evidence_graph"
 SOLVER_COMPLETENESS = "sparse_evidence_consistency_only"
 ARTIFACT_KIND = "sparse_evidence_qc_graph"
 DELIVERY_ROLE = "qc_only_not_v17_closure"
+CONTACT_MODE_QC_STATUS = "contact_mode_qc_structurally_consistent"
 
 
 @dataclass(frozen=True)
@@ -225,8 +226,8 @@ def contact_mode_graph_sides(contact_mode_graph_root: Path, case: str) -> dict[i
     report = load_json(path)
     if not isinstance(report, dict):
         raise RuntimeError(f"{path} must contain a JSON object")
-    if report.get("status") != "accepted_v17_contact_mode_graph":
-        raise RuntimeError(f"{path} is not an accepted contact-mode graph report")
+    if report.get("status") != CONTACT_MODE_QC_STATUS:
+        raise RuntimeError(f"{path} is not a structurally consistent contact-mode QC graph report")
     if report.get("solver_completeness") != "contact_mode_latent_only":
         raise RuntimeError(f"{path} has unexpected solver_completeness {report.get('solver_completeness')!r}")
     rows = report.get("rows")
@@ -238,6 +239,9 @@ def contact_mode_graph_sides(contact_mode_graph_root: Path, case: str) -> dict[i
             raise RuntimeError(f"{path} row {row_i} is not a JSON object")
         if row.get("contact_factor_ready") is not True:
             continue
+        checks = row.get("contact_factor_readiness_checks")
+        if not isinstance(checks, dict) or not checks or not all(value is True for value in checks.values()):
+            raise RuntimeError(f"{path} row {row_i} is factor-ready without auditable true readiness checks")
         idx = row.get("frame_idx")
         if isinstance(idx, bool) or not isinstance(idx, int):
             raise RuntimeError(f"{path} row {row_i} has invalid frame_idx {idx!r}")
@@ -956,8 +960,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
                 {
                     "entity_id": f"hand:{side}",
                     "side": side,
-                    "status": "mano_pose_present" if side in present_sides else "mano_pose_missing_unresolved",
+                    "status": "mano_dict_present" if side in present_sides else "mano_dict_missing_unresolved",
                     "source": "v17_sparse_graph_corrected_annotation",
+                    "semantics": "list_presence_diagnostic_not_hand_state_estimate",
                 }
                 for side in ("left", "right")
             ]
@@ -972,6 +977,7 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "deliverable_ready": report["deliverable_ready"],
         "accuracy_target_met": report["accuracy_target_met"],
         "solver_completeness": report["solver_completeness"],
+        "hand_state_status_semantics": "list_presence_diagnostic_not_hand_state_estimate",
         "v3_solver_complete": False,
         "report": report["report_path"],
     }

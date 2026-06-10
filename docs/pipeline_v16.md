@@ -2,13 +2,13 @@
 
 ## Purpose
 
-V16 is the first complete pipeline version after the component exploration in v2 through v15. It consumes one original EgoScale raw video and produces full-length deliverables with no frame clipping:
+V16 is the first full-raw-video packaging version after the component exploration in v2 through v15. It consumes one original EgoScale raw video and produces full-length render artifacts with no frame clipping:
 
 - annotated video with MANO hand overlay and object mesh annotation;
 - 3D world animation with head camera, MANO hands, object mesh, object motion, and contact state;
 - side-by-side annotated video plus 3D reconstruction with semantic captions.
 
-The output videos must have the same source-frame count, duration, and timeline as the raw input video.
+The output videos must have the same source-frame count, duration, and timeline as the raw input video. This packaging rule did not satisfy the original V3 joint graph requirement: V16 did not jointly solve camera trajectory, MANO articulation, object geometry/topology, object pose, depth, contact labels, and physical contact consistency.
 
 ## Inputs
 
@@ -323,6 +323,6 @@ The orchestrator owns:
 
 ## Closure Rule
 
-V16 closes only when at least one original raw video has a complete full-length overlay video, full-length world reconstruction, full-length side-by-side render, full-timeline annotation JSON, and passing manifest frame-count checks.
+V16 closure meant full-duration packaging closure only. It required at least one original raw video to have a complete full-length overlay video, full-length world reconstruction, full-length side-by-side render, full-timeline annotation JSON, and passing manifest frame-count checks.
 
-All later versions inherit this rule. A later version number means a complete pipeline with complete full-video deliverables.
+All later versions inherit the full-duration packaging rule, but full-duration packaging is not sufficient for annotation closure. A later version must also satisfy its own scientific solver and quality predicates before it can count as a complete annotation pipeline.

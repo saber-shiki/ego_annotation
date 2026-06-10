@@ -2,11 +2,11 @@
 
 ## Status
 
-V16 is closed only as the first full raw-video delivery. It produced full-length videos for two raw clips, but the annotations do not meet the quality requirement. V17 treats every detector output as a measurement with residuals, confidence, and source evidence before the solver can accept an annotation state.
+V16 closed only as full-duration packaging. It produced full-length videos for two raw clips, but it did not satisfy the original V3 joint graph requirement and its annotations do not meet the quality requirement. V17 treats every detector output as a measurement with residuals, confidence, and source evidence before the solver can accept an annotation state.
 
 V17 implementation has produced the measurement store, full-state integration, a latent contact-mode graph, and sparse full-timeline evidence-consistency graphs. The measurement store reads V16 full-video outputs, prior HaWoR/WiLoR artifacts, HaMeR repairs, SAM2 object masks, contact-state rows, local deformable contact patches, and tomato persistent-shape state as measurements, then emits anchor QC before any graph solver can accept or repair them. The full-state integration writes full-length V17 annotation JSONs and renders. The contact-mode graph estimates per-frame per-hand contact/no-contact/unobserved modes from graph-corrected hand-object gaps, object-mask proximity, selected anchors, and temporal switch cost. The sparse geometry graph optimizes per-active-frame object translation corrections, per-active-frame small-angle object rotation corrections, and per-valid-hand camera-ray depth corrections against either selected anchor contacts or contact-mode factor-ready rows, object priors, pose smoothness, and hand-ray smoothness. Its contact equality terms use a local nearest MANO surface patch and report broader hand-object distances separately. It keeps camera trajectory, MANO articulation and shape, object mesh topology, and contact mode labels fixed, so it is an integrated consistency solver for the current V17 evidence layer. The complete nonlinear V3 joint solver remains open.
 
-The current generated graph annotations still carry one manipulated object stream per frame. The V17 multi-object roster and multi-object pose timeline remain an open requirement: object-plan and SAM2 evidence record additional objects, but the contact-mode-factor graph outputs do not yet emit simultaneous object states for bowls, plates, trays, lids, trash-can parts, and other contact-relevant objects.
+The current generated graph annotations still carry one manipulated object stream per frame. The V17 multi-object roster and multi-object pose timeline remain an open requirement: object-plan and SAM2 evidence record additional objects, but the contact-mode-factor graph outputs do not yet emit simultaneous object states for bowls, plates, trays, lids, trash-can parts, and other contact-relevant objects. Any artifact whose schema exposes only `object` rather than simultaneous `objects` is a single-manipulated-object QC artifact.
 
 V17 also corrects a version-accounting problem. V3 already identified the core requirement: solve or expose the metric contradiction between MANO hands and object geometry through a joint factor graph. Later versions implemented real component graphs, including object-pose, sparse object-track, and contact-dynamics graphs. Their scope stayed at selected windows or selected state variables. V16 then closed as a full-length delivery artifact with QC flags while the original joint graph requirement remained open. V17 therefore treats prior graph outputs as evidence modules and reports the current sparse full-timeline graph separately from the still-unimplemented complete nonlinear V3 solver.
 
@@ -26,7 +26,7 @@ The tomato measurement path now has a persistent visible-surface mesh state for 
 
 The current measurement store passes the named trash and tomato anchors. The evidence-layer full-state integration also renders full raw-video outputs for both representative clips: trash has 1,050 raw frames and 1,050 frames in overlay, world, and side-by-side renders; tomato has 960 raw frames and 960 frames in overlay, world, and side-by-side renders. The anchor-only sparse evidence-consistency graph accepts both clips under its limited variable set. Trash uses four selected contact factors at 0182, 0260, 0764, and 0856; after optimization its contact p95-of-p95 is 12.3 mm, max object translation correction is 9.7 mm, and max hand camera-ray correction is 3.8 mm. Tomato uses three selected contact factors at 0480, 0720, and 0760; after optimization its contact p95-of-p95 is 18.7 mm, max object translation correction is 15.1 mm, and max hand camera-ray correction is 7.5 mm. The graph uses full MANO surfaces for contact correspondence selection; a previous 160-point stochastic hand subsample made tomato frame 0480 fail at 36.1 mm, which exposed a sampling artifact in the sparse contact linearization.
 
-The contact-mode graph is implemented as a V17 contact-state layer, not as the full V3 solver. Its default manifests read the anchor-only sparse graph outputs, so it estimates contact modes from fixed graph-corrected geometry rather than solving hand geometry, object geometry, object pose, and contact labels together. It accepts both representative clips with zero anchor contradictions and explicit `v3_solver_complete=false` metadata. Trash has 1,908 hand-side rows, 1,625 active geometry observations, 281 unobserved rows, 172 contact-mode rows, and 81 contact-factor-ready rows after requiring positive contact evidence and sparse-graph hand residual compatibility. Tomato has 1,859 hand-side rows, 1,340 active observations, 519 unobserved rows, 527 contact-mode rows, and 381 contact-factor-ready rows. Visual review sheets sampled from the full graph-corrected side-by-side videos show that the long tomato left-hand interval from frame 0714 to 0939 is hand-held washing/rinsing behavior, while the trash contact bursts correspond to bag/trash-can manipulation. Rows without hand/object geometry are marked `unobserved` and cannot inherit temporal contact. Rows whose unary evidence opposes contact can remain temporally labeled as contact, but they cannot become geometry factors.
+The contact-mode graph is implemented as a V17 contact-state layer, not as the full V3 solver. Its default manifests read the anchor-only sparse graph outputs, so it estimates contact modes from fixed graph-corrected geometry rather than solving hand geometry, object geometry, object pose, and contact labels together. It accepts both representative clips with zero anchor contradictions and explicit `v3_solver_complete=false` metadata. Trash has 1,908 hand-side rows, 1,625 active geometry observations, 281 unobserved rows, 172 contact-mode rows, and 81 contact-factor-ready rows after requiring positive contact evidence and sparse-graph hand residual compatibility. Tomato has 1,859 hand-side rows, 1,340 active observations, 519 unobserved rows, 527 contact-mode rows, and 381 contact-factor-ready rows. Contact-mode reports now store row-level `contact_factor_readiness_checks`, including hand residual values and threshold predicates, so readiness can be audited from the JSON. Visual review sheets sampled from the full graph-corrected side-by-side videos show that the long tomato left-hand interval from frame 0714 to 0939 is hand-held washing/rinsing behavior, while the trash contact bursts correspond to bag/trash-can manipulation. Rows without hand/object geometry are marked `unobserved` and cannot inherit temporal contact. Rows whose unary evidence opposes contact can remain temporally labeled as contact, but they cannot become geometry factors.
 
 The contact-mode-factor sparse graph consumes only accepted contact-mode `contact_factor_ready` rows through an explicit `--contact-mode-graph-root` input. It structurally accepts both representative clips with converged local contact-patch correspondences. The modeled contact patch now uses 16 nearest MANO surface vertices. A support-size sweep showed why the broader metric cannot be the local contact predicate: trash/tomato p95-of-p95 stays below 5 mm through 18 nearest vertices, then rises to 12.84/13.22 mm at 80 vertices because non-contact hand surface is being included. The 80-nearest-point report remains a support-size sensitivity diagnostic, not a requirement that the whole nearby hand surface touch the object. Trash uses all 81 corrected contact-mode factors, with 1,296 linearized local-patch correspondences, contact-patch p95-of-p95 4.75 mm, broader 80-nearest-point p95-of-p95 12.84 mm, max object translation correction 6.32 mm, max object rotation correction 0.0295 rad, and max hand ray correction 3.36 mm. Tomato uses all 381 corrected contact-mode factors, with 6,096 local-patch correspondences, contact-patch p95-of-p95 5.00 mm, broader 80-nearest-point p95-of-p95 13.22 mm, max object translation correction 6.90 mm, max object rotation correction 0.0294 rad, and max hand ray correction 12.21 mm. The 5 mm numbers are local evidence-consistency diagnostics under the sparse graph's fixed camera, fixed MANO articulation, fixed object topology, fixed contact-label, and nearest-vertex support assumptions. They do not prove a physically valid contact patch until patch identity, image/depth support, and anatomical/contact-area stability are also estimated. The generated reports set `accuracy_target_met=false`, `annotation_ready=false`, and `deliverable_ready=false` because the complete V3-class nonlinear solver remains open.
 
@@ -34,63 +34,35 @@ Two contact-support experiments were rejected before this interpretation was ado
 
 The graph output materializes the optimized state in the annotation files. Object translation and small-angle rotation corrections move `center_world_m`, nested V17 surface centers, local-patch world vertex arrays when present, and the corrected mesh archive around the solved object center. Hand camera-ray corrections move world-space MANO vertices and joints along the solved camera optical axis. Source-camera measurements remain unchanged as evidence.
 
-Graph-corrected full-length renders also pass structural QC. Trash graph renders contain 1,050 frames for overlay, world, and side-by-side outputs; tomato graph renders contain 960 frames for all three outputs. The visual inspection sheets are sampled from the final graph-corrected side-by-side videos and recorded in the render summary. The current trash sheet shows selected contact frames 0182, 0260, 0764, and 0856 with displayed nearest gaps of 0.5 mm, 1.7 mm, 2.0 mm, and 0.9 mm. The current tomato sheet shows selected contact frames 0480, 0720, and 0760 with displayed nearest gaps of 2.4 mm, 0.5 mm, and 2.3 mm. The regenerated contact-mode-factor renders also pass full-duration structural QC: trash contains 1,050 frames for overlay, world, and side-by-side outputs; tomato contains 960 frames for all three outputs. Their render summary carries `annotation_ready=false`, `deliverable_ready=false`, and `accuracy_target_met=false`, so these videos are structural evidence/QC renders rather than V17 closure deliverables. The current world videos and sheets still use the diagnostic V16/V17 renderer; the Stage 9 audience renderer with shaded MANO/object surfaces, image-plane context, close-up manipulation views, and uncertainty/rejection status remains open.
+Graph-corrected full-length renders also pass structural QC. Trash graph renders contain 1,050 frames for overlay, world, and side-by-side outputs; tomato graph renders contain 960 frames for all three outputs. The visual inspection sheets are sampled from the final graph-corrected side-by-side videos and recorded in the render summary. The current trash sheet shows selected contact frames 0182, 0260, 0764, and 0856 with displayed nearest gaps of 0.5 mm, 1.7 mm, 2.0 mm, and 0.9 mm. The current tomato sheet shows selected contact frames 0480, 0720, and 0760 with displayed nearest gaps of 2.4 mm, 0.5 mm, and 2.3 mm. The regenerated contact-mode-factor renders also pass full-duration structural QC: trash contains 1,050 frames for overlay, world, and side-by-side outputs; tomato contains 960 frames for all three outputs. New QC renders use `qc_` filenames and their render summary carries `annotation_ready=false`, `deliverable_ready=false`, and `accuracy_target_met=false`. These videos are structural evidence/QC renders rather than V17 closure deliverables. The current world videos and sheets still use the diagnostic V16/V17 renderer; the Stage 9 audience renderer with shaded MANO/object surfaces, image-plane context, close-up manipulation views, and uncertainty/rejection status remains open.
 
-Current V17 outputs:
+Current V17 evidence outputs:
 
 ```text
-/data2/ego_annotation_outputs/v17_full_state/trash_1050/annotations_v17_full.json
-/data2/ego_annotation_outputs/v17_full_state/trash_1050/object_meshes_v17_full.npz
-/data2/ego_annotation_outputs/v17_full_state/trash_1050/renders/overlay_mano_object_multi.mp4
-/data2/ego_annotation_outputs/v17_full_state/trash_1050/renders/world_reconstruction_3d_v17.mp4
-/data2/ego_annotation_outputs/v17_full_state/trash_1050/renders/side_by_side_v17.mp4
-/data2/ego_annotation_outputs/v17_full_state/trash_1050/v17_anchor_side_by_side_sheet.jpg
-/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/annotations_v17_full.json
-/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/object_meshes_v17_full.npz
-/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/renders/overlay_mano_object_multi.mp4
-/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/renders/world_reconstruction_3d_v17.mp4
-/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/renders/side_by_side_v17.mp4
-/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/v17_anchor_side_by_side_sheet.jpg
-/data2/ego_annotation_outputs/v17_full_state/v17_full_state_summary.json
-/data2/ego_annotation_outputs/v17_full_state/v17_render_summary.json
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/trash_1050/annotations_v17_full_timeline_graph.json
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/trash_1050/object_meshes_v17_full_timeline_graph.npz
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/trash_1050/v17_full_timeline_factor_graph_report.json
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/task5_tomato_960/annotations_v17_full_timeline_graph.json
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/task5_tomato_960/object_meshes_v17_full_timeline_graph.npz
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/task5_tomato_960/v17_full_timeline_factor_graph_report.json
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/v17_full_timeline_factor_graph_summary.json
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/renders/overlay_mano_object_multi.mp4
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/renders/world_reconstruction_3d_v17.mp4
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/renders/side_by_side_v17.mp4
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/v17_graph_anchor_side_by_side_sheet.jpg
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/renders/overlay_mano_object_multi.mp4
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/renders/world_reconstruction_3d_v17.mp4
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/renders/side_by_side_v17.mp4
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/v17_graph_anchor_side_by_side_sheet.jpg
-/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/v17_render_summary.json
+/data2/ego_annotation_outputs/v17_full_state/
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/
 /data2/ego_annotation_outputs/v17_contact_mode_graph/trash_1050/v17_contact_mode_graph_report.json
 /data2/ego_annotation_outputs/v17_contact_mode_graph/trash_1050/contact_mode_interval_review_sheet.jpg
 /data2/ego_annotation_outputs/v17_contact_mode_graph/task5_tomato_960/v17_contact_mode_graph_report.json
 /data2/ego_annotation_outputs/v17_contact_mode_graph/task5_tomato_960/contact_mode_interval_review_sheet.jpg
 /data2/ego_annotation_outputs/v17_contact_mode_graph/v17_contact_mode_graph_summary.json
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/trash_1050/annotations_v17_full_timeline_graph.json
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/trash_1050/object_meshes_v17_full_timeline_graph.npz
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/trash_1050/v17_full_timeline_factor_graph_report.json
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/task5_tomato_960/annotations_v17_full_timeline_graph.json
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/task5_tomato_960/object_meshes_v17_full_timeline_graph.npz
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/task5_tomato_960/v17_full_timeline_factor_graph_report.json
 /data2/ego_annotation_outputs/v17_contact_mode_factor_graph/v17_full_timeline_factor_graph_summary.json
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/trash_1050/renders/overlay_mano_object_multi.mp4
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/trash_1050/renders/world_reconstruction_3d_v17.mp4
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/trash_1050/renders/side_by_side_v17.mp4
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/{trash_1050,task5_tomato_960}/v17_full_timeline_factor_graph_report.json
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/{trash_1050,task5_tomato_960}/annotations_v17_full_timeline_graph.json
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph/{trash_1050,task5_tomato_960}/object_meshes_v17_full_timeline_graph.npz
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/trash_1050/renders/qc_overlay_mano_object_multi.mp4
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/trash_1050/renders/qc_world_reconstruction_3d_v17.mp4
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/trash_1050/renders/qc_side_by_side_v17.mp4
 /data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/trash_1050/v17_contact_mode_factor_side_by_side_sheet.jpg
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/task5_tomato_960/renders/overlay_mano_object_multi.mp4
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/task5_tomato_960/renders/world_reconstruction_3d_v17.mp4
-/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/task5_tomato_960/renders/side_by_side_v17.mp4
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/task5_tomato_960/renders/qc_overlay_mano_object_multi.mp4
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/task5_tomato_960/renders/qc_world_reconstruction_3d_v17.mp4
+/data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/task5_tomato_960/renders/qc_side_by_side_v17.mp4
 /data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/task5_tomato_960/v17_contact_mode_factor_side_by_side_sheet.jpg
 /data2/ego_annotation_outputs/v17_contact_mode_factor_graph_renders/v17_render_summary.json
 ```
+
+The first three roots above are legacy V17 evidence/QC outputs whose filenames predate the QC naming correction. The current contact-mode-factor render manifests use `qc_` render filenames.
 
 ## V16 Failure Analysis
 

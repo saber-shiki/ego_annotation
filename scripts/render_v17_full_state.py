@@ -132,6 +132,22 @@ def visual_inspection_sheet(video: Path, output: Path, frames: list[int]) -> dic
     return {"path": str(output), "sampled_frames": [int(frame) for frame in frames]}
 
 
+def existing_render_source(final_dir: Path, dst_name: str) -> Path | None:
+    dst = final_dir / dst_name
+    if dst.exists():
+        return dst
+    legacy_names = {
+        "qc_overlay_mano_object_multi.mp4": "overlay_mano_object_multi.mp4",
+        "qc_world_reconstruction_3d_v17.mp4": "world_reconstruction_3d_v17.mp4",
+        "qc_side_by_side_v17.mp4": "side_by_side_v17.mp4",
+    }
+    legacy_name = legacy_names.get(dst_name)
+    if legacy_name is None:
+        return None
+    legacy = final_dir / legacy_name
+    return legacy if legacy.exists() else None
+
+
 def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path) -> dict[str, Any]:
     state = load_json(case_manifest)
     v16 = load_json(Path(state["v16_manifest"]))
@@ -142,37 +158,41 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
     case_dir = output_root / str(state["case"])
     render_dir = case_dir / "render_tmp"
     final_dir = case_dir / "renders"
-    render_dir.mkdir(parents=True, exist_ok=True)
     final_dir.mkdir(parents=True, exist_ok=True)
-    run_command(
-        [
-            str(args.python),
-            "scripts/fuse_v1_full_fidelity.py",
-            "--clip",
-            str(clip),
-            "--output-dir",
-            str(render_dir),
-            "--render-only-annotations",
-            str(state["annotations"]),
-            "--object-mesh-npz",
-            str(state["object_mesh_archive"]),
-            "--render-width",
-            str(args.render_width),
-        ],
-        args.repo_root,
-    )
+    if not bool(args.reuse_existing_final_renders):
+        render_dir.mkdir(parents=True, exist_ok=True)
+        run_command(
+            [
+                str(args.python),
+                "scripts/fuse_v1_full_fidelity.py",
+                "--clip",
+                str(clip),
+                "--output-dir",
+                str(render_dir),
+                "--render-only-annotations",
+                str(state["annotations"]),
+                "--object-mesh-npz",
+                str(state["object_mesh_archive"]),
+                "--render-width",
+                str(args.render_width),
+            ],
+            args.repo_root,
+        )
     names = {
-        "overlay": ("overlay_mano_object.mp4", "overlay_mano_object_multi.mp4"),
-        "world": ("reconstruction_3d_world.mp4", "world_reconstruction_3d_v17.mp4"),
-        "side_by_side": ("side_by_side.mp4", "side_by_side_v17.mp4"),
+        "overlay": ("overlay_mano_object.mp4", "qc_overlay_mano_object_multi.mp4"),
+        "world": ("reconstruction_3d_world.mp4", "qc_world_reconstruction_3d_v17.mp4"),
+        "side_by_side": ("side_by_side.mp4", "qc_side_by_side_v17.mp4"),
     }
     render_qc: dict[str, Any] = {}
     for key, (src_name, dst_name) in names.items():
-        src = render_dir / src_name
+        src = existing_render_source(final_dir, dst_name) if bool(args.reuse_existing_final_renders) else render_dir / src_name
+        if src is None:
+            raise RuntimeError(f"no existing render available for {final_dir / dst_name}")
         dst = final_dir / dst_name
         if not src.exists():
             raise RuntimeError(f"renderer did not produce {src}")
-        shutil.copy2(src, dst)
+        if src.resolve() != dst.resolve():
+            shutil.copy2(src, dst)
         render_qc[key] = check_video(dst, raw)
     frame_count_match = all(row["frame_count_match"] for row in render_qc.values())
     solver_report_path = Path(state["solver_report"]) if isinstance(state.get("solver_report"), str) else None
@@ -242,6 +262,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--method-name", default="render_v17_full_state")
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_full_state"))
+    parser.add_argument("--reuse-existing-final-renders", action="store_true")
     parser.add_argument(
         "--case-manifests",
         type=Path,

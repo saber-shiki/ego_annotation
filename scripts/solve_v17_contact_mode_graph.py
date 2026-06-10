@@ -15,6 +15,11 @@ from scipy.spatial import cKDTree  # type: ignore[reportAttributeAccessIssue]
 
 from run_v16_full_pipeline import load_mesh_archive
 
+CONTACT_MODE_QC_STATUS = "contact_mode_qc_structurally_consistent"
+CONTACT_MODE_REJECTED_STATUS = "contact_mode_qc_rejected"
+CONTACT_MODE_ARTIFACT_KIND = "contact_mode_qc_graph"
+DELIVERY_ROLE = "qc_only_not_v17_closure"
+
 
 @dataclass(frozen=True)
 class ContactObs:
@@ -29,6 +34,9 @@ class ContactObs:
     gap_p95_m: float | None
     mask_distance_median_px: float | None
     mask_close_fraction: float | None
+    hand_residual_median_px: float | None
+    hand_residual_p95_px: float | None
+    sparse_graph_hand_ready: bool
     source_contact_state: str | None
     selected_measurement_id: str | None
     reason: str | None
@@ -166,14 +174,17 @@ def finite_float(value: object) -> float | None:
 
 
 def hand_residual_ok(hand: dict[str, Any], max_median_px: float, max_p95_px: float) -> bool:
-    residual = hand.get("projection_residual_to_measurement_px")
-    if not isinstance(residual, dict):
-        return False
-    median = finite_float(residual.get("median"))
-    p95 = finite_float(residual.get("p95"))
+    median, p95 = hand_residual_values(hand)
     if median is None or p95 is None:
         return False
     return median <= max_median_px and p95 <= max_p95_px
+
+
+def hand_residual_values(hand: dict[str, Any]) -> tuple[float | None, float | None]:
+    residual = hand.get("projection_residual_to_measurement_px")
+    if not isinstance(residual, dict):
+        return None, None
+    return finite_float(residual.get("median")), finite_float(residual.get("p95"))
 
 
 def contact_observation(
@@ -188,9 +199,9 @@ def contact_observation(
     anchor, source_state, selected_id = anchor_logit(frame, side, float(args.anchor_logit))
     points = finite_points(hand.get("vertices_world_m"))
     if points is None:
-        return ContactObs(idx, side, False, anchor, anchor, None, None, None, None, None, None, source_state, selected_id, "missing_world_hand_vertices")
+        return ContactObs(idx, side, False, anchor, anchor, None, None, None, None, None, None, None, None, False, source_state, selected_id, "missing_world_hand_vertices")
     if mesh_vertices is None or len(mesh_vertices) == 0:
-        return ContactObs(idx, side, False, anchor, anchor, None, None, None, None, None, None, source_state, selected_id, "missing_object_mesh")
+        return ContactObs(idx, side, False, anchor, anchor, None, None, None, None, None, None, None, None, False, source_state, selected_id, "missing_object_mesh")
     distances, _nearest = cKDTree(mesh_vertices).query(points, k=1)
     distances = np.asarray(distances, dtype=float)
     order = np.argsort(distances)[: min(len(distances), int(args.max_contact_points))]
@@ -204,6 +215,7 @@ def contact_observation(
     mask_median: float | None = None
     mask_close_fraction: float | None = None
     intr = hand_intrinsics(hand)
+    hand_residual_median, hand_residual_p95 = hand_residual_values(hand)
     sparse_graph_hand_ready = hand_residual_ok(hand, float(args.max_hand_median_px), float(args.max_hand_p95_px))
     obj = frame.get("object")
     mask_path = obj.get("mask_path") if isinstance(obj, dict) else None
@@ -241,10 +253,64 @@ def contact_observation(
         gap_p95,
         mask_median,
         mask_close_fraction,
+        hand_residual_median,
+        hand_residual_p95,
+        sparse_graph_hand_ready,
         source_state,
         selected_id,
         None if sparse_graph_hand_ready else "hand_residual_rejected_for_sparse_graph_contact_factor",
     )
+
+
+def factor_ready_checks(row: ContactObs, mode: str, confidence: float, args: argparse.Namespace) -> dict[str, bool]:
+    return {
+        "active_geometry": bool(row.active),
+        "contact_mode": mode == "contact",
+        "positive_contact_confidence": bool(confidence >= float(args.factor_ready_min_confidence)),
+        "hand_residual_ok": bool(row.sparse_graph_hand_ready),
+        "gap_p05_available": row.gap_p05_m is not None,
+        "gap_p05_within_threshold": bool(
+            row.gap_p05_m is not None and row.gap_p05_m <= float(args.factor_ready_max_gap_p05_m)
+        ),
+        "mask_distance_within_threshold": bool(
+            row.mask_distance_median_px is None
+            or row.mask_distance_median_px <= float(args.factor_ready_max_mask_px)
+        ),
+        "no_rejection_reason": row.reason is None,
+    }
+
+
+def solved_row_payload(
+    row: ContactObs,
+    mode: str,
+    confidence: float,
+    contact_factor_ready: bool,
+    readiness_checks: dict[str, bool],
+) -> dict[str, Any]:
+    return {
+        "frame_idx": int(row.frame_idx),
+        "side": row.side,
+        "active": bool(row.active),
+        "mode": mode,
+        "contact_score": float(sigmoid(row.unary_logit)),
+        "confidence_score": float(confidence),
+        "contact_factor_ready": bool(contact_factor_ready),
+        "contact_factor_readiness_checks": readiness_checks,
+        "unary_logit": float(row.unary_logit),
+        "anchor_logit": float(row.anchor_logit),
+        "gap_min_m": row.gap_min_m,
+        "gap_p05_m": row.gap_p05_m,
+        "gap_median_m": row.gap_median_m,
+        "gap_p95_m": row.gap_p95_m,
+        "mask_distance_median_px": row.mask_distance_median_px,
+        "mask_close_fraction": row.mask_close_fraction,
+        "hand_residual_median_px": row.hand_residual_median_px,
+        "hand_residual_p95_px": row.hand_residual_p95_px,
+        "sparse_graph_hand_ready": bool(row.sparse_graph_hand_ready),
+        "source_contact_state": row.source_contact_state,
+        "selected_measurement_id": row.selected_measurement_id,
+        "reason": row.reason,
+    }
 
 
 def solve_modes(rows: list[ContactObs], args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -254,26 +320,7 @@ def solve_modes(rows: list[ContactObs], args: argparse.Namespace) -> list[dict[s
     observed = [(i, row) for i, row in enumerate(rows) if row.active or row.anchor_logit != 0.0]
     if not observed:
         return [
-            {
-                "frame_idx": int(row.frame_idx),
-                "side": row.side,
-                "active": bool(row.active),
-                "mode": "unobserved",
-                "contact_score": float(sigmoid(row.unary_logit)),
-                "confidence_score": 0.0,
-                "contact_factor_ready": False,
-                "unary_logit": float(row.unary_logit),
-                "anchor_logit": float(row.anchor_logit),
-                "gap_min_m": row.gap_min_m,
-                "gap_p05_m": row.gap_p05_m,
-                "gap_median_m": row.gap_median_m,
-                "gap_p95_m": row.gap_p95_m,
-                "mask_distance_median_px": row.mask_distance_median_px,
-                "mask_close_fraction": row.mask_close_fraction,
-                "source_contact_state": row.source_contact_state,
-                "selected_measurement_id": row.selected_measurement_id,
-                "reason": row.reason,
-            }
+            solved_row_payload(row, "unobserved", 0.0, False, factor_ready_checks(row, "unobserved", 0.0, args))
             for row in rows
         ]
     observed_rows = [row for _i, row in observed]
@@ -309,38 +356,9 @@ def solve_modes(rows: list[ContactObs], args: argparse.Namespace) -> list[dict[s
         else:
             mode = "contact" if state == 1 else "no_contact"
             confidence = contact_score if state == 1 else sigmoid(-row.unary_logit)
-        factor_ready = (
-            row.active
-            and mode == "contact"
-            and confidence >= float(args.factor_ready_min_confidence)
-            and row.reason is None
-            and row.gap_p05_m is not None
-            and row.gap_p05_m <= float(args.factor_ready_max_gap_p05_m)
-        )
-        if factor_ready and row.mask_distance_median_px is not None:
-            factor_ready = row.mask_distance_median_px <= float(args.factor_ready_max_mask_px)
-        out.append(
-            {
-                "frame_idx": int(row.frame_idx),
-                "side": row.side,
-                "active": bool(row.active),
-                "mode": mode,
-                "contact_score": float(contact_score),
-                "confidence_score": float(confidence),
-                "contact_factor_ready": bool(factor_ready),
-                "unary_logit": float(row.unary_logit),
-                "anchor_logit": float(row.anchor_logit),
-                "gap_min_m": row.gap_min_m,
-                "gap_p05_m": row.gap_p05_m,
-                "gap_median_m": row.gap_median_m,
-                "gap_p95_m": row.gap_p95_m,
-                "mask_distance_median_px": row.mask_distance_median_px,
-                "mask_close_fraction": row.mask_close_fraction,
-                "source_contact_state": row.source_contact_state,
-                "selected_measurement_id": row.selected_measurement_id,
-                "reason": row.reason,
-            }
-        )
+        checks = factor_ready_checks(row, mode, confidence, args)
+        factor_ready = all(checks.values())
+        out.append(solved_row_payload(row, mode, confidence, factor_ready, checks))
     return out
 
 
@@ -430,9 +448,13 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
     report_path = case_dir / "v17_contact_mode_graph_report.json"
     report = {
         "case": case,
-        "status": "accepted_v17_contact_mode_graph" if not rejection_reasons else "rejected_v17_contact_mode_graph",
+        "status": CONTACT_MODE_QC_STATUS if not rejection_reasons else CONTACT_MODE_REJECTED_STATUS,
+        "artifact_status": "partial",
+        "artifact_kind": CONTACT_MODE_ARTIFACT_KIND,
+        "delivery_role": DELIVERY_ROLE,
         "rejection_reasons": rejection_reasons,
         "annotation_ready": False,
+        "deliverable_ready": False,
         "method": "solve_v17_contact_mode_graph",
         "solver_completeness": "contact_mode_latent_only",
         "v3_solver_complete": False,
@@ -452,6 +474,10 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
         "active_contact_mode_count": int(len(active_contact_rows)),
         "unobserved_row_count": int(len(unobserved_rows)),
         "contact_factor_ready_count": int(len(ready_rows)),
+        "contact_factor_readiness_semantics": (
+            "Rows become sparse-graph contact factors only when every row-level "
+            "contact_factor_readiness_checks predicate is true."
+        ),
         "anchor_count": int(len(anchor_rows)),
         "anchor_error_count": int(len(anchor_errors)),
         "anchor_errors": anchor_errors[:40],
@@ -486,10 +512,13 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
 
 def solve(args: argparse.Namespace) -> dict[str, Any]:
     reports = [solve_case(args, manifest) for manifest in args.case_manifests]
-    latent_graph_status = "accepted" if all(report["status"] == "accepted_v17_contact_mode_graph" for report in reports) else "rejected"
+    latent_graph_status = "structurally_consistent" if all(report["status"] == CONTACT_MODE_QC_STATUS for report in reports) else "rejected"
     summary = {
-        "status": latent_graph_status,
+        "status": "contact_mode_qc_structurally_consistent_collection" if latent_graph_status == "structurally_consistent" else "contact_mode_qc_rejected_collection",
         "latent_graph_status": latent_graph_status,
+        "artifact_status": "partial",
+        "artifact_kind": "contact_mode_qc_graph_collection",
+        "delivery_role": DELIVERY_ROLE,
         "annotation_ready": False,
         "deliverable_ready": False,
         "method": "solve_v17_contact_mode_graph",
@@ -499,6 +528,9 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
             {
                 "case": report["case"],
                 "status": report["status"],
+                "artifact_status": report["artifact_status"],
+                "artifact_kind": report["artifact_kind"],
+                "delivery_role": report["delivery_role"],
                 "active_observation_count": report["active_observation_count"],
                 "contact_mode_count": report["contact_mode_count"],
                 "contact_factor_ready_count": report["contact_factor_ready_count"],
