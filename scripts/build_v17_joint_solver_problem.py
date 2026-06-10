@@ -26,6 +26,7 @@ class CaseInputs:
     geometry_state_report: Path
     object_track_dataset_summary: Path
     object_material_track_summary: Path
+    object_material_motion_state_summary: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -98,6 +99,7 @@ def case_inputs(
     geometry_state_root: Path,
     object_track_dataset_root: Path,
     object_material_track_root: Path,
+    object_material_motion_state_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -130,6 +132,10 @@ def case_inputs(
         object_material_track_root / case / "v17_object_material_track_summary.json",
         f"{case} object material-track summary",
     )
+    object_material_motion_state_summary = existing_path(
+        object_material_motion_state_root / case / "v17_object_material_motion_state_report.json",
+        f"{case} object material-motion state report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -151,6 +157,7 @@ def case_inputs(
         geometry_state_report=geometry_state_report,
         object_track_dataset_summary=object_track_dataset_summary,
         object_material_track_summary=object_material_track_summary,
+        object_material_motion_state_summary=object_material_motion_state_summary,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -400,6 +407,59 @@ def object_material_track_counts(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def object_material_motion_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "material_track_window_count": require_int(
+            report.get("material_track_window_count"),
+            "object material-motion material_track_window_count",
+        ),
+        "material_tracked_object_count": require_int(
+            report.get("material_tracked_object_count"),
+            "object material-motion material_tracked_object_count",
+        ),
+        "rigid_factor_ready_pair_count": require_int(
+            report.get("rigid_factor_ready_pair_count"),
+            "object material-motion rigid_factor_ready_pair_count",
+        ),
+        "window_rigid_motion_candidate_count": require_int(
+            report.get("window_rigid_motion_candidate_count"),
+            "object material-motion window_rigid_motion_candidate_count",
+        ),
+        "persistent_window_motion_candidate_count": require_int(
+            report.get("persistent_window_motion_candidate_count"),
+            "object material-motion persistent_window_motion_candidate_count",
+        ),
+        "local_adjacent_material_motion_window_count": require_int(
+            report.get("local_adjacent_material_motion_window_count"),
+            "object material-motion local_adjacent_material_motion_window_count",
+        ),
+        "noncandidate_local_adjacent_material_motion_window_count": require_int(
+            report.get("noncandidate_local_adjacent_material_motion_window_count"),
+            "object material-motion noncandidate_local_adjacent_material_motion_window_count",
+        ),
+        "no_ready_material_motion_window_count": require_int(
+            report.get("no_ready_material_motion_window_count"),
+            "object material-motion no_ready_material_motion_window_count",
+        ),
+        "candidate_window_ids": require_list(
+            report.get("candidate_window_ids"),
+            "object material-motion candidate_window_ids",
+        ),
+        "max_candidate_segment_pairs": require_int(
+            report.get("max_candidate_segment_pairs"),
+            "object material-motion max_candidate_segment_pairs",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "frame_count": require_int(metadata.get("frame_count"), "mesh metadata frame_count"),
@@ -438,6 +498,7 @@ def required_variable_families(
     geometry_state: dict[str, Any],
     object_track_dataset: dict[str, Any],
     object_material_track: dict[str, Any],
+    object_material_motion_state: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -531,6 +592,12 @@ def required_variable_families(
                 "material_tracked_objects": object_material_track[
                     "material_tracked_object_count"
                 ],
+                "persistent_window_motion_candidates": object_material_motion_state[
+                    "persistent_window_motion_candidate_count"
+                ],
+                "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
+                    "noncandidate_local_adjacent_material_motion_window_count"
+                ],
                 "persistent_object_shape_measurements": counts.get("persistent_object_shape", 0),
                 "local_contact_patch_measurements": counts.get("local_contact_patch", 0),
                 "object_geometry_complete": mesh["object_geometry_complete"],
@@ -565,6 +632,16 @@ def required_variable_families(
                 "rigid_factor_ready_pair_count": object_material_track[
                     "rigid_factor_ready_pair_count"
                 ],
+                "persistent_window_motion_candidates": object_material_motion_state[
+                    "persistent_window_motion_candidate_count"
+                ],
+                "local_adjacent_material_motion_windows": object_material_motion_state[
+                    "local_adjacent_material_motion_window_count"
+                ],
+                "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
+                    "noncandidate_local_adjacent_material_motion_window_count"
+                ],
+                "candidate_window_ids": object_material_motion_state["candidate_window_ids"],
                 "exported_object_ids_without_material_tracks": object_material_track[
                     "exported_object_ids_without_material_tracks"
                 ],
@@ -574,7 +651,8 @@ def required_variable_families(
                 "deformable-bag state is represented by local patches and legacy centers, not deformation variables",
                 "object pose corrections are small per-frame updates around fixed input geometry",
                 "center-normalized visible-surface envelopes do not provide material correspondence or SE(3) pose",
-                "material tracks cover sampled object windows only and are not yet integrated as full-timeline object variables",
+                "material tracks cover sampled object windows only and are not integrated as full-timeline object variables",
+                "persistent material-motion candidates do not provide canonical object meshes or full-timeline pose/deformation variables",
             ],
         ),
         variable_family(
@@ -640,6 +718,12 @@ def required_variable_families(
                 "material_track_rigid_ready_pairs": object_material_track[
                     "rigid_factor_ready_pair_count"
                 ],
+                "persistent_window_motion_candidates": object_material_motion_state[
+                    "persistent_window_motion_candidate_count"
+                ],
+                "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
+                    "noncandidate_local_adjacent_material_motion_window_count"
+                ],
                 "sparse_graph_solver_completeness": sparse["solver_completeness"],
             },
             [
@@ -659,6 +743,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     geometry_state_report = require_dict(load_json(inputs.geometry_state_report), f"{inputs.case} geometry-state report")
     object_track_dataset_summary = require_dict(load_json(inputs.object_track_dataset_summary), f"{inputs.case} object-track dataset summary")
     object_material_track_summary = require_dict(load_json(inputs.object_material_track_summary), f"{inputs.case} object material-track summary")
+    object_material_motion_state_summary = require_dict(
+        load_json(inputs.object_material_motion_state_summary),
+        f"{inputs.case} object material-motion state report",
+    )
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -671,6 +759,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     geometry_state = geometry_state_counts(geometry_state_report)
     object_track_dataset = object_track_dataset_counts(object_track_dataset_summary)
     object_material_track = object_material_track_counts(object_material_track_summary)
+    object_material_motion_state = object_material_motion_state_counts(object_material_motion_state_summary)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -701,6 +790,22 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} material-track dataset exported frames",
     ):
         raise RuntimeError(f"{inputs.case} object-track dataset frame count disagrees with material-track summary")
+    if require_int(
+        object_material_track["material_track_window_count"],
+        f"{inputs.case} material-track window count",
+    ) != require_int(
+        object_material_motion_state["material_track_window_count"],
+        f"{inputs.case} material-motion window count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-track window count disagrees with material-motion report")
+    if require_int(
+        object_material_track["rigid_factor_ready_pair_count"],
+        f"{inputs.case} material-track ready pair count",
+    ) != require_int(
+        object_material_motion_state["rigid_factor_ready_pair_count"],
+        f"{inputs.case} material-motion ready pair count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-track ready pair count disagrees with material-motion report")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -715,6 +820,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         geometry_state,
         object_track_dataset,
         object_material_track,
+        object_material_motion_state,
         counts,
         sparse,
         contact,
@@ -743,6 +849,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "object_material_track_summary": source_summary(
                 inputs.object_material_track_summary, object_material_track_summary
             ),
+            "object_material_motion_state_report": source_summary(
+                inputs.object_material_motion_state_summary, object_material_motion_state_summary
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -754,6 +863,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_multi_object_geometry_state": geometry_state,
         "current_object_track_datasets": object_track_dataset,
         "current_object_material_tracks": object_material_track,
+        "current_object_material_motion_state": object_material_motion_state,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -763,6 +873,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "v3_solver_complete": False,
         "annotation_ready": False,
         "deliverable_ready": False,
+        "accuracy_target_met": False,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "rigid_pose_requirement_met": False,
         "next_solver_owner": (
             "A V17 optimizer must create variables for the missing families above or explicitly keep a family fixed "
             "with a source-backed scientific reason. A sparse graph over one legacy object stream cannot close the task."
@@ -787,6 +901,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.geometry_state_root,
             args.object_track_dataset_root,
             args.object_material_track_root,
+            args.object_material_motion_state_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -808,6 +923,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "multi_object_geometry_state_root": str(args.geometry_state_root),
         "object_track_dataset_root": str(args.object_track_dataset_root),
         "object_material_track_root": str(args.object_material_track_root),
+        "object_material_motion_state_root": str(args.object_material_motion_state_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -847,6 +963,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "rigid_factor_ready_pair_count": case["current_object_material_tracks"][
                     "rigid_factor_ready_pair_count"
                 ],
+                "persistent_window_motion_candidate_count": case[
+                    "current_object_material_motion_state"
+                ]["persistent_window_motion_candidate_count"],
+                "local_adjacent_material_motion_window_count": case[
+                    "current_object_material_motion_state"
+                ]["local_adjacent_material_motion_window_count"],
+                "noncandidate_local_adjacent_material_motion_window_count": case[
+                    "current_object_material_motion_state"
+                ]["noncandidate_local_adjacent_material_motion_window_count"],
+                "no_ready_material_motion_window_count": case[
+                    "current_object_material_motion_state"
+                ]["no_ready_material_motion_window_count"],
                 "current_single_stream_object_variable_frames": case["current_sparse_graph"]["object_variable_frames"],
                 "contact_factor_ready_count": case["current_contact_mode_graph"]["contact_factor_ready_count"],
                 "unmet_required_variable_families": case["unmet_required_variable_families"],
@@ -856,6 +984,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "v3_solver_complete": False,
                 "annotation_ready": False,
                 "deliverable_ready": False,
+                "accuracy_target_met": False,
+                "object_geometry_complete": False,
+                "object_pose_requirement_met": False,
+                "rigid_pose_requirement_met": False,
             }
             for case in case_outputs
         ],
@@ -864,6 +996,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "v3_solver_complete": False,
         "annotation_ready": False,
         "deliverable_ready": False,
+        "accuracy_target_met": False,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "rigid_pose_requirement_met": False,
     }
     write_json(args.output_root / "v17_joint_solver_problem_summary.json", payload)
     return payload
@@ -905,6 +1041,11 @@ def parse_args() -> argparse.Namespace:
         "--object-material-track-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_object_material_tracks"),
+    )
+    parser.add_argument(
+        "--object-material-motion-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_object_material_motion_state"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
