@@ -1229,6 +1229,9 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
     cases = [solve_case(args, manifest, args.output_root) for manifest in args.case_manifests]
     summary = {
         "status": "partial",
+        "artifact_status": "partial",
+        "artifact_kind": "sparse_evidence_qc_graph_collection",
+        "delivery_role": DELIVERY_ROLE,
         "structural_consistency_status": "pass" if all(case["structural_consistency_pass"] for case in cases) else "fail",
         "sparse_graph_evidence_consistency_status": "pass" if all(case.get("sparse_graph_evidence_consistency_target_met") for case in cases) else "fail",
         "accuracy_target_status": "fail",
@@ -1242,10 +1245,18 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
         json.dumps(
             {
                 "status": summary["status"],
+                "artifact_status": summary["artifact_status"],
+                "artifact_kind": summary["artifact_kind"],
+                "delivery_role": summary["delivery_role"],
+                "deliverable_ready": summary["deliverable_ready"],
+                "deliverable_blocker": summary["deliverable_blocker"],
                 "cases": [
                     {
                         "case": c["case"],
                         "status": c["status"],
+                        "artifact_status": c["artifact_status"],
+                        "artifact_kind": c["artifact_kind"],
+                        "delivery_role": c["delivery_role"],
                         "annotation_ready": c["annotation_ready"],
                         "deliverable_ready": c["deliverable_ready"],
                         "structural_consistency_pass": c["structural_consistency_pass"],
