@@ -20,6 +20,15 @@ CONTACT_MODE_REJECTED_STATUS = "contact_mode_qc_rejected"
 CONTACT_MODE_ARTIFACT_KIND = "contact_mode_qc_graph"
 DELIVERY_ROLE = "qc_only_not_v17_closure"
 
+OBJECT_LIMIT_FLAGS = {
+    "multi_object_timeline_ready": False,
+    "object_schema_status": "single_manipulated_object_qc",
+    "missing_multi_object_roster_required": True,
+    "object_geometry_complete": False,
+    "object_pose_requirement_met": False,
+    "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+}
+
 
 @dataclass(frozen=True)
 class ContactObs:
@@ -490,6 +499,7 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
         "method": "solve_v17_contact_mode_graph",
         "solver_completeness": "contact_mode_latent_only",
         "v3_solver_complete": False,
+        **OBJECT_LIMIT_FLAGS,
         "semantics": {
             "optimized_variables": ["per-frame per-hand binary contact/no-contact mode"],
             "fixed_variables": ["input camera trajectory", "input MANO geometry", "input object mesh geometry", "input object pose"],
@@ -557,6 +567,7 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
         "method": "solve_v17_contact_mode_graph",
         "solver_completeness": "contact_mode_latent_only",
         "v3_solver_complete": False,
+        **OBJECT_LIMIT_FLAGS,
         "cases": [
             {
                 "case": report["case"],
