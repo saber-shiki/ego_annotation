@@ -61,21 +61,23 @@ def anchor_specs(path: Path) -> dict[int, dict[str, Any]]:
         out[idx] = row
     return out
 
-
-def temporal_validation_by_frame(path: Path | None) -> dict[int, dict[str, Any]]:
-    if path is None or not path.exists():
-        return {}
-    rows = load_json(path)
-    if not isinstance(rows, list):
-        raise RuntimeError(f"{path} must contain a JSON list")
-    out = {}
-    for row_i, row in enumerate(rows):
-        if not isinstance(row, dict):
-            raise RuntimeError(f"{path} row {row_i} is not a JSON object")
-        idx = row.get("frame_idx")
-        if isinstance(idx, bool) or not isinstance(idx, int):
-            raise RuntimeError(f"{path} row {row_i} has invalid frame_idx {idx!r}")
-        out[idx] = row
+def temporal_validation_by_frame(paths: list[Path]) -> dict[int, dict[str, Any]]:
+    out: dict[int, dict[str, Any]] = {}
+    for path in paths:
+        rows = load_json(path)
+        if not isinstance(rows, list):
+            raise RuntimeError(f"{path} must contain a JSON list")
+        for row_i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise RuntimeError(f"{path} row {row_i} is not a JSON object")
+            idx = row.get("frame_idx")
+            if isinstance(idx, bool) or not isinstance(idx, int):
+                raise RuntimeError(f"{path} row {row_i} has invalid frame_idx {idx!r}")
+            if idx in out:
+                raise RuntimeError(f"duplicate temporal validation for frame {idx}")
+            row = dict(row)
+            row["source_temporal_validation"] = str(path)
+            out[idx] = row
     return out
 
 
@@ -164,7 +166,7 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
         "method": "solve_v17_anchor_contact_state_graph",
         "anchor_qc": str(args.anchor_qc),
         "contact_measurements": [str(path) for path in args.contact_measurements],
-        "object_depth_temporal_validation": str(args.object_depth_temporal_validation) if args.object_depth_temporal_validation else None,
+        "object_depth_temporal_validation": [str(path) for path in args.object_depth_temporal_validation],
         "frame_indices": wanted,
         "temporal_validation_required_source_substring": list(args.temporal_validation_required_source_substring),
         "state_counts": dict(sorted(counts.items())),
@@ -179,7 +181,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--anchor-qc", type=Path, required=True)
     parser.add_argument("--contact-measurements", type=Path, nargs="+", required=True)
-    parser.add_argument("--object-depth-temporal-validation", type=Path)
+    parser.add_argument("--object-depth-temporal-validation", type=Path, nargs="*", default=[])
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--frame-indices", type=int, nargs="*")
     parser.add_argument("--image-near-px", type=float, default=12.0)

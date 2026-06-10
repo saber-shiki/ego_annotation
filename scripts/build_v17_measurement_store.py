@@ -1403,10 +1403,18 @@ def default_cases() -> list[CaseSpec]:
             object_depth_repair_candidate_paths=(
                 Path(
                     "/data2/ego_annotation_outputs/v17_object_plan/trash_1050/"
+                    "contact_depth_object_repair_black_trash_bag_182_graph_hand_v1/object_depth_repair_candidates.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_object_plan/trash_1050/"
                     "contact_depth_object_repair_white_bag_856_graph_hand_v1/object_depth_repair_candidates.json"
                 ),
             ),
             object_depth_repair_contact_measurement_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/"
+                    "contact_measurements_anchor_graph_repair_object_depth_candidate_182_black_bag_v1.json"
+                ),
                 Path(
                     "/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/"
                     "contact_measurements_anchor_graph_repair_object_depth_candidate_856_graph_hand_v1.json"
@@ -1415,7 +1423,7 @@ def default_cases() -> list[CaseSpec]:
             contact_state_graph_paths=(
                 Path(
                     "/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/"
-                    "anchor_contact_state_graph_v2.json"
+                    "anchor_contact_state_graph_v3.json"
                 ),
             ),
         ),
