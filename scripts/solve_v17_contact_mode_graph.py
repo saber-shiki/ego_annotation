@@ -29,6 +29,11 @@ OBJECT_LIMIT_FLAGS = {
     "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
 }
 
+CONTACT_MODE_QC_BANNER_LINES = (
+    "V17 CONTACT-MODE QC ONLY: annotation deliverable remains open",
+    "annotation_ready=false | v3_solver_complete=false | object_geometry_complete=false",
+)
+
 
 @dataclass(frozen=True)
 class ContactObs:
@@ -60,6 +65,172 @@ def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+
+def fitted_text(
+    image: np.ndarray,
+    text: str,
+    origin: tuple[int, int],
+    max_width: int,
+    *,
+    max_scale: float = 0.9,
+    min_scale: float = 0.42,
+    color: tuple[int, int, int] = (255, 255, 255),
+    thickness: int = 2,
+) -> int:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = max_scale
+    while scale > min_scale:
+        (width, height), baseline = cv2.getTextSize(text, font, scale, thickness)
+        if width <= max_width:
+            break
+        scale -= 0.04
+    (width, height), baseline = cv2.getTextSize(text, font, scale, thickness)
+    cv2.putText(image, text, origin, font, scale, color, thickness, cv2.LINE_AA)
+    return int(height + baseline + 8)
+
+
+def draw_qc_banner(image: np.ndarray) -> int:
+    banner_height = 96
+    cv2.rectangle(image, (0, 0), (image.shape[1], banner_height), (12, 12, 12), thickness=-1)
+    y = 34
+    for i, line in enumerate(CONTACT_MODE_QC_BANNER_LINES):
+        step = fitted_text(
+            image,
+            line,
+            (24, y),
+            image.shape[1] - 48,
+            max_scale=0.94 if i == 0 else 0.7,
+            min_scale=0.44,
+            thickness=2,
+        )
+        y += step
+    cv2.rectangle(image, (0, banner_height - 4), (image.shape[1], banner_height - 1), (255, 255, 255), thickness=-1)
+    return banner_height
+
+
+def mode_color(row: dict[str, Any]) -> tuple[int, int, int]:
+    if row["contact_factor_ready"]:
+        return (55, 150, 55)
+    if row["mode"] == "contact":
+        return (40, 125, 235)
+    if row["mode"] == "no_contact":
+        return (205, 120, 45)
+    return (165, 165, 165)
+
+
+def write_contact_mode_sheet(
+    path: Path,
+    *,
+    case: str,
+    frame_count: int,
+    solved_rows: list[dict[str, Any]],
+    active_rows: list[dict[str, Any]],
+    active_contact_rows: list[dict[str, Any]],
+    unobserved_rows: list[dict[str, Any]],
+    ready_rows: list[dict[str, Any]],
+    anchor_errors: list[dict[str, Any]],
+    rejection_reasons: list[str],
+) -> dict[str, Any]:
+    width = 1800
+    height = 860
+    image = np.full((height, width, 3), 245, dtype=np.uint8)
+    banner_height = draw_qc_banner(image)
+
+    left = 170
+    right = width - 70
+    timeline_width = right - left
+    y = banner_height + 54
+    fitted_text(image, f"case={case}", (32, y), width - 64, color=(25, 25, 25), max_scale=0.82)
+    y += 44
+    status = "structurally_consistent" if not rejection_reasons else "rejected"
+    metric_line = (
+        f"contact-mode graph status={status} | frames={frame_count} | rows={len(solved_rows)} | "
+        f"active={len(active_rows)} | contact={len(active_contact_rows)} | unobserved={len(unobserved_rows)} | "
+        f"ready_factors={len(ready_rows)} | anchor_errors={len(anchor_errors)}"
+    )
+    fitted_text(image, metric_line, (32, y), width - 64, color=(25, 25, 25), max_scale=0.62, thickness=1)
+    y += 36
+    fitted_text(
+        image,
+        "legend: gray=unobserved, blue=no-contact, orange=contact, green=contact-factor-ready",
+        (32, y),
+        width - 64,
+        color=(25, 25, 25),
+        max_scale=0.58,
+        thickness=1,
+    )
+    y += 54
+
+    sides = sorted({str(row["side"]) for row in solved_rows}, key=lambda side: (side not in ("left", "right"), side))
+    frame_den = max(1, frame_count - 1)
+    for side in sides:
+        side_rows = sorted([row for row in solved_rows if str(row["side"]) == side], key=lambda row: int(row["frame_idx"]))
+        cv2.putText(image, side, (32, y + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (25, 25, 25), 2, cv2.LINE_AA)
+        cv2.rectangle(image, (left, y - 4), (right, y + 26), (218, 218, 218), thickness=-1)
+        for row in side_rows:
+            idx = int(row["frame_idx"])
+            x0 = left + int(round(idx * timeline_width / frame_den))
+            x1 = left + int(round((idx + 1) * timeline_width / frame_den))
+            if x1 <= x0:
+                x1 = x0 + 1
+            cv2.rectangle(image, (x0, y - 4), (min(right, x1), y + 26), mode_color(row), thickness=-1)
+        cv2.rectangle(image, (left, y - 4), (right, y + 26), (50, 50, 50), thickness=1)
+        y += 76
+
+    tick_values = [0, frame_count // 4, frame_count // 2, (3 * frame_count) // 4, max(0, frame_count - 1)]
+    axis_y = y - 32
+    for tick in tick_values:
+        x = left + int(round(tick * timeline_width / frame_den))
+        cv2.line(image, (x, axis_y), (x, axis_y + 16), (40, 40, 40), 1)
+        cv2.putText(image, str(tick), (x - 20, axis_y + 42), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (30, 30, 30), 1, cv2.LINE_AA)
+
+    y += 54
+    interval_text = ", ".join(
+        f"{item['side']}:{item['start_frame']}-{item['end_frame']}" for item in intervals(solved_rows, "contact")[:16]
+    )
+    if not interval_text:
+        interval_text = "none"
+    fitted_text(image, f"contact intervals preview: {interval_text}", (32, y), width - 64, color=(25, 25, 25), max_scale=0.55, thickness=1)
+    y += 38
+    fitted_text(
+        image,
+        "This sheet is a row-level contact-mode QC artifact; Stage 9 visual rendering and object mesh reconstruction remain open.",
+        (32, y),
+        width - 64,
+        color=(25, 25, 25),
+        max_scale=0.55,
+        thickness=1,
+    )
+    y += 38
+    if rejection_reasons:
+        fitted_text(
+            image,
+            f"rejection_reasons={','.join(rejection_reasons)}",
+            (32, y),
+            width - 64,
+            color=(20, 20, 160),
+            max_scale=0.55,
+            thickness=1,
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(path), image):
+        raise RuntimeError(f"failed to write contact-mode review sheet {path}")
+    return {
+        "path": str(path),
+        "exists": True,
+        "artifact_kind": "contact_mode_interval_qc_sheet",
+        "delivery_role": DELIVERY_ROLE,
+        "source": "generated_from_contact_mode_rows",
+        "visible_qc_banner": True,
+        "qc_banner_lines": list(CONTACT_MODE_QC_BANNER_LINES),
+        "visual_qc_scope": "contact_mode_interval_qc_only_not_visual_quality",
+        "visual_quality_qc_pass": False,
+        "stage9_visual_deliverable_ready": False,
+        "width_px": int(width),
+        "height_px": int(height),
+    }
 
 
 def sigmoid(x: float) -> float:
@@ -486,6 +657,19 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
     if anchor_errors:
         rejection_reasons.append("anchor_mode_contradictions")
     case_dir = Path(args.output_root) / case
+    sheet_path = case_dir / "contact_mode_interval_review_sheet.jpg"
+    sheet_report = write_contact_mode_sheet(
+        sheet_path,
+        case=case,
+        frame_count=len(frames),
+        solved_rows=solved_rows,
+        active_rows=active_rows,
+        active_contact_rows=active_contact_rows,
+        unobserved_rows=unobserved_rows,
+        ready_rows=ready_rows,
+        anchor_errors=anchor_errors,
+        rejection_reasons=rejection_reasons,
+    )
     report_path = case_dir / "v17_contact_mode_graph_report.json"
     report = {
         "case": case,
@@ -496,10 +680,20 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
         "rejection_reasons": rejection_reasons,
         "annotation_ready": False,
         "deliverable_ready": False,
+        "visual_quality_qc_pass": False,
+        "stage9_visual_deliverable_ready": False,
         "method": "solve_v17_contact_mode_graph",
         "solver_completeness": "contact_mode_latent_only",
         "v3_solver_complete": False,
         **OBJECT_LIMIT_FLAGS,
+        "visual_artifacts": {
+            "contact_mode_interval_review_sheet": sheet_report,
+            "visible_qc_banner": True,
+            "qc_banner_lines": list(CONTACT_MODE_QC_BANNER_LINES),
+            "visual_qc_scope": "contact_mode_interval_qc_only_not_visual_quality",
+            "visual_quality_qc_pass": False,
+            "stage9_visual_deliverable_ready": False,
+        },
         "semantics": {
             "optimized_variables": ["per-frame per-hand binary contact/no-contact mode"],
             "fixed_variables": ["input camera trajectory", "input MANO geometry", "input object mesh geometry", "input object pose"],
@@ -564,10 +758,17 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
         "delivery_role": DELIVERY_ROLE,
         "annotation_ready": False,
         "deliverable_ready": False,
+        "visual_quality_qc_pass": False,
+        "stage9_visual_deliverable_ready": False,
         "method": "solve_v17_contact_mode_graph",
         "solver_completeness": "contact_mode_latent_only",
         "v3_solver_complete": False,
         **OBJECT_LIMIT_FLAGS,
+        "visual_qc_scope": "contact_mode_interval_qc_only_not_visual_quality",
+        "visible_qc_banner": all(
+            bool(report.get("visual_artifacts", {}).get("visible_qc_banner")) for report in reports
+        ),
+        "qc_banner_lines": list(CONTACT_MODE_QC_BANNER_LINES),
         "cases": [
             {
                 "case": report["case"],
@@ -575,6 +776,9 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
                 "artifact_status": report["artifact_status"],
                 "artifact_kind": report["artifact_kind"],
                 "delivery_role": report["delivery_role"],
+                "visual_artifacts": report["visual_artifacts"],
+                "visual_quality_qc_pass": report["visual_quality_qc_pass"],
+                "stage9_visual_deliverable_ready": report["stage9_visual_deliverable_ready"],
                 "active_observation_count": report["active_observation_count"],
                 "contact_mode_count": report["contact_mode_count"],
                 "contact_factor_ready_count": report["contact_factor_ready_count"],
