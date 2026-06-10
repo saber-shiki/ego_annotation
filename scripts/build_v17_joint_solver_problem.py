@@ -28,6 +28,7 @@ class CaseInputs:
     object_material_track_summary: Path
     object_material_motion_state_summary: Path
     object_material_pose_candidate_summary: Path
+    object_material_surface_replay_summary: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -102,6 +103,7 @@ def case_inputs(
     object_material_track_root: Path,
     object_material_motion_state_root: Path,
     object_material_pose_candidate_root: Path,
+    object_material_surface_replay_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -142,6 +144,10 @@ def case_inputs(
         object_material_pose_candidate_root / case / "v17_object_material_pose_candidate_report.json",
         f"{case} object material-pose candidate report",
     )
+    object_material_surface_replay_summary = existing_path(
+        object_material_surface_replay_root / case / "v17_object_material_surface_replay_report.json",
+        f"{case} object material-surface replay report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -165,6 +171,7 @@ def case_inputs(
         object_material_track_summary=object_material_track_summary,
         object_material_motion_state_summary=object_material_motion_state_summary,
         object_material_pose_candidate_summary=object_material_pose_candidate_summary,
+        object_material_surface_replay_summary=object_material_surface_replay_summary,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -504,6 +511,39 @@ def object_material_pose_candidate_counts(report: dict[str, Any]) -> dict[str, A
     }
 
 
+def object_material_surface_replay_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "partial_material_pose_candidate_segment_count": require_int(
+            report.get("partial_material_pose_candidate_segment_count"),
+            "object material-surface partial_material_pose_candidate_segment_count",
+        ),
+        "partial_material_pose_candidate_ready_segment_count": require_int(
+            report.get("partial_material_pose_candidate_ready_segment_count"),
+            "object material-surface partial_material_pose_candidate_ready_segment_count",
+        ),
+        "partial_visible_surface_replay_candidate_count": require_int(
+            report.get("partial_visible_surface_replay_candidate_count"),
+            "object material-surface partial_visible_surface_replay_candidate_count",
+        ),
+        "partial_visible_surface_replay_ready_count": require_int(
+            report.get("partial_visible_surface_replay_ready_count"),
+            "object material-surface partial_visible_surface_replay_ready_count",
+        ),
+        "ready_candidate_ids": require_list(
+            report.get("ready_candidate_ids"),
+            "object material-surface ready_candidate_ids",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "frame_count": require_int(metadata.get("frame_count"), "mesh metadata frame_count"),
@@ -544,6 +584,7 @@ def required_variable_families(
     object_material_track: dict[str, Any],
     object_material_motion_state: dict[str, Any],
     object_material_pose_candidate: dict[str, Any],
+    object_material_surface_replay: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -646,6 +687,12 @@ def required_variable_families(
                 "partial_material_pose_ready_segments": object_material_pose_candidate[
                     "partial_material_pose_candidate_ready_segment_count"
                 ],
+                "partial_visible_surface_replay_candidates": object_material_surface_replay[
+                    "partial_visible_surface_replay_candidate_count"
+                ],
+                "partial_visible_surface_replay_ready_segments": object_material_surface_replay[
+                    "partial_visible_surface_replay_ready_count"
+                ],
                 "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
                     "noncandidate_local_adjacent_material_motion_window_count"
                 ],
@@ -702,6 +749,9 @@ def required_variable_families(
                 "partial_material_pose_candidate_segment_ids": object_material_pose_candidate[
                     "candidate_segment_ids"
                 ],
+                "partial_visible_surface_replay_ready_candidate_ids": object_material_surface_replay[
+                    "ready_candidate_ids"
+                ],
                 "exported_object_ids_without_material_tracks": object_material_track[
                     "exported_object_ids_without_material_tracks"
                 ],
@@ -714,6 +764,7 @@ def required_variable_families(
                 "material tracks cover sampled object windows only and are not integrated as full-timeline object variables",
                 "persistent material-motion candidates do not provide canonical object meshes or full-timeline pose/deformation variables",
                 "partial material-point SE(3) candidates exist only for accepted short segments and are not connected to complete object geometry",
+                "visible-surface replay tests only observed surfaces and does not reconstruct hidden topology",
             ],
         ),
         variable_family(
@@ -785,6 +836,9 @@ def required_variable_families(
                 "partial_material_pose_ready_segments": object_material_pose_candidate[
                     "partial_material_pose_candidate_ready_segment_count"
                 ],
+                "partial_visible_surface_replay_ready_segments": object_material_surface_replay[
+                    "partial_visible_surface_replay_ready_count"
+                ],
                 "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
                     "noncandidate_local_adjacent_material_motion_window_count"
                 ],
@@ -815,6 +869,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.object_material_pose_candidate_summary),
         f"{inputs.case} object material-pose candidate report",
     )
+    object_material_surface_replay_summary = require_dict(
+        load_json(inputs.object_material_surface_replay_summary),
+        f"{inputs.case} object material-surface replay report",
+    )
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -829,6 +887,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     object_material_track = object_material_track_counts(object_material_track_summary)
     object_material_motion_state = object_material_motion_state_counts(object_material_motion_state_summary)
     object_material_pose_candidate = object_material_pose_candidate_counts(object_material_pose_candidate_summary)
+    object_material_surface_replay = object_material_surface_replay_counts(object_material_surface_replay_summary)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -891,6 +950,22 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} material-pose persistent candidate count",
     ):
         raise RuntimeError(f"{inputs.case} material-motion persistent candidate count disagrees with material-pose report")
+    if require_int(
+        object_material_pose_candidate["partial_material_pose_candidate_segment_count"],
+        f"{inputs.case} material-pose candidate segment count",
+    ) != require_int(
+        object_material_surface_replay["partial_material_pose_candidate_segment_count"],
+        f"{inputs.case} material-surface candidate segment count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-pose candidate count disagrees with surface replay report")
+    if require_int(
+        object_material_pose_candidate["partial_material_pose_candidate_ready_segment_count"],
+        f"{inputs.case} material-pose ready segment count",
+    ) != require_int(
+        object_material_surface_replay["partial_material_pose_candidate_ready_segment_count"],
+        f"{inputs.case} material-surface pose ready segment count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-pose ready count disagrees with surface replay report")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -907,6 +982,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_material_track,
         object_material_motion_state,
         object_material_pose_candidate,
+        object_material_surface_replay,
         counts,
         sparse,
         contact,
@@ -941,6 +1017,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "object_material_pose_candidate_report": source_summary(
                 inputs.object_material_pose_candidate_summary, object_material_pose_candidate_summary
             ),
+            "object_material_surface_replay_report": source_summary(
+                inputs.object_material_surface_replay_summary, object_material_surface_replay_summary
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -954,6 +1033,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_material_tracks": object_material_track,
         "current_object_material_motion_state": object_material_motion_state,
         "current_object_material_pose_candidates": object_material_pose_candidate,
+        "current_object_material_surface_replay": object_material_surface_replay,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -993,6 +1073,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_material_track_root,
             args.object_material_motion_state_root,
             args.object_material_pose_candidate_root,
+            args.object_material_surface_replay_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -1016,6 +1097,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_material_track_root": str(args.object_material_track_root),
         "object_material_motion_state_root": str(args.object_material_motion_state_root),
         "object_material_pose_candidate_root": str(args.object_material_pose_candidate_root),
+        "object_material_surface_replay_root": str(args.object_material_surface_replay_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -1073,6 +1155,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "partial_material_pose_candidate_ready_segment_count": case[
                     "current_object_material_pose_candidates"
                 ]["partial_material_pose_candidate_ready_segment_count"],
+                "partial_visible_surface_replay_candidate_count": case[
+                    "current_object_material_surface_replay"
+                ]["partial_visible_surface_replay_candidate_count"],
+                "partial_visible_surface_replay_ready_count": case[
+                    "current_object_material_surface_replay"
+                ]["partial_visible_surface_replay_ready_count"],
                 "current_single_stream_object_variable_frames": case["current_sparse_graph"]["object_variable_frames"],
                 "contact_factor_ready_count": case["current_contact_mode_graph"]["contact_factor_ready_count"],
                 "unmet_required_variable_families": case["unmet_required_variable_families"],
@@ -1149,6 +1237,11 @@ def parse_args() -> argparse.Namespace:
         "--object-material-pose-candidate-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_object_material_pose_candidates"),
+    )
+    parser.add_argument(
+        "--object-material-surface-replay-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_object_material_surface_replay"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
