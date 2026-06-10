@@ -30,6 +30,7 @@ class CaseInputs:
     object_material_pose_candidate_summary: Path
     object_material_surface_replay_summary: Path
     multi_object_contact_evidence_summary: Path
+    geometry_source_audit_report: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -106,6 +107,7 @@ def case_inputs(
     object_material_pose_candidate_root: Path,
     object_material_surface_replay_root: Path,
     multi_object_contact_evidence_root: Path,
+    geometry_source_audit_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -154,6 +156,10 @@ def case_inputs(
         multi_object_contact_evidence_root / case / "v17_multi_object_contact_evidence_report.json",
         f"{case} multi-object contact evidence report",
     )
+    geometry_source_audit_report = existing_path(
+        geometry_source_audit_root / case / "v17_geometry_source_audit_report.json",
+        f"{case} geometry-source audit report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -179,6 +185,7 @@ def case_inputs(
         object_material_pose_candidate_summary=object_material_pose_candidate_summary,
         object_material_surface_replay_summary=object_material_surface_replay_summary,
         multi_object_contact_evidence_summary=multi_object_contact_evidence_summary,
+        geometry_source_audit_report=geometry_source_audit_report,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -588,6 +595,136 @@ def multi_object_contact_evidence_counts(report: dict[str, Any]) -> dict[str, An
     }
 
 
+def geometry_source_audit_counts(report: dict[str, Any]) -> dict[str, Any]:
+    geometry = require_dict(report.get("geometry_source_counts"), "geometry-source audit geometry_source_counts")
+    contact = require_dict(report.get("contact_source_counts"), "geometry-source audit contact_source_counts")
+    findings = require_dict(report.get("source_compatibility_findings"), "geometry-source audit findings")
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "geometry-source audit frame_count"),
+        "multi_object_visible_surface_rows": require_int(
+            geometry.get("multi_object_visible_surface_rows"),
+            "geometry-source audit multi_object_visible_surface_rows",
+        ),
+        "multi_object_visible_surface_rejected_rows": require_int(
+            geometry.get("multi_object_visible_surface_rejected_rows"),
+            "geometry-source audit multi_object_visible_surface_rejected_rows",
+        ),
+        "legacy_single_stream_object_variable_frames": require_int(
+            geometry.get("legacy_single_stream_object_variable_frames"),
+            "geometry-source audit legacy_single_stream_object_variable_frames",
+        ),
+        "legacy_single_stream_mesh_frames": require_int(
+            geometry.get("legacy_single_stream_mesh_frames"),
+            "geometry-source audit legacy_single_stream_mesh_frames",
+        ),
+        "legacy_single_stream_missing_mesh_frame_count": require_int(
+            geometry.get("legacy_single_stream_missing_mesh_frame_count"),
+            "geometry-source audit legacy_single_stream_missing_mesh_frame_count",
+        ),
+        "local_contact_patch_state_rows": require_int(
+            geometry.get("local_contact_patch_state_rows"),
+            "geometry-source audit local_contact_patch_state_rows",
+        ),
+        "accepted_local_contact_patch_state_rows": require_int(
+            geometry.get("accepted_local_contact_patch_state_rows"),
+            "geometry-source audit accepted_local_contact_patch_state_rows",
+        ),
+        "partial_visible_surface_replay_candidate_count": require_int(
+            geometry.get("partial_visible_surface_replay_candidate_count"),
+            "geometry-source audit partial_visible_surface_replay_candidate_count",
+        ),
+        "partial_visible_surface_replay_ready_count": require_int(
+            geometry.get("partial_visible_surface_replay_ready_count"),
+            "geometry-source audit partial_visible_surface_replay_ready_count",
+        ),
+        "contact_mode_factor_ready_rows": require_int(
+            contact.get("contact_mode_factor_ready_rows"),
+            "geometry-source audit contact_mode_factor_ready_rows",
+        ),
+        "contact_mode_factor_ready_rows_with_selected_measurement": require_int(
+            contact.get("contact_mode_factor_ready_rows_with_selected_measurement"),
+            "geometry-source audit contact_mode_factor_ready_rows_with_selected_measurement",
+        ),
+        "contact_mode_factor_ready_rows_without_selected_measurement": require_int(
+            contact.get("contact_mode_factor_ready_rows_without_selected_measurement"),
+            "geometry-source audit contact_mode_factor_ready_rows_without_selected_measurement",
+        ),
+        "contact_mode_ready_rows_with_same_frame_side_multi_object_measurement": require_int(
+            contact.get("contact_mode_ready_rows_with_same_frame_side_multi_object_measurement"),
+            "geometry-source audit contact_mode_ready_rows_with_same_frame_side_multi_object_measurement",
+        ),
+        "contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate": require_int(
+            contact.get("contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate"),
+            "geometry-source audit contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate",
+        ),
+        "multi_object_hand_object_rows": require_int(
+            contact.get("multi_object_hand_object_rows"),
+            "geometry-source audit multi_object_hand_object_rows",
+        ),
+        "multi_object_measured_distance_rows": require_int(
+            contact.get("multi_object_measured_distance_rows"),
+            "geometry-source audit multi_object_measured_distance_rows",
+        ),
+        "multi_object_unobserved_rows": require_int(
+            contact.get("multi_object_unobserved_rows"),
+            "geometry-source audit multi_object_unobserved_rows",
+        ),
+        "multi_object_visible_surface_distance_candidate_rows": require_int(
+            contact.get("multi_object_visible_surface_distance_candidate_rows"),
+            "geometry-source audit multi_object_visible_surface_distance_candidate_rows",
+        ),
+        "multi_object_contact_factor_ready_rows": require_int(
+            contact.get("multi_object_contact_factor_ready_rows"),
+            "geometry-source audit multi_object_contact_factor_ready_rows",
+        ),
+        "selected_measurement_audit_counts": require_dict(
+            contact.get("selected_measurement_audit_counts"),
+            "geometry-source audit selected_measurement_audit_counts",
+        ),
+        "local_patch_visible_surface_conflict_count": len(
+            [
+                row
+                for row in require_list(
+                    report.get("local_patch_visible_surface_conflicts"),
+                    "geometry-source audit local_patch_visible_surface_conflicts",
+                )
+                if require_dict(row, "local patch conflict").get("source_conflict") is True
+            ]
+        ),
+        "source_incompatibility_count": require_int(
+            report.get("source_incompatibility_count"),
+            "geometry-source audit source_incompatibility_count",
+        ),
+        "legacy_contact_factors_supported_by_multi_object_visible_surface_contact_rows": bool(
+            findings.get("legacy_contact_factors_supported_by_multi_object_visible_surface_contact_rows") is True
+        ),
+        "legacy_contact_factors_have_any_same_frame_side_visible_surface_candidate": bool(
+            findings.get("legacy_contact_factors_have_any_same_frame_side_visible_surface_candidate") is True
+        ),
+        "accepted_local_patches_conflict_with_multi_object_visible_surface_distance": bool(
+            findings.get("accepted_local_patches_conflict_with_multi_object_visible_surface_distance") is True
+        ),
+        "partial_material_pose_replay_is_complete_object_geometry": bool(
+            findings.get("partial_material_pose_replay_is_complete_object_geometry") is True
+        ),
+        "unified_object_geometry_source_ready": bool(findings.get("unified_object_geometry_source_ready") is True),
+        "contact_factor_source_compatible_with_multi_object_geometry": bool(
+            findings.get("contact_factor_source_compatible_with_multi_object_geometry") is True
+        ),
+        "object_pose_source_compatible_with_contact_factors": bool(
+            findings.get("object_pose_source_compatible_with_contact_factors") is True
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "frame_count": require_int(metadata.get("frame_count"), "mesh metadata frame_count"),
@@ -630,6 +767,7 @@ def required_variable_families(
     object_material_pose_candidate: dict[str, Any],
     object_material_surface_replay: dict[str, Any],
     multi_object_contact_evidence: dict[str, Any],
+    geometry_source_audit: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -738,6 +876,15 @@ def required_variable_families(
                 "partial_visible_surface_replay_ready_segments": object_material_surface_replay[
                     "partial_visible_surface_replay_ready_count"
                 ],
+                "geometry_source_audit_incompatibilities": geometry_source_audit[
+                    "source_incompatibility_count"
+                ],
+                "unified_object_geometry_source_ready": geometry_source_audit[
+                    "unified_object_geometry_source_ready"
+                ],
+                "contact_factor_source_compatible_with_multi_object_geometry": geometry_source_audit[
+                    "contact_factor_source_compatible_with_multi_object_geometry"
+                ],
                 "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
                     "noncandidate_local_adjacent_material_motion_window_count"
                 ],
@@ -748,6 +895,7 @@ def required_variable_families(
             [
                 "complete object meshes are absent for several active objects",
                 "local contact patches and visible surfaces are still QC evidence, not complete object geometry",
+                "current contact factors and multi-object visible surfaces are not source-compatible",
                 "topology/deformation variables are not optimized",
             ],
         ),
@@ -797,6 +945,15 @@ def required_variable_families(
                 "partial_visible_surface_replay_ready_candidate_ids": object_material_surface_replay[
                     "ready_candidate_ids"
                 ],
+                "object_pose_source_compatible_with_contact_factors": geometry_source_audit[
+                    "object_pose_source_compatible_with_contact_factors"
+                ],
+                "partial_material_pose_replay_is_complete_object_geometry": geometry_source_audit[
+                    "partial_material_pose_replay_is_complete_object_geometry"
+                ],
+                "legacy_single_stream_object_variable_frames": geometry_source_audit[
+                    "legacy_single_stream_object_variable_frames"
+                ],
                 "exported_object_ids_without_material_tracks": object_material_track[
                     "exported_object_ids_without_material_tracks"
                 ],
@@ -810,6 +967,7 @@ def required_variable_families(
                 "persistent material-motion candidates do not provide canonical object meshes or full-timeline pose/deformation variables",
                 "partial material-point SE(3) candidates exist only for accepted short segments and are not connected to complete object geometry",
                 "visible-surface replay tests only observed surfaces and does not reconstruct hidden topology",
+                "object-pose evidence is not source-compatible with the current contact factors",
             ],
         ),
         variable_family(
@@ -830,11 +988,27 @@ def required_variable_families(
                 "multi_object_contact_factor_ready_rows": multi_object_contact_evidence[
                     "contact_factor_ready_rows"
                 ],
+                "contact_mode_ready_rows_with_same_frame_side_multi_object_measurement": geometry_source_audit[
+                    "contact_mode_ready_rows_with_same_frame_side_multi_object_measurement"
+                ],
+                "contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate": geometry_source_audit[
+                    "contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate"
+                ],
+                "local_patch_visible_surface_conflict_count": geometry_source_audit[
+                    "local_patch_visible_surface_conflict_count"
+                ],
+                "accepted_local_patches_conflict_with_multi_object_visible_surface_distance": geometry_source_audit[
+                    "accepted_local_patches_conflict_with_multi_object_visible_surface_distance"
+                ],
+                "contact_factor_source_compatible_with_multi_object_geometry": geometry_source_audit[
+                    "contact_factor_source_compatible_with_multi_object_geometry"
+                ],
             },
             [
                 "contact modes are estimated before the sparse geometry graph and then fixed",
                 "the full hand-object table measures visible-surface distance but does not estimate contact modes",
                 "accepted local contact-patch states are not unified with multi-object visible surfaces",
+                "contact-mode ready rows have no same-frame multi-object visible-surface contact candidates",
                 "unobserved rows do not carry uncertainty variables or prediction/update state",
             ],
         ),
@@ -894,6 +1068,12 @@ def required_variable_families(
                 "partial_visible_surface_replay_ready_segments": object_material_surface_replay[
                     "partial_visible_surface_replay_ready_count"
                 ],
+                "source_incompatibility_count": geometry_source_audit[
+                    "source_incompatibility_count"
+                ],
+                "unified_object_geometry_source_ready": geometry_source_audit[
+                    "unified_object_geometry_source_ready"
+                ],
                 "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
                     "noncandidate_local_adjacent_material_motion_window_count"
                 ],
@@ -903,6 +1083,7 @@ def required_variable_families(
                 "local equality and smoothness do not model nonpenetration or force/support feasibility",
                 "contact dynamics are not coupled to object identity, deformation, and MANO articulation",
                 "broad hand-object distances remain diagnostics rather than physical constraints",
+                "physical terms cannot share one object state until geometry-source ownership is unified",
             ],
         ),
     ]
@@ -932,6 +1113,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.multi_object_contact_evidence_summary),
         f"{inputs.case} multi-object contact evidence report",
     )
+    geometry_source_audit_report = require_dict(
+        load_json(inputs.geometry_source_audit_report),
+        f"{inputs.case} geometry-source audit report",
+    )
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -948,6 +1133,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     object_material_pose_candidate = object_material_pose_candidate_counts(object_material_pose_candidate_summary)
     object_material_surface_replay = object_material_surface_replay_counts(object_material_surface_replay_summary)
     multi_object_contact_evidence = multi_object_contact_evidence_counts(multi_object_contact_evidence_summary)
+    geometry_source_audit = geometry_source_audit_counts(geometry_source_audit_report)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -964,6 +1150,8 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and mesh metadata")
     if frame_count != require_int(multi_object_contact_evidence["frame_count"], f"{inputs.case} multi-object contact frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and multi-object contact evidence")
+    if frame_count != require_int(geometry_source_audit["frame_count"], f"{inputs.case} geometry-source audit frame_count"):
+        raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and geometry-source audit")
     if require_int(timeline["visible_mask_frame_rows"], f"{inputs.case} timeline visible mask rows") != require_int(
         visible_surface["visible_object_frame_rows"], f"{inputs.case} visible-surface visible rows"
     ):
@@ -980,6 +1168,79 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         geometry_state["surface_frame_rows"], f"{inputs.case} geometry-state surface rows"
     ):
         raise RuntimeError(f"{inputs.case} visible-surface rows disagree with geometry-state report")
+    if require_int(visible_surface["surface_frame_rows"], f"{inputs.case} visible surface rows") != require_int(
+        geometry_source_audit["multi_object_visible_surface_rows"],
+        f"{inputs.case} audit visible-surface rows",
+    ):
+        raise RuntimeError(f"{inputs.case} visible-surface rows disagree with geometry-source audit")
+    if require_int(
+        visible_surface["rejected_visible_object_frame_rows"],
+        f"{inputs.case} visible-surface rejected rows",
+    ) != require_int(
+        geometry_source_audit["multi_object_visible_surface_rejected_rows"],
+        f"{inputs.case} audit visible-surface rejected rows",
+    ):
+        raise RuntimeError(f"{inputs.case} visible-surface rejections disagree with geometry-source audit")
+    if require_int(sparse["object_variable_frames"], f"{inputs.case} sparse object variable frames") != require_int(
+        geometry_source_audit["legacy_single_stream_object_variable_frames"],
+        f"{inputs.case} audit legacy object variable frames",
+    ):
+        raise RuntimeError(f"{inputs.case} sparse object variables disagree with geometry-source audit")
+    if require_int(mesh["mesh_frames"], f"{inputs.case} mesh frames") != require_int(
+        geometry_source_audit["legacy_single_stream_mesh_frames"],
+        f"{inputs.case} audit mesh frames",
+    ):
+        raise RuntimeError(f"{inputs.case} mesh frames disagree with geometry-source audit")
+    if require_int(mesh["missing_mesh_frame_count"], f"{inputs.case} missing mesh frames") != require_int(
+        geometry_source_audit["legacy_single_stream_missing_mesh_frame_count"],
+        f"{inputs.case} audit missing mesh frames",
+    ):
+        raise RuntimeError(f"{inputs.case} missing mesh frames disagree with geometry-source audit")
+    if require_int(contact["contact_factor_ready_count"], f"{inputs.case} contact ready rows") != require_int(
+        geometry_source_audit["contact_mode_factor_ready_rows"],
+        f"{inputs.case} audit contact ready rows",
+    ):
+        raise RuntimeError(f"{inputs.case} contact ready rows disagree with geometry-source audit")
+    if require_int(
+        multi_object_contact_evidence["hand_object_rows"],
+        f"{inputs.case} multi-object contact hand-object rows",
+    ) != require_int(
+        geometry_source_audit["multi_object_hand_object_rows"],
+        f"{inputs.case} audit multi-object hand-object rows",
+    ):
+        raise RuntimeError(f"{inputs.case} hand-object rows disagree with geometry-source audit")
+    if require_int(
+        multi_object_contact_evidence["measured_distance_rows"],
+        f"{inputs.case} multi-object measured rows",
+    ) != require_int(
+        geometry_source_audit["multi_object_measured_distance_rows"],
+        f"{inputs.case} audit measured rows",
+    ):
+        raise RuntimeError(f"{inputs.case} measured contact rows disagree with geometry-source audit")
+    if require_int(
+        multi_object_contact_evidence["unobserved_rows"],
+        f"{inputs.case} multi-object unobserved rows",
+    ) != require_int(
+        geometry_source_audit["multi_object_unobserved_rows"],
+        f"{inputs.case} audit unobserved rows",
+    ):
+        raise RuntimeError(f"{inputs.case} unobserved contact rows disagree with geometry-source audit")
+    if require_int(
+        multi_object_contact_evidence["visible_surface_distance_candidate_rows"],
+        f"{inputs.case} multi-object visible distance candidates",
+    ) != require_int(
+        geometry_source_audit["multi_object_visible_surface_distance_candidate_rows"],
+        f"{inputs.case} audit visible distance candidates",
+    ):
+        raise RuntimeError(f"{inputs.case} visible-distance candidates disagree with geometry-source audit")
+    if require_int(
+        multi_object_contact_evidence["contact_factor_ready_rows"],
+        f"{inputs.case} multi-object contact factor rows",
+    ) != require_int(
+        geometry_source_audit["multi_object_contact_factor_ready_rows"],
+        f"{inputs.case} audit multi-object contact factor rows",
+    ):
+        raise RuntimeError(f"{inputs.case} multi-object contact factors disagree with geometry-source audit")
     if require_int(
         object_track_dataset["total_exported_frames"],
         f"{inputs.case} object-track dataset exported frames",
@@ -1036,6 +1297,22 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} material-surface pose ready segment count",
     ):
         raise RuntimeError(f"{inputs.case} material-pose ready count disagrees with surface replay report")
+    if require_int(
+        object_material_surface_replay["partial_visible_surface_replay_candidate_count"],
+        f"{inputs.case} material-surface candidate count",
+    ) != require_int(
+        geometry_source_audit["partial_visible_surface_replay_candidate_count"],
+        f"{inputs.case} audit material-surface candidate count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-surface candidate count disagrees with geometry-source audit")
+    if require_int(
+        object_material_surface_replay["partial_visible_surface_replay_ready_count"],
+        f"{inputs.case} material-surface ready count",
+    ) != require_int(
+        geometry_source_audit["partial_visible_surface_replay_ready_count"],
+        f"{inputs.case} audit material-surface ready count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-surface ready count disagrees with geometry-source audit")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -1054,6 +1331,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_material_pose_candidate,
         object_material_surface_replay,
         multi_object_contact_evidence,
+        geometry_source_audit,
         counts,
         sparse,
         contact,
@@ -1094,6 +1372,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "multi_object_contact_evidence_report": source_summary(
                 inputs.multi_object_contact_evidence_summary, multi_object_contact_evidence_summary
             ),
+            "geometry_source_audit_report": source_summary(
+                inputs.geometry_source_audit_report, geometry_source_audit_report
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -1109,6 +1390,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_material_pose_candidates": object_material_pose_candidate,
         "current_object_material_surface_replay": object_material_surface_replay,
         "current_multi_object_contact_evidence": multi_object_contact_evidence,
+        "current_geometry_source_audit": geometry_source_audit,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -1150,6 +1432,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_material_pose_candidate_root,
             args.object_material_surface_replay_root,
             args.multi_object_contact_evidence_root,
+            args.geometry_source_audit_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -1175,6 +1458,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_material_pose_candidate_root": str(args.object_material_pose_candidate_root),
         "object_material_surface_replay_root": str(args.object_material_surface_replay_root),
         "multi_object_contact_evidence_root": str(args.multi_object_contact_evidence_root),
+        "geometry_source_audit_root": str(args.geometry_source_audit_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -1250,6 +1534,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "multi_object_contact_factor_ready_rows": case[
                     "current_multi_object_contact_evidence"
                 ]["contact_factor_ready_rows"],
+                "geometry_source_incompatibility_count": case[
+                    "current_geometry_source_audit"
+                ]["source_incompatibility_count"],
+                "local_patch_visible_surface_conflict_count": case[
+                    "current_geometry_source_audit"
+                ]["local_patch_visible_surface_conflict_count"],
+                "contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate": case[
+                    "current_geometry_source_audit"
+                ]["contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate"],
+                "unified_object_geometry_source_ready": case[
+                    "current_geometry_source_audit"
+                ]["unified_object_geometry_source_ready"],
+                "contact_factor_source_compatible_with_multi_object_geometry": case[
+                    "current_geometry_source_audit"
+                ]["contact_factor_source_compatible_with_multi_object_geometry"],
+                "object_pose_source_compatible_with_contact_factors": case[
+                    "current_geometry_source_audit"
+                ]["object_pose_source_compatible_with_contact_factors"],
                 "current_single_stream_object_variable_frames": case["current_sparse_graph"]["object_variable_frames"],
                 "contact_factor_ready_count": case["current_contact_mode_graph"]["contact_factor_ready_count"],
                 "unmet_required_variable_families": case["unmet_required_variable_families"],
@@ -1268,6 +1570,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ],
         "unmet_required_variable_families_union": union_unmet,
         "missing_or_incomplete_required_variable_families_union": union_unmet,
+        "geometry_source_incompatibility_count": sum(
+            case["current_geometry_source_audit"]["source_incompatibility_count"] for case in case_outputs
+        ),
+        "contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate": sum(
+            case["current_geometry_source_audit"][
+                "contact_mode_ready_rows_with_same_frame_side_visible_surface_candidate"
+            ]
+            for case in case_outputs
+        ),
+        "unified_object_geometry_source_ready": False,
+        "contact_factor_source_compatible_with_multi_object_geometry": False,
+        "object_pose_source_compatible_with_contact_factors": False,
         "v3_solver_complete": False,
         "annotation_ready": False,
         "deliverable_ready": False,
@@ -1336,6 +1650,11 @@ def parse_args() -> argparse.Namespace:
         "--multi-object-contact-evidence-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_multi_object_contact_evidence"),
+    )
+    parser.add_argument(
+        "--geometry-source-audit-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_geometry_source_audit"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
