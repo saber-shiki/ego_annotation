@@ -174,6 +174,10 @@ def load_case_inputs(case: str, args: argparse.Namespace) -> dict[str, Any]:
             args.contact_ownership_problem_root / case / "v17_contact_ownership_problem.json",
             f"{case} contact-ownership problem",
         ),
+        "pairwise_contact_depth_gap": existing_path(
+            args.pairwise_contact_depth_gap_root / case / "v17_pairwise_contact_depth_gap.json",
+            f"{case} pairwise contact depth-gap report",
+        ),
         "geometry_source_audit": existing_path(
             args.geometry_source_audit_root / case / "v17_geometry_source_audit_report.json",
             f"{case} geometry-source audit report",
@@ -534,6 +538,7 @@ def contact_ownership_by_object(report: dict[str, Any]) -> dict[str, list[dict[s
                     ),
                     "owner_geometrically_supported": bool(candidate.get("owner_geometrically_supported") is True),
                     "owner_image_supported": bool(candidate.get("owner_image_supported") is True),
+                    "owner_metric_depth_supported": bool(candidate.get("owner_metric_depth_supported") is True),
                     "contact_owner_factor_ready": bool(candidate.get("contact_owner_factor_ready") is True),
                     "multi_object_visible_surface": require_dict(
                         candidate.get("multi_object_visible_surface"),
@@ -542,6 +547,10 @@ def contact_ownership_by_object(report: dict[str, Any]) -> dict[str, list[dict[s
                     "pairwise_image_contact": require_dict(
                         candidate.get("pairwise_image_contact"),
                         "pairwise_image_contact",
+                    ),
+                    "pairwise_metric_depth": require_dict(
+                        candidate.get("pairwise_metric_depth"),
+                        "pairwise_metric_depth",
                     ),
                     "accepted_reconstruction_contact": require_dict(
                         candidate.get("accepted_reconstruction_contact"),
@@ -564,6 +573,9 @@ def contact_ownership_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             1 for row in rows if row.get("owner_geometrically_supported") is True
         ),
         "image_supported_candidate_rows": sum(1 for row in rows if row.get("owner_image_supported") is True),
+        "metric_depth_supported_candidate_rows": sum(
+            1 for row in rows if row.get("owner_metric_depth_supported") is True
+        ),
         "contact_owner_factor_ready_rows": sum(1 for row in rows if row.get("contact_owner_factor_ready") is True),
         "owner_variable_state_counts": dict(
             sorted(Counter(require_str(row.get("owner_variable_state"), "owner_variable_state") for row in rows).items())
@@ -1025,6 +1037,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     depth_contact = payloads["depth_contact_consistency_audit"]
     contact = payloads["multi_object_contact_evidence"]
     contact_ownership = payloads["contact_ownership_problem"]
+    pairwise_depth_gap = payloads["pairwise_contact_depth_gap"]
     audit = payloads["geometry_source_audit"]
 
     objects = [require_dict(row, f"{case} objects[{i}]") for i, row in enumerate(require_list(hypothesis.get("objects"), "objects"))]
@@ -1223,6 +1236,20 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             for block in row["factor_blocks"]
             if block.get("factor_block") == "object_contact_ownership"
         ),
+        "contact_owner_metric_depth_evaluated_rows": require_int(
+            contact_ownership.get("pairwise_metric_depth_evaluated_rows"),
+            "contact owner pairwise metric depth evaluated rows",
+        ),
+        "contact_owner_metric_depth_compatible_candidate_rows": require_int(
+            contact_ownership.get("pairwise_metric_depth_compatible_candidate_rows"),
+            "contact owner pairwise metric depth compatible rows",
+        ),
+        "contact_owner_metric_depth_supported_candidate_rows": sum(
+            require_int(block.get("metric_depth_supported_candidate_rows"), "contact owner metric-depth supported rows")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "object_contact_ownership"
+        ),
         "contact_owner_factor_ready_rows": sum(
             require_int(block.get("contact_owner_factor_ready_rows"), "contact owner factor-ready rows")
             for row in object_rows
@@ -1323,6 +1350,21 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "contact owner image-supported rows",
     ):
         raise RuntimeError(f"{case} contact owner image-supported rows disagree with contact-ownership report")
+    if summary_counts["contact_owner_metric_depth_evaluated_rows"] != require_int(
+        pairwise_depth_gap.get("evaluated_pair_depth_rows"),
+        "pairwise depth-gap evaluated rows",
+    ):
+        raise RuntimeError(f"{case} metric-depth evaluated rows disagree with pairwise depth-gap report")
+    if summary_counts["contact_owner_metric_depth_compatible_candidate_rows"] != require_int(
+        pairwise_depth_gap.get("metric_depth_compatible_candidate_rows"),
+        "pairwise depth-gap compatible rows",
+    ):
+        raise RuntimeError(f"{case} metric-depth compatible rows disagree with pairwise depth-gap report")
+    if summary_counts["contact_owner_metric_depth_supported_candidate_rows"] != require_int(
+        contact_ownership.get("contact_owner_metric_depth_supported_candidate_rows"),
+        "contact owner metric-depth supported rows",
+    ):
+        raise RuntimeError(f"{case} metric-depth supported rows disagree with contact-ownership report")
     if summary_counts["geometry_source_conflict_count"] != len(
         require_list(audit.get("local_patch_visible_surface_conflicts"), "local_patch_visible_surface_conflicts")
     ):
@@ -1570,6 +1612,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("contact_owner_image_supported_candidate_rows"),
                     "contact_owner_image_supported_candidate_rows",
                 ),
+                "contact_owner_metric_depth_evaluated_rows": require_int(
+                    report.get("contact_owner_metric_depth_evaluated_rows"),
+                    "contact_owner_metric_depth_evaluated_rows",
+                ),
+                "contact_owner_metric_depth_compatible_candidate_rows": require_int(
+                    report.get("contact_owner_metric_depth_compatible_candidate_rows"),
+                    "contact_owner_metric_depth_compatible_candidate_rows",
+                ),
+                "contact_owner_metric_depth_supported_candidate_rows": require_int(
+                    report.get("contact_owner_metric_depth_supported_candidate_rows"),
+                    "contact_owner_metric_depth_supported_candidate_rows",
+                ),
                 "contact_owner_factor_ready_rows": require_int(
                     report.get("contact_owner_factor_ready_rows"),
                     "contact_owner_factor_ready_rows",
@@ -1777,6 +1831,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             require_int(report.get("contact_owner_image_supported_candidate_rows"), "contact owner image-supported rows")
             for report in reports
         ),
+        "contact_owner_metric_depth_evaluated_rows": sum(
+            require_int(report.get("contact_owner_metric_depth_evaluated_rows"), "contact owner metric-depth evaluated rows")
+            for report in reports
+        ),
+        "contact_owner_metric_depth_compatible_candidate_rows": sum(
+            require_int(
+                report.get("contact_owner_metric_depth_compatible_candidate_rows"),
+                "contact owner metric-depth compatible rows",
+            )
+            for report in reports
+        ),
+        "contact_owner_metric_depth_supported_candidate_rows": sum(
+            require_int(
+                report.get("contact_owner_metric_depth_supported_candidate_rows"),
+                "contact owner metric-depth supported rows",
+            )
+            for report in reports
+        ),
         "contact_owner_factor_ready_rows": sum(
             require_int(report.get("contact_owner_factor_ready_rows"), "contact owner factor-ready rows")
             for report in reports
@@ -1850,6 +1922,11 @@ def parse_args() -> argparse.Namespace:
         "--contact-ownership-problem-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_contact_ownership_problem"),
+    )
+    parser.add_argument(
+        "--pairwise-contact-depth-gap-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_pairwise_contact_depth_gap"),
     )
     parser.add_argument(
         "--geometry-source-audit-root",

@@ -157,6 +157,10 @@ def load_case_inputs(case: str, args: argparse.Namespace) -> dict[str, Any]:
             args.pairwise_contact_state_root / case / "v17_pairwise_contact_state.json",
             f"{case} pairwise contact state report",
         ),
+        "pairwise_contact_depth_gap": existing_path(
+            args.pairwise_contact_depth_gap_root / case / "v17_pairwise_contact_depth_gap.json",
+            f"{case} pairwise contact depth-gap report",
+        ),
         "object_geometry_hypothesis_state": existing_path(
             args.object_geometry_hypothesis_state_root / case / "v17_object_geometry_hypothesis_state_report.json",
             f"{case} object-geometry hypothesis state",
@@ -255,6 +259,17 @@ def pairwise_contact_index(report: dict[str, Any]) -> dict[tuple[int, str, str],
     return out
 
 
+def pairwise_depth_gap_index(report: dict[str, Any]) -> dict[tuple[int, str, str], dict[str, Any]]:
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for i, raw in enumerate(require_list(report.get("rows"), "pairwise depth-gap rows")):
+        row = require_dict(raw, f"pairwise depth-gap rows[{i}]")
+        frame_idx = require_int(row.get("frame_idx"), f"pairwise depth-gap rows[{i}].frame_idx")
+        side = require_str(row.get("hand_side"), f"pairwise depth-gap rows[{i}].hand_side")
+        object_id = require_str(row.get("object_id"), f"pairwise depth-gap rows[{i}].object_id")
+        out[(frame_idx, object_id, side)] = row
+    return out
+
+
 def object_state_index(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for i, raw in enumerate(require_list(report.get("objects"), "object hypothesis rows")):
@@ -334,6 +349,7 @@ def candidate_row(
     selected_measurement: dict[str, Any],
     multi_contact: dict[str, Any] | None,
     pairwise_contact: dict[str, Any] | None,
+    pairwise_depth_gap: dict[str, Any] | None,
     object_state: dict[str, Any] | None,
     depth_contact: dict[str, Any] | None,
     near_distance_m: float,
@@ -386,6 +402,9 @@ def candidate_row(
     )
     owner_geometrically_supported = bool(contact_factor_ready or visible_distance_candidate or reconstructed_contact)
     owner_image_supported = bool(pairwise_contact is not None and pairwise_contact.get("contact_owner_image_supported") is True)
+    owner_metric_depth_supported = bool(
+        pairwise_depth_gap is not None and pairwise_depth_gap.get("metric_depth_compatible_candidate") is True
+    )
     contact_compatible_geometry = bool(
         object_state is not None and object_state.get("can_own_contact_factors") is True
     )
@@ -394,6 +413,8 @@ def candidate_row(
         evidence_state = "geometry_supported_owner_candidate"
     elif selected_support:
         evidence_state = "selected_measurement_names_candidate_without_geometry_support"
+    elif owner_image_supported and pairwise_depth_gap is not None:
+        evidence_state = "image_supported_candidate_with_metric_depth_contradiction"
     elif owner_image_supported:
         evidence_state = "image_supported_candidate_without_metric_geometry"
     elif multi_state == "unobserved":
@@ -447,6 +468,20 @@ def candidate_row(
                 else None
             ),
         },
+        "pairwise_metric_depth": {
+            "available": pairwise_depth_gap is not None,
+            "depth_gap_state": pairwise_depth_gap.get("depth_gap_state") if pairwise_depth_gap else None,
+            "metric_depth_compatible_candidate": owner_metric_depth_supported,
+            "physical_contact_factor_ready": bool(
+                pairwise_depth_gap is not None and pairwise_depth_gap.get("physical_contact_factor_ready") is True
+            ),
+            "hand_minus_object_depth_m": pairwise_depth_gap.get("hand_minus_object_depth_m")
+            if pairwise_depth_gap
+            else None,
+            "abs_hand_minus_object_depth_m": pairwise_depth_gap.get("abs_hand_minus_object_depth_m")
+            if pairwise_depth_gap
+            else None,
+        },
         "object_readiness_checks": {
             "hidden_topology_reconstructed": accepted_reconstruction_count > 0,
             "can_own_contact_factors": contact_compatible_geometry,
@@ -456,6 +491,7 @@ def candidate_row(
         "owner_supported_by_current_evidence": owner_supported,
         "owner_geometrically_supported": owner_geometrically_supported,
         "owner_image_supported": owner_image_supported,
+        "owner_metric_depth_supported": owner_metric_depth_supported,
         "owner_has_contact_compatible_geometry": contact_compatible_geometry,
         "owner_evidence_state": evidence_state,
         "contact_owner_factor_ready": False,
@@ -470,6 +506,7 @@ def owner_variable_row(
     timeline: dict[int, list[dict[str, Any]]],
     multi_by_object_side: dict[tuple[int, str, str], dict[str, Any]],
     pairwise_by_object_side: dict[tuple[int, str, str], dict[str, Any]],
+    pairwise_depth_by_object_side: dict[tuple[int, str, str], dict[str, Any]],
     measurements: dict[str, list[dict[str, Any]]],
     object_states: dict[str, dict[str, Any]],
     depth_contact: dict[tuple[int, str, str], dict[str, Any]],
@@ -490,6 +527,7 @@ def owner_variable_row(
             selected_measurement=selected,
             multi_contact=multi_by_object_side.get((frame_idx, require_str(obj.get("object_id"), "timeline object_id"), side)),
             pairwise_contact=pairwise_by_object_side.get((frame_idx, require_str(obj.get("object_id"), "timeline object_id"), side)),
+            pairwise_depth_gap=pairwise_depth_by_object_side.get((frame_idx, require_str(obj.get("object_id"), "timeline object_id"), side)),
             object_state=object_states.get(require_str(obj.get("object_id"), "timeline object_id")),
             depth_contact=depth_contact.get((frame_idx, require_str(obj.get("object_id"), "timeline object_id"), side)),
             near_distance_m=near_distance_m,
@@ -563,6 +601,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
     timeline, frame_count, object_frame_rows = timeline_by_frame(payloads["multi_object_timeline"])
     _, multi_by_object_side = multi_contact_indexes(payloads["multi_object_contact"])
     pairwise_by_object_side = pairwise_contact_index(payloads["pairwise_contact_state"])
+    pairwise_depth_by_object_side = pairwise_depth_gap_index(payloads["pairwise_contact_depth_gap"])
     object_states = object_state_index(payloads["object_geometry_hypothesis_state"])
     depth_by_object_side = depth_contact_index(payloads["depth_contact_consistency"])
     ready_rows = contact_ready_rows(payloads["contact_mode"])
@@ -576,6 +615,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
             timeline=timeline,
             multi_by_object_side=multi_by_object_side,
             pairwise_by_object_side=pairwise_by_object_side,
+            pairwise_depth_by_object_side=pairwise_depth_by_object_side,
             measurements=measurements,
             object_states=object_states,
             depth_contact=depth_by_object_side,
@@ -594,6 +634,12 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
     ready_without_selected = len(variables) - len(ready_with_selected)
     supported_variables = [row for row in variables if row["supported_candidate_count"] > 0]
     geometry_supported_variables = [row for row in variables if row["geometrically_supported_candidate_count"] > 0]
+    metric_depth_supported_candidate_rows = sum(
+        1
+        for row in variables
+        for candidate in require_list(row.get("candidate_objects"), "candidate_objects")
+        if candidate.get("owner_metric_depth_supported") is True
+    )
     factor_ready_rows = sum(
         1
         for row in variables
@@ -636,6 +682,15 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
             payloads["pairwise_contact_state"].get("contact_owner_image_supported_candidate_rows"),
             "pairwise contact owner image-supported rows",
         ),
+        "pairwise_metric_depth_evaluated_rows": require_int(
+            payloads["pairwise_contact_depth_gap"].get("evaluated_pair_depth_rows"),
+            "pairwise depth-gap evaluated rows",
+        ),
+        "pairwise_metric_depth_compatible_candidate_rows": require_int(
+            payloads["pairwise_contact_depth_gap"].get("metric_depth_compatible_candidate_rows"),
+            "pairwise depth-gap compatible rows",
+        ),
+        "contact_owner_metric_depth_supported_candidate_rows": metric_depth_supported_candidate_rows,
         "owner_image_variables_with_single_supported_candidate": require_int(
             payloads["pairwise_contact_state"].get("owner_image_variables_with_single_supported_candidate"),
             "pairwise owner image single-supported variables",
@@ -656,6 +711,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "legacy contact-mode readiness over frame and hand side",
                 "selected contact measurement object label when it is an explicit multi-object id",
                 "pairwise image-plane hand/object mask support",
+                "pairwise hand/object metric depth compatibility at image-contact pixels",
                 "multi-object visible-surface hand distance",
                 "accepted reconstruction hand distance for matching reconstructed object id",
             ],
@@ -794,6 +850,11 @@ def parse_args() -> argparse.Namespace:
         "--pairwise-contact-state-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_pairwise_contact_state"),
+    )
+    parser.add_argument(
+        "--pairwise-contact-depth-gap-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_pairwise_contact_depth_gap"),
     )
     parser.add_argument(
         "--object-geometry-hypothesis-state-root",
