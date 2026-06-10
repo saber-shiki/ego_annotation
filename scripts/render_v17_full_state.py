@@ -73,13 +73,24 @@ def inspection_frames(state: dict[str, Any], raw: VideoInfo) -> list[int]:
         report = load_json(Path(solver_report))
         rows = (report.get("contact_after") or {}).get("rows") if isinstance(report, dict) else None
         if isinstance(rows, list):
-            for row in rows:
-                if isinstance(row, dict) and isinstance(row.get("frame_idx"), int):
-                    frames.add(int(row["frame_idx"]))
+            contact_frames = sorted(
+                {
+                    int(row["frame_idx"])
+                    for row in rows
+                    if isinstance(row, dict) and isinstance(row.get("frame_idx"), int)
+                }
+            )
+            if len(contact_frames) <= 24:
+                frames.update(contact_frames)
+            elif contact_frames:
+                pick = np.linspace(0, len(contact_frames) - 1, 24).round().astype(int)
+                frames.update(contact_frames[int(i)] for i in pick)
     return sorted(frame for frame in frames if 0 <= frame < raw.frame_count)
 
 
 def sheet_filename(method_name: str) -> str:
+    if "contact_mode_factor" in method_name:
+        return "v17_contact_mode_factor_side_by_side_sheet.jpg"
     if "graph" in method_name:
         return "v17_graph_anchor_side_by_side_sheet.jpg"
     return "v17_anchor_side_by_side_sheet.jpg"

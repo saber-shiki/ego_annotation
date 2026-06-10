@@ -42,6 +42,7 @@ class GraphData:
     object_var_by_frame: dict[int, int]
     hand_var_by_frame_side: dict[tuple[int, str], int]
     contact_pairs: list[tuple[int, str]]
+    contact_sources: dict[tuple[int, str], str]
     skipped_contacts: list[dict[str, Any]]
 
 
@@ -197,6 +198,34 @@ def measurement_contact_sides(measurement_store_root: Path, case: str) -> dict[i
     return merged
 
 
+def contact_mode_graph_sides(contact_mode_graph_root: Path, case: str) -> dict[int, set[str]]:
+    path = contact_mode_graph_root / case / "v17_contact_mode_graph_report.json"
+    report = load_json(path)
+    if not isinstance(report, dict):
+        raise RuntimeError(f"{path} must contain a JSON object")
+    if report.get("status") != "accepted_v17_contact_mode_graph":
+        raise RuntimeError(f"{path} is not an accepted contact-mode graph report")
+    if report.get("solver_completeness") != "contact_mode_latent_only":
+        raise RuntimeError(f"{path} has unexpected solver_completeness {report.get('solver_completeness')!r}")
+    rows = report.get("rows")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{path} must contain rows")
+    out: dict[int, set[str]] = {}
+    for row_i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise RuntimeError(f"{path} row {row_i} is not a JSON object")
+        if row.get("contact_factor_ready") is not True:
+            continue
+        idx = row.get("frame_idx")
+        if isinstance(idx, bool) or not isinstance(idx, int):
+            raise RuntimeError(f"{path} row {row_i} has invalid frame_idx {idx!r}")
+        side = row.get("side")
+        if side not in ("left", "right"):
+            raise RuntimeError(f"{path} row {row_i} has invalid side {side!r}")
+        out.setdefault(idx, set()).add(str(side))
+    return out
+
+
 def selected_graph_contact_sides(frame: dict[str, Any]) -> tuple[str, ...]:
     contact = frame.get("v17_contact_state")
     if not isinstance(contact, dict) or contact.get("status") != "accepted_contact":
@@ -224,6 +253,7 @@ def load_graph_frames(
     annotations_path: Path,
     mesh_archive_path: Path,
     measurement_sides: dict[int, set[str]],
+    contact_mode_sides: dict[int, set[str]] | None,
 ) -> list[GraphFrame]:
     payload = load_json(annotations_path)
     frames = payload.get("frames") if isinstance(payload, dict) else None
@@ -261,16 +291,20 @@ def load_graph_frames(
                 if points is None:
                     continue
                 hand_points[side_key(hand, hand_i)] = points
-        graph_sides = selected_graph_contact_sides(frame)
-        if graph_sides:
-            sides = graph_sides
-            contact_source = "selected_contact_state_graph"
-        elif bool(args.allow_measurement_candidate_contacts):
-            sides = tuple(sorted(measurement_sides.get(idx, set())))
-            contact_source = "measurement_store_candidate_contact" if sides else None
+        if contact_mode_sides is not None:
+            sides = tuple(sorted(contact_mode_sides.get(idx, set())))
+            contact_source = "contact_mode_factor_ready" if sides else None
         else:
-            sides = local_patch_contact_sides(frame)
-            contact_source = "local_contact_patch_state" if sides else None
+            graph_sides = selected_graph_contact_sides(frame)
+            if graph_sides:
+                sides = graph_sides
+                contact_source = "selected_contact_state_graph"
+            elif bool(args.allow_measurement_candidate_contacts):
+                sides = tuple(sorted(measurement_sides.get(idx, set())))
+                contact_source = "measurement_store_candidate_contact" if sides else None
+            else:
+                sides = local_patch_contact_sides(frame)
+                contact_source = "local_contact_patch_state" if sides else None
         out.append(
             GraphFrame(
                 frame_idx=idx,
@@ -292,6 +326,7 @@ def build_graph_data(frames: list[GraphFrame]) -> GraphData:
     object_var_by_frame: dict[int, int] = {}
     hand_var_by_frame_side: dict[tuple[int, str], int] = {}
     contact_pairs: list[tuple[int, str]] = []
+    contact_sources: dict[tuple[int, str], str] = {}
     skipped_contacts: list[dict[str, Any]] = []
     for i, frame in enumerate(frames):
         if frame.object_center is None or frame.mesh_vertices is None:
@@ -305,9 +340,17 @@ def build_graph_data(frames: list[GraphFrame]) -> GraphData:
         frame = frames[i]
         for side in frame.contact_sides:
             if (frame.frame_idx, side) not in hand_var_by_frame_side:
-                skipped_contacts.append({"frame_idx": frame.frame_idx, "side": side, "reason": "no_valid_hand_points_for_contact"})
+                skipped_contacts.append(
+                    {
+                        "frame_idx": frame.frame_idx,
+                        "side": side,
+                        "source": frame.contact_source or "unknown_contact_source",
+                        "reason": "no_valid_hand_points_for_contact",
+                    }
+                )
                 continue
             contact_pairs.append((frame.frame_idx, side))
+            contact_sources[(frame.frame_idx, side)] = frame.contact_source or "unknown_contact_source"
     if not active_indices:
         raise RuntimeError("no active object frames with mesh data")
     return GraphData(
@@ -316,6 +359,7 @@ def build_graph_data(frames: list[GraphFrame]) -> GraphData:
         object_var_by_frame=object_var_by_frame,
         hand_var_by_frame_side=hand_var_by_frame_side,
         contact_pairs=contact_pairs,
+        contact_sources=contact_sources,
         skipped_contacts=skipped_contacts,
     )
 
@@ -598,6 +642,14 @@ def apply_object_shift(obj: dict[str, Any], shift: np.ndarray, report: dict[str,
     return out
 
 
+def count_contact_sources(graph: GraphData) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for pair in graph.contact_pairs:
+        source = graph.contact_sources.get(pair, "unknown_contact_source")
+        out[source] = out.get(source, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def apply_hand_ray_shift(hand: dict[str, Any], shift_vec: np.ndarray, shift_m: float) -> None:
     for key in ("vertices_world_m", "vertices_sample_world_m", "joints3d_world_m", "joints_world_m", "mano_vertices_world_m", "mano_joints_world_m"):
         if key in hand:
@@ -652,7 +704,13 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     case = str(state["case"])
     annotations = Path(state["annotations"])
     mesh_archive = Path(state["object_mesh_archive"])
-    frames = load_graph_frames(args, annotations, mesh_archive, measurement_contact_sides(Path(args.measurement_store_root), case))
+    contact_mode_sides = (
+        contact_mode_graph_sides(Path(args.contact_mode_graph_root), case)
+        if args.contact_mode_graph_root is not None
+        else None
+    )
+    measurement_sides = {} if contact_mode_sides is not None else measurement_contact_sides(Path(args.measurement_store_root), case)
+    frames = load_graph_frames(args, annotations, mesh_archive, measurement_sides, contact_mode_sides)
     graph = build_graph_data(frames)
     system = build_linear_system(graph, args)
     x0 = np.zeros(variable_counts(graph)[2], dtype=float)
@@ -703,6 +761,11 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     system_shape = system.matrix.shape
     if system_shape is None:
         raise RuntimeError("linear system matrix shape is unavailable")
+    contact_factor_source = "contact_mode_factor_ready" if contact_mode_sides is not None else "selected_v17_contact_state"
+    contact_constraint_rule = (
+        "When --contact-mode-graph-root is provided, only contact_factor_ready rows from the accepted contact-mode graph become contact factors. "
+        "Otherwise only selected V17 contact states and accepted local contact patch states become contact factors by default; candidate contact measurements remain evidence until a contact graph selects them."
+    )
     report: dict[str, Any] = {
         "case": case,
         "status": ACCEPTED_STATUS if accepted else REJECTED_STATUS,
@@ -713,9 +776,11 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "semantics": {
             "optimized_variables": ["per-active-frame object translation correction", "per-valid-hand camera-ray depth correction"],
             "fixed_variables": ["camera trajectory", "MANO articulation and shape", "object mesh topology", "contact mode labels from current V17 evidence"],
-            "contact_constraint_rule": "Only selected V17 contact states and accepted local contact patch states become contact factors by default; candidate contact measurements remain evidence until a contact graph selects them.",
+            "contact_constraint_rule": contact_constraint_rule,
             "claim_limit": "This sparse graph tests full-timeline consistency of accepted evidence under bounded translation/depth corrections. The complete V3 joint camera-MANO-object-depth-contact solver remains open.",
         },
+        "contact_factor_source": contact_factor_source,
+        "contact_mode_graph_root": str(args.contact_mode_graph_root) if args.contact_mode_graph_root is not None else None,
         "source_manifest": str(case_manifest),
         "source_annotations": str(annotations),
         "source_mesh_archive": str(mesh_archive),
@@ -727,6 +792,7 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "object_variable_frames": int(len(graph.object_var_by_frame)),
         "hand_variable_count": int(len(graph.hand_var_by_frame_side)),
         "contact_factor_count": int(len(graph.contact_pairs)),
+        "contact_factor_source_counts": count_contact_sources(graph),
         "linearized_contact_correspondences": int(system.contact_correspondence_count),
         "skipped_contacts": graph.skipped_contacts,
         "variable_count": int(variable_counts(graph)[2]),
@@ -803,6 +869,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_full_timeline_factor_graph"))
     parser.add_argument("--measurement-store-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_measurement_store"))
+    parser.add_argument("--contact-mode-graph-root", type=Path, default=None)
     parser.add_argument(
         "--case-manifests",
         type=Path,
