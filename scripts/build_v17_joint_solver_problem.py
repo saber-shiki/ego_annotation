@@ -32,6 +32,7 @@ class CaseInputs:
     multi_object_contact_evidence_summary: Path
     pairwise_contact_state_report: Path
     pairwise_contact_depth_gap_report: Path
+    hand_metric_depth_state_report: Path
     contact_ownership_problem_report: Path
     geometry_source_audit_report: Path
     object_geometry_hypothesis_state_report: Path
@@ -117,6 +118,7 @@ def case_inputs(
     multi_object_contact_evidence_root: Path,
     pairwise_contact_state_root: Path,
     pairwise_contact_depth_gap_root: Path,
+    hand_metric_depth_state_root: Path,
     contact_ownership_problem_root: Path,
     geometry_source_audit_root: Path,
     object_geometry_hypothesis_state_root: Path,
@@ -180,6 +182,10 @@ def case_inputs(
         pairwise_contact_depth_gap_root / case / "v17_pairwise_contact_depth_gap.json",
         f"{case} pairwise contact depth-gap report",
     )
+    hand_metric_depth_state_report = existing_path(
+        hand_metric_depth_state_root / case / "v17_hand_metric_depth_state.json",
+        f"{case} hand metric-depth state report",
+    )
     contact_ownership_problem_report = existing_path(
         contact_ownership_problem_root / case / "v17_contact_ownership_problem.json",
         f"{case} contact-ownership problem report",
@@ -235,6 +241,7 @@ def case_inputs(
         multi_object_contact_evidence_summary=multi_object_contact_evidence_summary,
         pairwise_contact_state_report=pairwise_contact_state_report,
         pairwise_contact_depth_gap_report=pairwise_contact_depth_gap_report,
+        hand_metric_depth_state_report=hand_metric_depth_state_report,
         contact_ownership_problem_report=contact_ownership_problem_report,
         geometry_source_audit_report=geometry_source_audit_report,
         object_geometry_hypothesis_state_report=object_geometry_hypothesis_state_report,
@@ -751,6 +758,47 @@ def pairwise_contact_depth_gap_counts(report: dict[str, Any]) -> dict[str, Any]:
         "abs_hand_minus_object_depth_m": require_dict(
             report.get("abs_hand_minus_object_depth_m"),
             "pairwise depth-gap abs_hand_minus_object_depth_m",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
+def hand_metric_depth_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "hand metric-depth frame_count"),
+        "hand_metric_depth_variable_count": require_int(
+            report.get("hand_metric_depth_variable_count"),
+            "hand metric-depth variable count",
+        ),
+        "measured_hand_depth_rows": require_int(
+            report.get("measured_hand_depth_rows"),
+            "hand metric-depth measured rows",
+        ),
+        "unobserved_hand_depth_rows": require_int(
+            report.get("unobserved_hand_depth_rows"),
+            "hand metric-depth unobserved rows",
+        ),
+        "projection_residual_ok_hand_rows": require_int(
+            report.get("projection_residual_ok_hand_rows"),
+            "hand metric-depth projection residual ok rows",
+        ),
+        "hand_metric_depth_state_counts": require_dict(
+            report.get("hand_metric_depth_state_counts"),
+            "hand metric-depth state counts",
+        ),
+        "partition_summaries": require_dict(
+            report.get("partition_summaries"),
+            "hand metric-depth partition summaries",
+        ),
+        "pairwise_contact_depth_gap_comparison": require_dict(
+            report.get("pairwise_contact_depth_gap_comparison"),
+            "hand metric-depth pairwise comparison",
         ),
         "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
         "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
@@ -1438,6 +1486,7 @@ def required_variable_families(
     multi_object_contact_evidence: dict[str, Any],
     pairwise_contact_state: dict[str, Any],
     pairwise_contact_depth_gap: dict[str, Any],
+    hand_metric_depth_state: dict[str, Any],
     contact_ownership_problem: dict[str, Any],
     geometry_source_audit: dict[str, Any],
     object_geometry_hypothesis_state: dict[str, Any],
@@ -1477,11 +1526,33 @@ def required_variable_families(
                 "hawor_measurements": counts.get("hawor", 0),
                 "v16_hand_state_measurements": counts.get("v16_hand_state", 0),
                 "current_ray_shift_variables": sparse["hand_ray_shift_variables"],
+                "hand_metric_depth_variable_count": hand_metric_depth_state[
+                    "hand_metric_depth_variable_count"
+                ],
+                "hand_metric_depth_measured_rows": hand_metric_depth_state[
+                    "measured_hand_depth_rows"
+                ],
+                "hand_metric_depth_projection_residual_ok_rows": hand_metric_depth_state[
+                    "projection_residual_ok_hand_rows"
+                ],
+                "hand_metric_depth_state_counts": hand_metric_depth_state[
+                    "hand_metric_depth_state_counts"
+                ],
+                "hand_metric_depth_all_pixels_summary": hand_metric_depth_state[
+                    "partition_summaries"
+                ]["all_projected_hand_pixels"],
+                "hand_metric_depth_far_from_object_summary": hand_metric_depth_state[
+                    "partition_summaries"
+                ]["far_from_active_object_masks"],
+                "hand_metric_depth_near_object_summary": hand_metric_depth_state[
+                    "partition_summaries"
+                ]["near_active_object_masks"],
             },
             [
                 "MANO pose parameters are not graph variables",
                 "MANO shape parameters are not graph variables",
                 "world wrist pose is only corrected along camera rays",
+                "front-surface MANO depth is not metric-depth compatible in the current source-camera state",
                 "occluded hands are not represented as prediction/update latent states",
             ],
         ),
@@ -2000,6 +2071,18 @@ def required_variable_families(
                 "pairwise_contact_depth_gap_state_counts": pairwise_contact_depth_gap[
                     "depth_gap_state_counts"
                 ],
+                "hand_metric_depth_state_counts": hand_metric_depth_state[
+                    "hand_metric_depth_state_counts"
+                ],
+                "hand_metric_depth_all_pixels_summary": hand_metric_depth_state[
+                    "partition_summaries"
+                ]["all_projected_hand_pixels"],
+                "hand_metric_depth_far_from_object_summary": hand_metric_depth_state[
+                    "partition_summaries"
+                ]["far_from_active_object_masks"],
+                "hand_metric_depth_near_object_summary": hand_metric_depth_state[
+                    "partition_summaries"
+                ]["near_active_object_masks"],
                 "depth_contact_owner_incompatibility_count": depth_contact_consistency[
                     "depth_owner_incompatibility_count"
                 ],
@@ -2008,6 +2091,7 @@ def required_variable_families(
                 "visible surfaces are now materialized as fixed measurements where mask and metric depth overlap",
                 "depth/object/camera contradictions are not jointly optimized",
                 "accepted object reconstructions, legacy object centers, and MANO hands do not currently share one depth owner",
+                "current MANO depth fails against UniDepth even before object-contact ownership can create physical factors",
                 "projected image-contact MANO vertices sit behind the object UniDepth surface in the current hand state",
                 "occlusion state is not a latent variable with uncertainty",
             ],
@@ -2117,6 +2201,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.pairwise_contact_depth_gap_report),
         f"{inputs.case} pairwise contact depth-gap report",
     )
+    hand_metric_depth_state_report = require_dict(
+        load_json(inputs.hand_metric_depth_state_report),
+        f"{inputs.case} hand metric-depth state report",
+    )
     contact_ownership_problem_report = require_dict(
         load_json(inputs.contact_ownership_problem_report),
         f"{inputs.case} contact-ownership problem report",
@@ -2163,6 +2251,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     multi_object_contact_evidence = multi_object_contact_evidence_counts(multi_object_contact_evidence_summary)
     pairwise_contact_state = pairwise_contact_state_counts(pairwise_contact_state_report)
     pairwise_contact_depth_gap = pairwise_contact_depth_gap_counts(pairwise_contact_depth_gap_report)
+    hand_metric_depth_state = hand_metric_depth_state_counts(hand_metric_depth_state_report)
     contact_ownership_problem = contact_ownership_problem_counts(contact_ownership_problem_report)
     geometry_source_audit = geometry_source_audit_counts(geometry_source_audit_report)
     object_geometry_hypothesis_state = object_geometry_hypothesis_state_counts(
@@ -2192,6 +2281,8 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and pairwise contact state")
     if frame_count != require_int(pairwise_contact_depth_gap["frame_count"], f"{inputs.case} pairwise depth-gap frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and pairwise contact depth-gap")
+    if frame_count != require_int(hand_metric_depth_state["frame_count"], f"{inputs.case} hand metric-depth frame_count"):
+        raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and hand metric-depth state")
     if frame_count != require_int(contact_ownership_problem["frame_count"], f"{inputs.case} contact ownership frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and contact ownership problem")
     if frame_count != require_int(geometry_source_audit["frame_count"], f"{inputs.case} geometry-source audit frame_count"):
@@ -2367,6 +2458,26 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} pairwise depth-gap physical factor rows",
     ) != 0:
         raise RuntimeError(f"{inputs.case} pairwise depth-gap layer must not emit physical contact factors")
+    pairwise_comparison = require_dict(
+        hand_metric_depth_state["pairwise_contact_depth_gap_comparison"],
+        f"{inputs.case} hand metric-depth pairwise comparison",
+    )
+    if require_int(
+        pairwise_comparison.get("evaluated_pair_depth_rows"),
+        f"{inputs.case} hand metric-depth pairwise evaluated rows",
+    ) != require_int(
+        pairwise_contact_depth_gap["evaluated_pair_depth_rows"],
+        f"{inputs.case} pairwise depth-gap evaluated rows",
+    ):
+        raise RuntimeError(f"{inputs.case} hand metric-depth report disagrees with pairwise depth-gap evaluated rows")
+    if require_int(
+        pairwise_comparison.get("metric_depth_compatible_candidate_rows"),
+        f"{inputs.case} hand metric-depth pairwise compatible rows",
+    ) != require_int(
+        pairwise_contact_depth_gap["metric_depth_compatible_candidate_rows"],
+        f"{inputs.case} pairwise depth-gap compatible rows",
+    ):
+        raise RuntimeError(f"{inputs.case} hand metric-depth report disagrees with pairwise depth-gap compatible rows")
     if require_int(contact["contact_factor_ready_count"], f"{inputs.case} contact ready rows") != require_int(
         contact_ownership_problem["contact_owner_variable_count"],
         f"{inputs.case} contact ownership variable count",
@@ -2656,6 +2767,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         multi_object_contact_evidence,
         pairwise_contact_state,
         pairwise_contact_depth_gap,
+        hand_metric_depth_state,
         contact_ownership_problem,
         geometry_source_audit,
         object_geometry_hypothesis_state,
@@ -2709,6 +2821,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "pairwise_contact_depth_gap_report": source_summary(
                 inputs.pairwise_contact_depth_gap_report, pairwise_contact_depth_gap_report
             ),
+            "hand_metric_depth_state_report": source_summary(
+                inputs.hand_metric_depth_state_report, hand_metric_depth_state_report
+            ),
             "contact_ownership_problem_report": source_summary(
                 inputs.contact_ownership_problem_report, contact_ownership_problem_report
             ),
@@ -2747,6 +2862,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_multi_object_contact_evidence": multi_object_contact_evidence,
         "current_pairwise_contact_state": pairwise_contact_state,
         "current_pairwise_contact_depth_gap": pairwise_contact_depth_gap,
+        "current_hand_metric_depth_state": hand_metric_depth_state,
         "current_contact_ownership_problem": contact_ownership_problem,
         "current_geometry_source_audit": geometry_source_audit,
         "current_object_geometry_hypothesis_state": object_geometry_hypothesis_state,
@@ -2797,6 +2913,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.multi_object_contact_evidence_root,
             args.pairwise_contact_state_root,
             args.pairwise_contact_depth_gap_root,
+            args.hand_metric_depth_state_root,
             args.contact_ownership_problem_root,
             args.geometry_source_audit_root,
             args.object_geometry_hypothesis_state_root,
@@ -2831,6 +2948,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "multi_object_contact_evidence_root": str(args.multi_object_contact_evidence_root),
         "pairwise_contact_state_root": str(args.pairwise_contact_state_root),
         "pairwise_contact_depth_gap_root": str(args.pairwise_contact_depth_gap_root),
+        "hand_metric_depth_state_root": str(args.hand_metric_depth_state_root),
         "contact_ownership_problem_root": str(args.contact_ownership_problem_root),
         "geometry_source_audit_root": str(args.geometry_source_audit_root),
         "object_geometry_hypothesis_state_root": str(args.object_geometry_hypothesis_state_root),
@@ -2937,6 +3055,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "pairwise_metric_depth_state_counts": case[
                     "current_pairwise_contact_depth_gap"
                 ]["depth_gap_state_counts"],
+                "hand_metric_depth_variable_count": case[
+                    "current_hand_metric_depth_state"
+                ]["hand_metric_depth_variable_count"],
+                "hand_metric_depth_measured_rows": case[
+                    "current_hand_metric_depth_state"
+                ]["measured_hand_depth_rows"],
+                "hand_metric_depth_projection_residual_ok_rows": case[
+                    "current_hand_metric_depth_state"
+                ]["projection_residual_ok_hand_rows"],
+                "hand_metric_depth_state_counts": case[
+                    "current_hand_metric_depth_state"
+                ]["hand_metric_depth_state_counts"],
+                "hand_metric_depth_far_from_object_summary": case[
+                    "current_hand_metric_depth_state"
+                ]["partition_summaries"]["far_from_active_object_masks"],
+                "hand_metric_depth_near_object_summary": case[
+                    "current_hand_metric_depth_state"
+                ]["partition_summaries"]["near_active_object_masks"],
                 "contact_owner_variable_count": case[
                     "current_contact_ownership_problem"
                 ]["contact_owner_variable_count"],
@@ -3164,6 +3300,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "pairwise_metric_depth_compatible_candidate_rows": sum(
             case["current_pairwise_contact_depth_gap"]["metric_depth_compatible_candidate_rows"]
+            for case in case_outputs
+        ),
+        "hand_metric_depth_variable_count": sum(
+            case["current_hand_metric_depth_state"]["hand_metric_depth_variable_count"]
+            for case in case_outputs
+        ),
+        "hand_metric_depth_measured_rows": sum(
+            case["current_hand_metric_depth_state"]["measured_hand_depth_rows"]
+            for case in case_outputs
+        ),
+        "hand_metric_depth_projection_residual_ok_rows": sum(
+            case["current_hand_metric_depth_state"]["projection_residual_ok_hand_rows"]
             for case in case_outputs
         ),
         "contact_owner_variable_count": sum(
@@ -3445,6 +3593,11 @@ def parse_args() -> argparse.Namespace:
         "--pairwise-contact-depth-gap-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_pairwise_contact_depth_gap"),
+    )
+    parser.add_argument(
+        "--hand-metric-depth-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_metric_depth_state"),
     )
     parser.add_argument(
         "--contact-ownership-problem-root",
