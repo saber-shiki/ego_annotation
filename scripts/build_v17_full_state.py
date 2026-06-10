@@ -22,6 +22,13 @@ def write_json(path: Path, payload: Any) -> None:
         json.dump(payload, f, indent=2)
 
 
+def array3(value: object) -> np.ndarray | None:
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.shape != (3,) or not np.all(np.isfinite(arr)):
+        return None
+    return arr
+
+
 def frames_payload(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     payload = load_json(path)
     if not isinstance(payload, dict) or not isinstance(payload.get("frames"), list):
@@ -111,6 +118,9 @@ def load_persistent_surfaces(path: Path) -> tuple[dict[int, dict[str, Any]], dic
     frame_idx = data["frame_idx"].astype(int)
     starts = data["frame_vertex_start"].astype(np.int64)
     ends = data["frame_vertex_end"].astype(np.int64)
+    centers = data["object_center_world_m"].astype(np.float64) if "object_center_world_m" in data.files else None
+    if centers is not None and centers.shape != (len(frame_idx), 3):
+        raise RuntimeError(f"{npz_path} has invalid object_center_world_m shape {centers.shape}")
     if len(frame_rows) != len(frame_idx):
         raise RuntimeError(f"{path} frame_rows and mesh frame_idx lengths differ")
     rows_by_frame: dict[int, dict[str, Any]] = {}
@@ -126,6 +136,10 @@ def load_persistent_surfaces(path: Path) -> tuple[dict[int, dict[str, Any]], dic
         v0, v1 = int(starts[i]), int(ends[i])
         frame_faces = faces[face_offset : face_offset + row_face_count] - v0
         frame_vertices = vertices[v0:v1]
+        center = centers[i] if centers is not None else array3(raw.get("object_center_world_m"))
+        if center is None:
+            raise RuntimeError(f"{path} frame {idx} has no object_center_world_m for world mesh placement")
+        frame_vertices = frame_vertices + center[None, :]
         if len(frame_vertices) == 0 or len(frame_faces) == 0:
             raise RuntimeError(f"{path} frame {idx} has empty mesh")
         if int(frame_faces.min()) < 0 or int(frame_faces.max()) >= len(frame_vertices):
@@ -287,7 +301,7 @@ def case_spec(name: str, args: argparse.Namespace) -> dict[str, Any]:
         return {
             "v16_manifest": args.tomato_v16_manifest,
             "hand_repair_annotations": None,
-            "contact_graph": None,
+            "contact_graph": args.tomato_contact_graph,
             "local_patch_states": (),
             "persistent_shape": args.tomato_persistent_shape,
         }
@@ -415,6 +429,11 @@ def parse_args() -> argparse.Namespace:
             "/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/"
             "persistent_object_shape_obj_tomato_v1/persistent_object_shape_state.json"
         ),
+    )
+    parser.add_argument(
+        "--tomato-contact-graph",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_contact_measurements/task5_tomato_960/anchor_contact_state_graph_v1.json"),
     )
     return parser.parse_args()
 

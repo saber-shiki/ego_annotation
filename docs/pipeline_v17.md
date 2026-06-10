@@ -4,11 +4,11 @@
 
 V16 is closed only as the first full raw-video delivery. It produced full-length videos for two raw clips, but the annotations do not meet the quality requirement. V17 treats every detector output as a measurement with residuals, confidence, and source evidence before the solver can accept an annotation state.
 
-V17 implementation has produced the measurement store and an evidence-layer full-state integration. The measurement store reads V16 full-video outputs, prior HaWoR/WiLoR artifacts, HaMeR repairs, SAM2 object masks, contact-state rows, local deformable contact patches, and tomato persistent-shape state as measurements, then emits anchor QC before any graph solver can accept or repair them. The full-state integration writes full-length V17 annotation JSONs and renders, but it is a patched measurement integration layer rather than the integrated nonlinear full-timeline factor graph.
+V17 implementation has produced the measurement store, full-state integration, and a sparse full-timeline evidence-consistency graph. The measurement store reads V16 full-video outputs, prior HaWoR/WiLoR artifacts, HaMeR repairs, SAM2 object masks, contact-state rows, local deformable contact patches, and tomato persistent-shape state as measurements, then emits anchor QC before any graph solver can accept or repair them. The full-state integration writes full-length V17 annotation JSONs and renders. The sparse graph optimizes per-active-frame object translation corrections and per-valid-hand camera-ray depth corrections against selected contact states, object priors, and temporal smoothness. It keeps camera trajectory, MANO articulation and shape, object mesh topology, and contact mode labels fixed, so it is an integrated consistency solver for the current V17 evidence layer. The complete nonlinear V3 joint solver remains open.
 
-V17 also corrects a version-accounting problem. V3 already identified the core requirement: solve or expose the metric contradiction between MANO hands and object geometry through a joint factor graph. Later versions implemented real component graphs, including object-pose, sparse object-track, and contact-dynamics graphs. Their scope stayed at selected windows or selected state variables. V16 then closed as a full-length delivery artifact with QC flags while the original joint graph requirement remained open. V17 must therefore treat prior graph outputs as evidence modules and implement an integrated state-estimation layer before claiming annotation-quality closure.
+V17 also corrects a version-accounting problem. V3 already identified the core requirement: solve or expose the metric contradiction between MANO hands and object geometry through a joint factor graph. Later versions implemented real component graphs, including object-pose, sparse object-track, and contact-dynamics graphs. Their scope stayed at selected windows or selected state variables. V16 then closed as a full-length delivery artifact with QC flags while the original joint graph requirement remained open. V17 therefore treats prior graph outputs as evidence modules and reports the current sparse full-timeline graph separately from the still-unimplemented complete nonlinear V3 solver.
 
-The current measurement-store implementation is the evidence layer for the full V17 solver. Model outputs remain traceable measurements with confidence, residual, source, and failure fields; missing hands, missing objects, missing contact states, and incomplete HaWoR/WiLoR coverage become explicit QC failures.
+The current measurement-store implementation is the evidence layer for V17 state estimation. Model outputs remain traceable measurements with confidence, residual, source, and failure fields; missing hands, missing objects, missing contact states, and incomplete HaWoR/WiLoR coverage become explicit QC failures.
 
 The current HaWoR evidence path uses a compact full-video adapter input generated from V16 annotations. The compact file preserves frame indices, timestamps, source camera transforms, source intrinsics, measured V16 hand 2D keypoints, detector scores, and hand boxes, then reruns the HaWoR camera-local adapter against the full 0-1049 HaWoR NPZ. The adapter input therefore contains only the fields read by the HaWoR residual calculation.
 
@@ -20,11 +20,15 @@ The trash anchor repair path now materializes selected VLM-box HaMeR hypotheses 
 
 Frames 0182 and 0856 exposed the wrong object variable. Whole-object depth re-anchoring can force a hand-bag metric contact, but temporal validation rejects that variable because it shifts the entire deformable bag surface. V17 now records separate local deformable contact-patch meshes for those frames. Frame 0182 uses a 206-vertex, 302-face black-bag patch centered at the repaired right-hand contact support; the patch occupies 1.43 percent of the SAM2 bag mask and has a 2.47 mm nearest hand-surface distance. Frame 0856 uses a 638-vertex, 1,086-face white-bag patch; the patch occupies 12.77 percent of the SAM2 bag mask and has a 0.97 mm nearest hand-surface distance. The anchor contact graph v4 selects those local patch rows for 0182 and 0856, accepts contact at 0182, 0260, 0764, and 0856, and accepts no-contact at 0949 and 0970. The rejected whole-object depth candidates remain in the measurement store as failed evidence, while the accepted state is the local deformable surface geometry.
 
-The tomato measurement path now has a persistent visible-surface mesh state for `object:obj_tomato`. The solver fuses SAM2 object masks with V16 metric-depth surface extraction over the full active mask interval, rejects 20 temporal surface-scale outliers, and writes a canonical mesh with 84,318 vertices and 136,902 faces. The robust 1-99 percent canonical extents are 9.85 cm, 9.67 cm, and 9.56 cm; raw min-max extent is reported separately because sparse tails can overstate object scale. Tomato anchors 0480, 0720, and 0760 pass persistent-shape QC with surface-to-canonical p95 residuals of 1.7 mm, 5.6 mm, and 1.3 mm. This clears the previous `persistent_object_shape_state_missing` failure for the measurement store. It is still a visible-surface canonical mesh with translation-only pose measurements, so the full V17 hand-object-camera-depth-contact solver remains open.
+The tomato measurement path now has a persistent visible-surface mesh state for `object:obj_tomato`. The solver fuses SAM2 object masks with V16 metric-depth surface extraction over the full active mask interval, rejects 20 temporal surface-scale outliers, and writes a canonical mesh with 84,318 vertices and 136,902 faces. The robust 1-99 percent canonical extents are 9.85 cm, 9.67 cm, and 9.56 cm; raw min-max extent is reported separately because sparse tails can overstate object scale. Tomato anchors 0480, 0720, and 0760 pass persistent-shape QC with surface-to-canonical p95 residuals of 1.7 mm, 5.6 mm, and 1.3 mm. The full-state builder translates the canonical-local visible surfaces by their per-frame `object_center_world_m` before saving the V17 mesh archive, so the archive carries world-coordinate meshes. The tomato contact graph v1 selects left-hand contact rows at 0480, 0720, and 0760.
 
-The current measurement store passes the named trash and tomato anchors. The evidence-layer full-state integration also renders full raw-video outputs for both representative clips: trash has 1,050 raw frames and 1,050 frames in overlay, world, and side-by-side renders; tomato has 960 raw frames and 960 frames in overlay, world, and side-by-side renders. The trash anchor sheet shows V17 contact/local-patch labels at 0182 and 0856, contact labels at 0260 and 0764, and no-contact labels at 0949 and 0970. The tomato anchor sheet shows persistent-object-mesh labels at 0274, 0480, 0720, 0760, and 0935. This is an evidence-layer milestone, not V17 closure. V17 still owes the integrated full-timeline factor graph state.
+The current measurement store passes the named trash and tomato anchors. The evidence-layer full-state integration also renders full raw-video outputs for both representative clips: trash has 1,050 raw frames and 1,050 frames in overlay, world, and side-by-side renders; tomato has 960 raw frames and 960 frames in overlay, world, and side-by-side renders. The sparse evidence-consistency graph accepts both clips under its limited variable set. Trash uses four selected contact factors at 0182, 0260, 0764, and 0856; after optimization its contact p95-of-p95 is 12.3 mm, max object translation correction is 9.7 mm, and max hand camera-ray correction is 3.8 mm. Tomato uses three selected contact factors at 0480, 0720, and 0760; after optimization its contact p95-of-p95 is 18.7 mm, max object translation correction is 15.1 mm, and max hand camera-ray correction is 7.5 mm. The graph uses full MANO surfaces for contact correspondence selection; a previous 160-point stochastic hand subsample made tomato frame 0480 fail at 36.1 mm, which exposed a sampling artifact in the sparse contact linearization.
 
-Evidence-layer outputs:
+The graph output materializes the optimized state in the annotation files. Object translation corrections move `center_world_m`, nested V17 surface centers, local-patch world vertex arrays when present, and the corrected mesh archive. Hand camera-ray corrections move world-space MANO vertices and joints along the solved camera optical axis. Source-camera measurements remain unchanged as evidence.
+
+Graph-corrected full-length renders also pass structural QC. Trash graph renders contain 1,050 frames for overlay, world, and side-by-side outputs; tomato graph renders contain 960 frames for all three outputs. The visual inspection sheets are sampled from the final graph-corrected side-by-side videos and recorded in the render summary. The current trash sheet shows selected contact frames 0182, 0260, 0764, and 0856 with displayed nearest gaps of 0.5 mm, 1.7 mm, 2.0 mm, and 0.9 mm. The current tomato sheet shows selected contact frames 0480, 0720, and 0760 with displayed nearest gaps of 2.4 mm, 0.5 mm, and 2.3 mm. These graph renders are the current V17 sparse-graph output videos.
+
+Current V17 outputs:
 
 ```text
 /data2/ego_annotation_outputs/v17_full_state/trash_1050/annotations_v17_full.json
@@ -41,6 +45,22 @@ Evidence-layer outputs:
 /data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/v17_anchor_side_by_side_sheet.jpg
 /data2/ego_annotation_outputs/v17_full_state/v17_full_state_summary.json
 /data2/ego_annotation_outputs/v17_full_state/v17_render_summary.json
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/trash_1050/annotations_v17_full_timeline_graph.json
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/trash_1050/object_meshes_v17_full_timeline_graph.npz
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/trash_1050/v17_full_timeline_factor_graph_report.json
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/task5_tomato_960/annotations_v17_full_timeline_graph.json
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/task5_tomato_960/object_meshes_v17_full_timeline_graph.npz
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/task5_tomato_960/v17_full_timeline_factor_graph_report.json
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph/v17_full_timeline_factor_graph_summary.json
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/renders/overlay_mano_object_multi.mp4
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/renders/world_reconstruction_3d_v17.mp4
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/renders/side_by_side_v17.mp4
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/trash_1050/v17_graph_anchor_side_by_side_sheet.jpg
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/renders/overlay_mano_object_multi.mp4
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/renders/world_reconstruction_3d_v17.mp4
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/renders/side_by_side_v17.mp4
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/task5_tomato_960/v17_graph_anchor_side_by_side_sheet.jpg
+/data2/ego_annotation_outputs/v17_full_timeline_factor_graph_renders/v17_render_summary.json
 ```
 
 ## V16 Failure Analysis
@@ -273,9 +293,11 @@ The graph estimates contact from:
 
 Contact cannot be asserted from nearest distance alone. Contact cannot be rejected when image/depth/track evidence supports contact but the current 3D state is inconsistent; that case becomes a state repair target.
 
-### Stage 7: Learned-Prior Full-Timeline Smoother
+### Stage 7: Full Nonlinear Graph Target
 
-V17 implements the prediction/update idea as a fixed-lag nonlinear factor graph. A simple constant-velocity or constant-acceleration prior is not the process model for hand-object manipulation. It can appear only as a weak local smoothness regularizer. The actual process terms are learned priors and physically grounded residuals.
+This section defines the still-open full nonlinear solver target. The implemented V17 graph is the sparse evidence-consistency graph described in the Status section: it optimizes object translation and hand camera-ray depth corrections while camera trajectory, MANO articulation and shape, object mesh topology, and contact mode labels stay fixed.
+
+The full V3-class solver should implement the prediction/update idea as a fixed-lag nonlinear factor graph. A simple constant-velocity or constant-acceleration prior is not the process model for hand-object manipulation. It can appear only as a weak local smoothness regularizer. The actual process terms are learned priors and physically grounded residuals.
 
 State variables:
 
