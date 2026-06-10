@@ -121,19 +121,32 @@ def solve_frame(
             status = "unresolved_missing_contact_measurement"
             selected = None
         else:
-            selected = scored[0]
-            selected_state = str(selected["row"].get("contact_state_measurement"))
-            temporal_required = needs_temporal_validation(selected["row"], args)
-            if temporal_required and temporal_status is None:
-                status = "unresolved_missing_temporal_object_validation"
-            elif temporal_required and temporal_status != "accepted_temporal_mask_support":
-                status = "unresolved_temporal_object_contact_conflict"
-            elif selected_state == "candidate_contact_image_and_metric" and float(selected["total_cost"]) <= float(args.max_accept_cost):
+            selected = None
+            for candidate in scored:
+                candidate_state = str(candidate["row"].get("contact_state_measurement"))
+                temporal_required = needs_temporal_validation(candidate["row"], args)
+                if temporal_required and temporal_status != "accepted_temporal_mask_support":
+                    continue
+                if (
+                    candidate_state == "candidate_contact_image_and_metric"
+                    and float(candidate["total_cost"]) <= float(args.max_accept_cost)
+                ):
+                    selected = candidate
+                    break
+            if selected is not None:
                 status = "accepted_contact"
-            elif selected_state.startswith("candidate_contact"):
-                status = "unresolved_contact_geometry"
             else:
-                status = "rejected_contact_absent"
+                selected = scored[0]
+                selected_state = str(selected["row"].get("contact_state_measurement"))
+                temporal_required = needs_temporal_validation(selected["row"], args)
+                if temporal_required and temporal_status is None:
+                    status = "unresolved_missing_temporal_object_validation"
+                elif temporal_required and temporal_status != "accepted_temporal_mask_support":
+                    status = "unresolved_temporal_object_contact_conflict"
+                elif selected_state.startswith("candidate_contact"):
+                    status = "unresolved_contact_geometry"
+                else:
+                    status = "rejected_contact_absent"
     else:
         selected = scored[0] if scored else None
         status = "accepted_no_contact" if selected is None or str(selected["row"].get("contact_state_measurement")) == "no_contact_evidence" else "unresolved_unexpected_contact"

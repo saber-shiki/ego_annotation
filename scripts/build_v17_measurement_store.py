@@ -32,6 +32,8 @@ class CaseSpec:
     hand_repair_contact_measurement_paths: tuple[Path, ...] = ()
     object_depth_repair_candidate_paths: tuple[Path, ...] = ()
     object_depth_repair_contact_measurement_paths: tuple[Path, ...] = ()
+    local_contact_patch_state_paths: tuple[Path, ...] = ()
+    local_contact_patch_contact_measurement_paths: tuple[Path, ...] = ()
     contact_state_graph_paths: tuple[Path, ...] = ()
     persistent_object_shape_state_paths: tuple[Path, ...] = ()
 
@@ -847,6 +849,59 @@ def measurements_from_object_depth_repair_candidates(
     return measurements, by_frame, sources
 
 
+def measurements_from_local_contact_patch_states(
+    paths: tuple[Path, ...],
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        if not isinstance(payload, list):
+            raise RuntimeError(f"{path} must contain a JSON list")
+        source_rows = 0
+        annotation_ready_rows = 0
+        source_frames: list[int] = []
+        for row_i, raw in enumerate(payload):
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"{path} row {row_i} is not a JSON object")
+            idx = required_json_int(raw.get("frame_idx"), "frame_idx", f"{path} row {row_i}")
+            mesh_vertices = required_json_int(raw.get("mesh_vertices"), "mesh_vertices", f"{path} row {row_i}")
+            mesh_faces = required_json_int(raw.get("mesh_faces"), "mesh_faces", f"{path} row {row_i}")
+            entry = dict(raw)
+            entry["measurement_id"] = entry.get("measurement_id") or f"local_contact_patch:{source_i}:{row_i}"
+            entry["measurement_type"] = "local_deformable_contact_patch_state"
+            entry["entity_type"] = "object"
+            entry["source_file"] = str(path)
+            entry["annotation_ready"] = (
+                entry.get("annotation_ready") is True
+                and mesh_vertices > 0
+                and mesh_faces > 0
+                and entry.get("status") == "accepted_local_contact_patch_state"
+            )
+            measurements.append(entry)
+            by_frame.setdefault(idx, []).append(entry)
+            source_rows += 1
+            source_frames.append(idx)
+            if entry["annotation_ready"]:
+                annotation_ready_rows += 1
+        sources.append(
+            {
+                "path": str(path),
+                "status": "loaded",
+                "measurement_count": source_rows,
+                "annotation_ready_count": annotation_ready_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+            }
+        )
+    return measurements, by_frame, sources
+
+
 def measurements_from_contact_state_graphs(
     paths: tuple[Path, ...],
 ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
@@ -1065,6 +1120,8 @@ def anchor_qc(
     hand_repair_contact_by_frame: dict[int, list[dict[str, Any]]],
     object_depth_repair_by_frame: dict[int, list[dict[str, Any]]],
     object_depth_repair_contact_by_frame: dict[int, list[dict[str, Any]]],
+    local_contact_patch_by_frame: dict[int, list[dict[str, Any]]],
+    local_contact_patch_contact_by_frame: dict[int, list[dict[str, Any]]],
     contact_state_graph_by_frame: dict[int, list[dict[str, Any]]],
     roster: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -1103,6 +1160,9 @@ def anchor_qc(
         hand_repair_contact_measurements = hand_repair_contact_by_frame.get(idx, [])
         object_depth_repair_candidates = object_depth_repair_by_frame.get(idx, [])
         object_depth_repair_contact_measurements = object_depth_repair_contact_by_frame.get(idx, [])
+        local_contact_patch_states = local_contact_patch_by_frame.get(idx, [])
+        ready_local_contact_patch_states = [row for row in local_contact_patch_states if row.get("annotation_ready") is True]
+        local_contact_patch_contact_measurements = local_contact_patch_contact_by_frame.get(idx, [])
         contact_state_graph_measurements = contact_state_graph_by_frame.get(idx, [])
         contact_states = sorted({str(row.get("contact_state_measurement")) for row in contact_measurements})
         hand_repair_contact_states = sorted(
@@ -1110,6 +1170,9 @@ def anchor_qc(
         )
         object_depth_repair_contact_states = sorted(
             {str(row.get("contact_state_measurement")) for row in object_depth_repair_contact_measurements}
+        )
+        local_contact_patch_contact_states = sorted(
+            {str(row.get("contact_state_measurement")) for row in local_contact_patch_contact_measurements}
         )
         contact_state_graph_states = sorted({str(row.get("status")) for row in contact_state_graph_measurements})
         expected_visible = spec.expected_visible_hands.get(idx)
@@ -1199,7 +1262,12 @@ def anchor_qc(
             and not any(failure in hand_repair_failures for failure in failures)
         ):
             failures.append("known_v16_hand_failure_needs_repair_state")
-        if idx == 856 and object_measurements and "unresolved_temporal_object_contact_conflict" not in contact_state_graph_states:
+        if (
+            idx == 856
+            and object_measurements
+            and "unresolved_temporal_object_contact_conflict" not in contact_state_graph_states
+            and not ready_local_contact_patch_states
+        ):
             failures.append("known_bad_state_can_still_emit_small_distance_contact_label")
         anchors.append(
             {
@@ -1243,6 +1311,22 @@ def anchor_qc(
                 "object_depth_repair_candidate_count": len(object_depth_repair_candidates),
                 "object_depth_repair_contact_measurement_count": len(object_depth_repair_contact_measurements),
                 "object_depth_repair_contact_state_measurements": object_depth_repair_contact_states,
+                "local_contact_patch_state_count": len(local_contact_patch_states),
+                "local_contact_patch_annotation_ready_count": len(ready_local_contact_patch_states),
+                "local_contact_patch_states": [
+                    {
+                        "entity_id": row.get("entity_id"),
+                        "status": row.get("status"),
+                        "annotation_ready": row.get("annotation_ready"),
+                        "contact_state_measurement": row.get("contact_state_measurement"),
+                        "mesh_vertices": row.get("mesh_vertices"),
+                        "mesh_faces": row.get("mesh_faces"),
+                        "hand_object_mesh_distance_m": row.get("hand_object_mesh_distance_m"),
+                    }
+                    for row in local_contact_patch_states
+                ],
+                "local_contact_patch_contact_measurement_count": len(local_contact_patch_contact_measurements),
+                "local_contact_patch_contact_state_measurements": local_contact_patch_contact_states,
                 "contact_state_graph_measurement_count": len(contact_state_graph_measurements),
                 "contact_state_graph_states": contact_state_graph_states,
                 "failures": failures,
@@ -1308,6 +1392,16 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         object_depth_repair_contact_sources,
     ) = measurements_from_contact_measurements(spec.object_depth_repair_contact_measurement_paths)
     (
+        local_contact_patch_measurements,
+        local_contact_patch_by_frame,
+        local_contact_patch_sources,
+    ) = measurements_from_local_contact_patch_states(spec.local_contact_patch_state_paths)
+    (
+        local_contact_patch_contact_measurements,
+        local_contact_patch_contact_by_frame,
+        local_contact_patch_contact_sources,
+    ) = measurements_from_contact_measurements(spec.local_contact_patch_contact_measurement_paths)
+    (
         contact_state_graph_measurements,
         contact_state_graph_by_frame,
         contact_state_graph_sources,
@@ -1319,6 +1413,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     ) = measurements_from_persistent_object_shape_states(spec.persistent_object_shape_state_paths)
     object_by_frame_combined = {idx: list(rows) for idx, rows in object_by_frame.items()}
     for idx, rows in sam2_by_frame.items():
+        object_by_frame_combined.setdefault(idx, []).extend(rows)
+    for idx, rows in local_contact_patch_by_frame.items():
         object_by_frame_combined.setdefault(idx, []).extend(rows)
     for idx, rows in persistent_object_shape_by_frame.items():
         object_by_frame_combined.setdefault(idx, []).extend(rows)
@@ -1345,6 +1441,11 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "hand_repair_contact_measurements.json", hand_repair_contact_measurements)
     write_json(measurements_dir / "object_depth_repair_candidate_measurements.json", object_depth_repair_measurements)
     write_json(measurements_dir / "object_depth_repair_contact_measurements.json", object_depth_repair_contact_measurements)
+    write_json(measurements_dir / "local_contact_patch_state_measurements.json", local_contact_patch_measurements)
+    write_json(
+        measurements_dir / "local_contact_patch_contact_measurements.json",
+        local_contact_patch_contact_measurements,
+    )
     write_json(measurements_dir / "contact_state_graph_measurements.json", contact_state_graph_measurements)
     write_json(measurements_dir / "persistent_object_shape_measurements.json", persistent_object_shape_measurements)
     write_json(case_dir / "object_roster_v17.json", roster)
@@ -1364,6 +1465,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         hand_repair_contact_by_frame,
         object_depth_repair_by_frame,
         object_depth_repair_contact_by_frame,
+        local_contact_patch_by_frame,
+        local_contact_patch_contact_by_frame,
         contact_state_graph_by_frame,
         roster,
     )
@@ -1389,6 +1492,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "hand_repair_contact_measurement_sources": hand_repair_contact_sources,
         "object_depth_repair_sources": object_depth_repair_sources,
         "object_depth_repair_contact_measurement_sources": object_depth_repair_contact_sources,
+        "local_contact_patch_sources": local_contact_patch_sources,
+        "local_contact_patch_contact_measurement_sources": local_contact_patch_contact_sources,
         "contact_state_graph_sources": contact_state_graph_sources,
         "persistent_object_shape_sources": persistent_object_shape_sources,
         "object_mesh_qc": str(object_qc_path),
@@ -1409,6 +1514,8 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
             "hand_repair_contact": len(hand_repair_contact_measurements),
             "object_depth_repair": len(object_depth_repair_measurements),
             "object_depth_repair_contact": len(object_depth_repair_contact_measurements),
+            "local_contact_patch": len(local_contact_patch_measurements),
+            "local_contact_patch_contact": len(local_contact_patch_contact_measurements),
             "contact_state_graph": len(contact_state_graph_measurements),
             "persistent_object_shape": len(persistent_object_shape_measurements),
         },
@@ -1527,10 +1634,30 @@ def default_cases() -> list[CaseSpec]:
                     "contact_measurements_anchor_graph_repair_object_depth_candidate_856_graph_hand_v1.json"
                 ),
             ),
+            local_contact_patch_state_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_object_plan/trash_1050/"
+                    "local_contact_patch_black_bag_182_graph_hand_v1/local_contact_patch_states.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_object_plan/trash_1050/"
+                    "local_contact_patch_white_bag_856_graph_hand_v1/local_contact_patch_states.json"
+                ),
+            ),
+            local_contact_patch_contact_measurement_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_object_plan/trash_1050/"
+                    "local_contact_patch_black_bag_182_graph_hand_v1/local_contact_patch_contact_measurements.json"
+                ),
+                Path(
+                    "/data2/ego_annotation_outputs/v17_object_plan/trash_1050/"
+                    "local_contact_patch_white_bag_856_graph_hand_v1/local_contact_patch_contact_measurements.json"
+                ),
+            ),
             contact_state_graph_paths=(
                 Path(
                     "/data2/ego_annotation_outputs/v17_contact_measurements/trash_1050/"
-                    "anchor_contact_state_graph_v3.json"
+                    "anchor_contact_state_graph_v4.json"
                 ),
             ),
         ),
