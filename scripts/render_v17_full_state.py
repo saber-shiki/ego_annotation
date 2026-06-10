@@ -201,10 +201,21 @@ def visual_inspection_sheet(video: Path, output: Path, frames: list[int]) -> dic
     return {"path": str(output), "sampled_frames": [int(frame) for frame in frames]}
 
 
-def existing_render_source(final_dir: Path, dst_name: str) -> Path | None:
-    dst = final_dir / dst_name
-    if dst.exists():
-        return dst
+def valid_video(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        video_info(path)
+    except RuntimeError:
+        path.unlink()
+        return False
+    return True
+
+
+def existing_render_source(render_dir: Path, final_dir: Path, src_name: str, dst_name: str) -> Path | None:
+    tmp_source = render_dir / src_name
+    if valid_video(tmp_source):
+        return tmp_source
     legacy_names = {
         "qc_overlay_mano_object_multi.mp4": "overlay_mano_object_multi.mp4",
         "qc_world_reconstruction_3d_v17.mp4": "world_reconstruction_3d_v17.mp4",
@@ -213,9 +224,31 @@ def existing_render_source(final_dir: Path, dst_name: str) -> Path | None:
     legacy_name = legacy_names.get(dst_name)
     if legacy_name is not None:
         legacy = final_dir / legacy_name
-        if legacy.exists():
+        if valid_video(legacy):
             return legacy
-    return dst if dst.exists() else None
+    dst = final_dir / dst_name
+    return dst if valid_video(dst) else None
+
+
+def remove_non_qc_visual_artifacts(case_dir: Path, render_dir: Path, final_dir: Path, current_sheet: Path) -> list[str]:
+    stale_paths = [
+        final_dir / "overlay_mano_object_multi.mp4",
+        final_dir / "world_reconstruction_3d_v17.mp4",
+        final_dir / "side_by_side_v17.mp4",
+        render_dir / "overlay_mano_object.mp4",
+        render_dir / "reconstruction_3d_world.mp4",
+        render_dir / "side_by_side.mp4",
+        case_dir / "v17_graph_anchor_side_by_side_sheet.jpg",
+        case_dir / "v17_anchor_side_by_side_sheet.jpg",
+    ]
+    removed: list[str] = []
+    for path in stale_paths:
+        if path == current_sheet:
+            continue
+        if path.exists():
+            path.unlink()
+            removed.append(str(path))
+    return removed
 
 
 def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path) -> dict[str, Any]:
@@ -255,7 +288,11 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
     }
     render_qc: dict[str, Any] = {}
     for key, (src_name, dst_name) in names.items():
-        src = existing_render_source(final_dir, dst_name) if bool(args.reuse_existing_final_renders) else render_dir / src_name
+        src = (
+            existing_render_source(render_dir, final_dir, src_name, dst_name)
+            if bool(args.reuse_existing_final_renders)
+            else render_dir / src_name
+        )
         if src is None:
             raise RuntimeError(f"no existing render available for {final_dir / dst_name}")
         dst = final_dir / dst_name
@@ -271,6 +308,12 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         case_dir / sheet_filename(str(args.method_name)),
         inspection_frames(state, raw),
     )
+    removed_non_qc_visual_artifacts = remove_non_qc_visual_artifacts(
+        case_dir,
+        render_dir,
+        final_dir,
+        Path(sheet["path"]),
+    )
     report = {
         "case": state["case"],
         "status": "duration_render_qc_pass" if duration_render_qc_pass else "duration_render_qc_failed",
@@ -280,6 +323,7 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         "render_qc_scope": "duration_only_not_visual_quality",
         "visible_qc_banner": True,
         "qc_banner_text": list(QC_BANNER_LINES),
+        "non_qc_visual_artifacts_removed": removed_non_qc_visual_artifacts,
         "method": args.method_name,
         "clip": str(clip),
         "annotations": state["annotations"],

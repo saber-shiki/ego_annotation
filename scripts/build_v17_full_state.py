@@ -269,7 +269,11 @@ def annotate_v17_captions(frames: list[dict[str, Any]]) -> None:
             "status": "single_manipulated_object_qc",
             "multi_object_timeline_ready": False,
             "missing_multi_object_roster_required": True,
+            "object_geometry_complete": False,
+            "object_pose_requirement_met": False,
+            "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
             "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
+            "geometry_semantics": "Current object geometry can be a visible surface or local contact patch; complete manipulated-object mesh reconstruction remains open.",
         }
 
 
@@ -357,6 +361,9 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
         "multi_object_timeline_ready": False,
         "object_schema_status": "single_manipulated_object_qc",
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
     }
     write_json(annotations_out, payload)
 
@@ -375,6 +382,9 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
         "multi_object_timeline_ready": False,
         "object_schema_status": "single_manipulated_object_qc",
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
         "v16_manifest": str(spec["v16_manifest"]),
         "raw_frame_count": int(manifest["raw_frame_count"]),
         "annotations": str(annotations_out),
@@ -405,6 +415,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "multi_object_timeline_ready": False,
         "object_schema_status": "single_manipulated_object_qc",
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
         "method": "build_v17_full_state",
         "cases": reports,
     }

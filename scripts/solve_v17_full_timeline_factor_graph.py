@@ -929,7 +929,11 @@ def object_schema_status_payload() -> dict[str, Any]:
         "status": "single_manipulated_object_qc",
         "multi_object_timeline_ready": False,
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
         "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
+        "geometry_semantics": "Current object geometry can be a visible surface or local contact patch; complete manipulated-object mesh reconstruction remains open.",
     }
 
 
@@ -1000,6 +1004,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "multi_object_timeline_ready": False,
         "object_schema_status": "single_manipulated_object_qc",
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
     }
     payload["v17_full_timeline_factor_graph"] = {
         "status": report["status"],
@@ -1015,6 +1022,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "multi_object_timeline_ready": False,
         "object_schema_status": "single_manipulated_object_qc",
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
         "report": report["report_path"],
     }
     write_json(path, payload)
@@ -1168,6 +1178,9 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "multi_object_timeline_ready": False,
         "object_schema_status": "single_manipulated_object_qc",
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
         "method": "solve_v17_full_timeline_factor_graph",
         "semantics": {
             "optimized_variables": [
@@ -1266,6 +1279,9 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             "multi_object_timeline_ready": False,
             "object_schema_status": "single_manipulated_object_qc",
             "missing_multi_object_roster_required": True,
+            "object_geometry_complete": False,
+            "object_pose_requirement_met": False,
+            "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
             "solver_report": str(report_path),
         },
     )
@@ -1292,6 +1308,9 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
         "multi_object_timeline_ready": False,
         "object_schema_status": "single_manipulated_object_qc",
         "missing_multi_object_roster_required": True,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
         "method": "solve_v17_full_timeline_factor_graph",
         "cases": cases,
     }
@@ -1311,6 +1330,9 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
                 "v3_solver_complete": summary["v3_solver_complete"],
                 "multi_object_timeline_ready": summary["multi_object_timeline_ready"],
                 "object_schema_status": summary["object_schema_status"],
+                "object_geometry_complete": summary["object_geometry_complete"],
+                "object_pose_requirement_met": summary["object_pose_requirement_met"],
+                "object_geometry_status": summary["object_geometry_status"],
                 "cases": [
                     {
                         "case": c["case"],
