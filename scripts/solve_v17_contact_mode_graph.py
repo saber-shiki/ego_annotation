@@ -153,6 +153,29 @@ def hand_intrinsics(hand: dict[str, Any]) -> np.ndarray | None:
     return intr
 
 
+def finite_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def hand_residual_ok(hand: dict[str, Any], max_median_px: float, max_p95_px: float) -> bool:
+    residual = hand.get("projection_residual_to_measurement_px")
+    if not isinstance(residual, dict):
+        return False
+    median = finite_float(residual.get("median"))
+    p95 = finite_float(residual.get("p95"))
+    if median is None or p95 is None:
+        return False
+    return median <= max_median_px and p95 <= max_p95_px
+
+
 def contact_observation(
     frame: dict[str, Any],
     hand: dict[str, Any],
@@ -181,6 +204,7 @@ def contact_observation(
     mask_median: float | None = None
     mask_close_fraction: float | None = None
     intr = hand_intrinsics(hand)
+    sparse_graph_hand_ready = hand_residual_ok(hand, float(args.max_hand_median_px), float(args.max_hand_p95_px))
     obj = frame.get("object")
     mask_path = obj.get("mask_path") if isinstance(obj, dict) else None
     if isinstance(mask_path, str) and mask_path and intr is not None:
@@ -219,7 +243,7 @@ def contact_observation(
         mask_close_fraction,
         source_state,
         selected_id,
-        None,
+        None if sparse_graph_hand_ready else "hand_residual_rejected_for_sparse_graph_contact_factor",
     )
 
 
@@ -278,16 +302,18 @@ def solve_modes(rows: list[ContactObs], args: argparse.Namespace) -> list[dict[s
     out: list[dict[str, Any]] = []
     for row_i, row in enumerate(rows):
         state = state_by_row_index.get(row_i)
+        contact_score = sigmoid(row.unary_logit)
         if state is None:
             mode = "unobserved"
             confidence = 0.0
         else:
             mode = "contact" if state == 1 else "no_contact"
-            confidence = sigmoid(abs(row.unary_logit))
+            confidence = contact_score if state == 1 else sigmoid(-row.unary_logit)
         factor_ready = (
             row.active
             and mode == "contact"
             and confidence >= float(args.factor_ready_min_confidence)
+            and row.reason is None
             and row.gap_p05_m is not None
             and row.gap_p05_m <= float(args.factor_ready_max_gap_p05_m)
         )
@@ -299,7 +325,7 @@ def solve_modes(rows: list[ContactObs], args: argparse.Namespace) -> list[dict[s
                 "side": row.side,
                 "active": bool(row.active),
                 "mode": mode,
-                "contact_score": float(sigmoid(row.unary_logit)),
+                "contact_score": float(contact_score),
                 "confidence_score": float(confidence),
                 "contact_factor_ready": bool(factor_ready),
                 "unary_logit": float(row.unary_logit),
@@ -447,6 +473,8 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
             "factor_ready_min_confidence": float(args.factor_ready_min_confidence),
             "factor_ready_max_gap_p05_m": float(args.factor_ready_max_gap_p05_m),
             "factor_ready_max_mask_px": float(args.factor_ready_max_mask_px),
+            "max_hand_median_px": float(args.max_hand_median_px),
+            "max_hand_p95_px": float(args.max_hand_p95_px),
         },
         "rows": solved_rows,
     }
@@ -456,8 +484,12 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
 
 def solve(args: argparse.Namespace) -> dict[str, Any]:
     reports = [solve_case(args, manifest) for manifest in args.case_manifests]
+    latent_graph_status = "accepted" if all(report["status"] == "accepted_v17_contact_mode_graph" for report in reports) else "rejected"
     summary = {
-        "status": "pass" if all(report["status"] == "accepted_v17_contact_mode_graph" for report in reports) else "fail",
+        "status": latent_graph_status,
+        "latent_graph_status": latent_graph_status,
+        "annotation_ready": False,
+        "deliverable_ready": False,
         "method": "solve_v17_contact_mode_graph",
         "solver_completeness": "contact_mode_latent_only",
         "v3_solver_complete": False,
@@ -505,6 +537,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--factor-ready-min-confidence", type=float, default=0.72)
     parser.add_argument("--factor-ready-max-gap-p05-m", type=float, default=0.035)
     parser.add_argument("--factor-ready-max-mask-px", type=float, default=45.0)
+    parser.add_argument("--max-hand-median-px", type=float, default=45.0)
+    parser.add_argument("--max-hand-p95-px", type=float, default=95.0)
     return parser.parse_args()
 
 

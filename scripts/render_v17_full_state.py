@@ -175,6 +175,8 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         shutil.copy2(src, dst)
         render_qc[key] = check_video(dst, raw)
     frame_count_match = all(row["frame_count_match"] for row in render_qc.values())
+    solver_report_path = Path(state["solver_report"]) if isinstance(state.get("solver_report"), str) else None
+    solver_report = load_json(solver_report_path) if solver_report_path is not None and solver_report_path.exists() else {}
     sheet = visual_inspection_sheet(
         Path(render_qc["side_by_side"]["path"]),
         case_dir / sheet_filename(str(args.method_name)),
@@ -191,6 +193,13 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         "render_qc": render_qc,
         "frame_count_match": frame_count_match,
         "solver_status": state.get("solver_status"),
+        "solver_completeness": state.get("solver_completeness"),
+        "solver_report": state.get("solver_report"),
+        "v3_solver_complete": bool(state.get("v3_solver_complete")) if "v3_solver_complete" in state else None,
+        "structural_render_qc_pass": bool(frame_count_match),
+        "annotation_ready": bool(solver_report.get("annotation_ready")),
+        "deliverable_ready": bool(solver_report.get("deliverable_ready")),
+        "accuracy_target_met": bool(solver_report.get("accuracy_target_met")),
         "visual_inspection_sheet": sheet,
     }
     write_json(case_dir / "v17_render_manifest.json", report)

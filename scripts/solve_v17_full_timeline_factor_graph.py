@@ -18,6 +18,7 @@ from scipy.spatial import cKDTree  # type: ignore[reportAttributeAccessIssue]
 from run_v16_full_pipeline import load_mesh_archive, save_mesh_archive
 
 ACCEPTED_STATUS = "accepted_sparse_full_timeline_evidence_graph"
+PARTIAL_STATUS = "partial_sparse_full_timeline_evidence_graph"
 REJECTED_STATUS = "rejected_sparse_full_timeline_evidence_graph"
 SOLVER_COMPLETENESS = "sparse_evidence_consistency_only"
 
@@ -224,6 +225,17 @@ def contact_mode_graph_sides(contact_mode_graph_root: Path, case: str) -> dict[i
             raise RuntimeError(f"{path} row {row_i} has invalid side {side!r}")
         out.setdefault(idx, set()).add(str(side))
     return out
+
+
+def contact_mode_factor_ready_count(contact_mode_graph_root: Path, case: str) -> int:
+    path = contact_mode_graph_root / case / "v17_contact_mode_graph_report.json"
+    report = load_json(path)
+    if not isinstance(report, dict):
+        raise RuntimeError(f"{path} must contain a JSON object")
+    count = report.get("contact_factor_ready_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise RuntimeError(f"{path} has invalid contact_factor_ready_count {count!r}")
+    return count
 
 
 def selected_graph_contact_sides(frame: dict[str, Any]) -> tuple[str, ...]:
@@ -762,14 +774,35 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     if system_shape is None:
         raise RuntimeError("linear system matrix shape is unavailable")
     contact_factor_source = "contact_mode_factor_ready" if contact_mode_sides is not None else "selected_v17_contact_state"
+    contact_mode_factor_ready_total = (
+        contact_mode_factor_ready_count(Path(args.contact_mode_graph_root), case)
+        if args.contact_mode_graph_root is not None
+        else None
+    )
+    skipped_contact_factor_count = len(graph.skipped_contacts)
+    structural_consistency_pass = bool(accepted)
+    accuracy_target_met = bool(
+        after_contact.get("p95_m_p95") is not None
+        and float(after_contact["p95_m_p95"]) <= float(args.accuracy_target_m)
+        and object_shift_max is not None
+        and float(object_shift_max) <= float(args.accuracy_target_m)
+        and hand_shift_max is not None
+        and float(hand_shift_max) <= float(args.accuracy_target_m)
+    )
+    contact_factor_complete = skipped_contact_factor_count == 0
+    deliverable_ready = bool(structural_consistency_pass and accuracy_target_met and contact_factor_complete)
+    status = ACCEPTED_STATUS if structural_consistency_pass and contact_factor_complete else PARTIAL_STATUS if structural_consistency_pass else REJECTED_STATUS
     contact_constraint_rule = (
         "When --contact-mode-graph-root is provided, only contact_factor_ready rows from the accepted contact-mode graph become contact factors. "
         "Otherwise only selected V17 contact states and accepted local contact patch states become contact factors by default; candidate contact measurements remain evidence until a contact graph selects them."
     )
     report: dict[str, Any] = {
         "case": case,
-        "status": ACCEPTED_STATUS if accepted else REJECTED_STATUS,
-        "annotation_ready": bool(accepted),
+        "status": status,
+        "structural_consistency_pass": bool(structural_consistency_pass),
+        "accuracy_target_met": bool(accuracy_target_met),
+        "annotation_ready": bool(deliverable_ready),
+        "deliverable_ready": bool(deliverable_ready),
         "solver_completeness": SOLVER_COMPLETENESS,
         "v3_solver_complete": False,
         "method": "solve_v17_full_timeline_factor_graph",
@@ -789,9 +822,13 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "corrected_mesh_archive": archive_report,
         "frame_count": int(len(frames)),
         "active_object_frame_count": int(len(graph.active_indices)),
+        "inactive_or_missing_object_frame_count": int(len(frames) - len(graph.active_indices)),
         "object_variable_frames": int(len(graph.object_var_by_frame)),
         "hand_variable_count": int(len(graph.hand_var_by_frame_side)),
         "contact_factor_count": int(len(graph.contact_pairs)),
+        "contact_mode_factor_ready_input_count": contact_mode_factor_ready_total,
+        "skipped_contact_factor_count": int(skipped_contact_factor_count),
+        "contact_factor_complete": bool(contact_factor_complete),
         "contact_factor_source_counts": count_contact_sources(graph),
         "linearized_contact_correspondences": int(system.contact_correspondence_count),
         "skipped_contacts": graph.skipped_contacts,
@@ -811,7 +848,11 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             "accept_contact_p95_m": float(args.accept_contact_p95_m),
             "accept_object_shift_max_m": float(args.accept_object_shift_max_m),
             "accept_hand_ray_shift_max_m": float(args.accept_hand_ray_shift_max_m),
-            "passed": bool(accepted),
+            "accuracy_target_m": float(args.accuracy_target_m),
+            "structural_consistency_passed": bool(structural_consistency_pass),
+            "accuracy_target_met": bool(accuracy_target_met),
+            "contact_factor_complete": bool(contact_factor_complete),
+            "deliverable_ready": bool(deliverable_ready),
             "rejection_reasons": rejection_reasons,
         },
     }
@@ -839,7 +880,10 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
     args.output_root.mkdir(parents=True, exist_ok=True)
     cases = [solve_case(args, manifest, args.output_root) for manifest in args.case_manifests]
     summary = {
-        "status": "pass" if all(case["annotation_ready"] for case in cases) else "fail",
+        "status": "deliverable_ready" if all(case["deliverable_ready"] for case in cases) else "partial",
+        "structural_consistency_status": "pass" if all(case["structural_consistency_pass"] for case in cases) else "fail",
+        "accuracy_target_status": "pass" if all(case["accuracy_target_met"] for case in cases) else "fail",
+        "deliverable_ready": bool(all(case["deliverable_ready"] for case in cases)),
         "method": "solve_v17_full_timeline_factor_graph",
         "cases": cases,
     }
@@ -853,6 +897,9 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
                         "case": c["case"],
                         "status": c["status"],
                         "annotation_ready": c["annotation_ready"],
+                        "deliverable_ready": c["deliverable_ready"],
+                        "structural_consistency_pass": c["structural_consistency_pass"],
+                        "accuracy_target_met": c["accuracy_target_met"],
                         "contact_after_p95_m_p95": c["contact_after"]["p95_m_p95"],
                         "weighted_residual_rms_after": c["weighted_residual_rms_after"],
                     }
@@ -894,6 +941,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--accept-contact-p95-m", type=float, default=0.035)
     parser.add_argument("--accept-object-shift-max-m", type=float, default=0.04)
     parser.add_argument("--accept-hand-ray-shift-max-m", type=float, default=0.04)
+    parser.add_argument("--accuracy-target-m", type=float, default=0.005)
     parser.add_argument("--max-iter", type=int, default=120)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--allow-measurement-candidate-contacts", action="store_true")
