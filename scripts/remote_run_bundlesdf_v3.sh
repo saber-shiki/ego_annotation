@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 6 ]; then
-  echo "usage: $0 REMOTE_ROOT DATASET_DIR OUTPUT_DIR GPU_ID ZFAR DEBUG_LEVEL" >&2
+if [ "$#" -lt 6 ] || [ "$#" -gt 8 ]; then
+  echo "usage: $0 REMOTE_ROOT DATASET_DIR OUTPUT_DIR GPU_ID ZFAR DEBUG_LEVEL [FINAL_NERF_FRAME_MODE] [DEPTH_WEIGHT]" >&2
   exit 2
 fi
 
@@ -12,6 +12,8 @@ OUTPUT_DIR="$3"
 GPU_ID="$4"
 ZFAR="$5"
 DEBUG_LEVEL="$6"
+FINAL_NERF_FRAME_MODE="${7:-bundle_keyframes}"
+DEPTH_WEIGHT="${8:-0}"
 
 BUNDLE="$ROOT/BundleSDF"
 PREFIX="$ROOT/micromamba_root/envs/bundlesdf_py311"
@@ -62,6 +64,8 @@ TORCH_LIB="$PREFIX/lib/python3.11/site-packages/torch/lib"
 export LD_LIBRARY_PATH="$BUNDLE/BundleTrack/build:$PREFIX/lib:$TORCH_LIB:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 P3D_TRANSFORMS="${EGO_PYTORCH3D_TRANSFORMS_PATH:-/mnt/user-home/yiwen/.cache/uv/archive-v0/GQ7Vw61ILrlJefOs}"
 export PYTHONPATH="$P3D_TRANSFORMS:$BUNDLE/mycuda:$BUNDLE/BundleTrack/build:$BUNDLE/BundleTrack:$BUNDLE${PYTHONPATH:+:$PYTHONPATH}"
+export EGO_BUNDLESDF_FINAL_NERF_FRAME_MODE="$FINAL_NERF_FRAME_MODE"
+export EGO_BUNDLESDF_DEPTH_WEIGHT="$DEPTH_WEIGHT"
 
 cd "$BUNDLE"
 "$PREFIX/bin/python" - <<'PY'
@@ -102,6 +106,36 @@ PY
 "$PREFIX/bin/python" - <<'PY'
 from pathlib import Path
 
+path = Path("bundlesdf.py")
+text = path.read_text(encoding="utf-8")
+marker = """    with open(cfg_nerf_dir,'r') as ff:\n      self.cfg_nerf = yaml.load(ff)\n    self.cfg_nerf['notes'] = ''\n"""
+inject = """    with open(cfg_nerf_dir,'r') as ff:\n      self.cfg_nerf = yaml.load(ff)\n    ego_depth_weight = float(os.environ.get(\"EGO_BUNDLESDF_DEPTH_WEIGHT\", str(self.cfg_nerf.get('depth_weight', 0))))\n    if ego_depth_weight < 0:\n      raise RuntimeError(\"EGO_BUNDLESDF_DEPTH_WEIGHT must be nonnegative\")\n    self.cfg_nerf['depth_weight'] = ego_depth_weight\n    print(f\"EGO BundleSDF depth_weight {ego_depth_weight}\")\n    self.cfg_nerf['notes'] = ''\n"""
+if marker in text:
+    text = text.replace(marker, inject)
+elif inject in text:
+    pass
+else:
+    raise SystemExit("cannot find BundleSDF depth_weight assignment")
+path.write_text(text, encoding="utf-8")
+PY
+
+"$PREFIX/bin/python" - <<'PY'
+from pathlib import Path
+
+path = Path("bundlesdf.py")
+text = path.read_text(encoding="utf-8")
+marker = "    logging.info(f\"keyframes#: {len(keyframes)}\")\n"
+inject = """    if os.environ.get(\"EGO_BUNDLESDF_FINAL_NERF_FRAME_MODE\") == \"all_ob_in_cam\":\n      pose_files = sorted(glob.glob(f\"{self.debug_dir}/ob_in_cam/*.txt\"))\n      if len(pose_files)==0:\n        raise RuntimeError(\"all_ob_in_cam requested but no ob_in_cam pose files exist\")\n      keyframes = {}\n      for pose_file in pose_files:\n        frame_id = os.path.basename(pose_file).replace('.txt','')\n        ob_in_cam = np.loadtxt(pose_file).reshape(4,4)\n        cam_in_ob = np.linalg.inv(ob_in_cam)\n        keyframes[f\"keyframe_{frame_id}\"] = {\"cam_in_ob\": cam_in_ob.reshape(-1).tolist()}\n      logging.info(f\"EGO final NeRF all_ob_in_cam keyframes#: {len(keyframes)}\")\n\n"""
+if inject not in text:
+    if marker not in text:
+        raise SystemExit("cannot find BundleSDF keyframe logging insertion point")
+    text = text.replace(marker, inject + marker)
+    path.write_text(text, encoding="utf-8")
+PY
+
+"$PREFIX/bin/python" - <<'PY'
+from pathlib import Path
+
 utils = Path("Utils.py")
 text = utils.read_text(encoding="utf-8")
 helper = """
@@ -128,6 +162,7 @@ text = text.replace("    mesh.remove_duplicate_faces()\n", "    remove_duplicate
 nerf.write_text(text, encoding="utf-8")
 PY
 
+mesh_only_stop=0
 set +e
 "$PREFIX/bin/python" run_custom.py \
   --mode run_video \
@@ -136,14 +171,36 @@ set +e
   --use_segmenter 0 \
   --use_gui 0 \
   --stride 1 \
-  --debug_level "$DEBUG_LEVEL"
+  --debug_level "$DEBUG_LEVEL" &
+run_pid="$!"
+while kill -0 "$run_pid" 2>/dev/null; do
+  if [ -f "$OUTPUT_DIR/mesh_cleaned.obj" ]; then
+    mesh_size_1="$(stat -c '%s' "$OUTPUT_DIR/mesh_cleaned.obj" 2>/dev/null || echo 0)"
+    sleep 3
+    mesh_size_2="$(stat -c '%s' "$OUTPUT_DIR/mesh_cleaned.obj" 2>/dev/null || echo 0)"
+    if [ "$mesh_size_1" = "$mesh_size_2" ] && [ "$mesh_size_2" -gt 0 ]; then
+      echo "BUNDLESDF_RUN_V3_MESH_CLEANED_READY_TERMINATE_TEXTURE_PATH pid=$run_pid"
+      kill "$run_pid" 2>/dev/null || true
+      sleep 5
+      if kill -0 "$run_pid" 2>/dev/null; then
+        kill -9 "$run_pid" 2>/dev/null || true
+      fi
+      mesh_only_stop=1
+      break
+    fi
+  fi
+  sleep 5
+done
+wait "$run_pid"
 run_status="$?"
 set -e
 
 test -f "$OUTPUT_DIR/config_bundletrack.yml"
 test -d "$OUTPUT_DIR/ob_in_cam"
 test -f "$OUTPUT_DIR/mesh_cleaned.obj"
-if [ "$run_status" -ne 0 ]; then
+if [ "$mesh_only_stop" -eq 1 ]; then
+  echo "BUNDLESDF_RUN_V3_MESH_ONLY_AFTER_TEXTURE_PATH_TERMINATION status=$run_status"
+elif [ "$run_status" -ne 0 ]; then
   if [ -f "$OUTPUT_DIR/textured_mesh.obj" ]; then
     exit "$run_status"
   fi

@@ -9,6 +9,7 @@ from typing import Any
 
 import cv2  # type: ignore[reportMissingImports]
 import numpy as np
+import yaml  # type: ignore[reportMissingImports]
 
 
 STATUS = "v17_geometry_reconstruction_results_qc"
@@ -201,13 +202,91 @@ def mesh_topology_stats(faces: np.ndarray) -> dict[str, Any]:
 
 def candidate_mesh_path(output_dir: Path) -> Path | None:
     candidates = [
-        output_dir / "mesh_cleaned.obj",
         output_dir / "textured_mesh.obj",
         output_dir / "mesh" / "mesh_real_scale.obj",
         output_dir / "mesh" / "mesh_biggest_component_smoothed.obj",
         output_dir / "mesh" / "mesh_biggest_component.obj",
+        output_dir / "mesh_cleaned.obj",
     ]
     return next((path for path in candidates if path.exists()), None)
+
+
+def write_obj_mesh(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for x, y, z in vertices:
+            f.write(f"v {float(x):.9g} {float(y):.9g} {float(z):.9g}\n")
+        for a, b, c in faces:
+            f.write(f"f {int(a) + 1} {int(b) + 1} {int(c) + 1}\n")
+
+
+def read_yaml_mapping(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"BundleSDF normalization file must be a mapping: {path}")
+    return data
+
+
+def bundlesdf_normalization(output_dir: Path) -> tuple[Path, float, np.ndarray]:
+    candidates = [
+        output_dir / "final" / "nerf" / "config.yml",
+        output_dir / "final" / "nerf" / "normalization.yml",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        data = read_yaml_mapping(path)
+        sc_factor = data.get("sc_factor")
+        translation = data.get("translation", data.get("translation_cvcam"))
+        if sc_factor is None or translation is None:
+            continue
+        sc = finite_float(sc_factor, f"{path} sc_factor")
+        if sc <= 0.0:
+            raise RuntimeError(f"BundleSDF sc_factor must be positive: {path}")
+        tr = np.asarray(translation, dtype=np.float64)
+        if tr.shape != (3,) or not np.isfinite(tr).all():
+            raise RuntimeError(f"BundleSDF translation must be a finite 3-vector: {path}")
+        return path, sc, tr
+    raise RuntimeError(f"missing BundleSDF normalization config for normalized mesh: {output_dir}")
+
+
+def metric_mesh_for_qc(
+    output_dir: Path,
+    source_mesh_path: Path,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    metric_mesh_path: Path,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    source_extent = mesh_extent(vertices)
+    if source_mesh_path.name != "mesh_cleaned.obj":
+        return vertices, {
+            "source_mesh_path": str(source_mesh_path),
+            "mesh_coordinate_contract": "bundlesdf_metric_mesh",
+            "metric_mesh_path": str(source_mesh_path),
+            "source_mesh_extent_native_units": [float(v) for v in source_extent.tolist()],
+            "metric_transform_applied": False,
+        }
+    normalization_path, sc_factor, translation = bundlesdf_normalization(output_dir)
+    metric_vertices = vertices / sc_factor - translation.reshape(1, 3)
+    write_obj_mesh(metric_mesh_path, metric_vertices, faces)
+    return metric_vertices, {
+        "source_mesh_path": str(source_mesh_path),
+        "mesh_coordinate_contract": "bundlesdf_mesh_cleaned_normalized_before_texture_stage",
+        "metric_mesh_path": str(metric_mesh_path),
+        "source_mesh_extent_native_units": [float(v) for v in source_extent.tolist()],
+        "metric_transform_applied": True,
+        "metric_transform_source": str(normalization_path),
+        "bundlesdf_sc_factor": float(sc_factor),
+        "bundlesdf_translation_cvcam": [float(v) for v in translation.tolist()],
+        "bundlesdf_pose_offset_applied": False,
+        "bundlesdf_pose_offset_persisted": False,
+        "coordinate_contract_note": (
+            "BundleSDF exports mesh_cleaned.obj in normalized NeRF coordinates before the texture-stage "
+            "mesh_to_real_world conversion. V17 applies the persisted scale and translation only, then "
+            "requires projection and depth QC before accepting the recovered metric mesh."
+        ),
+    }
 
 
 def observed_extent_rows(frames: list[dict[str, Any]], max_points: int) -> list[dict[str, Any]]:
@@ -343,6 +422,10 @@ def projection_rows(
                 "silhouette_area_px": int(np.count_nonzero(silhouette)),
                 "mask_area_px": int(np.count_nonzero(mask)),
                 "front_vertex_depth_sample_count": int(len(errors)),
+                "front_vertex_depth_signed_median_m": float(np.median(errors)) if len(errors) else None,
+                "front_vertex_depth_signed_p05_m": float(np.percentile(errors, 5.0)) if len(errors) else None,
+                "front_vertex_depth_signed_p95_m": float(np.percentile(errors, 95.0)) if len(errors) else None,
+                "front_vertex_depth_positive_fraction": float(np.mean(errors > 0.0)) if len(errors) else None,
                 "front_vertex_depth_abs_median_m": float(np.median(np.abs(errors))) if len(errors) else None,
                 "front_vertex_depth_abs_p95_m": float(np.percentile(np.abs(errors), 95.0)) if len(errors) else None,
             }
@@ -436,7 +519,9 @@ def evaluate_job(case: str, job_row: dict[str, Any], args: argparse.Namespace) -
             "accepted_reconstruction_result": False,
             **FALSE_READY,
         }
-    vertices, faces = load_obj_mesh(mesh_path)
+    raw_vertices, faces = load_obj_mesh(mesh_path)
+    metric_mesh_path = args.output_root / case / job_id / "bundlesdf_metric_mesh_for_qc.obj"
+    vertices, mesh_contract = metric_mesh_for_qc(output_dir, mesh_path, raw_vertices, faces, metric_mesh_path)
     extent = mesh_extent(vertices)
     max_extent = float(np.max(extent))
     observed_limit = float(np.percentile(observed_maxima, 95.0)) * float(args.max_mesh_extent_ratio)
@@ -474,6 +559,34 @@ def evaluate_job(case: str, job_row: dict[str, Any], args: argparse.Namespace) -
                         if row["front_vertex_depth_abs_p95_m"] is not None
                     ]
                 ),
+                "front_vertex_depth_signed_median_m": summarize(
+                    [
+                        finite_float(row["front_vertex_depth_signed_median_m"], "front signed depth median")
+                        for row in projection_rows_payload
+                        if row["front_vertex_depth_signed_median_m"] is not None
+                    ]
+                ),
+                "front_vertex_depth_signed_p05_m": summarize(
+                    [
+                        finite_float(row["front_vertex_depth_signed_p05_m"], "front signed depth p05")
+                        for row in projection_rows_payload
+                        if row["front_vertex_depth_signed_p05_m"] is not None
+                    ]
+                ),
+                "front_vertex_depth_signed_p95_m": summarize(
+                    [
+                        finite_float(row["front_vertex_depth_signed_p95_m"], "front signed depth p95")
+                        for row in projection_rows_payload
+                        if row["front_vertex_depth_signed_p95_m"] is not None
+                    ]
+                ),
+                "front_vertex_depth_positive_fraction": summarize(
+                    [
+                        finite_float(row["front_vertex_depth_positive_fraction"], "front positive depth fraction")
+                        for row in projection_rows_payload
+                        if row["front_vertex_depth_positive_fraction"] is not None
+                    ]
+                ),
                 "front_vertex_depth_sample_count": summarize(
                     [
                         float(require_int(row["front_vertex_depth_sample_count"], "front depth samples"))
@@ -509,7 +622,9 @@ def evaluate_job(case: str, job_row: dict[str, Any], args: argparse.Namespace) -
     return {
         **base,
         "status": status,
-        "mesh_path": str(mesh_path),
+        "mesh_path": str(mesh_contract["metric_mesh_path"]),
+        "source_solver_mesh_path": str(mesh_path),
+        "mesh_coordinate_contract": mesh_contract,
         "mesh_vertices": int(len(vertices)),
         "mesh_faces": int(len(faces)),
         "mesh_extent_m": [float(v) for v in extent.tolist()],
