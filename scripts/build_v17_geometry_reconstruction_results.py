@@ -333,7 +333,7 @@ def render_silhouette(
     silhouette = np.zeros((height, width), dtype=np.uint8)
     valid = np.all(np.isfinite(uv[faces]), axis=(1, 2)) & np.all(z[faces] > 0.0, axis=1)
     face_ids = np.flatnonzero(valid)
-    if len(face_ids) > max_faces:
+    if max_faces > 0 and len(face_ids) > max_faces:
         face_ids = face_ids[np.linspace(0, len(face_ids) - 1, max_faces, dtype=np.int64)]
     order = np.argsort(z[faces[face_ids]].mean(axis=1))[::-1]
     for face_id in face_ids[order]:
@@ -360,7 +360,7 @@ def rasterized_front_depth_errors(
     face_ids = np.flatnonzero(valid)
     if len(face_ids) == 0:
         return np.asarray([], dtype=np.float64)
-    if len(face_ids) > max_faces:
+    if max_faces > 0 and len(face_ids) > max_faces:
         face_ids = face_ids[np.linspace(0, len(face_ids) - 1, max_faces, dtype=np.int64)]
     zbuf = np.full((height, width), np.inf, dtype=np.float32)
     order = np.argsort(z[faces[face_ids]].mean(axis=1))[::-1]
@@ -403,6 +403,12 @@ def projection_rows(
         intrinsics = np.asarray(frame.get("rectified_intrinsics_fx_fy_cx_cy"), dtype=np.float64)
         cam_vertices = transform_points(vertices, pose)
         uv = project(cam_vertices, intrinsics)
+        projectable_faces = np.all(np.isfinite(uv[faces]), axis=(1, 2)) & np.all(cam_vertices[:, 2][faces] > 0.0, axis=1)
+        projectable_face_count = int(np.count_nonzero(projectable_faces))
+        face_limit = int(args.max_projection_faces)
+        rasterized_face_count = (
+            min(projectable_face_count, face_limit) if face_limit > 0 else projectable_face_count
+        )
         silhouette = render_silhouette(mask.shape, uv, cam_vertices[:, 2], faces, int(args.max_projection_faces))
         intersection = int(np.count_nonzero(silhouette & mask))
         union = int(np.count_nonzero(silhouette | mask))
@@ -419,6 +425,9 @@ def projection_rows(
                 "silhouette_mask_iou": float(intersection / union),
                 "silhouette_area_px": int(np.count_nonzero(silhouette)),
                 "mask_area_px": int(np.count_nonzero(mask)),
+                "projectable_mesh_face_count": projectable_face_count,
+                "rasterized_mesh_face_count": rasterized_face_count,
+                "mesh_face_subsampling_used": bool(rasterized_face_count < projectable_face_count),
                 "front_surface_depth_sample_count": int(len(errors)),
                 "front_surface_depth_signed_median_m": float(np.median(errors)) if len(errors) else None,
                 "front_surface_depth_signed_p05_m": float(np.percentile(errors, 5.0)) if len(errors) else None,
@@ -543,6 +552,21 @@ def evaluate_job(case: str, job_row: dict[str, Any], args: argparse.Namespace) -
             projection_rows_payload = projection_rows(frames, output_dir, vertices, faces, args)
             projection = {
                 "silhouette_mask_iou": summarize([row["silhouette_mask_iou"] for row in projection_rows_payload]),
+                "projectable_mesh_face_count": summarize(
+                    [
+                        float(require_int(row["projectable_mesh_face_count"], "projectable mesh face count"))
+                        for row in projection_rows_payload
+                    ]
+                ),
+                "rasterized_mesh_face_count": summarize(
+                    [
+                        float(require_int(row["rasterized_mesh_face_count"], "rasterized mesh face count"))
+                        for row in projection_rows_payload
+                    ]
+                ),
+                "mesh_face_subsampling_used_frame_count": sum(
+                    1 for row in projection_rows_payload if row["mesh_face_subsampling_used"] is True
+                ),
                 "front_surface_depth_abs_median_m": summarize(
                     [
                         finite_float(row["front_surface_depth_abs_median_m"], "front depth median")
@@ -791,7 +815,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-mesh-extent-ratio", type=float, default=3.0)
     parser.add_argument("--max-boundary-edge-fraction", type=float, default=0.25)
     parser.add_argument("--max-nonmanifold-edge-fraction", type=float, default=0.02)
-    parser.add_argument("--max-projection-faces", type=int, default=120000)
+    parser.add_argument("--max-projection-faces", type=int, default=0)
     parser.add_argument("--min-silhouette-iou-p05", type=float, default=0.35)
     parser.add_argument("--min-silhouette-iou-median", type=float, default=0.45)
     parser.add_argument("--min-front-depth-samples", type=int, default=200)
