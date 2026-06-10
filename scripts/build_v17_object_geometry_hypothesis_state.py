@@ -182,6 +182,49 @@ def surface_replay_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def reconstruction_result_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    accepted = [row for row in rows if row.get("accepted_reconstruction_result") is True]
+    hidden = [row for row in rows if row.get("hidden_topology_reconstructed") is True]
+    return {
+        "result_count": len(rows),
+        "solver_output_detected_count": sum(
+            1
+            for row in rows
+            if require_dict(row.get("readiness_checks"), "reconstruction result readiness_checks").get(
+                "solver_backend_output_detected"
+            )
+            is True
+        ),
+        "mesh_projection_qc_passed_count": sum(
+            1
+            for row in rows
+            if require_dict(row.get("readiness_checks"), "reconstruction result readiness_checks").get(
+                "mesh_projection_qc_passed"
+            )
+            is True
+        ),
+        "hidden_topology_reconstructed_count": len(hidden),
+        "accepted_reconstruction_result_count": len(accepted),
+        "accepted_job_ids": [require_str(row.get("job_id"), "reconstruction job_id") for row in accepted],
+        "accepted_frame_ranges": [
+            [
+                require_int(row.get("first_frame"), "reconstruction first_frame"),
+                require_int(row.get("last_frame"), "reconstruction last_frame"),
+            ]
+            for row in accepted
+        ],
+        "accepted_frame_count": sum(require_int(row.get("frame_count"), "reconstruction frame_count") for row in accepted),
+        "accepted_mesh_vertices": sum(require_int(row.get("mesh_vertices"), "reconstruction mesh_vertices") for row in accepted),
+        "accepted_mesh_faces": sum(require_int(row.get("mesh_faces"), "reconstruction mesh_faces") for row in accepted),
+        "full_active_interval_geometry_ready_count": sum(
+            1 for row in accepted if row.get("full_active_interval_geometry_ready") is True
+        ),
+        "contact_compatible_geometry_ready_count": sum(
+            1 for row in accepted if row.get("contact_compatible_geometry_ready") is True
+        ),
+    }
+
+
 def local_patch_summary(rows: list[dict[str, Any]], conflicts: list[dict[str, Any]]) -> dict[str, Any]:
     accepted = [row for row in rows if row.get("status") == "accepted_local_contact_patch_state"]
     return {
@@ -253,6 +296,7 @@ def status_from_hypotheses(
     local_patch: dict[str, Any],
     object_depth_repair: dict[str, Any],
     observed_surface_seed: dict[str, Any],
+    reconstruction_result: dict[str, Any],
     material_pose_replay: dict[str, Any],
     visible_surface: dict[str, Any],
 ) -> str:
@@ -260,6 +304,10 @@ def status_from_hypotheses(
         (
             "partial_persistent_visible_surface_hypothesis",
             persistent_shape["accepted_measurement_count"] > 0,
+        ),
+        (
+            "partial_short_segment_hidden_topology_reconstruction",
+            reconstruction_result["accepted_reconstruction_result_count"] > 0,
         ),
         (
             "partial_observed_surface_geometry_seed",
@@ -317,6 +365,10 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         args.observed_surface_geometry_seed_root / case / "v17_observed_surface_geometry_seed_report.json",
         f"{case} observed-surface geometry seed report",
     )
+    reconstruction_result_path = existing_path(
+        args.geometry_reconstruction_results_root / case / "v17_geometry_reconstruction_results_report.json",
+        f"{case} geometry reconstruction results report",
+    )
     measurement_dir = args.measurement_store_root / case / "measurements_v17"
     local_patch_path = existing_path(
         measurement_dir / "local_contact_patch_state_measurements.json",
@@ -338,6 +390,9 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     material_pose = require_dict(load_json(pose_path), f"{case} material-pose report")
     material_replay = require_dict(load_json(replay_path), f"{case} material-surface replay report")
     observed_seed = require_dict(load_json(observed_seed_path), f"{case} observed-surface geometry seed report")
+    reconstruction_result = require_dict(
+        load_json(reconstruction_result_path), f"{case} geometry reconstruction results report"
+    )
 
     visible_by_object = visible_surface_by_object(visible_surface)
     local_patch_by_object = rows_by_object(load_json(local_patch_path), key="entity_id", label="local patches")
@@ -347,6 +402,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     pose_by_object = rows_by_object(require_list(material_pose.get("candidates"), "material-pose candidates"), key="object_id", label="material-pose candidates")
     replay_by_object = rows_by_object(require_list(material_replay.get("candidates"), "material-surface replay candidates"), key="object_id", label="material-surface replay candidates")
     observed_seed_by_object = rows_by_object(require_list(observed_seed.get("candidate_rows"), "observed-surface seed candidates"), key="object_id", label="observed-surface seed candidates")
+    reconstruction_result_by_object = rows_by_object(
+        require_list(reconstruction_result.get("jobs"), "geometry reconstruction result jobs"),
+        key="object_id",
+        label="geometry reconstruction result jobs",
+    )
     conflicts_by_object = geometry_audit_conflicts_by_object(geometry_audit)
 
     objects: list[dict[str, Any]] = []
@@ -373,6 +433,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         motion_summary = material_motion_summary(motion_by_object.get(object_id, []))
         pose_summary = material_pose_summary(pose_by_object.get(object_id, []))
         replay_summary = surface_replay_summary(replay_by_object.get(object_id, []))
+        reconstruction_summary = reconstruction_result_summary(reconstruction_result_by_object.get(object_id, []))
         observed_seed_summary = {
             "seed_candidate_count": len(observed_seed_by_object.get(object_id, [])),
             "candidate_ids": [
@@ -406,6 +467,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             local_patch=patch_summary,
             object_depth_repair=depth_summary,
             observed_surface_seed=observed_seed_summary,
+            reconstruction_result=reconstruction_summary,
             material_pose_replay=replay_summary,
             visible_surface=visible_summary,
         )
@@ -430,6 +492,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "material_pose_candidates": pose_summary,
             "material_surface_replay": replay_summary,
             "observed_surface_geometry_seed": observed_seed_summary,
+            "geometry_reconstruction_result": reconstruction_summary,
             "can_own_contact_factors": False,
             "can_own_object_pose_factors": False,
             "complete_mesh_timeline_ready": False,
@@ -451,6 +514,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "object_material_pose_candidate_report": source_summary(pose_path, material_pose),
             "object_material_surface_replay_report": source_summary(replay_path, material_replay),
             "observed_surface_geometry_seed_report": source_summary(observed_seed_path, observed_seed),
+            "geometry_reconstruction_results_report": source_summary(reconstruction_result_path, reconstruction_result),
             "local_contact_patch_state_measurements": {"path": str(local_patch_path), "row_count": sum(len(v) for v in local_patch_by_object.values())},
             "object_depth_repair_candidate_measurements": {"path": str(object_depth_path), "row_count": sum(len(v) for v in object_depth_by_object.values())},
             "persistent_object_shape_measurements": {"path": str(persistent_shape_path), "row_count": sum(len(v) for v in persistent_shape_by_object.values())},
@@ -475,8 +539,14 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "objects_with_observed_surface_geometry_seed": sum(
             1 for row in objects if row["observed_surface_geometry_seed"]["seed_candidate_count"] > 0
         ),
+        "objects_with_accepted_reconstruction_results": sum(
+            1 for row in objects if row["geometry_reconstruction_result"]["accepted_reconstruction_result_count"] > 0
+        ),
         "observed_surface_geometry_seed_count": sum(
             row["observed_surface_geometry_seed"]["seed_candidate_count"] for row in objects
+        ),
+        "accepted_reconstruction_result_count": sum(
+            row["geometry_reconstruction_result"]["accepted_reconstruction_result_count"] for row in objects
         ),
         "complete_object_geometry_hypothesis_count": 0,
         "contact_compatible_object_geometry_hypothesis_count": 0,
@@ -542,9 +612,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("objects_with_observed_surface_geometry_seed"),
                     "objects_with_observed_surface_geometry_seed",
                 ),
+                "objects_with_accepted_reconstruction_results": require_int(
+                    report.get("objects_with_accepted_reconstruction_results"),
+                    "objects_with_accepted_reconstruction_results",
+                ),
                 "observed_surface_geometry_seed_count": require_int(
                     report.get("observed_surface_geometry_seed_count"),
                     "observed_surface_geometry_seed_count",
+                ),
+                "accepted_reconstruction_result_count": require_int(
+                    report.get("accepted_reconstruction_result_count"),
+                    "accepted_reconstruction_result_count",
                 ),
                 "complete_object_geometry_hypothesis_count": 0,
                 "contact_compatible_object_geometry_hypothesis_count": 0,
@@ -564,6 +642,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "observed_surface_geometry_seed_count": sum(
             require_int(report.get("observed_surface_geometry_seed_count"), "observed_surface_geometry_seed_count")
+            for report in reports
+        ),
+        "objects_with_accepted_reconstruction_results": sum(
+            require_int(
+                report.get("objects_with_accepted_reconstruction_results"),
+                "objects_with_accepted_reconstruction_results",
+            )
+            for report in reports
+        ),
+        "accepted_reconstruction_result_count": sum(
+            require_int(report.get("accepted_reconstruction_result_count"), "accepted_reconstruction_result_count")
             for report in reports
         ),
         "complete_object_geometry_hypothesis_count": 0,
@@ -620,6 +709,11 @@ def parse_args() -> argparse.Namespace:
         "--observed-surface-geometry-seed-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_observed_surface_geometry_seed"),
+    )
+    parser.add_argument(
+        "--geometry-reconstruction-results-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_results"),
     )
     parser.add_argument(
         "--output-root",

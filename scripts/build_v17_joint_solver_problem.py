@@ -783,6 +783,14 @@ def object_geometry_hypothesis_state_counts(report: dict[str, Any]) -> dict[str,
             report.get("objects_with_material_surface_replay_ready_segments"),
             "object-geometry hypothesis objects_with_material_surface_replay_ready_segments",
         ),
+        "objects_with_accepted_reconstruction_results": require_int(
+            report.get("objects_with_accepted_reconstruction_results"),
+            "object-geometry hypothesis objects_with_accepted_reconstruction_results",
+        ),
+        "accepted_reconstruction_result_count": require_int(
+            report.get("accepted_reconstruction_result_count"),
+            "object-geometry hypothesis accepted_reconstruction_result_count",
+        ),
         "complete_object_geometry_hypothesis_count": require_int(
             report.get("complete_object_geometry_hypothesis_count"),
             "object-geometry hypothesis complete_object_geometry_hypothesis_count",
@@ -1189,6 +1197,12 @@ def required_variable_families(
                 ],
                 "object_geometry_hypothesis_state_counts": object_geometry_hypothesis_state[
                     "state_counts"
+                ],
+                "objects_with_accepted_reconstruction_results": object_geometry_hypothesis_state[
+                    "objects_with_accepted_reconstruction_results"
+                ],
+                "hypothesis_accepted_reconstruction_result_count": object_geometry_hypothesis_state[
+                    "accepted_reconstruction_result_count"
                 ],
                 "object_geometry_factor_problem_state_counts": object_geometry_factor_problem[
                     "state_counts"
@@ -2194,6 +2208,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "object_geometry_hypothesis_state_counts": case[
                     "current_object_geometry_hypothesis_state"
                 ]["state_counts"],
+                "objects_with_accepted_reconstruction_results": case[
+                    "current_object_geometry_hypothesis_state"
+                ]["objects_with_accepted_reconstruction_results"],
+                "hypothesis_accepted_reconstruction_result_count": case[
+                    "current_object_geometry_hypothesis_state"
+                ]["accepted_reconstruction_result_count"],
                 "complete_object_geometry_hypothesis_count": case[
                     "current_object_geometry_hypothesis_state"
                 ]["complete_object_geometry_hypothesis_count"],
@@ -2298,6 +2318,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_pose_source_compatible_with_contact_factors": False,
         "complete_object_geometry_hypothesis_count": sum(
             case["current_object_geometry_hypothesis_state"]["complete_object_geometry_hypothesis_count"]
+            for case in case_outputs
+        ),
+        "objects_with_accepted_reconstruction_results": sum(
+            case["current_object_geometry_hypothesis_state"]["objects_with_accepted_reconstruction_results"]
+            for case in case_outputs
+        ),
+        "hypothesis_accepted_reconstruction_result_count": sum(
+            case["current_object_geometry_hypothesis_state"]["accepted_reconstruction_result_count"]
             for case in case_outputs
         ),
         "contact_compatible_object_geometry_hypothesis_count": sum(
