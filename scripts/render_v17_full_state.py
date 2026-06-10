@@ -70,6 +70,31 @@ QC_BANNER_LINES = (
     "annotation_ready=false | v3_solver_complete=false | single-object stream",
 )
 
+OBJECT_LIMIT_KEYS = (
+    "multi_object_timeline_ready",
+    "object_schema_status",
+    "missing_multi_object_roster_required",
+    "object_geometry_complete",
+    "object_pose_requirement_met",
+    "object_geometry_status",
+)
+
+
+def require_limit_field(source: dict[str, Any], key: str, origin: Path) -> Any:
+    if key not in source:
+        raise RuntimeError(f"{origin} is missing required V17 limitation field {key}")
+    return source[key]
+
+
+def limitation_fields(state: dict[str, Any], solver_report: dict[str, Any], origin: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in OBJECT_LIMIT_KEYS:
+        if key in solver_report:
+            out[key] = solver_report[key]
+        else:
+            out[key] = require_limit_field(state, key, origin)
+    return out
+
 
 def draw_qc_banner(frame: np.ndarray) -> np.ndarray:
     out = frame.copy()
@@ -303,6 +328,7 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
     duration_render_qc_pass = all(row["frame_count_match"] for row in render_qc.values())
     solver_report_path = Path(state["solver_report"]) if isinstance(state.get("solver_report"), str) else None
     solver_report = load_json(solver_report_path) if solver_report_path is not None and solver_report_path.exists() else {}
+    limits = limitation_fields(state, solver_report, case_manifest)
     sheet = visual_inspection_sheet(
         Path(render_qc["side_by_side"]["path"]),
         case_dir / sheet_filename(str(args.method_name)),
@@ -344,6 +370,7 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         "annotation_ready": bool(solver_report.get("annotation_ready")),
         "deliverable_ready": bool(solver_report.get("deliverable_ready")),
         "accuracy_target_met": bool(solver_report.get("accuracy_target_met")),
+        **limits,
         "visual_inspection_sheet": sheet,
     }
     write_json(case_dir / "v17_render_manifest.json", report)
@@ -355,6 +382,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     args.output_root.mkdir(parents=True, exist_ok=True)
     reports = [render_case(args, manifest, args.output_root) for manifest in args.case_manifests]
     duration_render_qc_pass = all(bool(row["duration_render_qc_pass"]) for row in reports)
+    summary_limits = {
+        "multi_object_timeline_ready": bool(all(row["multi_object_timeline_ready"] for row in reports)),
+        "object_schema_status": "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": bool(any(row["missing_multi_object_roster_required"] for row in reports)),
+        "object_geometry_complete": bool(all(row["object_geometry_complete"] for row in reports)),
+        "object_pose_requirement_met": bool(all(row["object_pose_requirement_met"] for row in reports)),
+        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+    }
     summary = {
         "status": "duration_render_qc_pass" if duration_render_qc_pass else "duration_render_qc_failed",
         "artifact_status": "partial",
@@ -370,6 +405,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "deliverable_ready": bool(all(row["deliverable_ready"] for row in reports)),
         "accuracy_target_met": bool(all(row["accuracy_target_met"] for row in reports)),
         "v3_solver_complete": bool(all(row.get("v3_solver_complete") for row in reports)),
+        **summary_limits,
         "method": args.method_name,
         "cases": reports,
     }

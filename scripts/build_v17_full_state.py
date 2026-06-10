@@ -10,6 +10,24 @@ import numpy as np
 
 from run_v16_full_pipeline import load_mesh_archive, save_mesh_archive
 
+OBJECT_LIMIT_FLAGS: dict[str, Any] = {
+    "multi_object_timeline_ready": False,
+    "object_schema_status": "single_manipulated_object_qc",
+    "missing_multi_object_roster_required": True,
+    "object_geometry_complete": False,
+    "object_pose_requirement_met": False,
+    "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+}
+
+OBJECT_GEOMETRY_SEMANTICS = (
+    "Current object geometry can be a visible surface, local contact patch, or legacy single-object mesh stream; "
+    "complete manipulated-object mesh reconstruction remains open."
+)
+OBJECT_POSE_SEMANTICS = (
+    "Legacy object center, extent, and local-surface fields are QC evidence fields; complete manipulated-object "
+    "geometry and pose estimation remain open."
+)
+
 
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
@@ -20,6 +38,51 @@ def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+
+def object_limit_payload() -> dict[str, Any]:
+    return {
+        **OBJECT_LIMIT_FLAGS,
+        "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
+        "geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
+        "pose_semantics": OBJECT_POSE_SEMANTICS,
+    }
+
+
+def apply_object_limit_payload(obj: dict[str, Any]) -> dict[str, Any]:
+    out = dict(obj)
+    out.update(object_limit_payload())
+    return out
+
+
+def root_limit_payload() -> dict[str, Any]:
+    return {
+        "artifact_status": "partial",
+        "artifact_kind": "full_timeline_evidence_qc_annotation",
+        "delivery_role": "qc_only_not_v17_closure",
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "accuracy_target_met": False,
+        "v3_solver_complete": False,
+        **OBJECT_LIMIT_FLAGS,
+        "object_pose_semantics": OBJECT_POSE_SEMANTICS,
+        "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
+    }
+
+
+def write_mesh_archive_metadata(path: Path, metadata: dict[str, Any]) -> str:
+    with np.load(path) as blob:
+        arrays = {name: blob[name] for name in blob.files}
+    metadata_path = path.with_name(f"{path.name}.metadata.json")
+    payload = {
+        **metadata,
+        "metadata_path": str(metadata_path),
+        "npz_metadata_key": "v17_archive_metadata_json",
+    }
+    arrays["v17_archive_metadata_json"] = np.asarray(json.dumps(payload, sort_keys=True), dtype=np.str_)
+    np.savez_compressed(path, **arrays)
+    write_json(metadata_path, payload)
+    return str(metadata_path)
 
 
 def array3(value: object) -> np.ndarray | None:
@@ -207,6 +270,7 @@ def patch_object_states(
     for frame in frames:
         idx = int(frame["frame_idx"])
         obj = dict(frame.get("object") or {})
+        obj = apply_object_limit_payload(obj)
         persistent = persistent_rows.get(idx)
         local_patch = local_patch_rows.get(idx)
         if persistent is not None:
@@ -267,13 +331,7 @@ def annotate_v17_captions(frames: list[dict[str, Any]]) -> None:
         frame["caption"] = f"{'; '.join(labels)}: {caption}"
         frame["objects_status"] = {
             "status": "single_manipulated_object_qc",
-            "multi_object_timeline_ready": False,
-            "missing_multi_object_roster_required": True,
-            "object_geometry_complete": False,
-            "object_pose_requirement_met": False,
-            "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
-            "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
-            "geometry_semantics": "Current object geometry can be a visible surface or local contact patch; complete manipulated-object mesh reconstruction remains open.",
+            **object_limit_payload(),
         }
 
 
@@ -290,12 +348,23 @@ def merged_mesh_archive(
         meshes[idx] = mesh
     frames = sorted(meshes)
     save_mesh_archive(output_archive, frames, [meshes[idx][0] for idx in frames], [meshes[idx][1] for idx in frames])
-    return {
+    metadata = {
         "output_archive": str(output_archive),
+        "artifact_status": "partial",
+        "artifact_kind": "full_timeline_evidence_qc_mesh_archive",
+        "delivery_role": "qc_only_not_v17_closure",
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "accuracy_target_met": False,
+        "v3_solver_complete": False,
+        **OBJECT_LIMIT_FLAGS,
         "mesh_frames": len(frames),
+        "mesh_semantics": OBJECT_GEOMETRY_SEMANTICS,
         "persistent_replaced_frames": len(persistent_meshes),
         "local_patch_replaced_frames": len(local_patch_meshes),
     }
+    metadata["metadata_path"] = write_mesh_archive_metadata(output_archive, metadata)
+    return metadata
 
 
 def case_spec(name: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -350,6 +419,7 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
     case_dir.mkdir(parents=True, exist_ok=True)
     annotations_out = case_dir / "annotations_v17_full.json"
     payload["frames"] = frames
+    payload.update(root_limit_payload())
     payload["v17_state_note"] = {
         "status": "evidence_layer_qc_state",
         "artifact_kind": "full_timeline_evidence_qc_state",
@@ -358,12 +428,9 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
         "annotation_ready": False,
         "deliverable_ready": False,
         "v3_solver_complete": False,
-        "multi_object_timeline_ready": False,
-        "object_schema_status": "single_manipulated_object_qc",
-        "missing_multi_object_roster_required": True,
-        "object_geometry_complete": False,
-        "object_pose_requirement_met": False,
-        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+        **OBJECT_LIMIT_FLAGS,
+        "object_pose_semantics": OBJECT_POSE_SEMANTICS,
+        "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
     }
     write_json(annotations_out, payload)
 
@@ -379,12 +446,9 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
         "annotation_ready": False,
         "deliverable_ready": False,
         "v3_solver_complete": False,
-        "multi_object_timeline_ready": False,
-        "object_schema_status": "single_manipulated_object_qc",
-        "missing_multi_object_roster_required": True,
-        "object_geometry_complete": False,
-        "object_pose_requirement_met": False,
-        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+        **OBJECT_LIMIT_FLAGS,
+        "object_pose_semantics": OBJECT_POSE_SEMANTICS,
+        "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
         "v16_manifest": str(spec["v16_manifest"]),
         "raw_frame_count": int(manifest["raw_frame_count"]),
         "annotations": str(annotations_out),

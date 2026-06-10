@@ -26,6 +26,24 @@ ARTIFACT_KIND = "sparse_evidence_qc_graph"
 DELIVERY_ROLE = "qc_only_not_v17_closure"
 CONTACT_MODE_QC_STATUS = "contact_mode_qc_structurally_consistent"
 
+OBJECT_LIMIT_FLAGS: dict[str, Any] = {
+    "multi_object_timeline_ready": False,
+    "object_schema_status": "single_manipulated_object_qc",
+    "missing_multi_object_roster_required": True,
+    "object_geometry_complete": False,
+    "object_pose_requirement_met": False,
+    "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+}
+
+OBJECT_GEOMETRY_SEMANTICS = (
+    "Current object geometry can be a visible surface, local contact patch, or legacy single-object mesh stream; "
+    "complete manipulated-object mesh reconstruction remains open."
+)
+OBJECT_POSE_SEMANTICS = (
+    "Legacy object center, extent, and local-surface fields are QC evidence fields; complete manipulated-object "
+    "geometry and pose estimation remain open."
+)
+
 
 @dataclass(frozen=True)
 class GraphFrame:
@@ -68,6 +86,54 @@ def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+
+def object_limit_payload() -> dict[str, Any]:
+    return {
+        **OBJECT_LIMIT_FLAGS,
+        "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
+        "geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
+        "pose_semantics": OBJECT_POSE_SEMANTICS,
+    }
+
+
+def apply_object_limit_payload(obj: dict[str, Any]) -> dict[str, Any]:
+    out = dict(obj)
+    out.update(object_limit_payload())
+    return out
+
+
+def annotation_root_limit_payload(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "sparse_evidence_qc_annotation_payload",
+        "artifact_status": "partial",
+        "artifact_kind": "sparse_evidence_qc_annotation",
+        "delivery_role": DELIVERY_ROLE,
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "accuracy_target_met": False,
+        "solver_completeness": SOLVER_COMPLETENESS,
+        "v3_solver_complete": False,
+        **OBJECT_LIMIT_FLAGS,
+        "solver_report": report["report_path"],
+        "object_pose_semantics": OBJECT_POSE_SEMANTICS,
+        "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
+    }
+
+
+def write_mesh_archive_metadata(path: Path, metadata: dict[str, Any]) -> str:
+    with np.load(path) as blob:
+        arrays = {name: blob[name] for name in blob.files}
+    metadata_path = path.with_name(f"{path.name}.metadata.json")
+    payload = {
+        **metadata,
+        "metadata_path": str(metadata_path),
+        "npz_metadata_key": "v17_archive_metadata_json",
+    }
+    arrays["v17_archive_metadata_json"] = np.asarray(json.dumps(payload, sort_keys=True), dtype=np.str_)
+    np.savez_compressed(path, **arrays)
+    write_json(metadata_path, payload)
+    return str(metadata_path)
 
 
 def finite_float(value: object) -> float | None:
@@ -858,7 +924,27 @@ def save_corrected_mesh_archive(path: Path, graph: GraphData, params: np.ndarray
         vertices.append(shifted_mesh_vertices(frame, object_shift[var_i], object_rotvec[var_i]))
         faces.append(frame.mesh_faces)
     save_mesh_archive(path, frames, vertices, faces)
-    return {"path": str(path), "mesh_frames": int(len(frames)), "first_frame": int(frames[0]) if frames else None, "last_frame": int(frames[-1]) if frames else None}
+    frame_count = len(graph.frames)
+    metadata = {
+        "path": str(path),
+        "artifact_status": "partial",
+        "artifact_kind": "sparse_evidence_qc_mesh_archive",
+        "delivery_role": DELIVERY_ROLE,
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "accuracy_target_met": False,
+        "solver_completeness": SOLVER_COMPLETENESS,
+        "v3_solver_complete": False,
+        **OBJECT_LIMIT_FLAGS,
+        "frame_count": int(frame_count),
+        "mesh_frames": int(len(frames)),
+        "missing_mesh_frame_count": int(frame_count - len(frames)),
+        "first_frame": int(frames[0]) if frames else None,
+        "last_frame": int(frames[-1]) if frames else None,
+        "mesh_semantics": OBJECT_GEOMETRY_SEMANTICS,
+    }
+    metadata["metadata_path"] = write_mesh_archive_metadata(path, metadata)
+    return metadata
 
 
 def apply_object_pose_correction(
@@ -869,6 +955,7 @@ def apply_object_pose_correction(
     report: dict[str, Any],
 ) -> dict[str, Any]:
     out = dict(obj)
+    out = apply_object_limit_payload(out)
     for key in ("center_world_m", "position_world_m"):
         if key in out:
             out[key] = rotate_shift_vector3_value(out[key], center, shift, rotvec)
@@ -889,6 +976,12 @@ def apply_object_pose_correction(
         "object_rotvec_correction_rad": rotvec.astype(float).tolist(),
         "object_pose_linearization_center_world_m": center.astype(float).tolist(),
         "correction_archive": report["corrected_mesh_archive"]["path"],
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "v3_solver_complete": False,
+        **OBJECT_LIMIT_FLAGS,
+        "object_pose_semantics": OBJECT_POSE_SEMANTICS,
+        "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
     }
     return out
 
@@ -925,16 +1018,7 @@ def qc_caption(caption: object) -> str:
 
 
 def object_schema_status_payload() -> dict[str, Any]:
-    return {
-        "status": "single_manipulated_object_qc",
-        "multi_object_timeline_ready": False,
-        "missing_multi_object_roster_required": True,
-        "object_geometry_complete": False,
-        "object_pose_requirement_met": False,
-        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
-        "semantics": "The frame keeps the legacy singular object stream; simultaneous object states remain unimplemented.",
-        "geometry_semantics": "Current object geometry can be a visible surface or local contact patch; complete manipulated-object mesh reconstruction remains open.",
-    }
+    return object_limit_payload()
 
 
 def write_corrected_annotations(path: Path, source_annotations: Path, graph: GraphData, params: np.ndarray, report: dict[str, Any]) -> None:
@@ -954,6 +1038,7 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         if isinstance(idx, int):
             copied["caption"] = qc_caption(copied.get("caption"))
             copied["objects_status"] = object_schema_status_payload()
+            copied["object"] = apply_object_limit_payload(dict(copied.get("object") or {}))
             shift = object_shift_by_frame.get(idx)
             if shift is not None:
                 graph_frame = frame_by_idx.get(idx)
@@ -993,6 +1078,7 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
             ]
         out_frames.append(copied)
     payload["frames"] = out_frames
+    payload.update(annotation_root_limit_payload(report))
     payload["v17_state_note"] = {
         "status": "evidence_layer_qc_state",
         "artifact_kind": "full_timeline_evidence_qc_state",
@@ -1001,12 +1087,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "annotation_ready": False,
         "deliverable_ready": False,
         "v3_solver_complete": False,
-        "multi_object_timeline_ready": False,
-        "object_schema_status": "single_manipulated_object_qc",
-        "missing_multi_object_roster_required": True,
-        "object_geometry_complete": False,
-        "object_pose_requirement_met": False,
-        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+        **OBJECT_LIMIT_FLAGS,
+        "object_pose_semantics": OBJECT_POSE_SEMANTICS,
+        "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
     }
     payload["v17_full_timeline_factor_graph"] = {
         "status": report["status"],
@@ -1019,12 +1102,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "solver_completeness": report["solver_completeness"],
         "hand_state_status_semantics": "list_presence_diagnostic_not_hand_state_estimate",
         "v3_solver_complete": False,
-        "multi_object_timeline_ready": False,
-        "object_schema_status": "single_manipulated_object_qc",
-        "missing_multi_object_roster_required": True,
-        "object_geometry_complete": False,
-        "object_pose_requirement_met": False,
-        "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
+        **OBJECT_LIMIT_FLAGS,
+        "object_pose_semantics": OBJECT_POSE_SEMANTICS,
+        "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
         "report": report["report_path"],
     }
     write_json(path, payload)
