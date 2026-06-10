@@ -24,6 +24,7 @@ class CaseInputs:
     multi_object_timeline: Path
     visible_surface_report: Path
     geometry_state_report: Path
+    object_track_dataset_summary: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -94,6 +95,7 @@ def case_inputs(
     multi_object_timeline_root: Path,
     visible_surface_root: Path,
     geometry_state_root: Path,
+    object_track_dataset_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -118,6 +120,10 @@ def case_inputs(
         geometry_state_root / case / "v17_multi_object_geometry_state_report.json",
         f"{case} multi-object geometry-state report",
     )
+    object_track_dataset_summary = existing_path(
+        object_track_dataset_root / case / "v17_object_track_dataset_summary.json",
+        f"{case} object-track dataset summary",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -137,6 +143,7 @@ def case_inputs(
         multi_object_timeline=multi_object_timeline,
         visible_surface_report=visible_surface_report,
         geometry_state_report=geometry_state_report,
+        object_track_dataset_summary=object_track_dataset_summary,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -329,6 +336,26 @@ def geometry_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def object_track_dataset_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "object_count": require_int(report.get("object_count"), "object-track dataset object_count"),
+        "exported_object_count": require_int(
+            report.get("exported_object_count"), "object-track dataset exported_object_count"
+        ),
+        "total_exported_frames": require_int(
+            report.get("total_exported_frames"), "object-track dataset total_exported_frames"
+        ),
+        "total_rejected_frames": require_int(
+            report.get("total_rejected_frames"), "object-track dataset total_rejected_frames"
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "frame_count": require_int(metadata.get("frame_count"), "mesh metadata frame_count"),
@@ -365,6 +392,7 @@ def required_variable_families(
     timeline: dict[str, Any],
     visible_surface: dict[str, Any],
     geometry_state: dict[str, Any],
+    object_track_dataset: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -446,6 +474,12 @@ def required_variable_families(
                     "persistent_visible_surface_candidate_count"
                 ],
                 "rigid_pose_candidates": geometry_state["rigid_pose_candidate_count"],
+                "object_track_dataset_exported_frames": object_track_dataset[
+                    "total_exported_frames"
+                ],
+                "object_track_dataset_exported_objects": object_track_dataset[
+                    "exported_object_count"
+                ],
                 "persistent_object_shape_measurements": counts.get("persistent_object_shape", 0),
                 "local_contact_patch_measurements": counts.get("local_contact_patch", 0),
                 "object_geometry_complete": mesh["object_geometry_complete"],
@@ -468,6 +502,9 @@ def required_variable_families(
                     "visible_surface_envelope_candidate_count"
                 ],
                 "rigid_pose_candidates": geometry_state["rigid_pose_candidate_count"],
+                "object_track_dataset_exported_frames": object_track_dataset[
+                    "total_exported_frames"
+                ],
             },
             [
                 "simultaneous object poses are missing",
@@ -553,6 +590,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     multi_object_timeline = require_dict(load_json(inputs.multi_object_timeline), f"{inputs.case} multi-object timeline")
     visible_surface_report = require_dict(load_json(inputs.visible_surface_report), f"{inputs.case} visible-surface report")
     geometry_state_report = require_dict(load_json(inputs.geometry_state_report), f"{inputs.case} geometry-state report")
+    object_track_dataset_summary = require_dict(load_json(inputs.object_track_dataset_summary), f"{inputs.case} object-track dataset summary")
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -563,6 +601,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     timeline = multi_object_timeline_counts(multi_object_timeline)
     visible_surface = visible_surface_counts(visible_surface_report)
     geometry_state = geometry_state_counts(geometry_state_report)
+    object_track_dataset = object_track_dataset_counts(object_track_dataset_summary)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -592,7 +631,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(f"{inputs.case} raw frame count {raw_frame_count} differs from graph frame count {frame_count}")
     finite_number(raw_video.get("fps"), f"{inputs.case} raw fps")
 
-    families = required_variable_families(roster, timeline, visible_surface, geometry_state, counts, sparse, contact, mesh)
+    families = required_variable_families(roster, timeline, visible_surface, geometry_state, object_track_dataset, counts, sparse, contact, mesh)
     unmet = [family["family"] for family in families if not bool(family["v3_requirement_met"])]
     return {
         "case": inputs.case,
@@ -610,6 +649,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "multi_object_geometry_state_report": source_summary(
                 inputs.geometry_state_report, geometry_state_report
             ),
+            "object_track_dataset_summary": source_summary(
+                inputs.object_track_dataset_summary, object_track_dataset_summary
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -619,6 +661,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_multi_object_timeline": timeline,
         "current_multi_object_visible_surfaces": visible_surface,
         "current_multi_object_geometry_state": geometry_state,
+        "current_object_track_datasets": object_track_dataset,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -650,6 +693,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.multi_object_timeline_root,
             args.visible_surface_root,
             args.geometry_state_root,
+            args.object_track_dataset_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -669,6 +713,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "contact_mode_graph_root": str(args.contact_mode_graph_root),
         "multi_object_visible_surface_root": str(args.visible_surface_root),
         "multi_object_geometry_state_root": str(args.geometry_state_root),
+        "object_track_dataset_root": str(args.object_track_dataset_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -689,6 +734,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ]["visible_surface_envelope_candidate_count"],
                 "rigid_pose_candidate_count": case["current_multi_object_geometry_state"][
                     "rigid_pose_candidate_count"
+                ],
+                "object_track_dataset_exported_frames": case["current_object_track_datasets"][
+                    "total_exported_frames"
+                ],
+                "object_track_dataset_exported_objects": case["current_object_track_datasets"][
+                    "exported_object_count"
                 ],
                 "current_single_stream_object_variable_frames": case["current_sparse_graph"]["object_variable_frames"],
                 "contact_factor_ready_count": case["current_contact_mode_graph"]["contact_factor_ready_count"],
@@ -738,6 +789,11 @@ def parse_args() -> argparse.Namespace:
         "--geometry-state-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_multi_object_geometry_state"),
+    )
+    parser.add_argument(
+        "--object-track-dataset-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_object_track_datasets"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
