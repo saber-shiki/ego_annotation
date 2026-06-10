@@ -4,7 +4,7 @@
 
 V16 is closed only as the first full raw-video delivery. It produced full-length videos for two raw clips, but the annotations do not meet the quality requirement. V17 treats every detector output as a measurement with residuals, confidence, and source evidence before the solver can accept an annotation state.
 
-V17 implementation has started with the measurement store. The first implementation slice reads V16 full-video outputs and prior HaWoR/WiLoR artifacts as measurements, then emits anchor QC that exposes the known V16 failure frames before any graph solver can accept or repair them.
+V17 implementation has produced the measurement store and an evidence-layer full-state integration. The measurement store reads V16 full-video outputs, prior HaWoR/WiLoR artifacts, HaMeR repairs, SAM2 object masks, contact-state rows, local deformable contact patches, and tomato persistent-shape state as measurements, then emits anchor QC before any graph solver can accept or repair them. The full-state integration writes full-length V17 annotation JSONs and renders, but it is a patched measurement integration layer rather than the integrated nonlinear full-timeline factor graph.
 
 V17 also corrects a version-accounting problem. V3 already identified the core requirement: solve or expose the metric contradiction between MANO hands and object geometry through a joint factor graph. Later versions implemented real component graphs, including object-pose, sparse object-track, and contact-dynamics graphs. Their scope stayed at selected windows or selected state variables. V16 then closed as a full-length delivery artifact with QC flags while the original joint graph requirement remained open. V17 must therefore treat prior graph outputs as evidence modules and implement an integrated state-estimation layer before claiming annotation-quality closure.
 
@@ -22,7 +22,26 @@ Frames 0182 and 0856 exposed the wrong object variable. Whole-object depth re-an
 
 The tomato measurement path now has a persistent visible-surface mesh state for `object:obj_tomato`. The solver fuses SAM2 object masks with V16 metric-depth surface extraction over the full active mask interval, rejects 20 temporal surface-scale outliers, and writes a canonical mesh with 84,318 vertices and 136,902 faces. The robust 1-99 percent canonical extents are 9.85 cm, 9.67 cm, and 9.56 cm; raw min-max extent is reported separately because sparse tails can overstate object scale. Tomato anchors 0480, 0720, and 0760 pass persistent-shape QC with surface-to-canonical p95 residuals of 1.7 mm, 5.6 mm, and 1.3 mm. This clears the previous `persistent_object_shape_state_missing` failure for the measurement store. It is still a visible-surface canonical mesh with translation-only pose measurements, so the full V17 hand-object-camera-depth-contact solver remains open.
 
-The current measurement store passes the named trash and tomato anchors. This is an evidence-layer milestone, not V17 closure. V17 still owes the integrated full-timeline factor graph state, full-length V17 annotations, and full-length overlay/world/side-by-side renders.
+The current measurement store passes the named trash and tomato anchors. The evidence-layer full-state integration also renders full raw-video outputs for both representative clips: trash has 1,050 raw frames and 1,050 frames in overlay, world, and side-by-side renders; tomato has 960 raw frames and 960 frames in overlay, world, and side-by-side renders. The trash anchor sheet shows V17 contact/local-patch labels at 0182 and 0856, contact labels at 0260 and 0764, and no-contact labels at 0949 and 0970. The tomato anchor sheet shows persistent-object-mesh labels at 0274, 0480, 0720, 0760, and 0935. This is an evidence-layer milestone, not V17 closure. V17 still owes the integrated full-timeline factor graph state.
+
+Evidence-layer outputs:
+
+```text
+/data2/ego_annotation_outputs/v17_full_state/trash_1050/annotations_v17_full.json
+/data2/ego_annotation_outputs/v17_full_state/trash_1050/object_meshes_v17_full.npz
+/data2/ego_annotation_outputs/v17_full_state/trash_1050/renders/overlay_mano_object_multi.mp4
+/data2/ego_annotation_outputs/v17_full_state/trash_1050/renders/world_reconstruction_3d_v17.mp4
+/data2/ego_annotation_outputs/v17_full_state/trash_1050/renders/side_by_side_v17.mp4
+/data2/ego_annotation_outputs/v17_full_state/trash_1050/v17_anchor_side_by_side_sheet.jpg
+/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/annotations_v17_full.json
+/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/object_meshes_v17_full.npz
+/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/renders/overlay_mano_object_multi.mp4
+/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/renders/world_reconstruction_3d_v17.mp4
+/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/renders/side_by_side_v17.mp4
+/data2/ego_annotation_outputs/v17_full_state/task5_tomato_960/v17_anchor_side_by_side_sheet.jpg
+/data2/ego_annotation_outputs/v17_full_state/v17_full_state_summary.json
+/data2/ego_annotation_outputs/v17_full_state/v17_render_summary.json
+```
 
 ## V16 Failure Analysis
 
