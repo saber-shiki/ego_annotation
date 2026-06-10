@@ -1,13 +1,15 @@
 # Pipeline V4: Residual-Gated Object Tracks and Temporal Completion
 
-## V3 Closure State
+## V3 Evidence State
 
-V3 now has two mesh-backed representative results:
+V3 produced two mesh-backed representative results:
 
 - Trash/lid, frames 858 to 880: 23-frame measured object mesh, MANO hands, contact rows, full-hand nonpenetration, overlay video, standalone 3D world animation, and side-by-side presentation.
 - Wild-rice stem, frames 2531 to 2537: seven-frame continuous mesh-backed evidence window with the same deliverable types and the same geometry/contact/SDF checks.
 
-The remaining limitation is object-track completeness under ambiguous visual evidence. The wild-rice branch exposed two different causes:
+These results support the measured-sheet object-mesh and local contact mechanisms. They do not close the V3 joint factor-graph design, whose state couples camera scale, MANO metric state, object geometry, metric-depth reliability, and contact across the clip. V4 intentionally addresses the temporal object-track component of that larger unsolved state-estimation problem.
+
+The immediate V4 limitation is object-track completeness under ambiguous visual evidence. The wild-rice branch exposed two different causes:
 
 - some frames need temporal completion because the manipulated object is partially occluded or identity-ambiguous;
 - some frames were lost before completion because hand-written component-count pruning rejected VLM-accepted masks.

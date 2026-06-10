@@ -18,7 +18,7 @@ v2 produced a 91-frame contact-window video with observed object surface geometr
 /data2/ego_annotation_outputs/representative_trash/v2_pink_lid_mesh_metric_strict_render_840_930/side_by_side.mp4
 ```
 
-v3 produced investigation clips. It failed as a clean pipeline version because scope expanded during implementation around segmentation, mesh completion, depth scale, hand refit, and contact.
+v3 produced investigation clips. It failed as a clean pipeline version because scope expanded during implementation around segmentation, mesh completion, depth scale, hand refit, and contact. The later `V3 Closure State` wording in the V4 document referred only to two bounded evidence windows, not to completion of the V3 solver design.
 
 V3 also created the long-running factor-graph obligation. Its design and diagnostics identified the hand-object metric contradiction as a joint state-estimation problem: MANO hands, object geometry, camera/depth scale, and contact could not be accepted independently. Later versions implemented real component graphs. The original full-video hand-object interaction solver remained open.
 
