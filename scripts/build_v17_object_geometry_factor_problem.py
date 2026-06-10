@@ -106,6 +106,10 @@ def summarize(values: list[float]) -> dict[str, Any]:
     }
 
 
+def finite_values(values: list[Any]) -> list[float]:
+    return [value for value in (finite_float(raw) for raw in values) if value is not None]
+
+
 def source_summary(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "path": str(path),
@@ -169,6 +173,10 @@ def load_case_inputs(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "geometry_source_audit": existing_path(
             args.geometry_source_audit_root / case / "v17_geometry_source_audit_report.json",
             f"{case} geometry-source audit report",
+        ),
+        "depth_contact_consistency_audit": existing_path(
+            args.depth_contact_consistency_audit_root / case / "v17_depth_contact_consistency_audit_report.json",
+            f"{case} depth-contact consistency audit report",
         ),
     }
     payloads = {name: require_dict(load_json(path), f"{case} {name}") for name, path in paths.items()}
@@ -361,6 +369,86 @@ def reconstruction_results(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def depth_contact_consistency(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    hand_rows = [
+        require_dict(hand, "depth-contact hand row")
+        for row in rows
+        for hand in require_list(row.get("hand_rows"), "depth-contact hand rows")
+    ]
+    return {
+        "evaluated_frame_count": len(rows),
+        "evaluated_hand_rows": len(hand_rows),
+        "near_reconstructed_mesh_hand_rows": sum(
+            require_int(row.get("near_reconstructed_mesh_hand_rows"), "near reconstructed mesh hand rows")
+            for row in rows
+        ),
+        "reconstructed_mesh_contact_candidate_rows": sum(
+            require_int(
+                row.get("reconstructed_mesh_contact_candidate_rows"),
+                "reconstructed mesh contact candidate rows",
+            )
+            for row in rows
+        ),
+        "shared_depth_state_ready_frame_count": sum(
+            1 for row in rows if row.get("shared_depth_state_ready") is True
+        ),
+        "depth_owner_incompatibility_count": sum(
+            1
+            for row in rows
+            if require_dict(row.get("same_depth_state_checks"), "same_depth_state_checks").get(
+                "legacy_object_depth_matches_visible_unidepth"
+            )
+            is False
+            or require_dict(row.get("same_depth_state_checks"), "same_depth_state_checks").get(
+                "all_hand_depths_match_visible_unidepth"
+            )
+            is False
+        ),
+        "visible_unidepth_m": summarize(
+            finite_values(
+                [require_dict(row.get("visible_object_unidepth_m"), "visible depth").get("median") for row in rows]
+            )
+        ),
+        "reconstructed_mesh_camera_depth_m": summarize(
+            finite_values(
+                [
+                    require_dict(row.get("reconstructed_mesh_camera_depth_m"), "mesh camera depth").get("median")
+                    for row in rows
+                ]
+            )
+        ),
+        "reconstructed_mesh_front_surface_depth_abs_p95_m": summarize(
+            finite_values(
+                [
+                    require_dict(row.get("reconstructed_mesh_front_surface_depth_abs_m"), "front surface depth").get(
+                        "p95"
+                    )
+                    for row in rows
+                ]
+            )
+        ),
+        "legacy_object_center_depth_m": summarize(
+            finite_values([row.get("legacy_object_center_depth_m") for row in rows])
+        ),
+        "hand_source_depth_m": summarize(
+            finite_values(
+                [require_dict(hand.get("source_depth_m"), "hand source depth").get("median") for hand in hand_rows]
+            )
+        ),
+        "reconstructed_mesh_to_hand_min_m": summarize(
+            finite_values(
+                [
+                    require_dict(hand.get("reconstructed_mesh_distance_m"), "reconstructed mesh distance").get(
+                        "min_symmetric"
+                    )
+                    for hand in hand_rows
+                ]
+            )
+        ),
+        "rows": rows,
+    }
+
+
 def contact_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     measured = [row for row in rows if row.get("contact_mode_state") == "measured_distance_evidence"]
     min_distances = [
@@ -400,6 +488,7 @@ def factor_blocks(
     observed_seeds: list[dict[str, Any]],
     reconstruction_job_rows: list[dict[str, Any]],
     reconstruction_result_rows: list[dict[str, Any]],
+    depth_contact: dict[str, Any],
     contacts: dict[str, Any],
     conflicts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -533,6 +622,12 @@ def factor_blocks(
             "solver_role": "accept-or-reject QC for hidden-topology reconstruction backend outputs",
         },
         {
+            "factor_block": "depth_contact_consistency",
+            "source": "depth_contact_consistency_audit",
+            **depth_contact,
+            "solver_role": "checks whether reconstructed object geometry, visible depth, hand geometry, and contact modes share one metric state",
+        },
+        {
             "factor_block": "multi_object_hand_contact_distance",
             "source": "multi_object_contact_evidence",
             **contacts,
@@ -619,6 +714,7 @@ def readiness_checks(
     contacts: dict[str, Any],
     conflicts: list[dict[str, Any]],
     reconstruction_result_rows: list[dict[str, Any]],
+    depth_contact: dict[str, Any],
 ) -> dict[str, bool]:
     visible = require_dict(obj.get("visible_surface_measurement"), "visible_surface_measurement")
     persistent = require_dict(obj.get("persistent_visible_surface_shape"), "persistent_visible_surface_shape")
@@ -673,6 +769,23 @@ def readiness_checks(
             "contact_factor_ready_rows",
         )
         > 0,
+        "shared_depth_contact_state_available": bool(
+            require_int(
+                depth_contact.get("shared_depth_state_ready_frame_count"),
+                "shared_depth_state_ready_frame_count",
+            )
+            > 0
+            and require_int(
+                depth_contact.get("depth_owner_incompatibility_count"),
+                "depth_owner_incompatibility_count",
+            )
+            == 0
+            and require_int(
+                depth_contact.get("reconstructed_mesh_contact_candidate_rows"),
+                "reconstructed_mesh_contact_candidate_rows",
+            )
+            > 0
+        ),
         "source_compatible_with_visible_surface_geometry": len(conflicts) == 0,
     }
 
@@ -685,6 +798,7 @@ def blocked_reasons(checks: dict[str, bool]) -> list[str]:
         "hidden_topology_reconstructed": "hidden topology is not reconstructed",
         "orientation_observable": "orientation is not observable from current geometry seed",
         "contact_factor_ready_against_multi_object_geometry": "no contact factors are ready against multi-object geometry",
+        "shared_depth_contact_state_available": "no shared depth/contact state links accepted reconstruction meshes to current hand geometry",
         "source_compatible_with_visible_surface_geometry": "local patch or legacy geometry conflicts with visible-surface geometry",
     }
     return [message for key, message in messages.items() if checks.get(key) is not True]
@@ -700,6 +814,7 @@ def build_object_row(
     observed_seed_rows: list[dict[str, Any]],
     reconstruction_job_rows: list[dict[str, Any]],
     reconstruction_result_rows: list[dict[str, Any]],
+    depth_contact_rows: list[dict[str, Any]],
     contact_rows: list[dict[str, Any]],
     conflict_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -710,6 +825,7 @@ def build_object_row(
     observed_seeds = observed_surface_seeds(observed_seed_rows)
     reconstruction_rows = reconstruction_jobs(reconstruction_job_rows)
     reconstruction_result_payloads = reconstruction_results(reconstruction_result_rows)
+    depth_contact_payload = depth_contact_consistency(depth_contact_rows)
     contacts = contact_summary(contact_rows)
     blocks = factor_blocks(
         obj,
@@ -720,10 +836,11 @@ def build_object_row(
         observed_seeds=observed_seeds,
         reconstruction_job_rows=reconstruction_rows,
         reconstruction_result_rows=reconstruction_result_payloads,
+        depth_contact=depth_contact_payload,
         contacts=contacts,
         conflicts=conflict_rows,
     )
-    checks = readiness_checks(obj, contacts, conflict_rows, reconstruction_result_payloads)
+    checks = readiness_checks(obj, contacts, conflict_rows, reconstruction_result_payloads, depth_contact_payload)
     solve_activation_ready = all(
         checks[key]
         for key in (
@@ -732,6 +849,7 @@ def build_object_row(
             "canonical_geometry_seed_available",
             "hidden_topology_reconstructed",
             "orientation_observable",
+            "shared_depth_contact_state_available",
             "contact_factor_ready_against_multi_object_geometry",
             "source_compatible_with_visible_surface_geometry",
         )
@@ -770,6 +888,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     observed_seed = payloads["observed_surface_geometry_seed"]
     reconstruction_jobs_report = payloads["geometry_reconstruction_jobs"]
     reconstruction_results_report = payloads["geometry_reconstruction_results"]
+    depth_contact = payloads["depth_contact_consistency_audit"]
     contact = payloads["multi_object_contact_evidence"]
     audit = payloads["geometry_source_audit"]
 
@@ -785,6 +904,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         key="object_id",
         label="geometry reconstruction results",
     )
+    depth_contact_by_object = rows_by_object(
+        require_list(depth_contact.get("rows"), "depth-contact rows"),
+        key="object_id",
+        label="depth-contact rows",
+    )
     contact_by_object = rows_by_object(require_list(contact.get("rows"), "multi-object contact rows"), key="object_id", label="multi-object contact rows")
     conflict_by_object = rows_by_object(require_list(audit.get("local_patch_visible_surface_conflicts"), "geometry-source conflicts"), key="object_id", label="geometry-source conflicts")
 
@@ -799,6 +923,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             observed_seed_rows=observed_seed_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             reconstruction_job_rows=reconstruction_jobs_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             reconstruction_result_rows=reconstruction_results_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
+            depth_contact_rows=depth_contact_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             contact_rows=contact_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             conflict_rows=conflict_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
         )
@@ -933,6 +1058,42 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             for block in row["factor_blocks"]
             if block.get("factor_block") == "multi_object_hand_contact_distance"
         ),
+        "depth_contact_evaluated_frame_count": sum(
+            require_int(block.get("evaluated_frame_count"), "depth-contact evaluated frame count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
+        "depth_contact_evaluated_hand_rows": sum(
+            require_int(block.get("evaluated_hand_rows"), "depth-contact evaluated hand rows")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
+        "depth_contact_near_reconstructed_mesh_hand_rows": sum(
+            require_int(block.get("near_reconstructed_mesh_hand_rows"), "near reconstructed mesh hand rows")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
+        "depth_contact_reconstructed_mesh_contact_candidate_rows": sum(
+            require_int(block.get("reconstructed_mesh_contact_candidate_rows"), "reconstructed mesh contact candidates")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
+        "depth_contact_shared_depth_state_ready_frame_count": sum(
+            require_int(block.get("shared_depth_state_ready_frame_count"), "shared depth ready frames")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
+        "depth_contact_owner_incompatibility_count": sum(
+            require_int(block.get("depth_owner_incompatibility_count"), "depth owner incompatibility count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
         "geometry_source_conflict_count": sum(
             require_int(block.get("source_conflict_count"), "source conflict count")
             for row in object_rows
@@ -984,6 +1145,16 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "geometry reconstruction accepted_reconstruction_result_count",
     ):
         raise RuntimeError(f"{case} accepted geometry reconstruction result count disagrees with report")
+    if summary_counts["depth_contact_evaluated_frame_count"] != require_int(
+        depth_contact.get("evaluated_frame_count"),
+        "depth-contact evaluated_frame_count",
+    ):
+        raise RuntimeError(f"{case} depth-contact evaluated frame count disagrees with report")
+    if summary_counts["depth_contact_owner_incompatibility_count"] != require_int(
+        depth_contact.get("depth_owner_incompatibility_count"),
+        "depth-contact depth_owner_incompatibility_count",
+    ):
+        raise RuntimeError(f"{case} depth-contact incompatibility count disagrees with report")
 
     report = {
         "method": "build_v17_object_geometry_factor_problem",
@@ -1122,6 +1293,30 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("geometry_reconstruction_accepted_result_count"),
                     "geometry_reconstruction_accepted_result_count",
                 ),
+                "depth_contact_evaluated_frame_count": require_int(
+                    report.get("depth_contact_evaluated_frame_count"),
+                    "depth_contact_evaluated_frame_count",
+                ),
+                "depth_contact_evaluated_hand_rows": require_int(
+                    report.get("depth_contact_evaluated_hand_rows"),
+                    "depth_contact_evaluated_hand_rows",
+                ),
+                "depth_contact_near_reconstructed_mesh_hand_rows": require_int(
+                    report.get("depth_contact_near_reconstructed_mesh_hand_rows"),
+                    "depth_contact_near_reconstructed_mesh_hand_rows",
+                ),
+                "depth_contact_reconstructed_mesh_contact_candidate_rows": require_int(
+                    report.get("depth_contact_reconstructed_mesh_contact_candidate_rows"),
+                    "depth_contact_reconstructed_mesh_contact_candidate_rows",
+                ),
+                "depth_contact_shared_depth_state_ready_frame_count": require_int(
+                    report.get("depth_contact_shared_depth_state_ready_frame_count"),
+                    "depth_contact_shared_depth_state_ready_frame_count",
+                ),
+                "depth_contact_owner_incompatibility_count": require_int(
+                    report.get("depth_contact_owner_incompatibility_count"),
+                    "depth_contact_owner_incompatibility_count",
+                ),
                 "multi_object_contact_factor_ready_rows": require_int(
                     report.get("multi_object_contact_factor_ready_rows"),
                     "multi_object_contact_factor_ready_rows",
@@ -1245,6 +1440,42 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             )
             for report in reports
         ),
+        "depth_contact_evaluated_frame_count": sum(
+            require_int(report.get("depth_contact_evaluated_frame_count"), "depth-contact evaluated frame count")
+            for report in reports
+        ),
+        "depth_contact_evaluated_hand_rows": sum(
+            require_int(report.get("depth_contact_evaluated_hand_rows"), "depth-contact evaluated hand rows")
+            for report in reports
+        ),
+        "depth_contact_near_reconstructed_mesh_hand_rows": sum(
+            require_int(
+                report.get("depth_contact_near_reconstructed_mesh_hand_rows"),
+                "depth-contact near reconstructed mesh hand rows",
+            )
+            for report in reports
+        ),
+        "depth_contact_reconstructed_mesh_contact_candidate_rows": sum(
+            require_int(
+                report.get("depth_contact_reconstructed_mesh_contact_candidate_rows"),
+                "depth-contact reconstructed mesh contact candidate rows",
+            )
+            for report in reports
+        ),
+        "depth_contact_shared_depth_state_ready_frame_count": sum(
+            require_int(
+                report.get("depth_contact_shared_depth_state_ready_frame_count"),
+                "depth-contact shared depth state ready frame count",
+            )
+            for report in reports
+        ),
+        "depth_contact_owner_incompatibility_count": sum(
+            require_int(
+                report.get("depth_contact_owner_incompatibility_count"),
+                "depth-contact owner incompatibility count",
+            )
+            for report in reports
+        ),
         "multi_object_contact_factor_ready_rows": sum(
             require_int(report.get("multi_object_contact_factor_ready_rows"), "contact factor rows")
             for report in reports
@@ -1318,6 +1549,11 @@ def parse_args() -> argparse.Namespace:
         "--geometry-source-audit-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_geometry_source_audit"),
+    )
+    parser.add_argument(
+        "--depth-contact-consistency-audit-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_depth_contact_consistency_audit"),
     )
     parser.add_argument(
         "--output-root",

@@ -35,6 +35,7 @@ class CaseInputs:
     object_geometry_factor_problem_report: Path
     geometry_reconstruction_jobs_report: Path
     geometry_reconstruction_results_report: Path
+    depth_contact_consistency_audit_report: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -116,6 +117,7 @@ def case_inputs(
     object_geometry_factor_problem_root: Path,
     geometry_reconstruction_jobs_root: Path,
     geometry_reconstruction_results_root: Path,
+    depth_contact_consistency_audit_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -184,6 +186,10 @@ def case_inputs(
         geometry_reconstruction_results_root / case / "v17_geometry_reconstruction_results_report.json",
         f"{case} geometry reconstruction results report",
     )
+    depth_contact_consistency_audit_report = existing_path(
+        depth_contact_consistency_audit_root / case / "v17_depth_contact_consistency_audit_report.json",
+        f"{case} depth-contact consistency audit report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -214,6 +220,7 @@ def case_inputs(
         object_geometry_factor_problem_report=object_geometry_factor_problem_report,
         geometry_reconstruction_jobs_report=geometry_reconstruction_jobs_report,
         geometry_reconstruction_results_report=geometry_reconstruction_results_report,
+        depth_contact_consistency_audit_report=depth_contact_consistency_audit_report,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -906,6 +913,30 @@ def object_geometry_factor_problem_counts(report: dict[str, Any]) -> dict[str, A
             report.get("geometry_reconstruction_accepted_result_count"),
             "object-geometry factor geometry_reconstruction_accepted_result_count",
         ),
+        "depth_contact_evaluated_frame_count": require_int(
+            report.get("depth_contact_evaluated_frame_count"),
+            "object-geometry factor depth_contact_evaluated_frame_count",
+        ),
+        "depth_contact_evaluated_hand_rows": require_int(
+            report.get("depth_contact_evaluated_hand_rows"),
+            "object-geometry factor depth_contact_evaluated_hand_rows",
+        ),
+        "depth_contact_near_reconstructed_mesh_hand_rows": require_int(
+            report.get("depth_contact_near_reconstructed_mesh_hand_rows"),
+            "object-geometry factor depth_contact_near_reconstructed_mesh_hand_rows",
+        ),
+        "depth_contact_reconstructed_mesh_contact_candidate_rows": require_int(
+            report.get("depth_contact_reconstructed_mesh_contact_candidate_rows"),
+            "object-geometry factor depth_contact_reconstructed_mesh_contact_candidate_rows",
+        ),
+        "depth_contact_shared_depth_state_ready_frame_count": require_int(
+            report.get("depth_contact_shared_depth_state_ready_frame_count"),
+            "object-geometry factor depth_contact_shared_depth_state_ready_frame_count",
+        ),
+        "depth_contact_owner_incompatibility_count": require_int(
+            report.get("depth_contact_owner_incompatibility_count"),
+            "object-geometry factor depth_contact_owner_incompatibility_count",
+        ),
         "multi_object_contact_factor_ready_rows": require_int(
             report.get("multi_object_contact_factor_ready_rows"),
             "object-geometry factor multi_object_contact_factor_ready_rows",
@@ -1050,6 +1081,72 @@ def geometry_reconstruction_results_counts(report: dict[str, Any]) -> dict[str, 
     }
 
 
+def depth_contact_consistency_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "accepted_reconstruction_job_count": require_int(
+            report.get("accepted_reconstruction_job_count"),
+            "depth-contact accepted_reconstruction_job_count",
+        ),
+        "evaluated_frame_count": require_int(
+            report.get("evaluated_frame_count"),
+            "depth-contact evaluated_frame_count",
+        ),
+        "evaluated_hand_rows": require_int(
+            report.get("evaluated_hand_rows"),
+            "depth-contact evaluated_hand_rows",
+        ),
+        "near_reconstructed_mesh_hand_rows": require_int(
+            report.get("near_reconstructed_mesh_hand_rows"),
+            "depth-contact near_reconstructed_mesh_hand_rows",
+        ),
+        "reconstructed_mesh_contact_candidate_rows": require_int(
+            report.get("reconstructed_mesh_contact_candidate_rows"),
+            "depth-contact reconstructed_mesh_contact_candidate_rows",
+        ),
+        "shared_depth_state_ready_frame_count": require_int(
+            report.get("shared_depth_state_ready_frame_count"),
+            "depth-contact shared_depth_state_ready_frame_count",
+        ),
+        "depth_owner_incompatibility_count": require_int(
+            report.get("depth_owner_incompatibility_count"),
+            "depth-contact depth_owner_incompatibility_count",
+        ),
+        "visible_unidepth_m": require_dict(
+            report.get("visible_unidepth_m"),
+            "depth-contact visible_unidepth_m",
+        ),
+        "reconstructed_mesh_camera_depth_m": require_dict(
+            report.get("reconstructed_mesh_camera_depth_m"),
+            "depth-contact reconstructed_mesh_camera_depth_m",
+        ),
+        "reconstructed_mesh_front_surface_depth_abs_p95_m": require_dict(
+            report.get("reconstructed_mesh_front_surface_depth_abs_p95_m"),
+            "depth-contact reconstructed_mesh_front_surface_depth_abs_p95_m",
+        ),
+        "legacy_object_center_depth_m": require_dict(
+            report.get("legacy_object_center_depth_m"),
+            "depth-contact legacy_object_center_depth_m",
+        ),
+        "hand_source_depth_m": require_dict(
+            report.get("hand_source_depth_m"),
+            "depth-contact hand_source_depth_m",
+        ),
+        "reconstructed_mesh_to_hand_min_m": require_dict(
+            report.get("reconstructed_mesh_to_hand_min_m"),
+            "depth-contact reconstructed_mesh_to_hand_min_m",
+        ),
+        "shared_depth_contact_state_ready": bool(report.get("shared_depth_contact_state_ready") is True),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def variable_family(
     name: str,
     required_scope: str,
@@ -1084,6 +1181,7 @@ def required_variable_families(
     object_geometry_factor_problem: dict[str, Any],
     geometry_reconstruction_jobs: dict[str, Any],
     geometry_reconstruction_results: dict[str, Any],
+    depth_contact_consistency: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -1253,6 +1351,21 @@ def required_variable_families(
                 "geometry_reconstruction_accepted_result_count": geometry_reconstruction_results[
                     "accepted_reconstruction_result_count"
                 ],
+                "depth_contact_evaluated_frame_count": depth_contact_consistency[
+                    "evaluated_frame_count"
+                ],
+                "depth_contact_evaluated_hand_rows": depth_contact_consistency[
+                    "evaluated_hand_rows"
+                ],
+                "depth_contact_near_reconstructed_mesh_hand_rows": depth_contact_consistency[
+                    "near_reconstructed_mesh_hand_rows"
+                ],
+                "depth_contact_owner_incompatibility_count": depth_contact_consistency[
+                    "depth_owner_incompatibility_count"
+                ],
+                "depth_contact_shared_depth_state_ready_frame_count": depth_contact_consistency[
+                    "shared_depth_state_ready_frame_count"
+                ],
                 "complete_object_geometry_hypothesis_count": object_geometry_hypothesis_state[
                     "complete_object_geometry_hypothesis_count"
                 ],
@@ -1279,6 +1392,7 @@ def required_variable_families(
                 "per-object geometry hypotheses are now materialized but none is complete or contact-compatible",
                 "object-centric geometry factor blocks are now materialized but no object is activatable for solving",
                 "accepted hidden-topology reconstructions exist only for short observed-surface seed windows and are not full-interval or contact-compatible object geometry",
+                "accepted reconstructions are in the visible-depth state, while the current hand/contact graph uses a different source-camera depth state",
                 "topology/deformation variables are not optimized",
             ],
         ),
@@ -1365,6 +1479,15 @@ def required_variable_families(
                 "geometry_reconstruction_accepted_result_count": geometry_reconstruction_results[
                     "accepted_reconstruction_result_count"
                 ],
+                "depth_contact_reconstructed_mesh_contact_candidate_rows": depth_contact_consistency[
+                    "reconstructed_mesh_contact_candidate_rows"
+                ],
+                "depth_contact_shared_depth_state_ready_frame_count": depth_contact_consistency[
+                    "shared_depth_state_ready_frame_count"
+                ],
+                "depth_contact_owner_incompatibility_count": depth_contact_consistency[
+                    "depth_owner_incompatibility_count"
+                ],
                 "partial_material_pose_replay_is_complete_object_geometry": geometry_source_audit[
                     "partial_material_pose_replay_is_complete_object_geometry"
                 ],
@@ -1386,6 +1509,7 @@ def required_variable_families(
                 "visible-surface replay tests only observed surfaces and does not reconstruct hidden topology",
                 "observed-surface geometry seeds are short-segment canonical seeds, not full active-interval object pose timelines",
                 "accepted RGBD reconstructions are short-window mesh and pose evidence, not full active-interval object pose timelines",
+                "accepted RGBD reconstructions do not share a contact-depth state with current MANO geometry",
                 "object-centric pose factors are listed but no object has a complete geometry state that can own them",
                 "object-pose evidence is not source-compatible with the current contact factors",
                 "no per-object geometry hypothesis is ready to own pose factors",
@@ -1433,6 +1557,15 @@ def required_variable_families(
                 "object_geometry_factor_contact_compatible_hypothesis_count": object_geometry_factor_problem[
                     "contact_compatible_object_geometry_hypothesis_count"
                 ],
+                "depth_contact_near_reconstructed_mesh_hand_rows": depth_contact_consistency[
+                    "near_reconstructed_mesh_hand_rows"
+                ],
+                "depth_contact_reconstructed_mesh_contact_candidate_rows": depth_contact_consistency[
+                    "reconstructed_mesh_contact_candidate_rows"
+                ],
+                "depth_contact_shared_depth_state_ready_frame_count": depth_contact_consistency[
+                    "shared_depth_state_ready_frame_count"
+                ],
             },
             [
                 "contact modes are estimated before the sparse geometry graph and then fixed",
@@ -1440,6 +1573,7 @@ def required_variable_families(
                 "accepted local contact-patch states are not unified with multi-object visible surfaces",
                 "contact-mode ready rows have no same-frame multi-object visible-surface contact candidates",
                 "object-centric contact factor blocks have zero factor-ready rows against multi-object geometry",
+                "accepted reconstruction meshes have no near-contact hand rows under the current depth state",
                 "unobserved rows do not carry uncertainty variables or prediction/update state",
             ],
         ),
@@ -1474,10 +1608,27 @@ def required_variable_families(
                 "center_normalized_visible_surface_envelope_candidates": geometry_state[
                     "visible_surface_envelope_candidate_count"
                 ],
+                "depth_contact_visible_unidepth_m": depth_contact_consistency["visible_unidepth_m"],
+                "depth_contact_reconstructed_mesh_camera_depth_m": depth_contact_consistency[
+                    "reconstructed_mesh_camera_depth_m"
+                ],
+                "depth_contact_reconstructed_mesh_front_surface_depth_abs_p95_m": depth_contact_consistency[
+                    "reconstructed_mesh_front_surface_depth_abs_p95_m"
+                ],
+                "depth_contact_legacy_object_center_depth_m": depth_contact_consistency[
+                    "legacy_object_center_depth_m"
+                ],
+                "depth_contact_hand_source_depth_m": depth_contact_consistency[
+                    "hand_source_depth_m"
+                ],
+                "depth_contact_owner_incompatibility_count": depth_contact_consistency[
+                    "depth_owner_incompatibility_count"
+                ],
             },
             [
                 "visible surfaces are now materialized as fixed measurements where mask and metric depth overlap",
                 "depth/object/camera contradictions are not jointly optimized",
+                "accepted object reconstructions, legacy object centers, and MANO hands do not currently share one depth owner",
                 "occlusion state is not a latent variable with uncertainty",
             ],
         ),
@@ -1508,6 +1659,12 @@ def required_variable_families(
                 "geometry_reconstruction_accepted_result_count": geometry_reconstruction_results[
                     "accepted_reconstruction_result_count"
                 ],
+                "depth_contact_shared_depth_state_ready_frame_count": depth_contact_consistency[
+                    "shared_depth_state_ready_frame_count"
+                ],
+                "depth_contact_owner_incompatibility_count": depth_contact_consistency[
+                    "depth_owner_incompatibility_count"
+                ],
                 "source_incompatibility_count": geometry_source_audit[
                     "source_incompatibility_count"
                 ],
@@ -1524,6 +1681,7 @@ def required_variable_families(
                 "contact dynamics are not coupled to object identity, deformation, and MANO articulation",
                 "broad hand-object distances remain diagnostics rather than physical constraints",
                 "physical terms cannot share one object state until geometry-source ownership is unified",
+                "physical contact terms cannot attach to accepted reconstruction meshes until depth ownership is unified",
             ],
         ),
     ]
@@ -1573,6 +1731,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.geometry_reconstruction_results_report),
         f"{inputs.case} geometry reconstruction results report",
     )
+    depth_contact_consistency_audit_report = require_dict(
+        load_json(inputs.depth_contact_consistency_audit_report),
+        f"{inputs.case} depth-contact consistency audit report",
+    )
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -1596,6 +1758,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     object_geometry_factor_problem = object_geometry_factor_problem_counts(object_geometry_factor_problem_report)
     geometry_reconstruction_jobs = geometry_reconstruction_jobs_counts(geometry_reconstruction_jobs_report)
     geometry_reconstruction_results = geometry_reconstruction_results_counts(geometry_reconstruction_results_report)
+    depth_contact_consistency = depth_contact_consistency_counts(depth_contact_consistency_audit_report)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -1938,6 +2101,30 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} object-geometry factor accepted reconstruction result count",
     ):
         raise RuntimeError(f"{inputs.case} accepted reconstruction result count disagrees with factor problem")
+    if require_int(
+        geometry_reconstruction_results["accepted_reconstruction_result_count"],
+        f"{inputs.case} accepted reconstruction result count",
+    ) != require_int(
+        depth_contact_consistency["accepted_reconstruction_job_count"],
+        f"{inputs.case} depth-contact accepted reconstruction job count",
+    ):
+        raise RuntimeError(f"{inputs.case} accepted reconstruction count disagrees with depth-contact audit")
+    if require_int(
+        depth_contact_consistency["evaluated_frame_count"],
+        f"{inputs.case} depth-contact evaluated frame count",
+    ) != require_int(
+        object_geometry_factor_problem["depth_contact_evaluated_frame_count"],
+        f"{inputs.case} object-geometry factor depth-contact frame count",
+    ):
+        raise RuntimeError(f"{inputs.case} depth-contact evaluated frame count disagrees with factor problem")
+    if require_int(
+        depth_contact_consistency["depth_owner_incompatibility_count"],
+        f"{inputs.case} depth-contact incompatibility count",
+    ) != require_int(
+        object_geometry_factor_problem["depth_contact_owner_incompatibility_count"],
+        f"{inputs.case} object-geometry factor depth-contact incompatibility count",
+    ):
+        raise RuntimeError(f"{inputs.case} depth-contact incompatibility count disagrees with factor problem")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -1961,6 +2148,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_geometry_factor_problem,
         geometry_reconstruction_jobs,
         geometry_reconstruction_results,
+        depth_contact_consistency,
         counts,
         sparse,
         contact,
@@ -2016,6 +2204,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "geometry_reconstruction_results_report": source_summary(
                 inputs.geometry_reconstruction_results_report, geometry_reconstruction_results_report
             ),
+            "depth_contact_consistency_audit_report": source_summary(
+                inputs.depth_contact_consistency_audit_report, depth_contact_consistency_audit_report
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -2036,6 +2227,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_geometry_factor_problem": object_geometry_factor_problem,
         "current_geometry_reconstruction_jobs": geometry_reconstruction_jobs,
         "current_geometry_reconstruction_results": geometry_reconstruction_results,
+        "current_depth_contact_consistency_audit": depth_contact_consistency,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -2082,6 +2274,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_geometry_factor_problem_root,
             args.geometry_reconstruction_jobs_root,
             args.geometry_reconstruction_results_root,
+            args.depth_contact_consistency_audit_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -2112,6 +2305,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_geometry_factor_problem_root": str(args.object_geometry_factor_problem_root),
         "geometry_reconstruction_jobs_root": str(args.geometry_reconstruction_jobs_root),
         "geometry_reconstruction_results_root": str(args.geometry_reconstruction_results_root),
+        "depth_contact_consistency_audit_root": str(args.depth_contact_consistency_audit_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -2283,6 +2477,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "geometry_reconstruction_accepted_result_count": case[
                     "current_geometry_reconstruction_results"
                 ]["accepted_reconstruction_result_count"],
+                "depth_contact_evaluated_frame_count": case[
+                    "current_depth_contact_consistency_audit"
+                ]["evaluated_frame_count"],
+                "depth_contact_evaluated_hand_rows": case[
+                    "current_depth_contact_consistency_audit"
+                ]["evaluated_hand_rows"],
+                "depth_contact_near_reconstructed_mesh_hand_rows": case[
+                    "current_depth_contact_consistency_audit"
+                ]["near_reconstructed_mesh_hand_rows"],
+                "depth_contact_reconstructed_mesh_contact_candidate_rows": case[
+                    "current_depth_contact_consistency_audit"
+                ]["reconstructed_mesh_contact_candidate_rows"],
+                "depth_contact_shared_depth_state_ready_frame_count": case[
+                    "current_depth_contact_consistency_audit"
+                ]["shared_depth_state_ready_frame_count"],
+                "depth_contact_owner_incompatibility_count": case[
+                    "current_depth_contact_consistency_audit"
+                ]["depth_owner_incompatibility_count"],
                 "object_geometry_factor_contact_ready_rows": case[
                     "current_object_geometry_factor_problem"
                 ]["multi_object_contact_factor_ready_rows"],
@@ -2410,6 +2622,28 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             case["current_geometry_reconstruction_results"]["accepted_reconstruction_result_count"]
             for case in case_outputs
         ),
+        "depth_contact_evaluated_frame_count": sum(
+            case["current_depth_contact_consistency_audit"]["evaluated_frame_count"] for case in case_outputs
+        ),
+        "depth_contact_evaluated_hand_rows": sum(
+            case["current_depth_contact_consistency_audit"]["evaluated_hand_rows"] for case in case_outputs
+        ),
+        "depth_contact_near_reconstructed_mesh_hand_rows": sum(
+            case["current_depth_contact_consistency_audit"]["near_reconstructed_mesh_hand_rows"]
+            for case in case_outputs
+        ),
+        "depth_contact_reconstructed_mesh_contact_candidate_rows": sum(
+            case["current_depth_contact_consistency_audit"]["reconstructed_mesh_contact_candidate_rows"]
+            for case in case_outputs
+        ),
+        "depth_contact_shared_depth_state_ready_frame_count": sum(
+            case["current_depth_contact_consistency_audit"]["shared_depth_state_ready_frame_count"]
+            for case in case_outputs
+        ),
+        "depth_contact_owner_incompatibility_count": sum(
+            case["current_depth_contact_consistency_audit"]["depth_owner_incompatibility_count"]
+            for case in case_outputs
+        ),
         "object_geometry_factor_contact_ready_rows": sum(
             case["current_object_geometry_factor_problem"]["multi_object_contact_factor_ready_rows"]
             for case in case_outputs
@@ -2507,6 +2741,11 @@ def parse_args() -> argparse.Namespace:
         "--geometry-reconstruction-results-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_results"),
+    )
+    parser.add_argument(
+        "--depth-contact-consistency-audit-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_depth_contact_consistency_audit"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",

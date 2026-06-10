@@ -350,6 +350,10 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         args.sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
     )
+    depth_contact_path = existing_path(
+        args.depth_contact_consistency_audit_root / case / "v17_depth_contact_consistency_audit_report.json",
+        f"{case} depth-contact consistency audit report",
+    )
     mesh_metadata_path = existing_path(
         args.sparse_graph_root / case / "object_meshes_v17_full_timeline_graph.npz.metadata.json",
         f"{case} sparse mesh metadata",
@@ -364,6 +368,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     multi_contact = require_dict(load_json(multi_contact_path), f"{case} multi-object contact report")
     contact_mode = require_dict(load_json(contact_mode_path), f"{case} contact-mode report")
     sparse_report = require_dict(load_json(sparse_report_path), f"{case} sparse graph report")
+    depth_contact = require_dict(load_json(depth_contact_path), f"{case} depth-contact consistency audit")
     mesh_metadata = require_dict(load_json(mesh_metadata_path), f"{case} mesh metadata")
     contact_index, contact_source_counts = contact_measurement_index(measurement_dir)
     patches = local_patch_states(local_patch_path)
@@ -412,6 +417,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             source_incompatibility_count += 1
     if patch_conflict_count > 0:
         source_incompatibility_count += patch_conflict_count
+    if require_int(
+        depth_contact.get("depth_owner_incompatibility_count"),
+        "depth-contact depth_owner_incompatibility_count",
+    ) > 0:
+        source_incompatibility_count += 1
     if require_int(mesh_metadata.get("mesh_frames"), "mesh metadata mesh_frames") != require_int(
         sparse_report.get("object_variable_frames"), "sparse report object_variable_frames"
     ):
@@ -428,6 +438,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "multi_object_contact_evidence_report": source_summary(multi_contact_path, multi_contact),
             "contact_mode_graph_report": source_summary(contact_mode_path, contact_mode),
             "sparse_graph_report": source_summary(sparse_report_path, sparse_report),
+            "depth_contact_consistency_audit_report": source_summary(depth_contact_path, depth_contact),
             "sparse_mesh_metadata": source_summary(mesh_metadata_path, mesh_metadata),
             "local_contact_patch_state_measurements": {"path": str(local_patch_path), "row_count": len(patches)},
             "contact_measurement_files": contact_source_counts,
@@ -465,6 +476,38 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 material_surface_replay.get("ready_candidate_ids"),
                 "material surface ready_candidate_ids",
             ),
+            "accepted_reconstruction_depth_contact_evaluated_frame_count": require_int(
+                depth_contact.get("evaluated_frame_count"),
+                "depth-contact evaluated_frame_count",
+            ),
+            "accepted_reconstruction_depth_contact_evaluated_hand_rows": require_int(
+                depth_contact.get("evaluated_hand_rows"),
+                "depth-contact evaluated_hand_rows",
+            ),
+            "accepted_reconstruction_near_hand_rows": require_int(
+                depth_contact.get("near_reconstructed_mesh_hand_rows"),
+                "depth-contact near_reconstructed_mesh_hand_rows",
+            ),
+            "accepted_reconstruction_contact_candidate_rows": require_int(
+                depth_contact.get("reconstructed_mesh_contact_candidate_rows"),
+                "depth-contact reconstructed_mesh_contact_candidate_rows",
+            ),
+            "shared_depth_state_ready_frame_count": require_int(
+                depth_contact.get("shared_depth_state_ready_frame_count"),
+                "depth-contact shared_depth_state_ready_frame_count",
+            ),
+            "depth_owner_incompatibility_count": require_int(
+                depth_contact.get("depth_owner_incompatibility_count"),
+                "depth-contact depth_owner_incompatibility_count",
+            ),
+            "visible_unidepth_m": depth_contact.get("visible_unidepth_m"),
+            "reconstructed_mesh_camera_depth_m": depth_contact.get("reconstructed_mesh_camera_depth_m"),
+            "reconstructed_mesh_front_surface_depth_abs_p95_m": depth_contact.get(
+                "reconstructed_mesh_front_surface_depth_abs_p95_m"
+            ),
+            "legacy_object_center_depth_m": depth_contact.get("legacy_object_center_depth_m"),
+            "hand_source_depth_m": depth_contact.get("hand_source_depth_m"),
+            "reconstructed_mesh_to_hand_min_m": depth_contact.get("reconstructed_mesh_to_hand_min_m"),
         },
         "contact_source_counts": {
             "contact_mode_factor_ready_rows": require_int(
@@ -505,6 +548,25 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             ),
             "legacy_contact_factors_have_any_same_frame_side_visible_surface_candidate": bool(ready_same_frame_candidates),
             "accepted_local_patches_conflict_with_multi_object_visible_surface_distance": bool(patch_conflict_count > 0),
+            "accepted_reconstruction_meshes_contact_compatible_with_current_hand_depth": bool(
+                require_int(
+                    depth_contact.get("reconstructed_mesh_contact_candidate_rows"),
+                    "depth-contact contact candidate rows",
+                )
+                > 0
+            ),
+            "accepted_reconstruction_meshes_share_depth_state_with_current_contact_graph": bool(
+                require_int(
+                    depth_contact.get("shared_depth_state_ready_frame_count"),
+                    "depth-contact shared depth ready frames",
+                )
+                > 0
+                and require_int(
+                    depth_contact.get("depth_owner_incompatibility_count"),
+                    "depth-contact incompatibility count",
+                )
+                == 0
+            ),
             "partial_material_pose_replay_is_complete_object_geometry": False,
             "unified_object_geometry_source_ready": False,
             "contact_factor_source_compatible_with_multi_object_geometry": False,
@@ -515,6 +577,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "local contact-patch meshes can support contact evidence but do not reconstruct manipulated object geometry",
             "multi-object visible RGBD surfaces are object-mask measurements without canonical topology or pose variables",
             "partial material-pose replay candidates cover only short observed-surface segments and do not own hidden geometry",
+            "accepted short-segment reconstruction meshes currently use the UniDepth object-depth state, while the legacy hand/contact graph uses a different source-camera depth state",
         ],
         "annotation_ready": False,
         "deliverable_ready": False,
@@ -678,6 +741,11 @@ def parse_args() -> argparse.Namespace:
         "--sparse-graph-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_contact_mode_factor_graph"),
+    )
+    parser.add_argument(
+        "--depth-contact-consistency-audit-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_depth_contact_consistency_audit"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
