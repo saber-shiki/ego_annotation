@@ -44,6 +44,8 @@ OBJECT_POSE_SEMANTICS = (
     "geometry and pose estimation remain open."
 )
 
+MULTI_OBJECT_MASK_TIMELINE_STATUS = "multi_object_mask_timeline_without_geometry_or_pose"
+
 
 @dataclass(frozen=True)
 class GraphFrame:
@@ -104,6 +106,7 @@ def apply_object_limit_payload(obj: dict[str, Any]) -> dict[str, Any]:
 
 
 def annotation_root_limit_payload(report: dict[str, Any]) -> dict[str, Any]:
+    has_multi_object_mask_timeline = bool(report.get("multi_object_mask_timeline_attached") is True)
     return {
         "status": "sparse_evidence_qc_annotation_payload",
         "artifact_status": "partial",
@@ -115,6 +118,13 @@ def annotation_root_limit_payload(report: dict[str, Any]) -> dict[str, Any]:
         "solver_completeness": SOLVER_COMPLETENESS,
         "v3_solver_complete": False,
         **OBJECT_LIMIT_FLAGS,
+        "object_schema_status": MULTI_OBJECT_MASK_TIMELINE_STATUS
+        if has_multi_object_mask_timeline
+        else OBJECT_LIMIT_FLAGS["object_schema_status"],
+        "missing_multi_object_roster_required": not has_multi_object_mask_timeline,
+        "multi_object_mask_timeline_attached": has_multi_object_mask_timeline,
+        "multi_object_mask_timeline_frame_count": report.get("multi_object_mask_timeline_frame_count"),
+        "multi_object_mask_timeline_object_frame_rows": report.get("multi_object_mask_timeline_object_frame_rows"),
         "solver_report": report["report_path"],
         "object_pose_semantics": OBJECT_POSE_SEMANTICS,
         "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
@@ -1021,7 +1031,73 @@ def object_schema_status_payload() -> dict[str, Any]:
     return object_limit_payload()
 
 
-def write_corrected_annotations(path: Path, source_annotations: Path, graph: GraphData, params: np.ndarray, report: dict[str, Any]) -> None:
+def load_multi_object_frames(root: Path | None, case: str, frame_count: int) -> dict[int, list[dict[str, Any]]] | None:
+    if root is None:
+        return None
+    path = root / case / "v17_multi_object_timeline.json"
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{path} must contain a JSON object")
+    if int(payload.get("frame_count", -1)) != int(frame_count):
+        raise RuntimeError(f"{path} frame_count does not match annotation frame count {frame_count}")
+    frames = payload.get("frames")
+    if not isinstance(frames, list) or len(frames) != frame_count:
+        raise RuntimeError(f"{path} must contain exactly {frame_count} frames")
+    out: dict[int, list[dict[str, Any]]] = {}
+    for row_i, frame in enumerate(frames):
+        if not isinstance(frame, dict):
+            raise RuntimeError(f"{path} frame row {row_i} is not an object")
+        idx = frame.get("frame_idx")
+        if not isinstance(idx, int):
+            raise RuntimeError(f"{path} frame row {row_i} has no integer frame_idx")
+        objects = frame.get("objects")
+        if not isinstance(objects, list):
+            raise RuntimeError(f"{path} frame {idx} has no objects array")
+        copied: list[dict[str, Any]] = []
+        for obj_i, obj in enumerate(objects):
+            if not isinstance(obj, dict):
+                raise RuntimeError(f"{path} frame {idx} object {obj_i} is not an object")
+            copied_obj = copy.deepcopy(obj)
+            copied_obj.update(
+                {
+                    "multi_object_timeline_ready": False,
+                    "object_geometry_complete": False,
+                    "object_pose_requirement_met": False,
+                    "annotation_ready": False,
+                    "v3_solver_complete": False,
+                    "geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
+                    "pose_semantics": OBJECT_POSE_SEMANTICS,
+                    "semantics": "Multi-object mask-evidence state without mesh geometry or pose variables.",
+                }
+            )
+            copied.append(copied_obj)
+        out[idx] = copied
+    return out
+
+
+def object_schema_status_for_report(report: dict[str, Any]) -> dict[str, Any]:
+    out = object_schema_status_payload()
+    if bool(report.get("multi_object_mask_timeline_attached") is True):
+        out["object_schema_status"] = MULTI_OBJECT_MASK_TIMELINE_STATUS
+        out["missing_multi_object_roster_required"] = False
+        out["multi_object_mask_timeline_attached"] = True
+        out["multi_object_mask_timeline_frame_count"] = report.get("multi_object_mask_timeline_frame_count")
+        out["multi_object_mask_timeline_object_frame_rows"] = report.get("multi_object_mask_timeline_object_frame_rows")
+        out["semantics"] = (
+            "The frame carries simultaneous object mask-evidence states in objects; mesh geometry and object pose "
+            "variables remain unresolved."
+        )
+    return out
+
+
+def write_corrected_annotations(
+    path: Path,
+    source_annotations: Path,
+    graph: GraphData,
+    params: np.ndarray,
+    report: dict[str, Any],
+    multi_object_frames: dict[int, list[dict[str, Any]]] | None,
+) -> None:
     payload = load_json(source_annotations)
     frames = payload.get("frames") if isinstance(payload, dict) else None
     if not isinstance(frames, list):
@@ -1037,7 +1113,8 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         idx = copied.get("frame_idx")
         if isinstance(idx, int):
             copied["caption"] = qc_caption(copied.get("caption"))
-            copied["objects_status"] = object_schema_status_payload()
+            copied["objects_status"] = object_schema_status_for_report(report)
+            copied["objects"] = copy.deepcopy(multi_object_frames.get(idx, [])) if multi_object_frames is not None else []
             copied["object"] = apply_object_limit_payload(dict(copied.get("object") or {}))
             shift = object_shift_by_frame.get(idx)
             if shift is not None:
@@ -1088,6 +1165,13 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "deliverable_ready": False,
         "v3_solver_complete": False,
         **OBJECT_LIMIT_FLAGS,
+        "object_schema_status": MULTI_OBJECT_MASK_TIMELINE_STATUS
+        if bool(report.get("multi_object_mask_timeline_attached") is True)
+        else OBJECT_LIMIT_FLAGS["object_schema_status"],
+        "missing_multi_object_roster_required": not bool(report.get("multi_object_mask_timeline_attached") is True),
+        "multi_object_mask_timeline_attached": bool(report.get("multi_object_mask_timeline_attached") is True),
+        "multi_object_mask_timeline_frame_count": report.get("multi_object_mask_timeline_frame_count"),
+        "multi_object_mask_timeline_object_frame_rows": report.get("multi_object_mask_timeline_object_frame_rows"),
         "object_pose_semantics": OBJECT_POSE_SEMANTICS,
         "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
     }
@@ -1103,6 +1187,13 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         "hand_state_status_semantics": "list_presence_diagnostic_not_hand_state_estimate",
         "v3_solver_complete": False,
         **OBJECT_LIMIT_FLAGS,
+        "object_schema_status": MULTI_OBJECT_MASK_TIMELINE_STATUS
+        if bool(report.get("multi_object_mask_timeline_attached") is True)
+        else OBJECT_LIMIT_FLAGS["object_schema_status"],
+        "missing_multi_object_roster_required": not bool(report.get("multi_object_mask_timeline_attached") is True),
+        "multi_object_mask_timeline_attached": bool(report.get("multi_object_mask_timeline_attached") is True),
+        "multi_object_mask_timeline_frame_count": report.get("multi_object_mask_timeline_frame_count"),
+        "multi_object_mask_timeline_object_frame_rows": report.get("multi_object_mask_timeline_object_frame_rows"),
         "object_pose_semantics": OBJECT_POSE_SEMANTICS,
         "object_geometry_semantics": OBJECT_GEOMETRY_SEMANTICS,
         "report": report["report_path"],
@@ -1215,6 +1306,14 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         if args.contact_mode_graph_root is not None
         else None
     )
+    multi_object_frames = load_multi_object_frames(args.multi_object_timeline_root, case, len(frames))
+    attached_mask_timeline = multi_object_frames is not None
+    multi_object_frame_count = (
+        sum(1 for objects in multi_object_frames.values() if objects) if attached_mask_timeline else 0
+    )
+    multi_object_object_frame_rows = (
+        sum(len(objects) for objects in multi_object_frames.values()) if attached_mask_timeline else 0
+    )
     skipped_contact_factor_count = len(graph.skipped_contacts)
     structural_consistency_pass = bool(accepted)
     sparse_graph_evidence_consistency_target_met = bool(
@@ -1256,8 +1355,8 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "solver_completeness": SOLVER_COMPLETENESS,
         "v3_solver_complete": False,
         "multi_object_timeline_ready": False,
-        "object_schema_status": "single_manipulated_object_qc",
-        "missing_multi_object_roster_required": True,
+        "object_schema_status": MULTI_OBJECT_MASK_TIMELINE_STATUS if attached_mask_timeline else "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": not attached_mask_timeline,
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
         "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
@@ -1275,6 +1374,10 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         },
         "contact_factor_source": contact_factor_source,
         "contact_mode_graph_root": str(args.contact_mode_graph_root) if args.contact_mode_graph_root is not None else None,
+        "multi_object_timeline_root": str(args.multi_object_timeline_root) if args.multi_object_timeline_root is not None else None,
+        "multi_object_mask_timeline_attached": attached_mask_timeline,
+        "multi_object_mask_timeline_frame_count": int(multi_object_frame_count),
+        "multi_object_mask_timeline_object_frame_rows": int(multi_object_object_frame_rows),
         "source_manifest": str(case_manifest),
         "source_annotations": str(annotations),
         "source_mesh_archive": str(mesh_archive),
@@ -1336,7 +1439,7 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         },
     }
     write_json(report_path, report)
-    write_corrected_annotations(corrected_annotations, annotations, graph, solution, report)
+    write_corrected_annotations(corrected_annotations, annotations, graph, solution, report, multi_object_frames)
     write_json(
         graph_manifest,
         {
@@ -1357,12 +1460,17 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             "solver_completeness": report["solver_completeness"],
             "v3_solver_complete": False,
             "multi_object_timeline_ready": False,
-            "object_schema_status": "single_manipulated_object_qc",
-            "missing_multi_object_roster_required": True,
+            "object_schema_status": MULTI_OBJECT_MASK_TIMELINE_STATUS
+            if attached_mask_timeline
+            else "single_manipulated_object_qc",
+            "missing_multi_object_roster_required": not attached_mask_timeline,
             "object_geometry_complete": False,
             "object_pose_requirement_met": False,
             "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
             "solver_report": str(report_path),
+            "multi_object_mask_timeline_attached": attached_mask_timeline,
+            "multi_object_mask_timeline_frame_count": int(multi_object_frame_count),
+            "multi_object_mask_timeline_object_frame_rows": int(multi_object_object_frame_rows),
         },
     )
     return report
@@ -1371,6 +1479,7 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
 def solve(args: argparse.Namespace) -> dict[str, Any]:
     args.output_root.mkdir(parents=True, exist_ok=True)
     cases = [solve_case(args, manifest, args.output_root) for manifest in args.case_manifests]
+    attached_mask_timeline = all(bool(case.get("multi_object_mask_timeline_attached") is True) for case in cases)
     summary = {
         "status": "partial",
         "artifact_status": "partial",
@@ -1386,8 +1495,15 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
         "solver_completeness": SOLVER_COMPLETENESS,
         "v3_solver_complete": False,
         "multi_object_timeline_ready": False,
-        "object_schema_status": "single_manipulated_object_qc",
-        "missing_multi_object_roster_required": True,
+        "object_schema_status": MULTI_OBJECT_MASK_TIMELINE_STATUS if attached_mask_timeline else "single_manipulated_object_qc",
+        "missing_multi_object_roster_required": not attached_mask_timeline,
+        "multi_object_mask_timeline_attached": attached_mask_timeline,
+        "multi_object_mask_timeline_frame_count": sum(
+            int(case.get("multi_object_mask_timeline_frame_count", 0)) for case in cases
+        ),
+        "multi_object_mask_timeline_object_frame_rows": sum(
+            int(case.get("multi_object_mask_timeline_object_frame_rows", 0)) for case in cases
+        ),
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
         "object_geometry_status": "partial_visible_surface_or_local_patch_qc",
@@ -1410,6 +1526,11 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
                 "v3_solver_complete": summary["v3_solver_complete"],
                 "multi_object_timeline_ready": summary["multi_object_timeline_ready"],
                 "object_schema_status": summary["object_schema_status"],
+                "multi_object_mask_timeline_attached": summary["multi_object_mask_timeline_attached"],
+                "multi_object_mask_timeline_frame_count": summary["multi_object_mask_timeline_frame_count"],
+                "multi_object_mask_timeline_object_frame_rows": summary[
+                    "multi_object_mask_timeline_object_frame_rows"
+                ],
                 "object_geometry_complete": summary["object_geometry_complete"],
                 "object_pose_requirement_met": summary["object_pose_requirement_met"],
                 "object_geometry_status": summary["object_geometry_status"],
@@ -1424,6 +1545,11 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
                         "deliverable_ready": c["deliverable_ready"],
                         "structural_consistency_pass": c["structural_consistency_pass"],
                         "accuracy_target_met": c["accuracy_target_met"],
+                        "multi_object_mask_timeline_attached": c["multi_object_mask_timeline_attached"],
+                        "multi_object_mask_timeline_frame_count": c["multi_object_mask_timeline_frame_count"],
+                        "multi_object_mask_timeline_object_frame_rows": c[
+                            "multi_object_mask_timeline_object_frame_rows"
+                        ],
                         "contact_after_p95_m_p95": c["contact_after"]["p95_m_p95"],
                         "weighted_residual_rms_after": c["weighted_residual_rms_after"],
                     }
@@ -1441,6 +1567,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_full_timeline_factor_graph"))
     parser.add_argument("--measurement-store-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_measurement_store"))
     parser.add_argument("--contact-mode-graph-root", type=Path, default=None)
+    parser.add_argument("--multi-object-timeline-root", type=Path, default=None)
     parser.add_argument(
         "--case-manifests",
         type=Path,
