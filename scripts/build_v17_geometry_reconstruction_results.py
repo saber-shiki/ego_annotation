@@ -346,40 +346,36 @@ def render_silhouette(
     return silhouette > 0
 
 
-def front_vertex_depth_errors(
+def rasterized_front_depth_errors(
     shape: tuple[int, int],
     uv: np.ndarray,
     z: np.ndarray,
+    faces: np.ndarray,
     mask: np.ndarray,
     depth: np.ndarray,
+    max_faces: int,
 ) -> np.ndarray:
     height, width = shape
-    finite_uv = np.isfinite(uv).all(axis=1)
-    rounded = np.zeros((len(uv), 2), dtype=np.int64)
-    rounded[finite_uv] = np.rint(uv[finite_uv]).astype(np.int64)
-    valid = (
-        finite_uv
-        & np.isfinite(z)
-        & (z > 0.0)
-        & (rounded[:, 0] >= 0)
-        & (rounded[:, 0] < width)
-        & (rounded[:, 1] >= 0)
-        & (rounded[:, 1] < height)
-    )
-    if not np.any(valid):
+    valid = np.all(np.isfinite(uv[faces]), axis=(1, 2)) & np.all(z[faces] > 0.0, axis=1)
+    face_ids = np.flatnonzero(valid)
+    if len(face_ids) == 0:
         return np.asarray([], dtype=np.float64)
-    pix = rounded[valid]
-    zvals = z[valid]
-    flat = pix[:, 1] * width + pix[:, 0]
-    zbuf = np.full(height * width, np.inf, dtype=np.float64)
-    np.minimum.at(zbuf, flat, zvals)
-    sample = np.flatnonzero(np.isfinite(zbuf))
-    ys = sample // width
-    xs = sample - ys * width
-    keep = mask[ys, xs] & np.isfinite(depth[ys, xs]) & (depth[ys, xs] > 0.05)
+    if len(face_ids) > max_faces:
+        face_ids = face_ids[np.linspace(0, len(face_ids) - 1, max_faces, dtype=np.int64)]
+    zbuf = np.full((height, width), np.inf, dtype=np.float32)
+    order = np.argsort(z[faces[face_ids]].mean(axis=1))[::-1]
+    for face_id in face_ids[order]:
+        face = faces[int(face_id)]
+        poly = uv[face]
+        if np.any(poly[:, 0] < -width) or np.any(poly[:, 0] > 2 * width):
+            continue
+        if np.any(poly[:, 1] < -height) or np.any(poly[:, 1] > 2 * height):
+            continue
+        cv2.fillConvexPoly(zbuf, np.round(poly).astype(np.int32), float(np.min(z[face])), cv2.LINE_AA)
+    keep = mask & np.isfinite(zbuf) & np.isfinite(depth) & (depth > 0.05)
     if not np.any(keep):
         return np.asarray([], dtype=np.float64)
-    return zbuf[sample[keep]] - depth[ys[keep], xs[keep]]
+    return zbuf[keep].astype(np.float64) - depth[keep]
 
 
 def projection_rows(
@@ -412,7 +408,9 @@ def projection_rows(
         union = int(np.count_nonzero(silhouette | mask))
         if union == 0:
             raise RuntimeError(f"frame {frame.get('frame_idx')} has empty mask/silhouette union")
-        errors = front_vertex_depth_errors(mask.shape, uv, cam_vertices[:, 2], mask, depth)
+        errors = rasterized_front_depth_errors(
+            mask.shape, uv, cam_vertices[:, 2], faces, mask, depth, int(args.max_projection_faces)
+        )
         rows.append(
             {
                 "frame_idx": require_int(frame.get("frame_idx"), f"job frames[{i}].frame_idx"),
@@ -421,13 +419,13 @@ def projection_rows(
                 "silhouette_mask_iou": float(intersection / union),
                 "silhouette_area_px": int(np.count_nonzero(silhouette)),
                 "mask_area_px": int(np.count_nonzero(mask)),
-                "front_vertex_depth_sample_count": int(len(errors)),
-                "front_vertex_depth_signed_median_m": float(np.median(errors)) if len(errors) else None,
-                "front_vertex_depth_signed_p05_m": float(np.percentile(errors, 5.0)) if len(errors) else None,
-                "front_vertex_depth_signed_p95_m": float(np.percentile(errors, 95.0)) if len(errors) else None,
-                "front_vertex_depth_positive_fraction": float(np.mean(errors > 0.0)) if len(errors) else None,
-                "front_vertex_depth_abs_median_m": float(np.median(np.abs(errors))) if len(errors) else None,
-                "front_vertex_depth_abs_p95_m": float(np.percentile(np.abs(errors), 95.0)) if len(errors) else None,
+                "front_surface_depth_sample_count": int(len(errors)),
+                "front_surface_depth_signed_median_m": float(np.median(errors)) if len(errors) else None,
+                "front_surface_depth_signed_p05_m": float(np.percentile(errors, 5.0)) if len(errors) else None,
+                "front_surface_depth_signed_p95_m": float(np.percentile(errors, 95.0)) if len(errors) else None,
+                "front_surface_depth_positive_fraction": float(np.mean(errors > 0.0)) if len(errors) else None,
+                "front_surface_depth_abs_median_m": float(np.median(np.abs(errors))) if len(errors) else None,
+                "front_surface_depth_abs_p95_m": float(np.percentile(np.abs(errors), 95.0)) if len(errors) else None,
             }
         )
     return rows
@@ -438,16 +436,16 @@ def projection_pass(rows: list[dict[str, Any]], args: argparse.Namespace) -> boo
         return False
     ious = [finite_float(row.get("silhouette_mask_iou"), "silhouette_mask_iou") for row in rows]
     p95s = [
-        finite_float(row.get("front_vertex_depth_abs_p95_m"), "front_vertex_depth_abs_p95_m")
+        finite_float(row.get("front_surface_depth_abs_p95_m"), "front_surface_depth_abs_p95_m")
         for row in rows
-        if row.get("front_vertex_depth_abs_p95_m") is not None
+        if row.get("front_surface_depth_abs_p95_m") is not None
     ]
     medians = [
-        finite_float(row.get("front_vertex_depth_abs_median_m"), "front_vertex_depth_abs_median_m")
+        finite_float(row.get("front_surface_depth_abs_median_m"), "front_surface_depth_abs_median_m")
         for row in rows
-        if row.get("front_vertex_depth_abs_median_m") is not None
+        if row.get("front_surface_depth_abs_median_m") is not None
     ]
-    samples = [require_int(row.get("front_vertex_depth_sample_count"), "front_vertex_depth_sample_count") for row in rows]
+    samples = [require_int(row.get("front_surface_depth_sample_count"), "front_surface_depth_sample_count") for row in rows]
     return bool(
         ious
         and p95s
@@ -545,51 +543,51 @@ def evaluate_job(case: str, job_row: dict[str, Any], args: argparse.Namespace) -
             projection_rows_payload = projection_rows(frames, output_dir, vertices, faces, args)
             projection = {
                 "silhouette_mask_iou": summarize([row["silhouette_mask_iou"] for row in projection_rows_payload]),
-                "front_vertex_depth_abs_median_m": summarize(
+                "front_surface_depth_abs_median_m": summarize(
                     [
-                        finite_float(row["front_vertex_depth_abs_median_m"], "front depth median")
+                        finite_float(row["front_surface_depth_abs_median_m"], "front depth median")
                         for row in projection_rows_payload
-                        if row["front_vertex_depth_abs_median_m"] is not None
+                        if row["front_surface_depth_abs_median_m"] is not None
                     ]
                 ),
-                "front_vertex_depth_abs_p95_m": summarize(
+                "front_surface_depth_abs_p95_m": summarize(
                     [
-                        finite_float(row["front_vertex_depth_abs_p95_m"], "front depth p95")
+                        finite_float(row["front_surface_depth_abs_p95_m"], "front depth p95")
                         for row in projection_rows_payload
-                        if row["front_vertex_depth_abs_p95_m"] is not None
+                        if row["front_surface_depth_abs_p95_m"] is not None
                     ]
                 ),
-                "front_vertex_depth_signed_median_m": summarize(
+                "front_surface_depth_signed_median_m": summarize(
                     [
-                        finite_float(row["front_vertex_depth_signed_median_m"], "front signed depth median")
+                        finite_float(row["front_surface_depth_signed_median_m"], "front signed depth median")
                         for row in projection_rows_payload
-                        if row["front_vertex_depth_signed_median_m"] is not None
+                        if row["front_surface_depth_signed_median_m"] is not None
                     ]
                 ),
-                "front_vertex_depth_signed_p05_m": summarize(
+                "front_surface_depth_signed_p05_m": summarize(
                     [
-                        finite_float(row["front_vertex_depth_signed_p05_m"], "front signed depth p05")
+                        finite_float(row["front_surface_depth_signed_p05_m"], "front signed depth p05")
                         for row in projection_rows_payload
-                        if row["front_vertex_depth_signed_p05_m"] is not None
+                        if row["front_surface_depth_signed_p05_m"] is not None
                     ]
                 ),
-                "front_vertex_depth_signed_p95_m": summarize(
+                "front_surface_depth_signed_p95_m": summarize(
                     [
-                        finite_float(row["front_vertex_depth_signed_p95_m"], "front signed depth p95")
+                        finite_float(row["front_surface_depth_signed_p95_m"], "front signed depth p95")
                         for row in projection_rows_payload
-                        if row["front_vertex_depth_signed_p95_m"] is not None
+                        if row["front_surface_depth_signed_p95_m"] is not None
                     ]
                 ),
-                "front_vertex_depth_positive_fraction": summarize(
+                "front_surface_depth_positive_fraction": summarize(
                     [
-                        finite_float(row["front_vertex_depth_positive_fraction"], "front positive depth fraction")
+                        finite_float(row["front_surface_depth_positive_fraction"], "front positive depth fraction")
                         for row in projection_rows_payload
-                        if row["front_vertex_depth_positive_fraction"] is not None
+                        if row["front_surface_depth_positive_fraction"] is not None
                     ]
                 ),
-                "front_vertex_depth_sample_count": summarize(
+                "front_surface_depth_sample_count": summarize(
                     [
-                        float(require_int(row["front_vertex_depth_sample_count"], "front depth samples"))
+                        float(require_int(row["front_surface_depth_sample_count"], "front depth samples"))
                         for row in projection_rows_payload
                     ]
                 ),
