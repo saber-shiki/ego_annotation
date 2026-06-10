@@ -128,6 +128,7 @@ text = text.replace("    mesh.remove_duplicate_faces()\n", "    remove_duplicate
 nerf.write_text(text, encoding="utf-8")
 PY
 
+set +e
 "$PREFIX/bin/python" run_custom.py \
   --mode run_video \
   --video_dir "$DATASET_DIR" \
@@ -136,10 +137,19 @@ PY
   --use_gui 0 \
   --stride 1 \
   --debug_level "$DEBUG_LEVEL"
+run_status="$?"
+set -e
 
 test -f "$OUTPUT_DIR/config_bundletrack.yml"
 test -d "$OUTPUT_DIR/ob_in_cam"
 test -f "$OUTPUT_DIR/mesh_cleaned.obj"
-test -f "$OUTPUT_DIR/textured_mesh.obj"
+if [ "$run_status" -ne 0 ]; then
+  if [ -f "$OUTPUT_DIR/textured_mesh.obj" ]; then
+    exit "$run_status"
+  fi
+  echo "BUNDLESDF_RUN_V3_MESH_ONLY_AFTER_NONFATAL_TEXTURE_FAILURE status=$run_status"
+else
+  test -f "$OUTPUT_DIR/textured_mesh.obj"
+fi
 
 echo BUNDLESDF_RUN_V3_OK

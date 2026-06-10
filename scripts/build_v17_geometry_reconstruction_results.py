@@ -275,9 +275,11 @@ def front_vertex_depth_errors(
     depth: np.ndarray,
 ) -> np.ndarray:
     height, width = shape
-    rounded = np.rint(uv).astype(np.int64)
+    finite_uv = np.isfinite(uv).all(axis=1)
+    rounded = np.zeros((len(uv), 2), dtype=np.int64)
+    rounded[finite_uv] = np.rint(uv[finite_uv]).astype(np.int64)
     valid = (
-        np.isfinite(uv).all(axis=1)
+        finite_uv
         & np.isfinite(z)
         & (z > 0.0)
         & (rounded[:, 0] >= 0)
