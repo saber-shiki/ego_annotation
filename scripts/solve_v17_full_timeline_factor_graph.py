@@ -17,6 +17,10 @@ from scipy.spatial import cKDTree  # type: ignore[reportAttributeAccessIssue]
 
 from run_v16_full_pipeline import load_mesh_archive, save_mesh_archive
 
+ACCEPTED_STATUS = "accepted_sparse_full_timeline_evidence_graph"
+REJECTED_STATUS = "rejected_sparse_full_timeline_evidence_graph"
+SOLVER_COMPLETENESS = "sparse_evidence_consistency_only"
+
 
 @dataclass(frozen=True)
 class GraphFrame:
@@ -633,7 +637,13 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
                     apply_hand_ray_shift(hand, graph_frame.camera_forward_axis_world * float(hshift), float(hshift))
         out_frames.append(copied)
     payload["frames"] = out_frames
-    payload["v17_full_timeline_factor_graph"] = {"status": report["status"], "annotation_ready": report["annotation_ready"], "report": report["report_path"]}
+    payload["v17_full_timeline_factor_graph"] = {
+        "status": report["status"],
+        "annotation_ready": report["annotation_ready"],
+        "solver_completeness": report["solver_completeness"],
+        "v3_solver_complete": False,
+        "report": report["report_path"],
+    }
     write_json(path, payload)
 
 
@@ -695,14 +705,16 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         raise RuntimeError("linear system matrix shape is unavailable")
     report: dict[str, Any] = {
         "case": case,
-        "status": "accepted_full_timeline_factor_graph" if accepted else "rejected_full_timeline_factor_graph",
+        "status": ACCEPTED_STATUS if accepted else REJECTED_STATUS,
         "annotation_ready": bool(accepted),
+        "solver_completeness": SOLVER_COMPLETENESS,
+        "v3_solver_complete": False,
         "method": "solve_v17_full_timeline_factor_graph",
         "semantics": {
             "optimized_variables": ["per-active-frame object translation correction", "per-valid-hand camera-ray depth correction"],
             "fixed_variables": ["camera trajectory", "MANO articulation and shape", "object mesh topology", "contact mode labels from current V17 evidence"],
             "contact_constraint_rule": "Only selected V17 contact states and accepted local contact patch states become contact factors by default; candidate contact measurements remain evidence until a contact graph selects them.",
-            "claim_limit": "This sparse graph tests full-timeline consistency of accepted evidence under bounded translation/depth corrections; it is not the complete V3 joint camera-MANO-object-depth-contact solver.",
+            "claim_limit": "This sparse graph tests full-timeline consistency of accepted evidence under bounded translation/depth corrections. The complete V3 joint camera-MANO-object-depth-contact solver remains open.",
         },
         "source_manifest": str(case_manifest),
         "source_annotations": str(annotations),
@@ -749,6 +761,8 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             "annotations": str(corrected_annotations),
             "object_mesh_archive": str(corrected_archive),
             "solver_status": report["status"],
+            "solver_completeness": report["solver_completeness"],
+            "v3_solver_complete": False,
             "solver_report": str(report_path),
         },
     )

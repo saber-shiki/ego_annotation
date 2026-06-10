@@ -80,7 +80,7 @@ def inspection_frames(state: dict[str, Any], raw: VideoInfo) -> list[int]:
 
 
 def sheet_filename(method_name: str) -> str:
-    if "factor_graph" in method_name:
+    if "graph" in method_name:
         return "v17_graph_anchor_side_by_side_sheet.jpg"
     return "v17_anchor_side_by_side_sheet.jpg"
 
