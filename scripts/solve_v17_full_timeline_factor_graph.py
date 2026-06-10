@@ -18,10 +18,12 @@ from scipy.spatial import cKDTree  # type: ignore[reportAttributeAccessIssue]
 
 from run_v16_full_pipeline import load_mesh_archive, save_mesh_archive
 
-ACCEPTED_STATUS = "accepted_sparse_full_timeline_evidence_graph"
+ACCEPTED_STATUS = "structural_sparse_graph_qc_pass"
 PARTIAL_STATUS = "partial_sparse_full_timeline_evidence_graph"
 REJECTED_STATUS = "rejected_sparse_full_timeline_evidence_graph"
 SOLVER_COMPLETENESS = "sparse_evidence_consistency_only"
+ARTIFACT_KIND = "sparse_evidence_qc_graph"
+DELIVERY_ROLE = "qc_only_not_v17_closure"
 
 
 @dataclass(frozen=True)
@@ -945,11 +947,30 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
                 hshift = hand_shift_by_frame_side.get(f"{idx}:{side_key(hand, hand_i)}")
                 if hshift is not None and graph_frame is not None:
                     apply_hand_ray_shift(hand, graph_frame.camera_forward_axis_world * float(hshift), float(hshift))
+            present_sides = {
+                side_key(hand, hand_i)
+                for hand_i, hand in enumerate(copied.get("hands") or [])
+                if isinstance(hand, dict)
+            }
+            copied["hand_state_status"] = [
+                {
+                    "entity_id": f"hand:{side}",
+                    "side": side,
+                    "status": "mano_pose_present" if side in present_sides else "mano_pose_missing_unresolved",
+                    "source": "v17_sparse_graph_corrected_annotation",
+                }
+                for side in ("left", "right")
+            ]
         out_frames.append(copied)
     payload["frames"] = out_frames
     payload["v17_full_timeline_factor_graph"] = {
         "status": report["status"],
+        "artifact_status": report["artifact_status"],
+        "artifact_kind": report["artifact_kind"],
+        "delivery_role": report["delivery_role"],
         "annotation_ready": report["annotation_ready"],
+        "deliverable_ready": report["deliverable_ready"],
+        "accuracy_target_met": report["accuracy_target_met"],
         "solver_completeness": report["solver_completeness"],
         "v3_solver_complete": False,
         "report": report["report_path"],
@@ -1075,10 +1096,15 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         and float(hand_shift_p95) <= float(args.accuracy_target_m)
     )
     contact_factor_complete = skipped_contact_factor_count == 0
+    sparse_graph_qc_pass = bool(
+        structural_consistency_pass
+        and contact_factor_complete
+        and sparse_graph_evidence_consistency_target_met
+    )
     accuracy_target_met = False
     accuracy_failure_reasons = ["complete_v3_joint_camera_mano_object_depth_contact_solver_remains_open"]
     deliverable_ready = False
-    status = ACCEPTED_STATUS if structural_consistency_pass and contact_factor_complete else PARTIAL_STATUS if structural_consistency_pass else REJECTED_STATUS
+    status = ACCEPTED_STATUS if sparse_graph_qc_pass else PARTIAL_STATUS if structural_consistency_pass else REJECTED_STATUS
     contact_constraint_rule = (
         "When --contact-mode-graph-root is provided, only contact_factor_ready rows from the accepted contact-mode graph become contact factors. "
         "Otherwise only selected V17 contact states and accepted local contact patch states become contact factors by default; candidate contact measurements remain evidence until a contact graph selects them."
@@ -1086,6 +1112,10 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     report: dict[str, Any] = {
         "case": case,
         "status": status,
+        "artifact_status": "partial",
+        "artifact_kind": ARTIFACT_KIND,
+        "delivery_role": DELIVERY_ROLE,
+        "sparse_graph_qc_pass": bool(sparse_graph_qc_pass),
         "structural_consistency_pass": bool(structural_consistency_pass),
         "accuracy_target_met": bool(accuracy_target_met),
         "sparse_graph_evidence_consistency_target_met": bool(sparse_graph_evidence_consistency_target_met),
@@ -1156,6 +1186,7 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             "broad_contact_metric_points": int(args.broad_contact_metric_points),
             "broad_contact_metric_semantics": "diagnostic support-size sensitivity; not all nearest broad hand-surface vertices are physically required to be in contact",
             "structural_consistency_passed": bool(structural_consistency_pass),
+            "sparse_graph_qc_pass": bool(sparse_graph_qc_pass),
             "accuracy_target_met": bool(accuracy_target_met),
             "sparse_graph_evidence_consistency_target_met": bool(sparse_graph_evidence_consistency_target_met),
             "contact_factor_complete": bool(contact_factor_complete),
@@ -1173,11 +1204,18 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         {
             "case": case,
             "status": report["status"],
+            "artifact_status": report["artifact_status"],
+            "artifact_kind": report["artifact_kind"],
+            "delivery_role": report["delivery_role"],
+            "sparse_graph_qc_pass": report["sparse_graph_qc_pass"],
             "raw_frame_count": int(len(frames)),
             "v16_manifest": state["v16_manifest"],
             "annotations": str(corrected_annotations),
             "object_mesh_archive": str(corrected_archive),
             "solver_status": report["status"],
+            "annotation_ready": False,
+            "deliverable_ready": False,
+            "accuracy_target_met": False,
             "solver_completeness": report["solver_completeness"],
             "v3_solver_complete": False,
             "solver_report": str(report_path),

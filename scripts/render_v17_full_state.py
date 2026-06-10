@@ -184,7 +184,10 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
     )
     report = {
         "case": state["case"],
-        "status": "ok" if frame_count_match else "failed",
+        "status": "structural_render_qc_pass" if frame_count_match else "structural_render_qc_failed",
+        "artifact_status": "partial",
+        "artifact_kind": "structural_qc_render",
+        "delivery_role": "qc_only_not_v17_closure",
         "method": args.method_name,
         "clip": str(clip),
         "annotations": state["annotations"],
@@ -193,6 +196,9 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         "render_qc": render_qc,
         "frame_count_match": frame_count_match,
         "solver_status": state.get("solver_status"),
+        "solver_artifact_status": state.get("artifact_status"),
+        "solver_artifact_kind": state.get("artifact_kind"),
+        "solver_delivery_role": state.get("delivery_role"),
         "solver_completeness": state.get("solver_completeness"),
         "solver_report": state.get("solver_report"),
         "v3_solver_complete": bool(state.get("v3_solver_complete")) if "v3_solver_complete" in state else None,
@@ -210,8 +216,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     args.repo_root = Path(args.repo_root).resolve()
     args.output_root.mkdir(parents=True, exist_ok=True)
     reports = [render_case(args, manifest, args.output_root) for manifest in args.case_manifests]
+    structural_render_qc_pass = all(bool(row["structural_render_qc_pass"]) for row in reports)
     summary = {
-        "status": "ok" if all(row["status"] == "ok" for row in reports) else "failed",
+        "status": "structural_render_qc_pass" if structural_render_qc_pass else "structural_render_qc_failed",
+        "artifact_status": "partial",
+        "artifact_kind": "structural_qc_render_collection",
+        "delivery_role": "qc_only_not_v17_closure",
+        "structural_render_qc_status": "pass" if structural_render_qc_pass else "fail",
+        "annotation_ready": bool(all(row["annotation_ready"] for row in reports)),
+        "deliverable_ready": bool(all(row["deliverable_ready"] for row in reports)),
+        "accuracy_target_met": bool(all(row["accuracy_target_met"] for row in reports)),
+        "v3_solver_complete": bool(all(row.get("v3_solver_complete") for row in reports)),
         "method": args.method_name,
         "cases": reports,
     }
