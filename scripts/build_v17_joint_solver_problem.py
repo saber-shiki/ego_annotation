@@ -27,6 +27,7 @@ class CaseInputs:
     object_track_dataset_summary: Path
     object_material_track_summary: Path
     object_material_motion_state_summary: Path
+    object_material_pose_candidate_summary: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -100,6 +101,7 @@ def case_inputs(
     object_track_dataset_root: Path,
     object_material_track_root: Path,
     object_material_motion_state_root: Path,
+    object_material_pose_candidate_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -136,6 +138,10 @@ def case_inputs(
         object_material_motion_state_root / case / "v17_object_material_motion_state_report.json",
         f"{case} object material-motion state report",
     )
+    object_material_pose_candidate_summary = existing_path(
+        object_material_pose_candidate_root / case / "v17_object_material_pose_candidate_report.json",
+        f"{case} object material-pose candidate report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -158,6 +164,7 @@ def case_inputs(
         object_track_dataset_summary=object_track_dataset_summary,
         object_material_track_summary=object_material_track_summary,
         object_material_motion_state_summary=object_material_motion_state_summary,
+        object_material_pose_candidate_summary=object_material_pose_candidate_summary,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -460,6 +467,43 @@ def object_material_motion_state_counts(report: dict[str, Any]) -> dict[str, Any
     }
 
 
+def object_material_pose_candidate_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "material_track_window_count": require_int(
+            report.get("material_track_window_count"),
+            "object material-pose material_track_window_count",
+        ),
+        "persistent_window_motion_candidate_count": require_int(
+            report.get("persistent_window_motion_candidate_count"),
+            "object material-pose persistent_window_motion_candidate_count",
+        ),
+        "partial_material_pose_candidate_segment_count": require_int(
+            report.get("partial_material_pose_candidate_segment_count"),
+            "object material-pose partial_material_pose_candidate_segment_count",
+        ),
+        "partial_material_pose_candidate_ready_segment_count": require_int(
+            report.get("partial_material_pose_candidate_ready_segment_count"),
+            "object material-pose partial_material_pose_candidate_ready_segment_count",
+        ),
+        "candidate_window_ids": require_list(
+            report.get("candidate_window_ids"),
+            "object material-pose candidate_window_ids",
+        ),
+        "candidate_segment_ids": require_list(
+            report.get("candidate_segment_ids"),
+            "object material-pose candidate_segment_ids",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "frame_count": require_int(metadata.get("frame_count"), "mesh metadata frame_count"),
@@ -499,6 +543,7 @@ def required_variable_families(
     object_track_dataset: dict[str, Any],
     object_material_track: dict[str, Any],
     object_material_motion_state: dict[str, Any],
+    object_material_pose_candidate: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -595,6 +640,12 @@ def required_variable_families(
                 "persistent_window_motion_candidates": object_material_motion_state[
                     "persistent_window_motion_candidate_count"
                 ],
+                "partial_material_pose_candidate_segments": object_material_pose_candidate[
+                    "partial_material_pose_candidate_segment_count"
+                ],
+                "partial_material_pose_ready_segments": object_material_pose_candidate[
+                    "partial_material_pose_candidate_ready_segment_count"
+                ],
                 "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
                     "noncandidate_local_adjacent_material_motion_window_count"
                 ],
@@ -642,6 +693,15 @@ def required_variable_families(
                     "noncandidate_local_adjacent_material_motion_window_count"
                 ],
                 "candidate_window_ids": object_material_motion_state["candidate_window_ids"],
+                "partial_material_pose_candidate_segments": object_material_pose_candidate[
+                    "partial_material_pose_candidate_segment_count"
+                ],
+                "partial_material_pose_ready_segments": object_material_pose_candidate[
+                    "partial_material_pose_candidate_ready_segment_count"
+                ],
+                "partial_material_pose_candidate_segment_ids": object_material_pose_candidate[
+                    "candidate_segment_ids"
+                ],
                 "exported_object_ids_without_material_tracks": object_material_track[
                     "exported_object_ids_without_material_tracks"
                 ],
@@ -653,6 +713,7 @@ def required_variable_families(
                 "center-normalized visible-surface envelopes do not provide material correspondence or SE(3) pose",
                 "material tracks cover sampled object windows only and are not integrated as full-timeline object variables",
                 "persistent material-motion candidates do not provide canonical object meshes or full-timeline pose/deformation variables",
+                "partial material-point SE(3) candidates exist only for accepted short segments and are not connected to complete object geometry",
             ],
         ),
         variable_family(
@@ -721,6 +782,9 @@ def required_variable_families(
                 "persistent_window_motion_candidates": object_material_motion_state[
                     "persistent_window_motion_candidate_count"
                 ],
+                "partial_material_pose_ready_segments": object_material_pose_candidate[
+                    "partial_material_pose_candidate_ready_segment_count"
+                ],
                 "noncandidate_local_adjacent_material_motion_windows": object_material_motion_state[
                     "noncandidate_local_adjacent_material_motion_window_count"
                 ],
@@ -747,6 +811,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.object_material_motion_state_summary),
         f"{inputs.case} object material-motion state report",
     )
+    object_material_pose_candidate_summary = require_dict(
+        load_json(inputs.object_material_pose_candidate_summary),
+        f"{inputs.case} object material-pose candidate report",
+    )
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -760,6 +828,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     object_track_dataset = object_track_dataset_counts(object_track_dataset_summary)
     object_material_track = object_material_track_counts(object_material_track_summary)
     object_material_motion_state = object_material_motion_state_counts(object_material_motion_state_summary)
+    object_material_pose_candidate = object_material_pose_candidate_counts(object_material_pose_candidate_summary)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -806,6 +875,22 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} material-motion ready pair count",
     ):
         raise RuntimeError(f"{inputs.case} material-track ready pair count disagrees with material-motion report")
+    if require_int(
+        object_material_motion_state["material_track_window_count"],
+        f"{inputs.case} material-motion window count",
+    ) != require_int(
+        object_material_pose_candidate["material_track_window_count"],
+        f"{inputs.case} material-pose window count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-motion window count disagrees with material-pose report")
+    if require_int(
+        object_material_motion_state["persistent_window_motion_candidate_count"],
+        f"{inputs.case} material-motion persistent candidate count",
+    ) != require_int(
+        object_material_pose_candidate["persistent_window_motion_candidate_count"],
+        f"{inputs.case} material-pose persistent candidate count",
+    ):
+        raise RuntimeError(f"{inputs.case} material-motion persistent candidate count disagrees with material-pose report")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -821,6 +906,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_track_dataset,
         object_material_track,
         object_material_motion_state,
+        object_material_pose_candidate,
         counts,
         sparse,
         contact,
@@ -852,6 +938,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "object_material_motion_state_report": source_summary(
                 inputs.object_material_motion_state_summary, object_material_motion_state_summary
             ),
+            "object_material_pose_candidate_report": source_summary(
+                inputs.object_material_pose_candidate_summary, object_material_pose_candidate_summary
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -864,6 +953,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_track_datasets": object_track_dataset,
         "current_object_material_tracks": object_material_track,
         "current_object_material_motion_state": object_material_motion_state,
+        "current_object_material_pose_candidates": object_material_pose_candidate,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -902,6 +992,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_track_dataset_root,
             args.object_material_track_root,
             args.object_material_motion_state_root,
+            args.object_material_pose_candidate_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -924,6 +1015,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_track_dataset_root": str(args.object_track_dataset_root),
         "object_material_track_root": str(args.object_material_track_root),
         "object_material_motion_state_root": str(args.object_material_motion_state_root),
+        "object_material_pose_candidate_root": str(args.object_material_pose_candidate_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -975,6 +1067,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "no_ready_material_motion_window_count": case[
                     "current_object_material_motion_state"
                 ]["no_ready_material_motion_window_count"],
+                "partial_material_pose_candidate_segment_count": case[
+                    "current_object_material_pose_candidates"
+                ]["partial_material_pose_candidate_segment_count"],
+                "partial_material_pose_candidate_ready_segment_count": case[
+                    "current_object_material_pose_candidates"
+                ]["partial_material_pose_candidate_ready_segment_count"],
                 "current_single_stream_object_variable_frames": case["current_sparse_graph"]["object_variable_frames"],
                 "contact_factor_ready_count": case["current_contact_mode_graph"]["contact_factor_ready_count"],
                 "unmet_required_variable_families": case["unmet_required_variable_families"],
@@ -1046,6 +1144,11 @@ def parse_args() -> argparse.Namespace:
         "--object-material-motion-state-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_object_material_motion_state"),
+    )
+    parser.add_argument(
+        "--object-material-pose-candidate-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_object_material_pose_candidates"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
