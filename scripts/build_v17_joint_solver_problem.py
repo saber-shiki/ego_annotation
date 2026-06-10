@@ -29,6 +29,7 @@ class CaseInputs:
     object_material_motion_state_summary: Path
     object_material_pose_candidate_summary: Path
     object_material_surface_replay_summary: Path
+    multi_object_contact_evidence_summary: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -104,6 +105,7 @@ def case_inputs(
     object_material_motion_state_root: Path,
     object_material_pose_candidate_root: Path,
     object_material_surface_replay_root: Path,
+    multi_object_contact_evidence_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -148,6 +150,10 @@ def case_inputs(
         object_material_surface_replay_root / case / "v17_object_material_surface_replay_report.json",
         f"{case} object material-surface replay report",
     )
+    multi_object_contact_evidence_summary = existing_path(
+        multi_object_contact_evidence_root / case / "v17_multi_object_contact_evidence_report.json",
+        f"{case} multi-object contact evidence report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -172,6 +178,7 @@ def case_inputs(
         object_material_motion_state_summary=object_material_motion_state_summary,
         object_material_pose_candidate_summary=object_material_pose_candidate_summary,
         object_material_surface_replay_summary=object_material_surface_replay_summary,
+        multi_object_contact_evidence_summary=multi_object_contact_evidence_summary,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -544,6 +551,43 @@ def object_material_surface_replay_counts(report: dict[str, Any]) -> dict[str, A
     }
 
 
+def multi_object_contact_evidence_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "multi-object contact frame_count"),
+        "object_frame_rows": require_int(
+            report.get("object_frame_rows"), "multi-object contact object_frame_rows"
+        ),
+        "hand_object_rows": require_int(
+            report.get("hand_object_rows"), "multi-object contact hand_object_rows"
+        ),
+        "measured_distance_rows": require_int(
+            report.get("measured_distance_rows"), "multi-object contact measured_distance_rows"
+        ),
+        "unobserved_rows": require_int(
+            report.get("unobserved_rows"), "multi-object contact unobserved_rows"
+        ),
+        "visible_surface_distance_candidate_rows": require_int(
+            report.get("visible_surface_distance_candidate_rows"),
+            "multi-object contact visible_surface_distance_candidate_rows",
+        ),
+        "contact_distance_candidate_rows": require_int(
+            report.get("contact_distance_candidate_rows"),
+            "multi-object contact contact_distance_candidate_rows",
+        ),
+        "contact_factor_ready_rows": require_int(
+            report.get("contact_factor_ready_rows"),
+            "multi-object contact contact_factor_ready_rows",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "frame_count": require_int(metadata.get("frame_count"), "mesh metadata frame_count"),
@@ -585,6 +629,7 @@ def required_variable_families(
     object_material_motion_state: dict[str, Any],
     object_material_pose_candidate: dict[str, Any],
     object_material_surface_replay: dict[str, Any],
+    multi_object_contact_evidence: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -770,17 +815,27 @@ def required_variable_families(
         variable_family(
             "contact_mode_per_hand_object_frame",
             "contact, no-contact, or unobserved state for each hand-object pair across the full timeline",
-            "fixed_input_to_sparse_geometry_graph",
+            "visible_surface_distance_evidence_materialized",
             {
                 "current_hand_side_rows": contact["row_count"],
                 "current_contact_mode_rows": contact["contact_mode_count"],
                 "current_factor_ready_rows": contact["contact_factor_ready_count"],
                 "minimum_required_hand_object_rows_from_roster": required_contact_rows,
+                "multi_object_hand_object_rows": multi_object_contact_evidence["hand_object_rows"],
+                "multi_object_measured_distance_rows": multi_object_contact_evidence["measured_distance_rows"],
+                "multi_object_unobserved_rows": multi_object_contact_evidence["unobserved_rows"],
+                "multi_object_visible_surface_distance_candidate_rows": multi_object_contact_evidence[
+                    "visible_surface_distance_candidate_rows"
+                ],
+                "multi_object_contact_factor_ready_rows": multi_object_contact_evidence[
+                    "contact_factor_ready_rows"
+                ],
             },
             [
                 "contact modes are estimated before the sparse geometry graph and then fixed",
-                "contact state is hand-side to legacy-object, not hand-object for every roster object",
-                "unobserved rows do not carry uncertainty variables",
+                "the full hand-object table measures visible-surface distance but does not estimate contact modes",
+                "accepted local contact-patch states are not unified with multi-object visible surfaces",
+                "unobserved rows do not carry uncertainty variables or prediction/update state",
             ],
         ),
         variable_family(
@@ -873,6 +928,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.object_material_surface_replay_summary),
         f"{inputs.case} object material-surface replay report",
     )
+    multi_object_contact_evidence_summary = require_dict(
+        load_json(inputs.multi_object_contact_evidence_summary),
+        f"{inputs.case} multi-object contact evidence report",
+    )
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -888,6 +947,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     object_material_motion_state = object_material_motion_state_counts(object_material_motion_state_summary)
     object_material_pose_candidate = object_material_pose_candidate_counts(object_material_pose_candidate_summary)
     object_material_surface_replay = object_material_surface_replay_counts(object_material_surface_replay_summary)
+    multi_object_contact_evidence = multi_object_contact_evidence_counts(multi_object_contact_evidence_summary)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -902,10 +962,20 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and geometry-state report")
     if frame_count != require_int(mesh["frame_count"], f"{inputs.case} mesh frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and mesh metadata")
+    if frame_count != require_int(multi_object_contact_evidence["frame_count"], f"{inputs.case} multi-object contact frame_count"):
+        raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and multi-object contact evidence")
     if require_int(timeline["visible_mask_frame_rows"], f"{inputs.case} timeline visible mask rows") != require_int(
         visible_surface["visible_object_frame_rows"], f"{inputs.case} visible-surface visible rows"
     ):
         raise RuntimeError(f"{inputs.case} visible mask rows disagree between timeline and visible-surface report")
+    if require_int(timeline["object_frame_rows"], f"{inputs.case} timeline object rows") != require_int(
+        multi_object_contact_evidence["object_frame_rows"], f"{inputs.case} multi-object contact object rows"
+    ):
+        raise RuntimeError(f"{inputs.case} object rows disagree between timeline and multi-object contact evidence")
+    if 2 * require_int(timeline["object_frame_rows"], f"{inputs.case} timeline object rows") != require_int(
+        multi_object_contact_evidence["hand_object_rows"], f"{inputs.case} multi-object contact hand-object rows"
+    ):
+        raise RuntimeError(f"{inputs.case} multi-object contact rows must equal two hand sides times object rows")
     if require_int(visible_surface["surface_frame_rows"], f"{inputs.case} visible surface rows") != require_int(
         geometry_state["surface_frame_rows"], f"{inputs.case} geometry-state surface rows"
     ):
@@ -983,6 +1053,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_material_motion_state,
         object_material_pose_candidate,
         object_material_surface_replay,
+        multi_object_contact_evidence,
         counts,
         sparse,
         contact,
@@ -1020,6 +1091,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "object_material_surface_replay_report": source_summary(
                 inputs.object_material_surface_replay_summary, object_material_surface_replay_summary
             ),
+            "multi_object_contact_evidence_report": source_summary(
+                inputs.multi_object_contact_evidence_summary, multi_object_contact_evidence_summary
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -1034,6 +1108,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_material_motion_state": object_material_motion_state,
         "current_object_material_pose_candidates": object_material_pose_candidate,
         "current_object_material_surface_replay": object_material_surface_replay,
+        "current_multi_object_contact_evidence": multi_object_contact_evidence,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -1074,6 +1149,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_material_motion_state_root,
             args.object_material_pose_candidate_root,
             args.object_material_surface_replay_root,
+            args.multi_object_contact_evidence_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -1098,6 +1174,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_material_motion_state_root": str(args.object_material_motion_state_root),
         "object_material_pose_candidate_root": str(args.object_material_pose_candidate_root),
         "object_material_surface_replay_root": str(args.object_material_surface_replay_root),
+        "multi_object_contact_evidence_root": str(args.multi_object_contact_evidence_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -1161,6 +1238,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "partial_visible_surface_replay_ready_count": case[
                     "current_object_material_surface_replay"
                 ]["partial_visible_surface_replay_ready_count"],
+                "multi_object_hand_object_rows": case[
+                    "current_multi_object_contact_evidence"
+                ]["hand_object_rows"],
+                "multi_object_measured_distance_rows": case[
+                    "current_multi_object_contact_evidence"
+                ]["measured_distance_rows"],
+                "multi_object_unobserved_rows": case[
+                    "current_multi_object_contact_evidence"
+                ]["unobserved_rows"],
+                "multi_object_contact_factor_ready_rows": case[
+                    "current_multi_object_contact_evidence"
+                ]["contact_factor_ready_rows"],
                 "current_single_stream_object_variable_frames": case["current_sparse_graph"]["object_variable_frames"],
                 "contact_factor_ready_count": case["current_contact_mode_graph"]["contact_factor_ready_count"],
                 "unmet_required_variable_families": case["unmet_required_variable_families"],
@@ -1242,6 +1331,11 @@ def parse_args() -> argparse.Namespace:
         "--object-material-surface-replay-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_object_material_surface_replay"),
+    )
+    parser.add_argument(
+        "--multi-object-contact-evidence-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_multi_object_contact_evidence"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
