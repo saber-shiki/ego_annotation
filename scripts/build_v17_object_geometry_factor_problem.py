@@ -158,6 +158,10 @@ def load_case_inputs(case: str, args: argparse.Namespace) -> dict[str, Any]:
             args.geometry_reconstruction_jobs_root / case / "v17_geometry_reconstruction_jobs_report.json",
             f"{case} geometry reconstruction jobs report",
         ),
+        "geometry_reconstruction_results": existing_path(
+            args.geometry_reconstruction_results_root / case / "v17_geometry_reconstruction_results_report.json",
+            f"{case} geometry reconstruction results report",
+        ),
         "multi_object_contact_evidence": existing_path(
             args.multi_object_contact_evidence_root / case / "v17_multi_object_contact_evidence_report.json",
             f"{case} multi-object contact evidence report",
@@ -321,6 +325,42 @@ def reconstruction_jobs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def reconstruction_results(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        checks = require_dict(row.get("readiness_checks"), "reconstruction result readiness_checks")
+        out.append(
+            {
+                "job_id": require_str(row.get("job_id"), "job_id"),
+                "status": require_str(row.get("status"), "status"),
+                "bundlesdf_output_dir": require_str(row.get("bundlesdf_output_dir"), "bundlesdf_output_dir"),
+                "window_id": require_str(row.get("window_id"), "window_id"),
+                "first_frame": require_int(row.get("first_frame"), "first_frame"),
+                "last_frame": require_int(row.get("last_frame"), "last_frame"),
+                "frame_count": require_int(row.get("frame_count"), "frame_count"),
+                "solver_job_ready": bool(row.get("solver_job_ready") is True),
+                "solver_backend_output_detected": bool(checks.get("solver_backend_output_detected") is True),
+                "mesh_file_detected": bool(checks.get("mesh_file_detected") is True),
+                "pose_sequence_complete": bool(checks.get("pose_sequence_complete") is True),
+                "mesh_scale_plausible_against_rectified_rgbd": bool(
+                    checks.get("mesh_scale_plausible_against_rectified_rgbd") is True
+                ),
+                "mesh_surface_topology_plausible": bool(checks.get("mesh_surface_topology_plausible") is True),
+                "mesh_projection_qc_passed": bool(checks.get("mesh_projection_qc_passed") is True),
+                "hidden_topology_reconstructed": bool(row.get("hidden_topology_reconstructed") is True),
+                "accepted_reconstruction_result": bool(row.get("accepted_reconstruction_result") is True),
+                "mesh_path": row.get("mesh_path"),
+                "mesh_vertices": row.get("mesh_vertices"),
+                "mesh_faces": row.get("mesh_faces"),
+                "mesh_extent_m": row.get("mesh_extent_m"),
+                "mesh_scale_acceptance_range_m": row.get("mesh_scale_acceptance_range_m"),
+                "projection_qc": row.get("projection_qc"),
+                **FALSE_READY,
+            }
+        )
+    return out
+
+
 def contact_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     measured = [row for row in rows if row.get("contact_mode_state") == "measured_distance_evidence"]
     min_distances = [
@@ -359,6 +399,7 @@ def factor_blocks(
     replays: list[dict[str, Any]],
     observed_seeds: list[dict[str, Any]],
     reconstruction_job_rows: list[dict[str, Any]],
+    reconstruction_result_rows: list[dict[str, Any]],
     contacts: dict[str, Any],
     conflicts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -459,6 +500,39 @@ def factor_blocks(
             "solver_role": "constant-intrinsics RGBD job inputs for a hidden-topology reconstruction backend",
         },
         {
+            "factor_block": "unknown_object_rgbd_reconstruction_results",
+            "source": "geometry_reconstruction_results",
+            "job_count": len(reconstruction_result_rows),
+            "pending_solver_output_count": sum(
+                1 for row in reconstruction_result_rows if row.get("status") == "pending_solver_output"
+            ),
+            "solver_output_detected_count": sum(
+                1 for row in reconstruction_result_rows if row.get("solver_backend_output_detected") is True
+            ),
+            "mesh_file_detected_count": sum(
+                1 for row in reconstruction_result_rows if row.get("mesh_file_detected") is True
+            ),
+            "pose_sequence_complete_count": sum(
+                1 for row in reconstruction_result_rows if row.get("pose_sequence_complete") is True
+            ),
+            "mesh_scale_plausible_count": sum(
+                1
+                for row in reconstruction_result_rows
+                if row.get("mesh_scale_plausible_against_rectified_rgbd") is True
+            ),
+            "mesh_projection_qc_passed_count": sum(
+                1 for row in reconstruction_result_rows if row.get("mesh_projection_qc_passed") is True
+            ),
+            "hidden_topology_reconstructed_job_count": sum(
+                1 for row in reconstruction_result_rows if row.get("hidden_topology_reconstructed") is True
+            ),
+            "accepted_reconstruction_result_count": sum(
+                1 for row in reconstruction_result_rows if row.get("accepted_reconstruction_result") is True
+            ),
+            "results": reconstruction_result_rows,
+            "solver_role": "accept-or-reject QC for hidden-topology reconstruction backend outputs",
+        },
+        {
             "factor_block": "multi_object_hand_contact_distance",
             "source": "multi_object_contact_evidence",
             **contacts,
@@ -540,7 +614,12 @@ def variable_blocks(obj: dict[str, Any], blocks: list[dict[str, Any]]) -> list[d
     ]
 
 
-def readiness_checks(obj: dict[str, Any], contacts: dict[str, Any], conflicts: list[dict[str, Any]]) -> dict[str, bool]:
+def readiness_checks(
+    obj: dict[str, Any],
+    contacts: dict[str, Any],
+    conflicts: list[dict[str, Any]],
+    reconstruction_result_rows: list[dict[str, Any]],
+) -> dict[str, bool]:
     visible = require_dict(obj.get("visible_surface_measurement"), "visible_surface_measurement")
     persistent = require_dict(obj.get("persistent_visible_surface_shape"), "persistent_visible_surface_shape")
     material_motion = require_dict(obj.get("material_motion_state"), "material_motion_state")
@@ -560,7 +639,9 @@ def readiness_checks(obj: dict[str, Any], contacts: dict[str, Any], conflicts: l
             "accepted_measurement_count",
         )
         > 0,
-        "hidden_topology_reconstructed": False,
+        "hidden_topology_reconstructed": any(
+            row.get("hidden_topology_reconstructed") is True for row in reconstruction_result_rows
+        ),
         "orientation_observable": not any("orientation_unobservable" in model for model in pose_models),
         "persistent_material_motion_available": require_int(
             material_motion.get("persistent_window_motion_candidate_count"),
@@ -618,6 +699,7 @@ def build_object_row(
     replay_rows: list[dict[str, Any]],
     observed_seed_rows: list[dict[str, Any]],
     reconstruction_job_rows: list[dict[str, Any]],
+    reconstruction_result_rows: list[dict[str, Any]],
     contact_rows: list[dict[str, Any]],
     conflict_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -627,6 +709,7 @@ def build_object_row(
     replays = replay_candidates(replay_rows)
     observed_seeds = observed_surface_seeds(observed_seed_rows)
     reconstruction_rows = reconstruction_jobs(reconstruction_job_rows)
+    reconstruction_result_payloads = reconstruction_results(reconstruction_result_rows)
     contacts = contact_summary(contact_rows)
     blocks = factor_blocks(
         obj,
@@ -636,10 +719,11 @@ def build_object_row(
         replays=replays,
         observed_seeds=observed_seeds,
         reconstruction_job_rows=reconstruction_rows,
+        reconstruction_result_rows=reconstruction_result_payloads,
         contacts=contacts,
         conflicts=conflict_rows,
     )
-    checks = readiness_checks(obj, contacts, conflict_rows)
+    checks = readiness_checks(obj, contacts, conflict_rows, reconstruction_result_payloads)
     solve_activation_ready = all(
         checks[key]
         for key in (
@@ -685,6 +769,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     material_replay = payloads["material_surface_replay"]
     observed_seed = payloads["observed_surface_geometry_seed"]
     reconstruction_jobs_report = payloads["geometry_reconstruction_jobs"]
+    reconstruction_results_report = payloads["geometry_reconstruction_results"]
     contact = payloads["multi_object_contact_evidence"]
     audit = payloads["geometry_source_audit"]
 
@@ -695,6 +780,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     replay_by_object = rows_by_object(require_list(material_replay.get("candidates"), "material-surface replay candidates"), key="object_id", label="material-surface replay candidates")
     observed_seed_by_object = rows_by_object(require_list(observed_seed.get("candidate_rows"), "observed-surface seed candidates"), key="object_id", label="observed-surface seed candidates")
     reconstruction_jobs_by_object = rows_by_object(require_list(reconstruction_jobs_report.get("jobs"), "geometry reconstruction jobs"), key="object_id", label="geometry reconstruction jobs")
+    reconstruction_results_by_object = rows_by_object(
+        require_list(reconstruction_results_report.get("jobs"), "geometry reconstruction results"),
+        key="object_id",
+        label="geometry reconstruction results",
+    )
     contact_by_object = rows_by_object(require_list(contact.get("rows"), "multi-object contact rows"), key="object_id", label="multi-object contact rows")
     conflict_by_object = rows_by_object(require_list(audit.get("local_patch_visible_surface_conflicts"), "geometry-source conflicts"), key="object_id", label="geometry-source conflicts")
 
@@ -708,6 +798,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             replay_rows=replay_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             observed_seed_rows=observed_seed_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             reconstruction_job_rows=reconstruction_jobs_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
+            reconstruction_result_rows=reconstruction_results_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             contact_rows=contact_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             conflict_rows=conflict_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
         )
@@ -782,6 +873,60 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             for block in row["factor_blocks"]
             if block.get("factor_block") == "unknown_object_rgbd_reconstruction_jobs"
         ),
+        "geometry_reconstruction_result_job_count": sum(
+            require_int(block.get("job_count"), "geometry reconstruction result job count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_pending_solver_output_count": sum(
+            require_int(block.get("pending_solver_output_count"), "pending solver output count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_solver_output_detected_count": sum(
+            require_int(block.get("solver_output_detected_count"), "solver output detected count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_mesh_file_detected_count": sum(
+            require_int(block.get("mesh_file_detected_count"), "mesh file detected count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_pose_sequence_complete_count": sum(
+            require_int(block.get("pose_sequence_complete_count"), "pose sequence complete count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_mesh_scale_plausible_count": sum(
+            require_int(block.get("mesh_scale_plausible_count"), "mesh scale plausible count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_mesh_projection_qc_passed_count": sum(
+            require_int(block.get("mesh_projection_qc_passed_count"), "mesh projection qc passed count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_result_hidden_topology_job_count": sum(
+            require_int(block.get("hidden_topology_reconstructed_job_count"), "result hidden topology job count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
+        "geometry_reconstruction_accepted_result_count": sum(
+            require_int(block.get("accepted_reconstruction_result_count"), "accepted reconstruction result count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "unknown_object_rgbd_reconstruction_results"
+        ),
         "multi_object_contact_factor_ready_rows": sum(
             require_int(block.get("contact_factor_ready_rows"), "contact factor rows")
             for row in object_rows
@@ -824,6 +969,21 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "geometry reconstruction hidden_topology_reconstructed_job_count",
     ):
         raise RuntimeError(f"{case} hidden-topology reconstruction job count disagrees with report")
+    if summary_counts["geometry_reconstruction_result_job_count"] != require_int(
+        reconstruction_results_report.get("job_count"),
+        "geometry reconstruction results job_count",
+    ):
+        raise RuntimeError(f"{case} geometry reconstruction result job count disagrees with report")
+    if summary_counts["geometry_reconstruction_result_hidden_topology_job_count"] != require_int(
+        reconstruction_results_report.get("hidden_topology_reconstructed_job_count"),
+        "geometry reconstruction results hidden_topology_reconstructed_job_count",
+    ):
+        raise RuntimeError(f"{case} geometry reconstruction result hidden-topology count disagrees with report")
+    if summary_counts["geometry_reconstruction_accepted_result_count"] != require_int(
+        reconstruction_results_report.get("accepted_reconstruction_result_count"),
+        "geometry reconstruction accepted_reconstruction_result_count",
+    ):
+        raise RuntimeError(f"{case} accepted geometry reconstruction result count disagrees with report")
 
     report = {
         "method": "build_v17_object_geometry_factor_problem",
@@ -926,6 +1086,42 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("geometry_reconstruction_hidden_topology_job_count"),
                     "geometry_reconstruction_hidden_topology_job_count",
                 ),
+                "geometry_reconstruction_result_job_count": require_int(
+                    report.get("geometry_reconstruction_result_job_count"),
+                    "geometry_reconstruction_result_job_count",
+                ),
+                "geometry_reconstruction_pending_solver_output_count": require_int(
+                    report.get("geometry_reconstruction_pending_solver_output_count"),
+                    "geometry_reconstruction_pending_solver_output_count",
+                ),
+                "geometry_reconstruction_solver_output_detected_count": require_int(
+                    report.get("geometry_reconstruction_solver_output_detected_count"),
+                    "geometry_reconstruction_solver_output_detected_count",
+                ),
+                "geometry_reconstruction_mesh_file_detected_count": require_int(
+                    report.get("geometry_reconstruction_mesh_file_detected_count"),
+                    "geometry_reconstruction_mesh_file_detected_count",
+                ),
+                "geometry_reconstruction_pose_sequence_complete_count": require_int(
+                    report.get("geometry_reconstruction_pose_sequence_complete_count"),
+                    "geometry_reconstruction_pose_sequence_complete_count",
+                ),
+                "geometry_reconstruction_mesh_scale_plausible_count": require_int(
+                    report.get("geometry_reconstruction_mesh_scale_plausible_count"),
+                    "geometry_reconstruction_mesh_scale_plausible_count",
+                ),
+                "geometry_reconstruction_mesh_projection_qc_passed_count": require_int(
+                    report.get("geometry_reconstruction_mesh_projection_qc_passed_count"),
+                    "geometry_reconstruction_mesh_projection_qc_passed_count",
+                ),
+                "geometry_reconstruction_result_hidden_topology_job_count": require_int(
+                    report.get("geometry_reconstruction_result_hidden_topology_job_count"),
+                    "geometry_reconstruction_result_hidden_topology_job_count",
+                ),
+                "geometry_reconstruction_accepted_result_count": require_int(
+                    report.get("geometry_reconstruction_accepted_result_count"),
+                    "geometry_reconstruction_accepted_result_count",
+                ),
                 "multi_object_contact_factor_ready_rows": require_int(
                     report.get("multi_object_contact_factor_ready_rows"),
                     "multi_object_contact_factor_ready_rows",
@@ -989,6 +1185,66 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             )
             for report in reports
         ),
+        "geometry_reconstruction_result_job_count": sum(
+            require_int(report.get("geometry_reconstruction_result_job_count"), "geometry reconstruction result job count")
+            for report in reports
+        ),
+        "geometry_reconstruction_pending_solver_output_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_pending_solver_output_count"),
+                "geometry reconstruction pending solver output count",
+            )
+            for report in reports
+        ),
+        "geometry_reconstruction_solver_output_detected_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_solver_output_detected_count"),
+                "geometry reconstruction solver output detected count",
+            )
+            for report in reports
+        ),
+        "geometry_reconstruction_mesh_file_detected_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_mesh_file_detected_count"),
+                "geometry reconstruction mesh file detected count",
+            )
+            for report in reports
+        ),
+        "geometry_reconstruction_pose_sequence_complete_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_pose_sequence_complete_count"),
+                "geometry reconstruction pose sequence complete count",
+            )
+            for report in reports
+        ),
+        "geometry_reconstruction_mesh_scale_plausible_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_mesh_scale_plausible_count"),
+                "geometry reconstruction mesh scale plausible count",
+            )
+            for report in reports
+        ),
+        "geometry_reconstruction_mesh_projection_qc_passed_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_mesh_projection_qc_passed_count"),
+                "geometry reconstruction mesh projection qc passed count",
+            )
+            for report in reports
+        ),
+        "geometry_reconstruction_result_hidden_topology_job_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_result_hidden_topology_job_count"),
+                "geometry reconstruction result hidden topology job count",
+            )
+            for report in reports
+        ),
+        "geometry_reconstruction_accepted_result_count": sum(
+            require_int(
+                report.get("geometry_reconstruction_accepted_result_count"),
+                "geometry reconstruction accepted result count",
+            )
+            for report in reports
+        ),
         "multi_object_contact_factor_ready_rows": sum(
             require_int(report.get("multi_object_contact_factor_ready_rows"), "contact factor rows")
             for report in reports
@@ -1047,6 +1303,11 @@ def parse_args() -> argparse.Namespace:
         "--geometry-reconstruction-jobs-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_jobs"),
+    )
+    parser.add_argument(
+        "--geometry-reconstruction-results-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_results"),
     )
     parser.add_argument(
         "--multi-object-contact-evidence-root",

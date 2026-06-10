@@ -34,6 +34,7 @@ class CaseInputs:
     object_geometry_hypothesis_state_report: Path
     object_geometry_factor_problem_report: Path
     geometry_reconstruction_jobs_report: Path
+    geometry_reconstruction_results_report: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -114,6 +115,7 @@ def case_inputs(
     object_geometry_hypothesis_state_root: Path,
     object_geometry_factor_problem_root: Path,
     geometry_reconstruction_jobs_root: Path,
+    geometry_reconstruction_results_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -178,6 +180,10 @@ def case_inputs(
         geometry_reconstruction_jobs_root / case / "v17_geometry_reconstruction_jobs_report.json",
         f"{case} geometry reconstruction jobs report",
     )
+    geometry_reconstruction_results_report = existing_path(
+        geometry_reconstruction_results_root / case / "v17_geometry_reconstruction_results_report.json",
+        f"{case} geometry reconstruction results report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -207,6 +213,7 @@ def case_inputs(
         object_geometry_hypothesis_state_report=object_geometry_hypothesis_state_report,
         object_geometry_factor_problem_report=object_geometry_factor_problem_report,
         geometry_reconstruction_jobs_report=geometry_reconstruction_jobs_report,
+        geometry_reconstruction_results_report=geometry_reconstruction_results_report,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -855,6 +862,42 @@ def object_geometry_factor_problem_counts(report: dict[str, Any]) -> dict[str, A
             report.get("geometry_reconstruction_hidden_topology_job_count"),
             "object-geometry factor geometry_reconstruction_hidden_topology_job_count",
         ),
+        "geometry_reconstruction_result_job_count": require_int(
+            report.get("geometry_reconstruction_result_job_count"),
+            "object-geometry factor geometry_reconstruction_result_job_count",
+        ),
+        "geometry_reconstruction_pending_solver_output_count": require_int(
+            report.get("geometry_reconstruction_pending_solver_output_count"),
+            "object-geometry factor geometry_reconstruction_pending_solver_output_count",
+        ),
+        "geometry_reconstruction_solver_output_detected_count": require_int(
+            report.get("geometry_reconstruction_solver_output_detected_count"),
+            "object-geometry factor geometry_reconstruction_solver_output_detected_count",
+        ),
+        "geometry_reconstruction_mesh_file_detected_count": require_int(
+            report.get("geometry_reconstruction_mesh_file_detected_count"),
+            "object-geometry factor geometry_reconstruction_mesh_file_detected_count",
+        ),
+        "geometry_reconstruction_pose_sequence_complete_count": require_int(
+            report.get("geometry_reconstruction_pose_sequence_complete_count"),
+            "object-geometry factor geometry_reconstruction_pose_sequence_complete_count",
+        ),
+        "geometry_reconstruction_mesh_scale_plausible_count": require_int(
+            report.get("geometry_reconstruction_mesh_scale_plausible_count"),
+            "object-geometry factor geometry_reconstruction_mesh_scale_plausible_count",
+        ),
+        "geometry_reconstruction_mesh_projection_qc_passed_count": require_int(
+            report.get("geometry_reconstruction_mesh_projection_qc_passed_count"),
+            "object-geometry factor geometry_reconstruction_mesh_projection_qc_passed_count",
+        ),
+        "geometry_reconstruction_result_hidden_topology_job_count": require_int(
+            report.get("geometry_reconstruction_result_hidden_topology_job_count"),
+            "object-geometry factor geometry_reconstruction_result_hidden_topology_job_count",
+        ),
+        "geometry_reconstruction_accepted_result_count": require_int(
+            report.get("geometry_reconstruction_accepted_result_count"),
+            "object-geometry factor geometry_reconstruction_accepted_result_count",
+        ),
         "multi_object_contact_factor_ready_rows": require_int(
             report.get("multi_object_contact_factor_ready_rows"),
             "object-geometry factor multi_object_contact_factor_ready_rows",
@@ -937,6 +980,68 @@ def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def geometry_reconstruction_results_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "job_count": require_int(report.get("job_count"), "geometry reconstruction results job_count"),
+        "solver_job_ready_count": require_int(
+            report.get("solver_job_ready_count"),
+            "geometry reconstruction results solver_job_ready_count",
+        ),
+        "pending_solver_output_count": require_int(
+            report.get("pending_solver_output_count"),
+            "geometry reconstruction results pending_solver_output_count",
+        ),
+        "solver_output_detected_count": require_int(
+            report.get("solver_output_detected_count"),
+            "geometry reconstruction results solver_output_detected_count",
+        ),
+        "mesh_file_detected_count": require_int(
+            report.get("mesh_file_detected_count"),
+            "geometry reconstruction results mesh_file_detected_count",
+        ),
+        "pose_sequence_complete_count": require_int(
+            report.get("pose_sequence_complete_count"),
+            "geometry reconstruction results pose_sequence_complete_count",
+        ),
+        "mesh_scale_plausible_count": require_int(
+            report.get("mesh_scale_plausible_count"),
+            "geometry reconstruction results mesh_scale_plausible_count",
+        ),
+        "mesh_projection_qc_passed_count": require_int(
+            report.get("mesh_projection_qc_passed_count"),
+            "geometry reconstruction results mesh_projection_qc_passed_count",
+        ),
+        "hidden_topology_reconstructed_job_count": require_int(
+            report.get("hidden_topology_reconstructed_job_count"),
+            "geometry reconstruction results hidden_topology_reconstructed_job_count",
+        ),
+        "accepted_reconstruction_result_count": require_int(
+            report.get("accepted_reconstruction_result_count"),
+            "geometry reconstruction results accepted_reconstruction_result_count",
+        ),
+        "complete_geometry_seed_count": require_int(
+            report.get("complete_geometry_seed_count"),
+            "geometry reconstruction results complete_geometry_seed_count",
+        ),
+        "contact_compatible_geometry_seed_count": require_int(
+            report.get("contact_compatible_geometry_seed_count"),
+            "geometry reconstruction results contact_compatible_geometry_seed_count",
+        ),
+        "full_active_interval_geometry_seed_count": require_int(
+            report.get("full_active_interval_geometry_seed_count"),
+            "geometry reconstruction results full_active_interval_geometry_seed_count",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def variable_family(
     name: str,
     required_scope: str,
@@ -970,6 +1075,7 @@ def required_variable_families(
     object_geometry_hypothesis_state: dict[str, Any],
     object_geometry_factor_problem: dict[str, Any],
     geometry_reconstruction_jobs: dict[str, Any],
+    geometry_reconstruction_results: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -1109,6 +1215,30 @@ def required_variable_families(
                 "geometry_reconstruction_rectification_residual_p95_m": geometry_reconstruction_jobs[
                     "rectification_nearest_3d_residual_p95_m"
                 ],
+                "geometry_reconstruction_pending_solver_output_count": geometry_reconstruction_results[
+                    "pending_solver_output_count"
+                ],
+                "geometry_reconstruction_solver_output_detected_count": geometry_reconstruction_results[
+                    "solver_output_detected_count"
+                ],
+                "geometry_reconstruction_mesh_file_detected_count": geometry_reconstruction_results[
+                    "mesh_file_detected_count"
+                ],
+                "geometry_reconstruction_pose_sequence_complete_count": geometry_reconstruction_results[
+                    "pose_sequence_complete_count"
+                ],
+                "geometry_reconstruction_mesh_scale_plausible_count": geometry_reconstruction_results[
+                    "mesh_scale_plausible_count"
+                ],
+                "geometry_reconstruction_mesh_projection_qc_passed_count": geometry_reconstruction_results[
+                    "mesh_projection_qc_passed_count"
+                ],
+                "geometry_reconstruction_result_hidden_topology_job_count": geometry_reconstruction_results[
+                    "hidden_topology_reconstructed_job_count"
+                ],
+                "geometry_reconstruction_accepted_result_count": geometry_reconstruction_results[
+                    "accepted_reconstruction_result_count"
+                ],
                 "complete_object_geometry_hypothesis_count": object_geometry_hypothesis_state[
                     "complete_object_geometry_hypothesis_count"
                 ],
@@ -1214,6 +1344,12 @@ def required_variable_families(
                 ],
                 "geometry_reconstruction_hidden_topology_job_count": geometry_reconstruction_jobs[
                     "hidden_topology_reconstructed_job_count"
+                ],
+                "geometry_reconstruction_result_hidden_topology_job_count": geometry_reconstruction_results[
+                    "hidden_topology_reconstructed_job_count"
+                ],
+                "geometry_reconstruction_accepted_result_count": geometry_reconstruction_results[
+                    "accepted_reconstruction_result_count"
                 ],
                 "partial_material_pose_replay_is_complete_object_geometry": geometry_source_audit[
                     "partial_material_pose_replay_is_complete_object_geometry"
@@ -1355,6 +1491,9 @@ def required_variable_families(
                 "geometry_reconstruction_hidden_topology_job_count": geometry_reconstruction_jobs[
                     "hidden_topology_reconstructed_job_count"
                 ],
+                "geometry_reconstruction_accepted_result_count": geometry_reconstruction_results[
+                    "accepted_reconstruction_result_count"
+                ],
                 "source_incompatibility_count": geometry_source_audit[
                     "source_incompatibility_count"
                 ],
@@ -1416,6 +1555,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.geometry_reconstruction_jobs_report),
         f"{inputs.case} geometry reconstruction jobs report",
     )
+    geometry_reconstruction_results_report = require_dict(
+        load_json(inputs.geometry_reconstruction_results_report),
+        f"{inputs.case} geometry reconstruction results report",
+    )
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -1438,6 +1581,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     object_geometry_factor_problem = object_geometry_factor_problem_counts(object_geometry_factor_problem_report)
     geometry_reconstruction_jobs = geometry_reconstruction_jobs_counts(geometry_reconstruction_jobs_report)
+    geometry_reconstruction_results = geometry_reconstruction_results_counts(geometry_reconstruction_results_report)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -1748,6 +1892,38 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} object-geometry factor hidden topology job count",
     ):
         raise RuntimeError(f"{inputs.case} hidden topology reconstruction count disagrees with factor problem")
+    if require_int(
+        geometry_reconstruction_jobs["job_count"],
+        f"{inputs.case} geometry reconstruction job count",
+    ) != require_int(
+        geometry_reconstruction_results["job_count"],
+        f"{inputs.case} geometry reconstruction result job count",
+    ):
+        raise RuntimeError(f"{inputs.case} reconstruction result job count disagrees with job inputs")
+    if require_int(
+        geometry_reconstruction_results["job_count"],
+        f"{inputs.case} geometry reconstruction result job count",
+    ) != require_int(
+        object_geometry_factor_problem["geometry_reconstruction_result_job_count"],
+        f"{inputs.case} object-geometry factor reconstruction result job count",
+    ):
+        raise RuntimeError(f"{inputs.case} reconstruction result job count disagrees with factor problem")
+    if require_int(
+        geometry_reconstruction_results["hidden_topology_reconstructed_job_count"],
+        f"{inputs.case} geometry reconstruction result hidden topology count",
+    ) != require_int(
+        object_geometry_factor_problem["geometry_reconstruction_result_hidden_topology_job_count"],
+        f"{inputs.case} object-geometry factor result hidden topology count",
+    ):
+        raise RuntimeError(f"{inputs.case} reconstruction result hidden topology count disagrees with factor problem")
+    if require_int(
+        geometry_reconstruction_results["accepted_reconstruction_result_count"],
+        f"{inputs.case} accepted reconstruction result count",
+    ) != require_int(
+        object_geometry_factor_problem["geometry_reconstruction_accepted_result_count"],
+        f"{inputs.case} object-geometry factor accepted reconstruction result count",
+    ):
+        raise RuntimeError(f"{inputs.case} accepted reconstruction result count disagrees with factor problem")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -1770,6 +1946,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_geometry_hypothesis_state,
         object_geometry_factor_problem,
         geometry_reconstruction_jobs,
+        geometry_reconstruction_results,
         counts,
         sparse,
         contact,
@@ -1822,6 +1999,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "geometry_reconstruction_jobs_report": source_summary(
                 inputs.geometry_reconstruction_jobs_report, geometry_reconstruction_jobs_report
             ),
+            "geometry_reconstruction_results_report": source_summary(
+                inputs.geometry_reconstruction_results_report, geometry_reconstruction_results_report
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -1841,6 +2021,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_geometry_hypothesis_state": object_geometry_hypothesis_state,
         "current_object_geometry_factor_problem": object_geometry_factor_problem,
         "current_geometry_reconstruction_jobs": geometry_reconstruction_jobs,
+        "current_geometry_reconstruction_results": geometry_reconstruction_results,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -1886,6 +2067,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_geometry_hypothesis_state_root,
             args.object_geometry_factor_problem_root,
             args.geometry_reconstruction_jobs_root,
+            args.geometry_reconstruction_results_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -1915,6 +2097,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_geometry_hypothesis_state_root": str(args.object_geometry_hypothesis_state_root),
         "object_geometry_factor_problem_root": str(args.object_geometry_factor_problem_root),
         "geometry_reconstruction_jobs_root": str(args.geometry_reconstruction_jobs_root),
+        "geometry_reconstruction_results_root": str(args.geometry_reconstruction_results_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -2059,6 +2242,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "geometry_reconstruction_rectification_residual_p95_m": case[
                     "current_geometry_reconstruction_jobs"
                 ]["rectification_nearest_3d_residual_p95_m"],
+                "geometry_reconstruction_pending_solver_output_count": case[
+                    "current_geometry_reconstruction_results"
+                ]["pending_solver_output_count"],
+                "geometry_reconstruction_solver_output_detected_count": case[
+                    "current_geometry_reconstruction_results"
+                ]["solver_output_detected_count"],
+                "geometry_reconstruction_mesh_file_detected_count": case[
+                    "current_geometry_reconstruction_results"
+                ]["mesh_file_detected_count"],
+                "geometry_reconstruction_pose_sequence_complete_count": case[
+                    "current_geometry_reconstruction_results"
+                ]["pose_sequence_complete_count"],
+                "geometry_reconstruction_mesh_scale_plausible_count": case[
+                    "current_geometry_reconstruction_results"
+                ]["mesh_scale_plausible_count"],
+                "geometry_reconstruction_mesh_projection_qc_passed_count": case[
+                    "current_geometry_reconstruction_results"
+                ]["mesh_projection_qc_passed_count"],
+                "geometry_reconstruction_accepted_result_count": case[
+                    "current_geometry_reconstruction_results"
+                ]["accepted_reconstruction_result_count"],
                 "object_geometry_factor_contact_ready_rows": case[
                     "current_object_geometry_factor_problem"
                 ]["multi_object_contact_factor_ready_rows"],
@@ -2148,6 +2352,34 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "geometry_reconstruction_hidden_topology_job_count": sum(
             case["current_geometry_reconstruction_jobs"]["hidden_topology_reconstructed_job_count"]
+            for case in case_outputs
+        ),
+        "geometry_reconstruction_pending_solver_output_count": sum(
+            case["current_geometry_reconstruction_results"]["pending_solver_output_count"]
+            for case in case_outputs
+        ),
+        "geometry_reconstruction_solver_output_detected_count": sum(
+            case["current_geometry_reconstruction_results"]["solver_output_detected_count"]
+            for case in case_outputs
+        ),
+        "geometry_reconstruction_mesh_file_detected_count": sum(
+            case["current_geometry_reconstruction_results"]["mesh_file_detected_count"]
+            for case in case_outputs
+        ),
+        "geometry_reconstruction_pose_sequence_complete_count": sum(
+            case["current_geometry_reconstruction_results"]["pose_sequence_complete_count"]
+            for case in case_outputs
+        ),
+        "geometry_reconstruction_mesh_scale_plausible_count": sum(
+            case["current_geometry_reconstruction_results"]["mesh_scale_plausible_count"]
+            for case in case_outputs
+        ),
+        "geometry_reconstruction_mesh_projection_qc_passed_count": sum(
+            case["current_geometry_reconstruction_results"]["mesh_projection_qc_passed_count"]
+            for case in case_outputs
+        ),
+        "geometry_reconstruction_accepted_result_count": sum(
+            case["current_geometry_reconstruction_results"]["accepted_reconstruction_result_count"]
             for case in case_outputs
         ),
         "object_geometry_factor_contact_ready_rows": sum(
@@ -2242,6 +2474,11 @@ def parse_args() -> argparse.Namespace:
         "--geometry-reconstruction-jobs-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_jobs"),
+    )
+    parser.add_argument(
+        "--geometry-reconstruction-results-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_results"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",

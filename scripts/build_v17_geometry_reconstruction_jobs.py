@@ -188,6 +188,7 @@ def target_intrinsics(frames: list[dict[str, Any]]) -> np.ndarray:
 def rectify_frame(
     frame: dict[str, Any],
     *,
+    output_index: int,
     target_k: np.ndarray,
     output_rgb: Path,
     output_mask: Path,
@@ -270,8 +271,10 @@ def rectify_frame(
         seed,
     )
     distances = cKDTree(rect_points).query(eval_source, k=1, workers=-1)[0]
+    source_index = require_int(frame.get("index"), "frame.index")
     return {
-        "index": require_int(frame.get("index"), "frame.index"),
+        "index": int(output_index),
+        "source_object_track_index": source_index,
         "frame_idx": require_int(frame.get("frame_idx"), "frame.frame_idx"),
         "rgb": str(output_rgb),
         "mask": str(output_mask),
@@ -360,6 +363,7 @@ def build_job(
     rectified_rows = [
         rectify_frame(
             frame,
+            output_index=out_i,
             target_k=target_k,
             output_rgb=rgb_dir / f"{out_i:06d}.png",
             output_mask=mask_dir / f"{out_i:06d}.png",
