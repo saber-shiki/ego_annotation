@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import re
@@ -52,6 +53,7 @@ class LinearSystem:
     matrix: sparse.csr_matrix
     target: np.ndarray
     contact_correspondence_count: int
+    contact_selection_digest: str
 
 
 def load_json(path: Path) -> Any:
@@ -95,6 +97,23 @@ def shift_points3_value(value: object, shift: np.ndarray) -> object:
     if arr.ndim != 2 or arr.shape[1] != 3 or not np.all(np.isfinite(arr)):
         return value
     return (arr + shift[None, :]).astype(float).tolist()
+
+
+def rotate_shift_vector3_value(value: object, center: np.ndarray, shift: np.ndarray, rotvec: np.ndarray) -> object:
+    arr = array3(value)
+    if arr is None:
+        return value
+    return (arr + shift + np.cross(rotvec, arr - center)).astype(float).tolist()
+
+
+def rotate_shift_points3_value(value: object, center: np.ndarray, shift: np.ndarray, rotvec: np.ndarray) -> object:
+    try:
+        arr = np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        return value
+    if arr.ndim != 2 or arr.shape[1] != 3 or not np.all(np.isfinite(arr)):
+        return value
+    return (arr + shift[None, :] + np.cross(rotvec[None, :], arr - center[None, :], axis=1)).astype(float).tolist()
 
 
 def camera_forward_axis_world(frame: dict[str, Any], source: Path, row_i: int) -> np.ndarray:
@@ -376,28 +395,62 @@ def build_graph_data(frames: list[GraphFrame]) -> GraphData:
     )
 
 
-def variable_counts(graph: GraphData) -> tuple[int, int, int]:
-    object_vars = len(graph.object_var_by_frame) * 3
+def variable_counts(graph: GraphData) -> tuple[int, int, int, int]:
+    object_translation_vars = len(graph.object_var_by_frame) * 3
+    object_rotation_vars = len(graph.object_var_by_frame) * 3
     hand_vars = len(graph.hand_var_by_frame_side)
-    return object_vars, hand_vars, object_vars + hand_vars
+    return (
+        object_translation_vars,
+        object_rotation_vars,
+        hand_vars,
+        object_translation_vars + object_rotation_vars + hand_vars,
+    )
 
 
-def unpack(params: np.ndarray, graph: GraphData) -> tuple[np.ndarray, np.ndarray]:
-    object_width, hand_width, _ = variable_counts(graph)
-    return params[:object_width].reshape(len(graph.object_var_by_frame), 3), params[object_width : object_width + hand_width]
+def unpack(params: np.ndarray, graph: GraphData) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    object_translation_width, object_rotation_width, hand_width, _total = variable_counts(graph)
+    object_shift = params[:object_translation_width].reshape(len(graph.object_var_by_frame), 3)
+    object_rotvec = params[object_translation_width : object_translation_width + object_rotation_width].reshape(
+        len(graph.object_var_by_frame), 3
+    )
+    hand_shift = params[
+        object_translation_width + object_rotation_width : object_translation_width + object_rotation_width + hand_width
+    ]
+    return object_shift, object_rotvec, hand_shift
 
 
 def object_col(graph: GraphData, frame_idx: int, axis: int) -> int:
     return graph.object_var_by_frame[frame_idx] * 3 + axis
 
 
+def object_rot_col(graph: GraphData, frame_idx: int, axis: int) -> int:
+    object_translation_width = len(graph.object_var_by_frame) * 3
+    return object_translation_width + graph.object_var_by_frame[frame_idx] * 3 + axis
+
+
 def hand_col(graph: GraphData, frame_idx: int, side: str) -> int:
-    object_width, _hand_width, _total = variable_counts(graph)
-    return object_width + graph.hand_var_by_frame_side[(frame_idx, side)]
+    object_translation_width, object_rotation_width, _hand_width, _total = variable_counts(graph)
+    return object_translation_width + object_rotation_width + graph.hand_var_by_frame_side[(frame_idx, side)]
 
 
 def optical_axis(frame: GraphFrame) -> np.ndarray:
     return frame.camera_forward_axis_world
+
+
+def rotation_delta(rel: np.ndarray, axis: int) -> np.ndarray:
+    rx, ry, rz = rel.astype(float)
+    if axis == 0:
+        return np.asarray([0.0, rz, -ry], dtype=float)
+    if axis == 1:
+        return np.asarray([-rz, 0.0, rx], dtype=float)
+    return np.asarray([ry, -rx, 0.0], dtype=float)
+
+
+def shifted_mesh_vertices(frame: GraphFrame, object_shift: np.ndarray, object_rotvec: np.ndarray) -> np.ndarray:
+    if frame.mesh_vertices is None:
+        raise RuntimeError("contact frame has no mesh")
+    center = frame.object_center if frame.object_center is not None else np.median(frame.mesh_vertices, axis=0)
+    return frame.mesh_vertices + object_shift[None, :] + np.cross(object_rotvec[None, :], frame.mesh_vertices - center[None, :], axis=1)
 
 
 def add_row(
@@ -419,12 +472,45 @@ def add_row(
     return row_i + 1
 
 
-def build_linear_system(graph: GraphData, args: argparse.Namespace) -> LinearSystem:
-    _object_width, _hand_width, total_width = variable_counts(graph)
+def select_contact_correspondences(
+    frame: GraphFrame,
+    side: str,
+    object_shift: np.ndarray,
+    object_rotvec: np.ndarray,
+    hand_shift_m: float,
+    max_points: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if frame.mesh_vertices is None:
+        raise RuntimeError("contact frame has no mesh")
+    points = frame.hand_points[side]
+    if len(points) == 0:
+        return np.zeros((0,), dtype=np.int64), np.zeros((0,), dtype=np.int64)
+    mesh = shifted_mesh_vertices(frame, object_shift, object_rotvec)
+    shifted_hand = points + float(hand_shift_m) * optical_axis(frame)[None, :]
+    distances, nearest = cKDTree(mesh).query(shifted_hand, k=1)
+    distances = np.asarray(distances, dtype=float)
+    nearest = np.asarray(nearest, dtype=np.int64)
+    order = np.argsort(distances)[: min(len(points), int(max_points))]
+    return order.astype(np.int64), nearest[order].astype(np.int64)
+
+
+def build_linear_system(
+    graph: GraphData,
+    args: argparse.Namespace,
+    correspondence_params: np.ndarray | None = None,
+) -> LinearSystem:
+    _object_translation_width, _object_rotation_width, _hand_width, total_width = variable_counts(graph)
+    if correspondence_params is None:
+        selector_object_shift = np.zeros((len(graph.object_var_by_frame), 3), dtype=float)
+        selector_object_rotvec = np.zeros((len(graph.object_var_by_frame), 3), dtype=float)
+        selector_hand_shift = np.zeros((len(graph.hand_var_by_frame_side),), dtype=float)
+    else:
+        selector_object_shift, selector_object_rotvec, selector_hand_shift = unpack(np.asarray(correspondence_params, dtype=float), graph)
     rows: list[int] = []
     cols: list[int] = []
     vals: list[float] = []
     targets: list[float] = []
+    digest = hashlib.sha256()
     row_i = 0
     for frame_idx in sorted(graph.object_var_by_frame):
         for axis in range(3):
@@ -437,6 +523,17 @@ def build_linear_system(graph: GraphData, args: argparse.Namespace) -> LinearSys
                 [(object_col(graph, frame_idx, axis), 1.0)],
                 0.0,
                 float(args.sigma_object_prior_m),
+            )
+        for axis in range(3):
+            row_i = add_row(
+                rows,
+                cols,
+                vals,
+                targets,
+                row_i,
+                [(object_rot_col(graph, frame_idx, axis), 1.0)],
+                0.0,
+                float(args.sigma_object_rot_prior_rad),
             )
     for frame_idx, side in sorted(graph.hand_var_by_frame_side):
         row_i = add_row(
@@ -463,6 +560,18 @@ def build_linear_system(graph: GraphData, args: argparse.Namespace) -> LinearSys
                 0.0,
                 sigma,
             )
+        rot_sigma = float(args.sigma_object_rot_step_rad) * math.sqrt(float(max(1, right - left)))
+        for axis in range(3):
+            row_i = add_row(
+                rows,
+                cols,
+                vals,
+                targets,
+                row_i,
+                [(object_rot_col(graph, right, axis), 1.0), (object_rot_col(graph, left, axis), -1.0)],
+                0.0,
+                rot_sigma,
+            )
     for left, mid, right in zip(active_frames, active_frames[1:], active_frames[2:]):
         sigma = float(args.sigma_object_accel_m) * float(max(1, right - left))
         for axis in range(3):
@@ -479,6 +588,22 @@ def build_linear_system(graph: GraphData, args: argparse.Namespace) -> LinearSys
                 ],
                 0.0,
                 sigma,
+            )
+        rot_sigma = float(args.sigma_object_rot_accel_rad) * float(max(1, right - left))
+        for axis in range(3):
+            row_i = add_row(
+                rows,
+                cols,
+                vals,
+                targets,
+                row_i,
+                [
+                    (object_rot_col(graph, right, axis), 1.0),
+                    (object_rot_col(graph, mid, axis), -2.0),
+                    (object_rot_col(graph, left, axis), 1.0),
+                ],
+                0.0,
+                rot_sigma,
             )
     hand_series: dict[str, list[int]] = {}
     for frame_idx, side in graph.hand_var_by_frame_side:
@@ -504,21 +629,40 @@ def build_linear_system(graph: GraphData, args: argparse.Namespace) -> LinearSys
         if frame.mesh_vertices is None:
             continue
         points = frame.hand_points[side]
-        distances, nearest = cKDTree(frame.mesh_vertices).query(points, k=1)
-        order = np.argsort(np.asarray(distances, dtype=float))[: min(len(points), int(args.max_contact_points))]
+        hand_var = graph.hand_var_by_frame_side[(frame_idx, side)]
+        hand_indices, mesh_indices = select_contact_correspondences(
+            frame,
+            side,
+            selector_object_shift[graph.object_var_by_frame[frame_idx]],
+            selector_object_rotvec[graph.object_var_by_frame[frame_idx]],
+            float(selector_hand_shift[hand_var]),
+            int(args.max_contact_points),
+        )
+        digest.update(f"{frame_idx}:{side}:".encode("utf-8"))
+        digest.update(hand_indices.tobytes())
+        digest.update(mesh_indices.tobytes())
         ray = optical_axis(frame)
-        for point_i in order:
-            obj_point = frame.mesh_vertices[int(nearest[int(point_i)])]
-            hand_point = points[int(point_i)]
+        for hand_i, mesh_i in zip(hand_indices, mesh_indices):
+            obj_point = frame.mesh_vertices[int(mesh_i)]
+            hand_point = points[int(hand_i)]
+            center = frame.object_center if frame.object_center is not None else np.median(frame.mesh_vertices, axis=0)
+            rel = obj_point - center
             target = hand_point - obj_point
             for axis in range(3):
+                rot_coeffs = rotation_delta(rel, axis)
                 row_i = add_row(
                     rows,
                     cols,
                     vals,
                     targets,
                     row_i,
-                    [(object_col(graph, frame_idx, axis), 1.0), (hand_col(graph, frame_idx, side), -float(ray[axis]))],
+                    [
+                        (object_col(graph, frame_idx, axis), 1.0),
+                        (object_rot_col(graph, frame_idx, 0), float(rot_coeffs[0])),
+                        (object_rot_col(graph, frame_idx, 1), float(rot_coeffs[1])),
+                        (object_rot_col(graph, frame_idx, 2), float(rot_coeffs[2])),
+                        (hand_col(graph, frame_idx, side), -float(ray[axis])),
+                    ],
                     float(target[axis]),
                     float(args.sigma_contact_m),
                 )
@@ -526,18 +670,26 @@ def build_linear_system(graph: GraphData, args: argparse.Namespace) -> LinearSys
     if row_i == 0:
         raise RuntimeError("linear graph produced no rows")
     matrix = sparse.csr_matrix((vals, (rows, cols)), shape=(row_i, total_width))
-    return LinearSystem(matrix=matrix, target=np.asarray(targets, dtype=float), contact_correspondence_count=contact_count)
+    return LinearSystem(
+        matrix=matrix,
+        target=np.asarray(targets, dtype=float),
+        contact_correspondence_count=contact_count,
+        contact_selection_digest=digest.hexdigest(),
+    )
 
 
 def solve_linear_system(system: LinearSystem, graph: GraphData, args: argparse.Namespace) -> Any:
-    _object_width, _hand_width, total_width = variable_counts(graph)
+    object_translation_width, object_rotation_width, _hand_width, total_width = variable_counts(graph)
     lower = np.full(total_width, -np.inf, dtype=float)
     upper = np.full(total_width, np.inf, dtype=float)
-    object_width = len(graph.object_var_by_frame) * 3
-    lower[:object_width] = -float(args.max_object_shift_m)
-    upper[:object_width] = float(args.max_object_shift_m)
-    lower[object_width:] = -float(args.max_hand_ray_shift_m)
-    upper[object_width:] = float(args.max_hand_ray_shift_m)
+    lower[:object_translation_width] = -float(args.max_object_shift_m)
+    upper[:object_translation_width] = float(args.max_object_shift_m)
+    rot_start = object_translation_width
+    rot_end = object_translation_width + object_rotation_width
+    lower[rot_start:rot_end] = -float(args.max_object_rot_rad)
+    upper[rot_start:rot_end] = float(args.max_object_rot_rad)
+    lower[rot_end:] = -float(args.max_hand_ray_shift_m)
+    upper[rot_end:] = float(args.max_hand_ray_shift_m)
     return lsq_linear(
         system.matrix,
         system.target,
@@ -549,13 +701,20 @@ def solve_linear_system(system: LinearSystem, graph: GraphData, args: argparse.N
     )
 
 
-def contact_distances(frame: GraphFrame, side: str, object_shift: np.ndarray, hand_shift_m: float, max_points: int) -> np.ndarray:
+def contact_distances(
+    frame: GraphFrame,
+    side: str,
+    object_shift: np.ndarray,
+    object_rotvec: np.ndarray,
+    hand_shift_m: float,
+    max_points: int,
+) -> np.ndarray:
     if frame.mesh_vertices is None:
         raise RuntimeError("contact frame has no mesh")
     points = frame.hand_points.get(side)
     if points is None or len(points) == 0:
         return np.zeros((0,), dtype=float)
-    mesh = frame.mesh_vertices + object_shift[None, :]
+    mesh = shifted_mesh_vertices(frame, object_shift, object_rotvec)
     shifted_hand = points + float(hand_shift_m) * optical_axis(frame)[None, :]
     distances, _ = cKDTree(mesh).query(shifted_hand, k=1)
     distances = np.asarray(distances, dtype=float)
@@ -564,8 +723,14 @@ def contact_distances(frame: GraphFrame, side: str, object_shift: np.ndarray, ha
     return distances
 
 
-def frame_contact_metrics(params: np.ndarray, graph: GraphData, args: argparse.Namespace) -> dict[str, Any]:
-    object_shift, hand_shift = unpack(params, graph)
+def frame_contact_metrics(
+    params: np.ndarray,
+    graph: GraphData,
+    args: argparse.Namespace,
+    max_points: int | None = None,
+) -> dict[str, Any]:
+    point_count = int(args.max_contact_points) if max_points is None else int(max_points)
+    object_shift, object_rotvec, hand_shift = unpack(params, graph)
     frame_by_idx = {graph.frames[i].frame_idx: graph.frames[i] for i in graph.active_indices}
     rows: list[dict[str, Any]] = []
     for frame_idx, side in graph.contact_pairs:
@@ -574,8 +739,9 @@ def frame_contact_metrics(params: np.ndarray, graph: GraphData, args: argparse.N
             frame,
             side,
             object_shift[graph.object_var_by_frame[frame_idx]],
+            object_rotvec[graph.object_var_by_frame[frame_idx]],
             float(hand_shift[graph.hand_var_by_frame_side[(frame_idx, side)]]),
-            int(args.max_contact_points),
+            point_count,
         )
         rows.append(
             {
@@ -591,12 +757,66 @@ def frame_contact_metrics(params: np.ndarray, graph: GraphData, args: argparse.N
     p95s = np.asarray([row["p95_m"] for row in rows if row["p95_m"] is not None], dtype=float)
     return {
         "rows": rows,
+        "nearest_hand_surface_points_per_contact": int(point_count),
         "contact_factor_count": int(len(rows)),
         "median_m_median": float(np.median(medians)) if medians.size else None,
         "median_m_p95": float(np.percentile(medians, 95.0)) if medians.size else None,
         "p95_m_median": float(np.median(p95s)) if p95s.size else None,
         "p95_m_p95": float(np.percentile(p95s, 95.0)) if p95s.size else None,
     }
+
+
+def solve_contact_correspondence_system(
+    graph: GraphData,
+    args: argparse.Namespace,
+) -> tuple[LinearSystem, Any, np.ndarray, list[dict[str, Any]]]:
+    _object_translation_width, _object_rotation_width, _hand_width, total_width = variable_counts(graph)
+    params = np.zeros(total_width, dtype=float)
+    history: list[dict[str, Any]] = []
+    previous_digest: str | None = None
+    system = build_linear_system(graph, args, params)
+    result: Any = None
+    for iteration in range(max(1, int(args.contact_correspondence_iterations))):
+        system = build_linear_system(graph, args, params)
+        result = solve_linear_system(system, graph, args)
+        solution = np.asarray(result.x, dtype=float)
+        residual = system.matrix @ solution - system.target
+        delta = float(np.linalg.norm(solution - params))
+        history.append(
+            {
+                "iteration": int(iteration),
+                "contact_selection_digest": system.contact_selection_digest,
+                "contact_selection_stable": bool(previous_digest == system.contact_selection_digest),
+                "parameter_delta_norm_m": delta,
+                "weighted_residual_rms": float(np.sqrt(np.mean(residual * residual))),
+                "contact_patch_p95_m_p95": frame_contact_metrics(solution, graph, args, int(args.max_contact_points)).get("p95_m_p95"),
+                "broad_contact_p95_m_p95": frame_contact_metrics(solution, graph, args, int(args.broad_contact_metric_points)).get("p95_m_p95"),
+            }
+        )
+        if previous_digest == system.contact_selection_digest:
+            params = solution
+            break
+        previous_digest = system.contact_selection_digest
+        params = solution
+    if result is None:
+        raise RuntimeError("contact correspondence system produced no solve result")
+    final_system = build_linear_system(graph, args, params)
+    final_result = solve_linear_system(final_system, graph, args)
+    final_solution = np.asarray(final_result.x, dtype=float)
+    final_residual = final_system.matrix @ final_solution - final_system.target
+    history.append(
+        {
+            "iteration": len(history),
+            "contact_selection_digest": final_system.contact_selection_digest,
+            "contact_selection_stable": bool(previous_digest == final_system.contact_selection_digest),
+            "parameter_delta_norm_m": float(np.linalg.norm(final_solution - params)),
+            "weighted_residual_rms": float(np.sqrt(np.mean(final_residual * final_residual))),
+            "contact_patch_p95_m_p95": frame_contact_metrics(final_solution, graph, args, int(args.max_contact_points)).get("p95_m_p95"),
+            "broad_contact_p95_m_p95": frame_contact_metrics(final_solution, graph, args, int(args.broad_contact_metric_points)).get("p95_m_p95"),
+            "final_refit": True,
+        }
+    )
+    return final_system, final_result, final_solution, history
 
 
 def summarize_array(values: np.ndarray) -> dict[str, Any]:
@@ -608,13 +828,18 @@ def summarize_array(values: np.ndarray) -> dict[str, Any]:
 
 
 def summarize_shifts(params: np.ndarray, graph: GraphData) -> dict[str, Any]:
-    object_shift, hand_shift = unpack(params, graph)
+    object_shift, object_rotvec, hand_shift = unpack(params, graph)
     norms = np.linalg.norm(object_shift, axis=1) if len(object_shift) else np.zeros((0,), dtype=float)
-    return {"object_shift_norm_m": summarize_array(norms), "hand_ray_shift_abs_m": summarize_array(np.abs(hand_shift))}
+    rot_norms = np.linalg.norm(object_rotvec, axis=1) if len(object_rotvec) else np.zeros((0,), dtype=float)
+    return {
+        "object_shift_norm_m": summarize_array(norms),
+        "object_rotvec_norm_rad": summarize_array(rot_norms),
+        "hand_ray_shift_abs_m": summarize_array(np.abs(hand_shift)),
+    }
 
 
 def save_corrected_mesh_archive(path: Path, graph: GraphData, params: np.ndarray) -> dict[str, Any]:
-    object_shift, _hand_shift = unpack(params, graph)
+    object_shift, object_rotvec, _hand_shift = unpack(params, graph)
     frames: list[int] = []
     vertices: list[np.ndarray] = []
     faces: list[np.ndarray] = []
@@ -622,19 +847,25 @@ def save_corrected_mesh_archive(path: Path, graph: GraphData, params: np.ndarray
         frame = graph.frames[frame_i]
         if frame.mesh_vertices is None or frame.mesh_faces is None:
             continue
-        shift = object_shift[graph.object_var_by_frame[frame.frame_idx]]
+        var_i = graph.object_var_by_frame[frame.frame_idx]
         frames.append(frame.frame_idx)
-        vertices.append(frame.mesh_vertices + shift[None, :])
+        vertices.append(shifted_mesh_vertices(frame, object_shift[var_i], object_rotvec[var_i]))
         faces.append(frame.mesh_faces)
     save_mesh_archive(path, frames, vertices, faces)
     return {"path": str(path), "mesh_frames": int(len(frames)), "first_frame": int(frames[0]) if frames else None, "last_frame": int(frames[-1]) if frames else None}
 
 
-def apply_object_shift(obj: dict[str, Any], shift: np.ndarray, report: dict[str, Any]) -> dict[str, Any]:
+def apply_object_pose_correction(
+    obj: dict[str, Any],
+    center: np.ndarray,
+    shift: np.ndarray,
+    rotvec: np.ndarray,
+    report: dict[str, Any],
+) -> dict[str, Any]:
     out = dict(obj)
     for key in ("center_world_m", "position_world_m"):
         if key in out:
-            out[key] = shift_vector3_value(out[key], shift)
+            out[key] = rotate_shift_vector3_value(out[key], center, shift, rotvec)
     for nested_key in ("v17_shape_state", "v17_local_contact_patch_state"):
         nested = out.get(nested_key)
         if not isinstance(nested, dict):
@@ -642,13 +873,15 @@ def apply_object_shift(obj: dict[str, Any], shift: np.ndarray, report: dict[str,
         nested_out = dict(nested)
         for key in ("object_center_world_m", "center_world_m"):
             if key in nested_out:
-                nested_out[key] = shift_vector3_value(nested_out[key], shift)
+                nested_out[key] = rotate_shift_vector3_value(nested_out[key], center, shift, rotvec)
         for key in ("surface_vertices", "mesh_vertices"):
             if key in nested_out:
-                nested_out[key] = shift_points3_value(nested_out[key], shift)
+                nested_out[key] = rotate_shift_points3_value(nested_out[key], center, shift, rotvec)
         out[nested_key] = nested_out
     out["v17_full_timeline_factor_graph"] = {
         "object_translation_correction_m": shift.astype(float).tolist(),
+        "object_rotvec_correction_rad": rotvec.astype(float).tolist(),
+        "object_pose_linearization_center_world_m": center.astype(float).tolist(),
         "correction_archive": report["corrected_mesh_archive"]["path"],
     }
     return out
@@ -680,8 +913,9 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
     frames = payload.get("frames") if isinstance(payload, dict) else None
     if not isinstance(frames, list):
         raise RuntimeError(f"{source_annotations} must contain frames")
-    object_shift, hand_shift = unpack(params, graph)
+    object_shift, object_rotvec, hand_shift = unpack(params, graph)
     object_shift_by_frame = {idx: object_shift[var_i].astype(float) for idx, var_i in graph.object_var_by_frame.items()}
+    object_rotvec_by_frame = {idx: object_rotvec[var_i].astype(float) for idx, var_i in graph.object_var_by_frame.items()}
     hand_shift_by_frame_side = {f"{idx}:{side}": float(hand_shift[var_i]) for (idx, side), var_i in graph.hand_var_by_frame_side.items()}
     frame_by_idx = {graph.frames[i].frame_idx: graph.frames[i] for i in graph.active_indices}
     out_frames: list[dict[str, Any]] = []
@@ -691,7 +925,19 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         if isinstance(idx, int):
             shift = object_shift_by_frame.get(idx)
             if shift is not None:
-                copied["object"] = apply_object_shift(dict(copied.get("object") or {}), shift, report)
+                graph_frame = frame_by_idx.get(idx)
+                if graph_frame is None:
+                    raise RuntimeError(f"missing graph frame for active object frame {idx}")
+                center = graph_frame.object_center
+                if center is None:
+                    raise RuntimeError(f"missing object center for active object frame {idx}")
+                copied["object"] = apply_object_pose_correction(
+                    dict(copied.get("object") or {}),
+                    center,
+                    shift,
+                    object_rotvec_by_frame[idx],
+                    report,
+                )
             graph_frame = frame_by_idx.get(idx)
             for hand_i, hand in enumerate(copied.get("hands") or []):
                 if not isinstance(hand, dict):
@@ -724,17 +970,20 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     measurement_sides = {} if contact_mode_sides is not None else measurement_contact_sides(Path(args.measurement_store_root), case)
     frames = load_graph_frames(args, annotations, mesh_archive, measurement_sides, contact_mode_sides)
     graph = build_graph_data(frames)
-    system = build_linear_system(graph, args)
-    x0 = np.zeros(variable_counts(graph)[2], dtype=float)
-    before_residual = system.matrix @ x0 - system.target
-    result = solve_linear_system(system, graph, args)
-    solution = np.asarray(result.x, dtype=float)
+    x0 = np.zeros(variable_counts(graph)[3], dtype=float)
+    initial_system = build_linear_system(graph, args, x0)
+    before_residual = initial_system.matrix @ x0 - initial_system.target
+    system, result, solution, correspondence_history = solve_contact_correspondence_system(graph, args)
     after_residual = system.matrix @ solution - system.target
-    before_contact = frame_contact_metrics(x0, graph, args)
-    after_contact = frame_contact_metrics(solution, graph, args)
+    before_contact = frame_contact_metrics(x0, graph, args, int(args.max_contact_points))
+    after_contact = frame_contact_metrics(solution, graph, args, int(args.max_contact_points))
+    broad_contact_before = frame_contact_metrics(x0, graph, args, int(args.broad_contact_metric_points))
+    broad_contact_after = frame_contact_metrics(solution, graph, args, int(args.broad_contact_metric_points))
     shifts = summarize_shifts(solution, graph)
     contact_p95 = after_contact.get("p95_m_p95")
+    broad_contact_p95 = broad_contact_after.get("p95_m_p95")
     object_shift_max = shifts["object_shift_norm_m"]["max"]
+    object_rot_max = shifts["object_rotvec_norm_rad"]["max"]
     hand_shift_max = shifts["hand_ray_shift_abs_m"]["max"]
     rejection_reasons: list[str] = []
     if len(graph.contact_pairs) == 0:
@@ -749,17 +998,31 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         rejection_reasons.append("object_shift_unavailable")
     elif float(object_shift_max) > float(args.accept_object_shift_max_m):
         rejection_reasons.append("object_shift_exceeds_threshold")
+    if object_rot_max is None:
+        rejection_reasons.append("object_rotation_unavailable")
+    elif float(object_rot_max) > float(args.accept_object_rot_max_rad):
+        rejection_reasons.append("object_rotation_exceeds_threshold")
     if hand_shift_max is None:
         rejection_reasons.append("hand_ray_shift_unavailable")
     elif float(hand_shift_max) > float(args.accept_hand_ray_shift_max_m):
         rejection_reasons.append("hand_ray_shift_exceeds_threshold")
+    if broad_contact_p95 is None:
+        rejection_reasons.append("broad_contact_p95_unavailable")
+    contact_correspondence_converged = bool(
+        correspondence_history and bool(correspondence_history[-1].get("contact_selection_stable"))
+    )
+    if not contact_correspondence_converged:
+        rejection_reasons.append("contact_correspondence_selection_not_converged")
     accepted = (
         bool(result.success)
         and contact_p95 is not None
         and len(graph.contact_pairs) > 0
+        and contact_correspondence_converged
         and float(contact_p95) <= float(args.accept_contact_p95_m)
         and object_shift_max is not None
         and float(object_shift_max) <= float(args.accept_object_shift_max_m)
+        and object_rot_max is not None
+        and float(object_rot_max) <= float(args.accept_object_rot_max_rad)
         and hand_shift_max is not None
         and float(hand_shift_max) <= float(args.accept_hand_ray_shift_max_m)
     )
@@ -784,8 +1047,12 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     accuracy_target_met = bool(
         after_contact.get("p95_m_p95") is not None
         and float(after_contact["p95_m_p95"]) <= float(args.accuracy_target_m)
+        and broad_contact_after.get("p95_m_p95") is not None
+        and float(broad_contact_after["p95_m_p95"]) <= float(args.accuracy_target_m)
         and object_shift_max is not None
         and float(object_shift_max) <= float(args.accuracy_target_m)
+        and object_rot_max is not None
+        and float(object_rot_max) <= float(args.accuracy_object_rot_target_rad)
         and hand_shift_max is not None
         and float(hand_shift_max) <= float(args.accuracy_target_m)
     )
@@ -807,10 +1074,15 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "v3_solver_complete": False,
         "method": "solve_v17_full_timeline_factor_graph",
         "semantics": {
-            "optimized_variables": ["per-active-frame object translation correction", "per-valid-hand camera-ray depth correction"],
+            "optimized_variables": [
+                "per-active-frame object translation correction",
+                "per-active-frame small-angle object rotation correction",
+                "per-valid-hand camera-ray depth correction",
+            ],
             "fixed_variables": ["camera trajectory", "MANO articulation and shape", "object mesh topology", "contact mode labels from current V17 evidence"],
             "contact_constraint_rule": contact_constraint_rule,
-            "claim_limit": "This sparse graph tests full-timeline consistency of accepted evidence under bounded translation/depth corrections. The complete V3 joint camera-MANO-object-depth-contact solver remains open.",
+            "contact_factor_semantics": "Contact equality is imposed on the nearest local MANO surface patch, not on the whole hand mesh. Broader nearest-surface distances are reported separately as residual evidence.",
+            "claim_limit": "This sparse graph tests full-timeline consistency of accepted evidence under bounded object translation, small-angle object rotation, hand depth corrections, and local contact-patch correspondences. The complete V3 joint camera-MANO-object-depth-contact solver remains open.",
         },
         "contact_factor_source": contact_factor_source,
         "contact_mode_graph_root": str(args.contact_mode_graph_root) if args.contact_mode_graph_root is not None else None,
@@ -831,8 +1103,11 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "contact_factor_complete": bool(contact_factor_complete),
         "contact_factor_source_counts": count_contact_sources(graph),
         "linearized_contact_correspondences": int(system.contact_correspondence_count),
+        "contact_correspondence_converged": bool(contact_correspondence_converged),
+        "contact_correspondence_iterations": correspondence_history,
+        "contact_selection_digest": system.contact_selection_digest,
         "skipped_contacts": graph.skipped_contacts,
-        "variable_count": int(variable_counts(graph)[2]),
+        "variable_count": int(variable_counts(graph)[3]),
         "linear_system_shape": [int(system_shape[0]), int(system_shape[1])],
         "least_squares_success": bool(result.success),
         "least_squares_status": int(result.status),
@@ -843,12 +1118,18 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "weighted_residual_rms_after": float(np.sqrt(np.mean(after_residual * after_residual))),
         "contact_before": before_contact,
         "contact_after": after_contact,
+        "broad_contact_before": broad_contact_before,
+        "broad_contact_after": broad_contact_after,
         "correction_summary": shifts,
         "acceptance": {
             "accept_contact_p95_m": float(args.accept_contact_p95_m),
             "accept_object_shift_max_m": float(args.accept_object_shift_max_m),
+            "accept_object_rot_max_rad": float(args.accept_object_rot_max_rad),
             "accept_hand_ray_shift_max_m": float(args.accept_hand_ray_shift_max_m),
             "accuracy_target_m": float(args.accuracy_target_m),
+            "accuracy_object_rot_target_rad": float(args.accuracy_object_rot_target_rad),
+            "accuracy_requires_broad_contact_p95": True,
+            "broad_contact_metric_points": int(args.broad_contact_metric_points),
             "structural_consistency_passed": bool(structural_consistency_pass),
             "accuracy_target_met": bool(accuracy_target_met),
             "contact_factor_complete": bool(contact_factor_complete),
@@ -927,21 +1208,29 @@ def parse_args() -> argparse.Namespace:
         ],
     )
     parser.add_argument("--max-hand-points", type=int, default=778)
-    parser.add_argument("--max-contact-points", type=int, default=80)
+    parser.add_argument("--max-contact-points", type=int, default=20)
+    parser.add_argument("--broad-contact-metric-points", type=int, default=80)
+    parser.add_argument("--contact-correspondence-iterations", type=int, default=20)
     parser.add_argument("--max-hand-median-px", type=float, default=45.0)
     parser.add_argument("--max-hand-p95-px", type=float, default=95.0)
     parser.add_argument("--sigma-object-prior-m", type=float, default=0.015)
+    parser.add_argument("--sigma-object-rot-prior-rad", type=float, default=0.08)
     parser.add_argument("--sigma-hand-ray-prior-m", type=float, default=0.015)
     parser.add_argument("--sigma-object-step-m", type=float, default=0.006)
     parser.add_argument("--sigma-object-accel-m", type=float, default=0.012)
+    parser.add_argument("--sigma-object-rot-step-rad", type=float, default=0.03)
+    parser.add_argument("--sigma-object-rot-accel-rad", type=float, default=0.06)
     parser.add_argument("--sigma-hand-ray-step-m", type=float, default=0.01)
     parser.add_argument("--sigma-contact-m", type=float, default=0.006)
     parser.add_argument("--max-object-shift-m", type=float, default=0.06)
+    parser.add_argument("--max-object-rot-rad", type=float, default=0.35)
     parser.add_argument("--max-hand-ray-shift-m", type=float, default=0.06)
     parser.add_argument("--accept-contact-p95-m", type=float, default=0.035)
     parser.add_argument("--accept-object-shift-max-m", type=float, default=0.04)
+    parser.add_argument("--accept-object-rot-max-rad", type=float, default=0.35)
     parser.add_argument("--accept-hand-ray-shift-max-m", type=float, default=0.04)
     parser.add_argument("--accuracy-target-m", type=float, default=0.005)
+    parser.add_argument("--accuracy-object-rot-target-rad", type=float, default=0.03)
     parser.add_argument("--max-iter", type=int, default=120)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--allow-measurement-candidate-contacts", action="store_true")

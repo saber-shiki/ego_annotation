@@ -456,6 +456,8 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
         "anchor_error_count": int(len(anchor_errors)),
         "anchor_errors": anchor_errors[:40],
         "contact_intervals": intervals(solved_rows, "contact")[:80],
+        "factor_ready_rows_preview_limit": 200,
+        "factor_ready_rows_preview_truncated": len(ready_rows) > 200,
         "factor_ready_rows": ready_rows[:200],
         "gap_p05_m": summarize([float(row["gap_p05_m"]) for row in active_rows if row["gap_p05_m"] is not None]),
         "mask_distance_median_px": summarize(
