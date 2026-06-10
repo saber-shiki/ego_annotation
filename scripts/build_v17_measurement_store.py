@@ -33,6 +33,7 @@ class CaseSpec:
     object_depth_repair_candidate_paths: tuple[Path, ...] = ()
     object_depth_repair_contact_measurement_paths: tuple[Path, ...] = ()
     contact_state_graph_paths: tuple[Path, ...] = ()
+    persistent_object_shape_state_paths: tuple[Path, ...] = ()
 
 
 def load_json(path: Path) -> Any:
@@ -890,6 +891,83 @@ def measurements_from_contact_state_graphs(
     return measurements, by_frame, sources
 
 
+def measurements_from_persistent_object_shape_states(
+    paths: tuple[Path, ...],
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    measurements: list[dict[str, Any]] = []
+    by_frame: dict[int, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    for source_i, path in enumerate(paths):
+        if not path.exists():
+            sources.append({"path": str(path), "status": "missing"})
+            continue
+        payload = load_json(path)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{path} must contain a JSON object")
+        object_id = payload.get("object_id")
+        if not isinstance(object_id, str) or not object_id:
+            raise RuntimeError(f"{path} missing object_id")
+        covered_entity_ids = [str(x) for x in payload.get("covered_entity_ids") or []]
+        anchor_rows = payload.get("anchor_rows")
+        if not isinstance(anchor_rows, list):
+            raise RuntimeError(f"{path} must contain anchor_rows")
+        source_rows = 0
+        annotation_ready_rows = 0
+        source_frames: list[int] = []
+        for row_i, raw in enumerate(anchor_rows):
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"{path} anchor row {row_i} is not a JSON object")
+            idx = required_json_int(raw.get("frame_idx"), "frame_idx", f"{path} anchor row {row_i}")
+            surface_summary = raw.get("surface_to_canonical_m")
+            entry = {
+                "measurement_id": f"persistent_object_shape:{source_i}:{idx}",
+                "frame_idx": idx,
+                "entity_type": "object",
+                "entity_id": object_id,
+                "covered_entity_ids": covered_entity_ids,
+                "measurement_type": "object_persistent_canonical_mesh",
+                "source_model": payload.get("method") or "persistent_object_shape_state",
+                "coordinate_frame": "v16_world_metric_canonical_object_centered",
+                "status": raw.get("status"),
+                "annotation_ready": raw.get("annotation_ready") is True,
+                "pose_model": raw.get("pose_model"),
+                "object_center_world_m": raw.get("object_center_world_m"),
+                "surface_vertices": raw.get("surface_vertices"),
+                "surface_faces": raw.get("surface_faces"),
+                "canonical_mesh_npz": payload.get("canonical_mesh_npz"),
+                "canonical_mesh_ply": payload.get("canonical_mesh_ply"),
+                "canonical_vertices": payload.get("canonical_vertices"),
+                "canonical_faces": payload.get("canonical_faces"),
+                "canonical_extent_m": payload.get("canonical_extent_m"),
+                "surface_to_canonical_m": surface_summary if isinstance(surface_summary, dict) else None,
+                "failure_reason": raw.get("failure_reason"),
+                "claim_tested": payload.get("claim_tested"),
+                "source_file": str(path),
+            }
+            measurements.append(entry)
+            by_frame.setdefault(idx, []).append(entry)
+            source_rows += 1
+            source_frames.append(idx)
+            if entry["annotation_ready"]:
+                annotation_ready_rows += 1
+        sources.append(
+            {
+                "path": str(path),
+                "status": payload.get("status", "loaded"),
+                "annotation_ready": payload.get("annotation_ready"),
+                "measurement_count": source_rows,
+                "annotation_ready_count": annotation_ready_rows,
+                "active_frame_min": min(source_frames) if source_frames else None,
+                "active_frame_max": max(source_frames) if source_frames else None,
+                "active_frame_count": len(set(source_frames)),
+                "method": payload.get("method"),
+                "object_id": object_id,
+                "covered_entity_ids": covered_entity_ids,
+            }
+        )
+    return measurements, by_frame, sources
+
+
 def frame_state(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {int(frame["frame_idx"]): frame for frame in payload.get("frames", [])}
 
@@ -1071,8 +1149,14 @@ def anchor_qc(
             failures.append("hawor_geometry_missing")
         if object_status == "outside_semantic_interval" and spec.expected_contact.get(idx):
             failures.append("object_inactive_despite_expected_interaction_context")
+        persistent_shape_states = [
+            row
+            for row in object_measurements
+            if row.get("measurement_type") == "object_persistent_canonical_mesh"
+        ]
+        ready_persistent_shape_states = [row for row in persistent_shape_states if row.get("annotation_ready") is True]
         if obj.get("label") in spec.expected_persistent_object_labels and object_measurements:
-            has_persistent_state = any(row.get("measurement_type") == "object_persistent_canonical_mesh" for row in object_measurements)
+            has_persistent_state = bool(ready_persistent_shape_states)
             if not has_persistent_state:
                 failures.append("persistent_object_shape_state_missing")
         if spec.expected_contact.get(idx) == "contact" and not object_measurements:
@@ -1139,6 +1223,19 @@ def anchor_qc(
                 "object_status": object_status,
                 "object_label": obj.get("label"),
                 "object_mesh_measurement_count": len(object_measurements),
+                "persistent_object_shape_state_count": len(persistent_shape_states),
+                "persistent_object_shape_annotation_ready_count": len(ready_persistent_shape_states),
+                "persistent_object_shape_states": [
+                    {
+                        "entity_id": row.get("entity_id"),
+                        "status": row.get("status"),
+                        "annotation_ready": row.get("annotation_ready"),
+                        "pose_model": row.get("pose_model"),
+                        "surface_to_canonical_m": row.get("surface_to_canonical_m"),
+                        "failure_reason": row.get("failure_reason"),
+                    }
+                    for row in persistent_shape_states
+                ],
                 "contact_measurement_count": len(contact_measurements),
                 "contact_state_measurements": contact_states,
                 "hand_repair_contact_measurement_count": len(hand_repair_contact_measurements),
@@ -1215,8 +1312,15 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         contact_state_graph_by_frame,
         contact_state_graph_sources,
     ) = measurements_from_contact_state_graphs(spec.contact_state_graph_paths)
+    (
+        persistent_object_shape_measurements,
+        persistent_object_shape_by_frame,
+        persistent_object_shape_sources,
+    ) = measurements_from_persistent_object_shape_states(spec.persistent_object_shape_state_paths)
     object_by_frame_combined = {idx: list(rows) for idx, rows in object_by_frame.items()}
     for idx, rows in sam2_by_frame.items():
+        object_by_frame_combined.setdefault(idx, []).extend(rows)
+    for idx, rows in persistent_object_shape_by_frame.items():
         object_by_frame_combined.setdefault(idx, []).extend(rows)
     roster = apply_expected_object_coverage(
         merge_object_rosters(object_roster_from_v16(frames, spec.expected_objects), plan_roster),
@@ -1242,6 +1346,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
     write_json(measurements_dir / "object_depth_repair_candidate_measurements.json", object_depth_repair_measurements)
     write_json(measurements_dir / "object_depth_repair_contact_measurements.json", object_depth_repair_contact_measurements)
     write_json(measurements_dir / "contact_state_graph_measurements.json", contact_state_graph_measurements)
+    write_json(measurements_dir / "persistent_object_shape_measurements.json", persistent_object_shape_measurements)
     write_json(case_dir / "object_roster_v17.json", roster)
     anchor = anchor_qc(
         spec,
@@ -1285,6 +1390,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
         "object_depth_repair_sources": object_depth_repair_sources,
         "object_depth_repair_contact_measurement_sources": object_depth_repair_contact_sources,
         "contact_state_graph_sources": contact_state_graph_sources,
+        "persistent_object_shape_sources": persistent_object_shape_sources,
         "object_mesh_qc": str(object_qc_path),
         "measurement_counts": {
             "wilor": len(wilor_measurements),
@@ -1304,6 +1410,7 @@ def build_case(spec: CaseSpec, output_root: Path) -> dict[str, Any]:
             "object_depth_repair": len(object_depth_repair_measurements),
             "object_depth_repair_contact": len(object_depth_repair_contact_measurements),
             "contact_state_graph": len(contact_state_graph_measurements),
+            "persistent_object_shape": len(persistent_object_shape_measurements),
         },
         "object_roster": str(case_dir / "object_roster_v17.json"),
         "anchor_qc": str(case_dir / "v17_anchor_qc.json"),
@@ -1446,6 +1553,12 @@ def default_cases() -> list[CaseSpec]:
             ),
             contact_measurement_paths=(
                 Path("/data2/ego_annotation_outputs/v17_contact_measurements/task5_tomato_960/contact_measurements_anchor.json"),
+            ),
+            persistent_object_shape_state_paths=(
+                Path(
+                    "/data2/ego_annotation_outputs/v17_object_plan/task5_tomato_960/"
+                    "persistent_object_shape_obj_tomato_v1/persistent_object_shape_state.json"
+                ),
             ),
         ),
     ]
