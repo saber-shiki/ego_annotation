@@ -824,6 +824,18 @@ def object_geometry_factor_problem_counts(report: dict[str, Any]) -> dict[str, A
             report.get("partial_visible_surface_replay_ready_segment_count"),
             "object-geometry factor partial_visible_surface_replay_ready_segment_count",
         ),
+        "observed_surface_geometry_seed_count": require_int(
+            report.get("observed_surface_geometry_seed_count"),
+            "object-geometry factor observed_surface_geometry_seed_count",
+        ),
+        "observed_surface_geometry_seed_vertices": require_int(
+            report.get("observed_surface_geometry_seed_vertices"),
+            "object-geometry factor observed_surface_geometry_seed_vertices",
+        ),
+        "observed_surface_geometry_seed_faces": require_int(
+            report.get("observed_surface_geometry_seed_faces"),
+            "object-geometry factor observed_surface_geometry_seed_faces",
+        ),
         "multi_object_contact_factor_ready_rows": require_int(
             report.get("multi_object_contact_factor_ready_rows"),
             "object-geometry factor multi_object_contact_factor_ready_rows",
@@ -1117,6 +1129,15 @@ def required_variable_families(
                 "object_geometry_factor_partial_surface_replay_ready_segments": object_geometry_factor_problem[
                     "partial_visible_surface_replay_ready_segment_count"
                 ],
+                "observed_surface_geometry_seed_count": object_geometry_factor_problem[
+                    "observed_surface_geometry_seed_count"
+                ],
+                "observed_surface_geometry_seed_vertices": object_geometry_factor_problem[
+                    "observed_surface_geometry_seed_vertices"
+                ],
+                "observed_surface_geometry_seed_faces": object_geometry_factor_problem[
+                    "observed_surface_geometry_seed_faces"
+                ],
                 "partial_material_pose_replay_is_complete_object_geometry": geometry_source_audit[
                     "partial_material_pose_replay_is_complete_object_geometry"
                 ],
@@ -1136,6 +1157,7 @@ def required_variable_families(
                 "persistent material-motion candidates do not provide canonical object meshes or full-timeline pose/deformation variables",
                 "partial material-point SE(3) candidates exist only for accepted short segments and are not connected to complete object geometry",
                 "visible-surface replay tests only observed surfaces and does not reconstruct hidden topology",
+                "observed-surface geometry seeds are short-segment canonical seeds, not full active-interval object pose timelines",
                 "object-centric pose factors are listed but no object has a complete geometry state that can own them",
                 "object-pose evidence is not source-compatible with the current contact factors",
                 "no per-object geometry hypothesis is ready to own pose factors",
@@ -1896,6 +1918,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "object_geometry_factor_surface_replay_ready_segment_count": case[
                     "current_object_geometry_factor_problem"
                 ]["partial_visible_surface_replay_ready_segment_count"],
+                "object_geometry_factor_observed_surface_seed_count": case[
+                    "current_object_geometry_factor_problem"
+                ]["observed_surface_geometry_seed_count"],
+                "object_geometry_factor_observed_surface_seed_vertices": case[
+                    "current_object_geometry_factor_problem"
+                ]["observed_surface_geometry_seed_vertices"],
+                "object_geometry_factor_observed_surface_seed_faces": case[
+                    "current_object_geometry_factor_problem"
+                ]["observed_surface_geometry_seed_faces"],
                 "object_geometry_factor_contact_ready_rows": case[
                     "current_object_geometry_factor_problem"
                 ]["multi_object_contact_factor_ready_rows"],
@@ -1963,6 +1994,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "object_geometry_factor_surface_replay_ready_segment_count": sum(
             case["current_object_geometry_factor_problem"]["partial_visible_surface_replay_ready_segment_count"]
+            for case in case_outputs
+        ),
+        "object_geometry_factor_observed_surface_seed_count": sum(
+            case["current_object_geometry_factor_problem"]["observed_surface_geometry_seed_count"]
+            for case in case_outputs
+        ),
+        "object_geometry_factor_observed_surface_seed_vertices": sum(
+            case["current_object_geometry_factor_problem"]["observed_surface_geometry_seed_vertices"]
+            for case in case_outputs
+        ),
+        "object_geometry_factor_observed_surface_seed_faces": sum(
+            case["current_object_geometry_factor_problem"]["observed_surface_geometry_seed_faces"]
             for case in case_outputs
         ),
         "object_geometry_factor_contact_ready_rows": sum(

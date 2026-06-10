@@ -150,6 +150,10 @@ def load_case_inputs(case: str, args: argparse.Namespace) -> dict[str, Any]:
             args.object_material_surface_replay_root / case / "v17_object_material_surface_replay_report.json",
             f"{case} material-surface replay report",
         ),
+        "observed_surface_geometry_seed": existing_path(
+            args.observed_surface_geometry_seed_root / case / "v17_observed_surface_geometry_seed_report.json",
+            f"{case} observed-surface geometry seed report",
+        ),
         "multi_object_contact_evidence": existing_path(
             args.multi_object_contact_evidence_root / case / "v17_multi_object_contact_evidence_report.json",
             f"{case} multi-object contact evidence report",
@@ -266,6 +270,30 @@ def replay_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def observed_surface_seeds(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "candidate_id": require_str(row.get("candidate_id"), "candidate_id"),
+                "window_id": require_str(row.get("window_id"), "window_id"),
+                "archive_path": require_str(row.get("archive_path"), "archive_path"),
+                "start_frame": require_int(row.get("start_frame"), "start_frame"),
+                "end_frame": require_int(row.get("end_frame"), "end_frame"),
+                "seed_frame_count": require_int(row.get("seed_frame_count"), "seed_frame_count"),
+                "seed_vertices": require_int(row.get("seed_vertices"), "seed_vertices"),
+                "seed_faces": require_int(row.get("seed_faces"), "seed_faces"),
+                "observed_surface_only": bool(row.get("observed_surface_only") is True),
+                "hidden_topology_reconstructed": bool(row.get("hidden_topology_reconstructed") is True),
+                "full_active_interval_geometry_ready": bool(row.get("full_active_interval_geometry_ready") is True),
+                "contact_compatible_geometry_ready": bool(row.get("contact_compatible_geometry_ready") is True),
+                "canonical_extent_m": row.get("canonical_extent_m"),
+                "canonical_centroid_delta_from_source_m": row.get("canonical_centroid_delta_from_source_m"),
+            }
+        )
+    return out
+
+
 def contact_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     measured = [row for row in rows if row.get("contact_mode_state") == "measured_distance_evidence"]
     min_distances = [
@@ -302,6 +330,7 @@ def factor_blocks(
     motion: list[dict[str, Any]],
     poses: list[dict[str, Any]],
     replays: list[dict[str, Any]],
+    observed_seeds: list[dict[str, Any]],
     contacts: dict[str, Any],
     conflicts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -372,6 +401,25 @@ def factor_blocks(
             "solver_role": "surface replay constraints for short material-pose segments",
         },
         {
+            "factor_block": "observed_surface_geometry_seed",
+            "source": "observed_surface_geometry_seed",
+            "seed_candidate_count": len(observed_seeds),
+            "observed_surface_only_seed_count": sum(
+                1 for row in observed_seeds if row.get("observed_surface_only") is True
+            ),
+            "complete_geometry_seed_count": sum(
+                1 for row in observed_seeds if row.get("hidden_topology_reconstructed") is True
+            ),
+            "contact_compatible_geometry_seed_count": sum(
+                1 for row in observed_seeds if row.get("contact_compatible_geometry_ready") is True
+            ),
+            "full_active_interval_geometry_seed_count": sum(
+                1 for row in observed_seeds if row.get("full_active_interval_geometry_ready") is True
+            ),
+            "seed_candidates": observed_seeds,
+            "solver_role": "canonical observed-surface geometry seed for object mesh or SDF optimization",
+        },
+        {
             "factor_block": "multi_object_hand_contact_distance",
             "source": "multi_object_contact_evidence",
             **contacts,
@@ -408,7 +456,14 @@ def variable_blocks(obj: dict[str, Any], blocks: list[dict[str, Any]]) -> list[d
         for block in blocks
         if block.get("factor_block") == "partial_material_pose_segments"
     )
+    observed_seed_count = sum(
+        require_int(block.get("seed_candidate_count"), "seed_candidate_count")
+        for block in blocks
+        if block.get("factor_block") == "observed_surface_geometry_seed"
+    )
     geometry_seed = "persistent_visible_surface_mesh" if canonical_meshes else "visible_surface_samples_only"
+    if observed_seed_count:
+        geometry_seed = "observed_surface_geometry_seed"
     orientation_observable = not any("orientation_unobservable" in str(model) for model in persistent.get("pose_models", []))
     return [
         {
@@ -452,6 +507,7 @@ def readiness_checks(obj: dict[str, Any], contacts: dict[str, Any], conflicts: l
     material_motion = require_dict(obj.get("material_motion_state"), "material_motion_state")
     material_pose = require_dict(obj.get("material_pose_candidates"), "material_pose_candidates")
     material_replay = require_dict(obj.get("material_surface_replay"), "material_surface_replay")
+    observed_seed = require_dict(obj.get("observed_surface_geometry_seed"), "observed_surface_geometry_seed")
     active = require_int(obj.get("active_frame_count"), "active_frame_count")
     visible_masks = require_int(obj.get("visible_mask_frame_count"), "visible_mask_frame_count")
     visible_surfaces = require_int(visible.get("surface_frame_count"), "surface_frame_count")
@@ -480,6 +536,11 @@ def readiness_checks(obj: dict[str, Any], contacts: dict[str, Any], conflicts: l
         "partial_visible_surface_replay_available": require_int(
             material_replay.get("ready_segment_count"),
             "ready_segment_count",
+        )
+        > 0,
+        "observed_surface_geometry_seed_available": require_int(
+            observed_seed.get("seed_candidate_count"),
+            "seed_candidate_count",
         )
         > 0,
         "contact_distance_candidates_available": require_int(
@@ -516,6 +577,7 @@ def build_object_row(
     motion_rows: list[dict[str, Any]],
     pose_rows: list[dict[str, Any]],
     replay_rows: list[dict[str, Any]],
+    observed_seed_rows: list[dict[str, Any]],
     contact_rows: list[dict[str, Any]],
     conflict_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -523,6 +585,7 @@ def build_object_row(
     motion = motion_windows(motion_rows)
     poses = pose_candidates(pose_rows)
     replays = replay_candidates(replay_rows)
+    observed_seeds = observed_surface_seeds(observed_seed_rows)
     contacts = contact_summary(contact_rows)
     blocks = factor_blocks(
         obj,
@@ -530,6 +593,7 @@ def build_object_row(
         motion=motion,
         poses=poses,
         replays=replays,
+        observed_seeds=observed_seeds,
         contacts=contacts,
         conflicts=conflict_rows,
     )
@@ -577,6 +641,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     material_motion = payloads["material_motion"]
     material_pose = payloads["material_pose"]
     material_replay = payloads["material_surface_replay"]
+    observed_seed = payloads["observed_surface_geometry_seed"]
     contact = payloads["multi_object_contact_evidence"]
     audit = payloads["geometry_source_audit"]
 
@@ -585,6 +650,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     motion_by_object = rows_by_object(require_list(material_motion.get("windows"), "material-motion windows"), key="object_id", label="material-motion windows")
     pose_by_object = rows_by_object(require_list(material_pose.get("candidates"), "material-pose candidates"), key="object_id", label="material-pose candidates")
     replay_by_object = rows_by_object(require_list(material_replay.get("candidates"), "material-surface replay candidates"), key="object_id", label="material-surface replay candidates")
+    observed_seed_by_object = rows_by_object(require_list(observed_seed.get("candidate_rows"), "observed-surface seed candidates"), key="object_id", label="observed-surface seed candidates")
     contact_by_object = rows_by_object(require_list(contact.get("rows"), "multi-object contact rows"), key="object_id", label="multi-object contact rows")
     conflict_by_object = rows_by_object(require_list(audit.get("local_patch_visible_surface_conflicts"), "geometry-source conflicts"), key="object_id", label="geometry-source conflicts")
 
@@ -596,6 +662,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             motion_rows=motion_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             pose_rows=pose_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             replay_rows=replay_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
+            observed_seed_rows=observed_seed_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             contact_rows=contact_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
             conflict_rows=conflict_by_object.get(require_str(obj.get("object_id"), "object_id"), []),
         )
@@ -631,6 +698,26 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             for row in object_rows
             for block in row["factor_blocks"]
             if block.get("factor_block") == "visible_surface_replay_segments"
+        ),
+        "observed_surface_geometry_seed_count": sum(
+            require_int(block.get("seed_candidate_count"), "seed_candidate_count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "observed_surface_geometry_seed"
+        ),
+        "observed_surface_geometry_seed_vertices": sum(
+            require_int(seed.get("seed_vertices"), "seed_vertices")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "observed_surface_geometry_seed"
+            for seed in require_list(block.get("seed_candidates"), "seed_candidates")
+        ),
+        "observed_surface_geometry_seed_faces": sum(
+            require_int(seed.get("seed_faces"), "seed_faces")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "observed_surface_geometry_seed"
+            for seed in require_list(block.get("seed_candidates"), "seed_candidates")
         ),
         "multi_object_contact_factor_ready_rows": sum(
             require_int(block.get("contact_factor_ready_rows"), "contact factor rows")
@@ -737,6 +824,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("partial_visible_surface_replay_ready_segment_count"),
                     "partial_visible_surface_replay_ready_segment_count",
                 ),
+                "observed_surface_geometry_seed_count": require_int(
+                    report.get("observed_surface_geometry_seed_count"),
+                    "observed_surface_geometry_seed_count",
+                ),
+                "observed_surface_geometry_seed_vertices": require_int(
+                    report.get("observed_surface_geometry_seed_vertices"),
+                    "observed_surface_geometry_seed_vertices",
+                ),
+                "observed_surface_geometry_seed_faces": require_int(
+                    report.get("observed_surface_geometry_seed_faces"),
+                    "observed_surface_geometry_seed_faces",
+                ),
                 "multi_object_contact_factor_ready_rows": require_int(
                     report.get("multi_object_contact_factor_ready_rows"),
                     "multi_object_contact_factor_ready_rows",
@@ -768,6 +867,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "partial_visible_surface_replay_ready_segment_count": sum(
             require_int(report.get("partial_visible_surface_replay_ready_segment_count"), "surface replay ready count")
+            for report in reports
+        ),
+        "observed_surface_geometry_seed_count": sum(
+            require_int(report.get("observed_surface_geometry_seed_count"), "observed surface seed count")
+            for report in reports
+        ),
+        "observed_surface_geometry_seed_vertices": sum(
+            require_int(report.get("observed_surface_geometry_seed_vertices"), "observed surface seed vertices")
+            for report in reports
+        ),
+        "observed_surface_geometry_seed_faces": sum(
+            require_int(report.get("observed_surface_geometry_seed_faces"), "observed surface seed faces")
             for report in reports
         ),
         "multi_object_contact_factor_ready_rows": sum(
@@ -818,6 +929,11 @@ def parse_args() -> argparse.Namespace:
         "--object-material-surface-replay-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_object_material_surface_replay"),
+    )
+    parser.add_argument(
+        "--observed-surface-geometry-seed-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_observed_surface_geometry_seed"),
     )
     parser.add_argument(
         "--multi-object-contact-evidence-root",
