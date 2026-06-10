@@ -914,6 +914,16 @@ def apply_hand_ray_shift(hand: dict[str, Any], shift_vec: np.ndarray, shift_m: f
     }
 
 
+def qc_caption(caption: object) -> str:
+    text = str(caption or "").strip()
+    if not text:
+        return "V17: Full-video V17 evidence/QC state; annotation closure remains open."
+    return text.replace(
+        "Full-video V17 annotation state.",
+        "Full-video V17 evidence/QC state; annotation closure remains open.",
+    )
+
+
 def write_corrected_annotations(path: Path, source_annotations: Path, graph: GraphData, params: np.ndarray, report: dict[str, Any]) -> None:
     payload = load_json(source_annotations)
     frames = payload.get("frames") if isinstance(payload, dict) else None
@@ -929,6 +939,7 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
         copied = copy.deepcopy(frame)
         idx = copied.get("frame_idx")
         if isinstance(idx, int):
+            copied["caption"] = qc_caption(copied.get("caption"))
             shift = object_shift_by_frame.get(idx)
             if shift is not None:
                 graph_frame = frame_by_idx.get(idx)
@@ -968,6 +979,15 @@ def write_corrected_annotations(path: Path, source_annotations: Path, graph: Gra
             ]
         out_frames.append(copied)
     payload["frames"] = out_frames
+    payload["v17_state_note"] = {
+        "status": "evidence_layer_qc_state",
+        "artifact_kind": "full_timeline_evidence_qc_state",
+        "delivery_role": "qc_only_not_v17_closure",
+        "claim": "full-timeline evidence/QC state assembled from accepted V17 measurements; annotation closure and the integrated nonlinear solver remain open",
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "v3_solver_complete": False,
+    }
     payload["v17_full_timeline_factor_graph"] = {
         "status": report["status"],
         "artifact_status": report["artifact_status"],

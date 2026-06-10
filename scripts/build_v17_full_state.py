@@ -263,7 +263,7 @@ def annotate_v17_captions(frames: list[dict[str, Any]]) -> None:
             elif "persistent object mesh" in labels:
                 caption = "Persistent object surface state carried through the full timeline."
             else:
-                caption = "Full-video V17 annotation state."
+                caption = "Full-video V17 evidence/QC state; annotation closure remains open."
         frame["caption"] = f"{'; '.join(labels)}: {caption}"
 
 
@@ -341,8 +341,13 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
     annotations_out = case_dir / "annotations_v17_full.json"
     payload["frames"] = frames
     payload["v17_state_note"] = {
-        "status": "evidence_layer_state",
-        "claim": "full-timeline annotation state patched with accepted V17 measurements; integrated nonlinear solver remains open",
+        "status": "evidence_layer_qc_state",
+        "artifact_kind": "full_timeline_evidence_qc_state",
+        "delivery_role": "qc_only_not_v17_closure",
+        "claim": "full-timeline evidence/QC state assembled from accepted V17 measurements; annotation closure and the integrated nonlinear solver remain open",
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "v3_solver_complete": False,
     }
     write_json(annotations_out, payload)
 
@@ -350,8 +355,14 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
     mesh_report = merged_mesh_archive(base_archive, mesh_archive, persistent_meshes, local_meshes)
     report = {
         "case": name,
-        "status": "ok",
+        "status": "evidence_qc_state_built",
+        "artifact_status": "partial",
+        "artifact_kind": "full_timeline_evidence_qc_state",
+        "delivery_role": "qc_only_not_v17_closure",
         "method": "build_v17_full_state",
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "v3_solver_complete": False,
         "v16_manifest": str(spec["v16_manifest"]),
         "raw_frame_count": int(manifest["raw_frame_count"]),
         "annotations": str(annotations_out),
@@ -370,8 +381,15 @@ def build_case(name: str, spec: dict[str, Any], output_root: Path) -> dict[str, 
 def build(args: argparse.Namespace) -> dict[str, Any]:
     args.output_root.mkdir(parents=True, exist_ok=True)
     reports = [build_case(name, case_spec(name, args), args.output_root) for name in args.cases]
+    built = all(row["status"] == "evidence_qc_state_built" for row in reports)
     summary = {
-        "status": "ok" if all(row["status"] == "ok" for row in reports) else "failed",
+        "status": "evidence_qc_state_built_collection" if built else "failed",
+        "artifact_status": "partial",
+        "artifact_kind": "full_timeline_evidence_qc_state_collection",
+        "delivery_role": "qc_only_not_v17_closure",
+        "annotation_ready": False,
+        "deliverable_ready": False,
+        "v3_solver_complete": False,
         "method": "build_v17_full_state",
         "cases": reports,
     }

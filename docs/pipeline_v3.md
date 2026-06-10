@@ -232,7 +232,7 @@ After the full-scene VGGT branch, the next graph should treat VGGT scene geometr
 - MANO depth variables constrained by 2D reprojection, temporal velocity/acceleration, hand-size priors, and detector confidence;
 - contact variables that can turn off or mark a hand observation unreliable when satisfying contact would require large reprojection error, hand-scale collapse, or bound-saturated depth shifts.
 
-The focal/hand/contact graph implements this principle on frames 858 to 880. It rejects the broad-lid contact hypothesis by lowering contact probability instead of forcing geometry into contact. That is the correct failure signal for this branch: the central pink lid is a measured support/context surface, while the actual manipulated contact object is likely the liner or perimeter/rim material identified by the VLM surface plan.
+The focal/hand/contact graph tests this principle on frames 858 to 880. It rejects the broad-lid contact hypothesis by lowering contact probability instead of forcing geometry into contact. That is the correct failure signal for this branch: the central pink lid is a measured support/context surface, while the actual manipulated contact object is likely the liner or perimeter/rim material identified by the VLM surface plan.
 
 The failure to close contact after VGGT is a useful V3 result because it separates three mechanisms: Depth Anything creates large object-depth outliers in late frames, the DROID focal prior is inconsistent with VGGT/contact geometry, and WiLoR/MANO still places some measured hands at incompatible depths even when focal length is allowed to move. V3 cannot close until the object surface being contacted is reconstructed and a stronger temporal hand/depth model passes the same residual checks.
 

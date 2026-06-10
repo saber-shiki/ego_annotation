@@ -262,6 +262,30 @@ def contact_observation(
     )
 
 
+def missing_hand_observation(frame: dict[str, Any], side: str, args: argparse.Namespace) -> ContactObs:
+    idx = int(frame["frame_idx"])
+    anchor, source_state, selected_id = anchor_logit(frame, side, float(args.anchor_logit))
+    return ContactObs(
+        idx,
+        side,
+        False,
+        anchor,
+        anchor,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        False,
+        source_state,
+        selected_id,
+        "missing_hand_state",
+    )
+
+
 def factor_ready_checks(row: ContactObs, mode: str, confidence: float, args: argparse.Namespace) -> dict[str, bool]:
     return {
         "active_geometry": bool(row.active),
@@ -272,9 +296,10 @@ def factor_ready_checks(row: ContactObs, mode: str, confidence: float, args: arg
         "gap_p05_within_threshold": bool(
             row.gap_p05_m is not None and row.gap_p05_m <= float(args.factor_ready_max_gap_p05_m)
         ),
+        "mask_distance_available": row.mask_distance_median_px is not None,
         "mask_distance_within_threshold": bool(
-            row.mask_distance_median_px is None
-            or row.mask_distance_median_px <= float(args.factor_ready_max_mask_px)
+            row.mask_distance_median_px is not None
+            and row.mask_distance_median_px <= float(args.factor_ready_max_mask_px)
         ),
         "no_rejection_reason": row.reason is None,
     }
@@ -416,11 +441,18 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
         mesh_vertices = mesh[0] if mesh is not None else None
         hands = frame.get("hands")
         if not isinstance(hands, list):
-            continue
+            hands = []
+        observed_standard_sides: set[str] = set()
         for hand_i, hand in enumerate(hands):
             if not isinstance(hand, dict):
                 continue
+            side = side_key(hand, hand_i)
+            if side in ("left", "right"):
+                observed_standard_sides.add(side)
             observations.append(contact_observation(frame, hand, hand_i, mesh_vertices, args))
+        for side in ("left", "right"):
+            if side not in observed_standard_sides:
+                observations.append(missing_hand_observation(frame, side, args))
     solved_rows: list[dict[str, Any]] = []
     for side in sorted({row.side for row in observations}):
         side_rows = [row for row in observations if row.side == side]
@@ -476,7 +508,8 @@ def solve_case(args: argparse.Namespace, manifest: Path) -> dict[str, Any]:
         "contact_factor_ready_count": int(len(ready_rows)),
         "contact_factor_readiness_semantics": (
             "Rows become sparse-graph contact factors only when every row-level "
-            "contact_factor_readiness_checks predicate is true."
+            "contact_factor_readiness_checks predicate is true, including explicit "
+            "mask-distance evidence from the object mask."
         ),
         "anchor_count": int(len(anchor_rows)),
         "anchor_error_count": int(len(anchor_errors)),

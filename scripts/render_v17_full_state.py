@@ -194,7 +194,7 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         if src.resolve() != dst.resolve():
             shutil.copy2(src, dst)
         render_qc[key] = check_video(dst, raw)
-    frame_count_match = all(row["frame_count_match"] for row in render_qc.values())
+    duration_render_qc_pass = all(row["frame_count_match"] for row in render_qc.values())
     solver_report_path = Path(state["solver_report"]) if isinstance(state.get("solver_report"), str) else None
     solver_report = load_json(solver_report_path) if solver_report_path is not None and solver_report_path.exists() else {}
     sheet = visual_inspection_sheet(
@@ -204,17 +204,18 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
     )
     report = {
         "case": state["case"],
-        "status": "structural_render_qc_pass" if frame_count_match else "structural_render_qc_failed",
+        "status": "duration_render_qc_pass" if duration_render_qc_pass else "duration_render_qc_failed",
         "artifact_status": "partial",
-        "artifact_kind": "structural_qc_render",
+        "artifact_kind": "duration_qc_render",
         "delivery_role": "qc_only_not_v17_closure",
+        "render_qc_scope": "duration_only_not_visual_quality",
         "method": args.method_name,
         "clip": str(clip),
         "annotations": state["annotations"],
         "object_mesh_archive": state["object_mesh_archive"],
         "raw_video": raw.__dict__,
         "render_qc": render_qc,
-        "frame_count_match": frame_count_match,
+        "frame_count_match": duration_render_qc_pass,
         "solver_status": state.get("solver_status"),
         "solver_artifact_status": state.get("artifact_status"),
         "solver_artifact_kind": state.get("artifact_kind"),
@@ -222,7 +223,9 @@ def render_case(args: argparse.Namespace, case_manifest: Path, output_root: Path
         "solver_completeness": state.get("solver_completeness"),
         "solver_report": state.get("solver_report"),
         "v3_solver_complete": bool(state.get("v3_solver_complete")) if "v3_solver_complete" in state else None,
-        "structural_render_qc_pass": bool(frame_count_match),
+        "duration_render_qc_pass": bool(duration_render_qc_pass),
+        "visual_quality_qc_pass": False,
+        "stage9_visual_deliverable_ready": False,
         "annotation_ready": bool(solver_report.get("annotation_ready")),
         "deliverable_ready": bool(solver_report.get("deliverable_ready")),
         "accuracy_target_met": bool(solver_report.get("accuracy_target_met")),
@@ -236,13 +239,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     args.repo_root = Path(args.repo_root).resolve()
     args.output_root.mkdir(parents=True, exist_ok=True)
     reports = [render_case(args, manifest, args.output_root) for manifest in args.case_manifests]
-    structural_render_qc_pass = all(bool(row["structural_render_qc_pass"]) for row in reports)
+    duration_render_qc_pass = all(bool(row["duration_render_qc_pass"]) for row in reports)
     summary = {
-        "status": "structural_render_qc_pass" if structural_render_qc_pass else "structural_render_qc_failed",
+        "status": "duration_render_qc_pass" if duration_render_qc_pass else "duration_render_qc_failed",
         "artifact_status": "partial",
-        "artifact_kind": "structural_qc_render_collection",
+        "artifact_kind": "duration_qc_render_collection",
         "delivery_role": "qc_only_not_v17_closure",
-        "structural_render_qc_status": "pass" if structural_render_qc_pass else "fail",
+        "render_qc_scope": "duration_only_not_visual_quality",
+        "duration_render_qc_status": "pass" if duration_render_qc_pass else "fail",
+        "visual_quality_qc_pass": False,
+        "stage9_visual_deliverable_ready": False,
         "annotation_ready": bool(all(row["annotation_ready"] for row in reports)),
         "deliverable_ready": bool(all(row["deliverable_ready"] for row in reports)),
         "accuracy_target_met": bool(all(row["accuracy_target_met"] for row in reports)),
