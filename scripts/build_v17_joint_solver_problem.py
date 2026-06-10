@@ -23,6 +23,7 @@ class CaseInputs:
     object_roster: Path
     multi_object_timeline: Path
     visible_surface_report: Path
+    geometry_state_report: Path
     sparse_report: Path
     contact_mode_report: Path
     mesh_metadata: Path
@@ -92,6 +93,7 @@ def case_inputs(
     measurement_store_root: Path,
     multi_object_timeline_root: Path,
     visible_surface_root: Path,
+    geometry_state_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
 ) -> CaseInputs:
@@ -112,6 +114,10 @@ def case_inputs(
         visible_surface_root / case / "v17_multi_object_visible_surface_report.json",
         f"{case} multi-object visible-surface report",
     )
+    geometry_state_report = existing_path(
+        geometry_state_root / case / "v17_multi_object_geometry_state_report.json",
+        f"{case} multi-object geometry-state report",
+    )
     sparse_report = existing_path(
         sparse_graph_root / case / "v17_full_timeline_factor_graph_report.json",
         f"{case} sparse graph report",
@@ -130,6 +136,7 @@ def case_inputs(
         object_roster=object_roster,
         multi_object_timeline=multi_object_timeline,
         visible_surface_report=visible_surface_report,
+        geometry_state_report=geometry_state_report,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
         mesh_metadata=mesh_metadata,
@@ -293,6 +300,35 @@ def visible_surface_counts(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def geometry_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "geometry-state frame_count"),
+        "object_count": require_int(report.get("object_count"), "geometry-state object_count"),
+        "surface_frame_rows": require_int(report.get("surface_frame_rows"), "geometry-state surface_frame_rows"),
+        "rejected_visible_object_frame_rows": require_int(
+            report.get("rejected_visible_object_frame_rows"),
+            "geometry-state rejected_visible_object_frame_rows",
+        ),
+        "visible_surface_envelope_candidate_count": require_int(
+            report.get("visible_surface_envelope_candidate_count"),
+            "geometry-state visible_surface_envelope_candidate_count",
+        ),
+        "persistent_visible_surface_candidate_count": require_int(
+            report.get("persistent_visible_surface_candidate_count"),
+            "geometry-state persistent_visible_surface_candidate_count",
+        ),
+        "rigid_pose_candidate_count": require_int(
+            report.get("rigid_pose_candidate_count"), "geometry-state rigid_pose_candidate_count"
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mesh_counts(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "frame_count": require_int(metadata.get("frame_count"), "mesh metadata frame_count"),
@@ -328,6 +364,7 @@ def required_variable_families(
     roster: dict[str, Any],
     timeline: dict[str, Any],
     visible_surface: dict[str, Any],
+    geometry_state: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
     contact: dict[str, Any],
@@ -402,6 +439,13 @@ def required_variable_families(
                 "multi_object_visible_surface_rejection_reasons": visible_surface[
                     "rejection_reason_counts"
                 ],
+                "center_normalized_visible_surface_envelope_candidates": geometry_state[
+                    "visible_surface_envelope_candidate_count"
+                ],
+                "persistent_visible_surface_candidates": geometry_state[
+                    "persistent_visible_surface_candidate_count"
+                ],
+                "rigid_pose_candidates": geometry_state["rigid_pose_candidate_count"],
                 "persistent_object_shape_measurements": counts.get("persistent_object_shape", 0),
                 "local_contact_patch_measurements": counts.get("local_contact_patch", 0),
                 "object_geometry_complete": mesh["object_geometry_complete"],
@@ -420,11 +464,16 @@ def required_variable_families(
                 "current_single_stream_object_variable_frames": sparse["object_variable_frames"],
                 "required_multi_object_frame_rows": object_frame_rows,
                 "object_pose_requirement_met": sparse["object_pose_requirement_met"],
+                "visible_surface_envelope_candidates": geometry_state[
+                    "visible_surface_envelope_candidate_count"
+                ],
+                "rigid_pose_candidates": geometry_state["rigid_pose_candidate_count"],
             },
             [
                 "simultaneous object poses are missing",
                 "deformable-bag state is represented by local patches and legacy centers, not deformation variables",
                 "object pose corrections are small per-frame updates around fixed input geometry",
+                "center-normalized visible-surface envelopes do not provide material correspondence or SE(3) pose",
             ],
         ),
         variable_family(
@@ -471,6 +520,9 @@ def required_variable_families(
                 "rejected_visible_object_frame_rows": visible_surface[
                     "rejected_visible_object_frame_rows"
                 ],
+                "center_normalized_visible_surface_envelope_candidates": geometry_state[
+                    "visible_surface_envelope_candidate_count"
+                ],
             },
             [
                 "visible surfaces are now materialized as fixed measurements where mask and metric depth overlap",
@@ -500,6 +552,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     roster_payload = require_list(load_json(inputs.object_roster), f"{inputs.case} object roster")
     multi_object_timeline = require_dict(load_json(inputs.multi_object_timeline), f"{inputs.case} multi-object timeline")
     visible_surface_report = require_dict(load_json(inputs.visible_surface_report), f"{inputs.case} visible-surface report")
+    geometry_state_report = require_dict(load_json(inputs.geometry_state_report), f"{inputs.case} geometry-state report")
     sparse_report = require_dict(load_json(inputs.sparse_report), f"{inputs.case} sparse report")
     contact_report = require_dict(load_json(inputs.contact_mode_report), f"{inputs.case} contact-mode report")
     mesh_metadata = require_dict(load_json(inputs.mesh_metadata), f"{inputs.case} mesh metadata")
@@ -509,6 +562,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     contact = contact_mode_counts(contact_report)
     timeline = multi_object_timeline_counts(multi_object_timeline)
     visible_surface = visible_surface_counts(visible_surface_report)
+    geometry_state = geometry_state_counts(geometry_state_report)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
 
@@ -519,12 +573,18 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and multi-object timeline")
     if frame_count != require_int(visible_surface["frame_count"], f"{inputs.case} visible-surface frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and visible-surface report")
+    if frame_count != require_int(geometry_state["frame_count"], f"{inputs.case} geometry-state frame_count"):
+        raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and geometry-state report")
     if frame_count != require_int(mesh["frame_count"], f"{inputs.case} mesh frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and mesh metadata")
     if require_int(timeline["visible_mask_frame_rows"], f"{inputs.case} timeline visible mask rows") != require_int(
         visible_surface["visible_object_frame_rows"], f"{inputs.case} visible-surface visible rows"
     ):
         raise RuntimeError(f"{inputs.case} visible mask rows disagree between timeline and visible-surface report")
+    if require_int(visible_surface["surface_frame_rows"], f"{inputs.case} visible surface rows") != require_int(
+        geometry_state["surface_frame_rows"], f"{inputs.case} geometry-state surface rows"
+    ):
+        raise RuntimeError(f"{inputs.case} visible-surface rows disagree with geometry-state report")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -532,7 +592,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(f"{inputs.case} raw frame count {raw_frame_count} differs from graph frame count {frame_count}")
     finite_number(raw_video.get("fps"), f"{inputs.case} raw fps")
 
-    families = required_variable_families(roster, timeline, visible_surface, counts, sparse, contact, mesh)
+    families = required_variable_families(roster, timeline, visible_surface, geometry_state, counts, sparse, contact, mesh)
     unmet = [family["family"] for family in families if not bool(family["v3_requirement_met"])]
     return {
         "case": inputs.case,
@@ -547,6 +607,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "multi_object_visible_surface_report": source_summary(
                 inputs.visible_surface_report, visible_surface_report
             ),
+            "multi_object_geometry_state_report": source_summary(
+                inputs.geometry_state_report, geometry_state_report
+            ),
             "sparse_graph_report": source_summary(inputs.sparse_report, sparse_report),
             "contact_mode_report": source_summary(inputs.contact_mode_report, contact_report),
             "mesh_metadata": source_summary(inputs.mesh_metadata, mesh_metadata),
@@ -555,6 +618,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_contact_mode_graph": contact,
         "current_multi_object_timeline": timeline,
         "current_multi_object_visible_surfaces": visible_surface,
+        "current_multi_object_geometry_state": geometry_state,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
         "object_roster_audit": roster,
@@ -585,6 +649,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.measurement_store_root,
             args.multi_object_timeline_root,
             args.visible_surface_root,
+            args.geometry_state_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
         )
@@ -603,6 +668,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "sparse_graph_root": str(args.sparse_graph_root),
         "contact_mode_graph_root": str(args.contact_mode_graph_root),
         "multi_object_visible_surface_root": str(args.visible_surface_root),
+        "multi_object_geometry_state_root": str(args.geometry_state_root),
         "case_count": len(case_outputs),
         "cases": [
             {
@@ -618,6 +684,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "multi_object_visible_surface_rejected_rows": case[
                     "current_multi_object_visible_surfaces"
                 ]["rejected_visible_object_frame_rows"],
+                "visible_surface_envelope_candidate_count": case[
+                    "current_multi_object_geometry_state"
+                ]["visible_surface_envelope_candidate_count"],
+                "rigid_pose_candidate_count": case["current_multi_object_geometry_state"][
+                    "rigid_pose_candidate_count"
+                ],
                 "current_single_stream_object_variable_frames": case["current_sparse_graph"]["object_variable_frames"],
                 "contact_factor_ready_count": case["current_contact_mode_graph"]["contact_factor_ready_count"],
                 "unmet_required_variable_families": case["unmet_required_variable_families"],
@@ -661,6 +733,11 @@ def parse_args() -> argparse.Namespace:
         "--visible-surface-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_multi_object_visible_surfaces"),
+    )
+    parser.add_argument(
+        "--geometry-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_multi_object_geometry_state"),
     )
     parser.add_argument(
         "--contact-mode-graph-root",
