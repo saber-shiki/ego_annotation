@@ -23,6 +23,39 @@ def summarize(values: np.ndarray) -> dict:
     }
 
 
+def rotation_angle_rad(rot: np.ndarray) -> float:
+    cos_theta = float((np.trace(rot) - 1.0) * 0.5)
+    return float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+
+
+def cloud_support(points: np.ndarray) -> dict:
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+        raise RuntimeError("invalid point cloud support input")
+    center = np.mean(points, axis=0)
+    centered = points - center
+    radial = np.linalg.norm(centered, axis=1)
+    singular = np.linalg.svd(centered, compute_uv=False)
+    if singular.size < 3:
+        singular = np.pad(singular, (0, 3 - singular.size), constant_values=0.0)
+    rank2_ratio = float(singular[1] / singular[0]) if singular[0] > 1e-12 else 0.0
+    rank3_ratio = float(singular[2] / singular[0]) if singular[0] > 1e-12 else 0.0
+    return {
+        "center_world_m": center.astype(float).tolist(),
+        "aabb_extent_m": (np.max(points, axis=0) - np.min(points, axis=0)).astype(float).tolist(),
+        "radial_extent_m": summarize(radial),
+        "singular_values_m": singular.astype(float).tolist(),
+        "rank2_ratio": rank2_ratio,
+        "rank3_ratio": rank3_ratio,
+    }
+
+
+def finite_summary_value(summary: dict, key: str) -> float:
+    value = summary.get(key)
+    if value is None:
+        return float("nan")
+    return float(value)
+
+
 def load_track_ids(path: Path) -> np.ndarray:
     data = json.loads(path.read_text(encoding="utf-8"))
     edges = data.get("edges")
@@ -116,10 +149,28 @@ def run(args: argparse.Namespace) -> dict:
         source = world[i, keep]
         target = world[i + 1, keep]
         rot, trans, residual, solver_rows = robust_pair_fit(source, target, args)
+        source_support = cloud_support(source)
+        target_support = cloud_support(target)
+        source_center = np.asarray(source_support["center_world_m"], dtype=np.float64)
+        target_center = np.asarray(target_support["center_world_m"], dtype=np.float64)
+        centroid_displacement_m = float(np.linalg.norm(target_center - source_center))
+        angle_rad = rotation_angle_rad(rot)
+        source_radial_p95_m = finite_summary_value(source_support["radial_extent_m"], "p95")
+        target_radial_p95_m = finite_summary_value(target_support["radial_extent_m"], "p95")
+        min_radial_p95_m = float(min(source_radial_p95_m, target_radial_p95_m))
+        min_rank2_ratio = float(min(source_support["rank2_ratio"], target_support["rank2_ratio"]))
         inliers = residual <= float(args.max_inlier_residual_m)
         inlier_count = int(np.count_nonzero(inliers))
         inlier_p95 = float(np.percentile(residual[inliers], 95)) if np.any(inliers) else float("inf")
-        ready = inlier_count >= int(args.min_inlier_tracks) and inlier_p95 <= float(args.accept_inlier_p95_m)
+        readiness_checks = {
+            "min_inlier_tracks_met": bool(inlier_count >= int(args.min_inlier_tracks)),
+            "inlier_p95_met": bool(inlier_p95 <= float(args.accept_inlier_p95_m)),
+            "max_centroid_displacement_met": bool(centroid_displacement_m <= float(args.max_centroid_displacement_m)),
+            "max_rotation_angle_met": bool(angle_rad <= float(args.max_rotation_angle_rad)),
+            "min_radial_extent_met": bool(min_radial_p95_m >= float(args.min_radial_extent_m)),
+            "min_rank2_ratio_met": bool(min_rank2_ratio >= float(args.min_rank2_ratio)),
+        }
+        ready = bool(all(readiness_checks.values()))
         all_inlier_residuals.extend(residual[inliers].astype(float).tolist())
         if ready:
             ready_inlier_residuals.extend(residual[inliers].astype(float).tolist())
@@ -131,6 +182,13 @@ def run(args: argparse.Namespace) -> dict:
                 "inlier_count": inlier_count,
                 "inlier_fraction": float(np.mean(inliers)),
                 "rigid_factor_ready": bool(ready),
+                "readiness_checks": readiness_checks,
+                "rotation_angle_rad": angle_rad,
+                "centroid_displacement_m": centroid_displacement_m,
+                "min_radial_p95_m": min_radial_p95_m,
+                "min_rank2_ratio": min_rank2_ratio,
+                "source_support": source_support,
+                "target_support": target_support,
                 "rotation": rot.tolist(),
                 "translation_m": trans.tolist(),
                 "residual_m": summarize(residual),
@@ -161,6 +219,10 @@ def run(args: argparse.Namespace) -> dict:
             "huber_delta_m": float(args.huber_delta_m),
             "max_inlier_residual_m": float(args.max_inlier_residual_m),
             "accept_inlier_p95_m": float(args.accept_inlier_p95_m),
+            "max_centroid_displacement_m": float(args.max_centroid_displacement_m),
+            "max_rotation_angle_rad": float(args.max_rotation_angle_rad),
+            "min_radial_extent_m": float(args.min_radial_extent_m),
+            "min_rank2_ratio": float(args.min_rank2_ratio),
             "irls_iterations": int(args.irls_iterations),
         },
     }
@@ -180,6 +242,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--huber-delta-m", type=float, default=0.010)
     parser.add_argument("--max-inlier-residual-m", type=float, default=0.012)
     parser.add_argument("--accept-inlier-p95-m", type=float, default=0.010)
+    parser.add_argument("--max-centroid-displacement-m", type=float, default=0.080)
+    parser.add_argument("--max-rotation-angle-rad", type=float, default=0.250)
+    parser.add_argument("--min-radial-extent-m", type=float, default=0.010)
+    parser.add_argument("--min-rank2-ratio", type=float, default=0.050)
     parser.add_argument("--irls-iterations", type=int, default=8)
     return parser.parse_args()
 
