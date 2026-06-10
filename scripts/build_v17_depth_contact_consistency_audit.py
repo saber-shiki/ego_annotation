@@ -62,9 +62,21 @@ def require_str(value: Any, label: str) -> str:
     return value
 
 
+def optional_str(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    return require_str(value, label)
+
+
 def require_int(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise RuntimeError(f"{label} must be a JSON integer")
+    return value
+
+
+def require_bool(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise RuntimeError(f"{label} must be a JSON boolean")
     return value
 
 
@@ -187,6 +199,66 @@ def contact_mode_index(report: dict[str, Any]) -> dict[tuple[int, str], dict[str
     return out
 
 
+def multi_object_contact_index(report: dict[str, Any]) -> dict[tuple[int, str, str], dict[str, Any]]:
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for i, raw in enumerate(require_list(report.get("rows"), "multi-object contact rows")):
+        row = require_dict(raw, f"multi-object contact rows[{i}]")
+        out[
+            (
+                require_int(row.get("frame_idx"), "multi-object contact frame_idx"),
+                require_str(row.get("object_id"), "multi-object contact object_id"),
+                require_str(row.get("hand_side"), "multi-object contact hand_side"),
+            )
+        ] = row
+    return out
+
+
+def object_owner_state(frame: dict[str, Any], object_id: str, track_id: str) -> dict[str, Any]:
+    legacy = require_dict(frame.get("object"), "legacy object")
+    legacy_object_id = optional_str(legacy.get("object_id"), "legacy object_id")
+    legacy_track_id = optional_str(legacy.get("track_id"), "legacy track_id")
+    legacy_label = optional_str(legacy.get("label"), "legacy label")
+    objects = []
+    reconstructed_present = False
+    reconstructed_visible = False
+    for i, raw in enumerate(require_list(frame.get("objects"), "multi-object frame objects")):
+        row = require_dict(raw, f"multi-object frame objects[{i}]")
+        row_object_id = require_str(row.get("object_id"), "multi-object frame object_id")
+        row_track_id = require_str(row.get("track_id"), "multi-object frame track_id")
+        active = require_bool(row.get("active"), "multi-object frame active")
+        visible = require_bool(row.get("visible"), "multi-object frame visible")
+        objects.append(
+            {
+                "object_id": row_object_id,
+                "track_id": row_track_id,
+                "name": optional_str(row.get("name"), "multi-object frame name"),
+                "active": active,
+                "visible": visible,
+                "mask_evidence_status": optional_str(
+                    row.get("mask_evidence_status"),
+                    "multi-object mask_evidence_status",
+                ),
+            }
+        )
+        if row_object_id == object_id:
+            reconstructed_present = bool(reconstructed_present or active)
+            reconstructed_visible = bool(reconstructed_visible or (active and visible))
+    legacy_matches = bool(legacy_object_id == object_id or legacy_track_id == track_id)
+    return {
+        "reconstructed_object_id": object_id,
+        "reconstructed_track_id": track_id,
+        "legacy_single_object": {
+            "object_id": legacy_object_id,
+            "track_id": legacy_track_id,
+            "label": legacy_label,
+        },
+        "legacy_single_object_matches_reconstructed_object": legacy_matches,
+        "multi_object_frame_objects": objects,
+        "reconstructed_object_present_in_multi_object_timeline": reconstructed_present,
+        "reconstructed_object_visible_in_multi_object_timeline": reconstructed_visible,
+    }
+
+
 def hand_depth_rows(frame: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for hand in require_list(frame.get("hands"), "frame hands"):
@@ -224,6 +296,7 @@ def frame_row(
     annotation_frame: dict[str, Any],
     object_track_frame: dict[str, Any],
     contact_rows: dict[tuple[int, str], dict[str, Any]],
+    multi_object_contact_rows: dict[tuple[int, str, str], dict[str, Any]],
     mesh_samples: np.ndarray,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
@@ -258,7 +331,9 @@ def frame_row(
     )
     hand_rows = []
     reconstructed_contact_candidates = 0
+    multi_object_contact_candidates = 0
     near_reconstructed_mesh_rows = 0
+    legacy_contact_ready_rows = 0
     for hand in hand_depth_rows(annotation_frame):
         side = require_str(hand.get("side"), "hand side")
         world_vertices = np.asarray(hand["world_vertices"], dtype=np.float64)
@@ -269,6 +344,15 @@ def frame_row(
         contact_row = contact_rows.get((frame_idx, side), {})
         contact_gap = optional_float(contact_row.get("gap_p05_m"), "contact-mode gap_p05_m")
         legacy_contact_ready = bool(contact_row.get("contact_factor_ready") is True)
+        if legacy_contact_ready:
+            legacy_contact_ready_rows += 1
+        multi_contact_row = multi_object_contact_rows.get(
+            (frame_idx, require_str(job.get("object_id"), "job object_id"), side),
+            {},
+        )
+        multi_object_contact_ready = bool(multi_contact_row.get("contact_factor_ready") is True)
+        if multi_object_contact_ready:
+            multi_object_contact_candidates += 1
         near_reconstructed = bool(min_distance <= float(args.near_reconstructed_mesh_m))
         reconstructed_contact = bool(
             near_reconstructed
@@ -297,6 +381,19 @@ def frame_row(
                     "mask_distance_median_px": optional_float(
                         contact_row.get("mask_distance_median_px"),
                         "contact-mode mask_distance_median_px",
+                    ),
+                },
+                "multi_object_contact_evidence": {
+                    "contact_mode_state": multi_contact_row.get("contact_mode_state"),
+                    "geometry_source": multi_contact_row.get("geometry_source"),
+                    "contact_factor_ready": multi_object_contact_ready,
+                    "visible_surface_distance_candidate": bool(
+                        multi_contact_row.get("visible_surface_distance_candidate") is True
+                    ),
+                    "contact_distance_candidate": bool(multi_contact_row.get("contact_distance_candidate") is True),
+                    "min_symmetric_distance_m": optional_float(
+                        multi_contact_row.get("min_symmetric_distance_m"),
+                        "multi-object min_symmetric_distance_m",
                     ),
                 },
                 "near_reconstructed_mesh": near_reconstructed,
@@ -344,6 +441,13 @@ def frame_row(
         "hand_row_count": len(hand_rows),
         "near_reconstructed_mesh_hand_rows": near_reconstructed_mesh_rows,
         "reconstructed_mesh_contact_candidate_rows": reconstructed_contact_candidates,
+        "legacy_contact_ready_hand_rows": legacy_contact_ready_rows,
+        "multi_object_reconstructed_object_contact_candidate_rows": multi_object_contact_candidates,
+        "object_owner_state": object_owner_state(
+            annotation_frame,
+            require_str(job.get("object_id"), "job object_id"),
+            require_str(job.get("track_id"), "job track_id"),
+        ),
         "same_depth_state_checks": {
             "mesh_matches_visible_unidepth": bool(
                 front_surface_depth_abs_p95 <= float(args.max_same_state_depth_delta_m)
@@ -379,13 +483,22 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         args.contact_mode_graph_root / case / "v17_contact_mode_graph_report.json",
         f"{case} contact-mode graph report",
     )
+    multi_object_contact_path = existing_path(
+        args.multi_object_contact_evidence_root / case / "v17_multi_object_contact_evidence_report.json",
+        f"{case} multi-object contact evidence report",
+    )
     reconstruction = require_dict(load_json(reconstruction_path), f"{case} reconstruction results")
     annotation = require_dict(load_json(annotation_path), f"{case} graph annotations")
     contact = require_dict(load_json(contact_path), f"{case} contact-mode report")
+    multi_object_contact = require_dict(
+        load_json(multi_object_contact_path),
+        f"{case} multi-object contact evidence",
+    )
     annotation_by_frame = frame_index(
         [require_dict(row, f"{case} annotation frames") for row in require_list(annotation.get("frames"), "annotation frames")]
     )
     contact_rows = contact_mode_index(contact)
+    multi_object_contact_rows = multi_object_contact_index(multi_object_contact)
     rows: list[dict[str, Any]] = []
     jobs: list[dict[str, Any]] = []
     for job in accepted_reconstruction_jobs(reconstruction):
@@ -420,6 +533,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 annotation_frame=annotation_by_frame[frame_idx],
                 object_track_frame=object_track_by_frame[frame_idx],
                 contact_rows=contact_rows,
+                multi_object_contact_rows=multi_object_contact_rows,
                 mesh_samples=mesh_samples,
                 args=args,
             )
@@ -442,6 +556,25 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "reconstructed_mesh_contact_candidate_rows": sum(
                     require_int(row.get("reconstructed_mesh_contact_candidate_rows"), "contact candidate rows")
                     for row in job_rows
+                ),
+                "legacy_contact_ready_hand_rows": sum(
+                    require_int(row.get("legacy_contact_ready_hand_rows"), "legacy contact ready hand rows")
+                    for row in job_rows
+                ),
+                "multi_object_reconstructed_object_contact_candidate_rows": sum(
+                    require_int(
+                        row.get("multi_object_reconstructed_object_contact_candidate_rows"),
+                        "multi-object contact candidate rows",
+                    )
+                    for row in job_rows
+                ),
+                "legacy_owner_mismatch_frame_count": sum(
+                    1
+                    for row in job_rows
+                    if require_dict(row.get("object_owner_state"), "object owner state").get(
+                        "legacy_single_object_matches_reconstructed_object"
+                    )
+                    is False
                 ),
                 "reconstructed_mesh_to_hand_min_m": summarize(
                     [
@@ -517,6 +650,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "source_geometry_reconstruction_results_report": str(reconstruction_path),
         "source_graph_annotations": str(annotation_path),
         "source_contact_mode_graph_report": str(contact_path),
+        "source_multi_object_contact_evidence_report": str(multi_object_contact_path),
         "accepted_reconstruction_job_count": len(jobs),
         "evaluated_frame_count": len(rows),
         "evaluated_hand_rows": sum(len(require_list(row.get("hand_rows"), "hand rows")) for row in rows),
@@ -527,6 +661,25 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "reconstructed_mesh_contact_candidate_rows": sum(
             require_int(row.get("reconstructed_mesh_contact_candidate_rows"), "mesh contact candidate rows")
             for row in rows
+        ),
+        "legacy_contact_ready_hand_rows": sum(
+            require_int(row.get("legacy_contact_ready_hand_rows"), "legacy contact ready hand rows")
+            for row in rows
+        ),
+        "multi_object_reconstructed_object_contact_candidate_rows": sum(
+            require_int(
+                row.get("multi_object_reconstructed_object_contact_candidate_rows"),
+                "multi-object reconstructed object contact candidate rows",
+            )
+            for row in rows
+        ),
+        "legacy_owner_mismatch_frame_count": sum(
+            1
+            for row in rows
+            if require_dict(row.get("object_owner_state"), "object owner state").get(
+                "legacy_single_object_matches_reconstructed_object"
+            )
+            is False
         ),
         "shared_depth_state_ready_frame_count": sum(1 for row in rows if shared_depth_state_ready(row)),
         "depth_owner_incompatibility_count": sum(
@@ -642,6 +795,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("reconstructed_mesh_contact_candidate_rows"),
                     "reconstructed mesh contact candidate rows",
                 ),
+                "legacy_contact_ready_hand_rows": require_int(
+                    report.get("legacy_contact_ready_hand_rows"),
+                    "legacy contact ready hand rows",
+                ),
+                "multi_object_reconstructed_object_contact_candidate_rows": require_int(
+                    report.get("multi_object_reconstructed_object_contact_candidate_rows"),
+                    "multi-object reconstructed object contact candidate rows",
+                ),
+                "legacy_owner_mismatch_frame_count": require_int(
+                    report.get("legacy_owner_mismatch_frame_count"),
+                    "legacy owner mismatch frame count",
+                ),
                 "shared_depth_state_ready_frame_count": require_int(
                     report.get("shared_depth_state_ready_frame_count"),
                     "shared depth ready frame count",
@@ -670,6 +835,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "reconstructed_mesh_contact_candidate_rows": sum(
             require_int(report.get("reconstructed_mesh_contact_candidate_rows"), "mesh contact candidates")
+            for report in reports
+        ),
+        "legacy_contact_ready_hand_rows": sum(
+            require_int(report.get("legacy_contact_ready_hand_rows"), "legacy contact ready hand rows")
+            for report in reports
+        ),
+        "multi_object_reconstructed_object_contact_candidate_rows": sum(
+            require_int(
+                report.get("multi_object_reconstructed_object_contact_candidate_rows"),
+                "multi-object reconstructed object contact candidate rows",
+            )
+            for report in reports
+        ),
+        "legacy_owner_mismatch_frame_count": sum(
+            require_int(report.get("legacy_owner_mismatch_frame_count"), "legacy owner mismatch frame count")
             for report in reports
         ),
         "shared_depth_state_ready_frame_count": sum(
@@ -710,6 +890,11 @@ def parse_args() -> argparse.Namespace:
         "--contact-mode-graph-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_contact_mode_graph"),
+    )
+    parser.add_argument(
+        "--multi-object-contact-evidence-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_multi_object_contact_evidence"),
     )
     parser.add_argument(
         "--output-root",

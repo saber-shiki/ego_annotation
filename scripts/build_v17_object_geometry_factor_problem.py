@@ -389,6 +389,24 @@ def depth_contact_consistency(rows: list[dict[str, Any]]) -> dict[str, Any]:
             )
             for row in rows
         ),
+        "legacy_contact_ready_hand_rows": sum(
+            require_int(row.get("legacy_contact_ready_hand_rows"), "legacy contact ready hand rows") for row in rows
+        ),
+        "multi_object_reconstructed_object_contact_candidate_rows": sum(
+            require_int(
+                row.get("multi_object_reconstructed_object_contact_candidate_rows"),
+                "multi-object reconstructed object contact candidate rows",
+            )
+            for row in rows
+        ),
+        "legacy_owner_mismatch_frame_count": sum(
+            1
+            for row in rows
+            if require_dict(row.get("object_owner_state"), "object owner state").get(
+                "legacy_single_object_matches_reconstructed_object"
+            )
+            is False
+        ),
         "shared_depth_state_ready_frame_count": sum(
             1 for row in rows if row.get("shared_depth_state_ready") is True
         ),
@@ -785,6 +803,11 @@ def readiness_checks(
                 "reconstructed_mesh_contact_candidate_rows",
             )
             > 0
+            and require_int(
+                depth_contact.get("legacy_owner_mismatch_frame_count"),
+                "legacy_owner_mismatch_frame_count",
+            )
+            == 0
         ),
         "source_compatible_with_visible_surface_geometry": len(conflicts) == 0,
     }
@@ -799,7 +822,7 @@ def blocked_reasons(checks: dict[str, bool]) -> list[str]:
         "orientation_observable": "orientation is not observable from current geometry seed",
         "contact_factor_ready_against_multi_object_geometry": "no contact factors are ready against multi-object geometry",
         "shared_depth_contact_state_available": "no shared depth/contact state links accepted reconstruction meshes to current hand geometry",
-        "source_compatible_with_visible_surface_geometry": "local patch or legacy geometry conflicts with visible-surface geometry",
+        "source_compatible_with_visible_surface_geometry": "local patch, legacy geometry, or legacy contact ownership conflicts with visible-surface geometry",
     }
     return [message for key, message in messages.items() if checks.get(key) is not True]
 
@@ -1082,6 +1105,27 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             for block in row["factor_blocks"]
             if block.get("factor_block") == "depth_contact_consistency"
         ),
+        "depth_contact_legacy_contact_ready_hand_rows": sum(
+            require_int(block.get("legacy_contact_ready_hand_rows"), "legacy contact ready hand rows")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
+        "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": sum(
+            require_int(
+                block.get("multi_object_reconstructed_object_contact_candidate_rows"),
+                "multi-object reconstructed object contact candidate rows",
+            )
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
+        "depth_contact_legacy_owner_mismatch_frame_count": sum(
+            require_int(block.get("legacy_owner_mismatch_frame_count"), "legacy owner mismatch frame count")
+            for row in object_rows
+            for block in row["factor_blocks"]
+            if block.get("factor_block") == "depth_contact_consistency"
+        ),
         "depth_contact_shared_depth_state_ready_frame_count": sum(
             require_int(block.get("shared_depth_state_ready_frame_count"), "shared depth ready frames")
             for row in object_rows
@@ -1155,6 +1199,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "depth-contact depth_owner_incompatibility_count",
     ):
         raise RuntimeError(f"{case} depth-contact incompatibility count disagrees with report")
+    if summary_counts["depth_contact_legacy_owner_mismatch_frame_count"] != require_int(
+        depth_contact.get("legacy_owner_mismatch_frame_count"),
+        "depth-contact legacy_owner_mismatch_frame_count",
+    ):
+        raise RuntimeError(f"{case} depth-contact legacy owner mismatch count disagrees with report")
 
     report = {
         "method": "build_v17_object_geometry_factor_problem",
@@ -1309,6 +1358,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("depth_contact_reconstructed_mesh_contact_candidate_rows"),
                     "depth_contact_reconstructed_mesh_contact_candidate_rows",
                 ),
+                "depth_contact_legacy_contact_ready_hand_rows": require_int(
+                    report.get("depth_contact_legacy_contact_ready_hand_rows"),
+                    "depth_contact_legacy_contact_ready_hand_rows",
+                ),
+                "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": require_int(
+                    report.get("depth_contact_multi_object_reconstructed_object_contact_candidate_rows"),
+                    "depth_contact_multi_object_reconstructed_object_contact_candidate_rows",
+                ),
+                "depth_contact_legacy_owner_mismatch_frame_count": require_int(
+                    report.get("depth_contact_legacy_owner_mismatch_frame_count"),
+                    "depth_contact_legacy_owner_mismatch_frame_count",
+                ),
                 "depth_contact_shared_depth_state_ready_frame_count": require_int(
                     report.get("depth_contact_shared_depth_state_ready_frame_count"),
                     "depth_contact_shared_depth_state_ready_frame_count",
@@ -1459,6 +1520,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             require_int(
                 report.get("depth_contact_reconstructed_mesh_contact_candidate_rows"),
                 "depth-contact reconstructed mesh contact candidate rows",
+            )
+            for report in reports
+        ),
+        "depth_contact_legacy_contact_ready_hand_rows": sum(
+            require_int(
+                report.get("depth_contact_legacy_contact_ready_hand_rows"),
+                "depth-contact legacy contact ready hand rows",
+            )
+            for report in reports
+        ),
+        "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": sum(
+            require_int(
+                report.get("depth_contact_multi_object_reconstructed_object_contact_candidate_rows"),
+                "depth-contact multi-object reconstructed object contact candidate rows",
+            )
+            for report in reports
+        ),
+        "depth_contact_legacy_owner_mismatch_frame_count": sum(
+            require_int(
+                report.get("depth_contact_legacy_owner_mismatch_frame_count"),
+                "depth-contact legacy owner mismatch frame count",
             )
             for report in reports
         ),

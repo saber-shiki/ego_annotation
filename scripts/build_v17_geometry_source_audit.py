@@ -492,6 +492,18 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 depth_contact.get("reconstructed_mesh_contact_candidate_rows"),
                 "depth-contact reconstructed_mesh_contact_candidate_rows",
             ),
+            "legacy_contact_ready_hand_rows_on_accepted_reconstruction_window": require_int(
+                depth_contact.get("legacy_contact_ready_hand_rows"),
+                "depth-contact legacy_contact_ready_hand_rows",
+            ),
+            "multi_object_reconstructed_object_contact_candidate_rows": require_int(
+                depth_contact.get("multi_object_reconstructed_object_contact_candidate_rows"),
+                "depth-contact multi_object_reconstructed_object_contact_candidate_rows",
+            ),
+            "legacy_owner_mismatch_frame_count": require_int(
+                depth_contact.get("legacy_owner_mismatch_frame_count"),
+                "depth-contact legacy_owner_mismatch_frame_count",
+            ),
             "shared_depth_state_ready_frame_count": require_int(
                 depth_contact.get("shared_depth_state_ready_frame_count"),
                 "depth-contact shared_depth_state_ready_frame_count",
@@ -567,6 +579,13 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 )
                 == 0
             ),
+            "legacy_contact_rows_name_the_accepted_reconstruction_object": bool(
+                require_int(
+                    depth_contact.get("legacy_owner_mismatch_frame_count"),
+                    "depth-contact legacy owner mismatch frames",
+                )
+                == 0
+            ),
             "partial_material_pose_replay_is_complete_object_geometry": False,
             "unified_object_geometry_source_ready": False,
             "contact_factor_source_compatible_with_multi_object_geometry": False,
@@ -578,6 +597,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "multi-object visible RGBD surfaces are object-mask measurements without canonical topology or pose variables",
             "partial material-pose replay candidates cover only short observed-surface segments and do not own hidden geometry",
             "accepted short-segment reconstruction meshes currently use the UniDepth object-depth state, while the legacy hand/contact graph uses a different source-camera depth state",
+            "accepted short-segment reconstruction meshes belong to explicit multi-object ids, while legacy contact rows come from a single-object stream without object ownership",
         ],
         "annotation_ready": False,
         "deliverable_ready": False,

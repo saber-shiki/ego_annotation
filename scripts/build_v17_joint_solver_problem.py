@@ -929,6 +929,18 @@ def object_geometry_factor_problem_counts(report: dict[str, Any]) -> dict[str, A
             report.get("depth_contact_reconstructed_mesh_contact_candidate_rows"),
             "object-geometry factor depth_contact_reconstructed_mesh_contact_candidate_rows",
         ),
+        "depth_contact_legacy_contact_ready_hand_rows": require_int(
+            report.get("depth_contact_legacy_contact_ready_hand_rows"),
+            "object-geometry factor depth_contact_legacy_contact_ready_hand_rows",
+        ),
+        "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": require_int(
+            report.get("depth_contact_multi_object_reconstructed_object_contact_candidate_rows"),
+            "object-geometry factor depth_contact_multi_object_reconstructed_object_contact_candidate_rows",
+        ),
+        "depth_contact_legacy_owner_mismatch_frame_count": require_int(
+            report.get("depth_contact_legacy_owner_mismatch_frame_count"),
+            "object-geometry factor depth_contact_legacy_owner_mismatch_frame_count",
+        ),
         "depth_contact_shared_depth_state_ready_frame_count": require_int(
             report.get("depth_contact_shared_depth_state_ready_frame_count"),
             "object-geometry factor depth_contact_shared_depth_state_ready_frame_count",
@@ -1103,6 +1115,18 @@ def depth_contact_consistency_counts(report: dict[str, Any]) -> dict[str, Any]:
         "reconstructed_mesh_contact_candidate_rows": require_int(
             report.get("reconstructed_mesh_contact_candidate_rows"),
             "depth-contact reconstructed_mesh_contact_candidate_rows",
+        ),
+        "legacy_contact_ready_hand_rows": require_int(
+            report.get("legacy_contact_ready_hand_rows"),
+            "depth-contact legacy_contact_ready_hand_rows",
+        ),
+        "multi_object_reconstructed_object_contact_candidate_rows": require_int(
+            report.get("multi_object_reconstructed_object_contact_candidate_rows"),
+            "depth-contact multi_object_reconstructed_object_contact_candidate_rows",
+        ),
+        "legacy_owner_mismatch_frame_count": require_int(
+            report.get("legacy_owner_mismatch_frame_count"),
+            "depth-contact legacy_owner_mismatch_frame_count",
         ),
         "shared_depth_state_ready_frame_count": require_int(
             report.get("shared_depth_state_ready_frame_count"),
@@ -1360,6 +1384,9 @@ def required_variable_families(
                 "depth_contact_near_reconstructed_mesh_hand_rows": depth_contact_consistency[
                     "near_reconstructed_mesh_hand_rows"
                 ],
+                "depth_contact_legacy_owner_mismatch_frame_count": depth_contact_consistency[
+                    "legacy_owner_mismatch_frame_count"
+                ],
                 "depth_contact_owner_incompatibility_count": depth_contact_consistency[
                     "depth_owner_incompatibility_count"
                 ],
@@ -1393,6 +1420,7 @@ def required_variable_families(
                 "object-centric geometry factor blocks are now materialized but no object is activatable for solving",
                 "accepted hidden-topology reconstructions exist only for short observed-surface seed windows and are not full-interval or contact-compatible object geometry",
                 "accepted reconstructions are in the visible-depth state, while the current hand/contact graph uses a different source-camera depth state",
+                "legacy contact rows in accepted reconstruction windows do not name the reconstructed multi-object id",
                 "topology/deformation variables are not optimized",
             ],
         ),
@@ -1482,6 +1510,15 @@ def required_variable_families(
                 "depth_contact_reconstructed_mesh_contact_candidate_rows": depth_contact_consistency[
                     "reconstructed_mesh_contact_candidate_rows"
                 ],
+                "depth_contact_legacy_contact_ready_hand_rows": depth_contact_consistency[
+                    "legacy_contact_ready_hand_rows"
+                ],
+                "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": depth_contact_consistency[
+                    "multi_object_reconstructed_object_contact_candidate_rows"
+                ],
+                "depth_contact_legacy_owner_mismatch_frame_count": depth_contact_consistency[
+                    "legacy_owner_mismatch_frame_count"
+                ],
                 "depth_contact_shared_depth_state_ready_frame_count": depth_contact_consistency[
                     "shared_depth_state_ready_frame_count"
                 ],
@@ -1509,6 +1546,7 @@ def required_variable_families(
                 "visible-surface replay tests only observed surfaces and does not reconstruct hidden topology",
                 "observed-surface geometry seeds are short-segment canonical seeds, not full active-interval object pose timelines",
                 "accepted RGBD reconstructions are short-window mesh and pose evidence, not full active-interval object pose timelines",
+                "legacy contact rows in accepted reconstruction windows are attached to the legacy single-object stream, not to the reconstructed object id",
                 "accepted RGBD reconstructions do not share a contact-depth state with current MANO geometry",
                 "object-centric pose factors are listed but no object has a complete geometry state that can own them",
                 "object-pose evidence is not source-compatible with the current contact factors",
@@ -1563,6 +1601,15 @@ def required_variable_families(
                 "depth_contact_reconstructed_mesh_contact_candidate_rows": depth_contact_consistency[
                     "reconstructed_mesh_contact_candidate_rows"
                 ],
+                "depth_contact_legacy_contact_ready_hand_rows": depth_contact_consistency[
+                    "legacy_contact_ready_hand_rows"
+                ],
+                "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": depth_contact_consistency[
+                    "multi_object_reconstructed_object_contact_candidate_rows"
+                ],
+                "depth_contact_legacy_owner_mismatch_frame_count": depth_contact_consistency[
+                    "legacy_owner_mismatch_frame_count"
+                ],
                 "depth_contact_shared_depth_state_ready_frame_count": depth_contact_consistency[
                     "shared_depth_state_ready_frame_count"
                 ],
@@ -1574,6 +1621,7 @@ def required_variable_families(
                 "contact-mode ready rows have no same-frame multi-object visible-surface contact candidates",
                 "object-centric contact factor blocks have zero factor-ready rows against multi-object geometry",
                 "accepted reconstruction meshes have no near-contact hand rows under the current depth state",
+                "legacy contact factors are not object-id-owned in accepted reconstruction windows",
                 "unobserved rows do not carry uncertainty variables or prediction/update state",
             ],
         ),
@@ -1665,6 +1713,9 @@ def required_variable_families(
                 "depth_contact_owner_incompatibility_count": depth_contact_consistency[
                     "depth_owner_incompatibility_count"
                 ],
+                "depth_contact_legacy_owner_mismatch_frame_count": depth_contact_consistency[
+                    "legacy_owner_mismatch_frame_count"
+                ],
                 "source_incompatibility_count": geometry_source_audit[
                     "source_incompatibility_count"
                 ],
@@ -1682,6 +1733,7 @@ def required_variable_families(
                 "broad hand-object distances remain diagnostics rather than physical constraints",
                 "physical terms cannot share one object state until geometry-source ownership is unified",
                 "physical contact terms cannot attach to accepted reconstruction meshes until depth ownership is unified",
+                "physical contact terms cannot attach to accepted reconstruction meshes until contact ownership names the same object id",
             ],
         ),
     ]
@@ -2125,6 +2177,14 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} object-geometry factor depth-contact incompatibility count",
     ):
         raise RuntimeError(f"{inputs.case} depth-contact incompatibility count disagrees with factor problem")
+    if require_int(
+        depth_contact_consistency["legacy_owner_mismatch_frame_count"],
+        f"{inputs.case} depth-contact legacy owner mismatch count",
+    ) != require_int(
+        object_geometry_factor_problem["depth_contact_legacy_owner_mismatch_frame_count"],
+        f"{inputs.case} object-geometry factor depth-contact legacy owner mismatch count",
+    ):
+        raise RuntimeError(f"{inputs.case} depth-contact legacy owner mismatch count disagrees with factor problem")
 
     raw_video = require_dict(load_json(Path(require_str(manifest.get("manifest"), "v16 manifest path"))).get("raw_video"), "raw_video")
     raw_frame_count = require_int(raw_video.get("frame_count"), f"{inputs.case} raw_video.frame_count")
@@ -2489,6 +2549,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "depth_contact_reconstructed_mesh_contact_candidate_rows": case[
                     "current_depth_contact_consistency_audit"
                 ]["reconstructed_mesh_contact_candidate_rows"],
+                "depth_contact_legacy_contact_ready_hand_rows": case[
+                    "current_depth_contact_consistency_audit"
+                ]["legacy_contact_ready_hand_rows"],
+                "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": case[
+                    "current_depth_contact_consistency_audit"
+                ]["multi_object_reconstructed_object_contact_candidate_rows"],
+                "depth_contact_legacy_owner_mismatch_frame_count": case[
+                    "current_depth_contact_consistency_audit"
+                ]["legacy_owner_mismatch_frame_count"],
                 "depth_contact_shared_depth_state_ready_frame_count": case[
                     "current_depth_contact_consistency_audit"
                 ]["shared_depth_state_ready_frame_count"],
@@ -2634,6 +2703,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "depth_contact_reconstructed_mesh_contact_candidate_rows": sum(
             case["current_depth_contact_consistency_audit"]["reconstructed_mesh_contact_candidate_rows"]
+            for case in case_outputs
+        ),
+        "depth_contact_legacy_contact_ready_hand_rows": sum(
+            case["current_depth_contact_consistency_audit"]["legacy_contact_ready_hand_rows"]
+            for case in case_outputs
+        ),
+        "depth_contact_multi_object_reconstructed_object_contact_candidate_rows": sum(
+            case["current_depth_contact_consistency_audit"][
+                "multi_object_reconstructed_object_contact_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "depth_contact_legacy_owner_mismatch_frame_count": sum(
+            case["current_depth_contact_consistency_audit"]["legacy_owner_mismatch_frame_count"]
             for case in case_outputs
         ),
         "depth_contact_shared_depth_state_ready_frame_count": sum(
