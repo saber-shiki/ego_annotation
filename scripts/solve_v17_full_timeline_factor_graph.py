@@ -985,6 +985,9 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     object_shift_max = shifts["object_shift_norm_m"]["max"]
     object_rot_max = shifts["object_rotvec_norm_rad"]["max"]
     hand_shift_max = shifts["hand_ray_shift_abs_m"]["max"]
+    object_shift_p95 = shifts["object_shift_norm_m"]["p95"]
+    object_rot_p95 = shifts["object_rotvec_norm_rad"]["p95"]
+    hand_shift_p95 = shifts["hand_ray_shift_abs_m"]["p95"]
     rejection_reasons: list[str] = []
     if len(graph.contact_pairs) == 0:
         rejection_reasons.append("no_selected_contact_constraints")
@@ -1026,6 +1029,23 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         and hand_shift_max is not None
         and float(hand_shift_max) <= float(args.accept_hand_ray_shift_max_m)
     )
+    evidence_consistency_failure_reasons: list[str] = []
+    if after_contact.get("p95_m_p95") is None:
+        evidence_consistency_failure_reasons.append("local_contact_p95_unavailable")
+    elif float(after_contact["p95_m_p95"]) > float(args.accuracy_target_m):
+        evidence_consistency_failure_reasons.append("local_contact_p95_exceeds_target")
+    if object_shift_p95 is None:
+        evidence_consistency_failure_reasons.append("object_shift_p95_unavailable")
+    elif float(object_shift_p95) > float(args.accuracy_target_m):
+        evidence_consistency_failure_reasons.append("object_shift_p95_exceeds_target")
+    if object_rot_p95 is None:
+        evidence_consistency_failure_reasons.append("object_rotation_p95_unavailable")
+    elif float(object_rot_p95) > float(args.accuracy_object_rot_target_rad):
+        evidence_consistency_failure_reasons.append("object_rotation_p95_exceeds_target")
+    if hand_shift_p95 is None:
+        evidence_consistency_failure_reasons.append("hand_ray_shift_p95_unavailable")
+    elif float(hand_shift_p95) > float(args.accuracy_target_m):
+        evidence_consistency_failure_reasons.append("hand_ray_shift_p95_exceeds_target")
     case_dir = output_root / case
     case_dir.mkdir(parents=True, exist_ok=True)
     corrected_archive = case_dir / "object_meshes_v17_full_timeline_graph.npz"
@@ -1044,20 +1064,20 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
     )
     skipped_contact_factor_count = len(graph.skipped_contacts)
     structural_consistency_pass = bool(accepted)
-    accuracy_target_met = bool(
+    sparse_graph_evidence_consistency_target_met = bool(
         after_contact.get("p95_m_p95") is not None
         and float(after_contact["p95_m_p95"]) <= float(args.accuracy_target_m)
-        and broad_contact_after.get("p95_m_p95") is not None
-        and float(broad_contact_after["p95_m_p95"]) <= float(args.accuracy_target_m)
-        and object_shift_max is not None
-        and float(object_shift_max) <= float(args.accuracy_target_m)
-        and object_rot_max is not None
-        and float(object_rot_max) <= float(args.accuracy_object_rot_target_rad)
-        and hand_shift_max is not None
-        and float(hand_shift_max) <= float(args.accuracy_target_m)
+        and object_shift_p95 is not None
+        and float(object_shift_p95) <= float(args.accuracy_target_m)
+        and object_rot_p95 is not None
+        and float(object_rot_p95) <= float(args.accuracy_object_rot_target_rad)
+        and hand_shift_p95 is not None
+        and float(hand_shift_p95) <= float(args.accuracy_target_m)
     )
     contact_factor_complete = skipped_contact_factor_count == 0
-    deliverable_ready = bool(structural_consistency_pass and accuracy_target_met and contact_factor_complete)
+    accuracy_target_met = False
+    accuracy_failure_reasons = ["complete_v3_joint_camera_mano_object_depth_contact_solver_remains_open"]
+    deliverable_ready = False
     status = ACCEPTED_STATUS if structural_consistency_pass and contact_factor_complete else PARTIAL_STATUS if structural_consistency_pass else REJECTED_STATUS
     contact_constraint_rule = (
         "When --contact-mode-graph-root is provided, only contact_factor_ready rows from the accepted contact-mode graph become contact factors. "
@@ -1068,8 +1088,9 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
         "status": status,
         "structural_consistency_pass": bool(structural_consistency_pass),
         "accuracy_target_met": bool(accuracy_target_met),
-        "annotation_ready": bool(deliverable_ready),
-        "deliverable_ready": bool(deliverable_ready),
+        "sparse_graph_evidence_consistency_target_met": bool(sparse_graph_evidence_consistency_target_met),
+        "annotation_ready": False,
+        "deliverable_ready": False,
         "solver_completeness": SOLVER_COMPLETENESS,
         "v3_solver_complete": False,
         "method": "solve_v17_full_timeline_factor_graph",
@@ -1081,7 +1102,7 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             ],
             "fixed_variables": ["camera trajectory", "MANO articulation and shape", "object mesh topology", "contact mode labels from current V17 evidence"],
             "contact_constraint_rule": contact_constraint_rule,
-            "contact_factor_semantics": "Contact equality is imposed on the nearest local MANO surface patch, not on the whole hand mesh. Broader nearest-surface distances are reported separately as residual evidence.",
+            "contact_factor_semantics": "Contact equality is imposed on the nearest local MANO surface patch, not on the whole hand mesh. Broader nearest-surface distances are reported separately as support-size sensitivity evidence because non-contact hand surface should not be forced onto the object.",
             "claim_limit": "This sparse graph tests full-timeline consistency of accepted evidence under bounded object translation, small-angle object rotation, hand depth corrections, and local contact-patch correspondences. The complete V3 joint camera-MANO-object-depth-contact solver remains open.",
         },
         "contact_factor_source": contact_factor_source,
@@ -1128,13 +1149,21 @@ def solve_case(args: argparse.Namespace, case_manifest: Path, output_root: Path)
             "accept_hand_ray_shift_max_m": float(args.accept_hand_ray_shift_max_m),
             "accuracy_target_m": float(args.accuracy_target_m),
             "accuracy_object_rot_target_rad": float(args.accuracy_object_rot_target_rad),
-            "accuracy_requires_broad_contact_p95": True,
+            "accuracy_scope": "not_met_complete_v3_joint_camera_mano_object_depth_contact_solver_remains_open",
+            "local_evidence_consistency_requires_broad_contact_p95": False,
+            "evidence_consistency_contact_metric": "local modeled contact patch p95-of-p95",
+            "evidence_consistency_correction_metric": "p95 correction magnitude over the full timeline, with max values retained as outlier evidence",
             "broad_contact_metric_points": int(args.broad_contact_metric_points),
+            "broad_contact_metric_semantics": "diagnostic support-size sensitivity; not all nearest broad hand-surface vertices are physically required to be in contact",
             "structural_consistency_passed": bool(structural_consistency_pass),
             "accuracy_target_met": bool(accuracy_target_met),
+            "sparse_graph_evidence_consistency_target_met": bool(sparse_graph_evidence_consistency_target_met),
             "contact_factor_complete": bool(contact_factor_complete),
-            "deliverable_ready": bool(deliverable_ready),
+            "deliverable_ready": False,
+            "deliverable_blocker": "complete_v3_joint_camera_mano_object_depth_contact_solver_remains_open",
             "rejection_reasons": rejection_reasons,
+            "accuracy_failure_reasons": accuracy_failure_reasons,
+            "evidence_consistency_failure_reasons": evidence_consistency_failure_reasons,
         },
     }
     write_json(report_path, report)
@@ -1161,10 +1190,12 @@ def solve(args: argparse.Namespace) -> dict[str, Any]:
     args.output_root.mkdir(parents=True, exist_ok=True)
     cases = [solve_case(args, manifest, args.output_root) for manifest in args.case_manifests]
     summary = {
-        "status": "deliverable_ready" if all(case["deliverable_ready"] for case in cases) else "partial",
+        "status": "partial",
         "structural_consistency_status": "pass" if all(case["structural_consistency_pass"] for case in cases) else "fail",
-        "accuracy_target_status": "pass" if all(case["accuracy_target_met"] for case in cases) else "fail",
-        "deliverable_ready": bool(all(case["deliverable_ready"] for case in cases)),
+        "sparse_graph_evidence_consistency_status": "pass" if all(case.get("sparse_graph_evidence_consistency_target_met") for case in cases) else "fail",
+        "accuracy_target_status": "fail",
+        "deliverable_ready": False,
+        "deliverable_blocker": "complete_v3_joint_camera_mano_object_depth_contact_solver_remains_open",
         "method": "solve_v17_full_timeline_factor_graph",
         "cases": cases,
     }
@@ -1208,7 +1239,7 @@ def parse_args() -> argparse.Namespace:
         ],
     )
     parser.add_argument("--max-hand-points", type=int, default=778)
-    parser.add_argument("--max-contact-points", type=int, default=20)
+    parser.add_argument("--max-contact-points", type=int, default=16)
     parser.add_argument("--broad-contact-metric-points", type=int, default=80)
     parser.add_argument("--contact-correspondence-iterations", type=int, default=20)
     parser.add_argument("--max-hand-median-px", type=float, default=45.0)
