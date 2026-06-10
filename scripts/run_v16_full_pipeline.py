@@ -890,7 +890,7 @@ def run(args: argparse.Namespace) -> dict:
         "object_mask_qc": str(args.object_mask_qc) if args.object_mask_qc else None,
         "object_mesh_qc": str(args.output_dir / "object_mesh_qc.json"),
         "timeline_qc": str(args.output_dir / "v16_full_timeline_qc.json"),
-        "factor_graph_qc": str(args.output_dir / "v16_full_timeline_qc.json"),
+        "timeline_residual_qc": str(args.output_dir / "v16_full_timeline_qc.json"),
         "render_qc": render_report,
         "visual_inspection_sheet": inspection,
         "delivered_object_stream": {

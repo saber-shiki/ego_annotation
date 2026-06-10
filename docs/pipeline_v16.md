@@ -268,7 +268,7 @@ camera_qc
 hand_qc
 object_mask_qc
 object_mesh_qc
-factor_graph_qc
+timeline_residual_qc
 render_qc
 visual_inspection_sheet
 failure_rows

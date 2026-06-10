@@ -80,6 +80,8 @@ def hand_contact_anchor(
     mask_path: Path,
     image_near_px: float,
     min_near_vertices: int,
+    required_hand_side: str | None,
+    required_repair_candidate_id: str | None,
 ) -> dict[str, Any]:
     hands = frame.get("hands")
     if not isinstance(hands, list) or not hands:
@@ -88,6 +90,10 @@ def hand_contact_anchor(
     for hand_i, hand in enumerate(hands):
         if not isinstance(hand, dict):
             raise RuntimeError(f"frame {frame.get('frame_idx')} hand row {hand_i} is not a JSON object")
+        if required_hand_side is not None and hand.get("side") != required_hand_side:
+            continue
+        if required_repair_candidate_id is not None and hand.get("v17_repair_candidate_id") != required_repair_candidate_id:
+            continue
         vertices = np.asarray(hand.get("vertices_world_m"), dtype=np.float64)
         if vertices.ndim != 2 or vertices.shape[1] != 3 or not np.isfinite(vertices).all():
             continue
@@ -121,6 +127,7 @@ def hand_contact_anchor(
             {
                 "hand_index": hand_i,
                 "hand_side": hand.get("side"),
+                "hand_repair_candidate_id": hand.get("v17_repair_candidate_id"),
                 "near_vertices": near_count,
                 "image_distance_px_median": float(np.nanmedian(d[np.isfinite(d)])),
                 "image_distance_px_min": float(np.nanmin(d)),
@@ -130,7 +137,13 @@ def hand_contact_anchor(
             }
         )
     if not candidates:
-        raise RuntimeError(f"frame {frame.get('frame_idx')} has no hand vertices within {image_near_px}px of {mask_path}")
+        constraints = {
+            "required_hand_side": required_hand_side,
+            "required_repair_candidate_id": required_repair_candidate_id,
+        }
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')} has no matching hand vertices within {image_near_px}px of {mask_path}: {constraints}"
+        )
     return sorted(candidates, key=lambda row: (-int(row["near_vertices"]), float(row["image_distance_px_median"])))[0]
 
 
@@ -153,7 +166,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         mask_path = Path(str(object_row["mask_path"]))
         if cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) is None:
             raise RuntimeError(f"failed to read object mask {mask_path}")
-        anchor = hand_contact_anchor(frame, mask_path, float(args.image_near_px), int(args.min_near_vertices))
+        anchor = hand_contact_anchor(
+            frame,
+            mask_path,
+            float(args.image_near_px),
+            int(args.min_near_vertices),
+            args.required_hand_side,
+            args.required_repair_candidate_id,
+        )
         repair_frame = dict(frame)
         repair_frame["object"] = dict(frame.get("object", {}))
         repair_frame["object"]["label"] = args.object_id
@@ -254,6 +274,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-vertices", type=int, default=100)
     parser.add_argument("--min-faces", type=int, default=100)
     parser.add_argument("--max-triangle-edge-m", type=float, default=0.06)
+    parser.add_argument("--required-hand-side", choices=("left", "right"))
+    parser.add_argument("--required-repair-candidate-id")
     return parser.parse_args()
 
 

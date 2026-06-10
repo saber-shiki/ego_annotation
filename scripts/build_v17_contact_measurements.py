@@ -164,7 +164,7 @@ def contact_measurement(
     if contact_state.startswith("candidate_contact") and not hand_measurement_valid:
         contact_state = "contact_evidence_requires_hand_repair"
     return {
-        "measurement_id": f"contact:v17:{idx}:{hand['side']}:{hand['hand_index']}",
+        "measurement_id": f"{args.measurement_id_prefix}:{idx}:{hand['side']}:{hand['hand_index']}",
         "frame_idx": idx,
         "entity_type": "contact",
         "entity_id": f"contact:{hand['side']}:object",
@@ -242,6 +242,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-hand-vertices-image", type=int, default=778)
     parser.add_argument("--max-hand-vertices-3d", type=int, default=180)
     parser.add_argument("--max-object-vertices-3d", type=int, default=2200)
+    parser.add_argument("--measurement-id-prefix", default="contact:v17")
     return parser.parse_args()
 
 

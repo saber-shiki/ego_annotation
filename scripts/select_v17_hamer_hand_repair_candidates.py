@@ -80,9 +80,47 @@ def group_choice(
     return sorted(candidates, key=sort_key)[0]
 
 
+def side_priors(paths: list[Path]) -> dict[int, str]:
+    counts: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for path in paths:
+        rows = load_json(path)
+        if not isinstance(rows, list):
+            raise RuntimeError(f"{path} must contain a JSON list")
+        for row_i, raw in enumerate(rows):
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"{path} row {row_i} is not a JSON object")
+            if raw.get("measurement_available") is False:
+                continue
+            if raw.get("failure_reason") is not None:
+                continue
+            side = raw.get("side")
+            if side not in ("left", "right"):
+                entity_id = raw.get("entity_id")
+                if entity_id == "hand:left":
+                    side = "left"
+                elif entity_id == "hand:right":
+                    side = "right"
+            if side not in ("left", "right"):
+                continue
+            frame_idx = as_int(raw.get("frame_idx"), f"{path} row {row_i} frame_idx")
+            counts[frame_idx][str(side)] += 1
+    out: dict[int, str] = {}
+    for frame_idx, by_side in counts.items():
+        left = by_side.get("left", 0)
+        right = by_side.get("right", 0)
+        if left == right:
+            continue
+        out[frame_idx] = "left" if left > right else "right"
+    return out
+
+
 def frame_choices(
     groups: dict[tuple[int, str], list[dict[str, Any]]],
+    selected_side: str | None,
 ) -> tuple[list[dict[str, Any]], str]:
+    if selected_side is not None and len(groups) == 1:
+        group = next(iter(groups.values()))
+        return [group_choice(group, selected_side)], "selected_independent_side_prior"
     if len(groups) == 2:
         keys = sorted(groups)
         available_sides = [{str(row.get("side")) for row in groups[key]} for key in keys]
@@ -106,6 +144,7 @@ def select_candidates(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(rows, list):
         raise RuntimeError(f"{args.hamer_measurements} must contain a JSON list")
     wanted_frames = {int(frame) for frame in args.frame_indices} if args.frame_indices else None
+    priors = side_priors(args.side_prior_measurements)
     groups_by_frame: dict[int, dict[tuple[int, str], list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for raw in rows:
         if not isinstance(raw, dict):
@@ -125,7 +164,7 @@ def select_candidates(args: argparse.Namespace) -> dict[str, Any]:
     selected: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for frame_idx, frame_groups in sorted(groups_by_frame.items()):
-        winners, selection_status = frame_choices(frame_groups)
+        winners, selection_status = frame_choices(frame_groups, priors.get(frame_idx))
         winner_ids = {id(row) for row in winners}
         for group_key, group in sorted(frame_groups.items()):
             detector_hand_idx, source = group_key
@@ -168,6 +207,8 @@ def select_candidates(args: argparse.Namespace) -> dict[str, Any]:
         "method": "select_v17_hamer_hand_repair_candidates",
         "hamer_measurements": str(args.hamer_measurements),
         "source_substring": args.source_substring,
+        "side_prior_measurements": [str(path) for path in args.side_prior_measurements],
+        "side_priors": {str(idx): side for idx, side in sorted(priors.items())},
         "frame_indices": sorted(wanted_frames) if wanted_frames is not None else None,
         "selected_count": len(selected),
         "rejected_count": len(rejected),
@@ -186,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--frame-indices", type=int, nargs="*")
     parser.add_argument("--source-substring", default="hamer_vlm_box_summary")
+    parser.add_argument("--side-prior-measurements", type=Path, nargs="*", default=[])
     return parser.parse_args()
 
 

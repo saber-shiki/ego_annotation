@@ -20,6 +20,8 @@ v2 produced a 91-frame contact-window video with observed object surface geometr
 
 v3 produced investigation clips. It failed as a clean pipeline version because scope expanded during implementation around segmentation, mesh completion, depth scale, hand refit, and contact.
 
+V3 also created the long-running factor-graph obligation. Its design and diagnostics identified the hand-object metric contradiction as a joint state-estimation problem: MANO hands, object geometry, camera/depth scale, and contact could not be accepted independently. Later versions implemented real component graphs. The original full-video hand-object interaction solver remained open.
+
 v4 through v6 produced 31-frame wild-rice videos. These support dynamic surface and sparse correspondence inspection.
 
 ```text
@@ -76,3 +78,5 @@ The closest executable paths are component chains:
 - v8 through v15 consume accepted short-window artifacts from earlier stages and solve local hand/contact/physics graphs.
 
 The only current source path that records a full source timeline check is the v1 fusion path. Running any v2-through-v15 script over a full raw video today would create another partial component output or crash on missing precomputed full-video contracts, and the result would fail the full-video deliverable standard.
+
+The graph status follows the same distinction. V3, V6, V8, and V12 through V15 contain real factor-graph or graph-ready solvers over object pose, sparse object correspondence, MANO contact, contact dynamics, handoff, and contact switching. Those solvers are local in time or local in state variables. V17 must treat them as evidence modules for the integrated full-timeline factor graph required for annotation-quality closure.
