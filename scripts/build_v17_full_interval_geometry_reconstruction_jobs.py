@@ -49,20 +49,34 @@ def case_objects(summary: dict[str, Any], case: str) -> list[dict[str, Any]]:
     return rows
 
 
+def contiguous_segments(frames: list[dict[str, Any]], max_gap: int) -> list[list[dict[str, Any]]]:
+    segments: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    prev_idx: int | None = None
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
+        if prev_idx is not None and frame_idx - prev_idx > max_gap:
+            segments.append(current)
+            current = []
+        current.append(frame)
+        prev_idx = frame_idx
+    if current:
+        segments.append(current)
+    return segments
+
+
 def build_job(
     *,
     case: str,
     object_row: dict[str, Any],
+    segment_frames: list[dict[str, Any]],
     object_manifest: dict[str, Any],
     output_dir: Path,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     object_id = require_str(object_row.get("object_id"), "object_id")
     track_id = object_id.split(":", 1)[1] if ":" in object_id else object_id
-    frames = [
-        require_dict(raw, "object-track frame")
-        for raw in require_list(object_manifest.get("frames"), "object-track frames")
-    ]
+    frames = segment_frames
     if len(frames) < int(args.min_job_frames):
         raise RuntimeError(
             f"{case} {track_id} has {len(frames)} exported frames, below minimum {args.min_job_frames}"
@@ -210,6 +224,10 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     jobs: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for object_row in case_objects(summary, case):
+        object_id_filter = require_str(object_row.get("object_id"), "object_id")
+        track_filter = object_id_filter.split(":", 1)[1] if ":" in object_id_filter else object_id_filter
+        if args.only_tracks and track_filter not in set(args.only_tracks):
+            continue
         manifest_path = existing_path(
             Path(require_str(object_row.get("manifest"), "object row manifest path")),
             f"{case} object manifest",
@@ -219,8 +237,6 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             object_id = require_str(object_row.get("object_id"), "object_id")
             track_id = object_id.split(":", 1)[1] if ":" in object_id else object_id
             job_paths = sorted((args.output_root / case).glob(f"{case}_{track_id}_full_*/v17_geometry_reconstruction_job.json"))
-            if len(job_paths) > 1:
-                raise RuntimeError(f"{case} {track_id} has multiple full-interval job manifests")
             if not job_paths:
                 skipped.append(
                     {
@@ -230,26 +246,38 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                     }
                 )
                 continue
-            jobs.append(require_dict(load_json(job_paths[0]), f"{case} {track_id} existing job manifest"))
+            for job_path in job_paths:
+                jobs.append(require_dict(load_json(job_path), f"{case} {track_id} existing job manifest"))
             continue
-        try:
-            jobs.append(
-                build_job(
-                    case=case,
-                    object_row=object_row,
-                    object_manifest=object_manifest,
-                    output_dir=args.output_root / case,
-                    args=args,
+        all_frames = [
+            require_dict(raw, "object-track frame")
+            for raw in require_list(object_manifest.get("frames"), "object-track frames")
+        ]
+        object_id = require_str(object_row.get("object_id"), "object_id")
+        track_id = object_id.split(":", 1)[1] if ":" in object_id else object_id
+        for stale in sorted((args.output_root / case).glob(f"{case}_{track_id}_full_*")):
+            if stale.is_dir():
+                shutil.rmtree(stale)
+        for segment in contiguous_segments(all_frames, int(args.max_segment_gap_frames)):
+            try:
+                jobs.append(
+                    build_job(
+                        case=case,
+                        object_row=object_row,
+                        segment_frames=segment,
+                        object_manifest=object_manifest,
+                        output_dir=args.output_root / case,
+                        args=args,
+                    )
                 )
-            )
-        except RuntimeError as exc:
-            skipped.append(
-                {
-                    "object_id": require_str(object_row.get("object_id"), "object_id"),
-                    "reason": str(exc),
-                    **FALSE_READY,
-                }
-            )
+            except RuntimeError as exc:
+                skipped.append(
+                    {
+                        "object_id": require_str(object_row.get("object_id"), "object_id"),
+                        "reason": str(exc),
+                        **FALSE_READY,
+                    }
+                )
     ready_jobs = [job for job in jobs if job.get("solver_job_ready") is True]
     report = {
         "method": "build_v17_full_interval_geometry_reconstruction_jobs",
@@ -348,7 +376,19 @@ def parse_args() -> argparse.Namespace:
         default=Path("/data2/ego_annotation_outputs/v17_full_interval_geometry_reconstruction_jobs"),
     )
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
+    parser.add_argument(
+        "--only-tracks",
+        nargs="*",
+        default=None,
+        help="restrict (re-)export to these track ids; other objects keep existing job dirs untouched",
+    )
     parser.add_argument("--min-job-frames", type=int, default=20)
+    parser.add_argument(
+        "--max-segment-gap-frames",
+        type=int,
+        default=30,
+        help="split an object's exported frames into separate jobs at gaps larger than this",
+    )
     parser.add_argument(
         "--max-job-frames",
         type=int,
