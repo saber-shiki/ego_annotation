@@ -48,6 +48,7 @@ class CaseInputs:
     hand_far_field_depth_temporal_problem_report: Path
     hand_far_field_temporal_refit_report: Path
     hand_far_field_temporal_reprojection_report: Path
+    hand_temporal_reprojection_residual_owner_state_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -151,6 +152,7 @@ def case_inputs(
     hand_far_field_depth_temporal_problem_root: Path,
     hand_far_field_temporal_refit_root: Path,
     hand_far_field_temporal_reprojection_root: Path,
+    hand_temporal_reprojection_residual_owner_state_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -289,6 +291,12 @@ def case_inputs(
         / "v17_hand_far_field_temporal_reprojection.json",
         f"{case} hand far-field temporal reprojection report",
     )
+    hand_temporal_reprojection_residual_owner_state_report = existing_path(
+        hand_temporal_reprojection_residual_owner_state_root
+        / case
+        / "v17_hand_temporal_reprojection_residual_owner_state.json",
+        f"{case} hand temporal reprojection residual-owner state report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -371,6 +379,7 @@ def case_inputs(
         hand_far_field_depth_temporal_problem_report=hand_far_field_depth_temporal_problem_report,
         hand_far_field_temporal_refit_report=hand_far_field_temporal_refit_report,
         hand_far_field_temporal_reprojection_report=hand_far_field_temporal_reprojection_report,
+        hand_temporal_reprojection_residual_owner_state_report=hand_temporal_reprojection_residual_owner_state_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1686,6 +1695,62 @@ def hand_far_field_temporal_reprojection_counts(report: dict[str, Any]) -> dict[
     }
 
 
+def hand_temporal_reprojection_residual_owner_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "hand temporal reprojection residual-owner frame_count",
+        ),
+        "temporal_reprojection_source_rows": require_int(
+            report.get("temporal_reprojection_source_rows"),
+            "hand temporal reprojection residual-owner source rows",
+        ),
+        "temporal_reprojection_delta_applied_rows": require_int(
+            report.get("temporal_reprojection_delta_applied_rows"),
+            "hand temporal reprojection residual-owner applied rows",
+        ),
+        "temporal_reprojection_residual_owner_rows": require_int(
+            report.get("temporal_reprojection_residual_owner_rows"),
+            "hand temporal reprojection residual-owner rows",
+        ),
+        "temporal_reprojection_local_surface_factor_candidate_rows": require_int(
+            report.get("temporal_reprojection_local_surface_factor_candidate_rows"),
+            "hand temporal reprojection local surface candidate rows",
+        ),
+        "temporal_reprojection_mixed_surface_depth_owner_rows": require_int(
+            report.get("temporal_reprojection_mixed_surface_depth_owner_rows"),
+            "hand temporal reprojection mixed surface-depth owner rows",
+        ),
+        "temporal_reprojection_depth_observation_owner_rows": require_int(
+            report.get("temporal_reprojection_depth_observation_owner_rows"),
+            "hand temporal reprojection depth-observation owner rows",
+        ),
+        "temporal_reprojection_projection_untrusted_rows": require_int(
+            report.get("temporal_reprojection_projection_untrusted_rows"),
+            "hand temporal reprojection projection-untrusted rows",
+        ),
+        "temporal_reprojection_residual_owner_state_counts": require_dict(
+            report.get("temporal_reprojection_residual_owner_state_counts"),
+            "hand temporal reprojection residual-owner state counts",
+        ),
+        "applied_temporal_reprojection_residual_owner_state_counts": require_dict(
+            report.get("applied_temporal_reprojection_residual_owner_state_counts"),
+            "hand temporal reprojection applied residual-owner state counts",
+        ),
+        "local_assignment": require_dict(
+            report.get("local_assignment"),
+            "hand temporal reprojection local assignment",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2530,6 +2595,7 @@ def required_variable_families(
     hand_far_field_depth_temporal_problem: dict[str, Any],
     hand_far_field_temporal_refit: dict[str, Any],
     hand_far_field_temporal_reprojection: dict[str, Any],
+    hand_temporal_reprojection_residual_owner_state: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2833,6 +2899,27 @@ def required_variable_families(
                 "hand_far_field_temporal_reprojection_state_counts": hand_far_field_temporal_reprojection[
                     "temporal_refit_reprojection_state_counts"
                 ],
+                "hand_temporal_reprojection_residual_owner_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_residual_owner_rows"
+                ],
+                "hand_temporal_reprojection_local_surface_factor_candidate_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_local_surface_factor_candidate_rows"
+                ],
+                "hand_temporal_reprojection_mixed_surface_depth_owner_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_mixed_surface_depth_owner_rows"
+                ],
+                "hand_temporal_reprojection_depth_observation_owner_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_depth_observation_owner_rows"
+                ],
+                "hand_temporal_reprojection_projection_untrusted_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_projection_untrusted_rows"
+                ],
+                "hand_temporal_reprojection_residual_owner_state_counts": hand_temporal_reprojection_residual_owner_state[
+                    "applied_temporal_reprojection_residual_owner_state_counts"
+                ],
+                "hand_temporal_reprojection_local_assignment": hand_temporal_reprojection_residual_owner_state[
+                    "local_assignment"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2909,6 +2996,7 @@ def required_variable_families(
                 "far-field depth-observation switches form long temporal runs, so the hand-depth repair needs full-timeline temporal variables rather than isolated frame fixes",
                 "a relinearized far-field temporal refit repairs most long-run residual samples without hitting ray-shift bounds, but it does not reproject MANO geometry or update accepted hand state",
                 "post-update reprojection and resampling falsify the fixed-sample temporal refit as sufficient; temporal shifts improve many rows but leave most rows depth-incompatible, so local MANO surface and projection relinearization remains required",
+                "post-temporal residual ownership shows that only a small residual subset is clean local MANO-surface ownership, while mixed surface-depth and depth-observation owners dominate the remaining applied temporal rows",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3675,6 +3763,27 @@ def required_variable_families(
                 "hand_far_field_temporal_reprojection_owner_depth_state_counts": hand_far_field_temporal_reprojection[
                     "owner_depth_state_counts_after_temporal_reprojection"
                 ],
+                "hand_temporal_reprojection_residual_owner_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_residual_owner_rows"
+                ],
+                "hand_temporal_reprojection_local_surface_factor_candidate_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_local_surface_factor_candidate_rows"
+                ],
+                "hand_temporal_reprojection_mixed_surface_depth_owner_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_mixed_surface_depth_owner_rows"
+                ],
+                "hand_temporal_reprojection_depth_observation_owner_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_depth_observation_owner_rows"
+                ],
+                "hand_temporal_reprojection_projection_untrusted_rows": hand_temporal_reprojection_residual_owner_state[
+                    "temporal_reprojection_projection_untrusted_rows"
+                ],
+                "hand_temporal_reprojection_residual_owner_state_counts": hand_temporal_reprojection_residual_owner_state[
+                    "applied_temporal_reprojection_residual_owner_state_counts"
+                ],
+                "hand_temporal_reprojection_local_assignment": hand_temporal_reprojection_residual_owner_state[
+                    "local_assignment"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -3930,6 +4039,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_far_field_temporal_reprojection_report),
         f"{inputs.case} hand far-field temporal reprojection report",
     )
+    hand_temporal_reprojection_residual_owner_state_report = require_dict(
+        load_json(inputs.hand_temporal_reprojection_residual_owner_state_report),
+        f"{inputs.case} hand temporal reprojection residual-owner state report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -4024,6 +4137,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     hand_far_field_temporal_reprojection = hand_far_field_temporal_reprojection_counts(
         hand_far_field_temporal_reprojection_report
+    )
+    hand_temporal_reprojection_residual_owner_state = hand_temporal_reprojection_residual_owner_state_counts(
+        hand_temporal_reprojection_residual_owner_state_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -4149,6 +4265,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand far-field temporal reprojection"
+        )
+    if frame_count != require_int(
+        hand_temporal_reprojection_residual_owner_state["frame_count"],
+        f"{inputs.case} hand temporal reprojection residual-owner frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand temporal reprojection residual-owner state"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -4810,6 +4933,62 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} far-field temporal reprojection reduced accepted hand states")
     if require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_source_rows"],
+        f"{inputs.case} temporal reprojection residual-owner source rows",
+    ) != require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_source_rows"],
+        f"{inputs.case} far-field temporal reprojection source rows",
+    ):
+        raise RuntimeError(f"{inputs.case} temporal reprojection residual-owner source rows disagree with reprojection")
+    if require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_delta_applied_rows"],
+        f"{inputs.case} temporal reprojection residual-owner applied rows",
+    ) != require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_delta_applied_rows"],
+        f"{inputs.case} far-field temporal reprojection applied rows",
+    ):
+        raise RuntimeError(f"{inputs.case} temporal reprojection residual-owner applied rows disagree with reprojection")
+    temporal_projection_untrusted = require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_reprojection_state_counts"].get(
+            "temporal_refit_reprojected_projection_untrusted",
+            0,
+        ),
+        f"{inputs.case} temporal reprojection projection-untrusted rows",
+    )
+    if require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_projection_untrusted_rows"],
+        f"{inputs.case} temporal reprojection residual-owner projection-untrusted rows",
+    ) != temporal_projection_untrusted:
+        raise RuntimeError(f"{inputs.case} temporal reprojection residual-owner projection-untrusted rows disagree with reprojection")
+    if require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_local_surface_factor_candidate_rows"],
+        f"{inputs.case} temporal reprojection residual-owner local rows",
+    ) + require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_mixed_surface_depth_owner_rows"],
+        f"{inputs.case} temporal reprojection residual-owner mixed rows",
+    ) + require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_depth_observation_owner_rows"],
+        f"{inputs.case} temporal reprojection residual-owner depth rows",
+    ) != require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_residual_owner_rows"],
+        f"{inputs.case} temporal reprojection residual-owner rows",
+    ):
+        raise RuntimeError(f"{inputs.case} temporal reprojection residual-owner split does not sum to residual rows")
+    if require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_residual_owner_rows"],
+        f"{inputs.case} temporal reprojection residual-owner rows",
+    ) + require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_projection_untrusted_rows"],
+        f"{inputs.case} temporal reprojection residual-owner projection-untrusted rows",
+    ) + require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} far-field temporal reprojection compatible rows",
+    ) != require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_delta_applied_rows"],
+        f"{inputs.case} temporal reprojection residual-owner applied rows",
+    ):
+        raise RuntimeError(f"{inputs.case} temporal reprojection applied split does not sum to applied rows")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -5205,6 +5384,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_far_field_depth_temporal_problem,
         hand_far_field_temporal_refit,
         hand_far_field_temporal_reprojection,
+        hand_temporal_reprojection_residual_owner_state,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -5316,6 +5496,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_far_field_temporal_reprojection_report,
                 hand_far_field_temporal_reprojection_report,
             ),
+            "hand_temporal_reprojection_residual_owner_state_report": source_summary(
+                inputs.hand_temporal_reprojection_residual_owner_state_report,
+                hand_temporal_reprojection_residual_owner_state_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -5379,6 +5563,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_far_field_depth_temporal_problem": hand_far_field_depth_temporal_problem,
         "current_hand_far_field_temporal_refit": hand_far_field_temporal_refit,
         "current_hand_far_field_temporal_reprojection": hand_far_field_temporal_reprojection,
+        "current_hand_temporal_reprojection_residual_owner_state": hand_temporal_reprojection_residual_owner_state,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -5447,6 +5632,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_far_field_depth_temporal_problem_root,
             args.hand_far_field_temporal_refit_root,
             args.hand_far_field_temporal_reprojection_root,
+            args.hand_temporal_reprojection_residual_owner_state_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -5499,6 +5685,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_far_field_depth_temporal_problem_root": str(args.hand_far_field_depth_temporal_problem_root),
         "hand_far_field_temporal_refit_root": str(args.hand_far_field_temporal_refit_root),
         "hand_far_field_temporal_reprojection_root": str(args.hand_far_field_temporal_reprojection_root),
+        "hand_temporal_reprojection_residual_owner_state_root": str(
+            args.hand_temporal_reprojection_residual_owner_state_root
+        ),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -5908,6 +6097,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_far_field_temporal_reprojection_state_counts": case[
                     "current_hand_far_field_temporal_reprojection"
                 ]["temporal_refit_reprojection_state_counts"],
+                "hand_temporal_reprojection_residual_owner_rows": case[
+                    "current_hand_temporal_reprojection_residual_owner_state"
+                ]["temporal_reprojection_residual_owner_rows"],
+                "hand_temporal_reprojection_local_surface_factor_candidate_rows": case[
+                    "current_hand_temporal_reprojection_residual_owner_state"
+                ]["temporal_reprojection_local_surface_factor_candidate_rows"],
+                "hand_temporal_reprojection_mixed_surface_depth_owner_rows": case[
+                    "current_hand_temporal_reprojection_residual_owner_state"
+                ]["temporal_reprojection_mixed_surface_depth_owner_rows"],
+                "hand_temporal_reprojection_depth_observation_owner_rows": case[
+                    "current_hand_temporal_reprojection_residual_owner_state"
+                ]["temporal_reprojection_depth_observation_owner_rows"],
+                "hand_temporal_reprojection_projection_untrusted_rows": case[
+                    "current_hand_temporal_reprojection_residual_owner_state"
+                ]["temporal_reprojection_projection_untrusted_rows"],
+                "hand_temporal_reprojection_residual_owner_state_counts": case[
+                    "current_hand_temporal_reprojection_residual_owner_state"
+                ]["applied_temporal_reprojection_residual_owner_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -6775,6 +6982,80 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "hand_temporal_reprojection_residual_owner_rows": sum(
+            case["current_hand_temporal_reprojection_residual_owner_state"][
+                "temporal_reprojection_residual_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_reprojection_local_surface_factor_candidate_rows": sum(
+            case["current_hand_temporal_reprojection_residual_owner_state"][
+                "temporal_reprojection_local_surface_factor_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_reprojection_mixed_surface_depth_owner_rows": sum(
+            case["current_hand_temporal_reprojection_residual_owner_state"][
+                "temporal_reprojection_mixed_surface_depth_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_reprojection_depth_observation_owner_rows": sum(
+            case["current_hand_temporal_reprojection_residual_owner_state"][
+                "temporal_reprojection_depth_observation_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_reprojection_projection_untrusted_rows": sum(
+            case["current_hand_temporal_reprojection_residual_owner_state"][
+                "temporal_reprojection_projection_untrusted_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_reprojection_residual_owner_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_temporal_reprojection_residual_owner_state"][
+                                "applied_temporal_reprojection_residual_owner_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_temporal_reprojection_local_assignment": {
+            "residual_sample_count": sum(
+                require_int(
+                    case["current_hand_temporal_reprojection_residual_owner_state"]["local_assignment"].get(
+                        "residual_sample_count"
+                    ),
+                    "temporal reprojection residual samples",
+                )
+                for case in case_outputs
+            ),
+            "assigned_residual_sample_count": sum(
+                require_int(
+                    case["current_hand_temporal_reprojection_residual_owner_state"]["local_assignment"].get(
+                        "assigned_residual_sample_count"
+                    ),
+                    "temporal reprojection assigned samples",
+                )
+                for case in case_outputs
+            ),
+            "compatible_seed_sample_count": sum(
+                require_int(
+                    case["current_hand_temporal_reprojection_residual_owner_state"]["local_assignment"].get(
+                        "compatible_seed_sample_count"
+                    ),
+                    "temporal reprojection compatible seed samples",
+                )
+                for case in case_outputs
+            ),
+        },
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -7411,6 +7692,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-far-field-temporal-reprojection-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_far_field_temporal_reprojection"),
+    )
+    parser.add_argument(
+        "--hand-temporal-reprojection-residual-owner-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_temporal_reprojection_residual_owner_state"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
