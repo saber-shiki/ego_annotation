@@ -151,6 +151,12 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             raise RuntimeError(f"{graph_id} corrected hand state is not finite")
         frame = require_dict(frames.get(frame_idx), f"{case} frame {frame_idx}")
         transform = camera_transform(frame, frame_idx)
+        solver_intrinsics = state["intrinsics"].detach().cpu().numpy().astype(np.float64).reshape(-1)
+        if solver_intrinsics.shape != (4,) or not np.isfinite(solver_intrinsics).all():
+            raise RuntimeError(f"{graph_id} solver intrinsics must be a finite 4-vector")
+        prior_intrinsics = hand.get("source_intrinsics")
+        hand["source_intrinsics"] = solver_intrinsics.astype(float).tolist()
+        hand["v16_source_intrinsics"] = prior_intrinsics
         hand["vertices_source_camera_m"] = corrected_vertices.astype(float).tolist()
         hand["joints3d_source_camera_m"] = corrected_joints.astype(float).tolist()
         hand["vertices_world_m"] = to_world(corrected_vertices, transform).astype(float).tolist()
@@ -166,6 +172,7 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             "pose_delta_abs_max_rad": float(np.max(np.abs(pose_delta_np))),
             "interior_state": require_str(row.get("interior_state"), "interior state"),
             "interior_metric_depth_compatible": bool(row.get("interior_metric_depth_compatible") is True),
+            "camera_model": "unidepth_scaled_source_intrinsics",
         }
         span = float(
             np.linalg.norm(
