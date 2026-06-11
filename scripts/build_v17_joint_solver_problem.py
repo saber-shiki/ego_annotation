@@ -35,6 +35,7 @@ class CaseInputs:
     hand_metric_depth_state_report: Path
     hand_depth_factor_problem_report: Path
     hand_intrinsics_depth_counterfactual_report: Path
+    hand_scale_depth_counterfactual_report: Path
     contact_ownership_problem_report: Path
     geometry_source_audit_report: Path
     object_geometry_hypothesis_state_report: Path
@@ -123,6 +124,7 @@ def case_inputs(
     hand_metric_depth_state_root: Path,
     hand_depth_factor_problem_root: Path,
     hand_intrinsics_depth_counterfactual_root: Path,
+    hand_scale_depth_counterfactual_root: Path,
     contact_ownership_problem_root: Path,
     geometry_source_audit_root: Path,
     object_geometry_hypothesis_state_root: Path,
@@ -198,6 +200,10 @@ def case_inputs(
         hand_intrinsics_depth_counterfactual_root / case / "v17_hand_intrinsics_depth_counterfactual.json",
         f"{case} hand intrinsics-depth counterfactual report",
     )
+    hand_scale_depth_counterfactual_report = existing_path(
+        hand_scale_depth_counterfactual_root / case / "v17_hand_scale_depth_counterfactual.json",
+        f"{case} hand scale-depth counterfactual report",
+    )
     contact_ownership_problem_report = existing_path(
         contact_ownership_problem_root / case / "v17_contact_ownership_problem.json",
         f"{case} contact-ownership problem report",
@@ -256,6 +262,7 @@ def case_inputs(
         hand_metric_depth_state_report=hand_metric_depth_state_report,
         hand_depth_factor_problem_report=hand_depth_factor_problem_report,
         hand_intrinsics_depth_counterfactual_report=hand_intrinsics_depth_counterfactual_report,
+        hand_scale_depth_counterfactual_report=hand_scale_depth_counterfactual_report,
         contact_ownership_problem_report=contact_ownership_problem_report,
         geometry_source_audit_report=geometry_source_audit_report,
         object_geometry_hypothesis_state_report=object_geometry_hypothesis_state_report,
@@ -935,6 +942,65 @@ def hand_intrinsics_depth_counterfactual_counts(report: dict[str, Any]) -> dict[
         "counterfactual_hand_depth_m": require_dict(
             report.get("counterfactual_hand_depth_m"),
             "hand intrinsics counterfactual hand depth",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
+def hand_scale_depth_counterfactual_counts(report: dict[str, Any]) -> dict[str, Any]:
+    modes = require_dict(report.get("mode_summaries"), "hand scale mode summaries")
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "hand scale counterfactual frame_count"),
+        "hand_scale_counterfactual_variable_count": require_int(
+            report.get("hand_scale_counterfactual_variable_count"),
+            "hand scale counterfactual variable count",
+        ),
+        "base_available_rows": require_int(
+            report.get("base_available_rows"),
+            "hand scale base available rows",
+        ),
+        "scale_candidate_rows": require_int(
+            report.get("scale_candidate_rows"),
+            "hand scale candidate rows",
+        ),
+        "case_global_scale": report.get("case_global_scale"),
+        "side_global_scales": require_dict(
+            report.get("side_global_scales"),
+            "hand scale side scales",
+        ),
+        "row_scale_candidate_summary": require_dict(
+            report.get("row_scale_candidate_summary"),
+            "hand scale row scale candidate summary",
+        ),
+        "current_wrist_to_middle_tip_m": require_dict(
+            report.get("current_wrist_to_middle_tip_m"),
+            "hand scale current wrist-to-middle summary",
+        ),
+        "case_global_scaled_wrist_to_middle_tip_m": require_dict(
+            report.get("case_global_scaled_wrist_to_middle_tip_m"),
+            "hand scale case-global wrist-to-middle summary",
+        ),
+        "side_global_scaled_wrist_to_middle_tip_m": require_dict(
+            report.get("side_global_scaled_wrist_to_middle_tip_m"),
+            "hand scale side-global wrist-to-middle summary",
+        ),
+        "per_row_scaled_wrist_to_middle_tip_m": require_dict(
+            report.get("per_row_scaled_wrist_to_middle_tip_m"),
+            "hand scale per-row wrist-to-middle summary",
+        ),
+        "mode_summaries": modes,
+        "case_global_scale_mode": require_dict(modes.get("case_global_scale"), "case_global_scale mode"),
+        "side_global_scale_mode": require_dict(modes.get("side_global_scale"), "side_global_scale mode"),
+        "per_row_scale_oracle_mode": require_dict(modes.get("per_row_scale_oracle"), "per_row_scale_oracle mode"),
+        "source_intrinsics_counterfactual_comparison": require_dict(
+            report.get("source_intrinsics_counterfactual_comparison"),
+            "hand scale source intrinsics comparison",
         ),
         "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
         "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
@@ -1625,6 +1691,7 @@ def required_variable_families(
     hand_metric_depth_state: dict[str, Any],
     hand_depth_factor_problem: dict[str, Any],
     hand_intrinsics_depth_counterfactual: dict[str, Any],
+    hand_scale_depth_counterfactual: dict[str, Any],
     contact_ownership_problem: dict[str, Any],
     geometry_source_audit: dict[str, Any],
     object_geometry_hypothesis_state: dict[str, Any],
@@ -1706,6 +1773,33 @@ def required_variable_families(
                 "counterfactual_owner_median_gap_m": hand_intrinsics_depth_counterfactual[
                     "counterfactual_owner_median_gap_m"
                 ],
+                "scale_counterfactual_base_available_rows": hand_scale_depth_counterfactual[
+                    "base_available_rows"
+                ],
+                "scale_counterfactual_candidate_rows": hand_scale_depth_counterfactual[
+                    "scale_candidate_rows"
+                ],
+                "scale_counterfactual_case_global_scale": hand_scale_depth_counterfactual[
+                    "case_global_scale"
+                ],
+                "scale_counterfactual_side_global_scales": hand_scale_depth_counterfactual[
+                    "side_global_scales"
+                ],
+                "scale_counterfactual_case_global_mode": hand_scale_depth_counterfactual[
+                    "case_global_scale_mode"
+                ],
+                "scale_counterfactual_side_global_mode": hand_scale_depth_counterfactual[
+                    "side_global_scale_mode"
+                ],
+                "scale_counterfactual_per_row_oracle_mode": hand_scale_depth_counterfactual[
+                    "per_row_scale_oracle_mode"
+                ],
+                "scale_counterfactual_current_wrist_to_middle_tip_m": hand_scale_depth_counterfactual[
+                    "current_wrist_to_middle_tip_m"
+                ],
+                "scale_counterfactual_case_scaled_wrist_to_middle_tip_m": hand_scale_depth_counterfactual[
+                    "case_global_scaled_wrist_to_middle_tip_m"
+                ],
                 "source_camera_solve_status_counts": hand_depth_factor_problem[
                     "source_camera_solve_status_counts"
                 ],
@@ -1728,6 +1822,8 @@ def required_variable_families(
                 "world wrist pose is only corrected along camera rays",
                 "source-camera hand translation is an inherited monocular measurement, not a UniDepth-constrained variable",
                 "UniDepth-aligned source intrinsics improve the hand-depth gap but still leave almost all rows depth-incompatible",
+                "global or per-side hand scale reduces median depth bias but leaves most rows outside the p95 depth threshold",
+                "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "front-surface MANO depth is not metric-depth compatible in the current source-camera state",
                 "occluded hands are not represented as prediction/update latent states",
             ],
@@ -2277,6 +2373,21 @@ def required_variable_families(
                 "counterfactual_owner_depth_state_counts": hand_intrinsics_depth_counterfactual[
                     "counterfactual_owner_depth_state_counts"
                 ],
+                "scale_counterfactual_case_global_mode": hand_scale_depth_counterfactual[
+                    "case_global_scale_mode"
+                ],
+                "scale_counterfactual_side_global_mode": hand_scale_depth_counterfactual[
+                    "side_global_scale_mode"
+                ],
+                "scale_counterfactual_per_row_oracle_mode": hand_scale_depth_counterfactual[
+                    "per_row_scale_oracle_mode"
+                ],
+                "scale_counterfactual_row_scale_candidate_summary": hand_scale_depth_counterfactual[
+                    "row_scale_candidate_summary"
+                ],
+                "scale_counterfactual_case_scaled_wrist_to_middle_tip_m": hand_scale_depth_counterfactual[
+                    "case_global_scaled_wrist_to_middle_tip_m"
+                ],
                 "source_camera_solve_status_counts": hand_depth_factor_problem[
                     "source_camera_solve_status_counts"
                 ],
@@ -2302,6 +2413,7 @@ def required_variable_families(
                 "accepted object reconstructions, legacy object centers, and MANO hands do not currently share one depth owner",
                 "hand source-camera translation is not solved against UniDepth in the current accepted hand stream",
                 "UniDepth-aligned intrinsics alone leave thousands of hand-depth repair candidates",
+                "stable hand-scale counterfactuals leave thousands of depth-repair candidates and imply implausibly small hands",
                 "current MANO depth fails against UniDepth even before object-contact ownership can create physical factors",
                 "projected image-contact MANO vertices sit behind the object UniDepth surface in the current hand state",
                 "occlusion state is not a latent variable with uncertainty",
@@ -2424,6 +2536,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_intrinsics_depth_counterfactual_report),
         f"{inputs.case} hand intrinsics-depth counterfactual report",
     )
+    hand_scale_depth_counterfactual_report = require_dict(
+        load_json(inputs.hand_scale_depth_counterfactual_report),
+        f"{inputs.case} hand scale-depth counterfactual report",
+    )
     contact_ownership_problem_report = require_dict(
         load_json(inputs.contact_ownership_problem_report),
         f"{inputs.case} contact-ownership problem report",
@@ -2475,6 +2591,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     hand_intrinsics_depth_counterfactual = hand_intrinsics_depth_counterfactual_counts(
         hand_intrinsics_depth_counterfactual_report
     )
+    hand_scale_depth_counterfactual = hand_scale_depth_counterfactual_counts(hand_scale_depth_counterfactual_report)
     contact_ownership_problem = contact_ownership_problem_counts(contact_ownership_problem_report)
     geometry_source_audit = geometry_source_audit_counts(geometry_source_audit_report)
     object_geometry_hypothesis_state = object_geometry_hypothesis_state_counts(
@@ -2515,6 +2632,11 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand intrinsics-depth counterfactual"
         )
+    if frame_count != require_int(
+        hand_scale_depth_counterfactual["frame_count"],
+        f"{inputs.case} hand scale-depth counterfactual frame_count",
+    ):
+        raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and hand scale-depth counterfactual")
     if frame_count != require_int(contact_ownership_problem["frame_count"], f"{inputs.case} contact ownership frame_count"):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and contact ownership problem")
     if frame_count != require_int(geometry_source_audit["frame_count"], f"{inputs.case} geometry-source audit frame_count"):
@@ -2758,6 +2880,34 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} hand intrinsics counterfactual projection rows",
     ):
         raise RuntimeError(f"{inputs.case} hand intrinsics counterfactual cannot be interpreted as a failed repair")
+    if require_int(
+        hand_scale_depth_counterfactual["hand_scale_counterfactual_variable_count"],
+        f"{inputs.case} hand scale counterfactual variable count",
+    ) != require_int(
+        hand_metric_depth_state["hand_metric_depth_variable_count"],
+        f"{inputs.case} hand metric-depth variable count",
+    ):
+        raise RuntimeError(f"{inputs.case} hand scale counterfactual variable count disagrees with hand metric-depth state")
+    if require_int(
+        hand_scale_depth_counterfactual["base_available_rows"],
+        f"{inputs.case} hand scale base available rows",
+    ) != require_int(
+        hand_intrinsics_depth_counterfactual["counterfactual_metric_depth_measured_rows"],
+        f"{inputs.case} hand intrinsics counterfactual measured rows",
+    ):
+        raise RuntimeError(f"{inputs.case} hand scale base rows disagree with hand intrinsics counterfactual measured rows")
+    scale_intrinsics_comparison = require_dict(
+        hand_scale_depth_counterfactual["source_intrinsics_counterfactual_comparison"],
+        f"{inputs.case} hand scale source intrinsics comparison",
+    )
+    if require_int(
+        scale_intrinsics_comparison.get("intrinsics_counterfactual_metric_hand_state_accepted_rows"),
+        f"{inputs.case} hand scale comparison accepted rows",
+    ) != require_int(
+        hand_intrinsics_depth_counterfactual["counterfactual_metric_hand_state_accepted_rows"],
+        f"{inputs.case} hand intrinsics counterfactual accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} hand scale report disagrees with hand intrinsics counterfactual")
     if require_int(contact["contact_factor_ready_count"], f"{inputs.case} contact ready rows") != require_int(
         contact_ownership_problem["contact_owner_variable_count"],
         f"{inputs.case} contact ownership variable count",
@@ -3050,6 +3200,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_metric_depth_state,
         hand_depth_factor_problem,
         hand_intrinsics_depth_counterfactual,
+        hand_scale_depth_counterfactual,
         contact_ownership_problem,
         geometry_source_audit,
         object_geometry_hypothesis_state,
@@ -3112,6 +3263,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "hand_intrinsics_depth_counterfactual_report": source_summary(
                 inputs.hand_intrinsics_depth_counterfactual_report, hand_intrinsics_depth_counterfactual_report
             ),
+            "hand_scale_depth_counterfactual_report": source_summary(
+                inputs.hand_scale_depth_counterfactual_report, hand_scale_depth_counterfactual_report
+            ),
             "contact_ownership_problem_report": source_summary(
                 inputs.contact_ownership_problem_report, contact_ownership_problem_report
             ),
@@ -3153,6 +3307,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_metric_depth_state": hand_metric_depth_state,
         "current_hand_depth_factor_problem": hand_depth_factor_problem,
         "current_hand_intrinsics_depth_counterfactual": hand_intrinsics_depth_counterfactual,
+        "current_hand_scale_depth_counterfactual": hand_scale_depth_counterfactual,
         "current_contact_ownership_problem": contact_ownership_problem,
         "current_geometry_source_audit": geometry_source_audit,
         "current_object_geometry_hypothesis_state": object_geometry_hypothesis_state,
@@ -3206,6 +3361,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_metric_depth_state_root,
             args.hand_depth_factor_problem_root,
             args.hand_intrinsics_depth_counterfactual_root,
+            args.hand_scale_depth_counterfactual_root,
             args.contact_ownership_problem_root,
             args.geometry_source_audit_root,
             args.object_geometry_hypothesis_state_root,
@@ -3243,6 +3399,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_metric_depth_state_root": str(args.hand_metric_depth_state_root),
         "hand_depth_factor_problem_root": str(args.hand_depth_factor_problem_root),
         "hand_intrinsics_depth_counterfactual_root": str(args.hand_intrinsics_depth_counterfactual_root),
+        "hand_scale_depth_counterfactual_root": str(args.hand_scale_depth_counterfactual_root),
         "contact_ownership_problem_root": str(args.contact_ownership_problem_root),
         "geometry_source_audit_root": str(args.geometry_source_audit_root),
         "object_geometry_hypothesis_state_root": str(args.object_geometry_hypothesis_state_root),
@@ -3403,6 +3560,33 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_intrinsics_counterfactual_owner_median_gap_m": case[
                     "current_hand_intrinsics_depth_counterfactual"
                 ]["counterfactual_owner_median_gap_m"],
+                "hand_scale_counterfactual_variable_count": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["hand_scale_counterfactual_variable_count"],
+                "hand_scale_counterfactual_base_available_rows": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["base_available_rows"],
+                "hand_scale_counterfactual_scale_candidate_rows": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["scale_candidate_rows"],
+                "hand_scale_counterfactual_case_global_scale": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["case_global_scale"],
+                "hand_scale_counterfactual_side_global_scales": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["side_global_scales"],
+                "hand_scale_counterfactual_case_global_mode": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["case_global_scale_mode"],
+                "hand_scale_counterfactual_side_global_mode": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["side_global_scale_mode"],
+                "hand_scale_counterfactual_per_row_oracle_mode": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["per_row_scale_oracle_mode"],
+                "hand_scale_counterfactual_case_scaled_wrist_to_middle_tip_m": case[
+                    "current_hand_scale_depth_counterfactual"
+                ]["case_global_scaled_wrist_to_middle_tip_m"],
                 "hand_metric_depth_far_from_object_summary": case[
                     "current_hand_metric_depth_state"
                 ]["partition_summaries"]["far_from_active_object_masks"],
@@ -3680,6 +3864,54 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "hand_intrinsics_counterfactual_metric_hand_state_accepted_rows": sum(
             case["current_hand_intrinsics_depth_counterfactual"]["counterfactual_metric_hand_state_accepted_rows"]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_variable_count": sum(
+            case["current_hand_scale_depth_counterfactual"]["hand_scale_counterfactual_variable_count"]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_base_available_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["base_available_rows"]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_scale_candidate_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["scale_candidate_rows"]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_case_global_accepted_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["case_global_scale_mode"][
+                "metric_hand_state_accepted_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_case_global_depth_repair_candidate_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["case_global_scale_mode"][
+                "depth_repair_factor_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_side_global_accepted_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["side_global_scale_mode"][
+                "metric_hand_state_accepted_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_side_global_depth_repair_candidate_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["side_global_scale_mode"][
+                "depth_repair_factor_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_per_row_oracle_accepted_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["per_row_scale_oracle_mode"][
+                "metric_hand_state_accepted_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_scale_counterfactual_per_row_oracle_depth_repair_candidate_rows": sum(
+            case["current_hand_scale_depth_counterfactual"]["per_row_scale_oracle_mode"][
+                "depth_repair_factor_candidate_rows"
+            ]
             for case in case_outputs
         ),
         "contact_owner_variable_count": sum(
@@ -3976,6 +4208,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-intrinsics-depth-counterfactual-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_intrinsics_depth_counterfactual"),
+    )
+    parser.add_argument(
+        "--hand-scale-depth-counterfactual-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_scale_depth_counterfactual"),
     )
     parser.add_argument(
         "--contact-ownership-problem-root",
