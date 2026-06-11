@@ -38,6 +38,7 @@ class CaseInputs:
     hand_intrinsics_depth_counterfactual_report: Path
     hand_scale_depth_counterfactual_report: Path
     hand_depth_repair_graph_report: Path
+    hand_depth_repair_residual_owner_state_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -131,6 +132,7 @@ def case_inputs(
     hand_intrinsics_depth_counterfactual_root: Path,
     hand_scale_depth_counterfactual_root: Path,
     hand_depth_repair_graph_root: Path,
+    hand_depth_repair_residual_owner_state_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -217,6 +219,12 @@ def case_inputs(
         hand_depth_repair_graph_root / case / "v17_hand_depth_repair_graph.json",
         f"{case} hand depth repair graph report",
     )
+    hand_depth_repair_residual_owner_state_report = existing_path(
+        hand_depth_repair_residual_owner_state_root
+        / case
+        / "v17_hand_depth_repair_residual_owner_state.json",
+        f"{case} hand depth repair residual-owner state report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -289,6 +297,7 @@ def case_inputs(
         hand_intrinsics_depth_counterfactual_report=hand_intrinsics_depth_counterfactual_report,
         hand_scale_depth_counterfactual_report=hand_scale_depth_counterfactual_report,
         hand_depth_repair_graph_report=hand_depth_repair_graph_report,
+        hand_depth_repair_residual_owner_state_report=hand_depth_repair_residual_owner_state_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1107,6 +1116,58 @@ def hand_depth_repair_graph_counts(report: dict[str, Any]) -> dict[str, Any]:
         "source_tail_depth_observation_comparison": require_dict(
             report.get("source_tail_depth_observation_comparison"),
             "hand depth repair graph tail depth comparison",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
+def hand_depth_repair_residual_owner_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "hand depth repair residual-owner frame_count",
+        ),
+        "hand_depth_repair_residual_owner_variable_count": require_int(
+            report.get("hand_depth_repair_residual_owner_variable_count"),
+            "hand depth repair residual-owner variable count",
+        ),
+        "repair_residual_factor_candidate_rows": require_int(
+            report.get("repair_residual_factor_candidate_rows"),
+            "hand depth repair residual-owner candidate rows",
+        ),
+        "independent_supported_repair_residual_rows": require_int(
+            report.get("independent_supported_repair_residual_rows"),
+            "hand depth repair residual-owner supported rows",
+        ),
+        "independent_unsupported_repair_residual_rows": require_int(
+            report.get("independent_unsupported_repair_residual_rows"),
+            "hand depth repair residual-owner unsupported rows",
+        ),
+        "residual_independent_support_state_counts": require_dict(
+            report.get("residual_independent_support_state_counts"),
+            "hand depth repair residual-owner support state counts",
+        ),
+        "residual_depth_observation_state_counts": require_dict(
+            report.get("residual_depth_observation_state_counts"),
+            "hand depth repair residual-owner depth observation state counts",
+        ),
+        "supported_residual_depth_observation_state_counts": require_dict(
+            report.get("supported_residual_depth_observation_state_counts"),
+            "hand depth repair residual-owner supported depth observation state counts",
+        ),
+        "residual_owner_state_counts": require_dict(
+            report.get("residual_owner_state_counts"),
+            "hand depth repair residual-owner state counts",
+        ),
+        "residual_sample_count": require_int(
+            report.get("residual_sample_count"),
+            "hand depth repair residual-owner sample count",
         ),
         "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
         "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
@@ -1951,6 +2012,7 @@ def required_variable_families(
     hand_intrinsics_depth_counterfactual: dict[str, Any],
     hand_scale_depth_counterfactual: dict[str, Any],
     hand_depth_repair_graph: dict[str, Any],
+    hand_depth_repair_residual_owner_state: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2101,6 +2163,30 @@ def required_variable_families(
                 "hand_depth_repair_graph_owner_median_gap_m": hand_depth_repair_graph[
                     "owner_median_gap_m"
                 ],
+                "hand_depth_repair_residual_candidate_rows": hand_depth_repair_residual_owner_state[
+                    "repair_residual_factor_candidate_rows"
+                ],
+                "hand_depth_repair_residual_supported_rows": hand_depth_repair_residual_owner_state[
+                    "independent_supported_repair_residual_rows"
+                ],
+                "hand_depth_repair_residual_unsupported_rows": hand_depth_repair_residual_owner_state[
+                    "independent_unsupported_repair_residual_rows"
+                ],
+                "hand_depth_repair_residual_support_state_counts": hand_depth_repair_residual_owner_state[
+                    "residual_independent_support_state_counts"
+                ],
+                "hand_depth_repair_residual_depth_observation_state_counts": hand_depth_repair_residual_owner_state[
+                    "residual_depth_observation_state_counts"
+                ],
+                "supported_hand_depth_repair_residual_depth_observation_state_counts": hand_depth_repair_residual_owner_state[
+                    "supported_residual_depth_observation_state_counts"
+                ],
+                "hand_depth_repair_residual_owner_state_counts": hand_depth_repair_residual_owner_state[
+                    "residual_owner_state_counts"
+                ],
+                "hand_depth_repair_residual_sample_count": hand_depth_repair_residual_owner_state[
+                    "residual_sample_count"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2167,6 +2253,7 @@ def required_variable_families(
                 "UniDepth-aligned source intrinsics improve the hand-depth gap but still leave almost all rows depth-incompatible",
                 "global or per-side hand scale reduces median depth bias but leaves most rows outside the p95 depth threshold",
                 "a full-timeline bounded scale plus ray-depth repair graph improves the hand-depth state but still leaves many projection-trusted depth-repair candidates",
+                "the remaining hand-depth repair residuals split into local hand-surface/projection owners and depth-observation owners after per-sample owner partitioning",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -2750,6 +2837,30 @@ def required_variable_families(
                 "hand_depth_repair_graph_owner_median_gap_m": hand_depth_repair_graph[
                     "owner_median_gap_m"
                 ],
+                "hand_depth_repair_residual_candidate_rows": hand_depth_repair_residual_owner_state[
+                    "repair_residual_factor_candidate_rows"
+                ],
+                "hand_depth_repair_residual_supported_rows": hand_depth_repair_residual_owner_state[
+                    "independent_supported_repair_residual_rows"
+                ],
+                "hand_depth_repair_residual_unsupported_rows": hand_depth_repair_residual_owner_state[
+                    "independent_unsupported_repair_residual_rows"
+                ],
+                "hand_depth_repair_residual_support_state_counts": hand_depth_repair_residual_owner_state[
+                    "residual_independent_support_state_counts"
+                ],
+                "hand_depth_repair_residual_depth_observation_state_counts": hand_depth_repair_residual_owner_state[
+                    "residual_depth_observation_state_counts"
+                ],
+                "supported_hand_depth_repair_residual_depth_observation_state_counts": hand_depth_repair_residual_owner_state[
+                    "supported_residual_depth_observation_state_counts"
+                ],
+                "hand_depth_repair_residual_owner_state_counts": hand_depth_repair_residual_owner_state[
+                    "residual_owner_state_counts"
+                ],
+                "hand_depth_repair_residual_sample_count": hand_depth_repair_residual_owner_state[
+                    "residual_sample_count"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -2822,6 +2933,7 @@ def required_variable_families(
                 "UniDepth-aligned intrinsics alone leave thousands of hand-depth repair candidates",
                 "stable hand-scale counterfactuals leave thousands of depth-repair candidates and imply implausibly small hands",
                 "bounded hand-depth repair leaves many residual depth-repair candidates after exact post-solve surface resampling",
+                "per-sample residual ownership separates unsupported projection rows, local hand-surface/projection rows, and depth-observation rows",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -2955,6 +3067,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_depth_repair_graph_report),
         f"{inputs.case} hand depth repair graph report",
     )
+    hand_depth_repair_residual_owner_state_report = require_dict(
+        load_json(inputs.hand_depth_repair_residual_owner_state_report),
+        f"{inputs.case} hand depth repair residual-owner state report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3020,6 +3136,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     hand_scale_depth_counterfactual = hand_scale_depth_counterfactual_counts(hand_scale_depth_counterfactual_report)
     hand_depth_repair_graph = hand_depth_repair_graph_counts(hand_depth_repair_graph_report)
+    hand_depth_repair_residual_owner_state = hand_depth_repair_residual_owner_state_counts(
+        hand_depth_repair_residual_owner_state_report
+    )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
     hand_tail_depth_observation_state = hand_tail_depth_observation_state_counts(
@@ -3075,6 +3194,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} hand depth repair graph frame_count",
     ):
         raise RuntimeError(f"{inputs.case} frame_count mismatch between sparse report and hand depth repair graph")
+    if frame_count != require_int(
+        hand_depth_repair_residual_owner_state["frame_count"],
+        f"{inputs.case} hand depth repair residual-owner frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand depth repair residual-owner state"
+        )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
         f"{inputs.case} hand surface-depth tail frame_count",
@@ -3373,6 +3499,37 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} hand depth repair graph base rows",
     ):
         raise RuntimeError(f"{inputs.case} hand depth repair graph data rows exceed base-available rows")
+    if require_int(
+        hand_depth_repair_residual_owner_state["hand_depth_repair_residual_owner_variable_count"],
+        f"{inputs.case} hand depth repair residual-owner variable count",
+    ) != require_int(
+        hand_depth_repair_graph["hand_depth_repair_graph_variable_count"],
+        f"{inputs.case} hand depth repair graph variable count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} hand depth repair residual-owner variables disagree with repair graph variables"
+        )
+    if require_int(
+        hand_depth_repair_residual_owner_state["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} hand depth repair residual-owner candidate rows",
+    ) != require_int(
+        hand_depth_repair_graph["depth_repair_factor_candidate_rows"],
+        f"{inputs.case} hand depth repair graph repair rows",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} hand depth repair residual-owner candidates disagree with repair graph residuals"
+        )
+    if require_int(
+        hand_depth_repair_residual_owner_state["independent_supported_repair_residual_rows"],
+        f"{inputs.case} supported hand depth repair residual rows",
+    ) + require_int(
+        hand_depth_repair_residual_owner_state["independent_unsupported_repair_residual_rows"],
+        f"{inputs.case} unsupported hand depth repair residual rows",
+    ) != require_int(
+        hand_depth_repair_residual_owner_state["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} hand depth repair residual-owner candidate rows",
+    ):
+        raise RuntimeError(f"{inputs.case} hand depth repair residual support split does not sum to candidates")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -3759,6 +3916,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_intrinsics_depth_counterfactual,
         hand_scale_depth_counterfactual,
         hand_depth_repair_graph,
+        hand_depth_repair_residual_owner_state,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -3830,6 +3988,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "hand_depth_repair_graph_report": source_summary(
                 inputs.hand_depth_repair_graph_report, hand_depth_repair_graph_report
             ),
+            "hand_depth_repair_residual_owner_state_report": source_summary(
+                inputs.hand_depth_repair_residual_owner_state_report,
+                hand_depth_repair_residual_owner_state_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -3883,6 +4045,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_intrinsics_depth_counterfactual": hand_intrinsics_depth_counterfactual,
         "current_hand_scale_depth_counterfactual": hand_scale_depth_counterfactual,
         "current_hand_depth_repair_graph": hand_depth_repair_graph,
+        "current_hand_depth_repair_residual_owner_state": hand_depth_repair_residual_owner_state,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -3941,6 +4104,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_intrinsics_depth_counterfactual_root,
             args.hand_scale_depth_counterfactual_root,
             args.hand_depth_repair_graph_root,
+            args.hand_depth_repair_residual_owner_state_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -3983,6 +4147,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_intrinsics_depth_counterfactual_root": str(args.hand_intrinsics_depth_counterfactual_root),
         "hand_scale_depth_counterfactual_root": str(args.hand_scale_depth_counterfactual_root),
         "hand_depth_repair_graph_root": str(args.hand_depth_repair_graph_root),
+        "hand_depth_repair_residual_owner_state_root": str(args.hand_depth_repair_residual_owner_state_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -4203,6 +4368,33 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_depth_repair_graph_bound_hit_rows": case[
                     "current_hand_depth_repair_graph"
                 ]["hand_ray_shift_bound_hit_rows"],
+                "hand_depth_repair_residual_owner_variable_count": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["hand_depth_repair_residual_owner_variable_count"],
+                "hand_depth_repair_residual_factor_candidate_rows": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["repair_residual_factor_candidate_rows"],
+                "hand_depth_repair_residual_independent_supported_rows": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["independent_supported_repair_residual_rows"],
+                "hand_depth_repair_residual_independent_unsupported_rows": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["independent_unsupported_repair_residual_rows"],
+                "hand_depth_repair_residual_independent_support_state_counts": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["residual_independent_support_state_counts"],
+                "hand_depth_repair_residual_depth_observation_state_counts": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["residual_depth_observation_state_counts"],
+                "supported_hand_depth_repair_residual_depth_observation_state_counts": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["supported_residual_depth_observation_state_counts"],
+                "hand_depth_repair_residual_owner_state_counts": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["residual_owner_state_counts"],
+                "hand_depth_repair_residual_sample_count": case[
+                    "current_hand_depth_repair_residual_owner_state"
+                ]["residual_sample_count"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -4628,6 +4820,94 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "hand_depth_repair_residual_owner_variable_count": sum(
+            case["current_hand_depth_repair_residual_owner_state"][
+                "hand_depth_repair_residual_owner_variable_count"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_repair_residual_factor_candidate_rows": sum(
+            case["current_hand_depth_repair_residual_owner_state"][
+                "repair_residual_factor_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_repair_residual_independent_supported_rows": sum(
+            case["current_hand_depth_repair_residual_owner_state"][
+                "independent_supported_repair_residual_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_repair_residual_independent_unsupported_rows": sum(
+            case["current_hand_depth_repair_residual_owner_state"][
+                "independent_unsupported_repair_residual_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_repair_residual_independent_support_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_depth_repair_residual_owner_state"][
+                                "residual_independent_support_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_depth_repair_residual_depth_observation_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_depth_repair_residual_owner_state"][
+                                "residual_depth_observation_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "supported_hand_depth_repair_residual_depth_observation_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_depth_repair_residual_owner_state"][
+                                "supported_residual_depth_observation_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_depth_repair_residual_owner_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_depth_repair_residual_owner_state"][
+                                "residual_owner_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_depth_repair_residual_sample_count": sum(
+            case["current_hand_depth_repair_residual_owner_state"]["residual_sample_count"]
+            for case in case_outputs
+        ),
         "hand_surface_depth_tail_variable_count": sum(
             case["current_hand_surface_depth_tail_state"]["hand_surface_depth_tail_variable_count"]
             for case in case_outputs
@@ -5037,6 +5317,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-depth-repair-graph-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_depth_repair_graph"),
+    )
+    parser.add_argument(
+        "--hand-depth-repair-residual-owner-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_depth_repair_residual_owner_state"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",

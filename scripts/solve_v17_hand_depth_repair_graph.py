@@ -638,6 +638,17 @@ def evaluate_row(
         "projection_residual_to_measurement_px": projection,
         "owner_median_gap_m": owner_gap,
         "scaled_wrist_to_middle_tip_m": float(scale) * float(base["wrist_to_middle_tip_m"]),
+        "x": x.astype(int).tolist(),
+        "y": y.astype(int).tolist(),
+        "hand_z": hand_z.astype(float).tolist(),
+        "metric_z": metric_z.astype(float).tolist(),
+        "object_distance_px": [
+            None if not math.isfinite(float(value)) else float(value) for value in object_distance_px
+        ],
+        "near": near.astype(bool).tolist(),
+        "far": far.astype(bool).tolist(),
+        "depth_shape": [int(depth_m.shape[0]), int(depth_m.shape[1])],
+        "projection_source_size": [float(v) for v in tuple(base["projection_source_size"])],
         "corrected_hand_depth_m": summarize(hand_z.astype(float).tolist()),
         "corrected_unidepth_m": summarize(metric_z.astype(float).tolist()),
         "partitions": partitions,
