@@ -154,6 +154,25 @@ def project_torch(points: torch.Tensor, intrinsics: torch.Tensor) -> torch.Tenso
     return torch.stack([fx * points[..., 0] / z + cx, fy * points[..., 1] / z + cy], dim=-1)
 
 
+def project_depth_torch(
+    points: torch.Tensor,
+    intrinsics: torch.Tensor,
+    projection_source_size: tuple[float, float],
+    depth_shape: tuple[int, int],
+) -> torch.Tensor:
+    uv = project_torch(points, intrinsics)
+    depth_h, depth_w = depth_shape
+    scale = torch.tensor(
+        [
+            float(depth_w) / float(projection_source_size[0]),
+            float(depth_h) / float(projection_source_size[1]),
+        ],
+        dtype=uv.dtype,
+        device=uv.device,
+    )
+    return uv * scale
+
+
 def corrected_replayed_state(
     *,
     model: Any,
@@ -220,6 +239,8 @@ def corrected_replayed_state(
         "center_ray": torch.tensor(center_ray_np, dtype=torch.float32, device=device).reshape(1, 1, 3),
         "translation": torch.tensor(translation, dtype=torch.float32, device=device).reshape(1, 1, 3),
         "intrinsics": torch.tensor(intrinsics_np, dtype=torch.float32, device=device),
+        "projection_source_size": tuple(float(value) for value in projection_source_size),
+        "depth_shape": (int(depth["depth"][int(depth_i)].shape[0]), int(depth["depth"][int(depth_i)].shape[1])),
         "keypoints2d": torch.tensor(keypoints2d_np, dtype=torch.float32, device=device),
         "source_joints_np": source_joints_np,
         "source_vertices_np": source_vertices_np,
@@ -316,8 +337,18 @@ def eval_metrics(
 ) -> dict[str, Any]:
     residual_vertices = vertices[0, factors["residual_vertex_id"]]
     depth_gap = residual_vertices[:, 2] - factors["target_depth"]
-    uv = project_torch(residual_vertices, state["intrinsics"])
-    source_uv = project_torch(vertices[0, factors["seed_vertex_id"]], state["intrinsics"])
+    uv = project_depth_torch(
+        residual_vertices,
+        state["intrinsics"],
+        state["projection_source_size"],
+        state["depth_shape"],
+    )
+    source_uv = project_depth_torch(
+        vertices[0, factors["seed_vertex_id"]],
+        state["intrinsics"],
+        state["projection_source_size"],
+        state["depth_shape"],
+    )
     projection_to_seed = uv - factors["target_xy"]
     projection_to_source_seed = uv - source_uv
     joint_uv = project_torch(joints[0], state["intrinsics"])
@@ -368,7 +399,12 @@ def solve_row(
         depth_loss = robust_l1(
             (residual_vertices[:, 2] - factors["target_depth"]) / float(args.sigma_depth_m)
         ).mean()
-        uv = project_torch(residual_vertices, state["intrinsics"])
+        uv = project_depth_torch(
+            residual_vertices,
+            state["intrinsics"],
+            state["projection_source_size"],
+            state["depth_shape"],
+        )
         projection_loss = robust_l1((uv - factors["target_xy"]) / float(args.sigma_projection_px)).mean()
         joint_uv = project_torch(joints[0], state["intrinsics"])
         joint_loss = robust_l1((joint_uv - state["keypoints2d"]) / float(args.sigma_joint_px)).mean()

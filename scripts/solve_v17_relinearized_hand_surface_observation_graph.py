@@ -58,6 +58,7 @@ from solve_v17_mano_articulation_local import (
     factor_arrays,
     load_wilor_mano_class,
     patch_legacy_mano_loader,
+    project_depth_torch,
     project_torch,
 )
 from solve_v17_post_temporal_depth_observation_weighted_refit import keypoint_sigma
@@ -136,7 +137,12 @@ def geometry_eval_metrics(
 ) -> dict[str, Any]:
     residual_vertices = vertices[0, factors["residual_vertex_id"]]
     depth_gap = residual_vertices[:, 2] - factors["target_depth"]
-    uv = project_torch(residual_vertices, state["intrinsics"])
+    uv = project_depth_torch(
+        residual_vertices,
+        state["intrinsics"],
+        state["projection_source_size"],
+        state["depth_shape"],
+    )
     projection_to_seed = uv - factors["target_xy"]
     joint_uv = project_torch(joints[0], state["intrinsics"])
     joint_residual = torch.linalg.norm(joint_uv - state["keypoints2d"], dim=1)
@@ -171,7 +177,12 @@ def local_geometry_loss(
     depth_loss = robust_l1(
         (residual_vertices[:, 2] - factors["target_depth"]) / float(args.sigma_geometry_depth_m)
     ).mean()
-    uv = project_torch(residual_vertices, state["intrinsics"])
+    uv = project_depth_torch(
+        residual_vertices,
+        state["intrinsics"],
+        state["projection_source_size"],
+        state["depth_shape"],
+    )
     projection_loss = robust_l1((uv - factors["target_xy"]) / float(args.sigma_geometry_projection_px)).mean()
     joint_uv = project_torch(joints[0], state["intrinsics"])
     joint_loss = robust_l1((joint_uv - state["keypoints2d"]) / float(args.sigma_joint_px)).mean()
