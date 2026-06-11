@@ -47,6 +47,7 @@ class CaseInputs:
     hand_depth_observation_switch_problem_report: Path
     hand_far_field_depth_temporal_problem_report: Path
     hand_far_field_temporal_refit_report: Path
+    hand_far_field_temporal_reprojection_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -149,6 +150,7 @@ def case_inputs(
     hand_depth_observation_switch_problem_root: Path,
     hand_far_field_depth_temporal_problem_root: Path,
     hand_far_field_temporal_refit_root: Path,
+    hand_far_field_temporal_reprojection_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -281,6 +283,12 @@ def case_inputs(
         / "v17_hand_far_field_temporal_refit.json",
         f"{case} hand far-field temporal refit report",
     )
+    hand_far_field_temporal_reprojection_report = existing_path(
+        hand_far_field_temporal_reprojection_root
+        / case
+        / "v17_hand_far_field_temporal_reprojection.json",
+        f"{case} hand far-field temporal reprojection report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -362,6 +370,7 @@ def case_inputs(
         hand_depth_observation_switch_problem_report=hand_depth_observation_switch_problem_report,
         hand_far_field_depth_temporal_problem_report=hand_far_field_depth_temporal_problem_report,
         hand_far_field_temporal_refit_report=hand_far_field_temporal_refit_report,
+        hand_far_field_temporal_reprojection_report=hand_far_field_temporal_reprojection_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1621,6 +1630,62 @@ def hand_far_field_temporal_refit_counts(report: dict[str, Any]) -> dict[str, An
     }
 
 
+def hand_far_field_temporal_reprojection_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "hand far-field temporal reprojection frame_count",
+        ),
+        "hand_depth_temporal_reprojection_variable_count": require_int(
+            report.get("hand_depth_temporal_reprojection_variable_count"),
+            "hand far-field temporal reprojection variable count",
+        ),
+        "temporal_refit_source_rows": require_int(
+            report.get("temporal_refit_source_rows"),
+            "hand far-field temporal reprojection source rows",
+        ),
+        "temporal_refit_delta_applied_rows": require_int(
+            report.get("temporal_refit_delta_applied_rows"),
+            "hand far-field temporal reprojection applied rows",
+        ),
+        "temporal_refit_reprojected_metric_depth_compatible_rows": require_int(
+            report.get("temporal_refit_reprojected_metric_depth_compatible_rows"),
+            "hand far-field temporal reprojection compatible rows",
+        ),
+        "temporal_refit_reprojected_depth_improved_rows": require_int(
+            report.get("temporal_refit_reprojected_depth_improved_rows"),
+            "hand far-field temporal reprojection improved rows",
+        ),
+        "metric_hand_state_accepted_rows_after_temporal_reprojection": require_int(
+            report.get("metric_hand_state_accepted_rows_after_temporal_reprojection"),
+            "hand far-field temporal reprojection accepted rows",
+        ),
+        "depth_repair_factor_candidate_rows_after_temporal_reprojection": require_int(
+            report.get("depth_repair_factor_candidate_rows_after_temporal_reprojection"),
+            "hand far-field temporal reprojection residual rows",
+        ),
+        "temporal_reprojection_state_counts": require_dict(
+            report.get("temporal_reprojection_state_counts"),
+            "hand far-field temporal reprojection state counts",
+        ),
+        "temporal_refit_reprojection_state_counts": require_dict(
+            report.get("temporal_refit_reprojection_state_counts"),
+            "hand far-field temporal refit reprojection state counts",
+        ),
+        "owner_depth_state_counts_after_temporal_reprojection": require_dict(
+            report.get("owner_depth_state_counts_after_temporal_reprojection"),
+            "hand far-field temporal reprojection owner depth state counts",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2464,6 +2529,7 @@ def required_variable_families(
     hand_depth_observation_switch_problem: dict[str, Any],
     hand_far_field_depth_temporal_problem: dict[str, Any],
     hand_far_field_temporal_refit: dict[str, Any],
+    hand_far_field_temporal_reprojection: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2746,6 +2812,27 @@ def required_variable_families(
                 "hand_far_field_temporal_refit_state_counts": hand_far_field_temporal_refit[
                     "temporal_refit_state_counts"
                 ],
+                "hand_far_field_temporal_reprojection_source_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_source_rows"
+                ],
+                "hand_far_field_temporal_reprojection_delta_applied_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_delta_applied_rows"
+                ],
+                "hand_far_field_temporal_reprojected_metric_depth_compatible_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_reprojected_metric_depth_compatible_rows"
+                ],
+                "hand_far_field_temporal_reprojected_depth_improved_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_reprojected_depth_improved_rows"
+                ],
+                "hand_far_field_temporal_reprojection_accepted_rows_after_reprojection": hand_far_field_temporal_reprojection[
+                    "metric_hand_state_accepted_rows_after_temporal_reprojection"
+                ],
+                "hand_far_field_temporal_reprojection_residual_rows_after_reprojection": hand_far_field_temporal_reprojection[
+                    "depth_repair_factor_candidate_rows_after_temporal_reprojection"
+                ],
+                "hand_far_field_temporal_reprojection_state_counts": hand_far_field_temporal_reprojection[
+                    "temporal_refit_reprojection_state_counts"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2821,6 +2908,7 @@ def required_variable_families(
                 "depth-observation switch variables show that most depth-side residual rows are far from active object masks, so object occlusion alone cannot explain the remaining hand-depth residual",
                 "far-field depth-observation switches form long temporal runs, so the hand-depth repair needs full-timeline temporal variables rather than isolated frame fixes",
                 "a relinearized far-field temporal refit repairs most long-run residual samples without hitting ray-shift bounds, but it does not reproject MANO geometry or update accepted hand state",
+                "post-update reprojection and resampling falsify the fixed-sample temporal refit as sufficient; temporal shifts improve many rows but leave most rows depth-incompatible, so local MANO surface and projection relinearization remains required",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3563,6 +3651,30 @@ def required_variable_families(
                 "hand_far_field_temporal_refit_state_counts": hand_far_field_temporal_refit[
                     "temporal_refit_state_counts"
                 ],
+                "hand_far_field_temporal_reprojection_source_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_source_rows"
+                ],
+                "hand_far_field_temporal_reprojection_delta_applied_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_delta_applied_rows"
+                ],
+                "hand_far_field_temporal_reprojected_metric_depth_compatible_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_reprojected_metric_depth_compatible_rows"
+                ],
+                "hand_far_field_temporal_reprojected_depth_improved_rows": hand_far_field_temporal_reprojection[
+                    "temporal_refit_reprojected_depth_improved_rows"
+                ],
+                "hand_far_field_temporal_reprojection_accepted_rows_after_reprojection": hand_far_field_temporal_reprojection[
+                    "metric_hand_state_accepted_rows_after_temporal_reprojection"
+                ],
+                "hand_far_field_temporal_reprojection_residual_rows_after_reprojection": hand_far_field_temporal_reprojection[
+                    "depth_repair_factor_candidate_rows_after_temporal_reprojection"
+                ],
+                "hand_far_field_temporal_reprojection_state_counts": hand_far_field_temporal_reprojection[
+                    "temporal_refit_reprojection_state_counts"
+                ],
+                "hand_far_field_temporal_reprojection_owner_depth_state_counts": hand_far_field_temporal_reprojection[
+                    "owner_depth_state_counts_after_temporal_reprojection"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -3644,6 +3756,7 @@ def required_variable_families(
                 "depth-observation switch variables split the depth-side residuals by object-mask proximity and expose far-field hand-depth rows as the dominant owner",
                 "far-field temporal segments expose persistent same-hand signed depth residuals that require a full-timeline hand-depth state",
                 "far-field temporal refit evidence shows temporal relinearization can remove most long-run residual depth gaps without exhausting the existing ray-shift bounds",
+                "temporal refit deltas survive as improvement evidence but not as metric-depth-compatible hand state after MANO surface resampling",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -3813,6 +3926,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_far_field_temporal_refit_report),
         f"{inputs.case} hand far-field temporal refit report",
     )
+    hand_far_field_temporal_reprojection_report = require_dict(
+        load_json(inputs.hand_far_field_temporal_reprojection_report),
+        f"{inputs.case} hand far-field temporal reprojection report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3904,6 +4021,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     hand_far_field_temporal_refit = hand_far_field_temporal_refit_counts(
         hand_far_field_temporal_refit_report
+    )
+    hand_far_field_temporal_reprojection = hand_far_field_temporal_reprojection_counts(
+        hand_far_field_temporal_reprojection_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -4022,6 +4142,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand far-field temporal refit"
+        )
+    if frame_count != require_int(
+        hand_far_field_temporal_reprojection["frame_count"],
+        f"{inputs.case} hand far-field temporal reprojection frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand far-field temporal reprojection"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -4635,6 +4762,54 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} far-field temporal refit threshold rows exceed candidate rows")
     if require_int(
+        hand_far_field_temporal_reprojection["hand_depth_temporal_reprojection_variable_count"],
+        f"{inputs.case} far-field temporal reprojection variable count",
+    ) != require_int(
+        hand_depth_repair_graph["hand_depth_repair_graph_variable_count"],
+        f"{inputs.case} hand depth repair graph variable count",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal reprojection variables disagree with repair graph")
+    if require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_source_rows"],
+        f"{inputs.case} far-field temporal reprojection source rows",
+    ) != require_int(
+        hand_far_field_temporal_refit["far_field_temporal_refit_row_count"],
+        f"{inputs.case} far-field temporal refit rows",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal reprojection source rows disagree with refit rows")
+    if require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_delta_applied_rows"],
+        f"{inputs.case} far-field temporal reprojection applied rows",
+    ) != require_int(
+        hand_far_field_temporal_refit["temporal_refit_variable_candidate_rows"],
+        f"{inputs.case} far-field temporal refit variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal reprojection applied rows disagree with refit variables")
+    if require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} far-field temporal reprojection compatible rows",
+    ) > require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_delta_applied_rows"],
+        f"{inputs.case} far-field temporal reprojection applied rows",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal reprojection compatible rows exceed applied rows")
+    if require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_reprojected_depth_improved_rows"],
+        f"{inputs.case} far-field temporal reprojection improved rows",
+    ) > require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_delta_applied_rows"],
+        f"{inputs.case} far-field temporal reprojection applied rows",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal reprojection improved rows exceed applied rows")
+    if require_int(
+        hand_far_field_temporal_reprojection["metric_hand_state_accepted_rows_after_temporal_reprojection"],
+        f"{inputs.case} far-field temporal reprojection accepted rows",
+    ) < require_int(
+        hand_depth_repair_graph["metric_hand_state_accepted_rows"],
+        f"{inputs.case} hand depth repair graph accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal reprojection reduced accepted hand states")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -5029,6 +5204,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_depth_observation_switch_problem,
         hand_far_field_depth_temporal_problem,
         hand_far_field_temporal_refit,
+        hand_far_field_temporal_reprojection,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -5136,6 +5312,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_far_field_temporal_refit_report,
                 hand_far_field_temporal_refit_report,
             ),
+            "hand_far_field_temporal_reprojection_report": source_summary(
+                inputs.hand_far_field_temporal_reprojection_report,
+                hand_far_field_temporal_reprojection_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -5198,6 +5378,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_depth_observation_switch_problem": hand_depth_observation_switch_problem,
         "current_hand_far_field_depth_temporal_problem": hand_far_field_depth_temporal_problem,
         "current_hand_far_field_temporal_refit": hand_far_field_temporal_refit,
+        "current_hand_far_field_temporal_reprojection": hand_far_field_temporal_reprojection,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -5265,6 +5446,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_depth_observation_switch_problem_root,
             args.hand_far_field_depth_temporal_problem_root,
             args.hand_far_field_temporal_refit_root,
+            args.hand_far_field_temporal_reprojection_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -5316,6 +5498,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_depth_observation_switch_problem_root": str(args.hand_depth_observation_switch_problem_root),
         "hand_far_field_depth_temporal_problem_root": str(args.hand_far_field_depth_temporal_problem_root),
         "hand_far_field_temporal_refit_root": str(args.hand_far_field_temporal_refit_root),
+        "hand_far_field_temporal_reprojection_root": str(args.hand_far_field_temporal_reprojection_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -5704,6 +5887,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_far_field_temporal_refit_state_counts": case[
                     "current_hand_far_field_temporal_refit"
                 ]["temporal_refit_state_counts"],
+                "hand_far_field_temporal_reprojection_source_rows": case[
+                    "current_hand_far_field_temporal_reprojection"
+                ]["temporal_refit_source_rows"],
+                "hand_far_field_temporal_reprojection_delta_applied_rows": case[
+                    "current_hand_far_field_temporal_reprojection"
+                ]["temporal_refit_delta_applied_rows"],
+                "hand_far_field_temporal_reprojected_metric_depth_compatible_rows": case[
+                    "current_hand_far_field_temporal_reprojection"
+                ]["temporal_refit_reprojected_metric_depth_compatible_rows"],
+                "hand_far_field_temporal_reprojected_depth_improved_rows": case[
+                    "current_hand_far_field_temporal_reprojection"
+                ]["temporal_refit_reprojected_depth_improved_rows"],
+                "hand_far_field_temporal_reprojection_accepted_rows_after_reprojection": case[
+                    "current_hand_far_field_temporal_reprojection"
+                ]["metric_hand_state_accepted_rows_after_temporal_reprojection"],
+                "hand_far_field_temporal_reprojection_residual_rows_after_reprojection": case[
+                    "current_hand_far_field_temporal_reprojection"
+                ]["depth_repair_factor_candidate_rows_after_temporal_reprojection"],
+                "hand_far_field_temporal_reprojection_state_counts": case[
+                    "current_hand_far_field_temporal_reprojection"
+                ]["temporal_refit_reprojection_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -6509,6 +6713,68 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "hand_far_field_temporal_reprojection_source_rows": sum(
+            case["current_hand_far_field_temporal_reprojection"]["temporal_refit_source_rows"]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_reprojection_delta_applied_rows": sum(
+            case["current_hand_far_field_temporal_reprojection"]["temporal_refit_delta_applied_rows"]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_reprojected_metric_depth_compatible_rows": sum(
+            case["current_hand_far_field_temporal_reprojection"][
+                "temporal_refit_reprojected_metric_depth_compatible_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_reprojected_depth_improved_rows": sum(
+            case["current_hand_far_field_temporal_reprojection"][
+                "temporal_refit_reprojected_depth_improved_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_reprojection_accepted_rows_after_reprojection": sum(
+            case["current_hand_far_field_temporal_reprojection"][
+                "metric_hand_state_accepted_rows_after_temporal_reprojection"
+            ]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_reprojection_residual_rows_after_reprojection": sum(
+            case["current_hand_far_field_temporal_reprojection"][
+                "depth_repair_factor_candidate_rows_after_temporal_reprojection"
+            ]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_reprojection_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_far_field_temporal_reprojection"][
+                                "temporal_refit_reprojection_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_far_field_temporal_reprojection_owner_depth_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_far_field_temporal_reprojection"][
+                                "owner_depth_state_counts_after_temporal_reprojection"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -7140,6 +7406,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-far-field-temporal-refit-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_far_field_temporal_refit"),
+    )
+    parser.add_argument(
+        "--hand-far-field-temporal-reprojection-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_far_field_temporal_reprojection"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
