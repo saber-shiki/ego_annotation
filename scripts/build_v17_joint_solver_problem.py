@@ -58,6 +58,7 @@ class CaseInputs:
     coupled_hand_depth_mano_observation_graph_report: Path
     relinearized_hand_surface_observation_graph_report: Path
     full_residual_relinearized_hand_surface_observation_graph_report: Path
+    full_residual_pose_relinearized_hand_surface_observation_graph_report: Path
     relinearized_hand_capacity_diagnostic_report: Path
     relinearized_residual_object_contact_state_report: Path
     relinearized_residual_factor_coverage_report: Path
@@ -174,6 +175,7 @@ def case_inputs(
     coupled_hand_depth_mano_observation_graph_root: Path,
     relinearized_hand_surface_observation_graph_root: Path,
     full_residual_relinearized_hand_surface_observation_graph_root: Path,
+    full_residual_pose_relinearized_hand_surface_observation_graph_root: Path,
     relinearized_hand_capacity_diagnostic_root: Path,
     relinearized_residual_object_contact_state_root: Path,
     relinearized_residual_factor_coverage_root: Path,
@@ -373,6 +375,12 @@ def case_inputs(
         / "v17_full_residual_relinearized_hand_surface_observation_graph.json",
         f"{case} full residual relinearized hand surface observation graph report",
     )
+    full_residual_pose_relinearized_hand_surface_observation_graph_report = existing_path(
+        full_residual_pose_relinearized_hand_surface_observation_graph_root
+        / case
+        / "v17_full_residual_relinearized_hand_surface_observation_graph.json",
+        f"{case} pose-enabled full residual relinearized hand surface observation graph report",
+    )
     relinearized_hand_capacity_diagnostic_report = existing_path(
         relinearized_hand_capacity_diagnostic_root
         / case
@@ -483,6 +491,7 @@ def case_inputs(
         coupled_hand_depth_mano_observation_graph_report=coupled_hand_depth_mano_observation_graph_report,
         relinearized_hand_surface_observation_graph_report=relinearized_hand_surface_observation_graph_report,
         full_residual_relinearized_hand_surface_observation_graph_report=full_residual_relinearized_hand_surface_observation_graph_report,
+        full_residual_pose_relinearized_hand_surface_observation_graph_report=full_residual_pose_relinearized_hand_surface_observation_graph_report,
         relinearized_hand_capacity_diagnostic_report=relinearized_hand_capacity_diagnostic_report,
         relinearized_residual_object_contact_state_report=relinearized_residual_object_contact_state_report,
         relinearized_residual_factor_coverage_report=relinearized_residual_factor_coverage_report,
@@ -3872,6 +3881,7 @@ def required_variable_families(
     coupled_hand_depth_mano_observation_graph: dict[str, Any],
     relinearized_hand_surface_observation_graph: dict[str, Any],
     full_residual_relinearized_hand_surface_observation_graph: dict[str, Any],
+    full_residual_pose_relinearized_hand_surface_observation_graph: dict[str, Any],
     relinearized_hand_capacity_diagnostic: dict[str, Any],
     relinearized_residual_object_contact_state: dict[str, Any],
     relinearized_residual_factor_coverage: dict[str, Any],
@@ -4425,6 +4435,36 @@ def required_variable_families(
                     "relinearized_reprojection_depth_observation_owner_rows"
                 ],
                 "full_residual_relinearized_hand_depth_reprojection_state_counts": full_residual_relinearized_hand_surface_observation_graph[
+                    "relinearized_temporal_reprojection_state_counts"
+                ],
+                "full_residual_pose_relinearized_hand_depth_variable_rows": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "relinearized_variable_rows"
+                ],
+                "full_residual_pose_relinearized_hand_depth_pose_optimization_enabled": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "relinearized_geometry_pose_optimization_enabled"
+                ],
+                "full_residual_pose_relinearized_hand_depth_pose_delta_clamp_hit_rows": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "relinearized_geometry_pose_delta_clamp_hit_rows"
+                ],
+                "full_residual_pose_relinearized_hand_depth_surface_factor_rows": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "relinearized_surface_factor_rows"
+                ],
+                "full_residual_pose_relinearized_hand_depth_observation_factor_rows": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "relinearized_depth_observation_factor_rows"
+                ],
+                "full_residual_pose_relinearized_hand_depth_reprojected_metric_depth_compatible_rows": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "relinearized_reprojected_metric_depth_compatible_rows"
+                ],
+                "full_residual_pose_relinearized_hand_depth_accepted_rows_after_reprojection": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "metric_hand_state_accepted_rows_after_relinearized_graph"
+                ],
+                "full_residual_pose_relinearized_hand_depth_residual_rows_after_reprojection": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "depth_repair_factor_candidate_rows_after_relinearized_graph"
+                ],
+                "full_residual_pose_relinearized_hand_depth_reprojection_depth_observation_owner_rows": full_residual_pose_relinearized_hand_surface_observation_graph[
+                    "relinearized_reprojection_depth_observation_owner_rows"
+                ],
+                "full_residual_pose_relinearized_hand_depth_reprojection_state_counts": full_residual_pose_relinearized_hand_surface_observation_graph[
                     "relinearized_temporal_reprojection_state_counts"
                 ],
                 "relinearized_hand_capacity_applied_variable_rows": relinearized_hand_capacity_diagnostic[
@@ -5933,6 +5973,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.full_residual_relinearized_hand_surface_observation_graph_report),
         f"{inputs.case} full residual relinearized hand surface observation graph report",
     )
+    full_residual_pose_relinearized_hand_surface_observation_graph_report = require_dict(
+        load_json(inputs.full_residual_pose_relinearized_hand_surface_observation_graph_report),
+        f"{inputs.case} pose-enabled full residual relinearized hand surface observation graph report",
+    )
     relinearized_hand_capacity_diagnostic_report = require_dict(
         load_json(inputs.relinearized_hand_capacity_diagnostic_report),
         f"{inputs.case} relinearized hand capacity diagnostic report",
@@ -6071,6 +6115,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     full_residual_relinearized_hand_surface_observation_graph = relinearized_hand_surface_observation_graph_counts(
         full_residual_relinearized_hand_surface_observation_graph_report
+    )
+    full_residual_pose_relinearized_hand_surface_observation_graph = relinearized_hand_surface_observation_graph_counts(
+        full_residual_pose_relinearized_hand_surface_observation_graph_report
     )
     relinearized_hand_capacity_diagnostic = relinearized_hand_capacity_diagnostic_counts(
         relinearized_hand_capacity_diagnostic_report
@@ -6991,6 +7038,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and full residual relinearized hand surface observation graph"
         )
+    if frame_count != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["frame_count"],
+        f"{inputs.case} pose-enabled full residual relinearized hand surface observation graph frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and pose-enabled full residual relinearized hand surface observation graph"
+        )
     if require_str(
         relinearized_hand_surface_observation_graph["relinearized_variable_scope"],
         f"{inputs.case} relinearized hand graph scope",
@@ -7001,6 +7055,11 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} full residual relinearized hand graph scope",
     ) != "full_residual_coverage":
         raise RuntimeError(f"{inputs.case} full residual relinearized hand graph has the wrong variable scope")
+    if require_str(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_variable_scope"],
+        f"{inputs.case} pose-enabled full residual relinearized hand graph scope",
+    ) != "full_residual_coverage":
+        raise RuntimeError(f"{inputs.case} pose-enabled full residual relinearized hand graph has the wrong variable scope")
     if frame_count != require_int(
         relinearized_hand_capacity_diagnostic["frame_count"],
         f"{inputs.case} relinearized hand capacity diagnostic frame_count",
@@ -7687,6 +7746,62 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} full residual graph residual owner split does not sum")
     if require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_variable_rows"],
+        f"{inputs.case} pose-enabled full residual graph variable rows",
+    ) != require_int(
+        full_residual_relinearized_hand_surface_observation_graph["relinearized_variable_rows"],
+        f"{inputs.case} scalar full residual graph variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} pose-enabled full residual graph variables disagree with scalar full residual graph")
+    if require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_source_nonapplied_variable_rows"],
+        f"{inputs.case} pose-enabled full residual graph source nonapplied rows",
+    ) != require_int(
+        relinearized_residual_factor_coverage["current_relinearized_nonapplied_rows"],
+        f"{inputs.case} full residual coverage nonapplied rows",
+    ):
+        raise RuntimeError(f"{inputs.case} pose-enabled full residual graph source nonapplied rows disagree with coverage diagnostic")
+    if require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_source_residual_variable_rows"],
+        f"{inputs.case} pose-enabled full residual graph source residual rows",
+    ) != require_int(
+        relinearized_residual_factor_coverage["relinearized_hand_residual_rows"],
+        f"{inputs.case} full residual coverage rows",
+    ):
+        raise RuntimeError(f"{inputs.case} pose-enabled full residual graph source residual rows disagree with coverage diagnostic")
+    if not full_residual_pose_relinearized_hand_surface_observation_graph[
+        "relinearized_geometry_pose_optimization_enabled"
+    ]:
+        raise RuntimeError(f"{inputs.case} pose-enabled full residual graph did not optimize geometry pose")
+    if require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_reprojection_residual_owner_rows"],
+        f"{inputs.case} pose-enabled full residual graph residual owner rows",
+    ) + require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_reprojection_projection_untrusted_rows"],
+        f"{inputs.case} pose-enabled full residual graph projection-untrusted rows",
+    ) + require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} pose-enabled full residual graph compatible rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_variable_rows"],
+        f"{inputs.case} pose-enabled full residual graph variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} pose-enabled full residual graph reprojected split does not sum to variables")
+    if require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_reprojection_local_surface_factor_candidate_rows"],
+        f"{inputs.case} pose-enabled full residual graph local rows",
+    ) + require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_reprojection_mixed_surface_depth_owner_rows"],
+        f"{inputs.case} pose-enabled full residual graph mixed rows",
+    ) + require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_reprojection_depth_observation_owner_rows"],
+        f"{inputs.case} pose-enabled full residual graph depth-observation rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_reprojection_residual_owner_rows"],
+        f"{inputs.case} pose-enabled full residual graph residual owner rows",
+    ):
+        raise RuntimeError(f"{inputs.case} pose-enabled full residual graph residual owner split does not sum")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -8092,6 +8207,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         coupled_hand_depth_mano_observation_graph,
         relinearized_hand_surface_observation_graph,
         full_residual_relinearized_hand_surface_observation_graph,
+        full_residual_pose_relinearized_hand_surface_observation_graph,
         relinearized_hand_capacity_diagnostic,
         relinearized_residual_object_contact_state,
         relinearized_residual_factor_coverage,
@@ -8246,6 +8362,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.full_residual_relinearized_hand_surface_observation_graph_report,
                 full_residual_relinearized_hand_surface_observation_graph_report,
             ),
+            "full_residual_pose_relinearized_hand_surface_observation_graph_report": source_summary(
+                inputs.full_residual_pose_relinearized_hand_surface_observation_graph_report,
+                full_residual_pose_relinearized_hand_surface_observation_graph_report,
+            ),
             "relinearized_hand_capacity_diagnostic_report": source_summary(
                 inputs.relinearized_hand_capacity_diagnostic_report,
                 relinearized_hand_capacity_diagnostic_report,
@@ -8331,6 +8451,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_coupled_hand_depth_mano_observation_graph": coupled_hand_depth_mano_observation_graph,
         "current_relinearized_hand_surface_observation_graph": relinearized_hand_surface_observation_graph,
         "current_full_residual_relinearized_hand_surface_observation_graph": full_residual_relinearized_hand_surface_observation_graph,
+        "current_full_residual_pose_relinearized_hand_surface_observation_graph": full_residual_pose_relinearized_hand_surface_observation_graph,
         "current_relinearized_hand_capacity_diagnostic": relinearized_hand_capacity_diagnostic,
         "current_relinearized_residual_object_contact_state": relinearized_residual_object_contact_state,
         "current_relinearized_residual_factor_coverage": relinearized_residual_factor_coverage,
@@ -8412,6 +8533,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.coupled_hand_depth_mano_observation_graph_root,
             args.relinearized_hand_surface_observation_graph_root,
             args.full_residual_relinearized_hand_surface_observation_graph_root,
+            args.full_residual_pose_relinearized_hand_surface_observation_graph_root,
             args.relinearized_hand_capacity_diagnostic_root,
             args.relinearized_residual_object_contact_state_root,
             args.relinearized_residual_factor_coverage_root,
@@ -8492,6 +8614,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "full_residual_relinearized_hand_surface_observation_graph_root": str(
             args.full_residual_relinearized_hand_surface_observation_graph_root
+        ),
+        "full_residual_pose_relinearized_hand_surface_observation_graph_root": str(
+            args.full_residual_pose_relinearized_hand_surface_observation_graph_root
         ),
         "relinearized_hand_capacity_diagnostic_root": str(
             args.relinearized_hand_capacity_diagnostic_root
@@ -10955,6 +11080,111 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "full_residual_pose_relinearized_hand_depth_variable_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_variable_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_surface_factor_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_surface_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_observation_factor_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_depth_observation_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_anchor_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_compatible_anchor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_pose_delta_clamp_hit_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_geometry_pose_delta_clamp_hit_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_reprojected_metric_depth_compatible_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_reprojected_metric_depth_compatible_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_reprojected_depth_improved_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_reprojected_depth_improved_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_accepted_rows_after_reprojection": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "metric_hand_state_accepted_rows_after_relinearized_graph"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_residual_rows_after_reprojection": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "depth_repair_factor_candidate_rows_after_relinearized_graph"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_residual_owner_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_reprojection_residual_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_local_surface_factor_candidate_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_reprojection_local_surface_factor_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_mixed_surface_depth_owner_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_reprojection_mixed_surface_depth_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_depth_observation_owner_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_reprojection_depth_observation_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_projection_untrusted_rows": sum(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_reprojection_projection_untrusted_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_pose_optimization_enabled": any(
+            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                "relinearized_geometry_pose_optimization_enabled"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_pose_relinearized_hand_depth_reprojection_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_full_residual_pose_relinearized_hand_surface_observation_graph"][
+                                "relinearized_temporal_reprojection_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "relinearized_hand_capacity_applied_variable_rows": sum(
             case["current_relinearized_hand_capacity_diagnostic"]["applied_relinearized_variable_rows"]
             for case in case_outputs
@@ -11930,6 +12160,11 @@ def parse_args() -> argparse.Namespace:
         "--full-residual-relinearized-hand-surface-observation-graph-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_full_residual_relinearized_hand_surface_observation_graph"),
+    )
+    parser.add_argument(
+        "--full-residual-pose-relinearized-hand-surface-observation-graph-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_full_residual_relinearized_hand_surface_observation_graph_pose"),
     )
     parser.add_argument(
         "--relinearized-hand-capacity-diagnostic-root",
