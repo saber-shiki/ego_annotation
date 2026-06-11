@@ -50,6 +50,7 @@ class CaseInputs:
     hand_far_field_temporal_reprojection_report: Path
     hand_temporal_reprojection_residual_owner_state_report: Path
     hand_temporal_owner_weighted_refit_report: Path
+    post_temporal_mano_factor_input_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -155,6 +156,7 @@ def case_inputs(
     hand_far_field_temporal_reprojection_root: Path,
     hand_temporal_reprojection_residual_owner_state_root: Path,
     hand_temporal_owner_weighted_refit_root: Path,
+    post_temporal_mano_factor_input_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -305,6 +307,10 @@ def case_inputs(
         / "v17_hand_temporal_owner_weighted_refit.json",
         f"{case} hand temporal owner-weighted refit report",
     )
+    post_temporal_mano_factor_input_report = existing_path(
+        post_temporal_mano_factor_input_root / case / "v17_post_temporal_mano_factor_input.json",
+        f"{case} post-temporal MANO factor input report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -389,6 +395,7 @@ def case_inputs(
         hand_far_field_temporal_reprojection_report=hand_far_field_temporal_reprojection_report,
         hand_temporal_reprojection_residual_owner_state_report=hand_temporal_reprojection_residual_owner_state_report,
         hand_temporal_owner_weighted_refit_report=hand_temporal_owner_weighted_refit_report,
+        post_temporal_mano_factor_input_report=post_temporal_mano_factor_input_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1397,6 +1404,59 @@ def mano_articulation_factor_input_counts(report: dict[str, Any]) -> dict[str, A
         "assigned_pixel_shift_px": require_dict(
             report.get("assigned_pixel_shift_px"),
             "MANO articulation assigned pixel shift summary",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
+def post_temporal_mano_factor_input_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "post-temporal MANO factor frame_count"),
+        "post_temporal_mano_factor_input_candidate_rows": require_int(
+            report.get("post_temporal_mano_factor_input_candidate_rows"),
+            "post-temporal MANO factor input candidate rows",
+        ),
+        "post_temporal_mano_factor_input_materialized_rows": require_int(
+            report.get("post_temporal_mano_factor_input_materialized_rows"),
+            "post-temporal MANO factor input materialized rows",
+        ),
+        "post_temporal_mano_local_surface_factor_rows": require_int(
+            report.get("post_temporal_mano_local_surface_factor_rows"),
+            "post-temporal MANO local surface factor rows",
+        ),
+        "post_temporal_mano_mixed_surface_depth_factor_rows": require_int(
+            report.get("post_temporal_mano_mixed_surface_depth_factor_rows"),
+            "post-temporal MANO mixed surface-depth factor rows",
+        ),
+        "post_temporal_factor_input_state_counts": require_dict(
+            report.get("post_temporal_factor_input_state_counts"),
+            "post-temporal MANO factor input state counts",
+        ),
+        "source_owner_weighted_reprojection_state_counts": require_dict(
+            report.get("source_owner_weighted_reprojection_state_counts"),
+            "post-temporal MANO source owner-weighted state counts",
+        ),
+        "assigned_factor_sample_count": require_int(
+            report.get("assigned_factor_sample_count"),
+            "post-temporal MANO assigned factor sample count",
+        ),
+        "residual_factor_sample_count": require_int(
+            report.get("residual_factor_sample_count"),
+            "post-temporal MANO residual factor sample count",
+        ),
+        "compatible_seed_sample_count": require_int(
+            report.get("compatible_seed_sample_count"),
+            "post-temporal MANO compatible seed sample count",
+        ),
+        "assigned_pixel_shift_px": require_dict(
+            report.get("assigned_pixel_shift_px"),
+            "post-temporal MANO assigned pixel shift",
         ),
         "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
         "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
@@ -2726,6 +2786,7 @@ def required_variable_families(
     hand_far_field_temporal_reprojection: dict[str, Any],
     hand_temporal_reprojection_residual_owner_state: dict[str, Any],
     hand_temporal_owner_weighted_refit: dict[str, Any],
+    post_temporal_mano_factor_input: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -3080,6 +3141,24 @@ def required_variable_families(
                 "hand_temporal_owner_weighted_reprojection_state_counts": hand_temporal_owner_weighted_refit[
                     "owner_weighted_temporal_reprojection_state_counts"
                 ],
+                "post_temporal_mano_factor_input_candidate_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_factor_input_candidate_rows"
+                ],
+                "post_temporal_mano_factor_input_materialized_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_factor_input_materialized_rows"
+                ],
+                "post_temporal_mano_local_surface_factor_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_local_surface_factor_rows"
+                ],
+                "post_temporal_mano_mixed_surface_depth_factor_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_mixed_surface_depth_factor_rows"
+                ],
+                "post_temporal_mano_assigned_factor_sample_count": post_temporal_mano_factor_input[
+                    "assigned_factor_sample_count"
+                ],
+                "post_temporal_mano_factor_input_state_counts": post_temporal_mano_factor_input[
+                    "post_temporal_factor_input_state_counts"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -3158,6 +3237,7 @@ def required_variable_families(
                 "post-update reprojection and resampling falsify the fixed-sample temporal refit as sufficient; temporal shifts improve many rows but leave most rows depth-incompatible, so local MANO surface and projection relinearization remains required",
                 "post-temporal residual ownership shows that only a small residual subset is clean local MANO-surface ownership, while mixed surface-depth and depth-observation owners dominate the remaining applied temporal rows",
                 "owner-weighted temporal refit consumes geometry-owned sample pairs and explicit depth-observation variables, but post-update reprojection still leaves most temporal rows depth-incompatible",
+                "post-temporal MANO factor input materializes current-state vertex-pair factors for local and mixed owner rows, but MANO pose has not consumed those post-temporal factors",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3975,6 +4055,24 @@ def required_variable_families(
                 "hand_temporal_owner_weighted_reprojection_state_counts": hand_temporal_owner_weighted_refit[
                     "owner_weighted_temporal_reprojection_state_counts"
                 ],
+                "post_temporal_mano_factor_input_candidate_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_factor_input_candidate_rows"
+                ],
+                "post_temporal_mano_factor_input_materialized_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_factor_input_materialized_rows"
+                ],
+                "post_temporal_mano_local_surface_factor_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_local_surface_factor_rows"
+                ],
+                "post_temporal_mano_mixed_surface_depth_factor_rows": post_temporal_mano_factor_input[
+                    "post_temporal_mano_mixed_surface_depth_factor_rows"
+                ],
+                "post_temporal_mano_assigned_factor_sample_count": post_temporal_mano_factor_input[
+                    "assigned_factor_sample_count"
+                ],
+                "post_temporal_mano_factor_input_state_counts": post_temporal_mano_factor_input[
+                    "post_temporal_factor_input_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -4238,6 +4336,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_temporal_owner_weighted_refit_report),
         f"{inputs.case} hand temporal owner-weighted refit report",
     )
+    post_temporal_mano_factor_input_report = require_dict(
+        load_json(inputs.post_temporal_mano_factor_input_report),
+        f"{inputs.case} post-temporal MANO factor input report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -4338,6 +4440,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     hand_temporal_owner_weighted_refit = hand_temporal_owner_weighted_refit_counts(
         hand_temporal_owner_weighted_refit_report
+    )
+    post_temporal_mano_factor_input = post_temporal_mano_factor_input_counts(
+        post_temporal_mano_factor_input_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -5193,6 +5298,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand temporal owner-weighted refit"
         )
+    if frame_count != require_int(
+        post_temporal_mano_factor_input["frame_count"],
+        f"{inputs.case} post-temporal MANO factor input frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and post-temporal MANO factor input"
+        )
     if require_int(
         hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
         f"{inputs.case} owner-weighted temporal source rows",
@@ -5231,6 +5343,62 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} owner-weighted variable rows",
     ):
         raise RuntimeError(f"{inputs.case} owner-weighted compatible rows exceed variable rows")
+    post_temporal_source_counts = post_temporal_mano_factor_input[
+        "source_owner_weighted_reprojection_state_counts"
+    ]
+    post_temporal_local_rows = require_int(
+        post_temporal_source_counts.get("owner_weighted_reprojected_local_surface_factor_candidate", 0),
+        f"{inputs.case} post-temporal MANO source local rows",
+    )
+    post_temporal_mixed_rows = require_int(
+        post_temporal_source_counts.get("owner_weighted_reprojected_mixed_surface_depth_owner", 0),
+        f"{inputs.case} post-temporal MANO source mixed rows",
+    )
+    if require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_factor_input_candidate_rows"],
+        f"{inputs.case} post-temporal MANO candidate rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojection_local_surface_factor_candidate_rows"],
+        f"{inputs.case} owner-weighted local rows",
+    ) + require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojection_mixed_surface_depth_owner_rows"],
+        f"{inputs.case} owner-weighted mixed rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO candidates disagree with owner-weighted local/mixed rows")
+    if post_temporal_local_rows != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojection_local_surface_factor_candidate_rows"],
+        f"{inputs.case} owner-weighted local rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO local source rows disagree with owner-weighted refit")
+    if post_temporal_mixed_rows != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojection_mixed_surface_depth_owner_rows"],
+        f"{inputs.case} owner-weighted mixed rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO mixed source rows disagree with owner-weighted refit")
+    if require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_factor_input_materialized_rows"],
+        f"{inputs.case} post-temporal MANO materialized rows",
+    ) != require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_factor_input_candidate_rows"],
+        f"{inputs.case} post-temporal MANO candidate rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO factor input did not materialize every candidate")
+    if require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_local_surface_factor_rows"],
+        f"{inputs.case} post-temporal MANO local factor rows",
+    ) + require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_mixed_surface_depth_factor_rows"],
+        f"{inputs.case} post-temporal MANO mixed factor rows",
+    ) != require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_factor_input_materialized_rows"],
+        f"{inputs.case} post-temporal MANO materialized rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO local/mixed factors do not sum to materialized rows")
+    if require_int(
+        post_temporal_mano_factor_input["assigned_factor_sample_count"],
+        f"{inputs.case} post-temporal MANO assigned sample count",
+    ) <= 0:
+        raise RuntimeError(f"{inputs.case} post-temporal MANO factor input has no assigned samples")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -5629,6 +5797,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_far_field_temporal_reprojection,
         hand_temporal_reprojection_residual_owner_state,
         hand_temporal_owner_weighted_refit,
+        post_temporal_mano_factor_input,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -5748,6 +5917,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_temporal_owner_weighted_refit_report,
                 hand_temporal_owner_weighted_refit_report,
             ),
+            "post_temporal_mano_factor_input_report": source_summary(
+                inputs.post_temporal_mano_factor_input_report,
+                post_temporal_mano_factor_input_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -5813,6 +5986,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_far_field_temporal_reprojection": hand_far_field_temporal_reprojection,
         "current_hand_temporal_reprojection_residual_owner_state": hand_temporal_reprojection_residual_owner_state,
         "current_hand_temporal_owner_weighted_refit": hand_temporal_owner_weighted_refit,
+        "current_post_temporal_mano_factor_input": post_temporal_mano_factor_input,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -5883,6 +6057,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_far_field_temporal_reprojection_root,
             args.hand_temporal_reprojection_residual_owner_state_root,
             args.hand_temporal_owner_weighted_refit_root,
+            args.post_temporal_mano_factor_input_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -5939,6 +6114,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_temporal_reprojection_residual_owner_state_root
         ),
         "hand_temporal_owner_weighted_refit_root": str(args.hand_temporal_owner_weighted_refit_root),
+        "post_temporal_mano_factor_input_root": str(args.post_temporal_mano_factor_input_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -6390,6 +6566,33 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_temporal_owner_weighted_reprojection_state_counts": case[
                     "current_hand_temporal_owner_weighted_refit"
                 ]["owner_weighted_temporal_reprojection_state_counts"],
+                "post_temporal_mano_factor_input_candidate_rows": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["post_temporal_mano_factor_input_candidate_rows"],
+                "post_temporal_mano_factor_input_materialized_rows": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["post_temporal_mano_factor_input_materialized_rows"],
+                "post_temporal_mano_local_surface_factor_rows": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["post_temporal_mano_local_surface_factor_rows"],
+                "post_temporal_mano_mixed_surface_depth_factor_rows": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["post_temporal_mano_mixed_surface_depth_factor_rows"],
+                "post_temporal_mano_assigned_factor_sample_count": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["assigned_factor_sample_count"],
+                "post_temporal_mano_residual_factor_sample_count": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["residual_factor_sample_count"],
+                "post_temporal_mano_compatible_seed_sample_count": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["compatible_seed_sample_count"],
+                "post_temporal_mano_factor_input_state_counts": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["post_temporal_factor_input_state_counts"],
+                "post_temporal_mano_source_owner_weighted_reprojection_state_counts": case[
+                    "current_post_temporal_mano_factor_input"
+                ]["source_owner_weighted_reprojection_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -7416,6 +7619,76 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "post_temporal_mano_factor_input_candidate_rows": sum(
+            case["current_post_temporal_mano_factor_input"][
+                "post_temporal_mano_factor_input_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_factor_input_materialized_rows": sum(
+            case["current_post_temporal_mano_factor_input"][
+                "post_temporal_mano_factor_input_materialized_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_local_surface_factor_rows": sum(
+            case["current_post_temporal_mano_factor_input"]["post_temporal_mano_local_surface_factor_rows"]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_mixed_surface_depth_factor_rows": sum(
+            case["current_post_temporal_mano_factor_input"][
+                "post_temporal_mano_mixed_surface_depth_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_assigned_factor_sample_count": sum(
+            case["current_post_temporal_mano_factor_input"]["assigned_factor_sample_count"]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_residual_factor_sample_count": sum(
+            case["current_post_temporal_mano_factor_input"]["residual_factor_sample_count"]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_compatible_seed_sample_count": sum(
+            case["current_post_temporal_mano_factor_input"]["compatible_seed_sample_count"]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_factor_input_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_post_temporal_mano_factor_input"][
+                                "post_temporal_factor_input_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "post_temporal_mano_source_owner_weighted_reprojection_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_post_temporal_mano_factor_input"][
+                                "source_owner_weighted_reprojection_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "post_temporal_mano_assigned_pixel_shift_px": {
+            "case_summaries": [
+                case["current_post_temporal_mano_factor_input"]["assigned_pixel_shift_px"]
+                for case in case_outputs
+            ]
+        },
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -8062,6 +8335,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-temporal-owner-weighted-refit-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_temporal_owner_weighted_refit"),
+    )
+    parser.add_argument(
+        "--post-temporal-mano-factor-input-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_post_temporal_mano_factor_input"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
