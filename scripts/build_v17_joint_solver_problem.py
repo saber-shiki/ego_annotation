@@ -49,6 +49,7 @@ class CaseInputs:
     hand_far_field_temporal_refit_report: Path
     hand_far_field_temporal_reprojection_report: Path
     hand_temporal_reprojection_residual_owner_state_report: Path
+    hand_temporal_owner_weighted_refit_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -153,6 +154,7 @@ def case_inputs(
     hand_far_field_temporal_refit_root: Path,
     hand_far_field_temporal_reprojection_root: Path,
     hand_temporal_reprojection_residual_owner_state_root: Path,
+    hand_temporal_owner_weighted_refit_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -297,6 +299,12 @@ def case_inputs(
         / "v17_hand_temporal_reprojection_residual_owner_state.json",
         f"{case} hand temporal reprojection residual-owner state report",
     )
+    hand_temporal_owner_weighted_refit_report = existing_path(
+        hand_temporal_owner_weighted_refit_root
+        / case
+        / "v17_hand_temporal_owner_weighted_refit.json",
+        f"{case} hand temporal owner-weighted refit report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -380,6 +388,7 @@ def case_inputs(
         hand_far_field_temporal_refit_report=hand_far_field_temporal_refit_report,
         hand_far_field_temporal_reprojection_report=hand_far_field_temporal_reprojection_report,
         hand_temporal_reprojection_residual_owner_state_report=hand_temporal_reprojection_residual_owner_state_report,
+        hand_temporal_owner_weighted_refit_report=hand_temporal_owner_weighted_refit_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1751,6 +1760,126 @@ def hand_temporal_reprojection_residual_owner_state_counts(report: dict[str, Any
     }
 
 
+def hand_temporal_owner_weighted_refit_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "hand temporal owner-weighted refit frame_count",
+        ),
+        "hand_temporal_owner_weighted_refit_variable_count": require_int(
+            report.get("hand_temporal_owner_weighted_refit_variable_count"),
+            "hand temporal owner-weighted refit variable count",
+        ),
+        "owner_weighted_temporal_source_rows": require_int(
+            report.get("owner_weighted_temporal_source_rows"),
+            "hand temporal owner-weighted source rows",
+        ),
+        "owner_weighted_variable_rows": require_int(
+            report.get("owner_weighted_variable_rows"),
+            "hand temporal owner-weighted variable rows",
+        ),
+        "owner_weighted_geometry_factor_rows": require_int(
+            report.get("owner_weighted_geometry_factor_rows"),
+            "hand temporal owner-weighted geometry factor rows",
+        ),
+        "owner_weighted_compatible_anchor_rows": require_int(
+            report.get("owner_weighted_compatible_anchor_rows"),
+            "hand temporal owner-weighted compatible anchor rows",
+        ),
+        "owner_weighted_prior_smooth_only_rows": require_int(
+            report.get("owner_weighted_prior_smooth_only_rows"),
+            "hand temporal owner-weighted prior/smooth rows",
+        ),
+        "owner_weighted_depth_observation_prior_smooth_rows": require_int(
+            report.get("owner_weighted_depth_observation_prior_smooth_rows"),
+            "hand temporal owner-weighted depth-observation prior/smooth rows",
+        ),
+        "owner_weighted_projection_untrusted_prior_smooth_rows": require_int(
+            report.get("owner_weighted_projection_untrusted_prior_smooth_rows"),
+            "hand temporal owner-weighted projection-untrusted prior/smooth rows",
+        ),
+        "owner_weighted_geometry_depth_sample_factor_count": require_int(
+            report.get("owner_weighted_geometry_depth_sample_factor_count"),
+            "hand temporal owner-weighted geometry depth sample factors",
+        ),
+        "owner_weighted_compatible_anchor_sample_factor_count": require_int(
+            report.get("owner_weighted_compatible_anchor_sample_factor_count"),
+            "hand temporal owner-weighted compatible anchor sample factors",
+        ),
+        "owner_weighted_delta_bound_hit_rows": require_int(
+            report.get("owner_weighted_delta_bound_hit_rows"),
+            "hand temporal owner-weighted bound-hit rows",
+        ),
+        "owner_weighted_fixed_factor_depth_improved_rows": require_int(
+            report.get("owner_weighted_fixed_factor_depth_improved_rows"),
+            "hand temporal owner-weighted fixed-factor improved rows",
+        ),
+        "owner_weighted_fixed_factor_depth_threshold_met_rows": require_int(
+            report.get("owner_weighted_fixed_factor_depth_threshold_met_rows"),
+            "hand temporal owner-weighted fixed-factor threshold rows",
+        ),
+        "owner_weighted_reprojected_metric_depth_compatible_rows": require_int(
+            report.get("owner_weighted_reprojected_metric_depth_compatible_rows"),
+            "hand temporal owner-weighted reprojected compatible rows",
+        ),
+        "owner_weighted_reprojected_depth_improved_rows": require_int(
+            report.get("owner_weighted_reprojected_depth_improved_rows"),
+            "hand temporal owner-weighted reprojected improved rows",
+        ),
+        "metric_hand_state_accepted_rows_after_owner_weighted_refit": require_int(
+            report.get("metric_hand_state_accepted_rows_after_owner_weighted_refit"),
+            "hand temporal owner-weighted accepted rows",
+        ),
+        "depth_repair_factor_candidate_rows_after_owner_weighted_refit": require_int(
+            report.get("depth_repair_factor_candidate_rows_after_owner_weighted_refit"),
+            "hand temporal owner-weighted residual rows",
+        ),
+        "owner_weighted_reprojection_residual_owner_rows": require_int(
+            report.get("owner_weighted_reprojection_residual_owner_rows"),
+            "hand temporal owner-weighted residual-owner rows",
+        ),
+        "owner_weighted_reprojection_local_surface_factor_candidate_rows": require_int(
+            report.get("owner_weighted_reprojection_local_surface_factor_candidate_rows"),
+            "hand temporal owner-weighted local rows",
+        ),
+        "owner_weighted_reprojection_mixed_surface_depth_owner_rows": require_int(
+            report.get("owner_weighted_reprojection_mixed_surface_depth_owner_rows"),
+            "hand temporal owner-weighted mixed rows",
+        ),
+        "owner_weighted_reprojection_depth_observation_owner_rows": require_int(
+            report.get("owner_weighted_reprojection_depth_observation_owner_rows"),
+            "hand temporal owner-weighted depth-observation rows",
+        ),
+        "owner_weighted_reprojection_projection_untrusted_rows": require_int(
+            report.get("owner_weighted_reprojection_projection_untrusted_rows"),
+            "hand temporal owner-weighted projection-untrusted rows",
+        ),
+        "owner_weighted_input_factor_state_counts": require_dict(
+            report.get("owner_weighted_input_factor_state_counts"),
+            "hand temporal owner-weighted input factor state counts",
+        ),
+        "owner_weighted_temporal_reprojection_state_counts": require_dict(
+            report.get("owner_weighted_temporal_reprojection_state_counts"),
+            "hand temporal owner-weighted temporal reprojection state counts",
+        ),
+        "owner_weighted_owner_depth_state_counts_after_reprojection": require_dict(
+            report.get("owner_weighted_owner_depth_state_counts_after_reprojection"),
+            "hand temporal owner-weighted owner depth state counts",
+        ),
+        "owner_weighted_owner_median_gap_m_after_reprojection": require_dict(
+            report.get("owner_weighted_owner_median_gap_m_after_reprojection"),
+            "hand temporal owner-weighted owner median gap summary",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2596,6 +2725,7 @@ def required_variable_families(
     hand_far_field_temporal_refit: dict[str, Any],
     hand_far_field_temporal_reprojection: dict[str, Any],
     hand_temporal_reprojection_residual_owner_state: dict[str, Any],
+    hand_temporal_owner_weighted_refit: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2920,6 +3050,36 @@ def required_variable_families(
                 "hand_temporal_reprojection_local_assignment": hand_temporal_reprojection_residual_owner_state[
                     "local_assignment"
                 ],
+                "hand_temporal_owner_weighted_refit_variable_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_variable_rows"
+                ],
+                "hand_temporal_owner_weighted_geometry_factor_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_geometry_factor_rows"
+                ],
+                "hand_temporal_owner_weighted_depth_observation_prior_smooth_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_depth_observation_prior_smooth_rows"
+                ],
+                "hand_temporal_owner_weighted_geometry_depth_sample_factor_count": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_geometry_depth_sample_factor_count"
+                ],
+                "hand_temporal_owner_weighted_fixed_factor_depth_threshold_met_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_fixed_factor_depth_threshold_met_rows"
+                ],
+                "hand_temporal_owner_weighted_reprojected_metric_depth_compatible_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_reprojected_metric_depth_compatible_rows"
+                ],
+                "hand_temporal_owner_weighted_reprojected_depth_improved_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_reprojected_depth_improved_rows"
+                ],
+                "hand_temporal_owner_weighted_accepted_rows_after_reprojection": hand_temporal_owner_weighted_refit[
+                    "metric_hand_state_accepted_rows_after_owner_weighted_refit"
+                ],
+                "hand_temporal_owner_weighted_residual_rows_after_reprojection": hand_temporal_owner_weighted_refit[
+                    "depth_repair_factor_candidate_rows_after_owner_weighted_refit"
+                ],
+                "hand_temporal_owner_weighted_reprojection_state_counts": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_temporal_reprojection_state_counts"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2997,6 +3157,7 @@ def required_variable_families(
                 "a relinearized far-field temporal refit repairs most long-run residual samples without hitting ray-shift bounds, but it does not reproject MANO geometry or update accepted hand state",
                 "post-update reprojection and resampling falsify the fixed-sample temporal refit as sufficient; temporal shifts improve many rows but leave most rows depth-incompatible, so local MANO surface and projection relinearization remains required",
                 "post-temporal residual ownership shows that only a small residual subset is clean local MANO-surface ownership, while mixed surface-depth and depth-observation owners dominate the remaining applied temporal rows",
+                "owner-weighted temporal refit consumes geometry-owned sample pairs and explicit depth-observation variables, but post-update reprojection still leaves most temporal rows depth-incompatible",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3784,6 +3945,36 @@ def required_variable_families(
                 "hand_temporal_reprojection_local_assignment": hand_temporal_reprojection_residual_owner_state[
                     "local_assignment"
                 ],
+                "hand_temporal_owner_weighted_refit_variable_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_variable_rows"
+                ],
+                "hand_temporal_owner_weighted_geometry_factor_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_geometry_factor_rows"
+                ],
+                "hand_temporal_owner_weighted_depth_observation_prior_smooth_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_depth_observation_prior_smooth_rows"
+                ],
+                "hand_temporal_owner_weighted_geometry_depth_sample_factor_count": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_geometry_depth_sample_factor_count"
+                ],
+                "hand_temporal_owner_weighted_fixed_factor_depth_threshold_met_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_fixed_factor_depth_threshold_met_rows"
+                ],
+                "hand_temporal_owner_weighted_reprojected_metric_depth_compatible_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_reprojected_metric_depth_compatible_rows"
+                ],
+                "hand_temporal_owner_weighted_reprojected_depth_improved_rows": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_reprojected_depth_improved_rows"
+                ],
+                "hand_temporal_owner_weighted_accepted_rows_after_reprojection": hand_temporal_owner_weighted_refit[
+                    "metric_hand_state_accepted_rows_after_owner_weighted_refit"
+                ],
+                "hand_temporal_owner_weighted_residual_rows_after_reprojection": hand_temporal_owner_weighted_refit[
+                    "depth_repair_factor_candidate_rows_after_owner_weighted_refit"
+                ],
+                "hand_temporal_owner_weighted_reprojection_state_counts": hand_temporal_owner_weighted_refit[
+                    "owner_weighted_temporal_reprojection_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -4043,6 +4234,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_temporal_reprojection_residual_owner_state_report),
         f"{inputs.case} hand temporal reprojection residual-owner state report",
     )
+    hand_temporal_owner_weighted_refit_report = require_dict(
+        load_json(inputs.hand_temporal_owner_weighted_refit_report),
+        f"{inputs.case} hand temporal owner-weighted refit report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -4140,6 +4335,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     hand_temporal_reprojection_residual_owner_state = hand_temporal_reprojection_residual_owner_state_counts(
         hand_temporal_reprojection_residual_owner_state_report
+    )
+    hand_temporal_owner_weighted_refit = hand_temporal_owner_weighted_refit_counts(
+        hand_temporal_owner_weighted_refit_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -4988,6 +5186,51 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} temporal reprojection residual-owner applied rows",
     ):
         raise RuntimeError(f"{inputs.case} temporal reprojection applied split does not sum to applied rows")
+    if frame_count != require_int(
+        hand_temporal_owner_weighted_refit["frame_count"],
+        f"{inputs.case} hand temporal owner-weighted frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand temporal owner-weighted refit"
+        )
+    if require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
+        f"{inputs.case} owner-weighted temporal source rows",
+    ) != require_int(
+        hand_far_field_temporal_reprojection["temporal_refit_source_rows"],
+        f"{inputs.case} far-field temporal reprojection source rows",
+    ):
+        raise RuntimeError(f"{inputs.case} owner-weighted temporal source rows disagree with reprojection")
+    if require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_variable_rows"],
+        f"{inputs.case} owner-weighted variable rows",
+    ) != require_int(
+        hand_temporal_reprojection_residual_owner_state["temporal_reprojection_delta_applied_rows"],
+        f"{inputs.case} temporal reprojection applied rows",
+    ):
+        raise RuntimeError(f"{inputs.case} owner-weighted variables disagree with applied temporal rows")
+    if require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojection_residual_owner_rows"],
+        f"{inputs.case} owner-weighted residual owner rows",
+    ) + require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojection_projection_untrusted_rows"],
+        f"{inputs.case} owner-weighted projection-untrusted rows",
+    ) + require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} owner-weighted compatible rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_variable_rows"],
+        f"{inputs.case} owner-weighted variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} owner-weighted applied split does not sum to variable rows")
+    if require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} owner-weighted compatible rows",
+    ) > require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_variable_rows"],
+        f"{inputs.case} owner-weighted variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} owner-weighted compatible rows exceed variable rows")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -5385,6 +5628,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_far_field_temporal_refit,
         hand_far_field_temporal_reprojection,
         hand_temporal_reprojection_residual_owner_state,
+        hand_temporal_owner_weighted_refit,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -5500,6 +5744,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_temporal_reprojection_residual_owner_state_report,
                 hand_temporal_reprojection_residual_owner_state_report,
             ),
+            "hand_temporal_owner_weighted_refit_report": source_summary(
+                inputs.hand_temporal_owner_weighted_refit_report,
+                hand_temporal_owner_weighted_refit_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -5564,6 +5812,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_far_field_temporal_refit": hand_far_field_temporal_refit,
         "current_hand_far_field_temporal_reprojection": hand_far_field_temporal_reprojection,
         "current_hand_temporal_reprojection_residual_owner_state": hand_temporal_reprojection_residual_owner_state,
+        "current_hand_temporal_owner_weighted_refit": hand_temporal_owner_weighted_refit,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -5633,6 +5882,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_far_field_temporal_refit_root,
             args.hand_far_field_temporal_reprojection_root,
             args.hand_temporal_reprojection_residual_owner_state_root,
+            args.hand_temporal_owner_weighted_refit_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -5688,6 +5938,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_temporal_reprojection_residual_owner_state_root": str(
             args.hand_temporal_reprojection_residual_owner_state_root
         ),
+        "hand_temporal_owner_weighted_refit_root": str(args.hand_temporal_owner_weighted_refit_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -6115,6 +6366,30 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_temporal_reprojection_residual_owner_state_counts": case[
                     "current_hand_temporal_reprojection_residual_owner_state"
                 ]["applied_temporal_reprojection_residual_owner_state_counts"],
+                "hand_temporal_owner_weighted_refit_variable_rows": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["owner_weighted_variable_rows"],
+                "hand_temporal_owner_weighted_geometry_factor_rows": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["owner_weighted_geometry_factor_rows"],
+                "hand_temporal_owner_weighted_depth_observation_prior_smooth_rows": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["owner_weighted_depth_observation_prior_smooth_rows"],
+                "hand_temporal_owner_weighted_reprojected_metric_depth_compatible_rows": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["owner_weighted_reprojected_metric_depth_compatible_rows"],
+                "hand_temporal_owner_weighted_reprojected_depth_improved_rows": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["owner_weighted_reprojected_depth_improved_rows"],
+                "hand_temporal_owner_weighted_accepted_rows_after_reprojection": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["metric_hand_state_accepted_rows_after_owner_weighted_refit"],
+                "hand_temporal_owner_weighted_residual_rows_after_reprojection": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["depth_repair_factor_candidate_rows_after_owner_weighted_refit"],
+                "hand_temporal_owner_weighted_reprojection_state_counts": case[
+                    "current_hand_temporal_owner_weighted_refit"
+                ]["owner_weighted_temporal_reprojection_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -7056,6 +7331,91 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 for case in case_outputs
             ),
         },
+        "hand_temporal_owner_weighted_refit_variable_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"]["owner_weighted_variable_rows"]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_geometry_factor_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"]["owner_weighted_geometry_factor_rows"]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_compatible_anchor_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"]["owner_weighted_compatible_anchor_rows"]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_prior_smooth_only_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"]["owner_weighted_prior_smooth_only_rows"]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_depth_observation_prior_smooth_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "owner_weighted_depth_observation_prior_smooth_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_projection_untrusted_prior_smooth_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "owner_weighted_projection_untrusted_prior_smooth_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_geometry_depth_sample_factor_count": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "owner_weighted_geometry_depth_sample_factor_count"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_compatible_anchor_sample_factor_count": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "owner_weighted_compatible_anchor_sample_factor_count"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_fixed_factor_depth_threshold_met_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "owner_weighted_fixed_factor_depth_threshold_met_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_reprojected_metric_depth_compatible_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "owner_weighted_reprojected_metric_depth_compatible_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_reprojected_depth_improved_rows": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "owner_weighted_reprojected_depth_improved_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_accepted_rows_after_reprojection": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "metric_hand_state_accepted_rows_after_owner_weighted_refit"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_residual_rows_after_reprojection": sum(
+            case["current_hand_temporal_owner_weighted_refit"][
+                "depth_repair_factor_candidate_rows_after_owner_weighted_refit"
+            ]
+            for case in case_outputs
+        ),
+        "hand_temporal_owner_weighted_reprojection_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_temporal_owner_weighted_refit"][
+                                "owner_weighted_temporal_reprojection_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -7697,6 +8057,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-temporal-reprojection-residual-owner-state-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_temporal_reprojection_residual_owner_state"),
+    )
+    parser.add_argument(
+        "--hand-temporal-owner-weighted-refit-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_temporal_owner_weighted_refit"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
