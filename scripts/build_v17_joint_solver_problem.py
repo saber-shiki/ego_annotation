@@ -43,6 +43,7 @@ class CaseInputs:
     mano_parameter_ownership_state_report: Path
     mano_articulation_factor_input_report: Path
     mano_articulation_local_solve_report: Path
+    hand_residual_switch_problem_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -141,6 +142,7 @@ def case_inputs(
     mano_parameter_ownership_state_root: Path,
     mano_articulation_factor_input_root: Path,
     mano_articulation_local_solve_root: Path,
+    hand_residual_switch_problem_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -251,6 +253,10 @@ def case_inputs(
         mano_articulation_local_solve_root / case / "v17_mano_articulation_local_solve.json",
         f"{case} MANO local articulation solve report",
     )
+    hand_residual_switch_problem_report = existing_path(
+        hand_residual_switch_problem_root / case / "v17_hand_residual_switch_problem.json",
+        f"{case} hand residual switch problem report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -328,6 +334,7 @@ def case_inputs(
         mano_parameter_ownership_state_report=mano_parameter_ownership_state_report,
         mano_articulation_factor_input_report=mano_articulation_factor_input_report,
         mano_articulation_local_solve_report=mano_articulation_local_solve_report,
+        hand_residual_switch_problem_report=hand_residual_switch_problem_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1407,6 +1414,59 @@ def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, An
     }
 
 
+def hand_residual_switch_problem_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "hand residual switch frame_count"),
+        "hand_residual_switch_variable_count": require_int(
+            report.get("hand_residual_switch_variable_count"),
+            "hand residual switch variable count",
+        ),
+        "local_projection_candidate_rows": require_int(
+            report.get("local_projection_candidate_rows"),
+            "hand residual switch local projection rows",
+        ),
+        "local_articulation_solve_attached_rows": require_int(
+            report.get("local_articulation_solve_attached_rows"),
+            "hand residual switch attached articulation rows",
+        ),
+        "local_articulation_factor_ready_rows": require_int(
+            report.get("local_articulation_factor_ready_rows"),
+            "hand residual switch ready articulation rows",
+        ),
+        "mixed_projection_depth_switch_rows": require_int(
+            report.get("mixed_projection_depth_switch_rows"),
+            "hand residual switch mixed projection-depth rows",
+        ),
+        "depth_observation_or_occlusion_switch_rows": require_int(
+            report.get("depth_observation_or_occlusion_switch_rows"),
+            "hand residual switch depth-observation rows",
+        ),
+        "projection_support_switch_rows": require_int(
+            report.get("projection_support_switch_rows"),
+            "hand residual switch projection-support rows",
+        ),
+        "residual_switch_state_counts": require_dict(
+            report.get("residual_switch_state_counts"),
+            "hand residual switch state counts",
+        ),
+        "articulation_pose_delta_abs_max_rad": require_dict(
+            report.get("articulation_pose_delta_abs_max_rad"),
+            "hand residual switch pose delta summary",
+        ),
+        "articulation_depth_abs_median_improvement_m": require_dict(
+            report.get("articulation_depth_abs_median_improvement_m"),
+            "hand residual switch depth improvement summary",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2246,6 +2306,7 @@ def required_variable_families(
     mano_parameter_ownership_state: dict[str, Any],
     mano_articulation_factor_input: dict[str, Any],
     mano_articulation_local_solve: dict[str, Any],
+    hand_residual_switch_problem: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2483,6 +2544,15 @@ def required_variable_families(
                 "mano_local_articulation_depth_abs_median_improvement_m": mano_articulation_local_solve[
                     "depth_abs_median_improvement_m"
                 ],
+                "hand_residual_switch_variable_count": hand_residual_switch_problem[
+                    "hand_residual_switch_variable_count"
+                ],
+                "hand_residual_switch_state_counts": hand_residual_switch_problem[
+                    "residual_switch_state_counts"
+                ],
+                "hand_residual_switch_local_articulation_factor_ready_rows": hand_residual_switch_problem[
+                    "local_articulation_factor_ready_rows"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2554,6 +2624,7 @@ def required_variable_families(
                 "saved MANO parameters own every local projection factor candidate, but an articulation optimizer has not consumed those factors",
                 "MANO articulation factor inputs now carry residual and compatible-seed surface vertex ids, but MANO pose has not been re-optimized",
                 "local MANO pose-delta solves reduce some residuals but mostly hit the pose bound and leave the local articulation mechanism unaccepted",
+                "residual switch variables now separate local surface/articulation owners from mixed depth and occlusion owners, but current local articulation produces no accepted switch-ready row",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3224,6 +3295,21 @@ def required_variable_families(
                 "mano_local_articulation_depth_abs_median_improvement_m": mano_articulation_local_solve[
                     "depth_abs_median_improvement_m"
                 ],
+                "hand_residual_switch_variable_count": hand_residual_switch_problem[
+                    "hand_residual_switch_variable_count"
+                ],
+                "hand_residual_switch_mixed_projection_depth_rows": hand_residual_switch_problem[
+                    "mixed_projection_depth_switch_rows"
+                ],
+                "hand_residual_switch_depth_observation_or_occlusion_rows": hand_residual_switch_problem[
+                    "depth_observation_or_occlusion_switch_rows"
+                ],
+                "hand_residual_switch_projection_support_rows": hand_residual_switch_problem[
+                    "projection_support_switch_rows"
+                ],
+                "hand_residual_switch_state_counts": hand_residual_switch_problem[
+                    "residual_switch_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -3301,6 +3387,7 @@ def required_variable_families(
                 "MANO parameter ownership now identifies which local projection factors can attach to saved MANO pose parameters before an articulation solve",
                 "MANO articulation factor inputs now identify surface vertex correspondences for local projection factors before pose optimization",
                 "local MANO articulation pose-delta solves produce limited depth gains and widespread pose-bound hits, so they diagnose the next owner rather than updating the hand state",
+                "hand residual switch variables expose which residuals need mixed projection-depth, occlusion/depth-observation, projection-support, or broader local hand-surface factors",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -3454,6 +3541,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.mano_articulation_local_solve_report),
         f"{inputs.case} MANO local articulation solve report",
     )
+    hand_residual_switch_problem_report = require_dict(
+        load_json(inputs.hand_residual_switch_problem_report),
+        f"{inputs.case} hand residual switch problem report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3533,6 +3624,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     mano_articulation_local_solve = mano_articulation_local_solve_counts(
         mano_articulation_local_solve_report
+    )
+    hand_residual_switch_problem = hand_residual_switch_problem_counts(
+        hand_residual_switch_problem_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -3623,6 +3717,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and MANO local articulation solve"
+        )
+    if frame_count != require_int(
+        hand_residual_switch_problem["frame_count"],
+        f"{inputs.case} hand residual switch frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand residual switch problem"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -4098,6 +4199,71 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} MANO local articulation clamp hits exceed solve rows")
     if require_int(
+        hand_residual_switch_problem["hand_residual_switch_variable_count"],
+        f"{inputs.case} hand residual switch rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} local projection residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} hand residual switch rows disagree with local projection residuals")
+    if require_int(
+        hand_residual_switch_problem["local_projection_candidate_rows"],
+        f"{inputs.case} residual switch local projection rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["local_projection_repair_factor_candidate_rows"],
+        f"{inputs.case} local projection repair rows",
+    ):
+        raise RuntimeError(f"{inputs.case} residual switch local rows disagree with local projection report")
+    if require_int(
+        hand_residual_switch_problem["local_articulation_solve_attached_rows"],
+        f"{inputs.case} residual switch attached articulation rows",
+    ) != require_int(
+        mano_articulation_local_solve["mano_local_articulation_solve_candidate_rows"],
+        f"{inputs.case} MANO local articulation solve rows",
+    ):
+        raise RuntimeError(f"{inputs.case} residual switch attached articulation rows disagree with solve rows")
+    if require_int(
+        hand_residual_switch_problem["mixed_projection_depth_switch_rows"],
+        f"{inputs.case} residual switch mixed rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["partial_projection_depth_mixed_owner_rows"],
+        f"{inputs.case} mixed projection-depth rows",
+    ):
+        raise RuntimeError(f"{inputs.case} residual switch mixed rows disagree with local projection report")
+    if require_int(
+        hand_residual_switch_problem["depth_observation_or_occlusion_switch_rows"],
+        f"{inputs.case} residual switch depth rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["depth_observation_or_occlusion_owner_rows"],
+        f"{inputs.case} depth observation owner rows",
+    ):
+        raise RuntimeError(f"{inputs.case} residual switch depth rows disagree with local projection report")
+    if require_int(
+        hand_residual_switch_problem["projection_support_switch_rows"],
+        f"{inputs.case} residual switch projection rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["projection_support_unresolved_rows"],
+        f"{inputs.case} projection support unresolved rows",
+    ):
+        raise RuntimeError(f"{inputs.case} residual switch projection rows disagree with local projection report")
+    if require_int(
+        hand_residual_switch_problem["local_projection_candidate_rows"],
+        f"{inputs.case} residual switch local rows",
+    ) + require_int(
+        hand_residual_switch_problem["mixed_projection_depth_switch_rows"],
+        f"{inputs.case} residual switch mixed rows",
+    ) + require_int(
+        hand_residual_switch_problem["depth_observation_or_occlusion_switch_rows"],
+        f"{inputs.case} residual switch depth rows",
+    ) + require_int(
+        hand_residual_switch_problem["projection_support_switch_rows"],
+        f"{inputs.case} residual switch projection rows",
+    ) != require_int(
+        hand_residual_switch_problem["hand_residual_switch_variable_count"],
+        f"{inputs.case} hand residual switch rows",
+    ):
+        raise RuntimeError(f"{inputs.case} residual switch split does not sum to switch rows")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -4488,6 +4654,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         mano_parameter_ownership_state,
         mano_articulation_factor_input,
         mano_articulation_local_solve,
+        hand_residual_switch_problem,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -4579,6 +4746,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.mano_articulation_local_solve_report,
                 mano_articulation_local_solve_report,
             ),
+            "hand_residual_switch_problem_report": source_summary(
+                inputs.hand_residual_switch_problem_report,
+                hand_residual_switch_problem_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -4637,6 +4808,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_mano_parameter_ownership_state": mano_parameter_ownership_state,
         "current_mano_articulation_factor_input": mano_articulation_factor_input,
         "current_mano_articulation_local_solve": mano_articulation_local_solve,
+        "current_hand_residual_switch_problem": hand_residual_switch_problem,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -4700,6 +4872,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.mano_parameter_ownership_state_root,
             args.mano_articulation_factor_input_root,
             args.mano_articulation_local_solve_root,
+            args.hand_residual_switch_problem_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -4747,6 +4920,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "mano_parameter_ownership_state_root": str(args.mano_parameter_ownership_state_root),
         "mano_articulation_factor_input_root": str(args.mano_articulation_factor_input_root),
         "mano_articulation_local_solve_root": str(args.mano_articulation_local_solve_root),
+        "hand_residual_switch_problem_root": str(args.hand_residual_switch_problem_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -5063,6 +5237,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "mano_local_articulation_solve_state_counts": case[
                     "current_mano_articulation_local_solve"
                 ]["local_articulation_solve_state_counts"],
+                "hand_residual_switch_variable_count": case[
+                    "current_hand_residual_switch_problem"
+                ]["hand_residual_switch_variable_count"],
+                "hand_residual_switch_local_articulation_factor_ready_rows": case[
+                    "current_hand_residual_switch_problem"
+                ]["local_articulation_factor_ready_rows"],
+                "hand_residual_switch_mixed_projection_depth_rows": case[
+                    "current_hand_residual_switch_problem"
+                ]["mixed_projection_depth_switch_rows"],
+                "hand_residual_switch_depth_observation_or_occlusion_rows": case[
+                    "current_hand_residual_switch_problem"
+                ]["depth_observation_or_occlusion_switch_rows"],
+                "hand_residual_switch_projection_support_rows": case[
+                    "current_hand_residual_switch_problem"
+                ]["projection_support_switch_rows"],
+                "hand_residual_switch_state_counts": case[
+                    "current_hand_residual_switch_problem"
+                ]["residual_switch_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -5640,6 +5832,49 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 for case in case_outputs
             ),
         },
+        "hand_residual_switch_variable_count": sum(
+            case["current_hand_residual_switch_problem"]["hand_residual_switch_variable_count"]
+            for case in case_outputs
+        ),
+        "hand_residual_switch_local_projection_candidate_rows": sum(
+            case["current_hand_residual_switch_problem"]["local_projection_candidate_rows"]
+            for case in case_outputs
+        ),
+        "hand_residual_switch_local_articulation_attached_rows": sum(
+            case["current_hand_residual_switch_problem"]["local_articulation_solve_attached_rows"]
+            for case in case_outputs
+        ),
+        "hand_residual_switch_local_articulation_factor_ready_rows": sum(
+            case["current_hand_residual_switch_problem"]["local_articulation_factor_ready_rows"]
+            for case in case_outputs
+        ),
+        "hand_residual_switch_mixed_projection_depth_rows": sum(
+            case["current_hand_residual_switch_problem"]["mixed_projection_depth_switch_rows"]
+            for case in case_outputs
+        ),
+        "hand_residual_switch_depth_observation_or_occlusion_rows": sum(
+            case["current_hand_residual_switch_problem"]["depth_observation_or_occlusion_switch_rows"]
+            for case in case_outputs
+        ),
+        "hand_residual_switch_projection_support_rows": sum(
+            case["current_hand_residual_switch_problem"]["projection_support_switch_rows"]
+            for case in case_outputs
+        ),
+        "hand_residual_switch_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_residual_switch_problem"][
+                                "residual_switch_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -6251,6 +6486,11 @@ def parse_args() -> argparse.Namespace:
         "--mano-articulation-local-solve-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_mano_articulation_local_solve"),
+    )
+    parser.add_argument(
+        "--hand-residual-switch-problem-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_residual_switch_problem"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
