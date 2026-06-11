@@ -188,6 +188,7 @@ def case_archive(case: str, args: argparse.Namespace) -> dict[str, Any]:
     case_dir = args.output_root / case
     archive_path = case_dir / "v17_multi_object_world_meshes.npz"
     if frame_indices:
+        case_dir.mkdir(parents=True, exist_ok=True)
         save_mesh_archive(archive_path, frame_indices, vertices_per_frame, faces_per_frame)
     report = {
         "method": "build_v17_multi_object_world_mesh_archive",
