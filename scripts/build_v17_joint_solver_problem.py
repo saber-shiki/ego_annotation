@@ -1649,6 +1649,10 @@ def post_temporal_depth_observation_support_state_counts(report: dict[str, Any])
             report.get("independent_support_state_counts"),
             "post-temporal depth-observation independent support state counts",
         ),
+        "independent_keypoint_support_state_counts": require_dict(
+            report.get("independent_keypoint_support_state_counts"),
+            "post-temporal depth-observation independent keypoint support state counts",
+        ),
         "independent_supported_depth_observation_rows": require_int(
             report.get("independent_supported_depth_observation_rows"),
             "post-temporal depth-observation independently supported rows",
@@ -1656,6 +1660,14 @@ def post_temporal_depth_observation_support_state_counts(report: dict[str, Any])
         "independent_unsupported_depth_observation_rows": require_int(
             report.get("independent_unsupported_depth_observation_rows"),
             "post-temporal depth-observation independently unsupported rows",
+        ),
+        "independent_keypoint_supported_depth_observation_rows": require_int(
+            report.get("independent_keypoint_supported_depth_observation_rows"),
+            "post-temporal depth-observation independent keypoint supported rows",
+        ),
+        "independent_keypoint_strong_depth_observation_rows": require_int(
+            report.get("independent_keypoint_strong_depth_observation_rows"),
+            "post-temporal depth-observation independent keypoint strong rows",
         ),
         "source_depth_observation_state_counts": require_dict(
             report.get("source_depth_observation_state_counts"),
@@ -3425,6 +3437,15 @@ def required_variable_families(
                 "post_temporal_depth_observation_independent_support_state_counts": post_temporal_depth_observation_support_state[
                     "independent_support_state_counts"
                 ],
+                "post_temporal_depth_observation_independent_keypoint_support_state_counts": post_temporal_depth_observation_support_state[
+                    "independent_keypoint_support_state_counts"
+                ],
+                "post_temporal_depth_observation_independent_keypoint_supported_rows": post_temporal_depth_observation_support_state[
+                    "independent_keypoint_supported_depth_observation_rows"
+                ],
+                "post_temporal_depth_observation_independent_keypoint_strong_rows": post_temporal_depth_observation_support_state[
+                    "independent_keypoint_strong_depth_observation_rows"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -4373,6 +4394,15 @@ def required_variable_families(
                 ],
                 "post_temporal_depth_observation_independent_support_state_counts": post_temporal_depth_observation_support_state[
                     "independent_support_state_counts"
+                ],
+                "post_temporal_depth_observation_independent_keypoint_support_state_counts": post_temporal_depth_observation_support_state[
+                    "independent_keypoint_support_state_counts"
+                ],
+                "post_temporal_depth_observation_independent_keypoint_supported_rows": post_temporal_depth_observation_support_state[
+                    "independent_keypoint_supported_depth_observation_rows"
+                ],
+                "post_temporal_depth_observation_independent_keypoint_strong_rows": post_temporal_depth_observation_support_state[
+                    "independent_keypoint_strong_depth_observation_rows"
                 ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
@@ -7113,12 +7143,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "post_temporal_depth_observation_independent_support_state_counts": case[
                     "current_post_temporal_depth_observation_support_state"
                 ]["independent_support_state_counts"],
+                "post_temporal_depth_observation_independent_keypoint_support_state_counts": case[
+                    "current_post_temporal_depth_observation_support_state"
+                ]["independent_keypoint_support_state_counts"],
                 "post_temporal_depth_observation_independent_supported_rows": case[
                     "current_post_temporal_depth_observation_support_state"
                 ]["independent_supported_depth_observation_rows"],
                 "post_temporal_depth_observation_independent_unsupported_rows": case[
                     "current_post_temporal_depth_observation_support_state"
                 ]["independent_unsupported_depth_observation_rows"],
+                "post_temporal_depth_observation_independent_keypoint_supported_rows": case[
+                    "current_post_temporal_depth_observation_support_state"
+                ]["independent_keypoint_supported_depth_observation_rows"],
+                "post_temporal_depth_observation_independent_keypoint_strong_rows": case[
+                    "current_post_temporal_depth_observation_support_state"
+                ]["independent_keypoint_strong_depth_observation_rows"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -8456,6 +8495,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "post_temporal_depth_observation_independent_keypoint_support_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_post_temporal_depth_observation_support_state"][
+                                "independent_keypoint_support_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "post_temporal_depth_observation_independent_supported_rows": sum(
             case["current_post_temporal_depth_observation_support_state"][
                 "independent_supported_depth_observation_rows"
@@ -8465,6 +8519,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "post_temporal_depth_observation_independent_unsupported_rows": sum(
             case["current_post_temporal_depth_observation_support_state"][
                 "independent_unsupported_depth_observation_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_depth_observation_independent_keypoint_supported_rows": sum(
+            case["current_post_temporal_depth_observation_support_state"][
+                "independent_keypoint_supported_depth_observation_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_depth_observation_independent_keypoint_strong_rows": sum(
+            case["current_post_temporal_depth_observation_support_state"][
+                "independent_keypoint_strong_depth_observation_rows"
             ]
             for case in case_outputs
         ),

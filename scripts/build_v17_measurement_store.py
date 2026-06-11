@@ -136,6 +136,8 @@ def measurements_from_wilor(raw_path: Path) -> tuple[list[dict[str, Any]], dict[
                 "has_mano_params": hand.get("mano_params") is not None,
                 "failure_reason": None,
             }
+            if hand.get("joints2d") is not None:
+                row["keypoints"] = hand.get("joints2d")
             measurements.append(row)
             frame_rows.append(row)
         by_frame[idx] = frame_rows

@@ -58,6 +58,40 @@ def same_side_independent_supported(row: dict[str, Any]) -> bool:
     return row.get("independent_support_state") in SAME_SIDE_INDEPENDENT_SUPPORT_STATES
 
 
+def independent_keypoint_fraction(support: dict[str, Any]) -> float | None:
+    same_side = support.get("same_side_independent_models")
+    if not isinstance(same_side, dict):
+        return None
+    value = same_side.get("near_keypoint_fraction")
+    if not isinstance(value, int | float) or not np.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def independent_keypoint_support_state(support: dict[str, Any], args: argparse.Namespace) -> str:
+    fraction = independent_keypoint_fraction(support)
+    if fraction is None:
+        return "same_side_independent_keypoints_unmeasured"
+    if fraction >= float(args.strong_keypoint_supported_fraction):
+        return "same_side_independent_keypoint_strong"
+    if fraction >= float(args.min_keypoint_supported_fraction):
+        return "same_side_independent_keypoint_partial"
+    if fraction > 0.0:
+        return "same_side_independent_keypoint_sparse"
+    return "same_side_independent_keypoint_absent"
+
+
+def independent_keypoint_supported(row: dict[str, Any]) -> bool:
+    return row.get("independent_keypoint_support_state") in {
+        "same_side_independent_keypoint_partial",
+        "same_side_independent_keypoint_strong",
+    }
+
+
+def independent_keypoint_strong(row: dict[str, Any]) -> bool:
+    return row.get("independent_keypoint_support_state") == "same_side_independent_keypoint_strong"
+
+
 def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
     paths = {
         "annotations": existing_path(
@@ -140,6 +174,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
                     **base,
                     "selected_support_state": "missing_annotation_hand",
                     "independent_support_state": "missing_annotation_hand",
+                    "independent_keypoint_support_state": "same_side_independent_keypoints_unmeasured",
                     "missing_support_inputs": ["annotation_hand"],
                 }
             )
@@ -152,6 +187,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
                     **base,
                     "selected_support_state": "unobserved_depth_observation_pixels_for_support",
                     "independent_support_state": "unobserved_depth_observation_pixels_for_support",
+                    "independent_keypoint_support_state": "same_side_independent_keypoints_unmeasured",
                     "missing_support_inputs": ["selected_residual_pixels"],
                 }
             )
@@ -184,6 +220,7 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 **base,
                 "selected_support_state": selected_state,
                 "independent_support_state": independent_state,
+                "independent_keypoint_support_state": independent_keypoint_support_state(support, args),
                 "selected_residual_sample_count": int(np.count_nonzero(selected)),
                 "support_shape_counts": {name: len(value) for name, value in shapes.items()},
                 "support": support,
@@ -207,11 +244,18 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "post_temporal_depth_observation_support_candidate_rows": len(rows),
         "selected_support_state_counts": state_counts(rows, "selected_support_state"),
         "independent_support_state_counts": state_counts(rows, "independent_support_state"),
+        "independent_keypoint_support_state_counts": state_counts(rows, "independent_keypoint_support_state"),
         "independent_supported_depth_observation_rows": sum(
             1 for row in rows if same_side_independent_supported(row)
         ),
         "independent_unsupported_depth_observation_rows": sum(
             1 for row in rows if not same_side_independent_supported(row)
+        ),
+        "independent_keypoint_supported_depth_observation_rows": sum(
+            1 for row in rows if independent_keypoint_supported(row)
+        ),
+        "independent_keypoint_strong_depth_observation_rows": sum(
+            1 for row in rows if independent_keypoint_strong(row)
         ),
         "source_depth_observation_state_counts": state_counts(
             rows,
@@ -232,6 +276,9 @@ def case_problem(case: str, args: argparse.Namespace) -> dict[str, Any]:
             ),
             "supported_depth_observation_row": (
                 "selected residual pixels have independent hand support and need a hand-depth observation variable in the coupled graph"
+            ),
+            "independent_keypoint_support_state": (
+                "same-side independent keypoints provide graded anatomical support inside the box-supported depth-observation rows"
             ),
             "claim_limit": (
                 "this state measures 2D support for post-temporal depth-observation rows; hand geometry remains unchanged"
@@ -286,6 +333,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("independent_support_state_counts"),
                     "independent support state counts",
                 ),
+                "independent_keypoint_support_state_counts": require_dict(
+                    report.get("independent_keypoint_support_state_counts"),
+                    "independent keypoint support state counts",
+                ),
                 "independent_supported_depth_observation_rows": require_int(
                     report.get("independent_supported_depth_observation_rows"),
                     "independent supported rows",
@@ -293,6 +344,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "independent_unsupported_depth_observation_rows": require_int(
                     report.get("independent_unsupported_depth_observation_rows"),
                     "independent unsupported rows",
+                ),
+                "independent_keypoint_supported_depth_observation_rows": require_int(
+                    report.get("independent_keypoint_supported_depth_observation_rows"),
+                    "independent keypoint supported rows",
+                ),
+                "independent_keypoint_strong_depth_observation_rows": require_int(
+                    report.get("independent_keypoint_strong_depth_observation_rows"),
+                    "independent keypoint strong rows",
                 ),
                 "source_depth_observation_state_counts": require_dict(
                     report.get("source_depth_observation_state_counts"),
@@ -348,12 +407,42 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "independent_keypoint_support_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            require_dict(
+                                report.get("independent_keypoint_support_state_counts"),
+                                "independent keypoint counts",
+                            )
+                        )
+                        for report in reports
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "independent_supported_depth_observation_rows": sum(
             require_int(report.get("independent_supported_depth_observation_rows"), "supported rows")
             for report in reports
         ),
         "independent_unsupported_depth_observation_rows": sum(
             require_int(report.get("independent_unsupported_depth_observation_rows"), "unsupported rows")
+            for report in reports
+        ),
+        "independent_keypoint_supported_depth_observation_rows": sum(
+            require_int(
+                report.get("independent_keypoint_supported_depth_observation_rows"),
+                "keypoint supported rows",
+            )
+            for report in reports
+        ),
+        "independent_keypoint_strong_depth_observation_rows": sum(
+            require_int(
+                report.get("independent_keypoint_strong_depth_observation_rows"),
+                "keypoint strong rows",
+            )
             for report in reports
         ),
         "source_depth_observation_state_counts": dict(
@@ -448,6 +537,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-assign-center-px", type=float, default=160.0)
     parser.add_argument("--near-support-bbox-px", type=float, default=24.0)
     parser.add_argument("--near-support-keypoint-px", type=float, default=32.0)
+    parser.add_argument("--min-keypoint-supported-fraction", type=float, default=0.25)
+    parser.add_argument("--strong-keypoint-supported-fraction", type=float, default=0.5)
     parser.add_argument("--near-box-margin-px", type=float, default=24.0)
     parser.add_argument("--min-depth-m", type=float, default=0.05)
     parser.add_argument("--max-depth-m", type=float, default=5.0)
