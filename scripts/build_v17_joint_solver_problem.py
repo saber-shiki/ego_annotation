@@ -45,6 +45,7 @@ class CaseInputs:
     mano_articulation_local_solve_report: Path
     hand_residual_switch_problem_report: Path
     hand_depth_observation_switch_problem_report: Path
+    hand_far_field_depth_temporal_problem_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -145,6 +146,7 @@ def case_inputs(
     mano_articulation_local_solve_root: Path,
     hand_residual_switch_problem_root: Path,
     hand_depth_observation_switch_problem_root: Path,
+    hand_far_field_depth_temporal_problem_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -265,6 +267,12 @@ def case_inputs(
         / "v17_hand_depth_observation_switch_problem.json",
         f"{case} hand depth-observation switch problem report",
     )
+    hand_far_field_depth_temporal_problem_report = existing_path(
+        hand_far_field_depth_temporal_problem_root
+        / case
+        / "v17_hand_far_field_depth_temporal_problem.json",
+        f"{case} hand far-field depth temporal problem report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -344,6 +352,7 @@ def case_inputs(
         mano_articulation_local_solve_report=mano_articulation_local_solve_report,
         hand_residual_switch_problem_report=hand_residual_switch_problem_report,
         hand_depth_observation_switch_problem_report=hand_depth_observation_switch_problem_report,
+        hand_far_field_depth_temporal_problem_report=hand_far_field_depth_temporal_problem_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1521,6 +1530,47 @@ def hand_depth_observation_switch_problem_counts(report: dict[str, Any]) -> dict
     }
 
 
+def hand_far_field_depth_temporal_problem_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "hand far-field temporal frame_count"),
+        "far_field_depth_switch_rows": require_int(
+            report.get("far_field_depth_switch_rows"),
+            "hand far-field depth switch rows",
+        ),
+        "far_field_depth_temporal_segment_count": require_int(
+            report.get("far_field_depth_temporal_segment_count"),
+            "hand far-field temporal segment count",
+        ),
+        "far_field_temporal_factor_candidate_segments": require_int(
+            report.get("far_field_temporal_factor_candidate_segments"),
+            "hand far-field temporal candidate segments",
+        ),
+        "far_field_temporal_factor_candidate_rows": require_int(
+            report.get("far_field_temporal_factor_candidate_rows"),
+            "hand far-field temporal candidate rows",
+        ),
+        "longest_far_field_temporal_segment_frames": require_int(
+            report.get("longest_far_field_temporal_segment_frames"),
+            "longest hand far-field temporal segment",
+        ),
+        "far_field_temporal_segment_state_counts": require_dict(
+            report.get("far_field_temporal_segment_state_counts"),
+            "hand far-field temporal segment state counts",
+        ),
+        "far_field_temporal_depth_sign_state_counts": require_dict(
+            report.get("far_field_temporal_depth_sign_state_counts"),
+            "hand far-field temporal depth sign counts",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2362,6 +2412,7 @@ def required_variable_families(
     mano_articulation_local_solve: dict[str, Any],
     hand_residual_switch_problem: dict[str, Any],
     hand_depth_observation_switch_problem: dict[str, Any],
+    hand_far_field_depth_temporal_problem: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2614,6 +2665,18 @@ def required_variable_families(
                 "hand_depth_observation_far_field_rows": hand_depth_observation_switch_problem[
                     "far_field_hand_depth_observation_switch_rows"
                 ],
+                "hand_far_field_depth_switch_rows": hand_far_field_depth_temporal_problem[
+                    "far_field_depth_switch_rows"
+                ],
+                "hand_far_field_temporal_segment_count": hand_far_field_depth_temporal_problem[
+                    "far_field_depth_temporal_segment_count"
+                ],
+                "hand_far_field_temporal_factor_candidate_segments": hand_far_field_depth_temporal_problem[
+                    "far_field_temporal_factor_candidate_segments"
+                ],
+                "hand_far_field_temporal_factor_candidate_rows": hand_far_field_depth_temporal_problem[
+                    "far_field_temporal_factor_candidate_rows"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2687,6 +2750,7 @@ def required_variable_families(
                 "local MANO pose-delta solves reduce some residuals but mostly hit the pose bound and leave the local articulation mechanism unaccepted",
                 "residual switch variables now separate local surface/articulation owners from mixed depth and occlusion owners, but current local articulation produces no accepted switch-ready row",
                 "depth-observation switch variables show that most depth-side residual rows are far from active object masks, so object occlusion alone cannot explain the remaining hand-depth residual",
+                "far-field depth-observation switches form long temporal runs, so the hand-depth repair needs full-timeline temporal variables rather than isolated frame fixes",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3390,6 +3454,27 @@ def required_variable_families(
                 "hand_depth_observation_candidate_partition_sample_counts": hand_depth_observation_switch_problem[
                     "candidate_partition_sample_counts"
                 ],
+                "hand_far_field_depth_switch_rows": hand_far_field_depth_temporal_problem[
+                    "far_field_depth_switch_rows"
+                ],
+                "hand_far_field_temporal_segment_count": hand_far_field_depth_temporal_problem[
+                    "far_field_depth_temporal_segment_count"
+                ],
+                "hand_far_field_temporal_factor_candidate_segments": hand_far_field_depth_temporal_problem[
+                    "far_field_temporal_factor_candidate_segments"
+                ],
+                "hand_far_field_temporal_factor_candidate_rows": hand_far_field_depth_temporal_problem[
+                    "far_field_temporal_factor_candidate_rows"
+                ],
+                "hand_far_field_temporal_longest_segment_frames": hand_far_field_depth_temporal_problem[
+                    "longest_far_field_temporal_segment_frames"
+                ],
+                "hand_far_field_temporal_segment_state_counts": hand_far_field_depth_temporal_problem[
+                    "far_field_temporal_segment_state_counts"
+                ],
+                "hand_far_field_temporal_depth_sign_state_counts": hand_far_field_depth_temporal_problem[
+                    "far_field_temporal_depth_sign_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -3469,6 +3554,7 @@ def required_variable_families(
                 "local MANO articulation pose-delta solves produce limited depth gains and widespread pose-bound hits, so they diagnose the next owner rather than updating the hand state",
                 "hand residual switch variables expose which residuals need mixed projection-depth, occlusion/depth-observation, projection-support, or broader local hand-surface factors",
                 "depth-observation switch variables split the depth-side residuals by object-mask proximity and expose far-field hand-depth rows as the dominant owner",
+                "far-field temporal segments expose persistent same-hand signed depth residuals that require a full-timeline hand-depth state",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -3630,6 +3716,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_depth_observation_switch_problem_report),
         f"{inputs.case} hand depth-observation switch problem report",
     )
+    hand_far_field_depth_temporal_problem_report = require_dict(
+        load_json(inputs.hand_far_field_depth_temporal_problem_report),
+        f"{inputs.case} hand far-field depth temporal problem report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3715,6 +3805,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     hand_depth_observation_switch_problem = hand_depth_observation_switch_problem_counts(
         hand_depth_observation_switch_problem_report
+    )
+    hand_far_field_depth_temporal_problem = hand_far_field_depth_temporal_problem_counts(
+        hand_far_field_depth_temporal_problem_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -3819,6 +3912,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand depth-observation switch problem"
+        )
+    if frame_count != require_int(
+        hand_far_field_depth_temporal_problem["frame_count"],
+        f"{inputs.case} hand far-field temporal frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand far-field temporal problem"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -4392,6 +4492,22 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} depth-observation switch split does not sum to candidate rows")
     if require_int(
+        hand_far_field_depth_temporal_problem["far_field_depth_switch_rows"],
+        f"{inputs.case} far-field temporal rows",
+    ) != require_int(
+        hand_depth_observation_switch_problem["far_field_hand_depth_observation_switch_rows"],
+        f"{inputs.case} far-field depth-observation rows",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal rows disagree with depth-observation switches")
+    if require_int(
+        hand_far_field_depth_temporal_problem["far_field_temporal_factor_candidate_rows"],
+        f"{inputs.case} far-field temporal candidate rows",
+    ) > require_int(
+        hand_far_field_depth_temporal_problem["far_field_depth_switch_rows"],
+        f"{inputs.case} far-field temporal rows",
+    ):
+        raise RuntimeError(f"{inputs.case} far-field temporal candidate rows exceed far-field switch rows")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -4784,6 +4900,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         mano_articulation_local_solve,
         hand_residual_switch_problem,
         hand_depth_observation_switch_problem,
+        hand_far_field_depth_temporal_problem,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -4883,6 +5000,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_depth_observation_switch_problem_report,
                 hand_depth_observation_switch_problem_report,
             ),
+            "hand_far_field_depth_temporal_problem_report": source_summary(
+                inputs.hand_far_field_depth_temporal_problem_report,
+                hand_far_field_depth_temporal_problem_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -4943,6 +5064,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_mano_articulation_local_solve": mano_articulation_local_solve,
         "current_hand_residual_switch_problem": hand_residual_switch_problem,
         "current_hand_depth_observation_switch_problem": hand_depth_observation_switch_problem,
+        "current_hand_far_field_depth_temporal_problem": hand_far_field_depth_temporal_problem,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -5008,6 +5130,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.mano_articulation_local_solve_root,
             args.hand_residual_switch_problem_root,
             args.hand_depth_observation_switch_problem_root,
+            args.hand_far_field_depth_temporal_problem_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -5057,6 +5180,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "mano_articulation_local_solve_root": str(args.mano_articulation_local_solve_root),
         "hand_residual_switch_problem_root": str(args.hand_residual_switch_problem_root),
         "hand_depth_observation_switch_problem_root": str(args.hand_depth_observation_switch_problem_root),
+        "hand_far_field_depth_temporal_problem_root": str(args.hand_far_field_depth_temporal_problem_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -5406,6 +5530,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_depth_observation_switch_state_counts": case[
                     "current_hand_depth_observation_switch_problem"
                 ]["depth_observation_switch_state_counts"],
+                "hand_far_field_depth_switch_rows": case[
+                    "current_hand_far_field_depth_temporal_problem"
+                ]["far_field_depth_switch_rows"],
+                "hand_far_field_temporal_segment_count": case[
+                    "current_hand_far_field_depth_temporal_problem"
+                ]["far_field_depth_temporal_segment_count"],
+                "hand_far_field_temporal_factor_candidate_segments": case[
+                    "current_hand_far_field_depth_temporal_problem"
+                ]["far_field_temporal_factor_candidate_segments"],
+                "hand_far_field_temporal_factor_candidate_rows": case[
+                    "current_hand_far_field_depth_temporal_problem"
+                ]["far_field_temporal_factor_candidate_rows"],
+                "hand_far_field_temporal_longest_segment_frames": case[
+                    "current_hand_far_field_depth_temporal_problem"
+                ]["longest_far_field_temporal_segment_frames"],
+                "hand_far_field_temporal_segment_state_counts": case[
+                    "current_hand_far_field_depth_temporal_problem"
+                ]["far_field_temporal_segment_state_counts"],
+                "hand_far_field_temporal_depth_sign_state_counts": case[
+                    "current_hand_far_field_depth_temporal_problem"
+                ]["far_field_temporal_depth_sign_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -6115,6 +6260,67 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 for case in case_outputs
             ),
         },
+        "hand_far_field_depth_switch_rows": sum(
+            case["current_hand_far_field_depth_temporal_problem"]["far_field_depth_switch_rows"]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_segment_count": sum(
+            case["current_hand_far_field_depth_temporal_problem"][
+                "far_field_depth_temporal_segment_count"
+            ]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_factor_candidate_segments": sum(
+            case["current_hand_far_field_depth_temporal_problem"][
+                "far_field_temporal_factor_candidate_segments"
+            ]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_factor_candidate_rows": sum(
+            case["current_hand_far_field_depth_temporal_problem"][
+                "far_field_temporal_factor_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_far_field_temporal_longest_segment_frames": max(
+            [
+                case["current_hand_far_field_depth_temporal_problem"][
+                    "longest_far_field_temporal_segment_frames"
+                ]
+                for case in case_outputs
+            ],
+            default=0,
+        ),
+        "hand_far_field_temporal_segment_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_far_field_depth_temporal_problem"][
+                                "far_field_temporal_segment_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_far_field_temporal_depth_sign_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_far_field_depth_temporal_problem"][
+                                "far_field_temporal_depth_sign_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -6736,6 +6942,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-depth-observation-switch-problem-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_depth_observation_switch_problem"),
+    )
+    parser.add_argument(
+        "--hand-far-field-depth-temporal-problem-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_far_field_depth_temporal_problem"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
