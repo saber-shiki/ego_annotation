@@ -60,6 +60,7 @@ class CaseInputs:
     full_residual_relinearized_hand_surface_observation_graph_report: Path
     full_residual_pose_relinearized_hand_surface_observation_graph_report: Path
     full_residual_pose_transition_diagnostic_report: Path
+    full_residual_surface_tail_diagnostic_report: Path
     relinearized_hand_capacity_diagnostic_report: Path
     relinearized_residual_object_contact_state_report: Path
     relinearized_residual_factor_coverage_report: Path
@@ -178,6 +179,7 @@ def case_inputs(
     full_residual_relinearized_hand_surface_observation_graph_root: Path,
     full_residual_pose_relinearized_hand_surface_observation_graph_root: Path,
     full_residual_pose_transition_diagnostic_root: Path,
+    full_residual_surface_tail_diagnostic_root: Path,
     relinearized_hand_capacity_diagnostic_root: Path,
     relinearized_residual_object_contact_state_root: Path,
     relinearized_residual_factor_coverage_root: Path,
@@ -389,6 +391,12 @@ def case_inputs(
         / "v17_full_residual_pose_transition_diagnostic.json",
         f"{case} full residual pose transition diagnostic report",
     )
+    full_residual_surface_tail_diagnostic_report = existing_path(
+        full_residual_surface_tail_diagnostic_root
+        / case
+        / "v17_full_residual_surface_tail_diagnostic.json",
+        f"{case} full residual surface-tail diagnostic report",
+    )
     relinearized_hand_capacity_diagnostic_report = existing_path(
         relinearized_hand_capacity_diagnostic_root
         / case
@@ -501,6 +509,7 @@ def case_inputs(
         full_residual_relinearized_hand_surface_observation_graph_report=full_residual_relinearized_hand_surface_observation_graph_report,
         full_residual_pose_relinearized_hand_surface_observation_graph_report=full_residual_pose_relinearized_hand_surface_observation_graph_report,
         full_residual_pose_transition_diagnostic_report=full_residual_pose_transition_diagnostic_report,
+        full_residual_surface_tail_diagnostic_report=full_residual_surface_tail_diagnostic_report,
         relinearized_hand_capacity_diagnostic_report=relinearized_hand_capacity_diagnostic_report,
         relinearized_residual_object_contact_state_report=relinearized_residual_object_contact_state_report,
         relinearized_residual_factor_coverage_report=relinearized_residual_factor_coverage_report,
@@ -2676,6 +2685,99 @@ def full_residual_pose_transition_diagnostic_counts(report: dict[str, Any]) -> d
     }
 
 
+def full_residual_surface_tail_diagnostic_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "full residual surface-tail diagnostic frame_count",
+        ),
+        "transition_variable_rows": require_int(
+            report.get("transition_variable_rows"),
+            "full residual surface-tail transition variable rows",
+        ),
+        "pose_surface_factor_rows": require_int(
+            report.get("pose_surface_factor_rows"),
+            "full residual surface-tail surface factor rows",
+        ),
+        "pose_surface_geometry_rows": require_int(
+            report.get("pose_surface_geometry_rows"),
+            "full residual surface-tail geometry rows",
+        ),
+        "surface_geometry_depth_pass_rows": require_int(
+            report.get("surface_geometry_depth_pass_rows"),
+            "full residual surface-tail geometry pass rows",
+        ),
+        "surface_assignment_rejects_source_depth_rows": require_int(
+            report.get("surface_assignment_rejects_source_depth_rows"),
+            "full residual surface-tail source-depth rejected rows",
+        ),
+        "persistent_surface_depth_tail_rows": require_int(
+            report.get("persistent_surface_depth_tail_rows"),
+            "full residual surface-tail persistent tail rows",
+        ),
+        "persistent_surface_depth_tail_geometry_pass_rows": require_int(
+            report.get("persistent_surface_depth_tail_geometry_pass_rows"),
+            "full residual surface-tail persistent geometry pass rows",
+        ),
+        "persistent_surface_depth_tail_rejects_source_depth_rows": require_int(
+            report.get("persistent_surface_depth_tail_rejects_source_depth_rows"),
+            "full residual surface-tail persistent source-depth rejected rows",
+        ),
+        "persistent_surface_depth_tail_geometry_pass_and_rejects_source_depth_rows": require_int(
+            report.get("persistent_surface_depth_tail_geometry_pass_and_rejects_source_depth_rows"),
+            "full residual surface-tail persistent geometry pass and source-depth rejected rows",
+        ),
+        "persistent_surface_depth_tail_unassigned_residual_sample_count": require_int(
+            report.get("persistent_surface_depth_tail_unassigned_residual_sample_count"),
+            "full residual surface-tail persistent unassigned residual samples",
+        ),
+        "surface_assignment_incomplete_rows": require_int(
+            report.get("surface_assignment_incomplete_rows"),
+            "full residual surface-tail incomplete assignment rows",
+        ),
+        "persistent_surface_depth_tail_state_counts": require_dict(
+            report.get("persistent_surface_depth_tail_state_counts"),
+            "full residual surface-tail persistent state counts",
+        ),
+        "surface_factor_owner_depth_state_counts": require_dict(
+            report.get("surface_factor_owner_depth_state_counts"),
+            "full residual surface-tail surface owner depth counts",
+        ),
+        "surface_assignment_fraction": require_dict(
+            report.get("surface_assignment_fraction"),
+            "full residual surface-tail assignment fraction",
+        ),
+        "assigned_source_residual_abs_gap_median_m": require_dict(
+            report.get("assigned_source_residual_abs_gap_median_m"),
+            "full residual surface-tail assigned source gap",
+        ),
+        "assigned_target_seed_abs_gap_median_m": require_dict(
+            report.get("assigned_target_seed_abs_gap_median_m"),
+            "full residual surface-tail assigned target gap",
+        ),
+        "assigned_hand_depth_delta_to_seed_median_m": require_dict(
+            report.get("assigned_hand_depth_delta_to_seed_median_m"),
+            "full residual surface-tail assigned hand depth delta",
+        ),
+        "geometry_depth_abs_median_m": require_dict(
+            report.get("geometry_depth_abs_median_m"),
+            "full residual surface-tail geometry depth median",
+        ),
+        "geometry_depth_abs_p95_m": require_dict(
+            report.get("geometry_depth_abs_p95_m"),
+            "full residual surface-tail geometry depth p95",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -4005,6 +4107,7 @@ def required_variable_families(
     full_residual_relinearized_hand_surface_observation_graph: dict[str, Any],
     full_residual_pose_relinearized_hand_surface_observation_graph: dict[str, Any],
     full_residual_pose_transition_diagnostic: dict[str, Any],
+    full_residual_surface_tail_diagnostic: dict[str, Any],
     relinearized_hand_capacity_diagnostic: dict[str, Any],
     relinearized_residual_object_contact_state: dict[str, Any],
     relinearized_residual_factor_coverage: dict[str, Any],
@@ -4619,6 +4722,21 @@ def required_variable_families(
                 ],
                 "full_residual_pose_transition_reprojection_state_transition_counts": full_residual_pose_transition_diagnostic[
                     "reprojection_state_transition_counts"
+                ],
+                "full_residual_surface_tail_persistent_rows": full_residual_surface_tail_diagnostic[
+                    "persistent_surface_depth_tail_rows"
+                ],
+                "full_residual_surface_tail_geometry_pass_rows": full_residual_surface_tail_diagnostic[
+                    "persistent_surface_depth_tail_geometry_pass_rows"
+                ],
+                "full_residual_surface_tail_geometry_pass_and_rejects_source_depth_rows": full_residual_surface_tail_diagnostic[
+                    "persistent_surface_depth_tail_geometry_pass_and_rejects_source_depth_rows"
+                ],
+                "full_residual_surface_tail_geometry_depth_abs_median_m": full_residual_surface_tail_diagnostic[
+                    "geometry_depth_abs_median_m"
+                ],
+                "full_residual_surface_tail_geometry_depth_abs_p95_m": full_residual_surface_tail_diagnostic[
+                    "geometry_depth_abs_p95_m"
                 ],
                 "relinearized_hand_capacity_applied_variable_rows": relinearized_hand_capacity_diagnostic[
                     "applied_relinearized_variable_rows"
@@ -6134,6 +6252,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.full_residual_pose_transition_diagnostic_report),
         f"{inputs.case} full residual pose transition diagnostic report",
     )
+    full_residual_surface_tail_diagnostic_report = require_dict(
+        load_json(inputs.full_residual_surface_tail_diagnostic_report),
+        f"{inputs.case} full residual surface-tail diagnostic report",
+    )
     relinearized_hand_capacity_diagnostic_report = require_dict(
         load_json(inputs.relinearized_hand_capacity_diagnostic_report),
         f"{inputs.case} relinearized hand capacity diagnostic report",
@@ -6278,6 +6400,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     full_residual_pose_transition_diagnostic = full_residual_pose_transition_diagnostic_counts(
         full_residual_pose_transition_diagnostic_report
+    )
+    full_residual_surface_tail_diagnostic = full_residual_surface_tail_diagnostic_counts(
+        full_residual_surface_tail_diagnostic_report
     )
     relinearized_hand_capacity_diagnostic = relinearized_hand_capacity_diagnostic_counts(
         relinearized_hand_capacity_diagnostic_report
@@ -7212,6 +7337,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and full residual pose transition diagnostic"
         )
+    if frame_count != require_int(
+        full_residual_surface_tail_diagnostic["frame_count"],
+        f"{inputs.case} full residual surface-tail diagnostic frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and full residual surface-tail diagnostic"
+        )
     if require_str(
         relinearized_hand_surface_observation_graph["relinearized_variable_scope"],
         f"{inputs.case} relinearized hand graph scope",
@@ -8055,6 +8187,58 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} full residual pose transition clamp rows disagree with pose graph")
     if require_int(
+        full_residual_surface_tail_diagnostic["transition_variable_rows"],
+        f"{inputs.case} full residual surface-tail transition variables",
+    ) != require_int(
+        full_residual_pose_transition_diagnostic["transition_variable_rows"],
+        f"{inputs.case} full residual pose transition variables",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual surface-tail variables disagree with pose transition diagnostic")
+    if require_int(
+        full_residual_surface_tail_diagnostic["pose_surface_factor_rows"],
+        f"{inputs.case} full residual surface-tail surface rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_surface_factor_rows"],
+        f"{inputs.case} pose-enabled full residual surface rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual surface-tail surface rows disagree with pose graph")
+    if require_int(
+        full_residual_surface_tail_diagnostic["pose_surface_geometry_rows"],
+        f"{inputs.case} full residual surface-tail geometry rows",
+    ) != require_int(
+        full_residual_surface_tail_diagnostic["pose_surface_factor_rows"],
+        f"{inputs.case} full residual surface-tail surface rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual surface-tail geometry rows do not cover surface factor rows")
+    persistent_surface_tail_counts = require_dict(
+        full_residual_surface_tail_diagnostic["persistent_surface_depth_tail_state_counts"],
+        f"{inputs.case} full residual surface-tail persistent state counts",
+    )
+    if sum(
+        require_int(value, f"{inputs.case} full residual surface-tail persistent state count")
+        for value in persistent_surface_tail_counts.values()
+    ) != require_int(
+        full_residual_surface_tail_diagnostic["persistent_surface_depth_tail_rows"],
+        f"{inputs.case} full residual surface-tail persistent rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual surface-tail persistent state counts do not sum")
+    if require_int(
+        full_residual_surface_tail_diagnostic["persistent_surface_depth_tail_rows"],
+        f"{inputs.case} full residual surface-tail persistent rows",
+    ) > require_int(
+        full_residual_pose_transition_diagnostic["residual_owner_persistent_rows"],
+        f"{inputs.case} full residual pose transition persistent residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual surface-tail persistent rows exceed persistent residual owners")
+    if require_int(
+        full_residual_surface_tail_diagnostic["persistent_surface_depth_tail_geometry_pass_and_rejects_source_depth_rows"],
+        f"{inputs.case} full residual surface-tail geometry-pass source-reject rows",
+    ) > require_int(
+        full_residual_surface_tail_diagnostic["persistent_surface_depth_tail_geometry_pass_rows"],
+        f"{inputs.case} full residual surface-tail geometry-pass rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual surface-tail source-reject geometry-pass rows exceed geometry-pass rows")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -8462,6 +8646,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         full_residual_relinearized_hand_surface_observation_graph,
         full_residual_pose_relinearized_hand_surface_observation_graph,
         full_residual_pose_transition_diagnostic,
+        full_residual_surface_tail_diagnostic,
         relinearized_hand_capacity_diagnostic,
         relinearized_residual_object_contact_state,
         relinearized_residual_factor_coverage,
@@ -8624,6 +8809,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.full_residual_pose_transition_diagnostic_report,
                 full_residual_pose_transition_diagnostic_report,
             ),
+            "full_residual_surface_tail_diagnostic_report": source_summary(
+                inputs.full_residual_surface_tail_diagnostic_report,
+                full_residual_surface_tail_diagnostic_report,
+            ),
             "relinearized_hand_capacity_diagnostic_report": source_summary(
                 inputs.relinearized_hand_capacity_diagnostic_report,
                 relinearized_hand_capacity_diagnostic_report,
@@ -8711,6 +8900,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_full_residual_relinearized_hand_surface_observation_graph": full_residual_relinearized_hand_surface_observation_graph,
         "current_full_residual_pose_relinearized_hand_surface_observation_graph": full_residual_pose_relinearized_hand_surface_observation_graph,
         "current_full_residual_pose_transition_diagnostic": full_residual_pose_transition_diagnostic,
+        "current_full_residual_surface_tail_diagnostic": full_residual_surface_tail_diagnostic,
         "current_relinearized_hand_capacity_diagnostic": relinearized_hand_capacity_diagnostic,
         "current_relinearized_residual_object_contact_state": relinearized_residual_object_contact_state,
         "current_relinearized_residual_factor_coverage": relinearized_residual_factor_coverage,
@@ -8794,6 +8984,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.full_residual_relinearized_hand_surface_observation_graph_root,
             args.full_residual_pose_relinearized_hand_surface_observation_graph_root,
             args.full_residual_pose_transition_diagnostic_root,
+            args.full_residual_surface_tail_diagnostic_root,
             args.relinearized_hand_capacity_diagnostic_root,
             args.relinearized_residual_object_contact_state_root,
             args.relinearized_residual_factor_coverage_root,
@@ -8880,6 +9071,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "full_residual_pose_transition_diagnostic_root": str(
             args.full_residual_pose_transition_diagnostic_root
+        ),
+        "full_residual_surface_tail_diagnostic_root": str(
+            args.full_residual_surface_tail_diagnostic_root
         ),
         "relinearized_hand_capacity_diagnostic_root": str(
             args.relinearized_hand_capacity_diagnostic_root
@@ -11533,6 +11727,84 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "full_residual_surface_tail_transition_variable_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"]["transition_variable_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_pose_surface_factor_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"]["pose_surface_factor_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_surface_geometry_depth_pass_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"]["surface_geometry_depth_pass_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_surface_assignment_rejects_source_depth_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"]["surface_assignment_rejects_source_depth_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_persistent_surface_depth_tail_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"]["persistent_surface_depth_tail_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_persistent_geometry_pass_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"][
+                "persistent_surface_depth_tail_geometry_pass_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_persistent_rejects_source_depth_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"][
+                "persistent_surface_depth_tail_rejects_source_depth_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_persistent_geometry_pass_and_rejects_source_depth_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"][
+                "persistent_surface_depth_tail_geometry_pass_and_rejects_source_depth_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_persistent_unassigned_residual_sample_count": sum(
+            case["current_full_residual_surface_tail_diagnostic"][
+                "persistent_surface_depth_tail_unassigned_residual_sample_count"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_surface_assignment_incomplete_rows": sum(
+            case["current_full_residual_surface_tail_diagnostic"]["surface_assignment_incomplete_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_surface_tail_persistent_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_full_residual_surface_tail_diagnostic"][
+                                "persistent_surface_depth_tail_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "full_residual_surface_tail_surface_owner_depth_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_full_residual_surface_tail_diagnostic"][
+                                "surface_factor_owner_depth_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "relinearized_hand_capacity_applied_variable_rows": sum(
             case["current_relinearized_hand_capacity_diagnostic"]["applied_relinearized_variable_rows"]
             for case in case_outputs
@@ -12518,6 +12790,11 @@ def parse_args() -> argparse.Namespace:
         "--full-residual-pose-transition-diagnostic-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_full_residual_pose_transition_diagnostic"),
+    )
+    parser.add_argument(
+        "--full-residual-surface-tail-diagnostic-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_full_residual_surface_tail_diagnostic"),
     )
     parser.add_argument(
         "--relinearized-hand-capacity-diagnostic-root",
