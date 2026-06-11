@@ -61,6 +61,7 @@ class CaseInputs:
     full_residual_pose_relinearized_hand_surface_observation_graph_report: Path
     full_residual_pose_transition_diagnostic_report: Path
     full_residual_surface_tail_diagnostic_report: Path
+    interior_owned_full_residual_hand_graph_report: Path
     relinearized_hand_capacity_diagnostic_report: Path
     relinearized_residual_object_contact_state_report: Path
     relinearized_residual_factor_coverage_report: Path
@@ -180,6 +181,7 @@ def case_inputs(
     full_residual_pose_relinearized_hand_surface_observation_graph_root: Path,
     full_residual_pose_transition_diagnostic_root: Path,
     full_residual_surface_tail_diagnostic_root: Path,
+    interior_owned_full_residual_hand_graph_root: Path,
     relinearized_hand_capacity_diagnostic_root: Path,
     relinearized_residual_object_contact_state_root: Path,
     relinearized_residual_factor_coverage_root: Path,
@@ -397,6 +399,12 @@ def case_inputs(
         / "v17_full_residual_surface_tail_diagnostic.json",
         f"{case} full residual surface-tail diagnostic report",
     )
+    interior_owned_full_residual_hand_graph_report = existing_path(
+        interior_owned_full_residual_hand_graph_root
+        / case
+        / "v17_interior_owned_full_residual_hand_graph.json",
+        f"{case} interior-owned full residual hand graph report",
+    )
     relinearized_hand_capacity_diagnostic_report = existing_path(
         relinearized_hand_capacity_diagnostic_root
         / case
@@ -510,6 +518,7 @@ def case_inputs(
         full_residual_pose_relinearized_hand_surface_observation_graph_report=full_residual_pose_relinearized_hand_surface_observation_graph_report,
         full_residual_pose_transition_diagnostic_report=full_residual_pose_transition_diagnostic_report,
         full_residual_surface_tail_diagnostic_report=full_residual_surface_tail_diagnostic_report,
+        interior_owned_full_residual_hand_graph_report=interior_owned_full_residual_hand_graph_report,
         relinearized_hand_capacity_diagnostic_report=relinearized_hand_capacity_diagnostic_report,
         relinearized_residual_object_contact_state_report=relinearized_residual_object_contact_state_report,
         relinearized_residual_factor_coverage_report=relinearized_residual_factor_coverage_report,
@@ -2778,6 +2787,63 @@ def full_residual_surface_tail_diagnostic_counts(report: dict[str, Any]) -> dict
     }
 
 
+def interior_owned_full_residual_hand_graph_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "interior-owned full residual hand graph frame_count",
+        ),
+        "interior_owned_variable_rows": require_int(
+            report.get("interior_owned_variable_rows"),
+            "interior-owned variable rows",
+        ),
+        "interior_delta_bound_hit_rows": require_int(
+            report.get("interior_delta_bound_hit_rows"),
+            "interior-owned delta bound hit rows",
+        ),
+        "source_legacy_metric_depth_compatible_variable_rows": require_int(
+            report.get("source_legacy_metric_depth_compatible_variable_rows"),
+            "interior-owned source legacy compatible variable rows",
+        ),
+        "legacy_metric_depth_compatible_variable_rows": require_int(
+            report.get("legacy_metric_depth_compatible_variable_rows"),
+            "interior-owned legacy compatible variable rows",
+        ),
+        "interior_metric_depth_compatible_variable_rows": require_int(
+            report.get("interior_metric_depth_compatible_variable_rows"),
+            "interior-owned interior compatible variable rows",
+        ),
+        "interior_state_counts_variable_rows": require_dict(
+            report.get("interior_state_counts_variable_rows"),
+            "interior-owned interior state counts",
+        ),
+        "interior_median_gap_m_variable_rows": require_dict(
+            report.get("interior_median_gap_m_variable_rows"),
+            "interior-owned interior median gap",
+        ),
+        "metric_hand_state_accepted_rows_legacy_predicate": require_int(
+            report.get("metric_hand_state_accepted_rows_legacy_predicate"),
+            "interior-owned legacy accepted rows",
+        ),
+        "metric_hand_state_accepted_rows_interior_predicate": require_int(
+            report.get("metric_hand_state_accepted_rows_interior_predicate"),
+            "interior-owned interior accepted rows",
+        ),
+        "source_pose_graph_accepted_rows_legacy_predicate": require_int(
+            report.get("source_pose_graph_accepted_rows_legacy_predicate"),
+            "interior-owned source pose graph accepted rows",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -4108,6 +4174,7 @@ def required_variable_families(
     full_residual_pose_relinearized_hand_surface_observation_graph: dict[str, Any],
     full_residual_pose_transition_diagnostic: dict[str, Any],
     full_residual_surface_tail_diagnostic: dict[str, Any],
+    interior_owned_full_residual_hand_graph: dict[str, Any],
     relinearized_hand_capacity_diagnostic: dict[str, Any],
     relinearized_residual_object_contact_state: dict[str, Any],
     relinearized_residual_factor_coverage: dict[str, Any],
@@ -4737,6 +4804,24 @@ def required_variable_families(
                 ],
                 "full_residual_surface_tail_geometry_depth_abs_p95_m": full_residual_surface_tail_diagnostic[
                     "geometry_depth_abs_p95_m"
+                ],
+                "interior_owned_full_residual_variable_rows": interior_owned_full_residual_hand_graph[
+                    "interior_owned_variable_rows"
+                ],
+                "interior_owned_interior_metric_depth_compatible_variable_rows": interior_owned_full_residual_hand_graph[
+                    "interior_metric_depth_compatible_variable_rows"
+                ],
+                "interior_owned_metric_hand_state_accepted_rows_legacy_predicate": interior_owned_full_residual_hand_graph[
+                    "metric_hand_state_accepted_rows_legacy_predicate"
+                ],
+                "interior_owned_metric_hand_state_accepted_rows_interior_predicate": interior_owned_full_residual_hand_graph[
+                    "metric_hand_state_accepted_rows_interior_predicate"
+                ],
+                "interior_owned_interior_state_counts": interior_owned_full_residual_hand_graph[
+                    "interior_state_counts_variable_rows"
+                ],
+                "interior_owned_interior_median_gap_m": interior_owned_full_residual_hand_graph[
+                    "interior_median_gap_m_variable_rows"
                 ],
                 "relinearized_hand_capacity_applied_variable_rows": relinearized_hand_capacity_diagnostic[
                     "applied_relinearized_variable_rows"
@@ -6256,6 +6341,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.full_residual_surface_tail_diagnostic_report),
         f"{inputs.case} full residual surface-tail diagnostic report",
     )
+    interior_owned_full_residual_hand_graph_report = require_dict(
+        load_json(inputs.interior_owned_full_residual_hand_graph_report),
+        f"{inputs.case} interior-owned full residual hand graph report",
+    )
     relinearized_hand_capacity_diagnostic_report = require_dict(
         load_json(inputs.relinearized_hand_capacity_diagnostic_report),
         f"{inputs.case} relinearized hand capacity diagnostic report",
@@ -6403,6 +6492,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     full_residual_surface_tail_diagnostic = full_residual_surface_tail_diagnostic_counts(
         full_residual_surface_tail_diagnostic_report
+    )
+    interior_owned_full_residual_hand_graph = interior_owned_full_residual_hand_graph_counts(
+        interior_owned_full_residual_hand_graph_report
     )
     relinearized_hand_capacity_diagnostic = relinearized_hand_capacity_diagnostic_counts(
         relinearized_hand_capacity_diagnostic_report
@@ -8239,6 +8331,24 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} full residual surface-tail source-reject geometry-pass rows exceed geometry-pass rows")
     if require_int(
+        interior_owned_full_residual_hand_graph["interior_owned_variable_rows"],
+        f"{inputs.case} interior-owned variable rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_variable_rows"],
+        f"{inputs.case} pose-enabled full residual variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} interior-owned variable rows disagree with pose-enabled full residual graph")
+    if require_int(
+        interior_owned_full_residual_hand_graph["source_pose_graph_accepted_rows_legacy_predicate"],
+        f"{inputs.case} interior-owned source pose graph accepted rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph[
+            "metric_hand_state_accepted_rows_after_relinearized_graph"
+        ],
+        f"{inputs.case} pose-enabled full residual accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} interior-owned source accepted rows disagree with pose-enabled full residual graph")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -8647,6 +8757,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         full_residual_pose_relinearized_hand_surface_observation_graph,
         full_residual_pose_transition_diagnostic,
         full_residual_surface_tail_diagnostic,
+        interior_owned_full_residual_hand_graph,
         relinearized_hand_capacity_diagnostic,
         relinearized_residual_object_contact_state,
         relinearized_residual_factor_coverage,
@@ -8813,6 +8924,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.full_residual_surface_tail_diagnostic_report,
                 full_residual_surface_tail_diagnostic_report,
             ),
+            "interior_owned_full_residual_hand_graph_report": source_summary(
+                inputs.interior_owned_full_residual_hand_graph_report,
+                interior_owned_full_residual_hand_graph_report,
+            ),
             "relinearized_hand_capacity_diagnostic_report": source_summary(
                 inputs.relinearized_hand_capacity_diagnostic_report,
                 relinearized_hand_capacity_diagnostic_report,
@@ -8901,6 +9016,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_full_residual_pose_relinearized_hand_surface_observation_graph": full_residual_pose_relinearized_hand_surface_observation_graph,
         "current_full_residual_pose_transition_diagnostic": full_residual_pose_transition_diagnostic,
         "current_full_residual_surface_tail_diagnostic": full_residual_surface_tail_diagnostic,
+        "current_interior_owned_full_residual_hand_graph": interior_owned_full_residual_hand_graph,
         "current_relinearized_hand_capacity_diagnostic": relinearized_hand_capacity_diagnostic,
         "current_relinearized_residual_object_contact_state": relinearized_residual_object_contact_state,
         "current_relinearized_residual_factor_coverage": relinearized_residual_factor_coverage,
@@ -8985,6 +9101,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.full_residual_pose_relinearized_hand_surface_observation_graph_root,
             args.full_residual_pose_transition_diagnostic_root,
             args.full_residual_surface_tail_diagnostic_root,
+            args.interior_owned_full_residual_hand_graph_root,
             args.relinearized_hand_capacity_diagnostic_root,
             args.relinearized_residual_object_contact_state_root,
             args.relinearized_residual_factor_coverage_root,
@@ -9074,6 +9191,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "full_residual_surface_tail_diagnostic_root": str(
             args.full_residual_surface_tail_diagnostic_root
+        ),
+        "interior_owned_full_residual_hand_graph_root": str(
+            args.interior_owned_full_residual_hand_graph_root
         ),
         "relinearized_hand_capacity_diagnostic_root": str(
             args.relinearized_hand_capacity_diagnostic_root
@@ -11809,6 +11929,43 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             case["current_relinearized_hand_capacity_diagnostic"]["applied_relinearized_variable_rows"]
             for case in case_outputs
         ),
+        "interior_owned_full_residual_variable_rows": sum(
+            case["current_interior_owned_full_residual_hand_graph"]["interior_owned_variable_rows"]
+            for case in case_outputs
+        ),
+        "interior_owned_interior_metric_depth_compatible_variable_rows": sum(
+            case["current_interior_owned_full_residual_hand_graph"][
+                "interior_metric_depth_compatible_variable_rows"
+            ]
+            for case in case_outputs
+        ),
+        "interior_owned_metric_hand_state_accepted_rows_legacy_predicate": sum(
+            case["current_interior_owned_full_residual_hand_graph"][
+                "metric_hand_state_accepted_rows_legacy_predicate"
+            ]
+            for case in case_outputs
+        ),
+        "interior_owned_metric_hand_state_accepted_rows_interior_predicate": sum(
+            case["current_interior_owned_full_residual_hand_graph"][
+                "metric_hand_state_accepted_rows_interior_predicate"
+            ]
+            for case in case_outputs
+        ),
+        "interior_owned_interior_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_interior_owned_full_residual_hand_graph"][
+                                "interior_state_counts_variable_rows"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "relinearized_hand_capacity_residual_candidate_rows": sum(
             case["current_relinearized_hand_capacity_diagnostic"]["depth_repair_factor_candidate_rows"]
             for case in case_outputs
@@ -12795,6 +12952,11 @@ def parse_args() -> argparse.Namespace:
         "--full-residual-surface-tail-diagnostic-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_full_residual_surface_tail_diagnostic"),
+    )
+    parser.add_argument(
+        "--interior-owned-full-residual-hand-graph-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_interior_owned_full_residual_hand_graph"),
     )
     parser.add_argument(
         "--relinearized-hand-capacity-diagnostic-root",
