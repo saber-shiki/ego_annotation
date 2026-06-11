@@ -72,6 +72,14 @@ CLAIM = (
     "then optimizes bounded scalar depth and per-row MANO pose deltas under the refreshed factors. "
     "The output is a diagnostic for ownership relinearization, not V3 solver closure."
 )
+FULL_RESIDUAL_STATUS = "v17_full_residual_relinearized_hand_surface_observation_graph_qc"
+FULL_RESIDUAL_CLAIM = (
+    "This artifact tests whether the current relinearized graph failed because residual rows with "
+    "valid scalar hand-depth state were left outside the variable set. It starts from the sparse "
+    "relinearized state, promotes every residual hand-depth row with a finite hand-ray shift into "
+    "the same scalar factor graph, and measures the result through full MANO reprojection and "
+    "UniDepth resampling. The output tests scalar coverage only unless geometry pose loss is enabled."
+)
 
 OBSERVATION_FACTOR_STATES = {
     "same_side_independent_keypoint_partial",
@@ -94,6 +102,52 @@ def finite_or_none(value: Any, label: str) -> float | None:
     if value is None:
         return None
     return finite_float(value, label)
+
+
+def status_for_scope(scope: str) -> str:
+    if scope == "sparse_applied":
+        return STATUS
+    if scope == "full_residual_coverage":
+        return FULL_RESIDUAL_STATUS
+    raise RuntimeError(f"unknown relinearized variable scope: {scope}")
+
+
+def claim_for_scope(scope: str) -> str:
+    if scope == "sparse_applied":
+        return CLAIM
+    if scope == "full_residual_coverage":
+        return FULL_RESIDUAL_CLAIM
+    raise RuntimeError(f"unknown relinearized variable scope: {scope}")
+
+
+def variable_graph_id(row: dict[str, Any]) -> str:
+    return require_str(row.get("hand_depth_repair_graph_variable_id"), "variable graph id")
+
+
+def baseline_shift(row: dict[str, Any], scope: str) -> float:
+    if scope == "sparse_applied":
+        return finite_float(row.get("post_temporal_observation_total_hand_ray_shift_m"), "baseline shift")
+    if scope == "full_residual_coverage":
+        return finite_float(row.get("relinearized_total_hand_ray_shift_m"), "source relinearized shift")
+    raise RuntimeError(f"unknown relinearized variable scope: {scope}")
+
+
+def pose_delta_array(row: dict[str, Any]) -> np.ndarray:
+    raw = row.get("relinearized_pose_delta_rotvec")
+    if raw is None:
+        return np.zeros((15, 3), dtype=np.float32)
+    arr = np.asarray(raw, dtype=np.float32)
+    if arr.shape != (15, 3) or not np.all(np.isfinite(arr)):
+        raise RuntimeError("relinearized_pose_delta_rotvec must be a finite 15x3 array")
+    return arr
+
+
+def optimize_geometry_pose(scope: str, args: argparse.Namespace) -> bool:
+    if scope == "sparse_applied":
+        return bool(args.optimize_geometry_pose)
+    if scope == "full_residual_coverage":
+        return bool(args.full_residual_optimize_geometry_pose)
+    raise RuntimeError(f"unknown relinearized variable scope: {scope}")
 
 
 def replay_vertices(
@@ -245,6 +299,22 @@ def factor_state(row: dict[str, Any]) -> str:
     if state == "relinearized_reprojected_residual_unobserved":
         return "relinearized_unobserved_prior_smooth_variable"
     return "relinearized_sparse_owner_prior_smooth_variable"
+
+
+def report_filename(scope: str) -> str:
+    if scope == "sparse_applied":
+        return "v17_relinearized_hand_surface_observation_graph.json"
+    if scope == "full_residual_coverage":
+        return "v17_full_residual_relinearized_hand_surface_observation_graph.json"
+    raise RuntimeError(f"unknown relinearized variable scope: {scope}")
+
+
+def summary_filename(scope: str) -> str:
+    if scope == "sparse_applied":
+        return "v17_relinearized_hand_surface_observation_graph_summary.json"
+    if scope == "full_residual_coverage":
+        return "v17_full_residual_relinearized_hand_surface_observation_graph_summary.json"
+    raise RuntimeError(f"unknown relinearized variable scope: {scope}")
 
 
 def vertex_ids_for_current_surface(
@@ -481,6 +551,7 @@ def current_factor_targets(
 
 
 def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.device) -> dict[str, Any]:
+    scope = require_str(args.variable_scope, "variable scope")
     paths = {
         "annotations": existing_path(
             args.graph_root / case / "annotations_v17_full_timeline_graph.json",
@@ -511,6 +582,13 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             f"{case} coupled hand-depth MANO observation graph",
         ),
     }
+    if scope == "full_residual_coverage":
+        paths["source_relinearized_hand_surface_observation_graph"] = existing_path(
+            args.source_relinearized_hand_surface_observation_graph_root
+            / case
+            / "v17_relinearized_hand_surface_observation_graph.json",
+            f"{case} source sparse relinearized hand surface-observation graph",
+        )
     payloads = {name: require_dict(load_json(path), f"{case} {name}") for name, path in paths.items()}
     frames = annotation_frames(payloads["annotations"])
     frame_count = len(frames)
@@ -520,6 +598,11 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         "hand_depth_repair_graph",
         "post_temporal_depth_observation_weighted_refit",
         "coupled_hand_depth_mano_observation_graph",
+        *(
+            ["source_relinearized_hand_surface_observation_graph"]
+            if scope == "full_residual_coverage"
+            else []
+        ),
     ]:
         if frame_count != require_int(payloads[name].get("frame_count"), f"{case} {name} frame_count"):
             raise RuntimeError(f"{case} frame_count disagrees with {name}")
@@ -545,12 +628,29 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             for raw in require_list(weighted.get("rows"), f"{case} weighted rows")
         ]
     }
-    variable_inputs = [
-        row
-        for row in weighted_by_id.values()
-        if row.get("post_temporal_observation_delta_applied") is True
-        and row.get("post_temporal_observation_total_hand_ray_shift_m") is not None
-    ]
+    if scope == "sparse_applied":
+        variable_inputs = [
+            row
+            for row in weighted_by_id.values()
+            if row.get("post_temporal_observation_delta_applied") is True
+            and row.get("post_temporal_observation_total_hand_ray_shift_m") is not None
+        ]
+    elif scope == "full_residual_coverage":
+        source_relinearized = payloads["source_relinearized_hand_surface_observation_graph"]
+        variable_inputs = [
+            row
+            for row in [
+                require_dict(raw, "source relinearized row")
+                for raw in require_list(source_relinearized.get("rows"), f"{case} source relinearized rows")
+            ]
+            if (
+                row.get("depth_repair_factor_candidate") is True
+                or row.get("relinearized_delta_applied") is True
+            )
+            and row.get("relinearized_total_hand_ray_shift_m") is not None
+        ]
+    else:
+        raise RuntimeError(f"{case} unknown relinearized variable scope: {scope}")
     variable_inputs = sorted(
         variable_inputs,
         key=lambda row: (
@@ -560,14 +660,14 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         ),
     )
     var_by_id = {
-        require_str(row.get("hand_depth_repair_graph_variable_id"), "variable graph id"): i
+        variable_graph_id(row): i
         for i, row in enumerate(variable_inputs)
     }
     lower_np = np.asarray(
         [
             max(
                 -float(args.max_abs_hand_ray_shift_m)
-                - finite_float(row.get("post_temporal_observation_total_hand_ray_shift_m"), "baseline shift"),
+                - baseline_shift(row, scope),
                 -float(args.max_abs_relinearized_delta_m),
             )
             for row in variable_inputs
@@ -578,7 +678,7 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         [
             min(
                 float(args.max_abs_hand_ray_shift_m)
-                - finite_float(row.get("post_temporal_observation_total_hand_ray_shift_m"), "baseline shift"),
+                - baseline_shift(row, scope),
                 float(args.max_abs_relinearized_delta_m),
             )
             for row in variable_inputs
@@ -591,7 +691,9 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
     lower = torch.tensor(lower_np, dtype=torch.float32, device=device)
     upper = torch.tensor(upper_np, dtype=torch.float32, device=device)
     scalar_delta = torch.zeros(len(variable_inputs), dtype=torch.float32, device=device, requires_grad=True)
-    pose_delta = torch.zeros((len(variable_inputs), 15, 3), dtype=torch.float32, device=device, requires_grad=True)
+    init_pose_delta_np = np.stack([pose_delta_array(row) for row in variable_inputs]).astype(np.float32)
+    pose_delta = torch.tensor(init_pose_delta_np, dtype=torch.float32, device=device, requires_grad=True)
+    pose_optimization_enabled = optimize_geometry_pose(scope, args)
     scale = finite_float(repair.get("case_global_scale"), f"{case} repair graph scale")
     base_by_id: dict[str, dict[str, Any]] = {}
     state_by_id: dict[str, dict[str, Any]] = {}
@@ -604,7 +706,7 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         repair_row = require_dict(repair_by_id.get(graph_id), f"{case} repair row {graph_id}")
         shifted_repair = {
             **repair_row,
-            "hand_ray_shift_m": row.get("post_temporal_observation_total_hand_ray_shift_m"),
+            "hand_ray_shift_m": baseline_shift(row, scope),
         }
         state_by_id[graph_id] = corrected_replayed_state(
             model=model,
@@ -657,11 +759,8 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         with torch.no_grad():
             for graph_id, var_i in var_by_id.items():
                 source_row = variable_inputs[var_i]
-                baseline_shift = finite_float(
-                    source_row.get("post_temporal_observation_total_hand_ray_shift_m"),
-                    "baseline shift",
-                )
-                final_shift = baseline_shift + float(scalar_np[var_i])
+                source_shift = baseline_shift(source_row, scope)
+                final_shift = source_shift + float(scalar_np[var_i])
                 base = require_dict(base_by_id.get(graph_id), f"{case} base {graph_id}")
                 state = require_dict(state_by_id.get(graph_id), f"{case} state {graph_id}")
                 _, _, source_vertices, source_joints = replay_vertices(
@@ -696,13 +795,22 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
                         "post_temporal_observation_reprojection_state"
                     ),
                     "source_post_temporal_observation_owner_median_gap_m": source_row.get("owner_median_gap_m"),
-                    "source_post_temporal_observation_total_hand_ray_shift_m": baseline_shift,
+                    "source_post_temporal_observation_total_hand_ray_shift_m": source_row.get(
+                        "post_temporal_observation_total_hand_ray_shift_m"
+                    ),
+                    "source_relinearized_total_hand_ray_shift_m": source_shift,
                     "relinearized_delta_shift_m": float(scalar_np[var_i]),
                     "relinearized_total_hand_ray_shift_m": final_shift,
                     "relinearized_delta_applied": True,
                     "relinearized_pose_delta_applied": bool(
                         float(np.max(np.abs(pose_delta[var_i].detach().cpu().numpy()))) > 0.0
                     ),
+                    "relinearized_pose_delta_rotvec": pose_delta[var_i]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(float)
+                    .tolist(),
                     "relinearized_reprojection_assignment": None
                     if assignment is None
                     else public_assignment(assignment),
@@ -805,27 +913,31 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             total_loss = torch.stack(scalar_terms).mean()
             total_loss.backward()
             geometry_items = cast(list[dict[str, Any]], factor_targets["geometry_items"])
-            for item in geometry_items:
-                var_i = require_int(item.get("var_i"), "geometry var_i")
-                vertices, joints, _, _ = replay_vertices(
-                    model=model,
-                    state=require_dict(item.get("state"), "geometry state"),
-                    pose_delta=pose_delta[var_i : var_i + 1],
-                    ray_delta=scalar_delta[var_i],
-                )
-                row_loss = local_geometry_loss(
-                    vertices=vertices,
-                    joints=joints,
-                    state=require_dict(item.get("state"), "geometry state"),
-                    factors=cast(dict[str, torch.Tensor], item["factors"]),
-                    pose_delta=pose_delta[var_i : var_i + 1],
-                    args=args,
-                )
-                (row_loss / max(1, len(geometry_items))).backward()
+            if pose_optimization_enabled:
+                for item in geometry_items:
+                    var_i = require_int(item.get("var_i"), "geometry var_i")
+                    vertices, joints, _, _ = replay_vertices(
+                        model=model,
+                        state=require_dict(item.get("state"), "geometry state"),
+                        pose_delta=pose_delta[var_i : var_i + 1],
+                        ray_delta=scalar_delta[var_i],
+                    )
+                    row_loss = local_geometry_loss(
+                        vertices=vertices,
+                        joints=joints,
+                        state=require_dict(item.get("state"), "geometry state"),
+                        factors=cast(dict[str, torch.Tensor], item["factors"]),
+                        pose_delta=pose_delta[var_i : var_i + 1],
+                        args=args,
+                    )
+                    (row_loss / max(1, len(geometry_items))).backward()
             optimizer.step()
             with torch.no_grad():
                 scalar_delta.copy_(torch.minimum(torch.maximum(scalar_delta, lower), upper))
-                pose_delta.clamp_(-float(args.max_pose_delta_rad), float(args.max_pose_delta_rad))
+                if pose_optimization_enabled:
+                    pose_delta.clamp_(-float(args.max_pose_delta_rad), float(args.max_pose_delta_rad))
+                else:
+                    pose_delta.copy_(torch.tensor(init_pose_delta_np, dtype=torch.float32, device=device))
                 inner_loss_history.append(float(total_loss.detach().cpu()))
         after_items = evaluate_variables()
         after_rows = [require_dict(item.get("evaluated"), "after evaluated") for item in after_items]
@@ -861,6 +973,10 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
     final_variable_by_id = {
         require_str(item.get("graph_id"), "graph id"): item for item in final_variable_items
     }
+    variable_input_by_id = {
+        variable_graph_id(row): row
+        for row in variable_inputs
+    }
     scalar_delta_np = scalar_delta.detach().cpu().numpy().astype(np.float64)
     pose_delta_np = pose_delta.detach().cpu().numpy().astype(np.float64)
     rows: list[dict[str, Any]] = []
@@ -869,6 +985,7 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         base = base_for_metric_row(metric_row)
         graph_id = require_str(base.get("hand_depth_repair_graph_variable_id"), "graph id")
         weighted_row = weighted_by_id.get(graph_id)
+        source_variable_row = variable_input_by_id.get(graph_id)
         final_shift = None
         source_vertices_np = None
         source_joints_np = None
@@ -890,7 +1007,12 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             if final_shift is None
             else evaluate_row(eval_base, scale, final_shift, final_eval_cache, args)
         )
-        source_gap = None if weighted_row is None else finite_or_none(weighted_row.get("owner_median_gap_m"), "source gap")
+        if source_variable_row is not None:
+            source_gap = finite_or_none(source_variable_row.get("owner_median_gap_m"), "source variable gap")
+        elif weighted_row is not None:
+            source_gap = finite_or_none(weighted_row.get("owner_median_gap_m"), "source gap")
+        else:
+            source_gap = None
         new_gap = finite_or_none(evaluated.get("owner_median_gap_m"), "new gap")
         assignment = None
         if graph_id in var_by_id and evaluated.get("owner_sample_partition") is not None and isinstance(
@@ -915,6 +1037,9 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             "source_post_temporal_observation_total_hand_ray_shift_m": None
             if weighted_row is None
             else weighted_row.get("post_temporal_observation_total_hand_ray_shift_m"),
+            "source_relinearized_total_hand_ray_shift_m": None
+            if source_variable_row is None
+            else baseline_shift(source_variable_row, scope),
             "relinearized_delta_shift_m": None
             if graph_id not in var_by_id
             else float(scalar_delta_np[var_by_id[graph_id]]),
@@ -923,6 +1048,9 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             "relinearized_pose_delta_abs_max_rad": None
             if graph_id not in var_by_id
             else float(np.max(np.abs(pose_delta_np[var_by_id[graph_id]]))),
+            "relinearized_pose_delta_rotvec": None
+            if graph_id not in var_by_id
+            else pose_delta_np[var_by_id[graph_id]].astype(float).tolist(),
             "relinearized_reprojected_depth_improved": bool(
                 source_gap is not None
                 and new_gap is not None
@@ -949,6 +1077,16 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             "relinearized_reprojected_residual_unobserved",
         }
     ]
+    source_nonapplied_variable_rows = (
+        sum(1 for row in variable_inputs if row.get("relinearized_delta_applied") is not True)
+        if scope == "full_residual_coverage"
+        else 0
+    )
+    source_residual_variable_rows = sum(
+        1
+        for row in variable_inputs
+        if row.get("depth_repair_factor_candidate") is True
+    )
     if latest_factor_targets is None:
         raise RuntimeError("relinearized graph did not build factor targets")
     final_factor_rows = cast(list[dict[str, Any]], latest_factor_targets["factor_rows"])
@@ -983,8 +1121,8 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
             )
     report = {
         "method": "solve_v17_relinearized_hand_surface_observation_graph",
-        "status": STATUS,
-        "claim": CLAIM,
+        "status": status_for_scope(scope),
+        "claim": claim_for_scope(scope),
         "case": case,
         "sources": {
             **{name: source_summary(path, payloads[name]) for name, path in paths.items()},
@@ -995,7 +1133,11 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         },
         "metric_depth_npz": str(depth_path),
         "frame_count": frame_count,
+        "relinearized_variable_scope": scope,
         "relinearized_variable_rows": len(variable_inputs),
+        "relinearized_source_nonapplied_variable_rows": source_nonapplied_variable_rows,
+        "relinearized_source_residual_variable_rows": source_residual_variable_rows,
+        "relinearized_geometry_pose_optimization_enabled": pose_optimization_enabled,
         "relinearized_outer_iterations": int(args.outer_iters),
         "relinearized_inner_iterations_per_outer": int(args.inner_iters),
         "relinearized_surface_factor_rows": bool_count(final_factor_rows, "relinearized_surface_factor_row"),
@@ -1105,10 +1247,18 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         "outer_iterations": outer_reports,
         "problem_semantics": {
             "relinearization": "surface owner pixels, MANO vertex ids, compatible seed pixels, and depth-observation support are rebuilt from the current replayed state at every outer pass",
+            "variable_scope": (
+                "sparse_applied keeps the original post-temporal applied subset; "
+                "full_residual_coverage starts from the sparse relinearized graph and promotes every "
+                "residual row with a finite scalar hand-depth state"
+            ),
             "full_reprojection_oracle": "the same evaluate_row owner measurement path used by earlier V17 hand-depth artifacts decides compatibility after the solve",
             "claim_limit": "camera trajectory, MANO shape, object geometry, object pose, contact, and dense depth remain fixed outside this diagnostic",
         },
         "parameters": {
+            "variable_scope": scope,
+            "optimize_geometry_pose": bool(args.optimize_geometry_pose),
+            "full_residual_optimize_geometry_pose": bool(args.full_residual_optimize_geometry_pose),
             "outer_iters": int(args.outer_iters),
             "inner_iters": int(args.inner_iters),
             "lr": float(args.lr),
@@ -1122,11 +1272,12 @@ def case_problem(case: str, model: Any, args: argparse.Namespace, device: torch.
         "rows": rows,
         **FALSE_READY,
     }
-    write_json(args.output_root / case / "v17_relinearized_hand_surface_observation_graph.json", report)
+    write_json(args.output_root / case / report_filename(scope), report)
     return report
 
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
+    scope = require_str(args.variable_scope, "variable scope")
     patch_legacy_mano_loader()
     device = torch.device(args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     mano_model_path = args.wilor_mano_right
@@ -1162,8 +1313,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     ]
     summary = {
         "method": "solve_v17_relinearized_hand_surface_observation_graph",
-        "status": STATUS,
-        "claim": CLAIM,
+        "status": status_for_scope(scope),
+        "claim": claim_for_scope(scope),
         "wilor_root": str(args.wilor_root),
         "wilor_mano_right": str(mano_model_path),
         "device": str(device),
@@ -1188,6 +1339,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     report.get("depth_repair_factor_candidate_rows_after_relinearized_graph"),
                     "residual rows",
                 ),
+                "relinearized_variable_scope": require_str(
+                    report.get("relinearized_variable_scope"),
+                    "variable scope",
+                ),
+                "relinearized_source_nonapplied_variable_rows": require_int(
+                    report.get("relinearized_source_nonapplied_variable_rows"),
+                    "source nonapplied variables",
+                ),
+                "relinearized_source_residual_variable_rows": require_int(
+                    report.get("relinearized_source_residual_variable_rows"),
+                    "source residual variables",
+                ),
                 "relinearized_temporal_reprojection_state_counts": require_dict(
                     report.get("relinearized_temporal_reprojection_state_counts"),
                     "temporal state counts",
@@ -1197,8 +1360,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             for report in reports
         ],
         "frame_count": sum(require_int(report.get("frame_count"), "frame_count") for report in reports),
+        "relinearized_variable_scope": scope,
         "relinearized_variable_rows": sum(
             require_int(report.get("relinearized_variable_rows"), "variables") for report in reports
+        ),
+        "relinearized_source_nonapplied_variable_rows": sum(
+            require_int(report.get("relinearized_source_nonapplied_variable_rows"), "source nonapplied variables")
+            for report in reports
+        ),
+        "relinearized_source_residual_variable_rows": sum(
+            require_int(report.get("relinearized_source_residual_variable_rows"), "source residual variables")
+            for report in reports
+        ),
+        "relinearized_geometry_pose_optimization_enabled": bool(
+            any(report.get("relinearized_geometry_pose_optimization_enabled") is True for report in reports)
         ),
         "relinearized_surface_factor_rows": bool_count(factor_rows, "relinearized_surface_factor_row"),
         "relinearized_depth_observation_factor_rows": bool_count(
@@ -1270,7 +1445,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "geometry_after_depth_abs_median_m": numeric_summary(geometry_rows, "after.depth_abs_median_m"),
         **FALSE_READY,
     }
-    write_json(args.output_root / "v17_relinearized_hand_surface_observation_graph_summary.json", summary)
+    write_json(args.output_root / summary_filename(scope), summary)
     return summary
 
 
@@ -1307,6 +1482,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("/data2/ego_annotation_outputs/v17_coupled_hand_depth_mano_observation_graph"),
     )
     parser.add_argument(
+        "--source-relinearized-hand-surface-observation-graph-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_relinearized_hand_surface_observation_graph"),
+    )
+    parser.add_argument(
         "--measurement-store-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_measurement_store"),
@@ -1319,6 +1499,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wilor-root", type=Path, default=Path("third_party/WiLoR"))
     parser.add_argument("--wilor-mano-right", type=Path)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--variable-scope",
+        choices=["sparse_applied", "full_residual_coverage"],
+        default="sparse_applied",
+    )
+    parser.add_argument("--optimize-geometry-pose", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--full-residual-optimize-geometry-pose", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--outer-iters", type=int, default=3)
     parser.add_argument("--inner-iters", type=int, default=35)
     parser.add_argument("--lr", type=float, default=0.012)
