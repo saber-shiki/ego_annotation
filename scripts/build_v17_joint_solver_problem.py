@@ -74,6 +74,7 @@ class CaseInputs:
     object_geometry_factor_problem_report: Path
     geometry_reconstruction_jobs_report: Path
     geometry_reconstruction_results_report: Path
+    full_interval_geometry_reconstruction_results_report: Path
     depth_contact_consistency_audit_report: Path
     sparse_report: Path
     contact_mode_report: Path
@@ -194,6 +195,7 @@ def case_inputs(
     object_geometry_factor_problem_root: Path,
     geometry_reconstruction_jobs_root: Path,
     geometry_reconstruction_results_root: Path,
+    full_interval_geometry_reconstruction_results_root: Path,
     depth_contact_consistency_audit_root: Path,
     sparse_graph_root: Path,
     contact_mode_graph_root: Path,
@@ -459,6 +461,12 @@ def case_inputs(
         geometry_reconstruction_results_root / case / "v17_geometry_reconstruction_results_report.json",
         f"{case} geometry reconstruction results report",
     )
+    full_interval_geometry_reconstruction_results_report = existing_path(
+        full_interval_geometry_reconstruction_results_root
+        / case
+        / "v17_geometry_reconstruction_results_report.json",
+        f"{case} full-interval geometry reconstruction results report",
+    )
     depth_contact_consistency_audit_report = existing_path(
         depth_contact_consistency_audit_root / case / "v17_depth_contact_consistency_audit_report.json",
         f"{case} depth-contact consistency audit report",
@@ -531,6 +539,7 @@ def case_inputs(
         object_geometry_factor_problem_report=object_geometry_factor_problem_report,
         geometry_reconstruction_jobs_report=geometry_reconstruction_jobs_report,
         geometry_reconstruction_results_report=geometry_reconstruction_results_report,
+        full_interval_geometry_reconstruction_results_report=full_interval_geometry_reconstruction_results_report,
         depth_contact_consistency_audit_report=depth_contact_consistency_audit_report,
         sparse_report=sparse_report,
         contact_mode_report=contact_mode_report,
@@ -4015,6 +4024,10 @@ def geometry_reconstruction_results_counts(report: dict[str, Any]) -> dict[str, 
             report.get("accepted_reconstruction_result_count"),
             "geometry reconstruction results accepted_reconstruction_result_count",
         ),
+        "status_counts": require_dict(
+            report.get("status_counts"),
+            "geometry reconstruction results status_counts",
+        ),
         "complete_geometry_seed_count": require_int(
             report.get("complete_geometry_seed_count"),
             "geometry reconstruction results complete_geometry_seed_count",
@@ -4187,6 +4200,7 @@ def required_variable_families(
     object_geometry_factor_problem: dict[str, Any],
     geometry_reconstruction_jobs: dict[str, Any],
     geometry_reconstruction_results: dict[str, Any],
+    full_interval_geometry_reconstruction_results: dict[str, Any],
     depth_contact_consistency: dict[str, Any],
     counts: dict[str, int],
     sparse: dict[str, Any],
@@ -5111,6 +5125,18 @@ def required_variable_families(
                 ],
                 "geometry_reconstruction_accepted_result_count": geometry_reconstruction_results[
                     "accepted_reconstruction_result_count"
+                ],
+                "full_interval_geometry_reconstruction_job_count": full_interval_geometry_reconstruction_results[
+                    "job_count"
+                ],
+                "full_interval_geometry_reconstruction_pending_count": full_interval_geometry_reconstruction_results[
+                    "pending_solver_output_count"
+                ],
+                "full_interval_geometry_reconstruction_accepted_result_count": full_interval_geometry_reconstruction_results[
+                    "accepted_reconstruction_result_count"
+                ],
+                "full_interval_geometry_reconstruction_status_counts": full_interval_geometry_reconstruction_results[
+                    "status_counts"
                 ],
                 "depth_contact_evaluated_frame_count": depth_contact_consistency[
                     "evaluated_frame_count"
@@ -6518,6 +6544,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     object_geometry_factor_problem = object_geometry_factor_problem_counts(object_geometry_factor_problem_report)
     geometry_reconstruction_jobs = geometry_reconstruction_jobs_counts(geometry_reconstruction_jobs_report)
     geometry_reconstruction_results = geometry_reconstruction_results_counts(geometry_reconstruction_results_report)
+    full_interval_geometry_reconstruction_results_payload = require_dict(
+        load_json(inputs.full_interval_geometry_reconstruction_results_report),
+        f"{inputs.case} full-interval geometry reconstruction results report",
+    )
+    full_interval_geometry_reconstruction_results = geometry_reconstruction_results_counts(
+        full_interval_geometry_reconstruction_results_payload
+    )
     depth_contact_consistency = depth_contact_consistency_counts(depth_contact_consistency_audit_report)
     mesh = mesh_counts(mesh_metadata)
     roster = roster_audit(roster_payload)
@@ -8770,6 +8803,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         object_geometry_factor_problem,
         geometry_reconstruction_jobs,
         geometry_reconstruction_results,
+        full_interval_geometry_reconstruction_results,
         depth_contact_consistency,
         counts,
         sparse,
@@ -8968,6 +9002,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
             "geometry_reconstruction_results_report": source_summary(
                 inputs.geometry_reconstruction_results_report, geometry_reconstruction_results_report
             ),
+            "full_interval_geometry_reconstruction_results_report": source_summary(
+                inputs.full_interval_geometry_reconstruction_results_report,
+                full_interval_geometry_reconstruction_results_payload,
+            ),
             "depth_contact_consistency_audit_report": source_summary(
                 inputs.depth_contact_consistency_audit_report, depth_contact_consistency_audit_report
             ),
@@ -9029,6 +9067,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_object_geometry_factor_problem": object_geometry_factor_problem,
         "current_geometry_reconstruction_jobs": geometry_reconstruction_jobs,
         "current_geometry_reconstruction_results": geometry_reconstruction_results,
+        "current_full_interval_geometry_reconstruction_results": full_interval_geometry_reconstruction_results,
         "current_depth_contact_consistency_audit": depth_contact_consistency,
         "current_mesh_archive": mesh,
         "current_measurement_counts": counts,
@@ -9114,6 +9153,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.object_geometry_factor_problem_root,
             args.geometry_reconstruction_jobs_root,
             args.geometry_reconstruction_results_root,
+            args.full_interval_geometry_reconstruction_results_root,
             args.depth_contact_consistency_audit_root,
             args.sparse_graph_root,
             args.contact_mode_graph_root,
@@ -9213,6 +9253,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_geometry_factor_problem_root": str(args.object_geometry_factor_problem_root),
         "geometry_reconstruction_jobs_root": str(args.geometry_reconstruction_jobs_root),
         "geometry_reconstruction_results_root": str(args.geometry_reconstruction_results_root),
+        "full_interval_geometry_reconstruction_results_root": str(
+            args.full_interval_geometry_reconstruction_results_root
+        ),
         "depth_contact_consistency_audit_root": str(args.depth_contact_consistency_audit_root),
         "case_count": len(case_outputs),
         "cases": [
@@ -13017,6 +13060,11 @@ def parse_args() -> argparse.Namespace:
         "--geometry-reconstruction-results-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_results"),
+    )
+    parser.add_argument(
+        "--full-interval-geometry-reconstruction-results-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_geometry_reconstruction_results_full_interval"),
     )
     parser.add_argument(
         "--depth-contact-consistency-audit-root",
