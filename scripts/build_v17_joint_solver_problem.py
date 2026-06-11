@@ -55,6 +55,7 @@ class CaseInputs:
     post_temporal_depth_observation_state_report: Path
     post_temporal_depth_observation_support_state_report: Path
     post_temporal_depth_observation_weighted_refit_report: Path
+    coupled_hand_depth_mano_observation_graph_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -165,6 +166,7 @@ def case_inputs(
     post_temporal_depth_observation_state_root: Path,
     post_temporal_depth_observation_support_state_root: Path,
     post_temporal_depth_observation_weighted_refit_root: Path,
+    coupled_hand_depth_mano_observation_graph_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -343,6 +345,12 @@ def case_inputs(
         / "v17_post_temporal_depth_observation_weighted_refit.json",
         f"{case} post-temporal depth-observation weighted-refit report",
     )
+    coupled_hand_depth_mano_observation_graph_report = existing_path(
+        coupled_hand_depth_mano_observation_graph_root
+        / case
+        / "v17_coupled_hand_depth_mano_observation_graph.json",
+        f"{case} coupled hand-depth MANO observation graph report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -432,6 +440,7 @@ def case_inputs(
         post_temporal_depth_observation_state_report=post_temporal_depth_observation_state_report,
         post_temporal_depth_observation_support_state_report=post_temporal_depth_observation_support_state_report,
         post_temporal_depth_observation_weighted_refit_report=post_temporal_depth_observation_weighted_refit_report,
+        coupled_hand_depth_mano_observation_graph_report=coupled_hand_depth_mano_observation_graph_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1864,6 +1873,167 @@ def post_temporal_depth_observation_weighted_refit_counts(report: dict[str, Any]
     }
 
 
+def coupled_hand_depth_mano_observation_graph_counts(report: dict[str, Any]) -> dict[str, Any]:
+    comparison = require_dict(
+        report.get("source_weighted_refit_comparison"),
+        "coupled hand-depth MANO observation graph source comparison",
+    )
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "coupled hand-depth MANO observation graph frame_count",
+        ),
+        "coupled_variable_rows": require_int(
+            report.get("coupled_variable_rows"),
+            "coupled hand-depth MANO observation graph variables",
+        ),
+        "coupled_geometry_pose_variable_rows": require_int(
+            report.get("coupled_geometry_pose_variable_rows"),
+            "coupled hand-depth MANO observation graph geometry pose variables",
+        ),
+        "coupled_depth_observation_factor_rows": require_int(
+            report.get("coupled_depth_observation_factor_rows"),
+            "coupled hand-depth MANO observation graph depth-observation factors",
+        ),
+        "coupled_compatible_anchor_rows": require_int(
+            report.get("coupled_compatible_anchor_rows"),
+            "coupled hand-depth MANO observation graph compatible anchors",
+        ),
+        "coupled_scalar_delta_bound_hit_rows": require_int(
+            report.get("coupled_scalar_delta_bound_hit_rows"),
+            "coupled hand-depth MANO observation graph scalar bound hits",
+        ),
+        "coupled_fixed_factor_depth_improved_rows": require_int(
+            report.get("coupled_fixed_factor_depth_improved_rows"),
+            "coupled hand-depth MANO observation graph fixed-factor improved rows",
+        ),
+        "coupled_fixed_factor_depth_threshold_met_rows": require_int(
+            report.get("coupled_fixed_factor_depth_threshold_met_rows"),
+            "coupled hand-depth MANO observation graph fixed-factor threshold rows",
+        ),
+        "coupled_geometry_depth_improved_rows": require_int(
+            report.get("coupled_geometry_depth_improved_rows"),
+            "coupled hand-depth MANO observation graph geometry improved rows",
+        ),
+        "coupled_geometry_depth_threshold_met_rows": require_int(
+            report.get("coupled_geometry_depth_threshold_met_rows"),
+            "coupled hand-depth MANO observation graph geometry threshold rows",
+        ),
+        "coupled_geometry_projection_trusted_rows": require_int(
+            report.get("coupled_geometry_projection_trusted_rows"),
+            "coupled hand-depth MANO observation graph geometry projection trusted rows",
+        ),
+        "coupled_geometry_pose_delta_clamp_hit_rows": require_int(
+            report.get("coupled_geometry_pose_delta_clamp_hit_rows"),
+            "coupled hand-depth MANO observation graph pose clamp rows",
+        ),
+        "coupled_reprojected_metric_depth_compatible_rows": require_int(
+            report.get("coupled_reprojected_metric_depth_compatible_rows"),
+            "coupled hand-depth MANO observation graph reprojected compatible rows",
+        ),
+        "coupled_reprojected_depth_improved_rows": require_int(
+            report.get("coupled_reprojected_depth_improved_rows"),
+            "coupled hand-depth MANO observation graph reprojected improved rows",
+        ),
+        "metric_hand_state_accepted_rows_after_coupled_graph": require_int(
+            report.get("metric_hand_state_accepted_rows_after_coupled_graph"),
+            "coupled hand-depth MANO observation graph accepted rows",
+        ),
+        "depth_repair_factor_candidate_rows_after_coupled_graph": require_int(
+            report.get("depth_repair_factor_candidate_rows_after_coupled_graph"),
+            "coupled hand-depth MANO observation graph residual rows",
+        ),
+        "coupled_reprojection_residual_owner_rows": require_int(
+            report.get("coupled_reprojection_residual_owner_rows"),
+            "coupled hand-depth MANO observation graph residual owner rows",
+        ),
+        "coupled_reprojection_local_surface_factor_candidate_rows": require_int(
+            report.get("coupled_reprojection_local_surface_factor_candidate_rows"),
+            "coupled hand-depth MANO observation graph local rows",
+        ),
+        "coupled_reprojection_mixed_surface_depth_owner_rows": require_int(
+            report.get("coupled_reprojection_mixed_surface_depth_owner_rows"),
+            "coupled hand-depth MANO observation graph mixed rows",
+        ),
+        "coupled_reprojection_depth_observation_owner_rows": require_int(
+            report.get("coupled_reprojection_depth_observation_owner_rows"),
+            "coupled hand-depth MANO observation graph depth-observation owner rows",
+        ),
+        "coupled_reprojection_projection_untrusted_rows": require_int(
+            report.get("coupled_reprojection_projection_untrusted_rows"),
+            "coupled hand-depth MANO observation graph projection-untrusted rows",
+        ),
+        "coupled_input_factor_state_counts": require_dict(
+            report.get("coupled_input_factor_state_counts"),
+            "coupled hand-depth MANO observation graph input state counts",
+        ),
+        "coupled_geometry_solve_state_counts": require_dict(
+            report.get("coupled_geometry_solve_state_counts"),
+            "coupled hand-depth MANO observation graph geometry state counts",
+        ),
+        "coupled_reprojection_state_counts": require_dict(
+            report.get("coupled_reprojection_state_counts"),
+            "coupled hand-depth MANO observation graph full reprojection counts",
+        ),
+        "coupled_temporal_reprojection_state_counts": require_dict(
+            report.get("coupled_temporal_reprojection_state_counts"),
+            "coupled hand-depth MANO observation graph temporal reprojection counts",
+        ),
+        "coupled_owner_depth_state_counts_after_reprojection": require_dict(
+            report.get("coupled_owner_depth_state_counts_after_reprojection"),
+            "coupled hand-depth MANO observation graph owner depth counts",
+        ),
+        "coupled_owner_median_gap_m_after_reprojection": require_dict(
+            report.get("coupled_owner_median_gap_m_after_reprojection"),
+            "coupled hand-depth MANO observation graph owner median gap",
+        ),
+        "geometry_before_depth_abs_median_m": require_dict(
+            report.get("geometry_before_depth_abs_median_m"),
+            "coupled hand-depth MANO observation graph geometry before depth",
+        ),
+        "geometry_after_depth_abs_median_m": require_dict(
+            report.get("geometry_after_depth_abs_median_m"),
+            "coupled hand-depth MANO observation graph geometry after depth",
+        ),
+        "pose_delta_abs_max_rad": require_dict(
+            report.get("pose_delta_abs_max_rad"),
+            "coupled hand-depth MANO observation graph pose delta summary",
+        ),
+        "source_post_temporal_observation_weighted_variable_rows": require_int(
+            comparison.get("post_temporal_observation_weighted_variable_rows"),
+            "coupled hand-depth MANO observation graph source weighted variables",
+        ),
+        "source_post_temporal_observation_depth_factor_rows": require_int(
+            comparison.get("post_temporal_observation_depth_factor_rows"),
+            "coupled hand-depth MANO observation graph source observation factor rows",
+        ),
+        "source_post_temporal_observation_reprojected_metric_depth_compatible_rows": require_int(
+            comparison.get("post_temporal_observation_reprojected_metric_depth_compatible_rows"),
+            "coupled hand-depth MANO observation graph source compatible rows",
+        ),
+        "source_metric_hand_state_accepted_rows_after_post_temporal_observation_refit": require_int(
+            comparison.get("metric_hand_state_accepted_rows_after_post_temporal_observation_refit"),
+            "coupled hand-depth MANO observation graph source accepted rows",
+        ),
+        "source_depth_repair_factor_candidate_rows_after_post_temporal_observation_refit": require_int(
+            comparison.get("depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"),
+            "coupled hand-depth MANO observation graph source residual rows",
+        ),
+        "source_post_temporal_observation_reprojection_state_counts": require_dict(
+            comparison.get("post_temporal_observation_reprojection_state_counts"),
+            "coupled hand-depth MANO observation graph source reprojection counts",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -3188,6 +3358,7 @@ def required_variable_families(
     post_temporal_depth_observation_state: dict[str, Any],
     post_temporal_depth_observation_support_state: dict[str, Any],
     post_temporal_depth_observation_weighted_refit: dict[str, Any],
+    coupled_hand_depth_mano_observation_graph: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -3644,6 +3815,39 @@ def required_variable_families(
                 "post_temporal_observation_reprojection_state_counts": post_temporal_depth_observation_weighted_refit[
                     "post_temporal_observation_temporal_reprojection_state_counts"
                 ],
+                "coupled_hand_depth_variable_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_variable_rows"
+                ],
+                "coupled_hand_depth_geometry_pose_variable_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_pose_variable_rows"
+                ],
+                "coupled_hand_depth_observation_factor_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_depth_observation_factor_rows"
+                ],
+                "coupled_hand_depth_fixed_factor_threshold_met_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_fixed_factor_depth_threshold_met_rows"
+                ],
+                "coupled_hand_depth_geometry_depth_improved_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_depth_improved_rows"
+                ],
+                "coupled_hand_depth_geometry_depth_threshold_met_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_depth_threshold_met_rows"
+                ],
+                "coupled_hand_depth_geometry_pose_delta_clamp_hit_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_pose_delta_clamp_hit_rows"
+                ],
+                "coupled_hand_depth_reprojected_metric_depth_compatible_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_reprojected_metric_depth_compatible_rows"
+                ],
+                "coupled_hand_depth_accepted_rows_after_reprojection": coupled_hand_depth_mano_observation_graph[
+                    "metric_hand_state_accepted_rows_after_coupled_graph"
+                ],
+                "coupled_hand_depth_residual_rows_after_reprojection": coupled_hand_depth_mano_observation_graph[
+                    "depth_repair_factor_candidate_rows_after_coupled_graph"
+                ],
+                "coupled_hand_depth_reprojection_state_counts": coupled_hand_depth_mano_observation_graph[
+                    "coupled_temporal_reprojection_state_counts"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -3723,6 +3927,7 @@ def required_variable_families(
                 "post-temporal residual ownership shows that only a small residual subset is clean local MANO-surface ownership, while mixed surface-depth and depth-observation owners dominate the remaining applied temporal rows",
                 "owner-weighted temporal refit consumes geometry-owned sample pairs and explicit depth-observation variables, but post-update reprojection still leaves most temporal rows depth-incompatible",
                 "support-weighted UniDepth observation factors repair many fixed residual samples but leave all depth-observation owners after full MANO reprojection, so scalar camera-ray depth factors do not close the hand-depth state",
+                "coupled scalar depth, MANO pose, and supported UniDepth observation factors improve some local geometry rows but degrade the full reprojected metric hand state, so closure requires relinearized surface and ownership state beyond fixed correspondences and per-row pose deltas",
                 "post-temporal MANO factor input materializes current-state vertex-pair factors for local and mixed owner rows, but MANO pose has not consumed those post-temporal factors",
                 "post-temporal MANO pose-delta solve consumes the current local and mixed factors, but only one row clears the depth-improvement predicate and most rows hit the pose-delta bound",
                 "independent 2D hand evidence supports most post-temporal depth-observation rows; the dominant owner is hand-depth observation state, with projection spillover covering a small minority",
@@ -4630,6 +4835,39 @@ def required_variable_families(
                 "post_temporal_observation_reprojection_state_counts": post_temporal_depth_observation_weighted_refit[
                     "post_temporal_observation_temporal_reprojection_state_counts"
                 ],
+                "coupled_hand_depth_variable_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_variable_rows"
+                ],
+                "coupled_hand_depth_geometry_pose_variable_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_pose_variable_rows"
+                ],
+                "coupled_hand_depth_observation_factor_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_depth_observation_factor_rows"
+                ],
+                "coupled_hand_depth_fixed_factor_threshold_met_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_fixed_factor_depth_threshold_met_rows"
+                ],
+                "coupled_hand_depth_geometry_depth_improved_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_depth_improved_rows"
+                ],
+                "coupled_hand_depth_geometry_depth_threshold_met_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_depth_threshold_met_rows"
+                ],
+                "coupled_hand_depth_geometry_pose_delta_clamp_hit_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_geometry_pose_delta_clamp_hit_rows"
+                ],
+                "coupled_hand_depth_reprojected_metric_depth_compatible_rows": coupled_hand_depth_mano_observation_graph[
+                    "coupled_reprojected_metric_depth_compatible_rows"
+                ],
+                "coupled_hand_depth_accepted_rows_after_reprojection": coupled_hand_depth_mano_observation_graph[
+                    "metric_hand_state_accepted_rows_after_coupled_graph"
+                ],
+                "coupled_hand_depth_residual_rows_after_reprojection": coupled_hand_depth_mano_observation_graph[
+                    "depth_repair_factor_candidate_rows_after_coupled_graph"
+                ],
+                "coupled_hand_depth_reprojection_state_counts": coupled_hand_depth_mano_observation_graph[
+                    "coupled_temporal_reprojection_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -4714,6 +4952,7 @@ def required_variable_families(
                 "temporal refit deltas survive as improvement evidence but not as metric-depth-compatible hand state after MANO surface resampling",
                 "post-temporal depth-observation rows mostly remain supported by independent same-side hand evidence, so depth ownership needs an explicit hand-depth observation state plus a smaller projection-support state",
                 "support-weighted UniDepth observation factors repair many fixed residual samples but leave all depth-observation owners after full MANO reprojection, so scalar camera-ray depth factors do not close the hand-depth state",
+                "the coupled scalar-depth, MANO-pose, and depth-observation graph degrades the full reprojected hand state despite improving local geometry factors, which points to fixed correspondence and ownership relinearization rather than another isolated variable family",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -4915,6 +5154,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.post_temporal_depth_observation_weighted_refit_report),
         f"{inputs.case} post-temporal depth-observation weighted-refit report",
     )
+    coupled_hand_depth_mano_observation_graph_report = require_dict(
+        load_json(inputs.coupled_hand_depth_mano_observation_graph_report),
+        f"{inputs.case} coupled hand-depth MANO observation graph report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -5032,6 +5275,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         post_temporal_depth_observation_weighted_refit_counts(
             post_temporal_depth_observation_weighted_refit_report
         )
+    )
+    coupled_hand_depth_mano_observation_graph = coupled_hand_depth_mano_observation_graph_counts(
+        coupled_hand_depth_mano_observation_graph_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -5922,6 +6168,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and post-temporal depth-observation weighted refit"
         )
+    if frame_count != require_int(
+        coupled_hand_depth_mano_observation_graph["frame_count"],
+        f"{inputs.case} coupled hand-depth MANO observation graph frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and coupled hand-depth MANO observation graph"
+        )
     if require_int(
         hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
         f"{inputs.case} owner-weighted temporal source rows",
@@ -6209,6 +6462,98 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} post-temporal observation residual rows",
     ):
         raise RuntimeError(f"{inputs.case} post-temporal observation residual owner split does not sum to residual rows")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_variable_rows"],
+        f"{inputs.case} coupled graph variable rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_weighted_variable_rows"],
+        f"{inputs.case} post-temporal weighted variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled graph variables disagree with post-temporal weighted variables")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_geometry_pose_variable_rows"],
+        f"{inputs.case} coupled graph geometry pose rows",
+    ) != require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_factor_input_materialized_rows"],
+        f"{inputs.case} post-temporal MANO materialized rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled graph geometry pose rows disagree with post-temporal MANO input")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_depth_observation_factor_rows"],
+        f"{inputs.case} coupled graph depth-observation factor rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_depth_factor_rows"],
+        f"{inputs.case} post-temporal weighted depth-observation factor rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled graph observation rows disagree with weighted refit")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["source_post_temporal_observation_weighted_variable_rows"],
+        f"{inputs.case} coupled source weighted variables",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_weighted_variable_rows"],
+        f"{inputs.case} post-temporal weighted variables",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled source comparison changed weighted variables")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["source_post_temporal_observation_depth_factor_rows"],
+        f"{inputs.case} coupled source depth factor rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_depth_factor_rows"],
+        f"{inputs.case} weighted depth factor rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled source comparison changed depth-observation factor rows")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["source_post_temporal_observation_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} coupled source compatible rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} weighted compatible rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled source comparison changed weighted compatible rows")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["source_metric_hand_state_accepted_rows_after_post_temporal_observation_refit"],
+        f"{inputs.case} coupled source accepted rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["metric_hand_state_accepted_rows_after_post_temporal_observation_refit"],
+        f"{inputs.case} weighted accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled source comparison changed weighted accepted rows")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["source_depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"],
+        f"{inputs.case} coupled source residual rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"],
+        f"{inputs.case} weighted residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled source comparison changed weighted residual rows")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_reprojection_residual_owner_rows"],
+        f"{inputs.case} coupled residual owner rows",
+    ) + require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_reprojection_projection_untrusted_rows"],
+        f"{inputs.case} coupled projection-untrusted rows",
+    ) + require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} coupled compatible rows",
+    ) != require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_variable_rows"],
+        f"{inputs.case} coupled variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled reprojected split does not sum to coupled variables")
+    if require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_reprojection_local_surface_factor_candidate_rows"],
+        f"{inputs.case} coupled local rows",
+    ) + require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_reprojection_mixed_surface_depth_owner_rows"],
+        f"{inputs.case} coupled mixed rows",
+    ) + require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_reprojection_depth_observation_owner_rows"],
+        f"{inputs.case} coupled depth-observation rows",
+    ) != require_int(
+        coupled_hand_depth_mano_observation_graph["coupled_reprojection_residual_owner_rows"],
+        f"{inputs.case} coupled residual owner rows",
+    ):
+        raise RuntimeError(f"{inputs.case} coupled residual owner split does not sum to residual rows")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -6612,6 +6957,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         post_temporal_depth_observation_state,
         post_temporal_depth_observation_support_state,
         post_temporal_depth_observation_weighted_refit,
+        coupled_hand_depth_mano_observation_graph,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -6751,6 +7097,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.post_temporal_depth_observation_weighted_refit_report,
                 post_temporal_depth_observation_weighted_refit_report,
             ),
+            "coupled_hand_depth_mano_observation_graph_report": source_summary(
+                inputs.coupled_hand_depth_mano_observation_graph_report,
+                coupled_hand_depth_mano_observation_graph_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -6821,6 +7171,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_post_temporal_depth_observation_state": post_temporal_depth_observation_state,
         "current_post_temporal_depth_observation_support_state": post_temporal_depth_observation_support_state,
         "current_post_temporal_depth_observation_weighted_refit": post_temporal_depth_observation_weighted_refit,
+        "current_coupled_hand_depth_mano_observation_graph": coupled_hand_depth_mano_observation_graph,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -6896,6 +7247,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.post_temporal_depth_observation_state_root,
             args.post_temporal_depth_observation_support_state_root,
             args.post_temporal_depth_observation_weighted_refit_root,
+            args.coupled_hand_depth_mano_observation_graph_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -6964,6 +7316,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "post_temporal_depth_observation_weighted_refit_root": str(
             args.post_temporal_depth_observation_weighted_refit_root
+        ),
+        "coupled_hand_depth_mano_observation_graph_root": str(
+            args.coupled_hand_depth_mano_observation_graph_root
         ),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
@@ -7527,6 +7882,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "post_temporal_observation_reprojection_state_counts": case[
                     "current_post_temporal_depth_observation_weighted_refit"
                 ]["post_temporal_observation_temporal_reprojection_state_counts"],
+                "coupled_hand_depth_variable_rows": case[
+                    "current_coupled_hand_depth_mano_observation_graph"
+                ]["coupled_variable_rows"],
+                "coupled_hand_depth_geometry_pose_variable_rows": case[
+                    "current_coupled_hand_depth_mano_observation_graph"
+                ]["coupled_geometry_pose_variable_rows"],
+                "coupled_hand_depth_observation_factor_rows": case[
+                    "current_coupled_hand_depth_mano_observation_graph"
+                ]["coupled_depth_observation_factor_rows"],
+                "coupled_hand_depth_reprojected_metric_depth_compatible_rows": case[
+                    "current_coupled_hand_depth_mano_observation_graph"
+                ]["coupled_reprojected_metric_depth_compatible_rows"],
+                "coupled_hand_depth_accepted_rows_after_reprojection": case[
+                    "current_coupled_hand_depth_mano_observation_graph"
+                ]["metric_hand_state_accepted_rows_after_coupled_graph"],
+                "coupled_hand_depth_residual_rows_after_reprojection": case[
+                    "current_coupled_hand_depth_mano_observation_graph"
+                ]["depth_repair_factor_candidate_rows_after_coupled_graph"],
+                "coupled_hand_depth_reprojection_state_counts": case[
+                    "current_coupled_hand_depth_mano_observation_graph"
+                ]["coupled_temporal_reprojection_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -9017,6 +9393,83 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "coupled_hand_depth_variable_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"]["coupled_variable_rows"]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_geometry_pose_variable_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"]["coupled_geometry_pose_variable_rows"]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_observation_factor_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"]["coupled_depth_observation_factor_rows"]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_fixed_factor_threshold_met_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"][
+                "coupled_fixed_factor_depth_threshold_met_rows"
+            ]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_geometry_depth_improved_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"]["coupled_geometry_depth_improved_rows"]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_geometry_depth_threshold_met_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"][
+                "coupled_geometry_depth_threshold_met_rows"
+            ]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_geometry_pose_delta_clamp_hit_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"][
+                "coupled_geometry_pose_delta_clamp_hit_rows"
+            ]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_reprojected_metric_depth_compatible_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"][
+                "coupled_reprojected_metric_depth_compatible_rows"
+            ]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_reprojected_depth_improved_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"]["coupled_reprojected_depth_improved_rows"]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_accepted_rows_after_reprojection": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"][
+                "metric_hand_state_accepted_rows_after_coupled_graph"
+            ]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_residual_rows_after_reprojection": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"][
+                "depth_repair_factor_candidate_rows_after_coupled_graph"
+            ]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_reprojection_depth_observation_owner_rows": sum(
+            case["current_coupled_hand_depth_mano_observation_graph"][
+                "coupled_reprojection_depth_observation_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "coupled_hand_depth_reprojection_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_coupled_hand_depth_mano_observation_graph"][
+                                "coupled_temporal_reprojection_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -9688,6 +10141,11 @@ def parse_args() -> argparse.Namespace:
         "--post-temporal-depth-observation-weighted-refit-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_post_temporal_depth_observation_weighted_refit"),
+    )
+    parser.add_argument(
+        "--coupled-hand-depth-mano-observation-graph-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_coupled_hand_depth_mano_observation_graph"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
