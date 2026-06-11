@@ -51,6 +51,7 @@ class CaseInputs:
     hand_temporal_reprojection_residual_owner_state_report: Path
     hand_temporal_owner_weighted_refit_report: Path
     post_temporal_mano_factor_input_report: Path
+    post_temporal_mano_articulation_local_solve_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -157,6 +158,7 @@ def case_inputs(
     hand_temporal_reprojection_residual_owner_state_root: Path,
     hand_temporal_owner_weighted_refit_root: Path,
     post_temporal_mano_factor_input_root: Path,
+    post_temporal_mano_articulation_local_solve_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -311,6 +313,12 @@ def case_inputs(
         post_temporal_mano_factor_input_root / case / "v17_post_temporal_mano_factor_input.json",
         f"{case} post-temporal MANO factor input report",
     )
+    post_temporal_mano_articulation_local_solve_report = existing_path(
+        post_temporal_mano_articulation_local_solve_root
+        / case
+        / "v17_post_temporal_mano_articulation_local_solve.json",
+        f"{case} post-temporal MANO articulation local solve report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -396,6 +404,7 @@ def case_inputs(
         hand_temporal_reprojection_residual_owner_state_report=hand_temporal_reprojection_residual_owner_state_report,
         hand_temporal_owner_weighted_refit_report=hand_temporal_owner_weighted_refit_report,
         post_temporal_mano_factor_input_report=post_temporal_mano_factor_input_report,
+        post_temporal_mano_articulation_local_solve_report=post_temporal_mano_articulation_local_solve_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1457,6 +1466,82 @@ def post_temporal_mano_factor_input_counts(report: dict[str, Any]) -> dict[str, 
         "assigned_pixel_shift_px": require_dict(
             report.get("assigned_pixel_shift_px"),
             "post-temporal MANO assigned pixel shift",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
+def post_temporal_mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "post-temporal MANO articulation solve frame_count",
+        ),
+        "post_temporal_mano_articulation_solve_candidate_rows": require_int(
+            report.get("post_temporal_mano_articulation_solve_candidate_rows"),
+            "post-temporal MANO articulation solve candidate rows",
+        ),
+        "post_temporal_mano_local_surface_solve_rows": require_int(
+            report.get("post_temporal_mano_local_surface_solve_rows"),
+            "post-temporal MANO local surface solve rows",
+        ),
+        "post_temporal_mano_mixed_surface_depth_solve_rows": require_int(
+            report.get("post_temporal_mano_mixed_surface_depth_solve_rows"),
+            "post-temporal MANO mixed surface-depth solve rows",
+        ),
+        "post_temporal_mano_articulation_depth_improved_rows": require_int(
+            report.get("post_temporal_mano_articulation_depth_improved_rows"),
+            "post-temporal MANO articulation improved rows",
+        ),
+        "post_temporal_mano_articulation_depth_threshold_met_rows": require_int(
+            report.get("post_temporal_mano_articulation_depth_threshold_met_rows"),
+            "post-temporal MANO articulation threshold rows",
+        ),
+        "post_temporal_mano_articulation_projection_trusted_rows": require_int(
+            report.get("post_temporal_mano_articulation_projection_trusted_rows"),
+            "post-temporal MANO articulation projection trusted rows",
+        ),
+        "post_temporal_mano_articulation_pose_delta_clamp_hit_rows": require_int(
+            report.get("post_temporal_mano_articulation_pose_delta_clamp_hit_rows"),
+            "post-temporal MANO articulation pose clamp-hit rows",
+        ),
+        "post_temporal_mano_articulation_solve_state_counts": require_dict(
+            report.get("post_temporal_mano_articulation_solve_state_counts"),
+            "post-temporal MANO articulation state counts",
+        ),
+        "source_owner_weighted_reprojection_state_counts": require_dict(
+            report.get("source_owner_weighted_reprojection_state_counts"),
+            "post-temporal MANO articulation source owner-weighted counts",
+        ),
+        "before_depth_abs_median_m": require_dict(
+            report.get("before_depth_abs_median_m"),
+            "post-temporal MANO articulation before depth summary",
+        ),
+        "after_depth_abs_median_m": require_dict(
+            report.get("after_depth_abs_median_m"),
+            "post-temporal MANO articulation after depth summary",
+        ),
+        "depth_abs_median_improvement_m": require_dict(
+            report.get("depth_abs_median_improvement_m"),
+            "post-temporal MANO articulation depth improvement summary",
+        ),
+        "after_joint_reprojection_median_px": require_dict(
+            report.get("after_joint_reprojection_median_px"),
+            "post-temporal MANO articulation joint median summary",
+        ),
+        "after_joint_reprojection_p95_px": require_dict(
+            report.get("after_joint_reprojection_p95_px"),
+            "post-temporal MANO articulation joint p95 summary",
+        ),
+        "pose_delta_abs_max_rad": require_dict(
+            report.get("pose_delta_abs_max_rad"),
+            "post-temporal MANO articulation pose delta summary",
         ),
         "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
         "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
@@ -2787,6 +2872,7 @@ def required_variable_families(
     hand_temporal_reprojection_residual_owner_state: dict[str, Any],
     hand_temporal_owner_weighted_refit: dict[str, Any],
     post_temporal_mano_factor_input: dict[str, Any],
+    post_temporal_mano_articulation_local_solve: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -3159,6 +3245,21 @@ def required_variable_families(
                 "post_temporal_mano_factor_input_state_counts": post_temporal_mano_factor_input[
                     "post_temporal_factor_input_state_counts"
                 ],
+                "post_temporal_mano_articulation_solve_candidate_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_solve_candidate_rows"
+                ],
+                "post_temporal_mano_articulation_depth_improved_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_depth_improved_rows"
+                ],
+                "post_temporal_mano_articulation_depth_threshold_met_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_depth_threshold_met_rows"
+                ],
+                "post_temporal_mano_articulation_pose_delta_clamp_hit_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_pose_delta_clamp_hit_rows"
+                ],
+                "post_temporal_mano_articulation_solve_state_counts": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_solve_state_counts"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -3238,6 +3339,7 @@ def required_variable_families(
                 "post-temporal residual ownership shows that only a small residual subset is clean local MANO-surface ownership, while mixed surface-depth and depth-observation owners dominate the remaining applied temporal rows",
                 "owner-weighted temporal refit consumes geometry-owned sample pairs and explicit depth-observation variables, but post-update reprojection still leaves most temporal rows depth-incompatible",
                 "post-temporal MANO factor input materializes current-state vertex-pair factors for local and mixed owner rows, but MANO pose has not consumed those post-temporal factors",
+                "post-temporal MANO pose-delta solve consumes the current local and mixed factors, but only one row clears the depth-improvement predicate and most rows hit the pose-delta bound",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -4073,6 +4175,21 @@ def required_variable_families(
                 "post_temporal_mano_factor_input_state_counts": post_temporal_mano_factor_input[
                     "post_temporal_factor_input_state_counts"
                 ],
+                "post_temporal_mano_articulation_solve_candidate_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_solve_candidate_rows"
+                ],
+                "post_temporal_mano_articulation_depth_improved_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_depth_improved_rows"
+                ],
+                "post_temporal_mano_articulation_depth_threshold_met_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_depth_threshold_met_rows"
+                ],
+                "post_temporal_mano_articulation_pose_delta_clamp_hit_rows": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_pose_delta_clamp_hit_rows"
+                ],
+                "post_temporal_mano_articulation_solve_state_counts": post_temporal_mano_articulation_local_solve[
+                    "post_temporal_mano_articulation_solve_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -4340,6 +4457,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.post_temporal_mano_factor_input_report),
         f"{inputs.case} post-temporal MANO factor input report",
     )
+    post_temporal_mano_articulation_local_solve_report = require_dict(
+        load_json(inputs.post_temporal_mano_articulation_local_solve_report),
+        f"{inputs.case} post-temporal MANO articulation local solve report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -4443,6 +4564,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     post_temporal_mano_factor_input = post_temporal_mano_factor_input_counts(
         post_temporal_mano_factor_input_report
+    )
+    post_temporal_mano_articulation_local_solve = post_temporal_mano_articulation_local_solve_counts(
+        post_temporal_mano_articulation_local_solve_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -5305,6 +5429,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and post-temporal MANO factor input"
         )
+    if frame_count != require_int(
+        post_temporal_mano_articulation_local_solve["frame_count"],
+        f"{inputs.case} post-temporal MANO articulation solve frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and post-temporal MANO articulation solve"
+        )
     if require_int(
         hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
         f"{inputs.case} owner-weighted temporal source rows",
@@ -5399,6 +5530,59 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} post-temporal MANO assigned sample count",
     ) <= 0:
         raise RuntimeError(f"{inputs.case} post-temporal MANO factor input has no assigned samples")
+    if require_int(
+        post_temporal_mano_articulation_local_solve["post_temporal_mano_articulation_solve_candidate_rows"],
+        f"{inputs.case} post-temporal MANO articulation solve rows",
+    ) != require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_factor_input_materialized_rows"],
+        f"{inputs.case} post-temporal MANO materialized rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO articulation solve rows disagree with factor input")
+    if require_int(
+        post_temporal_mano_articulation_local_solve["post_temporal_mano_local_surface_solve_rows"],
+        f"{inputs.case} post-temporal MANO local solve rows",
+    ) != require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_local_surface_factor_rows"],
+        f"{inputs.case} post-temporal MANO local factor rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO local solve rows disagree with factor input")
+    if require_int(
+        post_temporal_mano_articulation_local_solve["post_temporal_mano_mixed_surface_depth_solve_rows"],
+        f"{inputs.case} post-temporal MANO mixed solve rows",
+    ) != require_int(
+        post_temporal_mano_factor_input["post_temporal_mano_mixed_surface_depth_factor_rows"],
+        f"{inputs.case} post-temporal MANO mixed factor rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO mixed solve rows disagree with factor input")
+    if require_int(
+        post_temporal_mano_articulation_local_solve["post_temporal_mano_articulation_depth_improved_rows"],
+        f"{inputs.case} post-temporal MANO improved rows",
+    ) > require_int(
+        post_temporal_mano_articulation_local_solve["post_temporal_mano_articulation_solve_candidate_rows"],
+        f"{inputs.case} post-temporal MANO solve rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO improved rows exceed solve rows")
+    if require_int(
+        post_temporal_mano_articulation_local_solve["post_temporal_mano_articulation_pose_delta_clamp_hit_rows"],
+        f"{inputs.case} post-temporal MANO clamp-hit rows",
+    ) > require_int(
+        post_temporal_mano_articulation_local_solve["post_temporal_mano_articulation_solve_candidate_rows"],
+        f"{inputs.case} post-temporal MANO solve rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal MANO clamp-hit rows exceed solve rows")
+    post_temporal_solve_source_counts = post_temporal_mano_articulation_local_solve[
+        "source_owner_weighted_reprojection_state_counts"
+    ]
+    if require_int(
+        post_temporal_solve_source_counts.get("owner_weighted_reprojected_local_surface_factor_candidate", 0),
+        f"{inputs.case} post-temporal MANO solve source local rows",
+    ) != post_temporal_local_rows:
+        raise RuntimeError(f"{inputs.case} post-temporal MANO solve local source rows disagree with factor input")
+    if require_int(
+        post_temporal_solve_source_counts.get("owner_weighted_reprojected_mixed_surface_depth_owner", 0),
+        f"{inputs.case} post-temporal MANO solve source mixed rows",
+    ) != post_temporal_mixed_rows:
+        raise RuntimeError(f"{inputs.case} post-temporal MANO solve mixed source rows disagree with factor input")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -5798,6 +5982,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_temporal_reprojection_residual_owner_state,
         hand_temporal_owner_weighted_refit,
         post_temporal_mano_factor_input,
+        post_temporal_mano_articulation_local_solve,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -5921,6 +6106,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.post_temporal_mano_factor_input_report,
                 post_temporal_mano_factor_input_report,
             ),
+            "post_temporal_mano_articulation_local_solve_report": source_summary(
+                inputs.post_temporal_mano_articulation_local_solve_report,
+                post_temporal_mano_articulation_local_solve_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -5987,6 +6176,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_temporal_reprojection_residual_owner_state": hand_temporal_reprojection_residual_owner_state,
         "current_hand_temporal_owner_weighted_refit": hand_temporal_owner_weighted_refit,
         "current_post_temporal_mano_factor_input": post_temporal_mano_factor_input,
+        "current_post_temporal_mano_articulation_local_solve": post_temporal_mano_articulation_local_solve,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -6058,6 +6248,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_temporal_reprojection_residual_owner_state_root,
             args.hand_temporal_owner_weighted_refit_root,
             args.post_temporal_mano_factor_input_root,
+            args.post_temporal_mano_articulation_local_solve_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -6115,6 +6306,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "hand_temporal_owner_weighted_refit_root": str(args.hand_temporal_owner_weighted_refit_root),
         "post_temporal_mano_factor_input_root": str(args.post_temporal_mano_factor_input_root),
+        "post_temporal_mano_articulation_local_solve_root": str(
+            args.post_temporal_mano_articulation_local_solve_root
+        ),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -6593,6 +6787,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "post_temporal_mano_source_owner_weighted_reprojection_state_counts": case[
                     "current_post_temporal_mano_factor_input"
                 ]["source_owner_weighted_reprojection_state_counts"],
+                "post_temporal_mano_articulation_solve_candidate_rows": case[
+                    "current_post_temporal_mano_articulation_local_solve"
+                ]["post_temporal_mano_articulation_solve_candidate_rows"],
+                "post_temporal_mano_articulation_depth_improved_rows": case[
+                    "current_post_temporal_mano_articulation_local_solve"
+                ]["post_temporal_mano_articulation_depth_improved_rows"],
+                "post_temporal_mano_articulation_depth_threshold_met_rows": case[
+                    "current_post_temporal_mano_articulation_local_solve"
+                ]["post_temporal_mano_articulation_depth_threshold_met_rows"],
+                "post_temporal_mano_articulation_projection_trusted_rows": case[
+                    "current_post_temporal_mano_articulation_local_solve"
+                ]["post_temporal_mano_articulation_projection_trusted_rows"],
+                "post_temporal_mano_articulation_pose_delta_clamp_hit_rows": case[
+                    "current_post_temporal_mano_articulation_local_solve"
+                ]["post_temporal_mano_articulation_pose_delta_clamp_hit_rows"],
+                "post_temporal_mano_articulation_solve_state_counts": case[
+                    "current_post_temporal_mano_articulation_local_solve"
+                ]["post_temporal_mano_articulation_solve_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -7689,6 +7901,83 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 for case in case_outputs
             ]
         },
+        "post_temporal_mano_articulation_solve_candidate_rows": sum(
+            case["current_post_temporal_mano_articulation_local_solve"][
+                "post_temporal_mano_articulation_solve_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_articulation_depth_improved_rows": sum(
+            case["current_post_temporal_mano_articulation_local_solve"][
+                "post_temporal_mano_articulation_depth_improved_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_articulation_depth_threshold_met_rows": sum(
+            case["current_post_temporal_mano_articulation_local_solve"][
+                "post_temporal_mano_articulation_depth_threshold_met_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_articulation_projection_trusted_rows": sum(
+            case["current_post_temporal_mano_articulation_local_solve"][
+                "post_temporal_mano_articulation_projection_trusted_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_articulation_pose_delta_clamp_hit_rows": sum(
+            case["current_post_temporal_mano_articulation_local_solve"][
+                "post_temporal_mano_articulation_pose_delta_clamp_hit_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_mano_articulation_solve_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_post_temporal_mano_articulation_local_solve"][
+                                "post_temporal_mano_articulation_solve_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "post_temporal_mano_articulation_before_depth_abs_median_m": {
+            "case_summaries": [
+                case["current_post_temporal_mano_articulation_local_solve"][
+                    "before_depth_abs_median_m"
+                ]
+                for case in case_outputs
+            ]
+        },
+        "post_temporal_mano_articulation_after_depth_abs_median_m": {
+            "case_summaries": [
+                case["current_post_temporal_mano_articulation_local_solve"][
+                    "after_depth_abs_median_m"
+                ]
+                for case in case_outputs
+            ]
+        },
+        "post_temporal_mano_articulation_depth_abs_median_improvement_m": {
+            "case_summaries": [
+                case["current_post_temporal_mano_articulation_local_solve"][
+                    "depth_abs_median_improvement_m"
+                ]
+                for case in case_outputs
+            ]
+        },
+        "post_temporal_mano_articulation_pose_delta_abs_max_rad": {
+            "case_summaries": [
+                case["current_post_temporal_mano_articulation_local_solve"][
+                    "pose_delta_abs_max_rad"
+                ]
+                for case in case_outputs
+            ]
+        },
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -8340,6 +8629,11 @@ def parse_args() -> argparse.Namespace:
         "--post-temporal-mano-factor-input-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_post_temporal_mano_factor_input"),
+    )
+    parser.add_argument(
+        "--post-temporal-mano-articulation-local-solve-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_post_temporal_mano_articulation_local_solve"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
