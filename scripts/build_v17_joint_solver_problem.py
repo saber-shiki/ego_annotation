@@ -58,6 +58,7 @@ class CaseInputs:
     coupled_hand_depth_mano_observation_graph_report: Path
     relinearized_hand_surface_observation_graph_report: Path
     relinearized_hand_capacity_diagnostic_report: Path
+    relinearized_residual_object_contact_state_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -171,6 +172,7 @@ def case_inputs(
     coupled_hand_depth_mano_observation_graph_root: Path,
     relinearized_hand_surface_observation_graph_root: Path,
     relinearized_hand_capacity_diagnostic_root: Path,
+    relinearized_residual_object_contact_state_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -367,6 +369,12 @@ def case_inputs(
         / "v17_relinearized_hand_capacity_diagnostic.json",
         f"{case} relinearized hand capacity diagnostic report",
     )
+    relinearized_residual_object_contact_state_report = existing_path(
+        relinearized_residual_object_contact_state_root
+        / case
+        / "v17_relinearized_residual_object_contact_state.json",
+        f"{case} relinearized residual object-contact state report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -459,6 +467,7 @@ def case_inputs(
         coupled_hand_depth_mano_observation_graph_report=coupled_hand_depth_mano_observation_graph_report,
         relinearized_hand_surface_observation_graph_report=relinearized_hand_surface_observation_graph_report,
         relinearized_hand_capacity_diagnostic_report=relinearized_hand_capacity_diagnostic_report,
+        relinearized_residual_object_contact_state_report=relinearized_residual_object_contact_state_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -2312,6 +2321,96 @@ def relinearized_hand_capacity_diagnostic_counts(report: dict[str, Any]) -> dict
     }
 
 
+def relinearized_residual_object_contact_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "relinearized residual object-contact state frame_count",
+        ),
+        "relinearized_hand_residual_rows": require_int(
+            report.get("relinearized_hand_residual_rows"),
+            "relinearized residual object-contact hand residual rows",
+        ),
+        "applied_relinearized_residual_rows": require_int(
+            report.get("applied_relinearized_residual_rows"),
+            "relinearized residual object-contact applied residual rows",
+        ),
+        "nonapplied_relinearized_residual_rows": require_int(
+            report.get("nonapplied_relinearized_residual_rows"),
+            "relinearized residual object-contact nonapplied residual rows",
+        ),
+        "near_active_object_residual_rows": require_int(
+            report.get("near_active_object_residual_rows"),
+            "relinearized residual object-contact near active-object residual rows",
+        ),
+        "far_from_active_object_residual_rows": require_int(
+            report.get("far_from_active_object_residual_rows"),
+            "relinearized residual object-contact far active-object residual rows",
+        ),
+        "active_object_proximity_state_counts": require_dict(
+            report.get("active_object_proximity_state_counts"),
+            "relinearized residual object-contact proximity state counts",
+        ),
+        "residual_object_contact_evidence_state_counts": require_dict(
+            report.get("residual_object_contact_evidence_state_counts"),
+            "relinearized residual object-contact evidence state counts",
+        ),
+        "rows_with_pairwise_image_contact_candidate": require_int(
+            report.get("rows_with_pairwise_image_contact_candidate"),
+            "relinearized residual object-contact image-contact rows",
+        ),
+        "rows_with_pairwise_metric_depth_compatible_candidate": require_int(
+            report.get("rows_with_pairwise_metric_depth_compatible_candidate"),
+            "relinearized residual object-contact metric-compatible rows",
+        ),
+        "rows_with_multi_object_visible_surface_candidate": require_int(
+            report.get("rows_with_multi_object_visible_surface_candidate"),
+            "relinearized residual object-contact visible-surface rows",
+        ),
+        "rows_with_contact_owner_variable": require_int(
+            report.get("rows_with_contact_owner_variable"),
+            "relinearized residual object-contact owner-variable rows",
+        ),
+        "rows_with_contact_owner_factor_ready": require_int(
+            report.get("rows_with_contact_owner_factor_ready"),
+            "relinearized residual object-contact owner-factor rows",
+        ),
+        "rows_with_object_contact_closure_supported": require_int(
+            report.get("rows_with_object_contact_closure_supported"),
+            "relinearized residual object-contact closure-supported rows",
+        ),
+        "object_distance_valid_sample_count": require_int(
+            report.get("object_distance_valid_sample_count"),
+            "relinearized residual object-contact valid object-distance samples",
+        ),
+        "object_distance_invalid_sample_count": require_int(
+            report.get("object_distance_invalid_sample_count"),
+            "relinearized residual object-contact invalid object-distance samples",
+        ),
+        "rows_with_invalid_object_distance_samples": require_int(
+            report.get("rows_with_invalid_object_distance_samples"),
+            "relinearized residual object-contact rows with invalid object-distance samples",
+        ),
+        "multi_object_min_visible_surface_distance_m": require_dict(
+            report.get("multi_object_min_visible_surface_distance_m"),
+            "relinearized residual object-contact visible-surface distance summary",
+        ),
+        "pairwise_abs_hand_minus_object_depth_median_min_m": require_dict(
+            report.get("pairwise_abs_hand_minus_object_depth_median_min_m"),
+            "relinearized residual object-contact pairwise depth-gap summary",
+        ),
+        "object_contact_closure_supported": bool(report.get("object_contact_closure_supported") is True),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -3639,6 +3738,7 @@ def required_variable_families(
     coupled_hand_depth_mano_observation_graph: dict[str, Any],
     relinearized_hand_surface_observation_graph: dict[str, Any],
     relinearized_hand_capacity_diagnostic: dict[str, Any],
+    relinearized_residual_object_contact_state: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -4191,6 +4291,27 @@ def required_variable_families(
                 "relinearized_hand_capacity_surface_projection_to_seed_median_px": relinearized_hand_capacity_diagnostic[
                     "surface_after_projection_to_seed_median_px"
                 ],
+                "relinearized_residual_object_contact_rows": relinearized_residual_object_contact_state[
+                    "relinearized_hand_residual_rows"
+                ],
+                "relinearized_residual_object_contact_evidence_state_counts": relinearized_residual_object_contact_state[
+                    "residual_object_contact_evidence_state_counts"
+                ],
+                "relinearized_residual_rows_with_pairwise_image_contact_candidate": relinearized_residual_object_contact_state[
+                    "rows_with_pairwise_image_contact_candidate"
+                ],
+                "relinearized_residual_rows_with_pairwise_metric_depth_compatible_candidate": relinearized_residual_object_contact_state[
+                    "rows_with_pairwise_metric_depth_compatible_candidate"
+                ],
+                "relinearized_residual_rows_with_object_contact_closure_supported": relinearized_residual_object_contact_state[
+                    "rows_with_object_contact_closure_supported"
+                ],
+                "relinearized_residual_object_distance_invalid_sample_count": relinearized_residual_object_contact_state[
+                    "object_distance_invalid_sample_count"
+                ],
+                "relinearized_residual_rows_with_invalid_object_distance_samples": relinearized_residual_object_contact_state[
+                    "rows_with_invalid_object_distance_samples"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -4272,6 +4393,7 @@ def required_variable_families(
                 "support-weighted UniDepth observation factors repair many fixed residual samples but leave all depth-observation owners after full MANO reprojection, so scalar camera-ray depth factors do not close the hand-depth state",
                 "coupled scalar depth, MANO pose, and supported UniDepth observation factors improve some local geometry rows but degrade the full reprojected metric hand state, so closure requires relinearized surface and ownership state beyond fixed correspondences and per-row pose deltas",
                 "outer-loop relinearized surface ownership reduces residual candidates and depth-observation owners but leaves full temporal compatibility at the scalar weighted-refit level, so stale assignment explains only part of the hand-depth contradiction",
+                "row-level object/contact ownership does not close any relinearized hand-depth residual: image-plane contacts still fail metric-depth compatibility, and no residual row has a geometry-backed contact owner",
                 "post-temporal MANO factor input materializes current-state vertex-pair factors for local and mixed owner rows, but MANO pose has not consumed those post-temporal factors",
                 "post-temporal MANO pose-delta solve consumes the current local and mixed factors, but only one row clears the depth-improvement predicate and most rows hit the pose-delta bound",
                 "independent 2D hand evidence supports most post-temporal depth-observation rows; the dominant owner is hand-depth observation state, with projection spillover covering a small minority",
@@ -5239,6 +5361,39 @@ def required_variable_families(
                 "relinearized_hand_depth_reprojection_state_counts": relinearized_hand_surface_observation_graph[
                     "relinearized_temporal_reprojection_state_counts"
                 ],
+                "relinearized_residual_object_contact_rows": relinearized_residual_object_contact_state[
+                    "relinearized_hand_residual_rows"
+                ],
+                "relinearized_residual_active_object_proximity_state_counts": relinearized_residual_object_contact_state[
+                    "active_object_proximity_state_counts"
+                ],
+                "relinearized_residual_object_contact_evidence_state_counts": relinearized_residual_object_contact_state[
+                    "residual_object_contact_evidence_state_counts"
+                ],
+                "relinearized_residual_rows_with_pairwise_image_contact_candidate": relinearized_residual_object_contact_state[
+                    "rows_with_pairwise_image_contact_candidate"
+                ],
+                "relinearized_residual_rows_with_pairwise_metric_depth_compatible_candidate": relinearized_residual_object_contact_state[
+                    "rows_with_pairwise_metric_depth_compatible_candidate"
+                ],
+                "relinearized_residual_rows_with_contact_owner_factor_ready": relinearized_residual_object_contact_state[
+                    "rows_with_contact_owner_factor_ready"
+                ],
+                "relinearized_residual_rows_with_object_contact_closure_supported": relinearized_residual_object_contact_state[
+                    "rows_with_object_contact_closure_supported"
+                ],
+                "relinearized_residual_object_distance_valid_sample_count": relinearized_residual_object_contact_state[
+                    "object_distance_valid_sample_count"
+                ],
+                "relinearized_residual_object_distance_invalid_sample_count": relinearized_residual_object_contact_state[
+                    "object_distance_invalid_sample_count"
+                ],
+                "relinearized_residual_rows_with_invalid_object_distance_samples": relinearized_residual_object_contact_state[
+                    "rows_with_invalid_object_distance_samples"
+                ],
+                "relinearized_residual_pairwise_abs_hand_minus_object_depth_median_min_m": relinearized_residual_object_contact_state[
+                    "pairwise_abs_hand_minus_object_depth_median_min_m"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -5325,6 +5480,7 @@ def required_variable_families(
                 "support-weighted UniDepth observation factors repair many fixed residual samples but leave all depth-observation owners after full MANO reprojection, so scalar camera-ray depth factors do not close the hand-depth state",
                 "the coupled scalar-depth, MANO-pose, and depth-observation graph degrades the full reprojected hand state despite improving local geometry factors, which points to fixed correspondence and ownership relinearization rather than another isolated variable family",
                 "the relinearized surface-observation graph updates assignments across outer iterations and reduces residual candidates, but full temporal compatibility still does not exceed the scalar weighted-refit baseline",
+                "object/contact ownership cannot currently absorb the remaining hand-depth residuals because no residual row has a metric-depth-compatible contact owner",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -5381,6 +5537,27 @@ def required_variable_families(
                 "contact_owner_factor_ready_rows": contact_ownership_problem[
                     "contact_owner_factor_ready_rows"
                 ],
+                "relinearized_residual_object_contact_rows": relinearized_residual_object_contact_state[
+                    "relinearized_hand_residual_rows"
+                ],
+                "relinearized_residual_object_contact_evidence_state_counts": relinearized_residual_object_contact_state[
+                    "residual_object_contact_evidence_state_counts"
+                ],
+                "relinearized_residual_rows_with_pairwise_image_contact_candidate": relinearized_residual_object_contact_state[
+                    "rows_with_pairwise_image_contact_candidate"
+                ],
+                "relinearized_residual_rows_with_pairwise_metric_depth_compatible_candidate": relinearized_residual_object_contact_state[
+                    "rows_with_pairwise_metric_depth_compatible_candidate"
+                ],
+                "relinearized_residual_rows_with_object_contact_closure_supported": relinearized_residual_object_contact_state[
+                    "rows_with_object_contact_closure_supported"
+                ],
+                "relinearized_residual_object_distance_invalid_sample_count": relinearized_residual_object_contact_state[
+                    "object_distance_invalid_sample_count"
+                ],
+                "relinearized_residual_rows_with_invalid_object_distance_samples": relinearized_residual_object_contact_state[
+                    "rows_with_invalid_object_distance_samples"
+                ],
                 "source_incompatibility_count": geometry_source_audit[
                     "source_incompatibility_count"
                 ],
@@ -5401,6 +5578,7 @@ def required_variable_families(
                 "physical contact terms cannot attach to accepted reconstruction meshes until contact ownership names the same object id",
                 "physical contact terms cannot attach to any active object until contact-owner variables have geometry-supported candidates",
                 "physical contact terms cannot attach to image-supported owners until pairwise metric depth is compatible with the object depth state",
+                "the remaining hand-depth residual population has no geometry-backed object-contact owner under current object/contact evidence",
             ],
         ),
     ]
@@ -5538,6 +5716,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.relinearized_hand_capacity_diagnostic_report),
         f"{inputs.case} relinearized hand capacity diagnostic report",
     )
+    relinearized_residual_object_contact_state_report = require_dict(
+        load_json(inputs.relinearized_residual_object_contact_state_report),
+        f"{inputs.case} relinearized residual object-contact state report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -5664,6 +5846,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     relinearized_hand_capacity_diagnostic = relinearized_hand_capacity_diagnostic_counts(
         relinearized_hand_capacity_diagnostic_report
+    )
+    relinearized_residual_object_contact_state = relinearized_residual_object_contact_state_counts(
+        relinearized_residual_object_contact_state_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -6575,6 +6760,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and relinearized hand capacity diagnostic"
         )
+    if frame_count != require_int(
+        relinearized_residual_object_contact_state["frame_count"],
+        f"{inputs.case} relinearized residual object-contact frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and relinearized residual object-contact state"
+        )
     if require_int(
         hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
         f"{inputs.case} owner-weighted temporal source rows",
@@ -7071,6 +7263,43 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} residual MANO-owned rows exceed residual candidates")
     if require_int(
+        relinearized_residual_object_contact_state["relinearized_hand_residual_rows"],
+        f"{inputs.case} relinearized residual object-contact rows",
+    ) != require_int(
+        relinearized_hand_surface_observation_graph["depth_repair_factor_candidate_rows_after_relinearized_graph"],
+        f"{inputs.case} relinearized graph full residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} relinearized residual object-contact rows disagree with graph residual rows")
+    if require_int(
+        relinearized_residual_object_contact_state["applied_relinearized_residual_rows"],
+        f"{inputs.case} relinearized residual object-contact applied rows",
+    ) != require_int(
+        relinearized_hand_surface_observation_graph["relinearized_reprojection_residual_owner_rows"],
+        f"{inputs.case} relinearized graph residual-owner rows",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} relinearized residual object-contact applied rows disagree with graph residual-owner rows"
+        )
+    if require_int(
+        relinearized_residual_object_contact_state["applied_relinearized_residual_rows"],
+        f"{inputs.case} relinearized residual object-contact applied rows",
+    ) + require_int(
+        relinearized_residual_object_contact_state["nonapplied_relinearized_residual_rows"],
+        f"{inputs.case} relinearized residual object-contact nonapplied rows",
+    ) != require_int(
+        relinearized_residual_object_contact_state["relinearized_hand_residual_rows"],
+        f"{inputs.case} relinearized residual object-contact rows",
+    ):
+        raise RuntimeError(f"{inputs.case} relinearized residual object-contact applied split does not sum")
+    if require_int(
+        relinearized_residual_object_contact_state["rows_with_object_contact_closure_supported"],
+        f"{inputs.case} relinearized residual object-contact closure-supported rows",
+    ) > require_int(
+        relinearized_residual_object_contact_state["relinearized_hand_residual_rows"],
+        f"{inputs.case} relinearized residual object-contact rows",
+    ):
+        raise RuntimeError(f"{inputs.case} object-contact closure rows exceed residual rows")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -7476,6 +7705,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         coupled_hand_depth_mano_observation_graph,
         relinearized_hand_surface_observation_graph,
         relinearized_hand_capacity_diagnostic,
+        relinearized_residual_object_contact_state,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -7627,6 +7857,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.relinearized_hand_capacity_diagnostic_report,
                 relinearized_hand_capacity_diagnostic_report,
             ),
+            "relinearized_residual_object_contact_state_report": source_summary(
+                inputs.relinearized_residual_object_contact_state_report,
+                relinearized_residual_object_contact_state_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -7700,6 +7934,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_coupled_hand_depth_mano_observation_graph": coupled_hand_depth_mano_observation_graph,
         "current_relinearized_hand_surface_observation_graph": relinearized_hand_surface_observation_graph,
         "current_relinearized_hand_capacity_diagnostic": relinearized_hand_capacity_diagnostic,
+        "current_relinearized_residual_object_contact_state": relinearized_residual_object_contact_state,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -7778,6 +8013,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.coupled_hand_depth_mano_observation_graph_root,
             args.relinearized_hand_surface_observation_graph_root,
             args.relinearized_hand_capacity_diagnostic_root,
+            args.relinearized_residual_object_contact_state_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -7855,6 +8091,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "relinearized_hand_capacity_diagnostic_root": str(
             args.relinearized_hand_capacity_diagnostic_root
+        ),
+        "relinearized_residual_object_contact_state_root": str(
+            args.relinearized_residual_object_contact_state_root
         ),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
@@ -8481,6 +8720,30 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "relinearized_hand_capacity_owner_depth_state_counts": case[
                     "current_relinearized_hand_capacity_diagnostic"
                 ]["owner_depth_state_counts"],
+                "relinearized_residual_object_contact_rows": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["relinearized_hand_residual_rows"],
+                "relinearized_residual_applied_object_contact_rows": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["applied_relinearized_residual_rows"],
+                "relinearized_residual_object_contact_evidence_state_counts": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["residual_object_contact_evidence_state_counts"],
+                "relinearized_residual_rows_with_pairwise_image_contact_candidate": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["rows_with_pairwise_image_contact_candidate"],
+                "relinearized_residual_rows_with_pairwise_metric_depth_compatible_candidate": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["rows_with_pairwise_metric_depth_compatible_candidate"],
+                "relinearized_residual_rows_with_object_contact_closure_supported": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["rows_with_object_contact_closure_supported"],
+                "relinearized_residual_object_distance_invalid_sample_count": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["object_distance_invalid_sample_count"],
+                "relinearized_residual_rows_with_invalid_object_distance_samples": case[
+                    "current_relinearized_residual_object_contact_state"
+                ]["rows_with_invalid_object_distance_samples"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -10176,6 +10439,75 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "relinearized_residual_object_contact_rows": sum(
+            case["current_relinearized_residual_object_contact_state"]["relinearized_hand_residual_rows"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_applied_object_contact_rows": sum(
+            case["current_relinearized_residual_object_contact_state"]["applied_relinearized_residual_rows"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_near_active_object_rows": sum(
+            case["current_relinearized_residual_object_contact_state"]["near_active_object_residual_rows"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_far_from_active_object_rows": sum(
+            case["current_relinearized_residual_object_contact_state"]["far_from_active_object_residual_rows"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_object_contact_evidence_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_relinearized_residual_object_contact_state"][
+                                "residual_object_contact_evidence_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "relinearized_residual_rows_with_pairwise_image_contact_candidate": sum(
+            case["current_relinearized_residual_object_contact_state"][
+                "rows_with_pairwise_image_contact_candidate"
+            ]
+            for case in case_outputs
+        ),
+        "relinearized_residual_rows_with_pairwise_metric_depth_compatible_candidate": sum(
+            case["current_relinearized_residual_object_contact_state"][
+                "rows_with_pairwise_metric_depth_compatible_candidate"
+            ]
+            for case in case_outputs
+        ),
+        "relinearized_residual_rows_with_contact_owner_factor_ready": sum(
+            case["current_relinearized_residual_object_contact_state"]["rows_with_contact_owner_factor_ready"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_rows_with_object_contact_closure_supported": sum(
+            case["current_relinearized_residual_object_contact_state"][
+                "rows_with_object_contact_closure_supported"
+            ]
+            for case in case_outputs
+        ),
+        "relinearized_residual_object_distance_valid_sample_count": sum(
+            case["current_relinearized_residual_object_contact_state"]["object_distance_valid_sample_count"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_object_distance_invalid_sample_count": sum(
+            case["current_relinearized_residual_object_contact_state"]["object_distance_invalid_sample_count"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_rows_with_invalid_object_distance_samples": sum(
+            case["current_relinearized_residual_object_contact_state"]["rows_with_invalid_object_distance_samples"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_object_contact_closure_supported": any(
+            bool(case["current_relinearized_residual_object_contact_state"]["object_contact_closure_supported"])
+            for case in case_outputs
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -10504,6 +10836,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "contact_owner_factor_ready_rows": sum(
             case["current_contact_ownership_problem"]["contact_owner_factor_ready_rows"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_contact_owner_variable_rows": sum(
+            case["current_relinearized_residual_object_contact_state"]["rows_with_contact_owner_variable"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_contact_owner_factor_ready_rows": sum(
+            case["current_relinearized_residual_object_contact_state"]["rows_with_contact_owner_factor_ready"]
+            for case in case_outputs
+        ),
+        "relinearized_residual_contact_closure_supported_rows": sum(
+            case["current_relinearized_residual_object_contact_state"][
+                "rows_with_object_contact_closure_supported"
+            ]
             for case in case_outputs
         ),
         "unified_object_geometry_source_ready": False,
@@ -10862,6 +11208,11 @@ def parse_args() -> argparse.Namespace:
         "--relinearized-hand-capacity-diagnostic-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_relinearized_hand_capacity_diagnostic"),
+    )
+    parser.add_argument(
+        "--relinearized-residual-object-contact-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_relinearized_residual_object_contact_state"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
