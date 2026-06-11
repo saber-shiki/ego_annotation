@@ -481,6 +481,8 @@ def recompute_row_samples(
     return {
         "x": x,
         "y": y,
+        "hand_z": hand_z,
+        "metric_z": metric_z,
         "gap": gap,
         "valid": valid,
         "projection_source_size": projection_source_size,
