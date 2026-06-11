@@ -330,6 +330,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         **FALSE_READY,
     }
     write_json(args.output_root / "v17_full_interval_geometry_reconstruction_jobs_summary.json", summary)
+    # evaluator-compatible alias so build_v17_geometry_reconstruction_results can consume this root directly
+    write_json(args.output_root / "v17_geometry_reconstruction_jobs_summary.json", summary)
     return summary
 
 
