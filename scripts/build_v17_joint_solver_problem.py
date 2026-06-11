@@ -42,6 +42,7 @@ class CaseInputs:
     hand_local_projection_repair_problem_report: Path
     mano_parameter_ownership_state_report: Path
     mano_articulation_factor_input_report: Path
+    mano_articulation_local_solve_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -139,6 +140,7 @@ def case_inputs(
     hand_local_projection_repair_problem_root: Path,
     mano_parameter_ownership_state_root: Path,
     mano_articulation_factor_input_root: Path,
+    mano_articulation_local_solve_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -245,6 +247,10 @@ def case_inputs(
         mano_articulation_factor_input_root / case / "v17_mano_articulation_factor_input.json",
         f"{case} MANO articulation factor input report",
     )
+    mano_articulation_local_solve_report = existing_path(
+        mano_articulation_local_solve_root / case / "v17_mano_articulation_local_solve.json",
+        f"{case} MANO local articulation solve report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -321,6 +327,7 @@ def case_inputs(
         hand_local_projection_repair_problem_report=hand_local_projection_repair_problem_report,
         mano_parameter_ownership_state_report=mano_parameter_ownership_state_report,
         mano_articulation_factor_input_report=mano_articulation_factor_input_report,
+        mano_articulation_local_solve_report=mano_articulation_local_solve_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1339,6 +1346,67 @@ def mano_articulation_factor_input_counts(report: dict[str, Any]) -> dict[str, A
     }
 
 
+def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "MANO local articulation solve frame_count"),
+        "mano_local_articulation_solve_candidate_rows": require_int(
+            report.get("mano_local_articulation_solve_candidate_rows"),
+            "MANO local articulation solve candidate rows",
+        ),
+        "local_articulation_depth_improved_rows": require_int(
+            report.get("local_articulation_depth_improved_rows"),
+            "MANO local articulation improved rows",
+        ),
+        "local_articulation_depth_threshold_met_rows": require_int(
+            report.get("local_articulation_depth_threshold_met_rows"),
+            "MANO local articulation threshold rows",
+        ),
+        "local_articulation_projection_trusted_rows": require_int(
+            report.get("local_articulation_projection_trusted_rows"),
+            "MANO local articulation projection trusted rows",
+        ),
+        "local_articulation_pose_delta_clamp_hit_rows": require_int(
+            report.get("local_articulation_pose_delta_clamp_hit_rows"),
+            "MANO local articulation pose clamp hit rows",
+        ),
+        "local_articulation_solve_state_counts": require_dict(
+            report.get("local_articulation_solve_state_counts"),
+            "MANO local articulation state counts",
+        ),
+        "before_depth_abs_median_m": require_dict(
+            report.get("before_depth_abs_median_m"),
+            "MANO local articulation before depth summary",
+        ),
+        "after_depth_abs_median_m": require_dict(
+            report.get("after_depth_abs_median_m"),
+            "MANO local articulation after depth summary",
+        ),
+        "depth_abs_median_improvement_m": require_dict(
+            report.get("depth_abs_median_improvement_m"),
+            "MANO local articulation improvement summary",
+        ),
+        "after_joint_reprojection_median_px": require_dict(
+            report.get("after_joint_reprojection_median_px"),
+            "MANO local articulation joint reprojection median summary",
+        ),
+        "after_joint_reprojection_p95_px": require_dict(
+            report.get("after_joint_reprojection_p95_px"),
+            "MANO local articulation joint reprojection p95 summary",
+        ),
+        "pose_delta_abs_max_rad": require_dict(
+            report.get("pose_delta_abs_max_rad"),
+            "MANO local articulation pose delta summary",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2177,6 +2245,7 @@ def required_variable_families(
     hand_local_projection_repair_problem: dict[str, Any],
     mano_parameter_ownership_state: dict[str, Any],
     mano_articulation_factor_input: dict[str, Any],
+    mano_articulation_local_solve: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2396,6 +2465,24 @@ def required_variable_families(
                 "mano_articulation_surface_correspondence_state_counts": mano_articulation_factor_input[
                     "surface_correspondence_state_counts"
                 ],
+                "mano_local_articulation_solve_candidate_rows": mano_articulation_local_solve[
+                    "mano_local_articulation_solve_candidate_rows"
+                ],
+                "mano_local_articulation_depth_improved_rows": mano_articulation_local_solve[
+                    "local_articulation_depth_improved_rows"
+                ],
+                "mano_local_articulation_depth_threshold_met_rows": mano_articulation_local_solve[
+                    "local_articulation_depth_threshold_met_rows"
+                ],
+                "mano_local_articulation_pose_delta_clamp_hit_rows": mano_articulation_local_solve[
+                    "local_articulation_pose_delta_clamp_hit_rows"
+                ],
+                "mano_local_articulation_solve_state_counts": mano_articulation_local_solve[
+                    "local_articulation_solve_state_counts"
+                ],
+                "mano_local_articulation_depth_abs_median_improvement_m": mano_articulation_local_solve[
+                    "depth_abs_median_improvement_m"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2466,6 +2553,7 @@ def required_variable_families(
                 "local projection assignment materializes the local hand-surface factor candidates but does not update MANO articulation",
                 "saved MANO parameters own every local projection factor candidate, but an articulation optimizer has not consumed those factors",
                 "MANO articulation factor inputs now carry residual and compatible-seed surface vertex ids, but MANO pose has not been re-optimized",
+                "local MANO pose-delta solves reduce some residuals but mostly hit the pose bound and leave the local articulation mechanism unaccepted",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3118,6 +3206,24 @@ def required_variable_families(
                 "mano_articulation_surface_correspondence_state_counts": mano_articulation_factor_input[
                     "surface_correspondence_state_counts"
                 ],
+                "mano_local_articulation_solve_candidate_rows": mano_articulation_local_solve[
+                    "mano_local_articulation_solve_candidate_rows"
+                ],
+                "mano_local_articulation_depth_improved_rows": mano_articulation_local_solve[
+                    "local_articulation_depth_improved_rows"
+                ],
+                "mano_local_articulation_depth_threshold_met_rows": mano_articulation_local_solve[
+                    "local_articulation_depth_threshold_met_rows"
+                ],
+                "mano_local_articulation_pose_delta_clamp_hit_rows": mano_articulation_local_solve[
+                    "local_articulation_pose_delta_clamp_hit_rows"
+                ],
+                "mano_local_articulation_solve_state_counts": mano_articulation_local_solve[
+                    "local_articulation_solve_state_counts"
+                ],
+                "mano_local_articulation_depth_abs_median_improvement_m": mano_articulation_local_solve[
+                    "depth_abs_median_improvement_m"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -3194,6 +3300,7 @@ def required_variable_families(
                 "local projection assignment exposes which residual rows can become local hand-surface factors and which rows remain depth-observation or support owners",
                 "MANO parameter ownership now identifies which local projection factors can attach to saved MANO pose parameters before an articulation solve",
                 "MANO articulation factor inputs now identify surface vertex correspondences for local projection factors before pose optimization",
+                "local MANO articulation pose-delta solves produce limited depth gains and widespread pose-bound hits, so they diagnose the next owner rather than updating the hand state",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -3343,6 +3450,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.mano_articulation_factor_input_report),
         f"{inputs.case} MANO articulation factor input report",
     )
+    mano_articulation_local_solve_report = require_dict(
+        load_json(inputs.mano_articulation_local_solve_report),
+        f"{inputs.case} MANO local articulation solve report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3419,6 +3530,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     mano_articulation_factor_input = mano_articulation_factor_input_counts(
         mano_articulation_factor_input_report
+    )
+    mano_articulation_local_solve = mano_articulation_local_solve_counts(
+        mano_articulation_local_solve_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -3502,6 +3616,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and MANO articulation factor input"
+        )
+    if frame_count != require_int(
+        mano_articulation_local_solve["frame_count"],
+        f"{inputs.case} MANO local articulation solve frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and MANO local articulation solve"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -3953,6 +4074,30 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ) <= 0:
         raise RuntimeError(f"{inputs.case} MANO articulation factor input has no assigned samples")
     if require_int(
+        mano_articulation_local_solve["mano_local_articulation_solve_candidate_rows"],
+        f"{inputs.case} MANO local articulation solve rows",
+    ) != require_int(
+        mano_articulation_factor_input["mano_articulation_factor_input_materialized_rows"],
+        f"{inputs.case} MANO articulation materialized rows",
+    ):
+        raise RuntimeError(f"{inputs.case} MANO local articulation solve rows disagree with factor inputs")
+    if require_int(
+        mano_articulation_local_solve["local_articulation_depth_improved_rows"],
+        f"{inputs.case} MANO local articulation improved rows",
+    ) > require_int(
+        mano_articulation_local_solve["mano_local_articulation_solve_candidate_rows"],
+        f"{inputs.case} MANO local articulation solve rows",
+    ):
+        raise RuntimeError(f"{inputs.case} MANO local articulation improved rows exceed solve rows")
+    if require_int(
+        mano_articulation_local_solve["local_articulation_pose_delta_clamp_hit_rows"],
+        f"{inputs.case} MANO local articulation clamp hit rows",
+    ) > require_int(
+        mano_articulation_local_solve["mano_local_articulation_solve_candidate_rows"],
+        f"{inputs.case} MANO local articulation solve rows",
+    ):
+        raise RuntimeError(f"{inputs.case} MANO local articulation clamp hits exceed solve rows")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -4342,6 +4487,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_local_projection_repair_problem,
         mano_parameter_ownership_state,
         mano_articulation_factor_input,
+        mano_articulation_local_solve,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -4429,6 +4575,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.mano_articulation_factor_input_report,
                 mano_articulation_factor_input_report,
             ),
+            "mano_articulation_local_solve_report": source_summary(
+                inputs.mano_articulation_local_solve_report,
+                mano_articulation_local_solve_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -4486,6 +4636,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_local_projection_repair_problem": hand_local_projection_repair_problem,
         "current_mano_parameter_ownership_state": mano_parameter_ownership_state,
         "current_mano_articulation_factor_input": mano_articulation_factor_input,
+        "current_mano_articulation_local_solve": mano_articulation_local_solve,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -4548,6 +4699,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_local_projection_repair_problem_root,
             args.mano_parameter_ownership_state_root,
             args.mano_articulation_factor_input_root,
+            args.mano_articulation_local_solve_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -4594,6 +4746,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_local_projection_repair_problem_root": str(args.hand_local_projection_repair_problem_root),
         "mano_parameter_ownership_state_root": str(args.mano_parameter_ownership_state_root),
         "mano_articulation_factor_input_root": str(args.mano_articulation_factor_input_root),
+        "mano_articulation_local_solve_root": str(args.mano_articulation_local_solve_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -4895,6 +5048,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "mano_articulation_surface_correspondence_state_counts": case[
                     "current_mano_articulation_factor_input"
                 ]["surface_correspondence_state_counts"],
+                "mano_local_articulation_solve_candidate_rows": case[
+                    "current_mano_articulation_local_solve"
+                ]["mano_local_articulation_solve_candidate_rows"],
+                "mano_local_articulation_depth_improved_rows": case[
+                    "current_mano_articulation_local_solve"
+                ]["local_articulation_depth_improved_rows"],
+                "mano_local_articulation_depth_threshold_met_rows": case[
+                    "current_mano_articulation_local_solve"
+                ]["local_articulation_depth_threshold_met_rows"],
+                "mano_local_articulation_pose_delta_clamp_hit_rows": case[
+                    "current_mano_articulation_local_solve"
+                ]["local_articulation_pose_delta_clamp_hit_rows"],
+                "mano_local_articulation_solve_state_counts": case[
+                    "current_mano_articulation_local_solve"
+                ]["local_articulation_solve_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -5590,6 +5758,65 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 for case in case_outputs
             ]
         },
+        "mano_local_articulation_solve_candidate_rows": sum(
+            case["current_mano_articulation_local_solve"]["mano_local_articulation_solve_candidate_rows"]
+            for case in case_outputs
+        ),
+        "mano_local_articulation_depth_improved_rows": sum(
+            case["current_mano_articulation_local_solve"]["local_articulation_depth_improved_rows"]
+            for case in case_outputs
+        ),
+        "mano_local_articulation_depth_threshold_met_rows": sum(
+            case["current_mano_articulation_local_solve"]["local_articulation_depth_threshold_met_rows"]
+            for case in case_outputs
+        ),
+        "mano_local_articulation_projection_trusted_rows": sum(
+            case["current_mano_articulation_local_solve"]["local_articulation_projection_trusted_rows"]
+            for case in case_outputs
+        ),
+        "mano_local_articulation_pose_delta_clamp_hit_rows": sum(
+            case["current_mano_articulation_local_solve"]["local_articulation_pose_delta_clamp_hit_rows"]
+            for case in case_outputs
+        ),
+        "mano_local_articulation_solve_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_mano_articulation_local_solve"][
+                                "local_articulation_solve_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "mano_local_articulation_before_depth_abs_median_m": {
+            "case_summaries": [
+                case["current_mano_articulation_local_solve"]["before_depth_abs_median_m"]
+                for case in case_outputs
+            ]
+        },
+        "mano_local_articulation_after_depth_abs_median_m": {
+            "case_summaries": [
+                case["current_mano_articulation_local_solve"]["after_depth_abs_median_m"]
+                for case in case_outputs
+            ]
+        },
+        "mano_local_articulation_depth_abs_median_improvement_m": {
+            "case_summaries": [
+                case["current_mano_articulation_local_solve"]["depth_abs_median_improvement_m"]
+                for case in case_outputs
+            ]
+        },
+        "mano_local_articulation_pose_delta_abs_max_rad": {
+            "case_summaries": [
+                case["current_mano_articulation_local_solve"]["pose_delta_abs_max_rad"]
+                for case in case_outputs
+            ]
+        },
         "hand_surface_depth_tail_variable_count": sum(
             case["current_hand_surface_depth_tail_state"]["hand_surface_depth_tail_variable_count"]
             for case in case_outputs
@@ -6019,6 +6246,11 @@ def parse_args() -> argparse.Namespace:
         "--mano-articulation-factor-input-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_mano_articulation_factor_input"),
+    )
+    parser.add_argument(
+        "--mano-articulation-local-solve-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_mano_articulation_local_solve"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
