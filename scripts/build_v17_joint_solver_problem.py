@@ -59,6 +59,7 @@ class CaseInputs:
     relinearized_hand_surface_observation_graph_report: Path
     relinearized_hand_capacity_diagnostic_report: Path
     relinearized_residual_object_contact_state_report: Path
+    relinearized_residual_factor_coverage_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -173,6 +174,7 @@ def case_inputs(
     relinearized_hand_surface_observation_graph_root: Path,
     relinearized_hand_capacity_diagnostic_root: Path,
     relinearized_residual_object_contact_state_root: Path,
+    relinearized_residual_factor_coverage_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -375,6 +377,12 @@ def case_inputs(
         / "v17_relinearized_residual_object_contact_state.json",
         f"{case} relinearized residual object-contact state report",
     )
+    relinearized_residual_factor_coverage_report = existing_path(
+        relinearized_residual_factor_coverage_root
+        / case
+        / "v17_relinearized_residual_factor_coverage.json",
+        f"{case} relinearized residual factor coverage report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -468,6 +476,7 @@ def case_inputs(
         relinearized_hand_surface_observation_graph_report=relinearized_hand_surface_observation_graph_report,
         relinearized_hand_capacity_diagnostic_report=relinearized_hand_capacity_diagnostic_report,
         relinearized_residual_object_contact_state_report=relinearized_residual_object_contact_state_report,
+        relinearized_residual_factor_coverage_report=relinearized_residual_factor_coverage_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -2411,6 +2420,107 @@ def relinearized_residual_object_contact_state_counts(report: dict[str, Any]) ->
     }
 
 
+def relinearized_residual_factor_coverage_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "relinearized residual factor coverage frame_count",
+        ),
+        "relinearized_hand_residual_rows": require_int(
+            report.get("relinearized_hand_residual_rows"),
+            "relinearized residual factor coverage residual rows",
+        ),
+        "current_relinearized_applied_rows": require_int(
+            report.get("current_relinearized_applied_rows"),
+            "relinearized residual factor coverage applied rows",
+        ),
+        "current_relinearized_nonapplied_rows": require_int(
+            report.get("current_relinearized_nonapplied_rows"),
+            "relinearized residual factor coverage nonapplied rows",
+        ),
+        "full_residual_scalar_variable_candidate_rows": require_int(
+            report.get("full_residual_scalar_variable_candidate_rows"),
+            "relinearized residual factor coverage scalar variable candidate rows",
+        ),
+        "full_residual_direct_factor_rows": require_int(
+            report.get("full_residual_direct_factor_rows"),
+            "relinearized residual factor coverage direct factor rows",
+        ),
+        "full_residual_surface_factor_rows": require_int(
+            report.get("full_residual_surface_factor_rows"),
+            "relinearized residual factor coverage surface factor rows",
+        ),
+        "full_residual_depth_observation_factor_rows": require_int(
+            report.get("full_residual_depth_observation_factor_rows"),
+            "relinearized residual factor coverage depth observation factor rows",
+        ),
+        "full_residual_compatible_anchor_rows": require_int(
+            report.get("full_residual_compatible_anchor_rows"),
+            "relinearized residual factor coverage compatible anchor rows",
+        ),
+        "full_residual_prior_smooth_only_rows": require_int(
+            report.get("full_residual_prior_smooth_only_rows"),
+            "relinearized residual factor coverage prior smooth rows",
+        ),
+        "nonapplied_full_residual_direct_factor_rows": require_int(
+            report.get("nonapplied_full_residual_direct_factor_rows"),
+            "relinearized residual factor coverage nonapplied direct factor rows",
+        ),
+        "nonapplied_full_residual_surface_factor_rows": require_int(
+            report.get("nonapplied_full_residual_surface_factor_rows"),
+            "relinearized residual factor coverage nonapplied surface factor rows",
+        ),
+        "nonapplied_full_residual_depth_observation_factor_rows": require_int(
+            report.get("nonapplied_full_residual_depth_observation_factor_rows"),
+            "relinearized residual factor coverage nonapplied depth factor rows",
+        ),
+        "nonapplied_full_residual_prior_smooth_only_rows": require_int(
+            report.get("nonapplied_full_residual_prior_smooth_only_rows"),
+            "relinearized residual factor coverage nonapplied prior smooth rows",
+        ),
+        "full_residual_factor_coverage_state_counts": require_dict(
+            report.get("full_residual_factor_coverage_state_counts"),
+            "relinearized residual factor coverage state counts",
+        ),
+        "full_residual_factor_state_counts": require_dict(
+            report.get("full_residual_factor_state_counts"),
+            "relinearized residual factor state counts",
+        ),
+        "nonapplied_full_residual_factor_coverage_state_counts": require_dict(
+            report.get("nonapplied_full_residual_factor_coverage_state_counts"),
+            "relinearized residual nonapplied factor coverage state counts",
+        ),
+        "nonapplied_full_residual_factor_state_counts": require_dict(
+            report.get("nonapplied_full_residual_factor_state_counts"),
+            "relinearized residual nonapplied factor state counts",
+        ),
+        "independent_keypoint_support_state_counts": require_dict(
+            report.get("independent_keypoint_support_state_counts"),
+            "relinearized residual independent keypoint support counts",
+        ),
+        "selected_residual_sample_count": require_int(
+            report.get("selected_residual_sample_count"),
+            "relinearized residual selected sample count",
+        ),
+        "assigned_residual_sample_count": require_int(
+            report.get("assigned_residual_sample_count"),
+            "relinearized residual assigned sample count",
+        ),
+        "compatible_seed_sample_count": require_int(
+            report.get("compatible_seed_sample_count"),
+            "relinearized residual compatible seed sample count",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -3739,6 +3849,7 @@ def required_variable_families(
     relinearized_hand_surface_observation_graph: dict[str, Any],
     relinearized_hand_capacity_diagnostic: dict[str, Any],
     relinearized_residual_object_contact_state: dict[str, Any],
+    relinearized_residual_factor_coverage: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -4312,6 +4423,15 @@ def required_variable_families(
                 "relinearized_residual_rows_with_invalid_object_distance_samples": relinearized_residual_object_contact_state[
                     "rows_with_invalid_object_distance_samples"
                 ],
+                "full_residual_factor_coverage_direct_rows": relinearized_residual_factor_coverage[
+                    "full_residual_direct_factor_rows"
+                ],
+                "full_residual_factor_coverage_nonapplied_direct_rows": relinearized_residual_factor_coverage[
+                    "nonapplied_full_residual_direct_factor_rows"
+                ],
+                "full_residual_factor_coverage_prior_smooth_only_rows": relinearized_residual_factor_coverage[
+                    "full_residual_prior_smooth_only_rows"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -4394,6 +4514,7 @@ def required_variable_families(
                 "coupled scalar depth, MANO pose, and supported UniDepth observation factors improve some local geometry rows but degrade the full reprojected metric hand state, so closure requires relinearized surface and ownership state beyond fixed correspondences and per-row pose deltas",
                 "outer-loop relinearized surface ownership reduces residual candidates and depth-observation owners but leaves full temporal compatibility at the scalar weighted-refit level, so stale assignment explains only part of the hand-depth contradiction",
                 "row-level object/contact ownership does not close any relinearized hand-depth residual: image-plane contacts still fail metric-depth compatibility, and no residual row has a geometry-backed contact owner",
+                "full residual coverage shows most rows skipped by the current relinearized graph already have surface or supported depth-observation factors, so graph coverage is a missing solver state",
                 "post-temporal MANO factor input materializes current-state vertex-pair factors for local and mixed owner rows, but MANO pose has not consumed those post-temporal factors",
                 "post-temporal MANO pose-delta solve consumes the current local and mixed factors, but only one row clears the depth-improvement predicate and most rows hit the pose-delta bound",
                 "independent 2D hand evidence supports most post-temporal depth-observation rows; the dominant owner is hand-depth observation state, with projection spillover covering a small minority",
@@ -5394,6 +5515,30 @@ def required_variable_families(
                 "relinearized_residual_pairwise_abs_hand_minus_object_depth_median_min_m": relinearized_residual_object_contact_state[
                     "pairwise_abs_hand_minus_object_depth_median_min_m"
                 ],
+                "full_residual_factor_coverage_rows": relinearized_residual_factor_coverage[
+                    "relinearized_hand_residual_rows"
+                ],
+                "full_residual_factor_coverage_current_nonapplied_rows": relinearized_residual_factor_coverage[
+                    "current_relinearized_nonapplied_rows"
+                ],
+                "full_residual_factor_coverage_direct_rows": relinearized_residual_factor_coverage[
+                    "full_residual_direct_factor_rows"
+                ],
+                "full_residual_factor_coverage_surface_rows": relinearized_residual_factor_coverage[
+                    "full_residual_surface_factor_rows"
+                ],
+                "full_residual_factor_coverage_depth_observation_rows": relinearized_residual_factor_coverage[
+                    "full_residual_depth_observation_factor_rows"
+                ],
+                "full_residual_factor_coverage_prior_smooth_only_rows": relinearized_residual_factor_coverage[
+                    "full_residual_prior_smooth_only_rows"
+                ],
+                "full_residual_factor_coverage_state_counts": relinearized_residual_factor_coverage[
+                    "full_residual_factor_coverage_state_counts"
+                ],
+                "nonapplied_full_residual_factor_coverage_state_counts": relinearized_residual_factor_coverage[
+                    "nonapplied_full_residual_factor_coverage_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -5481,6 +5626,7 @@ def required_variable_families(
                 "the coupled scalar-depth, MANO-pose, and depth-observation graph degrades the full reprojected hand state despite improving local geometry factors, which points to fixed correspondence and ownership relinearization rather than another isolated variable family",
                 "the relinearized surface-observation graph updates assignments across outer iterations and reduces residual candidates, but full temporal compatibility still does not exceed the scalar weighted-refit baseline",
                 "object/contact ownership cannot currently absorb the remaining hand-depth residuals because no residual row has a metric-depth-compatible contact owner",
+                "full residual factor coverage exposes a solver coverage gap: many nonapplied residual rows already satisfy existing surface or supported depth-observation factor predicates",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -5558,6 +5704,15 @@ def required_variable_families(
                 "relinearized_residual_rows_with_invalid_object_distance_samples": relinearized_residual_object_contact_state[
                     "rows_with_invalid_object_distance_samples"
                 ],
+                "full_residual_factor_coverage_direct_rows": relinearized_residual_factor_coverage[
+                    "full_residual_direct_factor_rows"
+                ],
+                "full_residual_factor_coverage_nonapplied_direct_rows": relinearized_residual_factor_coverage[
+                    "nonapplied_full_residual_direct_factor_rows"
+                ],
+                "full_residual_factor_coverage_prior_smooth_only_rows": relinearized_residual_factor_coverage[
+                    "full_residual_prior_smooth_only_rows"
+                ],
                 "source_incompatibility_count": geometry_source_audit[
                     "source_incompatibility_count"
                 ],
@@ -5579,6 +5734,7 @@ def required_variable_families(
                 "physical contact terms cannot attach to any active object until contact-owner variables have geometry-supported candidates",
                 "physical contact terms cannot attach to image-supported owners until pairwise metric depth is compatible with the object depth state",
                 "the remaining hand-depth residual population has no geometry-backed object-contact owner under current object/contact evidence",
+                "the current relinearized graph did not cover all hand-depth residual rows even though most skipped rows have direct hand-depth factors",
             ],
         ),
     ]
@@ -5720,6 +5876,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.relinearized_residual_object_contact_state_report),
         f"{inputs.case} relinearized residual object-contact state report",
     )
+    relinearized_residual_factor_coverage_report = require_dict(
+        load_json(inputs.relinearized_residual_factor_coverage_report),
+        f"{inputs.case} relinearized residual factor coverage report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -5849,6 +6009,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     relinearized_residual_object_contact_state = relinearized_residual_object_contact_state_counts(
         relinearized_residual_object_contact_state_report
+    )
+    relinearized_residual_factor_coverage = relinearized_residual_factor_coverage_counts(
+        relinearized_residual_factor_coverage_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -6767,6 +6930,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and relinearized residual object-contact state"
         )
+    if frame_count != require_int(
+        relinearized_residual_factor_coverage["frame_count"],
+        f"{inputs.case} relinearized residual factor coverage frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and relinearized residual factor coverage"
+        )
     if require_int(
         hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
         f"{inputs.case} owner-weighted temporal source rows",
@@ -7300,6 +7470,79 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} object-contact closure rows exceed residual rows")
     if require_int(
+        relinearized_residual_factor_coverage["relinearized_hand_residual_rows"],
+        f"{inputs.case} full residual coverage rows",
+    ) != require_int(
+        relinearized_hand_surface_observation_graph["depth_repair_factor_candidate_rows_after_relinearized_graph"],
+        f"{inputs.case} relinearized graph full residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual factor coverage rows disagree with graph residual rows")
+    if require_int(
+        relinearized_residual_factor_coverage["current_relinearized_applied_rows"],
+        f"{inputs.case} full residual coverage applied rows",
+    ) != require_int(
+        relinearized_hand_surface_observation_graph["relinearized_reprojection_residual_owner_rows"],
+        f"{inputs.case} relinearized graph residual-owner rows",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} full residual factor coverage applied rows disagree with graph residual-owner rows"
+        )
+    if require_int(
+        relinearized_residual_factor_coverage["full_residual_scalar_variable_candidate_rows"],
+        f"{inputs.case} full residual coverage scalar candidate rows",
+    ) != require_int(
+        relinearized_residual_factor_coverage["relinearized_hand_residual_rows"],
+        f"{inputs.case} full residual coverage rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual coverage scalar candidates do not cover residual rows")
+    if require_int(
+        relinearized_residual_factor_coverage["current_relinearized_applied_rows"],
+        f"{inputs.case} full residual coverage applied rows",
+    ) + require_int(
+        relinearized_residual_factor_coverage["current_relinearized_nonapplied_rows"],
+        f"{inputs.case} full residual coverage nonapplied rows",
+    ) != require_int(
+        relinearized_residual_factor_coverage["relinearized_hand_residual_rows"],
+        f"{inputs.case} full residual coverage rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual coverage applied split does not sum")
+    if require_int(
+        relinearized_residual_factor_coverage["full_residual_surface_factor_rows"],
+        f"{inputs.case} full residual coverage surface rows",
+    ) + require_int(
+        relinearized_residual_factor_coverage["full_residual_depth_observation_factor_rows"],
+        f"{inputs.case} full residual coverage depth rows",
+    ) + require_int(
+        relinearized_residual_factor_coverage["full_residual_compatible_anchor_rows"],
+        f"{inputs.case} full residual coverage anchor rows",
+    ) != require_int(
+        relinearized_residual_factor_coverage["full_residual_direct_factor_rows"],
+        f"{inputs.case} full residual coverage direct rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual coverage direct-factor split does not sum")
+    if require_int(
+        relinearized_residual_factor_coverage["full_residual_direct_factor_rows"],
+        f"{inputs.case} full residual coverage direct rows",
+    ) + require_int(
+        relinearized_residual_factor_coverage["full_residual_prior_smooth_only_rows"],
+        f"{inputs.case} full residual coverage prior rows",
+    ) != require_int(
+        relinearized_residual_factor_coverage["relinearized_hand_residual_rows"],
+        f"{inputs.case} full residual coverage rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual coverage direct plus prior rows do not sum")
+    if require_int(
+        relinearized_residual_factor_coverage["nonapplied_full_residual_direct_factor_rows"],
+        f"{inputs.case} nonapplied full residual coverage direct rows",
+    ) + require_int(
+        relinearized_residual_factor_coverage["nonapplied_full_residual_prior_smooth_only_rows"],
+        f"{inputs.case} nonapplied full residual coverage prior rows",
+    ) != require_int(
+        relinearized_residual_factor_coverage["current_relinearized_nonapplied_rows"],
+        f"{inputs.case} full residual coverage nonapplied rows",
+    ):
+        raise RuntimeError(f"{inputs.case} nonapplied full residual coverage direct plus prior rows do not sum")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -7706,6 +7949,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         relinearized_hand_surface_observation_graph,
         relinearized_hand_capacity_diagnostic,
         relinearized_residual_object_contact_state,
+        relinearized_residual_factor_coverage,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -7861,6 +8105,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.relinearized_residual_object_contact_state_report,
                 relinearized_residual_object_contact_state_report,
             ),
+            "relinearized_residual_factor_coverage_report": source_summary(
+                inputs.relinearized_residual_factor_coverage_report,
+                relinearized_residual_factor_coverage_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -7935,6 +8183,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_relinearized_hand_surface_observation_graph": relinearized_hand_surface_observation_graph,
         "current_relinearized_hand_capacity_diagnostic": relinearized_hand_capacity_diagnostic,
         "current_relinearized_residual_object_contact_state": relinearized_residual_object_contact_state,
+        "current_relinearized_residual_factor_coverage": relinearized_residual_factor_coverage,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -8014,6 +8263,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.relinearized_hand_surface_observation_graph_root,
             args.relinearized_hand_capacity_diagnostic_root,
             args.relinearized_residual_object_contact_state_root,
+            args.relinearized_residual_factor_coverage_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -8094,6 +8344,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "relinearized_residual_object_contact_state_root": str(
             args.relinearized_residual_object_contact_state_root
+        ),
+        "relinearized_residual_factor_coverage_root": str(
+            args.relinearized_residual_factor_coverage_root
         ),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
@@ -8744,6 +8997,51 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "relinearized_residual_rows_with_invalid_object_distance_samples": case[
                     "current_relinearized_residual_object_contact_state"
                 ]["rows_with_invalid_object_distance_samples"],
+                "full_residual_factor_coverage_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["relinearized_hand_residual_rows"],
+                "full_residual_factor_coverage_current_applied_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["current_relinearized_applied_rows"],
+                "full_residual_factor_coverage_current_nonapplied_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["current_relinearized_nonapplied_rows"],
+                "full_residual_factor_coverage_direct_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["full_residual_direct_factor_rows"],
+                "full_residual_factor_coverage_surface_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["full_residual_surface_factor_rows"],
+                "full_residual_factor_coverage_depth_observation_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["full_residual_depth_observation_factor_rows"],
+                "full_residual_factor_coverage_prior_smooth_only_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["full_residual_prior_smooth_only_rows"],
+                "nonapplied_full_residual_direct_factor_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["nonapplied_full_residual_direct_factor_rows"],
+                "nonapplied_full_residual_surface_factor_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["nonapplied_full_residual_surface_factor_rows"],
+                "nonapplied_full_residual_depth_observation_factor_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["nonapplied_full_residual_depth_observation_factor_rows"],
+                "nonapplied_full_residual_prior_smooth_only_rows": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["nonapplied_full_residual_prior_smooth_only_rows"],
+                "full_residual_factor_coverage_state_counts": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["full_residual_factor_coverage_state_counts"],
+                "full_residual_factor_state_counts": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["full_residual_factor_state_counts"],
+                "nonapplied_full_residual_factor_coverage_state_counts": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["nonapplied_full_residual_factor_coverage_state_counts"],
+                "nonapplied_full_residual_factor_state_counts": case[
+                    "current_relinearized_residual_factor_coverage"
+                ]["nonapplied_full_residual_factor_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -10508,6 +10806,159 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             bool(case["current_relinearized_residual_object_contact_state"]["object_contact_closure_supported"])
             for case in case_outputs
         ),
+        "full_residual_factor_coverage_rows": sum(
+            case["current_relinearized_residual_factor_coverage"]["relinearized_hand_residual_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_current_applied_rows": sum(
+            case["current_relinearized_residual_factor_coverage"]["current_relinearized_applied_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_current_nonapplied_rows": sum(
+            case["current_relinearized_residual_factor_coverage"]["current_relinearized_nonapplied_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_scalar_variable_candidate_rows": sum(
+            case["current_relinearized_residual_factor_coverage"][
+                "full_residual_scalar_variable_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_direct_rows": sum(
+            case["current_relinearized_residual_factor_coverage"]["full_residual_direct_factor_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_surface_rows": sum(
+            case["current_relinearized_residual_factor_coverage"]["full_residual_surface_factor_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_depth_observation_rows": sum(
+            case["current_relinearized_residual_factor_coverage"][
+                "full_residual_depth_observation_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_compatible_anchor_rows": sum(
+            case["current_relinearized_residual_factor_coverage"][
+                "full_residual_compatible_anchor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_prior_smooth_only_rows": sum(
+            case["current_relinearized_residual_factor_coverage"]["full_residual_prior_smooth_only_rows"]
+            for case in case_outputs
+        ),
+        "nonapplied_full_residual_direct_factor_rows": sum(
+            case["current_relinearized_residual_factor_coverage"][
+                "nonapplied_full_residual_direct_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "nonapplied_full_residual_surface_factor_rows": sum(
+            case["current_relinearized_residual_factor_coverage"][
+                "nonapplied_full_residual_surface_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "nonapplied_full_residual_depth_observation_factor_rows": sum(
+            case["current_relinearized_residual_factor_coverage"][
+                "nonapplied_full_residual_depth_observation_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "nonapplied_full_residual_prior_smooth_only_rows": sum(
+            case["current_relinearized_residual_factor_coverage"][
+                "nonapplied_full_residual_prior_smooth_only_rows"
+            ]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_relinearized_residual_factor_coverage"][
+                                "full_residual_factor_coverage_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "full_residual_factor_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_relinearized_residual_factor_coverage"][
+                                "full_residual_factor_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "nonapplied_full_residual_factor_coverage_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_relinearized_residual_factor_coverage"][
+                                "nonapplied_full_residual_factor_coverage_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "nonapplied_full_residual_factor_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_relinearized_residual_factor_coverage"][
+                                "nonapplied_full_residual_factor_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "full_residual_factor_coverage_independent_keypoint_support_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_relinearized_residual_factor_coverage"][
+                                "independent_keypoint_support_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "full_residual_factor_coverage_selected_residual_sample_count": sum(
+            case["current_relinearized_residual_factor_coverage"]["selected_residual_sample_count"]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_assigned_residual_sample_count": sum(
+            case["current_relinearized_residual_factor_coverage"]["assigned_residual_sample_count"]
+            for case in case_outputs
+        ),
+        "full_residual_factor_coverage_compatible_seed_sample_count": sum(
+            case["current_relinearized_residual_factor_coverage"]["compatible_seed_sample_count"]
+            for case in case_outputs
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -11213,6 +11664,11 @@ def parse_args() -> argparse.Namespace:
         "--relinearized-residual-object-contact-state-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_relinearized_residual_object_contact_state"),
+    )
+    parser.add_argument(
+        "--relinearized-residual-factor-coverage-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_relinearized_residual_factor_coverage"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
