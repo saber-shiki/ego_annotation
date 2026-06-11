@@ -59,6 +59,7 @@ class CaseInputs:
     relinearized_hand_surface_observation_graph_report: Path
     full_residual_relinearized_hand_surface_observation_graph_report: Path
     full_residual_pose_relinearized_hand_surface_observation_graph_report: Path
+    full_residual_pose_transition_diagnostic_report: Path
     relinearized_hand_capacity_diagnostic_report: Path
     relinearized_residual_object_contact_state_report: Path
     relinearized_residual_factor_coverage_report: Path
@@ -176,6 +177,7 @@ def case_inputs(
     relinearized_hand_surface_observation_graph_root: Path,
     full_residual_relinearized_hand_surface_observation_graph_root: Path,
     full_residual_pose_relinearized_hand_surface_observation_graph_root: Path,
+    full_residual_pose_transition_diagnostic_root: Path,
     relinearized_hand_capacity_diagnostic_root: Path,
     relinearized_residual_object_contact_state_root: Path,
     relinearized_residual_factor_coverage_root: Path,
@@ -381,6 +383,12 @@ def case_inputs(
         / "v17_full_residual_relinearized_hand_surface_observation_graph.json",
         f"{case} pose-enabled full residual relinearized hand surface observation graph report",
     )
+    full_residual_pose_transition_diagnostic_report = existing_path(
+        full_residual_pose_transition_diagnostic_root
+        / case
+        / "v17_full_residual_pose_transition_diagnostic.json",
+        f"{case} full residual pose transition diagnostic report",
+    )
     relinearized_hand_capacity_diagnostic_report = existing_path(
         relinearized_hand_capacity_diagnostic_root
         / case
@@ -492,6 +500,7 @@ def case_inputs(
         relinearized_hand_surface_observation_graph_report=relinearized_hand_surface_observation_graph_report,
         full_residual_relinearized_hand_surface_observation_graph_report=full_residual_relinearized_hand_surface_observation_graph_report,
         full_residual_pose_relinearized_hand_surface_observation_graph_report=full_residual_pose_relinearized_hand_surface_observation_graph_report,
+        full_residual_pose_transition_diagnostic_report=full_residual_pose_transition_diagnostic_report,
         relinearized_hand_capacity_diagnostic_report=relinearized_hand_capacity_diagnostic_report,
         relinearized_residual_object_contact_state_report=relinearized_residual_object_contact_state_report,
         relinearized_residual_factor_coverage_report=relinearized_residual_factor_coverage_report,
@@ -2554,6 +2563,119 @@ def relinearized_residual_factor_coverage_counts(report: dict[str, Any]) -> dict
     }
 
 
+def full_residual_pose_transition_diagnostic_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "full residual pose transition diagnostic frame_count",
+        ),
+        "transition_variable_rows": require_int(
+            report.get("transition_variable_rows"),
+            "full residual pose transition variable rows",
+        ),
+        "scalar_variable_rows": require_int(
+            report.get("scalar_variable_rows"),
+            "full residual pose transition scalar variable rows",
+        ),
+        "pose_variable_rows": require_int(
+            report.get("pose_variable_rows"),
+            "full residual pose transition pose variable rows",
+        ),
+        "scalar_accepted_rows_after_reprojection": require_int(
+            report.get("scalar_accepted_rows_after_reprojection"),
+            "full residual pose transition scalar accepted rows",
+        ),
+        "pose_accepted_rows_after_reprojection": require_int(
+            report.get("pose_accepted_rows_after_reprojection"),
+            "full residual pose transition pose accepted rows",
+        ),
+        "scalar_residual_rows_after_reprojection": require_int(
+            report.get("scalar_residual_rows_after_reprojection"),
+            "full residual pose transition scalar residual rows",
+        ),
+        "pose_residual_rows_after_reprojection": require_int(
+            report.get("pose_residual_rows_after_reprojection"),
+            "full residual pose transition pose residual rows",
+        ),
+        "compatible_gain_rows": require_int(
+            report.get("compatible_gain_rows"),
+            "full residual pose transition compatible gain rows",
+        ),
+        "compatible_loss_rows": require_int(
+            report.get("compatible_loss_rows"),
+            "full residual pose transition compatible loss rows",
+        ),
+        "net_compatible_gain_rows": require_int(
+            report.get("net_compatible_gain_rows"),
+            "full residual pose transition net compatible gain rows",
+        ),
+        "residual_owner_persistent_rows": require_int(
+            report.get("residual_owner_persistent_rows"),
+            "full residual pose transition persistent residual owner rows",
+        ),
+        "residual_owner_created_rows": require_int(
+            report.get("residual_owner_created_rows"),
+            "full residual pose transition created residual owner rows",
+        ),
+        "residual_owner_resolved_rows": require_int(
+            report.get("residual_owner_resolved_rows"),
+            "full residual pose transition resolved residual owner rows",
+        ),
+        "pose_delta_clamp_hit_rows": require_int(
+            report.get("pose_delta_clamp_hit_rows"),
+            "full residual pose transition pose clamp rows",
+        ),
+        "abs_gap_improved_at_least_5mm_rows": require_int(
+            report.get("abs_gap_improved_at_least_5mm_rows"),
+            "full residual pose transition improved gap rows",
+        ),
+        "abs_gap_regressed_at_least_5mm_rows": require_int(
+            report.get("abs_gap_regressed_at_least_5mm_rows"),
+            "full residual pose transition regressed gap rows",
+        ),
+        "abs_owner_median_gap_improvement_m": require_dict(
+            report.get("abs_owner_median_gap_improvement_m"),
+            "full residual pose transition owner gap improvement summary",
+        ),
+        "pose_delta_abs_max_rad": require_dict(
+            report.get("pose_delta_abs_max_rad"),
+            "full residual pose transition pose delta summary",
+        ),
+        "pose_minus_scalar_delta_shift_m": require_dict(
+            report.get("pose_minus_scalar_delta_shift_m"),
+            "full residual pose transition scalar shift change summary",
+        ),
+        "reprojection_state_transition_counts": require_dict(
+            report.get("reprojection_state_transition_counts"),
+            "full residual pose transition reprojection transition counts",
+        ),
+        "input_factor_state_transition_counts": require_dict(
+            report.get("input_factor_state_transition_counts"),
+            "full residual pose transition factor transition counts",
+        ),
+        "owner_depth_state_transition_counts": require_dict(
+            report.get("owner_depth_state_transition_counts"),
+            "full residual pose transition owner depth transition counts",
+        ),
+        "pose_state_counts": require_dict(
+            report.get("pose_state_counts"),
+            "full residual pose transition pose state counts",
+        ),
+        "scalar_state_counts": require_dict(
+            report.get("scalar_state_counts"),
+            "full residual pose transition scalar state counts",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def mano_articulation_local_solve_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -3882,6 +4004,7 @@ def required_variable_families(
     relinearized_hand_surface_observation_graph: dict[str, Any],
     full_residual_relinearized_hand_surface_observation_graph: dict[str, Any],
     full_residual_pose_relinearized_hand_surface_observation_graph: dict[str, Any],
+    full_residual_pose_transition_diagnostic: dict[str, Any],
     relinearized_hand_capacity_diagnostic: dict[str, Any],
     relinearized_residual_object_contact_state: dict[str, Any],
     relinearized_residual_factor_coverage: dict[str, Any],
@@ -4466,6 +4589,36 @@ def required_variable_families(
                 ],
                 "full_residual_pose_relinearized_hand_depth_reprojection_state_counts": full_residual_pose_relinearized_hand_surface_observation_graph[
                     "relinearized_temporal_reprojection_state_counts"
+                ],
+                "full_residual_pose_transition_compatible_gain_rows": full_residual_pose_transition_diagnostic[
+                    "compatible_gain_rows"
+                ],
+                "full_residual_pose_transition_compatible_loss_rows": full_residual_pose_transition_diagnostic[
+                    "compatible_loss_rows"
+                ],
+                "full_residual_pose_transition_net_compatible_gain_rows": full_residual_pose_transition_diagnostic[
+                    "net_compatible_gain_rows"
+                ],
+                "full_residual_pose_transition_residual_owner_persistent_rows": full_residual_pose_transition_diagnostic[
+                    "residual_owner_persistent_rows"
+                ],
+                "full_residual_pose_transition_residual_owner_created_rows": full_residual_pose_transition_diagnostic[
+                    "residual_owner_created_rows"
+                ],
+                "full_residual_pose_transition_residual_owner_resolved_rows": full_residual_pose_transition_diagnostic[
+                    "residual_owner_resolved_rows"
+                ],
+                "full_residual_pose_transition_abs_gap_improved_at_least_5mm_rows": full_residual_pose_transition_diagnostic[
+                    "abs_gap_improved_at_least_5mm_rows"
+                ],
+                "full_residual_pose_transition_abs_gap_regressed_at_least_5mm_rows": full_residual_pose_transition_diagnostic[
+                    "abs_gap_regressed_at_least_5mm_rows"
+                ],
+                "full_residual_pose_transition_abs_owner_median_gap_improvement_m": full_residual_pose_transition_diagnostic[
+                    "abs_owner_median_gap_improvement_m"
+                ],
+                "full_residual_pose_transition_reprojection_state_transition_counts": full_residual_pose_transition_diagnostic[
+                    "reprojection_state_transition_counts"
                 ],
                 "relinearized_hand_capacity_applied_variable_rows": relinearized_hand_capacity_diagnostic[
                     "applied_relinearized_variable_rows"
@@ -5977,6 +6130,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.full_residual_pose_relinearized_hand_surface_observation_graph_report),
         f"{inputs.case} pose-enabled full residual relinearized hand surface observation graph report",
     )
+    full_residual_pose_transition_diagnostic_report = require_dict(
+        load_json(inputs.full_residual_pose_transition_diagnostic_report),
+        f"{inputs.case} full residual pose transition diagnostic report",
+    )
     relinearized_hand_capacity_diagnostic_report = require_dict(
         load_json(inputs.relinearized_hand_capacity_diagnostic_report),
         f"{inputs.case} relinearized hand capacity diagnostic report",
@@ -6118,6 +6275,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     full_residual_pose_relinearized_hand_surface_observation_graph = relinearized_hand_surface_observation_graph_counts(
         full_residual_pose_relinearized_hand_surface_observation_graph_report
+    )
+    full_residual_pose_transition_diagnostic = full_residual_pose_transition_diagnostic_counts(
+        full_residual_pose_transition_diagnostic_report
     )
     relinearized_hand_capacity_diagnostic = relinearized_hand_capacity_diagnostic_counts(
         relinearized_hand_capacity_diagnostic_report
@@ -7045,6 +7205,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and pose-enabled full residual relinearized hand surface observation graph"
         )
+    if frame_count != require_int(
+        full_residual_pose_transition_diagnostic["frame_count"],
+        f"{inputs.case} full residual pose transition diagnostic frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and full residual pose transition diagnostic"
+        )
     if require_str(
         relinearized_hand_surface_observation_graph["relinearized_variable_scope"],
         f"{inputs.case} relinearized hand graph scope",
@@ -7802,6 +7969,92 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} pose-enabled full residual graph residual owner split does not sum")
     if require_int(
+        full_residual_pose_transition_diagnostic["transition_variable_rows"],
+        f"{inputs.case} full residual pose transition variables",
+    ) != require_int(
+        full_residual_relinearized_hand_surface_observation_graph["relinearized_variable_rows"],
+        f"{inputs.case} scalar full residual graph variables",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition variables disagree with scalar graph")
+    if require_int(
+        full_residual_pose_transition_diagnostic["scalar_variable_rows"],
+        f"{inputs.case} full residual pose transition scalar variables",
+    ) != require_int(
+        full_residual_relinearized_hand_surface_observation_graph["relinearized_variable_rows"],
+        f"{inputs.case} scalar full residual graph variables",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition scalar variables disagree with scalar graph")
+    if require_int(
+        full_residual_pose_transition_diagnostic["pose_variable_rows"],
+        f"{inputs.case} full residual pose transition pose variables",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_variable_rows"],
+        f"{inputs.case} pose-enabled full residual graph variables",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition pose variables disagree with pose graph")
+    if require_int(
+        full_residual_pose_transition_diagnostic["scalar_accepted_rows_after_reprojection"],
+        f"{inputs.case} full residual pose transition scalar accepted rows",
+    ) != require_int(
+        full_residual_relinearized_hand_surface_observation_graph["metric_hand_state_accepted_rows_after_relinearized_graph"],
+        f"{inputs.case} scalar full residual accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition scalar accepted rows disagree with scalar graph")
+    if require_int(
+        full_residual_pose_transition_diagnostic["pose_accepted_rows_after_reprojection"],
+        f"{inputs.case} full residual pose transition pose accepted rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["metric_hand_state_accepted_rows_after_relinearized_graph"],
+        f"{inputs.case} pose-enabled full residual accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition pose accepted rows disagree with pose graph")
+    if require_int(
+        full_residual_pose_transition_diagnostic["scalar_residual_rows_after_reprojection"],
+        f"{inputs.case} full residual pose transition scalar residual rows",
+    ) != require_int(
+        full_residual_relinearized_hand_surface_observation_graph["depth_repair_factor_candidate_rows_after_relinearized_graph"],
+        f"{inputs.case} scalar full residual residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition scalar residual rows disagree with scalar graph")
+    if require_int(
+        full_residual_pose_transition_diagnostic["pose_residual_rows_after_reprojection"],
+        f"{inputs.case} full residual pose transition pose residual rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["depth_repair_factor_candidate_rows_after_relinearized_graph"],
+        f"{inputs.case} pose-enabled full residual residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition pose residual rows disagree with pose graph")
+    if require_int(
+        full_residual_pose_transition_diagnostic["compatible_gain_rows"],
+        f"{inputs.case} full residual pose transition gain rows",
+    ) - require_int(
+        full_residual_pose_transition_diagnostic["compatible_loss_rows"],
+        f"{inputs.case} full residual pose transition loss rows",
+    ) != require_int(
+        full_residual_pose_transition_diagnostic["net_compatible_gain_rows"],
+        f"{inputs.case} full residual pose transition net gain rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition net gain rows do not equal gains minus losses")
+    if require_int(
+        full_residual_pose_transition_diagnostic["net_compatible_gain_rows"],
+        f"{inputs.case} full residual pose transition net gain rows",
+    ) != require_int(
+        full_residual_pose_transition_diagnostic["pose_accepted_rows_after_reprojection"],
+        f"{inputs.case} full residual pose transition pose accepted rows",
+    ) - require_int(
+        full_residual_pose_transition_diagnostic["scalar_accepted_rows_after_reprojection"],
+        f"{inputs.case} full residual pose transition scalar accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition net gain rows disagree with accepted-row delta")
+    if require_int(
+        full_residual_pose_transition_diagnostic["pose_delta_clamp_hit_rows"],
+        f"{inputs.case} full residual pose transition clamp hit rows",
+    ) != require_int(
+        full_residual_pose_relinearized_hand_surface_observation_graph["relinearized_geometry_pose_delta_clamp_hit_rows"],
+        f"{inputs.case} pose-enabled full residual pose clamp rows",
+    ):
+        raise RuntimeError(f"{inputs.case} full residual pose transition clamp rows disagree with pose graph")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -8208,6 +8461,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         relinearized_hand_surface_observation_graph,
         full_residual_relinearized_hand_surface_observation_graph,
         full_residual_pose_relinearized_hand_surface_observation_graph,
+        full_residual_pose_transition_diagnostic,
         relinearized_hand_capacity_diagnostic,
         relinearized_residual_object_contact_state,
         relinearized_residual_factor_coverage,
@@ -8366,6 +8620,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.full_residual_pose_relinearized_hand_surface_observation_graph_report,
                 full_residual_pose_relinearized_hand_surface_observation_graph_report,
             ),
+            "full_residual_pose_transition_diagnostic_report": source_summary(
+                inputs.full_residual_pose_transition_diagnostic_report,
+                full_residual_pose_transition_diagnostic_report,
+            ),
             "relinearized_hand_capacity_diagnostic_report": source_summary(
                 inputs.relinearized_hand_capacity_diagnostic_report,
                 relinearized_hand_capacity_diagnostic_report,
@@ -8452,6 +8710,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_relinearized_hand_surface_observation_graph": relinearized_hand_surface_observation_graph,
         "current_full_residual_relinearized_hand_surface_observation_graph": full_residual_relinearized_hand_surface_observation_graph,
         "current_full_residual_pose_relinearized_hand_surface_observation_graph": full_residual_pose_relinearized_hand_surface_observation_graph,
+        "current_full_residual_pose_transition_diagnostic": full_residual_pose_transition_diagnostic,
         "current_relinearized_hand_capacity_diagnostic": relinearized_hand_capacity_diagnostic,
         "current_relinearized_residual_object_contact_state": relinearized_residual_object_contact_state,
         "current_relinearized_residual_factor_coverage": relinearized_residual_factor_coverage,
@@ -8534,6 +8793,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.relinearized_hand_surface_observation_graph_root,
             args.full_residual_relinearized_hand_surface_observation_graph_root,
             args.full_residual_pose_relinearized_hand_surface_observation_graph_root,
+            args.full_residual_pose_transition_diagnostic_root,
             args.relinearized_hand_capacity_diagnostic_root,
             args.relinearized_residual_object_contact_state_root,
             args.relinearized_residual_factor_coverage_root,
@@ -8617,6 +8877,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "full_residual_pose_relinearized_hand_surface_observation_graph_root": str(
             args.full_residual_pose_relinearized_hand_surface_observation_graph_root
+        ),
+        "full_residual_pose_transition_diagnostic_root": str(
+            args.full_residual_pose_transition_diagnostic_root
         ),
         "relinearized_hand_capacity_diagnostic_root": str(
             args.relinearized_hand_capacity_diagnostic_root
@@ -11185,6 +11448,91 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "full_residual_pose_transition_variable_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["transition_variable_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_compatible_gain_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["compatible_gain_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_compatible_loss_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["compatible_loss_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_net_compatible_gain_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["net_compatible_gain_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_residual_owner_persistent_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["residual_owner_persistent_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_residual_owner_created_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["residual_owner_created_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_residual_owner_resolved_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["residual_owner_resolved_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_pose_delta_clamp_hit_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["pose_delta_clamp_hit_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_abs_gap_improved_at_least_5mm_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["abs_gap_improved_at_least_5mm_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_abs_gap_regressed_at_least_5mm_rows": sum(
+            case["current_full_residual_pose_transition_diagnostic"]["abs_gap_regressed_at_least_5mm_rows"]
+            for case in case_outputs
+        ),
+        "full_residual_pose_transition_reprojection_state_transition_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_full_residual_pose_transition_diagnostic"][
+                                "reprojection_state_transition_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "full_residual_pose_transition_input_factor_state_transition_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_full_residual_pose_transition_diagnostic"][
+                                "input_factor_state_transition_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "full_residual_pose_transition_owner_depth_state_transition_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_full_residual_pose_transition_diagnostic"][
+                                "owner_depth_state_transition_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "relinearized_hand_capacity_applied_variable_rows": sum(
             case["current_relinearized_hand_capacity_diagnostic"]["applied_relinearized_variable_rows"]
             for case in case_outputs
@@ -12165,6 +12513,11 @@ def parse_args() -> argparse.Namespace:
         "--full-residual-pose-relinearized-hand-surface-observation-graph-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_full_residual_relinearized_hand_surface_observation_graph_pose"),
+    )
+    parser.add_argument(
+        "--full-residual-pose-transition-diagnostic-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_full_residual_pose_transition_diagnostic"),
     )
     parser.add_argument(
         "--relinearized-hand-capacity-diagnostic-root",
