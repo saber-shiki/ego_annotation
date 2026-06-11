@@ -44,6 +44,7 @@ class CaseInputs:
     mano_articulation_factor_input_report: Path
     mano_articulation_local_solve_report: Path
     hand_residual_switch_problem_report: Path
+    hand_depth_observation_switch_problem_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -143,6 +144,7 @@ def case_inputs(
     mano_articulation_factor_input_root: Path,
     mano_articulation_local_solve_root: Path,
     hand_residual_switch_problem_root: Path,
+    hand_depth_observation_switch_problem_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -257,6 +259,12 @@ def case_inputs(
         hand_residual_switch_problem_root / case / "v17_hand_residual_switch_problem.json",
         f"{case} hand residual switch problem report",
     )
+    hand_depth_observation_switch_problem_report = existing_path(
+        hand_depth_observation_switch_problem_root
+        / case
+        / "v17_hand_depth_observation_switch_problem.json",
+        f"{case} hand depth-observation switch problem report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -335,6 +343,7 @@ def case_inputs(
         mano_articulation_factor_input_report=mano_articulation_factor_input_report,
         mano_articulation_local_solve_report=mano_articulation_local_solve_report,
         hand_residual_switch_problem_report=hand_residual_switch_problem_report,
+        hand_depth_observation_switch_problem_report=hand_depth_observation_switch_problem_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1467,6 +1476,51 @@ def hand_residual_switch_problem_counts(report: dict[str, Any]) -> dict[str, Any
     }
 
 
+def hand_depth_observation_switch_problem_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "hand depth-observation switch frame_count"),
+        "hand_depth_observation_switch_variable_count": require_int(
+            report.get("hand_depth_observation_switch_variable_count"),
+            "hand depth-observation switch variable count",
+        ),
+        "depth_observation_switch_candidate_rows": require_int(
+            report.get("depth_observation_switch_candidate_rows"),
+            "hand depth-observation switch candidate rows",
+        ),
+        "object_or_occluder_depth_observation_switch_rows": require_int(
+            report.get("object_or_occluder_depth_observation_switch_rows"),
+            "hand object/occluder depth-observation switch rows",
+        ),
+        "far_field_hand_depth_observation_switch_rows": require_int(
+            report.get("far_field_hand_depth_observation_switch_rows"),
+            "hand far-field depth-observation switch rows",
+        ),
+        "mixed_object_and_far_field_depth_observation_switch_rows": require_int(
+            report.get("mixed_object_and_far_field_depth_observation_switch_rows"),
+            "hand mixed object/far-field depth-observation switch rows",
+        ),
+        "depth_observation_switch_state_counts": require_dict(
+            report.get("depth_observation_switch_state_counts"),
+            "hand depth-observation switch state counts",
+        ),
+        "depth_observation_candidate_state_counts": require_dict(
+            report.get("depth_observation_candidate_state_counts"),
+            "hand depth-observation candidate state counts",
+        ),
+        "candidate_partition_sample_counts": require_dict(
+            report.get("candidate_partition_sample_counts"),
+            "hand depth-observation partition sample counts",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2307,6 +2361,7 @@ def required_variable_families(
     mano_articulation_factor_input: dict[str, Any],
     mano_articulation_local_solve: dict[str, Any],
     hand_residual_switch_problem: dict[str, Any],
+    hand_depth_observation_switch_problem: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2553,6 +2608,12 @@ def required_variable_families(
                 "hand_residual_switch_local_articulation_factor_ready_rows": hand_residual_switch_problem[
                     "local_articulation_factor_ready_rows"
                 ],
+                "hand_depth_observation_switch_candidate_rows": hand_depth_observation_switch_problem[
+                    "depth_observation_switch_candidate_rows"
+                ],
+                "hand_depth_observation_far_field_rows": hand_depth_observation_switch_problem[
+                    "far_field_hand_depth_observation_switch_rows"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2625,6 +2686,7 @@ def required_variable_families(
                 "MANO articulation factor inputs now carry residual and compatible-seed surface vertex ids, but MANO pose has not been re-optimized",
                 "local MANO pose-delta solves reduce some residuals but mostly hit the pose bound and leave the local articulation mechanism unaccepted",
                 "residual switch variables now separate local surface/articulation owners from mixed depth and occlusion owners, but current local articulation produces no accepted switch-ready row",
+                "depth-observation switch variables show that most depth-side residual rows are far from active object masks, so object occlusion alone cannot explain the remaining hand-depth residual",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -3310,6 +3372,24 @@ def required_variable_families(
                 "hand_residual_switch_state_counts": hand_residual_switch_problem[
                     "residual_switch_state_counts"
                 ],
+                "hand_depth_observation_switch_candidate_rows": hand_depth_observation_switch_problem[
+                    "depth_observation_switch_candidate_rows"
+                ],
+                "hand_depth_observation_object_or_occluder_rows": hand_depth_observation_switch_problem[
+                    "object_or_occluder_depth_observation_switch_rows"
+                ],
+                "hand_depth_observation_far_field_rows": hand_depth_observation_switch_problem[
+                    "far_field_hand_depth_observation_switch_rows"
+                ],
+                "hand_depth_observation_mixed_object_far_field_rows": hand_depth_observation_switch_problem[
+                    "mixed_object_and_far_field_depth_observation_switch_rows"
+                ],
+                "hand_depth_observation_switch_state_counts": hand_depth_observation_switch_problem[
+                    "depth_observation_switch_state_counts"
+                ],
+                "hand_depth_observation_candidate_partition_sample_counts": hand_depth_observation_switch_problem[
+                    "candidate_partition_sample_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -3388,6 +3468,7 @@ def required_variable_families(
                 "MANO articulation factor inputs now identify surface vertex correspondences for local projection factors before pose optimization",
                 "local MANO articulation pose-delta solves produce limited depth gains and widespread pose-bound hits, so they diagnose the next owner rather than updating the hand state",
                 "hand residual switch variables expose which residuals need mixed projection-depth, occlusion/depth-observation, projection-support, or broader local hand-surface factors",
+                "depth-observation switch variables split the depth-side residuals by object-mask proximity and expose far-field hand-depth rows as the dominant owner",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -3545,6 +3626,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_residual_switch_problem_report),
         f"{inputs.case} hand residual switch problem report",
     )
+    hand_depth_observation_switch_problem_report = require_dict(
+        load_json(inputs.hand_depth_observation_switch_problem_report),
+        f"{inputs.case} hand depth-observation switch problem report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3627,6 +3712,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     hand_residual_switch_problem = hand_residual_switch_problem_counts(
         hand_residual_switch_problem_report
+    )
+    hand_depth_observation_switch_problem = hand_depth_observation_switch_problem_counts(
+        hand_depth_observation_switch_problem_report
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -3724,6 +3812,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand residual switch problem"
+        )
+    if frame_count != require_int(
+        hand_depth_observation_switch_problem["frame_count"],
+        f"{inputs.case} hand depth-observation switch frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand depth-observation switch problem"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -4264,6 +4359,39 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(f"{inputs.case} residual switch split does not sum to switch rows")
     if require_int(
+        hand_depth_observation_switch_problem["hand_depth_observation_switch_variable_count"],
+        f"{inputs.case} depth-observation switch rows",
+    ) != require_int(
+        hand_residual_switch_problem["hand_residual_switch_variable_count"],
+        f"{inputs.case} hand residual switch rows",
+    ):
+        raise RuntimeError(f"{inputs.case} depth-observation switch rows disagree with residual switches")
+    if require_int(
+        hand_depth_observation_switch_problem["depth_observation_switch_candidate_rows"],
+        f"{inputs.case} depth-observation candidate rows",
+    ) != require_int(
+        hand_residual_switch_problem["mixed_projection_depth_switch_rows"],
+        f"{inputs.case} residual switch mixed rows",
+    ) + require_int(
+        hand_residual_switch_problem["depth_observation_or_occlusion_switch_rows"],
+        f"{inputs.case} residual switch depth rows",
+    ):
+        raise RuntimeError(f"{inputs.case} depth-observation candidate rows disagree with residual switch owners")
+    if require_int(
+        hand_depth_observation_switch_problem["object_or_occluder_depth_observation_switch_rows"],
+        f"{inputs.case} object/occluder depth-observation rows",
+    ) + require_int(
+        hand_depth_observation_switch_problem["far_field_hand_depth_observation_switch_rows"],
+        f"{inputs.case} far-field depth-observation rows",
+    ) + require_int(
+        hand_depth_observation_switch_problem["mixed_object_and_far_field_depth_observation_switch_rows"],
+        f"{inputs.case} mixed object/far-field depth-observation rows",
+    ) != require_int(
+        hand_depth_observation_switch_problem["depth_observation_switch_candidate_rows"],
+        f"{inputs.case} depth-observation candidate rows",
+    ):
+        raise RuntimeError(f"{inputs.case} depth-observation switch split does not sum to candidate rows")
+    if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
     ) != require_int(
@@ -4655,6 +4783,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         mano_articulation_factor_input,
         mano_articulation_local_solve,
         hand_residual_switch_problem,
+        hand_depth_observation_switch_problem,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -4750,6 +4879,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_residual_switch_problem_report,
                 hand_residual_switch_problem_report,
             ),
+            "hand_depth_observation_switch_problem_report": source_summary(
+                inputs.hand_depth_observation_switch_problem_report,
+                hand_depth_observation_switch_problem_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -4809,6 +4942,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_mano_articulation_factor_input": mano_articulation_factor_input,
         "current_mano_articulation_local_solve": mano_articulation_local_solve,
         "current_hand_residual_switch_problem": hand_residual_switch_problem,
+        "current_hand_depth_observation_switch_problem": hand_depth_observation_switch_problem,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -4873,6 +5007,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.mano_articulation_factor_input_root,
             args.mano_articulation_local_solve_root,
             args.hand_residual_switch_problem_root,
+            args.hand_depth_observation_switch_problem_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -4921,6 +5056,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "mano_articulation_factor_input_root": str(args.mano_articulation_factor_input_root),
         "mano_articulation_local_solve_root": str(args.mano_articulation_local_solve_root),
         "hand_residual_switch_problem_root": str(args.hand_residual_switch_problem_root),
+        "hand_depth_observation_switch_problem_root": str(args.hand_depth_observation_switch_problem_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -5255,6 +5391,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_residual_switch_state_counts": case[
                     "current_hand_residual_switch_problem"
                 ]["residual_switch_state_counts"],
+                "hand_depth_observation_switch_candidate_rows": case[
+                    "current_hand_depth_observation_switch_problem"
+                ]["depth_observation_switch_candidate_rows"],
+                "hand_depth_observation_object_or_occluder_rows": case[
+                    "current_hand_depth_observation_switch_problem"
+                ]["object_or_occluder_depth_observation_switch_rows"],
+                "hand_depth_observation_far_field_rows": case[
+                    "current_hand_depth_observation_switch_problem"
+                ]["far_field_hand_depth_observation_switch_rows"],
+                "hand_depth_observation_mixed_object_far_field_rows": case[
+                    "current_hand_depth_observation_switch_problem"
+                ]["mixed_object_and_far_field_depth_observation_switch_rows"],
+                "hand_depth_observation_switch_state_counts": case[
+                    "current_hand_depth_observation_switch_problem"
+                ]["depth_observation_switch_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -5875,6 +6026,95 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 ).items()
             )
         ),
+        "hand_depth_observation_switch_variable_count": sum(
+            case["current_hand_depth_observation_switch_problem"][
+                "hand_depth_observation_switch_variable_count"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_observation_switch_candidate_rows": sum(
+            case["current_hand_depth_observation_switch_problem"][
+                "depth_observation_switch_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_observation_object_or_occluder_rows": sum(
+            case["current_hand_depth_observation_switch_problem"][
+                "object_or_occluder_depth_observation_switch_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_observation_far_field_rows": sum(
+            case["current_hand_depth_observation_switch_problem"][
+                "far_field_hand_depth_observation_switch_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_observation_mixed_object_far_field_rows": sum(
+            case["current_hand_depth_observation_switch_problem"][
+                "mixed_object_and_far_field_depth_observation_switch_rows"
+            ]
+            for case in case_outputs
+        ),
+        "hand_depth_observation_switch_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_depth_observation_switch_problem"][
+                                "depth_observation_switch_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_depth_observation_candidate_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_depth_observation_switch_problem"][
+                                "depth_observation_candidate_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_depth_observation_candidate_partition_sample_counts": {
+            "selected_residual_sample_count": sum(
+                require_int(
+                    case["current_hand_depth_observation_switch_problem"][
+                        "candidate_partition_sample_counts"
+                    ].get("selected_residual_sample_count"),
+                    "depth-observation selected residual samples",
+                )
+                for case in case_outputs
+            ),
+            "near_active_object_residual_sample_count": sum(
+                require_int(
+                    case["current_hand_depth_observation_switch_problem"][
+                        "candidate_partition_sample_counts"
+                    ].get("near_active_object_residual_sample_count"),
+                    "depth-observation near object residual samples",
+                )
+                for case in case_outputs
+            ),
+            "far_from_active_object_residual_sample_count": sum(
+                require_int(
+                    case["current_hand_depth_observation_switch_problem"][
+                        "candidate_partition_sample_counts"
+                    ].get("far_from_active_object_residual_sample_count"),
+                    "depth-observation far object residual samples",
+                )
+                for case in case_outputs
+            ),
+        },
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -6491,6 +6731,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-residual-switch-problem-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_residual_switch_problem"),
+    )
+    parser.add_argument(
+        "--hand-depth-observation-switch-problem-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_depth_observation_switch_problem"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
