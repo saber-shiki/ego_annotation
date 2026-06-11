@@ -39,6 +39,7 @@ class CaseInputs:
     hand_scale_depth_counterfactual_report: Path
     hand_depth_repair_graph_report: Path
     hand_depth_repair_residual_owner_state_report: Path
+    hand_local_projection_repair_problem_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -133,6 +134,7 @@ def case_inputs(
     hand_scale_depth_counterfactual_root: Path,
     hand_depth_repair_graph_root: Path,
     hand_depth_repair_residual_owner_state_root: Path,
+    hand_local_projection_repair_problem_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -225,6 +227,12 @@ def case_inputs(
         / "v17_hand_depth_repair_residual_owner_state.json",
         f"{case} hand depth repair residual-owner state report",
     )
+    hand_local_projection_repair_problem_report = existing_path(
+        hand_local_projection_repair_problem_root
+        / case
+        / "v17_hand_local_projection_repair_problem.json",
+        f"{case} hand local projection repair problem report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -298,6 +306,7 @@ def case_inputs(
         hand_scale_depth_counterfactual_report=hand_scale_depth_counterfactual_report,
         hand_depth_repair_graph_report=hand_depth_repair_graph_report,
         hand_depth_repair_residual_owner_state_report=hand_depth_repair_residual_owner_state_report,
+        hand_local_projection_repair_problem_report=hand_local_projection_repair_problem_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1178,6 +1187,54 @@ def hand_depth_repair_residual_owner_state_counts(report: dict[str, Any]) -> dic
     }
 
 
+def hand_local_projection_repair_problem_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "hand local projection repair frame_count",
+        ),
+        "hand_local_projection_repair_variable_count": require_int(
+            report.get("hand_local_projection_repair_variable_count"),
+            "hand local projection repair variable count",
+        ),
+        "repair_residual_factor_candidate_rows": require_int(
+            report.get("repair_residual_factor_candidate_rows"),
+            "hand local projection repair residual rows",
+        ),
+        "local_projection_repair_factor_candidate_rows": require_int(
+            report.get("local_projection_repair_factor_candidate_rows"),
+            "hand local projection repair candidate rows",
+        ),
+        "partial_projection_depth_mixed_owner_rows": require_int(
+            report.get("partial_projection_depth_mixed_owner_rows"),
+            "hand local projection mixed owner rows",
+        ),
+        "depth_observation_or_occlusion_owner_rows": require_int(
+            report.get("depth_observation_or_occlusion_owner_rows"),
+            "hand local projection depth observation owner rows",
+        ),
+        "projection_support_unresolved_rows": require_int(
+            report.get("projection_support_unresolved_rows"),
+            "hand local projection support unresolved rows",
+        ),
+        "residual_local_projection_repair_state_counts": require_dict(
+            report.get("residual_local_projection_repair_state_counts"),
+            "hand local projection repair state counts",
+        ),
+        "local_projection_assignment": require_dict(
+            report.get("local_projection_assignment"),
+            "hand local projection assignment summary",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2013,6 +2070,7 @@ def required_variable_families(
     hand_scale_depth_counterfactual: dict[str, Any],
     hand_depth_repair_graph: dict[str, Any],
     hand_depth_repair_residual_owner_state: dict[str, Any],
+    hand_local_projection_repair_problem: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2187,6 +2245,24 @@ def required_variable_families(
                 "hand_depth_repair_residual_sample_count": hand_depth_repair_residual_owner_state[
                     "residual_sample_count"
                 ],
+                "hand_local_projection_repair_factor_candidate_rows": hand_local_projection_repair_problem[
+                    "local_projection_repair_factor_candidate_rows"
+                ],
+                "hand_local_projection_mixed_owner_rows": hand_local_projection_repair_problem[
+                    "partial_projection_depth_mixed_owner_rows"
+                ],
+                "hand_local_projection_depth_observation_owner_rows": hand_local_projection_repair_problem[
+                    "depth_observation_or_occlusion_owner_rows"
+                ],
+                "hand_local_projection_support_unresolved_rows": hand_local_projection_repair_problem[
+                    "projection_support_unresolved_rows"
+                ],
+                "hand_local_projection_repair_state_counts": hand_local_projection_repair_problem[
+                    "residual_local_projection_repair_state_counts"
+                ],
+                "hand_local_projection_assignment": hand_local_projection_repair_problem[
+                    "local_projection_assignment"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2254,6 +2330,7 @@ def required_variable_families(
                 "global or per-side hand scale reduces median depth bias but leaves most rows outside the p95 depth threshold",
                 "a full-timeline bounded scale plus ray-depth repair graph improves the hand-depth state but still leaves many projection-trusted depth-repair candidates",
                 "the remaining hand-depth repair residuals split into local hand-surface/projection owners and depth-observation owners after per-sample owner partitioning",
+                "local projection assignment materializes the local hand-surface factor candidates but does not update MANO articulation",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -2861,6 +2938,24 @@ def required_variable_families(
                 "hand_depth_repair_residual_sample_count": hand_depth_repair_residual_owner_state[
                     "residual_sample_count"
                 ],
+                "hand_local_projection_repair_factor_candidate_rows": hand_local_projection_repair_problem[
+                    "local_projection_repair_factor_candidate_rows"
+                ],
+                "hand_local_projection_mixed_owner_rows": hand_local_projection_repair_problem[
+                    "partial_projection_depth_mixed_owner_rows"
+                ],
+                "hand_local_projection_depth_observation_owner_rows": hand_local_projection_repair_problem[
+                    "depth_observation_or_occlusion_owner_rows"
+                ],
+                "hand_local_projection_support_unresolved_rows": hand_local_projection_repair_problem[
+                    "projection_support_unresolved_rows"
+                ],
+                "hand_local_projection_repair_state_counts": hand_local_projection_repair_problem[
+                    "residual_local_projection_repair_state_counts"
+                ],
+                "hand_local_projection_assignment": hand_local_projection_repair_problem[
+                    "local_projection_assignment"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -2934,6 +3029,7 @@ def required_variable_families(
                 "stable hand-scale counterfactuals leave thousands of depth-repair candidates and imply implausibly small hands",
                 "bounded hand-depth repair leaves many residual depth-repair candidates after exact post-solve surface resampling",
                 "per-sample residual ownership separates unsupported projection rows, local hand-surface/projection rows, and depth-observation rows",
+                "local projection assignment exposes which residual rows can become local hand-surface factors and which rows remain depth-observation or support owners",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -3071,6 +3167,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_depth_repair_residual_owner_state_report),
         f"{inputs.case} hand depth repair residual-owner state report",
     )
+    hand_local_projection_repair_problem_report = require_dict(
+        load_json(inputs.hand_local_projection_repair_problem_report),
+        f"{inputs.case} hand local projection repair problem report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3139,6 +3239,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     hand_depth_repair_residual_owner_state = hand_depth_repair_residual_owner_state_counts(
         hand_depth_repair_residual_owner_state_report
     )
+    hand_local_projection_repair_problem = hand_local_projection_repair_problem_counts(
+        hand_local_projection_repair_problem_report
+    )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
     hand_tail_depth_observation_state = hand_tail_depth_observation_state_counts(
@@ -3200,6 +3303,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand depth repair residual-owner state"
+        )
+    if frame_count != require_int(
+        hand_local_projection_repair_problem["frame_count"],
+        f"{inputs.case} hand local projection repair frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and hand local projection repair problem"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -3530,6 +3640,51 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} hand depth repair residual-owner candidate rows",
     ):
         raise RuntimeError(f"{inputs.case} hand depth repair residual support split does not sum to candidates")
+    if require_int(
+        hand_local_projection_repair_problem["hand_local_projection_repair_variable_count"],
+        f"{inputs.case} hand local projection variable count",
+    ) != require_int(
+        hand_depth_repair_residual_owner_state["hand_depth_repair_residual_owner_variable_count"],
+        f"{inputs.case} hand depth repair residual-owner variable count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} hand local projection variables disagree with residual-owner variables"
+        )
+    if require_int(
+        hand_local_projection_repair_problem["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} hand local projection residual rows",
+    ) != require_int(
+        hand_depth_repair_residual_owner_state["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} hand depth repair residual-owner candidate rows",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} hand local projection residual rows disagree with residual-owner candidates"
+        )
+    if require_int(
+        hand_local_projection_repair_problem["local_projection_repair_factor_candidate_rows"],
+        f"{inputs.case} local projection repair rows",
+    ) + require_int(
+        hand_local_projection_repair_problem["partial_projection_depth_mixed_owner_rows"],
+        f"{inputs.case} mixed projection-depth rows",
+    ) + require_int(
+        hand_local_projection_repair_problem["depth_observation_or_occlusion_owner_rows"],
+        f"{inputs.case} depth observation owner rows",
+    ) + require_int(
+        hand_local_projection_repair_problem["projection_support_unresolved_rows"],
+        f"{inputs.case} projection support unresolved rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} local projection residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} local projection residual split does not sum to residual rows")
+    if require_int(
+        hand_local_projection_repair_problem["projection_support_unresolved_rows"],
+        f"{inputs.case} projection support unresolved rows",
+    ) != require_int(
+        hand_depth_repair_residual_owner_state["independent_unsupported_repair_residual_rows"],
+        f"{inputs.case} residual-owner unsupported rows",
+    ):
+        raise RuntimeError(f"{inputs.case} local projection support-unresolved rows disagree with residual owner")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -3917,6 +4072,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_scale_depth_counterfactual,
         hand_depth_repair_graph,
         hand_depth_repair_residual_owner_state,
+        hand_local_projection_repair_problem,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -3992,6 +4148,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_depth_repair_residual_owner_state_report,
                 hand_depth_repair_residual_owner_state_report,
             ),
+            "hand_local_projection_repair_problem_report": source_summary(
+                inputs.hand_local_projection_repair_problem_report,
+                hand_local_projection_repair_problem_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -4046,6 +4206,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_scale_depth_counterfactual": hand_scale_depth_counterfactual,
         "current_hand_depth_repair_graph": hand_depth_repair_graph,
         "current_hand_depth_repair_residual_owner_state": hand_depth_repair_residual_owner_state,
+        "current_hand_local_projection_repair_problem": hand_local_projection_repair_problem,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -4105,6 +4266,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_scale_depth_counterfactual_root,
             args.hand_depth_repair_graph_root,
             args.hand_depth_repair_residual_owner_state_root,
+            args.hand_local_projection_repair_problem_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -4148,6 +4310,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_scale_depth_counterfactual_root": str(args.hand_scale_depth_counterfactual_root),
         "hand_depth_repair_graph_root": str(args.hand_depth_repair_graph_root),
         "hand_depth_repair_residual_owner_state_root": str(args.hand_depth_repair_residual_owner_state_root),
+        "hand_local_projection_repair_problem_root": str(args.hand_local_projection_repair_problem_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -4395,6 +4558,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_depth_repair_residual_sample_count": case[
                     "current_hand_depth_repair_residual_owner_state"
                 ]["residual_sample_count"],
+                "hand_local_projection_repair_variable_count": case[
+                    "current_hand_local_projection_repair_problem"
+                ]["hand_local_projection_repair_variable_count"],
+                "hand_local_projection_repair_factor_candidate_rows": case[
+                    "current_hand_local_projection_repair_problem"
+                ]["local_projection_repair_factor_candidate_rows"],
+                "hand_local_projection_mixed_owner_rows": case[
+                    "current_hand_local_projection_repair_problem"
+                ]["partial_projection_depth_mixed_owner_rows"],
+                "hand_local_projection_depth_observation_owner_rows": case[
+                    "current_hand_local_projection_repair_problem"
+                ]["depth_observation_or_occlusion_owner_rows"],
+                "hand_local_projection_support_unresolved_rows": case[
+                    "current_hand_local_projection_repair_problem"
+                ]["projection_support_unresolved_rows"],
+                "hand_local_projection_repair_state_counts": case[
+                    "current_hand_local_projection_repair_problem"
+                ]["residual_local_projection_repair_state_counts"],
+                "hand_local_projection_assignment": case[
+                    "current_hand_local_projection_repair_problem"
+                ]["local_projection_assignment"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -4908,6 +5092,70 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             case["current_hand_depth_repair_residual_owner_state"]["residual_sample_count"]
             for case in case_outputs
         ),
+        "hand_local_projection_repair_variable_count": sum(
+            case["current_hand_local_projection_repair_problem"]["hand_local_projection_repair_variable_count"]
+            for case in case_outputs
+        ),
+        "hand_local_projection_repair_factor_candidate_rows": sum(
+            case["current_hand_local_projection_repair_problem"]["local_projection_repair_factor_candidate_rows"]
+            for case in case_outputs
+        ),
+        "hand_local_projection_mixed_owner_rows": sum(
+            case["current_hand_local_projection_repair_problem"]["partial_projection_depth_mixed_owner_rows"]
+            for case in case_outputs
+        ),
+        "hand_local_projection_depth_observation_owner_rows": sum(
+            case["current_hand_local_projection_repair_problem"]["depth_observation_or_occlusion_owner_rows"]
+            for case in case_outputs
+        ),
+        "hand_local_projection_support_unresolved_rows": sum(
+            case["current_hand_local_projection_repair_problem"]["projection_support_unresolved_rows"]
+            for case in case_outputs
+        ),
+        "hand_local_projection_repair_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_hand_local_projection_repair_problem"][
+                                "residual_local_projection_repair_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "hand_local_projection_assignment": {
+            "residual_sample_count": sum(
+                require_int(
+                    case["current_hand_local_projection_repair_problem"]["local_projection_assignment"].get(
+                        "residual_sample_count"
+                    ),
+                    "local projection residual samples",
+                )
+                for case in case_outputs
+            ),
+            "assigned_residual_sample_count": sum(
+                require_int(
+                    case["current_hand_local_projection_repair_problem"]["local_projection_assignment"].get(
+                        "assigned_residual_sample_count"
+                    ),
+                    "local projection assigned samples",
+                )
+                for case in case_outputs
+            ),
+            "compatible_seed_sample_count": sum(
+                require_int(
+                    case["current_hand_local_projection_repair_problem"]["local_projection_assignment"].get(
+                        "compatible_seed_sample_count"
+                    ),
+                    "local projection compatible seed samples",
+                )
+                for case in case_outputs
+            ),
+        },
         "hand_surface_depth_tail_variable_count": sum(
             case["current_hand_surface_depth_tail_state"]["hand_surface_depth_tail_variable_count"]
             for case in case_outputs
@@ -5322,6 +5570,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-depth-repair-residual-owner-state-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_depth_repair_residual_owner_state"),
+    )
+    parser.add_argument(
+        "--hand-local-projection-repair-problem-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_hand_local_projection_repair_problem"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
