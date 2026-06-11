@@ -83,8 +83,11 @@ def build_job(
     rgb_dir = job_dir / "rgb"
     mask_dir = job_dir / "masks"
     depth_dir = job_dir / "depth"
-    rectified_rows = [
-        rectify_frame(
+    rectified_rows: list[dict[str, Any]] = []
+    dropped_frames: list[dict[str, Any]] = []
+    out_i = 0
+    for frame in frames:
+        row = rectify_frame(
             frame,
             output_index=out_i,
             target_k=target_k,
@@ -95,8 +98,37 @@ def build_job(
             seed=stable_seed(case, job_id, frame["frame_idx"]),
             raster_scale=int(args.raster_scale),
         )
-        for out_i, frame in enumerate(frames)
-    ]
+        frame_residual_p95 = finite_float(
+            row["rectification_nearest_3d_residual_m"].get("p95"),
+            "frame rectification p95",
+        )
+        frame_inside = finite_float(row.get("projected_inside_fraction"), "frame projected fraction")
+        if (
+            frame_residual_p95 <= float(args.max_rectification_residual_p95_m)
+            and frame_inside >= float(args.min_projected_inside_fraction)
+        ):
+            rectified_rows.append(row)
+            out_i += 1
+        else:
+            for path in [
+                rgb_dir / f"{out_i:06d}.png",
+                mask_dir / f"{out_i:06d}.png",
+                depth_dir / f"{out_i:06d}.png",
+            ]:
+                path.unlink(missing_ok=True)
+            dropped_frames.append(
+                {
+                    "frame_idx": require_int(frame.get("frame_idx"), "frame_idx"),
+                    "rectification_nearest_3d_residual_p95_m": frame_residual_p95,
+                    "projected_inside_fraction": frame_inside,
+                    "reason": "frame_fails_rectification_contract",
+                }
+            )
+    if len(rectified_rows) < int(args.min_job_frames):
+        raise RuntimeError(
+            f"{case} {track_id} keeps {len(rectified_rows)} rectification-valid frames "
+            f"(dropped {len(dropped_frames)}), below minimum {args.min_job_frames}"
+        )
     scaled_k = target_k.astype(np.float64).copy()
     scaled_k *= float(args.raster_scale)
     write_cam_k(job_dir / "cam_K.txt", scaled_k)
@@ -113,6 +145,9 @@ def build_job(
         and max(residual_p95) <= float(args.max_rectification_residual_p95_m)
         and min(inside_fraction) >= float(args.min_projected_inside_fraction)
     )
+    kept_fraction = float(len(rectified_rows) / (len(rectified_rows) + len(dropped_frames)))
+    if kept_fraction < float(args.min_kept_frame_fraction):
+        ray_preserving = False
     job_status = "ready_for_unknown_object_rgbd_solver" if ray_preserving else "rejected_rectification_residual"
     manifest = {
         "method": "build_v17_full_interval_geometry_reconstruction_jobs",
@@ -132,6 +167,9 @@ def build_job(
         )
         + "/manifest.json",
         "frame_count": len(rectified_rows),
+        "dropped_frame_count": len(dropped_frames),
+        "kept_frame_fraction": kept_fraction,
+        "dropped_frames": dropped_frames,
         "first_frame": first_frame,
         "last_frame": last_frame,
         "frame_subsampled": frame_subsampled,
@@ -318,6 +356,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-eval-points", type=int, default=5000)
     parser.add_argument("--max-rectification-residual-p95-m", type=float, default=0.003)
     parser.add_argument("--min-projected-inside-fraction", type=float, default=0.995)
+    parser.add_argument(
+        "--min-kept-frame-fraction",
+        type=float,
+        default=0.75,
+        help="job is not solver-ready if more than this fraction of exported frames fail rectification",
+    )
     parser.add_argument("--raster-scale", type=int, default=2)
     parser.add_argument(
         "--reports-only",
