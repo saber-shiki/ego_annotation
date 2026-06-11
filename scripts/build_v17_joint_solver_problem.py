@@ -40,6 +40,7 @@ class CaseInputs:
     hand_depth_repair_graph_report: Path
     hand_depth_repair_residual_owner_state_report: Path
     hand_local_projection_repair_problem_report: Path
+    mano_parameter_ownership_state_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -135,6 +136,7 @@ def case_inputs(
     hand_depth_repair_graph_root: Path,
     hand_depth_repair_residual_owner_state_root: Path,
     hand_local_projection_repair_problem_root: Path,
+    mano_parameter_ownership_state_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -233,6 +235,10 @@ def case_inputs(
         / "v17_hand_local_projection_repair_problem.json",
         f"{case} hand local projection repair problem report",
     )
+    mano_parameter_ownership_state_report = existing_path(
+        mano_parameter_ownership_state_root / case / "v17_mano_parameter_ownership_state.json",
+        f"{case} MANO parameter ownership state report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -307,6 +313,7 @@ def case_inputs(
         hand_depth_repair_graph_report=hand_depth_repair_graph_report,
         hand_depth_repair_residual_owner_state_report=hand_depth_repair_residual_owner_state_report,
         hand_local_projection_repair_problem_report=hand_local_projection_repair_problem_report,
+        mano_parameter_ownership_state_report=mano_parameter_ownership_state_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1235,6 +1242,51 @@ def hand_local_projection_repair_problem_counts(report: dict[str, Any]) -> dict[
     }
 
 
+def mano_parameter_ownership_state_counts(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(report.get("frame_count"), "MANO parameter ownership frame_count"),
+        "mano_parameter_ownership_variable_count": require_int(
+            report.get("mano_parameter_ownership_variable_count"),
+            "MANO parameter ownership variable count",
+        ),
+        "repair_residual_factor_candidate_rows": require_int(
+            report.get("repair_residual_factor_candidate_rows"),
+            "MANO parameter ownership residual rows",
+        ),
+        "residual_mano_parameter_owned_rows": require_int(
+            report.get("residual_mano_parameter_owned_rows"),
+            "MANO parameter owned residual rows",
+        ),
+        "local_projection_repair_factor_candidate_rows": require_int(
+            report.get("local_projection_repair_factor_candidate_rows"),
+            "MANO parameter ownership local projection rows",
+        ),
+        "local_projection_articulation_factor_candidate_rows": require_int(
+            report.get("local_projection_articulation_factor_candidate_rows"),
+            "MANO parameter ownership local articulation rows",
+        ),
+        "mixed_projection_articulation_observation_candidate_rows": require_int(
+            report.get("mixed_projection_articulation_observation_candidate_rows"),
+            "MANO parameter ownership mixed articulation rows",
+        ),
+        "residual_mano_parameter_ownership_state_counts": require_dict(
+            report.get("residual_mano_parameter_ownership_state_counts"),
+            "MANO parameter ownership state counts",
+        ),
+        "owned_alignment_error_summary": require_dict(
+            report.get("owned_alignment_error_summary"),
+            "MANO parameter owned alignment summary",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
 def hand_surface_depth_tail_state_counts(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": report.get("status"),
@@ -2071,6 +2123,7 @@ def required_variable_families(
     hand_depth_repair_graph: dict[str, Any],
     hand_depth_repair_residual_owner_state: dict[str, Any],
     hand_local_projection_repair_problem: dict[str, Any],
+    mano_parameter_ownership_state: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -2263,6 +2316,21 @@ def required_variable_families(
                 "hand_local_projection_assignment": hand_local_projection_repair_problem[
                     "local_projection_assignment"
                 ],
+                "mano_parameter_owned_residual_rows": mano_parameter_ownership_state[
+                    "residual_mano_parameter_owned_rows"
+                ],
+                "mano_parameter_ownership_state_counts": mano_parameter_ownership_state[
+                    "residual_mano_parameter_ownership_state_counts"
+                ],
+                "mano_parameter_owned_alignment_error_summary": mano_parameter_ownership_state[
+                    "owned_alignment_error_summary"
+                ],
+                "mano_parameter_local_projection_articulation_factor_candidate_rows": mano_parameter_ownership_state[
+                    "local_projection_articulation_factor_candidate_rows"
+                ],
+                "mano_parameter_mixed_projection_articulation_observation_candidate_rows": mano_parameter_ownership_state[
+                    "mixed_projection_articulation_observation_candidate_rows"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -2331,6 +2399,7 @@ def required_variable_families(
                 "a full-timeline bounded scale plus ray-depth repair graph improves the hand-depth state but still leaves many projection-trusted depth-repair candidates",
                 "the remaining hand-depth repair residuals split into local hand-surface/projection owners and depth-observation owners after per-sample owner partitioning",
                 "local projection assignment materializes the local hand-surface factor candidates but does not update MANO articulation",
+                "saved MANO parameters own every local projection factor candidate, but an articulation optimizer has not consumed those factors",
                 "the scale required by depth shrinks the median wrist-to-middle-tip length below the current hand-size prior",
                 "per-row scalar hand-depth repair still leaves large visible-surface depth tails in many rows",
                 "most residual hand-surface depth tails are inside or near independent same-side hand boxes, so local hand-surface or depth-observation mismatch dominates detector support failure",
@@ -2956,6 +3025,21 @@ def required_variable_families(
                 "hand_local_projection_assignment": hand_local_projection_repair_problem[
                     "local_projection_assignment"
                 ],
+                "mano_parameter_owned_residual_rows": mano_parameter_ownership_state[
+                    "residual_mano_parameter_owned_rows"
+                ],
+                "mano_parameter_ownership_state_counts": mano_parameter_ownership_state[
+                    "residual_mano_parameter_ownership_state_counts"
+                ],
+                "mano_parameter_owned_alignment_error_summary": mano_parameter_ownership_state[
+                    "owned_alignment_error_summary"
+                ],
+                "mano_parameter_local_projection_articulation_factor_candidate_rows": mano_parameter_ownership_state[
+                    "local_projection_articulation_factor_candidate_rows"
+                ],
+                "mano_parameter_mixed_projection_articulation_observation_candidate_rows": mano_parameter_ownership_state[
+                    "mixed_projection_articulation_observation_candidate_rows"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -3030,6 +3114,7 @@ def required_variable_families(
                 "bounded hand-depth repair leaves many residual depth-repair candidates after exact post-solve surface resampling",
                 "per-sample residual ownership separates unsupported projection rows, local hand-surface/projection rows, and depth-observation rows",
                 "local projection assignment exposes which residual rows can become local hand-surface factors and which rows remain depth-observation or support owners",
+                "MANO parameter ownership now identifies which local projection factors can attach to saved MANO pose parameters before an articulation solve",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -3171,6 +3256,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.hand_local_projection_repair_problem_report),
         f"{inputs.case} hand local projection repair problem report",
     )
+    mano_parameter_ownership_state_report = require_dict(
+        load_json(inputs.mano_parameter_ownership_state_report),
+        f"{inputs.case} MANO parameter ownership state report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -3242,6 +3331,9 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     hand_local_projection_repair_problem = hand_local_projection_repair_problem_counts(
         hand_local_projection_repair_problem_report
     )
+    mano_parameter_ownership_state = mano_parameter_ownership_state_counts(
+        mano_parameter_ownership_state_report
+    )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
     hand_tail_depth_observation_state = hand_tail_depth_observation_state_counts(
@@ -3310,6 +3402,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and hand local projection repair problem"
+        )
+    if frame_count != require_int(
+        mano_parameter_ownership_state["frame_count"],
+        f"{inputs.case} MANO parameter ownership frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and MANO parameter ownership state"
         )
     if frame_count != require_int(
         hand_surface_depth_tail_state["frame_count"],
@@ -3685,6 +3784,50 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} residual-owner unsupported rows",
     ):
         raise RuntimeError(f"{inputs.case} local projection support-unresolved rows disagree with residual owner")
+    if require_int(
+        mano_parameter_ownership_state["mano_parameter_ownership_variable_count"],
+        f"{inputs.case} MANO parameter ownership variable count",
+    ) != require_int(
+        hand_local_projection_repair_problem["hand_local_projection_repair_variable_count"],
+        f"{inputs.case} hand local projection variable count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} MANO parameter ownership variables disagree with local projection variables"
+        )
+    if require_int(
+        mano_parameter_ownership_state["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} MANO parameter ownership residual rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["repair_residual_factor_candidate_rows"],
+        f"{inputs.case} hand local projection residual rows",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} MANO parameter ownership residual rows disagree with local projection residuals"
+        )
+    if require_int(
+        mano_parameter_ownership_state["local_projection_repair_factor_candidate_rows"],
+        f"{inputs.case} MANO ownership local projection rows",
+    ) != require_int(
+        hand_local_projection_repair_problem["local_projection_repair_factor_candidate_rows"],
+        f"{inputs.case} local projection repair rows",
+    ):
+        raise RuntimeError(f"{inputs.case} MANO ownership local projection rows disagree with local projection report")
+    if require_int(
+        mano_parameter_ownership_state["local_projection_articulation_factor_candidate_rows"],
+        f"{inputs.case} MANO local articulation factor rows",
+    ) > require_int(
+        mano_parameter_ownership_state["local_projection_repair_factor_candidate_rows"],
+        f"{inputs.case} MANO ownership local projection rows",
+    ):
+        raise RuntimeError(f"{inputs.case} MANO local articulation rows exceed local projection rows")
+    if require_int(
+        mano_parameter_ownership_state["mixed_projection_articulation_observation_candidate_rows"],
+        f"{inputs.case} MANO mixed articulation rows",
+    ) > require_int(
+        hand_local_projection_repair_problem["partial_projection_depth_mixed_owner_rows"],
+        f"{inputs.case} mixed projection-depth rows",
+    ):
+        raise RuntimeError(f"{inputs.case} MANO mixed articulation rows exceed mixed projection-depth rows")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -4073,6 +4216,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         hand_depth_repair_graph,
         hand_depth_repair_residual_owner_state,
         hand_local_projection_repair_problem,
+        mano_parameter_ownership_state,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -4152,6 +4296,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.hand_local_projection_repair_problem_report,
                 hand_local_projection_repair_problem_report,
             ),
+            "mano_parameter_ownership_state_report": source_summary(
+                inputs.mano_parameter_ownership_state_report,
+                mano_parameter_ownership_state_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -4207,6 +4355,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_hand_depth_repair_graph": hand_depth_repair_graph,
         "current_hand_depth_repair_residual_owner_state": hand_depth_repair_residual_owner_state,
         "current_hand_local_projection_repair_problem": hand_local_projection_repair_problem,
+        "current_mano_parameter_ownership_state": mano_parameter_ownership_state,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -4267,6 +4416,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.hand_depth_repair_graph_root,
             args.hand_depth_repair_residual_owner_state_root,
             args.hand_local_projection_repair_problem_root,
+            args.mano_parameter_ownership_state_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -4311,6 +4461,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_depth_repair_graph_root": str(args.hand_depth_repair_graph_root),
         "hand_depth_repair_residual_owner_state_root": str(args.hand_depth_repair_residual_owner_state_root),
         "hand_local_projection_repair_problem_root": str(args.hand_local_projection_repair_problem_root),
+        "mano_parameter_ownership_state_root": str(args.mano_parameter_ownership_state_root),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
         "hand_tail_depth_observation_state_root": str(args.hand_tail_depth_observation_state_root),
@@ -4579,6 +4730,24 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_local_projection_assignment": case[
                     "current_hand_local_projection_repair_problem"
                 ]["local_projection_assignment"],
+                "mano_parameter_ownership_variable_count": case[
+                    "current_mano_parameter_ownership_state"
+                ]["mano_parameter_ownership_variable_count"],
+                "mano_parameter_owned_residual_rows": case[
+                    "current_mano_parameter_ownership_state"
+                ]["residual_mano_parameter_owned_rows"],
+                "mano_parameter_ownership_state_counts": case[
+                    "current_mano_parameter_ownership_state"
+                ]["residual_mano_parameter_ownership_state_counts"],
+                "mano_parameter_owned_alignment_error_summary": case[
+                    "current_mano_parameter_ownership_state"
+                ]["owned_alignment_error_summary"],
+                "mano_parameter_local_projection_articulation_factor_candidate_rows": case[
+                    "current_mano_parameter_ownership_state"
+                ]["local_projection_articulation_factor_candidate_rows"],
+                "mano_parameter_mixed_projection_articulation_observation_candidate_rows": case[
+                    "current_mano_parameter_ownership_state"
+                ]["mixed_projection_articulation_observation_candidate_rows"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -5156,6 +5325,83 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 for case in case_outputs
             ),
         },
+        "mano_parameter_ownership_variable_count": sum(
+            case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
+            for case in case_outputs
+        ),
+        "mano_parameter_owned_residual_rows": sum(
+            case["current_mano_parameter_ownership_state"]["residual_mano_parameter_owned_rows"]
+            for case in case_outputs
+        ),
+        "mano_parameter_ownership_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_mano_parameter_ownership_state"][
+                                "residual_mano_parameter_ownership_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "mano_parameter_local_projection_articulation_factor_candidate_rows": sum(
+            case["current_mano_parameter_ownership_state"][
+                "local_projection_articulation_factor_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "mano_parameter_mixed_projection_articulation_observation_candidate_rows": sum(
+            case["current_mano_parameter_ownership_state"][
+                "mixed_projection_articulation_observation_candidate_rows"
+            ]
+            for case in case_outputs
+        ),
+        "mano_parameter_owned_alignment_error_summary": {
+            "vertex_median_error_m": {
+                "case_summaries": [
+                    case["current_mano_parameter_ownership_state"]["owned_alignment_error_summary"][
+                        "vertex_median_error_m"
+                    ]
+                    for case in case_outputs
+                ]
+            },
+            "vertex_p95_error_m": {
+                "case_summaries": [
+                    case["current_mano_parameter_ownership_state"]["owned_alignment_error_summary"][
+                        "vertex_p95_error_m"
+                    ]
+                    for case in case_outputs
+                ]
+            },
+            "joint_median_error_m": {
+                "case_summaries": [
+                    case["current_mano_parameter_ownership_state"]["owned_alignment_error_summary"][
+                        "joint_median_error_m"
+                    ]
+                    for case in case_outputs
+                ]
+            },
+            "joint_p95_error_m": {
+                "case_summaries": [
+                    case["current_mano_parameter_ownership_state"]["owned_alignment_error_summary"][
+                        "joint_p95_error_m"
+                    ]
+                    for case in case_outputs
+                ]
+            },
+            "wilor_similarity_scale": {
+                "case_summaries": [
+                    case["current_mano_parameter_ownership_state"]["owned_alignment_error_summary"][
+                        "wilor_similarity_scale"
+                    ]
+                    for case in case_outputs
+                ]
+            },
+        },
         "hand_surface_depth_tail_variable_count": sum(
             case["current_hand_surface_depth_tail_state"]["hand_surface_depth_tail_variable_count"]
             for case in case_outputs
@@ -5575,6 +5821,11 @@ def parse_args() -> argparse.Namespace:
         "--hand-local-projection-repair-problem-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_hand_local_projection_repair_problem"),
+    )
+    parser.add_argument(
+        "--mano-parameter-ownership-state-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_mano_parameter_ownership_state"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
