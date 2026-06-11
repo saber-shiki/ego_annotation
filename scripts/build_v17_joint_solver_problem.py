@@ -54,6 +54,7 @@ class CaseInputs:
     post_temporal_mano_articulation_local_solve_report: Path
     post_temporal_depth_observation_state_report: Path
     post_temporal_depth_observation_support_state_report: Path
+    post_temporal_depth_observation_weighted_refit_report: Path
     hand_surface_depth_tail_state_report: Path
     hand_tail_support_state_report: Path
     hand_tail_depth_observation_state_report: Path
@@ -163,6 +164,7 @@ def case_inputs(
     post_temporal_mano_articulation_local_solve_root: Path,
     post_temporal_depth_observation_state_root: Path,
     post_temporal_depth_observation_support_state_root: Path,
+    post_temporal_depth_observation_weighted_refit_root: Path,
     hand_surface_depth_tail_state_root: Path,
     hand_tail_support_state_root: Path,
     hand_tail_depth_observation_state_root: Path,
@@ -335,6 +337,12 @@ def case_inputs(
         / "v17_post_temporal_depth_observation_support_state.json",
         f"{case} post-temporal depth-observation support state report",
     )
+    post_temporal_depth_observation_weighted_refit_report = existing_path(
+        post_temporal_depth_observation_weighted_refit_root
+        / case
+        / "v17_post_temporal_depth_observation_weighted_refit.json",
+        f"{case} post-temporal depth-observation weighted-refit report",
+    )
     hand_surface_depth_tail_state_report = existing_path(
         hand_surface_depth_tail_state_root / case / "v17_hand_surface_depth_tail_state.json",
         f"{case} hand surface-depth tail state report",
@@ -423,6 +431,7 @@ def case_inputs(
         post_temporal_mano_articulation_local_solve_report=post_temporal_mano_articulation_local_solve_report,
         post_temporal_depth_observation_state_report=post_temporal_depth_observation_state_report,
         post_temporal_depth_observation_support_state_report=post_temporal_depth_observation_support_state_report,
+        post_temporal_depth_observation_weighted_refit_report=post_temporal_depth_observation_weighted_refit_report,
         hand_surface_depth_tail_state_report=hand_surface_depth_tail_state_report,
         hand_tail_support_state_report=hand_tail_support_state_report,
         hand_tail_depth_observation_state_report=hand_tail_depth_observation_state_report,
@@ -1687,6 +1696,167 @@ def post_temporal_depth_observation_support_state_counts(report: dict[str, Any])
         ),
         "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
         "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "annotation_ready": bool(report.get("annotation_ready") is True),
+        "deliverable_ready": bool(report.get("deliverable_ready") is True),
+        "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
+        "v3_solver_complete": bool(report.get("v3_solver_complete") is True),
+    }
+
+
+def post_temporal_depth_observation_weighted_refit_counts(report: dict[str, Any]) -> dict[str, Any]:
+    comparison = require_dict(
+        report.get("source_owner_weighted_comparison"),
+        "post-temporal depth-observation weighted-refit source comparison",
+    )
+    return {
+        "status": report.get("status"),
+        "frame_count": require_int(
+            report.get("frame_count"),
+            "post-temporal depth-observation weighted-refit frame_count",
+        ),
+        "post_temporal_observation_weighted_refit_input_rows": require_int(
+            report.get("post_temporal_observation_weighted_refit_input_rows"),
+            "post-temporal depth-observation weighted-refit input rows",
+        ),
+        "post_temporal_observation_weighted_variable_rows": require_int(
+            report.get("post_temporal_observation_weighted_variable_rows"),
+            "post-temporal depth-observation weighted variable rows",
+        ),
+        "post_temporal_observation_geometry_factor_rows": require_int(
+            report.get("post_temporal_observation_geometry_factor_rows"),
+            "post-temporal depth-observation weighted geometry factor rows",
+        ),
+        "post_temporal_observation_compatible_anchor_rows": require_int(
+            report.get("post_temporal_observation_compatible_anchor_rows"),
+            "post-temporal depth-observation weighted compatible anchor rows",
+        ),
+        "post_temporal_observation_depth_factor_rows": require_int(
+            report.get("post_temporal_observation_depth_factor_rows"),
+            "post-temporal depth-observation weighted depth factor rows",
+        ),
+        "post_temporal_observation_depth_factor_keypoint_state_counts": require_dict(
+            report.get("post_temporal_observation_depth_factor_keypoint_state_counts"),
+            "post-temporal depth-observation weighted keypoint factor counts",
+        ),
+        "post_temporal_observation_prior_smooth_only_rows": require_int(
+            report.get("post_temporal_observation_prior_smooth_only_rows"),
+            "post-temporal depth-observation weighted prior/smooth rows",
+        ),
+        "post_temporal_depth_observation_prior_smooth_rows": require_int(
+            report.get("post_temporal_depth_observation_prior_smooth_rows"),
+            "post-temporal depth-observation weighted depth-observation prior/smooth rows",
+        ),
+        "post_temporal_projection_untrusted_prior_smooth_rows": require_int(
+            report.get("post_temporal_projection_untrusted_prior_smooth_rows"),
+            "post-temporal depth-observation weighted projection-untrusted prior/smooth rows",
+        ),
+        "post_temporal_observation_geometry_depth_sample_factor_count": require_int(
+            report.get("post_temporal_observation_geometry_depth_sample_factor_count"),
+            "post-temporal depth-observation weighted geometry sample factors",
+        ),
+        "post_temporal_observation_compatible_anchor_sample_factor_count": require_int(
+            report.get("post_temporal_observation_compatible_anchor_sample_factor_count"),
+            "post-temporal depth-observation weighted anchor sample factors",
+        ),
+        "post_temporal_depth_observation_sample_factor_count": require_int(
+            report.get("post_temporal_depth_observation_sample_factor_count"),
+            "post-temporal depth-observation weighted observation sample factors",
+        ),
+        "post_temporal_observation_delta_bound_hit_rows": require_int(
+            report.get("post_temporal_observation_delta_bound_hit_rows"),
+            "post-temporal depth-observation weighted bound-hit rows",
+        ),
+        "post_temporal_observation_fixed_factor_depth_improved_rows": require_int(
+            report.get("post_temporal_observation_fixed_factor_depth_improved_rows"),
+            "post-temporal depth-observation weighted fixed-factor improved rows",
+        ),
+        "post_temporal_observation_fixed_factor_depth_threshold_met_rows": require_int(
+            report.get("post_temporal_observation_fixed_factor_depth_threshold_met_rows"),
+            "post-temporal depth-observation weighted fixed-factor threshold rows",
+        ),
+        "post_temporal_observation_reprojected_metric_depth_compatible_rows": require_int(
+            report.get("post_temporal_observation_reprojected_metric_depth_compatible_rows"),
+            "post-temporal depth-observation weighted reprojected compatible rows",
+        ),
+        "post_temporal_observation_reprojected_depth_improved_rows": require_int(
+            report.get("post_temporal_observation_reprojected_depth_improved_rows"),
+            "post-temporal depth-observation weighted reprojected improved rows",
+        ),
+        "metric_hand_state_accepted_rows_after_post_temporal_observation_refit": require_int(
+            report.get("metric_hand_state_accepted_rows_after_post_temporal_observation_refit"),
+            "post-temporal depth-observation weighted accepted rows",
+        ),
+        "depth_repair_factor_candidate_rows_after_post_temporal_observation_refit": require_int(
+            report.get("depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"),
+            "post-temporal depth-observation weighted residual rows",
+        ),
+        "post_temporal_observation_reprojection_residual_owner_rows": require_int(
+            report.get("post_temporal_observation_reprojection_residual_owner_rows"),
+            "post-temporal depth-observation weighted residual-owner rows",
+        ),
+        "post_temporal_observation_reprojection_local_surface_factor_candidate_rows": require_int(
+            report.get("post_temporal_observation_reprojection_local_surface_factor_candidate_rows"),
+            "post-temporal depth-observation weighted local rows",
+        ),
+        "post_temporal_observation_reprojection_mixed_surface_depth_owner_rows": require_int(
+            report.get("post_temporal_observation_reprojection_mixed_surface_depth_owner_rows"),
+            "post-temporal depth-observation weighted mixed rows",
+        ),
+        "post_temporal_observation_reprojection_depth_observation_owner_rows": require_int(
+            report.get("post_temporal_observation_reprojection_depth_observation_owner_rows"),
+            "post-temporal depth-observation weighted depth-observation owner rows",
+        ),
+        "post_temporal_observation_reprojection_projection_untrusted_rows": require_int(
+            report.get("post_temporal_observation_reprojection_projection_untrusted_rows"),
+            "post-temporal depth-observation weighted projection-untrusted rows",
+        ),
+        "post_temporal_observation_input_factor_state_counts": require_dict(
+            report.get("post_temporal_observation_input_factor_state_counts"),
+            "post-temporal depth-observation weighted input state counts",
+        ),
+        "post_temporal_observation_reprojection_state_counts": require_dict(
+            report.get("post_temporal_observation_reprojection_state_counts"),
+            "post-temporal depth-observation weighted full reprojection state counts",
+        ),
+        "post_temporal_observation_temporal_reprojection_state_counts": require_dict(
+            report.get("post_temporal_observation_temporal_reprojection_state_counts"),
+            "post-temporal depth-observation weighted temporal reprojection state counts",
+        ),
+        "post_temporal_observation_owner_depth_state_counts_after_reprojection": require_dict(
+            report.get("post_temporal_observation_owner_depth_state_counts_after_reprojection"),
+            "post-temporal depth-observation weighted owner depth counts",
+        ),
+        "post_temporal_observation_owner_median_gap_m_after_reprojection": require_dict(
+            report.get("post_temporal_observation_owner_median_gap_m_after_reprojection"),
+            "post-temporal depth-observation weighted owner median gap summary",
+        ),
+        "source_owner_weighted_variable_rows": require_int(
+            comparison.get("owner_weighted_variable_rows"),
+            "post-temporal depth-observation weighted source owner-weighted variables",
+        ),
+        "source_owner_weighted_depth_observation_prior_smooth_rows": require_int(
+            comparison.get("owner_weighted_depth_observation_prior_smooth_rows"),
+            "post-temporal depth-observation weighted source depth-observation prior/smooth rows",
+        ),
+        "source_owner_weighted_reprojected_metric_depth_compatible_rows": require_int(
+            comparison.get("owner_weighted_reprojected_metric_depth_compatible_rows"),
+            "post-temporal depth-observation weighted source compatible rows",
+        ),
+        "source_metric_hand_state_accepted_rows_after_owner_weighted_refit": require_int(
+            comparison.get("metric_hand_state_accepted_rows_after_owner_weighted_refit"),
+            "post-temporal depth-observation weighted source accepted rows",
+        ),
+        "source_depth_repair_factor_candidate_rows_after_owner_weighted_refit": require_int(
+            comparison.get("depth_repair_factor_candidate_rows_after_owner_weighted_refit"),
+            "post-temporal depth-observation weighted source residual rows",
+        ),
+        "source_owner_weighted_reprojection_state_counts": require_dict(
+            comparison.get("owner_weighted_reprojection_state_counts"),
+            "post-temporal depth-observation weighted source reprojection state counts",
+        ),
+        "object_geometry_complete": bool(report.get("object_geometry_complete") is True),
+        "object_pose_requirement_met": bool(report.get("object_pose_requirement_met") is True),
+        "rigid_pose_requirement_met": bool(report.get("rigid_pose_requirement_met") is True),
         "annotation_ready": bool(report.get("annotation_ready") is True),
         "deliverable_ready": bool(report.get("deliverable_ready") is True),
         "accuracy_target_met": bool(report.get("accuracy_target_met") is True),
@@ -3017,6 +3187,7 @@ def required_variable_families(
     post_temporal_mano_articulation_local_solve: dict[str, Any],
     post_temporal_depth_observation_state: dict[str, Any],
     post_temporal_depth_observation_support_state: dict[str, Any],
+    post_temporal_depth_observation_weighted_refit: dict[str, Any],
     hand_surface_depth_tail_state: dict[str, Any],
     hand_tail_support_state: dict[str, Any],
     hand_tail_depth_observation_state: dict[str, Any],
@@ -3446,6 +3617,33 @@ def required_variable_families(
                 "post_temporal_depth_observation_independent_keypoint_strong_rows": post_temporal_depth_observation_support_state[
                     "independent_keypoint_strong_depth_observation_rows"
                 ],
+                "post_temporal_observation_weighted_variable_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_weighted_variable_rows"
+                ],
+                "post_temporal_observation_depth_factor_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_depth_factor_rows"
+                ],
+                "post_temporal_observation_depth_factor_keypoint_state_counts": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_depth_factor_keypoint_state_counts"
+                ],
+                "post_temporal_observation_depth_prior_smooth_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_depth_observation_prior_smooth_rows"
+                ],
+                "post_temporal_observation_fixed_factor_depth_threshold_met_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_fixed_factor_depth_threshold_met_rows"
+                ],
+                "post_temporal_observation_reprojected_metric_depth_compatible_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_reprojected_metric_depth_compatible_rows"
+                ],
+                "post_temporal_observation_accepted_rows_after_reprojection": post_temporal_depth_observation_weighted_refit[
+                    "metric_hand_state_accepted_rows_after_post_temporal_observation_refit"
+                ],
+                "post_temporal_observation_residual_rows_after_reprojection": post_temporal_depth_observation_weighted_refit[
+                    "depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"
+                ],
+                "post_temporal_observation_reprojection_state_counts": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_temporal_reprojection_state_counts"
+                ],
                 "surface_depth_tail_variable_count": hand_surface_depth_tail_state[
                     "hand_surface_depth_tail_variable_count"
                 ],
@@ -3524,6 +3722,7 @@ def required_variable_families(
                 "post-update reprojection and resampling falsify the fixed-sample temporal refit as sufficient; temporal shifts improve many rows but leave most rows depth-incompatible, so local MANO surface and projection relinearization remains required",
                 "post-temporal residual ownership shows that only a small residual subset is clean local MANO-surface ownership, while mixed surface-depth and depth-observation owners dominate the remaining applied temporal rows",
                 "owner-weighted temporal refit consumes geometry-owned sample pairs and explicit depth-observation variables, but post-update reprojection still leaves most temporal rows depth-incompatible",
+                "support-weighted UniDepth observation factors repair many fixed residual samples but leave all depth-observation owners after full MANO reprojection, so scalar camera-ray depth factors do not close the hand-depth state",
                 "post-temporal MANO factor input materializes current-state vertex-pair factors for local and mixed owner rows, but MANO pose has not consumed those post-temporal factors",
                 "post-temporal MANO pose-delta solve consumes the current local and mixed factors, but only one row clears the depth-improvement predicate and most rows hit the pose-delta bound",
                 "independent 2D hand evidence supports most post-temporal depth-observation rows; the dominant owner is hand-depth observation state, with projection spillover covering a small minority",
@@ -4404,6 +4603,33 @@ def required_variable_families(
                 "post_temporal_depth_observation_independent_keypoint_strong_rows": post_temporal_depth_observation_support_state[
                     "independent_keypoint_strong_depth_observation_rows"
                 ],
+                "post_temporal_observation_weighted_variable_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_weighted_variable_rows"
+                ],
+                "post_temporal_observation_depth_factor_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_depth_factor_rows"
+                ],
+                "post_temporal_observation_depth_factor_keypoint_state_counts": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_depth_factor_keypoint_state_counts"
+                ],
+                "post_temporal_observation_depth_prior_smooth_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_depth_observation_prior_smooth_rows"
+                ],
+                "post_temporal_observation_fixed_factor_depth_threshold_met_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_fixed_factor_depth_threshold_met_rows"
+                ],
+                "post_temporal_observation_reprojected_metric_depth_compatible_rows": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_reprojected_metric_depth_compatible_rows"
+                ],
+                "post_temporal_observation_accepted_rows_after_reprojection": post_temporal_depth_observation_weighted_refit[
+                    "metric_hand_state_accepted_rows_after_post_temporal_observation_refit"
+                ],
+                "post_temporal_observation_residual_rows_after_reprojection": post_temporal_depth_observation_weighted_refit[
+                    "depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"
+                ],
+                "post_temporal_observation_reprojection_state_counts": post_temporal_depth_observation_weighted_refit[
+                    "post_temporal_observation_temporal_reprojection_state_counts"
+                ],
                 "surface_depth_tail_scalar_compatible_rows": hand_surface_depth_tail_state[
                     "scalar_depth_compatible_rows"
                 ],
@@ -4487,6 +4713,7 @@ def required_variable_families(
                 "far-field temporal refit evidence shows temporal relinearization can remove most long-run residual depth gaps without exhausting the existing ray-shift bounds",
                 "temporal refit deltas survive as improvement evidence but not as metric-depth-compatible hand state after MANO surface resampling",
                 "post-temporal depth-observation rows mostly remain supported by independent same-side hand evidence, so depth ownership needs an explicit hand-depth observation state plus a smaller projection-support state",
+                "support-weighted UniDepth observation factors repair many fixed residual samples but leave all depth-observation owners after full MANO reprojection, so scalar camera-ray depth factors do not close the hand-depth state",
                 "per-row scalar repair exposes visible hand-surface depth tails that require local hand/depth state",
                 "independent model-produced hand boxes support most residual depth-tail pixels, with unsupported projection accounting for a small minority",
                 "local UniDepth search finds a mixed observation state: some supported tails have nearby compatible depth, some have partial compatible depth, and hundreds lack nearby compatible depth",
@@ -4684,6 +4911,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         load_json(inputs.post_temporal_depth_observation_support_state_report),
         f"{inputs.case} post-temporal depth-observation support state report",
     )
+    post_temporal_depth_observation_weighted_refit_report = require_dict(
+        load_json(inputs.post_temporal_depth_observation_weighted_refit_report),
+        f"{inputs.case} post-temporal depth-observation weighted-refit report",
+    )
     hand_surface_depth_tail_state_report = require_dict(
         load_json(inputs.hand_surface_depth_tail_state_report),
         f"{inputs.case} hand surface-depth tail state report",
@@ -4796,6 +5027,11 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
     )
     post_temporal_depth_observation_support_state = post_temporal_depth_observation_support_state_counts(
         post_temporal_depth_observation_support_state_report
+    )
+    post_temporal_depth_observation_weighted_refit = (
+        post_temporal_depth_observation_weighted_refit_counts(
+            post_temporal_depth_observation_weighted_refit_report
+        )
     )
     hand_surface_depth_tail_state = hand_surface_depth_tail_state_counts(hand_surface_depth_tail_state_report)
     hand_tail_support_state = hand_tail_support_state_counts(hand_tail_support_state_report)
@@ -5679,6 +5915,13 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         raise RuntimeError(
             f"{inputs.case} frame_count mismatch between sparse report and post-temporal depth-observation support state"
         )
+    if frame_count != require_int(
+        post_temporal_depth_observation_weighted_refit["frame_count"],
+        f"{inputs.case} post-temporal depth-observation weighted-refit frame_count",
+    ):
+        raise RuntimeError(
+            f"{inputs.case} frame_count mismatch between sparse report and post-temporal depth-observation weighted refit"
+        )
     if require_int(
         hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
         f"{inputs.case} owner-weighted temporal source rows",
@@ -5871,6 +6114,101 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         f"{inputs.case} post-temporal depth-observation source counts",
     ):
         raise RuntimeError(f"{inputs.case} post-temporal depth-observation support source states changed")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_weighted_refit_input_rows"],
+        f"{inputs.case} post-temporal observation weighted input rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_temporal_source_rows"],
+        f"{inputs.case} owner-weighted temporal source rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation refit inputs disagree with owner-weighted source rows")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_weighted_variable_rows"],
+        f"{inputs.case} post-temporal observation weighted variable rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_variable_rows"],
+        f"{inputs.case} owner-weighted variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation refit variables disagree with owner-weighted variables")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["source_owner_weighted_variable_rows"],
+        f"{inputs.case} post-temporal observation source variable rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_variable_rows"],
+        f"{inputs.case} owner-weighted variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation source comparison changed owner-weighted variables")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["source_owner_weighted_depth_observation_prior_smooth_rows"],
+        f"{inputs.case} post-temporal observation source depth-observation prior rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_depth_observation_prior_smooth_rows"],
+        f"{inputs.case} owner-weighted depth-observation prior rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation source comparison changed depth-observation prior rows")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["source_owner_weighted_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} post-temporal observation source compatible rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} owner-weighted compatible rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation source comparison changed compatible rows")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["source_metric_hand_state_accepted_rows_after_owner_weighted_refit"],
+        f"{inputs.case} post-temporal observation source accepted rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["metric_hand_state_accepted_rows_after_owner_weighted_refit"],
+        f"{inputs.case} owner-weighted accepted rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation source comparison changed accepted rows")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["source_depth_repair_factor_candidate_rows_after_owner_weighted_refit"],
+        f"{inputs.case} post-temporal observation source residual rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["depth_repair_factor_candidate_rows_after_owner_weighted_refit"],
+        f"{inputs.case} owner-weighted residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation source comparison changed residual rows")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_depth_factor_rows"],
+        f"{inputs.case} post-temporal observation depth factor rows",
+    ) + require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_depth_observation_prior_smooth_rows"],
+        f"{inputs.case} post-temporal observation depth prior rows",
+    ) != require_int(
+        hand_temporal_owner_weighted_refit["owner_weighted_reprojection_depth_observation_owner_rows"],
+        f"{inputs.case} owner-weighted depth-observation rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation depth factors plus priors do not cover depth-observation owners")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojection_residual_owner_rows"],
+        f"{inputs.case} post-temporal observation residual rows",
+    ) + require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojection_projection_untrusted_rows"],
+        f"{inputs.case} post-temporal observation projection-untrusted rows",
+    ) + require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojected_metric_depth_compatible_rows"],
+        f"{inputs.case} post-temporal observation compatible rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_weighted_variable_rows"],
+        f"{inputs.case} post-temporal observation weighted variable rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation reprojected split does not sum to weighted variables")
+    if require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojection_local_surface_factor_candidate_rows"],
+        f"{inputs.case} post-temporal observation local rows",
+    ) + require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojection_mixed_surface_depth_owner_rows"],
+        f"{inputs.case} post-temporal observation mixed rows",
+    ) + require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojection_depth_observation_owner_rows"],
+        f"{inputs.case} post-temporal observation depth-observation rows",
+    ) != require_int(
+        post_temporal_depth_observation_weighted_refit["post_temporal_observation_reprojection_residual_owner_rows"],
+        f"{inputs.case} post-temporal observation residual rows",
+    ):
+        raise RuntimeError(f"{inputs.case} post-temporal observation residual owner split does not sum to residual rows")
     if require_int(
         hand_scale_depth_counterfactual["base_available_rows"],
         f"{inputs.case} hand scale base available rows",
@@ -6273,6 +6611,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         post_temporal_mano_articulation_local_solve,
         post_temporal_depth_observation_state,
         post_temporal_depth_observation_support_state,
+        post_temporal_depth_observation_weighted_refit,
         hand_surface_depth_tail_state,
         hand_tail_support_state,
         hand_tail_depth_observation_state,
@@ -6408,6 +6747,10 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
                 inputs.post_temporal_depth_observation_support_state_report,
                 post_temporal_depth_observation_support_state_report,
             ),
+            "post_temporal_depth_observation_weighted_refit_report": source_summary(
+                inputs.post_temporal_depth_observation_weighted_refit_report,
+                post_temporal_depth_observation_weighted_refit_report,
+            ),
             "hand_surface_depth_tail_state_report": source_summary(
                 inputs.hand_surface_depth_tail_state_report, hand_surface_depth_tail_state_report
             ),
@@ -6477,6 +6820,7 @@ def case_problem(inputs: CaseInputs) -> dict[str, Any]:
         "current_post_temporal_mano_articulation_local_solve": post_temporal_mano_articulation_local_solve,
         "current_post_temporal_depth_observation_state": post_temporal_depth_observation_state,
         "current_post_temporal_depth_observation_support_state": post_temporal_depth_observation_support_state,
+        "current_post_temporal_depth_observation_weighted_refit": post_temporal_depth_observation_weighted_refit,
         "current_hand_surface_depth_tail_state": hand_surface_depth_tail_state,
         "current_hand_tail_support_state": hand_tail_support_state,
         "current_hand_tail_depth_observation_state": hand_tail_depth_observation_state,
@@ -6551,6 +6895,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args.post_temporal_mano_articulation_local_solve_root,
             args.post_temporal_depth_observation_state_root,
             args.post_temporal_depth_observation_support_state_root,
+            args.post_temporal_depth_observation_weighted_refit_root,
             args.hand_surface_depth_tail_state_root,
             args.hand_tail_support_state_root,
             args.hand_tail_depth_observation_state_root,
@@ -6616,6 +6961,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "post_temporal_depth_observation_support_state_root": str(
             args.post_temporal_depth_observation_support_state_root
+        ),
+        "post_temporal_depth_observation_weighted_refit_root": str(
+            args.post_temporal_depth_observation_weighted_refit_root
         ),
         "hand_surface_depth_tail_state_root": str(args.hand_surface_depth_tail_state_root),
         "hand_tail_support_state_root": str(args.hand_tail_support_state_root),
@@ -7158,6 +7506,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "post_temporal_depth_observation_independent_keypoint_strong_rows": case[
                     "current_post_temporal_depth_observation_support_state"
                 ]["independent_keypoint_strong_depth_observation_rows"],
+                "post_temporal_observation_weighted_variable_rows": case[
+                    "current_post_temporal_depth_observation_weighted_refit"
+                ]["post_temporal_observation_weighted_variable_rows"],
+                "post_temporal_observation_depth_factor_rows": case[
+                    "current_post_temporal_depth_observation_weighted_refit"
+                ]["post_temporal_observation_depth_factor_rows"],
+                "post_temporal_observation_depth_factor_keypoint_state_counts": case[
+                    "current_post_temporal_depth_observation_weighted_refit"
+                ]["post_temporal_observation_depth_factor_keypoint_state_counts"],
+                "post_temporal_observation_reprojected_metric_depth_compatible_rows": case[
+                    "current_post_temporal_depth_observation_weighted_refit"
+                ]["post_temporal_observation_reprojected_metric_depth_compatible_rows"],
+                "post_temporal_observation_accepted_rows_after_reprojection": case[
+                    "current_post_temporal_depth_observation_weighted_refit"
+                ]["metric_hand_state_accepted_rows_after_post_temporal_observation_refit"],
+                "post_temporal_observation_residual_rows_after_reprojection": case[
+                    "current_post_temporal_depth_observation_weighted_refit"
+                ]["depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"],
+                "post_temporal_observation_reprojection_state_counts": case[
+                    "current_post_temporal_depth_observation_weighted_refit"
+                ]["post_temporal_observation_temporal_reprojection_state_counts"],
                 "hand_surface_depth_tail_variable_count": case[
                     "current_hand_surface_depth_tail_state"
                 ]["hand_surface_depth_tail_variable_count"],
@@ -8540,6 +8909,114 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             ]
             for case in case_outputs
         ),
+        "post_temporal_observation_weighted_variable_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_weighted_variable_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_geometry_factor_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_geometry_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_depth_factor_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_depth_factor_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_depth_factor_keypoint_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_post_temporal_depth_observation_weighted_refit"][
+                                "post_temporal_observation_depth_factor_keypoint_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
+        "post_temporal_observation_prior_smooth_only_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_prior_smooth_only_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_depth_prior_smooth_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_depth_observation_prior_smooth_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_geometry_depth_sample_factor_count": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_geometry_depth_sample_factor_count"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_depth_observation_sample_factor_count": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_depth_observation_sample_factor_count"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_fixed_factor_depth_threshold_met_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_fixed_factor_depth_threshold_met_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_reprojected_metric_depth_compatible_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_reprojected_metric_depth_compatible_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_reprojected_depth_improved_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_reprojected_depth_improved_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_accepted_rows_after_reprojection": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "metric_hand_state_accepted_rows_after_post_temporal_observation_refit"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_residual_rows_after_reprojection": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "depth_repair_factor_candidate_rows_after_post_temporal_observation_refit"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_reprojection_depth_observation_owner_rows": sum(
+            case["current_post_temporal_depth_observation_weighted_refit"][
+                "post_temporal_observation_reprojection_depth_observation_owner_rows"
+            ]
+            for case in case_outputs
+        ),
+        "post_temporal_observation_reprojection_state_counts": dict(
+            sorted(
+                sum(
+                    (
+                        Counter(
+                            case["current_post_temporal_depth_observation_weighted_refit"][
+                                "post_temporal_observation_temporal_reprojection_state_counts"
+                            ]
+                        )
+                        for case in case_outputs
+                    ),
+                    Counter(),
+                ).items()
+            )
+        ),
         "mano_parameter_ownership_variable_count": sum(
             case["current_mano_parameter_ownership_state"]["mano_parameter_ownership_variable_count"]
             for case in case_outputs
@@ -9206,6 +9683,11 @@ def parse_args() -> argparse.Namespace:
         "--post-temporal-depth-observation-support-state-root",
         type=Path,
         default=Path("/data2/ego_annotation_outputs/v17_post_temporal_depth_observation_support_state"),
+    )
+    parser.add_argument(
+        "--post-temporal-depth-observation-weighted-refit-root",
+        type=Path,
+        default=Path("/data2/ego_annotation_outputs/v17_post_temporal_depth_observation_weighted_refit"),
     )
     parser.add_argument(
         "--hand-surface-depth-tail-state-root",
