@@ -23,3 +23,11 @@ Each v16-or-later version must begin with an upfront design document before impl
 Every v16-or-later deliverable must have the same frame count and duration as the original raw video. Short windows, contact slices, debug clips, contact sheets, and selected-frame renders are QC artifacts only.
 
 Bug fixes, threshold changes, renderer fixes, server setup, and local mechanism studies belong inside the current version as patches or experiments. They do not create a new top-level version number.
+
+## Runtime And Occlusion Discipline
+
+Starting at v18, runtime is a design invariant. The default pipeline for a raw video must run in the same order of magnitude as the input duration. A method that takes hours for a roughly one-minute clip is a failed default design, even if its intermediate evidence is interesting. Per-instance neural reconstruction or training loops such as BundleSDF/NeRF-style optimization may be used only as offline research branches, never as the default path or as a way to discover obvious physical state types.
+
+Occlusion must be represented explicitly. Hands and objects need per-frame visibility states such as visible, partially visible, occluded, out-of-frame, and unresolved, with occluder ownership and uncertainty for inferred states. Do not treat occlusion as only missing data, do not silently fill occluded hands/objects with certain poses, and do not claim contact or object pose through occlusion without depth-order and temporal evidence.
+
+Do not block on foreground sleep/poll loops while waiting for long jobs. Long-running work must run in tmux or a job system with durable sentinels/logs while the agent does useful parallel work or returns control.
