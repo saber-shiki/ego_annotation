@@ -214,6 +214,8 @@ def acquisition_state(row: dict[str, Any]) -> tuple[str, list[str]]:
         return "requires_improved_sparse_part_masks_or_visible_subset_only_model", sorted(
             blockers | {"partial_visible_subset_not_full_part_model"}
         )
+    if state == "blocked_part_model_residual_probes_rejected":
+        return "requires_repair_rejected_part_model_residual_probes", sorted(blockers | {"part_model_residual_probes_rejected"})
     if state == "blocked_no_part_model_candidate":
         return "requires_part_surface_model_candidate_after_generated_masks", sorted(blockers | {"part_model_candidate_missing"})
     return "requires_manual_triage", sorted(blockers | {"unclassified_part_object_blocker_state"})

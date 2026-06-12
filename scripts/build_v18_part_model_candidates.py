@@ -84,6 +84,45 @@ def rows_for_component(surface_rows: list[dict[str, Any]], object_id: str, label
     return [row for row in surface_rows if str(row.get("object_id")) == object_id and str(row.get("part_track_label")) in labels]
 
 
+def rejected_probe_from_pair(index: int, object_id: str, pair: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_id": f"{object_id}::rejected_pair_residual_probe::{index:02d}",
+        "object_id": object_id,
+        "candidate_type": "two_part_relative_motion_residual_probe",
+        "candidate_state": "rejected_residual_probe_not_part_model",
+        "part_track_labels": [str(pair.get("part_a")), str(pair.get("part_b"))],
+        "shared_frame_count": pair.get("shared_frame_count"),
+        "frame_min": pair.get("frame_min"),
+        "frame_max": pair.get("frame_max"),
+        "center_distance_m": pair.get("center_distance_m"),
+        "p95_minus_p05_distance_m": pair.get("p95_minus_p05_distance_m"),
+        "pair_motion_state": pair.get("pair_motion_state"),
+        "pair_qc_state": pair.get("pair_qc_state"),
+        "rejection_reasons": list(pair.get("qc_blockers", [])) if isinstance(pair.get("qc_blockers"), list) else [str(pair.get("pair_qc_state"))],
+        "eligible_for_hidden_geometry_completion": False,
+        "articulation_model_ready": False,
+        "part_pose_ready": False,
+        "object_pose_requirement_met": False,
+    }
+
+
+def rejected_probe_from_single(index: int, object_id: str, part: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_id": f"{object_id}::rejected_single_part_surface_probe::{index:02d}",
+        "object_id": object_id,
+        "candidate_type": "single_part_visible_surface_residual_probe",
+        "candidate_state": "rejected_single_part_not_split_model",
+        "part_track_labels": [str(part.get("part_track_label"))],
+        "part_surface_quality": part.get("part_surface_quality"),
+        "quality_metrics": part.get("quality_metrics"),
+        "rejection_reasons": ["requires_at_least_two_semantic_part_tracks_for_part_or_articulation_model"],
+        "eligible_for_hidden_geometry_completion": False,
+        "articulation_model_ready": False,
+        "part_pose_ready": False,
+        "object_pose_requirement_met": False,
+    }
+
+
 def candidate_from_component(index: int, object_id: str, labels: list[str], rows: list[dict[str, Any]], source_edges: list[dict[str, Any]]) -> dict[str, Any]:
     frames = sorted({require_int(row.get("frame_idx"), "frame_idx") for row in rows})
     blockers = [
@@ -127,6 +166,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     surface_rows = [require_dict(raw, "surface row") for raw in require_list(surfaces.get("surface_rows"), "surface rows")]
     object_rows: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
+    rejected_candidates: list[dict[str, Any]] = []
     object_state_counts: Counter[str] = Counter()
     for raw_obj in require_list(qc.get("object_rows"), "qc object rows"):
         obj = require_dict(raw_obj, "qc object row")
@@ -134,15 +174,20 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         stable_edges: list[tuple[str, str]] = []
         stable_edge_rows: list[dict[str, Any]] = []
         confounded_variable_count = 0
-        for raw_pair in require_list(obj.get("pair_rows"), "qc pair rows"):
+        rejected_obj_candidates: list[dict[str, Any]] = []
+        pair_rows = [require_dict(raw_pair, "qc pair row") for raw_pair in require_list(obj.get("pair_rows"), "qc pair rows")]
+        for raw_pair in pair_rows:
+            pair = require_dict(raw_pair, "qc pair row")
             pair = require_dict(raw_pair, "qc pair row")
             if pair.get("pair_qc_state") == "stable_pair_supported_by_robust_surfaces":
                 a = str(pair.get("part_a"))
                 b = str(pair.get("part_b"))
                 stable_edges.append((a, b))
                 stable_edge_rows.append(pair)
-            elif pair.get("pair_qc_state") == "variable_pair_confounded_by_part_surface_quality":
-                confounded_variable_count += 1
+            else:
+                if pair.get("pair_qc_state") == "variable_pair_confounded_by_part_surface_quality":
+                    confounded_variable_count += 1
+                rejected_obj_candidates.append(rejected_probe_from_pair(len(rejected_obj_candidates) + 1, object_id, pair))
         components = stable_components(stable_edges)
         obj_candidates: list[dict[str, Any]] = []
         for index, labels in enumerate(components, start=1):
@@ -154,8 +199,14 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             candidate = candidate_from_component(index, object_id, labels, rows_for_component(surface_rows, object_id, set(labels)), component_edges)
             obj_candidates.append(candidate)
             candidates.append(candidate)
+        if not pair_rows:
+            for raw_part in require_list(obj.get("part_rows"), "qc part rows"):
+                rejected_obj_candidates.append(rejected_probe_from_single(len(rejected_obj_candidates) + 1, object_id, require_dict(raw_part, "qc part row")))
+        rejected_candidates.extend(rejected_obj_candidates)
         if obj_candidates:
             state = "visible_stable_part_subset_candidates_only"
+        elif rejected_obj_candidates:
+            state = "part_model_residual_probes_rejected"
         elif confounded_variable_count:
             state = "no_model_candidate_due_confounded_variable_pairs"
         else:
@@ -169,6 +220,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "stable_component_count": len(components),
                 "confounded_variable_pair_count": confounded_variable_count,
                 "candidate_ids": [candidate["candidate_id"] for candidate in obj_candidates],
+                "rejected_candidate_ids": [candidate["candidate_id"] for candidate in rejected_obj_candidates],
+                "rejected_candidate_count": len(rejected_obj_candidates),
                 "hidden_geometry_reconstructed": False,
                 "articulation_model_ready": False,
                 "part_pose_ready": False,
@@ -182,9 +235,11 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "case": case,
         "sources": {"v18_part_motion_qc": str(qc_path), "v18_part_visible_surfaces": str(surfaces_path)},
         "candidate_count": len(candidates),
+        "rejected_candidate_count": len(rejected_candidates),
         "object_state_counts": dict(sorted(object_state_counts.items())),
         "object_rows": object_rows,
         "candidates": candidates,
+        "rejected_candidates": rejected_candidates,
         "visible_subset_model_candidate_count": len(candidates),
         "hidden_geometry_completion_candidate_count": 0,
         "articulation_model_candidate_count": 0,
@@ -212,6 +267,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "case_count": len(reports),
         "build_elapsed_s": elapsed,
         "candidate_count": sum(require_int(report.get("candidate_count"), "candidate_count") for report in reports),
+        "rejected_candidate_count": sum(require_int(report.get("rejected_candidate_count"), "rejected_candidate_count") for report in reports),
         "visible_subset_model_candidate_count": sum(require_int(report.get("visible_subset_model_candidate_count"), "visible_subset_count") for report in reports),
         "hidden_geometry_completion_candidate_count": 0,
         "articulation_model_candidate_count": 0,
@@ -225,6 +281,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "case": report["case"],
                 "report_path": str(args.output_root / str(report["case"]) / "v18_part_model_candidates_report.json"),
                 "candidate_count": report["candidate_count"],
+                "rejected_candidate_count": report["rejected_candidate_count"],
                 "object_state_counts": report["object_state_counts"],
                 **FALSE_READY,
             }

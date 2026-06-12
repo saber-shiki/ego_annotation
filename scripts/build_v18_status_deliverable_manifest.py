@@ -399,6 +399,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         },
         "part_model_candidate_qc": {
             "candidate_count": part_model_candidates.get("candidate_count"),
+            "rejected_candidate_count": part_model_candidates.get("rejected_candidate_count"),
             "visible_subset_model_candidate_count": part_model_candidates.get("visible_subset_model_candidate_count"),
             "hidden_geometry_completion_candidate_count": part_model_candidates.get("hidden_geometry_completion_candidate_count"),
             "articulation_model_candidate_count": part_model_candidates.get("articulation_model_candidate_count"),
@@ -423,6 +424,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "part_object_blocker_qc": {
             "required_part_object_count": part_object_blockers.get("required_part_object_count"),
             "part_object_blocker_state_counts": part_object_blockers.get("part_object_blocker_state_counts"),
+            "rejected_part_model_candidate_count": part_object_blockers.get("rejected_part_model_candidate_count"),
             "hidden_geometry_reconstructed_count": part_object_blockers.get("hidden_geometry_reconstructed_count"),
             "articulation_model_ready_count": part_object_blockers.get("articulation_model_ready_count"),
             "part_pose_ready_count": part_object_blockers.get("part_pose_ready_count"),
@@ -708,6 +710,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("candidate_count"), "part model candidate count")
         for case in cases
     )
+    part_model_rejected_candidate_count = sum(
+        require_int(require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("rejected_candidate_count"), "rejected part model candidate count")
+        for case in cases
+    )
     visible_subset_model_candidate_count = sum(
         require_int(
             require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("visible_subset_model_candidate_count"),
@@ -743,6 +749,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     required_part_object_blocker_count = sum(
         require_int(require_dict(case.get("part_object_blocker_qc"), "part object blocker qc").get("required_part_object_count"), "required part object blocker count")
+        for case in cases
+    )
+    part_object_blocker_rejected_candidate_count = sum(
+        require_int(require_dict(case.get("part_object_blocker_qc"), "part object blocker qc").get("rejected_part_model_candidate_count"), "blocker rejected candidate count")
         for case in cases
     )
     contact_ownership_ready_count = sum(
@@ -904,6 +914,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "articulation_model_ready_count": articulation_model_ready_count,
         "part_motion_qc_object_count": part_motion_qc_object_count,
         "part_model_candidate_count": part_model_candidate_count,
+        "part_model_rejected_candidate_count": part_model_rejected_candidate_count,
         "visible_subset_model_candidate_count": visible_subset_model_candidate_count,
         "visible_part_subset_archive_file_written_all_cases": visible_part_subset_archive_file_written_all_cases,
         "visible_part_subset_archive_ready": visible_part_subset_archive_ready,
@@ -914,6 +925,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_part_subset_vertices": visible_part_subset_vertices,
         "visible_part_subset_faces": visible_part_subset_faces,
         "required_part_object_blocker_count": required_part_object_blocker_count,
+        "part_object_blocker_rejected_candidate_count": part_object_blocker_rejected_candidate_count,
         "contact_ownership_ready_count": contact_ownership_ready_count,
         "sam_promptable_selected_frame_count": sam_promptable_selected_frame_count,
         "sam_promptable_raw_mask_candidate_count": sam_promptable_raw_candidate_count,

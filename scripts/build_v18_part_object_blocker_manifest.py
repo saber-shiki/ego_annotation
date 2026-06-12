@@ -77,6 +77,10 @@ def blocker_state(part_row: dict[str, Any], candidate_row: dict[str, Any] | None
         blockers.add("missing_accepted_part_mask_evidence")
         next_evidence.add("obtain model-produced part plan and tracked part masks overlapping the object")
         return "blocked_missing_part_mask_evidence", sorted(blockers), sorted(next_evidence)
+    if candidate_row is not None and require_int(candidate_row.get("rejected_candidate_count", 0), "rejected candidate count") > 0:
+        blockers.add("part_model_residual_probes_rejected")
+        next_evidence.add("repair rejected part residual probes by improving sparse masks or collecting more shared-frame part surfaces")
+        return "blocked_part_model_residual_probes_rejected", sorted(blockers), sorted(next_evidence)
     if candidate_row is not None and subset_records:
         blockers.update(
             {
@@ -136,6 +140,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "part_object_blocker_state": state,
                 "accepted_part_track_count": part_row.get("accepted_part_track_count"),
                 "accepted_part_track_labels": part_row.get("accepted_part_track_labels"),
+                "rejected_part_model_candidate_count": require_int(candidate_row.get("rejected_candidate_count", 0), "rejected candidate count") if candidate_row else 0,
                 "visible_subset_candidate_count": len(subset_records),
                 "visible_subset_rows": sum(require_int(record.get("archive_row_count"), "archive row count") for record in subset_records),
                 "visible_subset_vertices": sum(require_int(record.get("vertex_count"), "vertex count") for record in subset_records),
@@ -165,6 +170,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "required_part_object_count": len(object_rows),
         "part_object_blocker_state_counts": dict(sorted(state_counts.items())),
         "object_rows": object_rows,
+        "rejected_part_model_candidate_count": sum(require_int(row.get("rejected_part_model_candidate_count"), "rejected candidate count") for row in object_rows),
         "hidden_geometry_reconstructed_count": 0,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
@@ -192,6 +198,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "build_elapsed_s": elapsed,
         "required_part_object_count": sum(require_int(report.get("required_part_object_count"), "required part object count") for report in reports),
         "part_object_blocker_state_counts": dict(sorted(state_counts.items())),
+        "rejected_part_model_candidate_count": sum(require_int(report.get("rejected_part_model_candidate_count"), "rejected candidate count") for report in reports),
         "hidden_geometry_reconstructed_count": 0,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
@@ -204,6 +211,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "report_path": str(args.output_root / str(report["case"]) / "v18_part_object_blocker_manifest_report.json"),
                 "required_part_object_count": report["required_part_object_count"],
                 "part_object_blocker_state_counts": report["part_object_blocker_state_counts"],
+                "rejected_part_model_candidate_count": report.get("rejected_part_model_candidate_count"),
                 **FALSE_READY,
             }
             for report in reports

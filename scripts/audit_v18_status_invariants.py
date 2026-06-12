@@ -59,6 +59,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     part_source_path = args.part_track_source_root / "v18_part_track_source_manifest_summary.json"
     part_split_path = args.part_split_evidence_root / "v18_part_split_evidence_summary.json"
     part_surfaces_path = args.part_visible_surfaces_root / "v18_part_visible_surfaces_summary.json"
+    part_models_path = args.part_model_candidates_root / "v18_part_model_candidates_summary.json"
     part_blockers_path = args.part_object_blockers_root / "v18_part_object_blocker_manifest_summary.json"
     acquisition_path = args.part_mask_acquisition_root / "v18_part_mask_acquisition_plan_summary.json"
     sam_promptable_path = args.sam_promptable_proposals_root / "v18_sam_promptable_part_proposals_summary.json"
@@ -75,6 +76,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     part_source = require_dict(load_json(part_source_path), "part source summary")
     part_split = require_dict(load_json(part_split_path), "part split summary")
     part_surfaces = require_dict(load_json(part_surfaces_path), "part visible surfaces summary")
+    part_models = require_dict(load_json(part_models_path), "part model candidates summary")
     part_blockers = require_dict(load_json(part_blockers_path), "part object blockers summary")
     acquisition = require_dict(load_json(acquisition_path), "part mask acquisition summary")
     sam_promptable = require_dict(load_json(sam_promptable_path), "SAM promptable proposals summary")
@@ -123,7 +125,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     check(checks, "part_track_source_counts_generated_only", part_source.get("root_count") == manifest.get("part_track_source_root_count") == 2 and part_source.get("usable_track_count") == manifest.get("part_track_source_usable_track_count") == 5, {"source_roots": part_source.get("root_count"), "manifest_roots": manifest.get("part_track_source_root_count"), "source_usable": part_source.get("usable_track_count"), "manifest_usable": manifest.get("part_track_source_usable_track_count")}, "2 roots, 5 usable tracks")
     check(checks, "part_split_generated_assignment_counts", part_split.get("accepted_part_track_assignment_count") == manifest.get("accepted_part_track_assignment_count") == 5, {"split": part_split.get("accepted_part_track_assignment_count"), "manifest": manifest.get("accepted_part_track_assignment_count")}, 5)
     check(checks, "part_surface_generated_counts", part_surfaces.get("surface_frame_rows") == manifest.get("part_visible_surface_frame_rows") == 753 and part_surfaces.get("total_vertices") == manifest.get("part_visible_surface_vertices") == 232551 and part_surfaces.get("total_faces") == manifest.get("part_visible_surface_faces") == 408455, {"surface_rows": part_surfaces.get("surface_frame_rows"), "manifest_rows": manifest.get("part_visible_surface_frame_rows"), "vertices": part_surfaces.get("total_vertices"), "manifest_vertices": manifest.get("part_visible_surface_vertices"), "faces": part_surfaces.get("total_faces"), "manifest_faces": manifest.get("part_visible_surface_faces")}, "753 rows / 232551 vertices / 408455 faces")
-    check(checks, "part_object_blockers_no_pose_promotion", part_blockers.get("part_object_blocker_state_counts") == {"blocked_no_part_model_candidate": 3}, part_blockers.get("part_object_blocker_state_counts"), {"blocked_no_part_model_candidate": 3})
+    check(checks, "part_model_residual_probes_rejected_not_promoted", part_models.get("candidate_count") == manifest.get("part_model_candidate_count") == 0 and part_models.get("rejected_candidate_count") == manifest.get("part_model_rejected_candidate_count") == part_blockers.get("rejected_part_model_candidate_count") == manifest.get("part_object_blocker_rejected_candidate_count") == 3, {"model_candidates": part_models.get("candidate_count"), "model_rejected": part_models.get("rejected_candidate_count"), "manifest_rejected": manifest.get("part_model_rejected_candidate_count"), "blocker_rejected": part_blockers.get("rejected_part_model_candidate_count"), "manifest_blocker_rejected": manifest.get("part_object_blocker_rejected_candidate_count")}, "0 accepted / 3 rejected")
+    check(checks, "part_object_blockers_no_pose_promotion", part_blockers.get("part_object_blocker_state_counts") == {"blocked_part_model_residual_probes_rejected": 3}, part_blockers.get("part_object_blocker_state_counts"), {"blocked_part_model_residual_probes_rejected": 3})
     check(checks, "part_mask_generation_ready_for_required_objects", manifest.get("local_new_mask_generation_ready_count") == manifest.get("part_mask_acquisition_object_count") == 3, {"local_ready_count": manifest.get("local_new_mask_generation_ready_count"), "object_count": manifest.get("part_mask_acquisition_object_count")}, 3)
     check(
         checks,
@@ -250,6 +253,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "part_track_source_summary": str(part_source_path),
             "part_split_evidence_summary": str(part_split_path),
             "part_visible_surfaces_summary": str(part_surfaces_path),
+            "part_model_candidates_summary": str(part_models_path),
             "part_object_blockers_summary": str(part_blockers_path),
             "part_mask_acquisition_summary": str(acquisition_path),
             "sam_promptable_proposals_summary": str(sam_promptable_path),
@@ -278,6 +282,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
     parser.add_argument("--part-split-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_split_evidence"))
     parser.add_argument("--part-visible-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
+    parser.add_argument("--part-model-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_model_candidates"))
     parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--part-mask-acquisition-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan"))
     parser.add_argument("--sam-promptable-proposals-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_sam_promptable_part_proposals"))
