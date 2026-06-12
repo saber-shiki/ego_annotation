@@ -68,9 +68,11 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
             if graph:
                 if graph.get("selected_by_contact_graph") is True:
                     selected_contact += 1
-                if graph.get("accepted_contact_owner") is True:
+                if hyp.get("contact_owner_hypothesis") == "accepted_contact_owner_by_temporal_mesh_distance_graph":
+                    require(signed is None or signed.get("local_penetration_detected") is not True, f"{case}: accepted contact owner contradicted by signed penetration")
                     accepted_contact += 1
-                    require(hyp.get("contact_owner_hypothesis") == "accepted_contact_owner_by_temporal_mesh_distance_graph", f"{case}: accepted graph row not reflected in hypothesis")
+                elif graph.get("accepted_contact_owner") is True:
+                    require(hyp.get("contact_owner_hypothesis") == "contact_owner_graph_conflicted_by_local_signed_penetration_not_accepted", f"{case}: graph accepted row must be accepted or explicitly signed-conflicted")
         for hand in frame.get("hands", []):
             if not isinstance(hand, dict):
                 continue
@@ -95,9 +97,13 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
         camera_depth = fg_variables.get("camera_depth_correction") if isinstance(fg_variables.get("camera_depth_correction"), dict) else {}
         if isinstance(camera_depth, dict) and camera_depth.get("has_direct_observation") is True:
             camera_depth_observed_rows += 1
-        solution_raw = fg.get("solution")
-        solution: dict[str, Any] = solution_raw if isinstance(solution_raw, dict) else {}
-        factor_contact_accept += int(solution.get("active_contact_hypotheses", 0))
+        contact_switch_raw = fg_variables.get("contact_switch")
+        if isinstance(contact_switch_raw, list):
+            for variable_raw in contact_switch_raw:
+                variable: dict[str, Any] = variable_raw if isinstance(variable_raw, dict) else {}
+                if variable.get("estimate") is True:
+                    require(variable.get("signed_nonpenetration_conflict") is not True, f"{case}: factor graph active contact despite signed nonpenetration conflict")
+                    factor_contact_accept += 1
     if require_contact_owner:
         require(accepted_contact > 0, f"{case}: no accepted contact owner rows in final annotations")
         require(selected_contact >= accepted_contact, f"{case}: selected contact count less than accepted count")

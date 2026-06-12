@@ -25,11 +25,17 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(report.get("occlusion_ownership_complete") is False, f"{case}: overclaims complete occlusion ownership")
     selected = 0
     accepted = 0
+    max_gap = int(report.get("parameters", {}).get("max_temporal_gap_frames", 30)) if isinstance(report.get("parameters"), dict) else 30
     for row in rows:
         require(isinstance(row, dict), f"{case}: malformed row")
         if row.get("selected_by_occlusion_graph") is True:
             selected += 1
+            assignment_raw = row.get("temporal_graph_assignment")
+            assignment_check: dict[str, Any] = assignment_raw if isinstance(assignment_raw, dict) else {}
             require(isinstance(row.get("temporal_graph_assignment"), dict), f"{case}: selected row lacks assignment")
+            gap = assignment_check.get("previous_candidate_frame_gap")
+            if isinstance(gap, int) and gap > max_gap:
+                require(assignment_check.get("temporal_transition_applied") is False, f"{case}: temporal transition applied across large gap")
         if row.get("accepted_occlusion_owner") is True:
             accepted += 1
             assignment_raw = row.get("temporal_graph_assignment")

@@ -729,6 +729,12 @@ def hand_by_side(v16_frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def signed_nonpenetration_conflict(signed_nonpenetration: dict[str, Any] | None) -> bool:
+    if not isinstance(signed_nonpenetration, dict):
+        return False
+    return bool(signed_nonpenetration.get("local_penetration_detected") is True)
+
+
 def contact_hypothesis(
     contact_row: dict[str, Any],
     mesh_contact: dict[str, Any] | None = None,
@@ -748,9 +754,13 @@ def contact_hypothesis(
     else:
         confidence = "unknown"
         ownership = "unresolved"
-    if contact_owner_graph and contact_owner_graph.get("accepted_contact_owner") is True:
+    signed_conflict = signed_nonpenetration_conflict(signed_nonpenetration)
+    if contact_owner_graph and contact_owner_graph.get("accepted_contact_owner") is True and not signed_conflict:
         confidence = "medium_temporal_mesh_contact_owner"
         ownership = "accepted_contact_owner_by_temporal_mesh_distance_graph"
+    elif contact_owner_graph and contact_owner_graph.get("accepted_contact_owner") is True and signed_conflict:
+        confidence = "low_conflicted_signed_nonpenetration"
+        ownership = "contact_owner_graph_conflicted_by_local_signed_penetration_not_accepted"
     elif contact_owner_graph and contact_owner_graph.get("selected_by_contact_graph") is True:
         confidence = "low_temporal_mesh_selected_not_accepted"
         ownership = "selected_by_contact_graph_not_accepted"
@@ -1042,7 +1052,10 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
     mesh_support = max(0.0, min(1.0, finite_float(mesh_raw.get("mesh_contact_support_score"), 0.0)))
     owner_candidate = evidence.get("contact_ownership_graph")
     owner_raw: dict[str, Any] = owner_candidate if isinstance(owner_candidate, dict) else {}
-    accepted_contact_owner = bool(owner_raw.get("accepted_contact_owner") is True)
+    signed_candidate = evidence.get("signed_nonpenetration_evidence")
+    signed_raw: dict[str, Any] | None = signed_candidate if isinstance(signed_candidate, dict) else None
+    signed_conflict = signed_nonpenetration_conflict(signed_raw)
+    accepted_contact_owner = bool(owner_raw.get("accepted_contact_owner") is True and not signed_conflict)
     selected_contact_owner = bool(owner_raw.get("selected_by_contact_graph") is True)
     image_support = max(iou, coverage, mesh_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
     # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
@@ -1053,6 +1066,8 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         on_energy += 1.5
     if mesh_support > 0.0:
         on_energy += (1.0 - mesh_support) ** 2
+    if signed_conflict:
+        on_energy += 2.0
     if accepted_contact_owner:
         on_energy *= 0.35
     elif selected_contact_owner:
@@ -1066,7 +1081,7 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         off_energy += 1.0
     if depth_contradiction and not accepted_contact_owner:
         off_energy *= 0.5
-    switch_on = on_energy < off_energy
+    switch_on = (on_energy < off_energy) and not signed_conflict
     return {
         "hand_side": hyp.get("hand_side"),
         "object_id": hyp.get("object_id"),
@@ -1083,6 +1098,7 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "mesh_contact_support_score": mesh_support,
         "selected_contact_owner": selected_contact_owner,
         "accepted_contact_owner": accepted_contact_owner,
+        "signed_nonpenetration_conflict": signed_conflict,
         "evidence": hyp.get("evidence"),
     }
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -22,6 +23,14 @@ def validate_case(path: Path) -> dict[str, Any]:
     report = load_json(path)
     case = report.get("case")
     rows = report.get("rows")
+    sources_raw = report.get("sources")
+    sources: dict[str, Any] = sources_raw if isinstance(sources_raw, dict) else {}
+    snapshot = sources.get("v18_full_annotations_snapshot")
+    sha = sources.get("v18_full_annotations_sha256")
+    require(isinstance(snapshot, str), f"{case}: missing mesh-contact source snapshot")
+    snapshot_path = Path(str(snapshot))
+    require(snapshot_path.exists(), f"{case}: missing mesh-contact source snapshot")
+    require(isinstance(sha, str) and hashlib.sha256(snapshot_path.read_bytes()).hexdigest() == sha, f"{case}: mesh-contact source snapshot hash mismatch")
     require(isinstance(rows, list) and len(rows) > 0, f"{case}: contact rows missing")
     require(report.get("contact_ownership_complete") is False, f"{case}: overclaims complete contact ownership")
     require(int(report.get("contact_ownership_accepted_rows", -1)) == 0, f"{case}: should not accept contact ownership")

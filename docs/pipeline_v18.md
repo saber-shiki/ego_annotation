@@ -756,13 +756,19 @@ V18 now has a camera/depth correction artifact in `scripts/build_v18_camera_dept
 
 V18 now has local signed-distance evidence in `scripts/build_v18_signed_nonpenetration_evidence.py`. For accepted contact-owner rows, it loads the V16 object mesh faces and V16 hand vertices, orients face normals outward from the mesh centroid, and records nearest-face normal-projection signed distances. `scripts/validate_v18_signed_nonpenetration_evidence.py` checks that the evidence is present and that it does not claim complete nonpenetration.
 
-The current evidence often flags local penetration, especially where meshes are thin, deformable, open, or normal projection is only a local approximation. Therefore the artifact is integrated into contact hypotheses as evidence only. It is not a watertight signed-distance field, not a complete nonpenetration solver, and it does not override contact ownership by itself.
+The current evidence often flags local penetration, especially where meshes are thin, deformable, open, or normal projection is only a local approximation. Therefore the artifact is integrated into contact hypotheses as evidence only. It is not a watertight signed-distance field and not a complete nonpenetration solver. Downstream accepted contact ownership is now vetoed when this local evidence reports penetration, so the contact graph remains preserved as conflicted evidence instead of being promoted to accepted ownership.
 
 ## Implementation Checkpoint 46: Temporal Occlusion Owner Graph
 
 V18 now has a temporal occlusion-owner graph in `scripts/build_v18_occlusion_owner_graph.py`. It solves an object-or-none sequence over bounded occlusion candidates using box coverage, candidate overlap, nearby mesh-contact support, and temporal continuity. The graph selects likely owners as evidence but only accepts ownership when source depth-order evidence already accepted it.
 
-Current representative outputs select 81 trash occlusion-owner rows and 0 task5 rows, while accepted occlusion ownership remains zero. `run_v18_full_pipeline.py` integrates each hand/frame assignment under `occlusion_owner_hypothesis.temporal_owner_graph`. This advances occlusion ownership from per-frame candidates to a temporal graph without making unsupported pose-fill or owner claims.
+Current representative outputs select 94 trash occlusion-owner rows and 0 task5 rows, while accepted occlusion ownership remains zero. The graph applies continuity only across candidate gaps of at most 30 frames; larger gaps are reset to unary candidate evidence. `run_v18_full_pipeline.py` integrates each hand/frame assignment under `occlusion_owner_hypothesis.temporal_owner_graph`. This advances occlusion ownership from per-frame candidates to a gap-aware temporal graph without making unsupported pose-fill or owner claims.
+
+## Implementation Checkpoint 47: Contact Signed-Conflict Veto and Mesh Evidence Provenance
+
+The contact graph still stores its temporal mesh-distance selections, but `run_v18_full_pipeline.py` no longer promotes a graph-accepted contact to final accepted ownership when local signed nonpenetration evidence reports penetration. Those rows are emitted as `contact_owner_graph_conflicted_by_local_signed_penetration_not_accepted`, and factor-graph contact switches are forced inactive under the same signed-conflict condition. Current representative build-only counts after the veto were: trash 4 final accepted / 291 conflicted graph-accepted rows; task5 17 final accepted / 704 conflicted graph-accepted rows.
+
+`build_v18_mesh_contact_evidence.py` now snapshots and hashes the full-annotation source used for mesh-distance evidence under each evidence output directory. This does not remove the bootstrap dependency on a full-annotation source, but it prevents the report from depending only on a mutable path after later full reruns overwrite `/data2/ego_annotation_outputs/v18_full_pipeline/<case>/annotations_v18_full.json`.
 
 ## Pipeline DAG and Parallelism
 

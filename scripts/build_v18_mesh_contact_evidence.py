@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -144,7 +145,12 @@ def support_from_distance(distance_m: float, sigma_m: float) -> float:
 
 def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     annotation_path = args.full_pipeline_root / case / "annotations_v18_full.json"
-    ann = load_json(annotation_path)
+    annotation_bytes = annotation_path.read_bytes()
+    annotation_sha256 = hashlib.sha256(annotation_bytes).hexdigest()
+    snapshot_path = args.output_root / case / "source_annotations_for_mesh_contact.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_bytes(annotation_bytes)
+    ann = json.loads(annotation_bytes.decode("utf-8"))
     v16_frames, mesh_index = load_v16(case, args)
     rows: list[dict[str, Any]] = []
     blocker_counts: dict[str, int] = {}
@@ -216,6 +222,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "case": case,
         "sources": {
             "v18_full_annotations": str(annotation_path),
+            "v18_full_annotations_sha256": annotation_sha256,
+            "v18_full_annotations_snapshot": str(snapshot_path),
             "v16_annotations": str(mesh_index.get("ann_path")),
             "v16_object_mesh_archive": mesh_index.get("mesh_archive"),
         },

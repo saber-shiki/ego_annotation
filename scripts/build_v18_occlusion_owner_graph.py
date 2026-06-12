@@ -89,11 +89,14 @@ def solve_sequence(hand_side: str, rows_by_frame: dict[int, list[dict[str, Any]]
     for i in range(1, len(frame_indices)):
         cur_costs: dict[str, float] = {}
         cur_back: dict[str, str | None] = {}
+        frame_gap = frame_indices[i] - frame_indices[i - 1]
+        use_temporal_transition = frame_gap <= args.max_temporal_gap_frames
         for cur, unary in unary_by_frame[frame_indices[i]].items():
             best_prev = None
             best_cost = float("inf")
             for prev, prev_cost in costs[i - 1].items():
-                total = prev_cost + transition_energy(prev, cur, args.object_switch_penalty, args.owner_onoff_penalty) + unary
+                temporal = transition_energy(prev, cur, args.object_switch_penalty, args.owner_onoff_penalty) if use_temporal_transition else 0.0
+                total = prev_cost + temporal + unary
                 if total < best_cost:
                     best_cost = total
                     best_prev = prev
@@ -130,6 +133,8 @@ def solve_sequence(hand_side: str, rows_by_frame: dict[int, list[dict[str, Any]]
                 "chosen_unary_energy": float(energies[chosen]),
                 "next_best_unary_energy": float(next_best) if next_best is not None else None,
                 "unary_energy_margin": margin,
+                "previous_candidate_frame_gap": (frame_idx - frame_indices[i - 1]) if i > 0 else None,
+                "temporal_transition_applied": bool(i > 0 and (frame_idx - frame_indices[i - 1]) <= args.max_temporal_gap_frames),
                 "accepted_occlusion_owner": accepted_row,
                 "occlusion_owner_claim": "accepted_occlusion_owner_by_depth_order_temporal_graph" if accepted_row else ("temporal_graph_selected_not_accepted" if chosen != NONE_OWNER else "no_occlusion_owner_selected"),
                 "source_row": row,
@@ -175,7 +180,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "claim": "Solves a temporal object-or-none occlusion-owner graph over bounded candidates with mesh-contact support. It selects candidates for evidence but accepts ownership only when source depth-order evidence accepted it.",
         "case": case,
         "sources": {"occlusion_mesh_owner_evidence": str(source_path)},
-        "parameters": {"object_switch_penalty": args.object_switch_penalty, "owner_onoff_penalty": args.owner_onoff_penalty, "accept_energy_margin": args.accept_energy_margin},
+        "parameters": {"object_switch_penalty": args.object_switch_penalty, "owner_onoff_penalty": args.owner_onoff_penalty, "accept_energy_margin": args.accept_energy_margin, "max_temporal_gap_frames": args.max_temporal_gap_frames},
         "hand_graphs": hand_graphs,
         "rows": annotated_rows,
         "selected_occlusion_owner_rows": selected,
@@ -204,6 +209,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--object-switch-penalty", type=float, default=0.40)
     parser.add_argument("--owner-onoff-penalty", type=float, default=0.25)
     parser.add_argument("--accept-energy-margin", type=float, default=0.25)
+    parser.add_argument("--max-temporal-gap-frames", type=int, default=30)
     return parser.parse_args()
 
 
