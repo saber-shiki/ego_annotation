@@ -610,6 +610,31 @@ def load_camera_depth_correction_index(path: Path) -> tuple[dict[int, dict[str, 
     return out, summary
 
 
+def load_occlusion_pose_fill_gate_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "occlusion pose fill gate report")
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("rows"), "occlusion pose fill gate rows"):
+        row = require_dict(raw, "occlusion pose fill gate row")
+        frame_idx = require_int(row.get("frame_idx"), "pose fill gate frame_idx")
+        hand_side = str(row.get("hand_side"))
+        out[(frame_idx, hand_side)] = {
+            "source_report": str(path),
+            "pose_fill_gate_claim": row.get("pose_fill_gate_claim"),
+            "pose_fill_through_occlusion_accepted": row.get("pose_fill_through_occlusion_accepted"),
+            "accepted_occlusion_owner": row.get("accepted_occlusion_owner"),
+            "chosen_owner_object_id": row.get("chosen_owner_object_id"),
+            "hand_baseline_state": row.get("hand_baseline_state"),
+            "hawor_measurement_available": row.get("hawor_measurement_available"),
+            "hawor_candidate_present": row.get("hawor_candidate_present"),
+            "interior_metric_depth_compatible": row.get("interior_metric_depth_compatible"),
+            "hand_baseline_temporal_occlusion_pose_accepted": row.get("hand_baseline_temporal_occlusion_pose_accepted"),
+            "blockers": row.get("blockers"),
+        }
+    return out
+
+
 def load_hand_baseline_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1461,6 +1486,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     bounded_index = index_bounded_frames(args.bounded_root / case / "v18_bounded_state_solution.json")
     camera_depth_correction_index, camera_depth_correction_summary = load_camera_depth_correction_index(args.camera_depth_correction_root / case / "v18_camera_depth_correction_report.json")
     hand_baseline_index = load_hand_baseline_index(args.hand_baseline_root / case / "v18_hand_baseline_branch.json")
+    pose_fill_gate_index = load_occlusion_pose_fill_gate_index(args.occlusion_pose_fill_gate_root / case / "v18_occlusion_pose_fill_gate_report.json")
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
@@ -1489,6 +1515,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             v16_hand = v16_hands.get(side, {})
             bounded_hand = bounded_hands_by_side.get(side, {})
             baseline = hand_baseline_index.get((frame_idx, side), {})
+            pose_fill_gate = pose_fill_gate_index.get((frame_idx, side))
             occlusion_solution = require_dict(bounded_hand.get("occlusion_solution", {}), "occlusion solution") if bounded_hand else {}
             owner_candidates = occlusion_solution.get("owner_candidate_objects", []) if isinstance(occlusion_solution.get("owner_candidate_objects", []), list) else []
             mano_candidate = {
@@ -1514,6 +1541,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "wilor_or_v16_candidate_present": bool(v16_hand) or hand.get("renderable_bbox") is True or baseline.get("wilor_measurement_available") is True,
                     "rtmlib_anchor_available": bool(hand.get("rtmlib_wilor_comparison_available") or baseline.get("rtmlib_wilor_comparison_available")),
                     "hand_baseline_branch": baseline or {"state": "missing_hand_baseline_branch_row"},
+                    "occlusion_pose_fill_gate": pose_fill_gate,
                     "confidence": confidence,
                     "uncertainty": "all_hand_outputs_approximate",
                     "occlusion_owner_hypothesis": {
@@ -1613,6 +1641,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "bounded_state_solution": str(args.bounded_root / case / "v18_bounded_state_solution.json"),
             "camera_depth_correction": str(args.camera_depth_correction_root / case / "v18_camera_depth_correction_report.json"),
             "hand_baseline_branch": str(args.hand_baseline_root / case / "v18_hand_baseline_branch.json"),
+            "occlusion_pose_fill_gate": str(args.occlusion_pose_fill_gate_root / case / "v18_occlusion_pose_fill_gate_report.json"),
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
@@ -1641,7 +1670,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         },
         "modules": {
             "camera_depth_backbone": "v16_metric_camera_depth_reused_with_observed_backend_to_metric_depth_scale_correction_variables",
-            "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_with_integrated_hand_baseline_evidence_and_blockers",
+            "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_with_integrated_hand_baseline_evidence_pose_fill_gate_and_blockers",
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
@@ -1942,6 +1971,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bounded-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--camera-depth-correction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_camera_depth_correction"))
     parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
+    parser.add_argument("--occlusion-pose-fill-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_pose_fill_gate"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))

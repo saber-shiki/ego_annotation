@@ -41,6 +41,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require("contact_owner_graph" in str(modules.get("contact_ownership")) or "contact_owner" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
     require("signed_normal" in str(modules.get("contact_ownership")), f"{case}: signed nonpenetration evidence not listed in modules")
     require("hand_baseline_evidence" in str(modules.get("hand_branch")), f"{case}: hand baseline evidence not listed in modules")
+    require("pose_fill_gate" in str(modules.get("hand_branch")), f"{case}: pose fill gate not listed in hand module")
     require("temporal_occlusion_owner_graph" in str(modules.get("occlusion_ownership")), f"{case}: temporal occlusion owner graph not listed in modules")
     accepted_contact = 0
     selected_contact = 0
@@ -50,6 +51,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     camera_depth_observed_rows = 0
     signed_nonpenetration_rows = 0
     occlusion_temporal_graph_rows = 0
+    pose_fill_gate_rows = 0
     for frame in frames:
         if not isinstance(frame, dict):
             continue
@@ -81,6 +83,13 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
             if baseline.get("hand_baseline_state"):
                 hand_baseline_rows += 1
             require(baseline.get("temporal_occlusion_pose_accepted") is not True, f"{case}: unsupported accepted occlusion hand pose")
+            pose_gate_raw = hand.get("occlusion_pose_fill_gate")
+            pose_gate: dict[str, Any] = pose_gate_raw if isinstance(pose_gate_raw, dict) else {}
+            if pose_gate:
+                pose_fill_gate_rows += 1
+                require(pose_gate.get("pose_fill_through_occlusion_accepted") is not True, f"{case}: unsupported accepted pose fill-through-occlusion")
+                blockers_raw = pose_gate.get("blockers")
+                require(isinstance(blockers_raw, list) and len(blockers_raw) > 0, f"{case}: blocked pose fill lacks blockers")
             occ_raw = hand.get("occlusion_owner_hypothesis")
             occ: dict[str, Any] = occ_raw if isinstance(occ_raw, dict) else {}
             occ_evidence = occ.get("mesh_owner_evidence")
@@ -113,7 +122,8 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require(camera_depth_observed_rows > 0, f"{case}: no observed camera/depth correction rows integrated")
     require(signed_nonpenetration_rows > 0, f"{case}: no signed nonpenetration evidence integrated")
     require(occlusion_temporal_graph_rows > 0, f"{case}: no temporal occlusion owner graph rows integrated")
-    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows, "occlusion_temporal_graph_rows": occlusion_temporal_graph_rows}
+    require(pose_fill_gate_rows == expected * 2, f"{case}: pose fill gate rows do not cover both hands/full timeline")
+    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows, "occlusion_temporal_graph_rows": occlusion_temporal_graph_rows, "pose_fill_gate_rows": pose_fill_gate_rows}
 
 
 def main() -> None:

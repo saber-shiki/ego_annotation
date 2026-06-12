@@ -770,6 +770,12 @@ The contact graph still stores its temporal mesh-distance selections, but `run_v
 
 `build_v18_mesh_contact_evidence.py` now snapshots and hashes the full-annotation source used for mesh-distance evidence under each evidence output directory. This does not remove the bootstrap dependency on a full-annotation source, but it prevents the report from depending only on a mutable path after later full reruns overwrite `/data2/ego_annotation_outputs/v18_full_pipeline/<case>/annotations_v18_full.json`.
 
+## Implementation Checkpoint 48: Occlusion Pose Fill Gate
+
+V18 now has an explicit pose fill-through-occlusion gate in `scripts/build_v18_occlusion_pose_fill_gate.py`. The gate joins the HaWoR/WiLoR hand-baseline branch with the temporal occlusion-owner graph. It can accept a filled occluded-hand pose only when occlusion ownership is accepted and the hand baseline has accepted temporal occlusion pose evidence; otherwise it writes blockers.
+
+Current representative outputs cover both hands for the full timeline (trash 2100 rows, task5 1920 rows). Trash has 182 HaWoR candidate/measurement rows, but zero pose-fill rows are accepted because accepted occlusion ownership and baseline acceptance are absent. Task5 has zero HaWoR candidate rows and zero accepted fills. This makes the missing pose-fill mechanism explicit without fabricating hand pose through occlusion.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
