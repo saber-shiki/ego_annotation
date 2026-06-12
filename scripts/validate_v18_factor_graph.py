@@ -32,24 +32,29 @@ def validate_case(path: Path) -> dict[str, Any]:
     variable_counts = fg.get("variable_counts")
     factor_counts = fg.get("factor_counts")
     require(isinstance(variable_counts, dict) and isinstance(factor_counts, dict), f"{case}: counts missing")
-    for key in ["hand_state", "object_se3", "contact_switch"]:
+    for key in ["hand_state", "object_se3", "part_se3", "contact_switch"]:
         require(int(variable_counts.get(key, 0)) > 0, f"{case}: missing {key} variables")
-    for key in ["hand_state_observation", "object_se3_observation", "contact_switch_discrete"]:
+    for key in ["hand_state_observation", "object_se3_observation", "part_se3_observation", "contact_switch_discrete"]:
         require(int(factor_counts.get(key, 0)) > 0, f"{case}: missing {key} factors")
     implemented_status = fg.get("implemented_variable_status")
     spec_gaps = fg.get("spec_factor_gaps_remaining")
     require(isinstance(implemented_status, dict), f"{case}: implemented variable status missing")
-    require("part_se3" in implemented_status and "rotation_unresolved" in str(implemented_status.get("part_se3")), f"{case}: part SE3 limitation not explicit")
+    require("part_se3" in implemented_status and "pca_rotvec" in str(implemented_status.get("part_se3")), f"{case}: part SE3 PCA status not explicit")
     require(isinstance(spec_gaps, list) and len(spec_gaps) > 0, f"{case}: spec factor gaps missing")
+    require(any("visible_surface_PCA" in str(gap) for gap in spec_gaps), f"{case}: visible-surface part SE3 limitation not explicit")
     inference = fg.get("inference")
     require(isinstance(inference, dict), f"{case}: inference missing")
     require("SciPy" in str(inference.get("continuous_method")), f"{case}: continuous solve is not SciPy-backed")
     series = inference.get("series_summaries")
     require(isinstance(series, dict) and len(series) > 0, f"{case}: series summaries missing")
     object_se3_series = {k: v for k, v in series.items() if str(k).startswith("object_se3::") and isinstance(v, dict)}
+    part_se3_series = {k: v for k, v in series.items() if str(k).startswith("part_se3::") and isinstance(v, dict)}
     require(len(object_se3_series) > 0, f"{case}: object SE3 series missing")
+    require(len(part_se3_series) > 0, f"{case}: part SE3 series missing")
     object_6d_count = sum(1 for v in object_se3_series.values() if int(v.get("dimension", 0)) == 6)
+    part_6d_count = sum(1 for v in part_se3_series.values() if int(v.get("dimension", 0)) == 6)
     require(object_6d_count > 0, f"{case}: no 6D object SE3 series")
+    require(part_6d_count > 0, f"{case}: no 6D part SE3 series")
     frame_with_graph = 0
     for frame in frames:
         g = frame.get("factor_graph_solution")
@@ -65,6 +70,7 @@ def validate_case(path: Path) -> dict[str, Any]:
         "variable_counts": variable_counts,
         "factor_counts": factor_counts,
         "object_6d_series_count": object_6d_count,
+        "part_6d_series_count": part_6d_count,
         "frame_with_graph_count": frame_with_graph,
     }
 

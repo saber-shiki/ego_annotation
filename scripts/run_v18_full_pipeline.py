@@ -407,35 +407,86 @@ def load_part_surface_index(path: Path) -> dict[tuple[int, str], list[dict[str, 
     if not path.exists():
         return {}
     report = require_dict(load_json(path), "part visible surfaces report")
+    archive_pose_by_key: dict[tuple[int, str, str], dict[str, Any]] = {}
+    archive_path_raw = report.get("archive_npz")
+    archive_path = Path(str(archive_path_raw)) if archive_path_raw else None
+    if archive_path is not None and archive_path.exists():
+        data = np.load(archive_path, allow_pickle=True)
+        frame_idx_arr = data["frame_idx"]
+        object_ids = data["object_id"]
+        labels = data["part_track_label"]
+        vertex_offsets = data["vertex_offsets"]
+        vertices_all = data["vertices"]
+        for row_idx in range(len(frame_idx_arr)):
+            start_i = int(vertex_offsets[row_idx])
+            end_i = int(vertex_offsets[row_idx + 1])
+            if end_i <= start_i:
+                continue
+            pts = np.asarray(vertices_all[start_i:end_i], dtype=np.float64)
+            if pts.ndim != 2 or pts.shape[1] != 3 or not np.isfinite(pts).all():
+                continue
+            pose = pca_pose_observation(pts)
+            if pose is None:
+                continue
+            key = (int(frame_idx_arr[row_idx]), str(object_ids[row_idx]), str(labels[row_idx]))
+            archive_pose_by_key[key] = {
+                "archive_npz": str(archive_path),
+                "archive_row_index": int(row_idx),
+                "vertex_count": int(pts.shape[0]),
+                "center_camera_m": [float(v) for v in pose["center"].tolist()],
+                "extent_camera_m": [float(v) for v in pose["extent"].tolist()],
+                "rotation_camera_from_part_rotvec": [float(v) for v in pose["rotation_vector"].tolist()],
+                "rotation_camera_from_part_matrix": [[float(x) for x in row] for row in pose["rotation_matrix"].tolist()],
+                "pca_singular_values": [float(v) for v in pose["singular_values"].tolist()],
+                "pca_anisotropy": float(pose["anisotropy"]),
+                "pose_source": "part_visible_surface_archive_pca",
+            }
     out: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
     for raw in require_list(report.get("surface_rows"), "part surface rows"):
         row = require_dict(raw, "part surface row")
         frame_idx = require_int(row.get("frame_idx"), "part frame_idx")
         object_id = str(row.get("object_id"))
+        label = str(row.get("part_track_label"))
         mn = row.get("bbox_camera_min_m")
         mx = row.get("bbox_camera_max_m")
-        center = None
+        bbox_center = None
         if isinstance(mn, list) and isinstance(mx, list) and len(mn) == 3 and len(mx) == 3:
-            center = [(finite_float(mn[i]) + finite_float(mx[i])) / 2.0 for i in range(3)]
+            bbox_center = [(finite_float(mn[i]) + finite_float(mx[i])) / 2.0 for i in range(3)]
+        archive_pose = archive_pose_by_key.get((frame_idx, object_id, label))
+        center = archive_pose.get("center_camera_m") if archive_pose else bbox_center
+        if archive_pose:
+            pose_candidate = {
+                "type": "approximate_part_visible_surface_pca_se3_candidate",
+                "translation_camera_m": center,
+                "rotation_camera_from_part_rotvec": archive_pose.get("rotation_camera_from_part_rotvec"),
+                "rotation_camera_from_part_matrix": archive_pose.get("rotation_camera_from_part_matrix"),
+                "pca_anisotropy": archive_pose.get("pca_anisotropy"),
+                "pca_singular_values": archive_pose.get("pca_singular_values"),
+                "pose_source": archive_pose.get("pose_source"),
+                "uncertainty": "visible_surface_pca_orientation_approximate_sign_ambiguous",
+            }
+        else:
+            pose_candidate = {
+                "type": "approximate_part_visible_surface_center_candidate",
+                "translation_camera_m": center,
+                "rotation": "unknown_from_visible_surface_only",
+                "uncertainty": "approximate",
+            }
         out[(frame_idx, object_id)].append(
             {
-                "part_track_label": row.get("part_track_label"),
+                "part_track_label": label,
                 "part_mask_path": row.get("part_mask_path"),
                 "status": row.get("status"),
                 "coordinate_frame": row.get("coordinate_frame"),
                 "vertices": row.get("vertices"),
                 "faces": row.get("faces"),
+                "archive_pose": archive_pose,
                 "depth_median_m": row.get("depth_median_m"),
                 "part_containment_in_object": row.get("part_containment_in_object"),
                 "bbox_camera_min_m": mn,
                 "bbox_camera_max_m": mx,
                 "center_camera_m": center,
-                "pose_candidate": {
-                    "type": "approximate_part_visible_surface_center_candidate",
-                    "translation_camera_m": center,
-                    "rotation": "unknown_from_visible_surface_only",
-                    "uncertainty": "approximate",
-                },
+                "pose_candidate": pose_candidate,
             }
         )
     return out
@@ -1019,14 +1070,29 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             for part in obj.get("parts", []):
                 if not isinstance(part, dict):
                     continue
-                center = numeric_vector(part.get("center_camera_m"), 3)
+                pose_candidate_raw = part.get("pose_candidate")
+                pose_candidate: dict[str, Any] = pose_candidate_raw if isinstance(pose_candidate_raw, dict) else {}
+                center = numeric_vector(pose_candidate.get("translation_camera_m"), 3)
+                if center is None:
+                    center = numeric_vector(part.get("center_camera_m"), 3)
                 if center is None:
                     continue
                 label = str(part.get("part_track_label"))
                 object_id = str(obj.get("object_id"))
                 containment = finite_float(part.get("part_containment_in_object"), 0.5)
                 weight = max(0.25, min(4.0, 0.5 + 3.0 * containment))
-                part_obs[f"part_se3::{object_id}::{label}"].append({"frame_idx": frame_idx, "variable_id": f"part_se3::{object_id}::{label}", "value": center, "weight": weight, "source": "part_visible_surface_center_camera"})
+                rotvec = numeric_vector(pose_candidate.get("rotation_camera_from_part_rotvec"), 3)
+                if rotvec is not None:
+                    anisotropy = max(0.0, finite_float(pose_candidate.get("pca_anisotropy"), 0.0))
+                    value = np.concatenate([center, rotvec])
+                    source = "part_visible_surface_camera_centroid_plus_pca_rotvec"
+                    key = f"part_se3::{object_id}::{label}"
+                    weight *= max(0.5, min(1.5, anisotropy + 0.5))
+                else:
+                    value = center
+                    source = "part_visible_surface_center_camera_rotation_unresolved"
+                    key = f"part_se3::{object_id}::{label}::translation_only"
+                part_obs[key].append({"frame_idx": frame_idx, "variable_id": key, "value": value, "weight": weight, "source": source})
         for art in articulation_index.get(frame_idx, []):
             object_id = str(art.get("object_id"))
             source_id = str(art.get("source_candidate_id"))
@@ -1071,7 +1137,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
 
     absorb_series("hand_state", hand_obs, temporal_weight=0.8, default_weight=1.0, unit="normalized_image_xy")
     absorb_series("object_se3", object_obs, temporal_weight=2.0, default_weight=1.0, unit="world_m_translation_plus_optional_pca_rotvec_rad")
-    absorb_series("part_se3", part_obs, temporal_weight=1.0, default_weight=1.0, unit="camera_m_translation")
+    absorb_series("part_se3", part_obs, temporal_weight=1.0, default_weight=1.0, unit="camera_m_translation_plus_optional_pca_rotvec_rad")
     absorb_series("articulation_parameter", articulation_obs, temporal_weight=1.0, default_weight=0.5, unit="relative_part_center_distance_m")
 
     active_contact_count = 0
@@ -1162,7 +1228,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             "camera_depth_correction": "prior_only_identity_scale_no_casewide_depth_refit_observation",
             "hand_state": "normalized_bbox_center_track_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available",
-            "part_se3": "visible_part_center_translation_only_rotation_unresolved_in_current_part_surface_artifact",
+            "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
             "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_and_contact_owner_graph_evidence",
             "occlusion_owner": "discrete_energy_over_owner_candidates_without_new_depth_order_acceptance",
@@ -1170,7 +1236,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
         "implemented_factor_families": [
             "hand_bbox_observation_residual",
             "visible_object_surface_pose_observation_residual",
-            "visible_part_center_observation_residual",
+            "visible_part_surface_pose_observation_residual",
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
             "contact_overlap_depth_mesh_distance_owner_graph_energy",
@@ -1178,7 +1244,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
         ],
         "spec_factor_gaps_remaining": [
             "object_mask_depth_registration_residual_is_visible_surface_only_not_complete_geometry_registration",
-            "rigid_articulation_consistency_does_not_yet_solve_full_part_SE3",
+            "part_SE3_uses_visible_surface_PCA_pose_not_complete_or_occlusion_filled_part_pose",
             "contact_signed_nonpenetration_is_not_yet_solved; current graph uses unsigned mesh distance and temporal ownership",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
@@ -1204,7 +1270,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
         },
         "limitations": [
             "The graph estimates candidate states from available observations; it does not invent hidden object geometry where no reconstruction exists.",
-            "Object SE(3) variables use visible-surface translation plus PCA rotation observations when available; part rotations remain unresolved because the current part-surface artifact stores center/extent/counts but not part point coordinates.",
+            "Object and part SE(3) variables use visible-surface translation plus PCA rotation observations when available; these are visible-surface pose candidates, not canonical hidden/full-object poses.",
             "Occlusion owner variables compete over candidates, but accepted ownership remains false unless depth-order evidence supports it.",
         ],
     }

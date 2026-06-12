@@ -734,6 +734,12 @@ V18 now has a discrete hand-level contact-ownership graph in `scripts/build_v18_
 
 Current representative outputs accept partial contact ownership: trash has 295 accepted rows and task5 has 721 accepted rows. Low-association false positives remain selected-but-not-accepted rather than promoted. The graph is integrated into `run_v18_full_pipeline.py`; accepted rows appear in each `contact_hypothesis.contact_owner_hypothesis` and also influence the factor-graph contact-switch energy. This still does not solve signed nonpenetration or complete multi-object contact ownership; `signed_nonpenetration_solved=false` and `contact_ownership_complete=false` remain explicit.
 
+## Implementation Checkpoint 42: Visible-Surface Part SE(3) From PCA
+
+V18 now consumes the part visible-surface archive `v18_part_visible_surfaces_camera.npz` in `run_v18_full_pipeline.py` instead of using only per-row center/count summaries. For each part surface row with archived vertices, the full pipeline computes a PCA pose observation: camera-frame translation, rotation vector, rotation matrix, anisotropy, singular values, and source archive row. These appear in each part's `pose_candidate` as `approximate_part_visible_surface_pca_se3_candidate`.
+
+The numerical factor graph now uses 6D part SE(3) observations (`translation_xyz_m_and_rotation_vector_xyz_rad`) when these PCA rotations exist. This advances the part pose mechanism beyond center-only translation. The scope remains limited: PCA orientation is visible-surface-only, sign-canonicalized, and not a canonical full part pose through occlusion or hidden geometry.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
