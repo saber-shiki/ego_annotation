@@ -25,8 +25,8 @@ CLAIM = (
     "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, an object "
     "completion eligibility gate, part-split mask evidence audit, part visible-surface evidence, part-motion "
     "state evidence, part-motion confound QC, bounded visible part-model candidate evidence, a materialized "
-    "visible part-subset archive, and explicit part-object blocker records. It does not close final hidden object "
-    "geometry, object pose, part pose, articulation model, or physical contact requirements."
+    "visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status. It does "
+    "not close final hidden object geometry, object pose, part pose, articulation model, or physical contact requirements."
 )
 
 
@@ -121,6 +121,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_model_candidates_path = args.part_model_candidates_root / case / "v18_part_model_candidates_report.json"
     visible_part_subset_path = args.visible_part_subset_root / case / "v18_visible_part_subset_archive_report.json"
     part_object_blockers_path = args.part_object_blockers_root / case / "v18_part_object_blocker_manifest_report.json"
+    part_mask_acquisition_path = args.part_mask_acquisition_root / case / "v18_part_mask_acquisition_plan_report.json"
     annotation = require_dict(load_json(annotation_path), f"{case} annotation")
     solution = require_dict(load_json(solution_path), f"{case} solution")
     overlay = require_dict(load_json(overlay_qc_path), f"{case} overlay qc")
@@ -135,6 +136,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_model_candidates = require_dict(load_json(part_model_candidates_path), f"{case} part model candidates")
     visible_part_subset = require_dict(load_json(visible_part_subset_path), f"{case} visible part subset archive")
     part_object_blockers = require_dict(load_json(part_object_blockers_path), f"{case} part object blockers")
+    part_mask_acquisition = require_dict(load_json(part_mask_acquisition_path), f"{case} part mask acquisition plan")
     frame_count = require_int(annotation.get("frame_count"), "annotation frame_count")
     raw_frame_count = require_int(annotation.get("raw_frame_count"), "annotation raw_frame_count")
     raw_video = require_dict(annotation.get("raw_video"), "annotation raw_video")
@@ -219,6 +221,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "visible_part_subset_archive_report": str(visible_part_subset_path),
             "visible_part_subset_archive_npz": visible_part_subset.get("archive_npz"),
             "part_object_blocker_manifest": str(part_object_blockers_path),
+            "part_mask_acquisition_plan": str(part_mask_acquisition_path),
         },
         "frame_count_qc": {
             "annotation_state_frames": frame_count,
@@ -327,6 +330,14 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_pose_ready_count": part_object_blockers.get("part_pose_ready_count"),
             "contact_ownership_ready_count": part_object_blockers.get("contact_ownership_ready_count"),
             "object_pose_requirement_met_count": part_object_blockers.get("object_pose_requirement_met_count"),
+        },
+        "part_mask_acquisition_qc": {
+            "object_count": part_mask_acquisition.get("object_count"),
+            "local_new_mask_generation_ready_count": part_mask_acquisition.get("local_new_mask_generation_ready_count"),
+            "mask_evidence_created_count": part_mask_acquisition.get("mask_evidence_created_count"),
+            "part_pose_ready_count": part_mask_acquisition.get("part_pose_ready_count"),
+            "object_pose_requirement_met_count": part_mask_acquisition.get("object_pose_requirement_met_count"),
+            "environment": part_mask_acquisition.get("environment"),
         },
         "status_deliverable_ready": True,
         "final_pose_complete_deliverable_ready": False,
@@ -441,6 +452,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("part_object_blocker_qc"), "part object blocker qc").get("contact_ownership_ready_count"), "contact ownership ready count")
         for case in cases
     )
+    part_mask_acquisition_object_count = sum(
+        require_int(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("object_count"), "part mask acquisition object count")
+        for case in cases
+    )
+    local_new_mask_generation_ready_count = sum(
+        require_int(
+            require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("local_new_mask_generation_ready_count"),
+            "local new mask generation ready count",
+        )
+        for case in cases
+    )
+    mask_evidence_created_count = sum(
+        require_int(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("mask_evidence_created_count"), "mask evidence created count")
+        for case in cases
+    )
     manifest = {
         "method": "build_v18_status_deliverable_manifest",
         "status": STATUS,
@@ -487,6 +513,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_part_subset_faces": visible_part_subset_faces,
         "required_part_object_blocker_count": required_part_object_blocker_count,
         "contact_ownership_ready_count": contact_ownership_ready_count,
+        "part_mask_acquisition_object_count": part_mask_acquisition_object_count,
+        "local_new_mask_generation_ready_count": local_new_mask_generation_ready_count,
+        "mask_evidence_created_count": mask_evidence_created_count,
         "total_duration_s": total_duration,
         "total_measured_render_elapsed_s": total_render_elapsed,
         "total_measured_render_to_video_ratio": total_render_elapsed / total_duration if total_duration > 0 else None,
@@ -518,6 +547,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-model-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_model_candidates"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
     parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
+    parser.add_argument("--part-mask-acquisition-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_deliverable_manifest"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()

@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, and explicit part-object blocker records, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -230,6 +230,20 @@ V18 now writes explicit blockers for part/relative-motion objects:
 The updated manifest reports `required_part_object_blocker_count=3` and `contact_ownership_ready_count=0`. This is an explicit stop against treating the visible pink-lid subset as hidden geometry, part pose, contact ownership, or final object pose.
 
 Remaining gap after this checkpoint: obtain accepted part-mask evidence for the off-white can and faucet handle, improve sparse pink-lid part masks if articulation is to be tested, and only then re-run part geometry/motion/contact checks.
+
+## Implementation Checkpoint 14: Part-Mask Acquisition Status
+
+V18 now records the status of acquiring missing or improved part masks:
+
+```text
+/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan/
+```
+
+`build_v18_part_mask_acquisition_plan.py` turns the blocker manifest into object-level acquisition requirements and probes local runner prerequisites. It covers the same 3 part/relative-motion objects. `object:off_white_trash_can_first` and `object:obj_faucet_handle` require new model-produced part masks. `object:pink_lid_trash_can_second` requires improved sparse part masks or visible-subset-only modeling.
+
+The `.venv` environment has Python cv2, torch, and CUDA available, but no SAMWISE repo or checkpoint was found in the checked paths, so `local_new_mask_generation_ready_count=0` and `mask_evidence_created_count=0`. The updated status manifest records those counts and keeps `part_pose_ready_count=0`.
+
+Remaining gap after this checkpoint: provision a runnable open-vocabulary/referring video segmentation backend or provide precomputed part tracks, then rerun part-split evidence and downstream part geometry/motion checks.
 
 ## Design Goal
 
