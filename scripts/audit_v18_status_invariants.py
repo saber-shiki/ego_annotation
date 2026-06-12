@@ -102,6 +102,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     check(checks, "part_track_source_ready_all_cases", manifest.get("part_track_source_manifest_ready_all_cases") is True, manifest.get("part_track_source_manifest_ready_all_cases"), True)
     check(checks, "part_track_uniform_generation_false", part_source.get("uniform_part_track_generation_ready") is False and manifest.get("uniform_part_track_generation_ready") is False, {"source": part_source.get("uniform_part_track_generation_ready"), "manifest": manifest.get("uniform_part_track_generation_ready")}, False)
     check(checks, "part_mask_generation_not_ready", manifest.get("local_new_mask_generation_ready_count") == 0, manifest.get("local_new_mask_generation_ready_count"), 0)
+    check(
+        checks,
+        "promptable_segmentation_not_sufficient_for_local_generation",
+        acquisition.get("environment", {}).get("promptable_segmentation_backend_available") is True
+        and manifest.get("promptable_segmentation_backend_available") is True
+        and acquisition.get("environment", {}).get("open_vocab_or_referring_prompt_backend_available") is False
+        and manifest.get("open_vocab_or_referring_prompt_backend_available") is False
+        and manifest.get("local_new_mask_generation_ready") is False,
+        {
+            "promptable": manifest.get("promptable_segmentation_backend_available"),
+            "open_vocab_or_referring": manifest.get("open_vocab_or_referring_prompt_backend_available"),
+            "local_ready": manifest.get("local_new_mask_generation_ready"),
+        },
+        "promptable true, referring/open-vocab false, local generation false",
+    )
     check(checks, "mask_evidence_created_zero", acquisition.get("mask_evidence_created_count") == manifest.get("mask_evidence_created_count") == 0, {"acquisition": acquisition.get("mask_evidence_created_count"), "manifest": manifest.get("mask_evidence_created_count")}, 0)
     check(checks, "occlusion_candidate_count_matches", occlusion.get("candidate_owner_row_count") == manifest.get("occlusion_candidate_owner_row_count") == bounded.get("occlusion_owner_candidate_rows") == manifest.get("bounded_occlusion_owner_candidate_rows"), {"occlusion": occlusion.get("candidate_owner_row_count"), "bounded": bounded.get("occlusion_owner_candidate_rows"), "manifest": manifest.get("occlusion_candidate_owner_row_count")}, 116)
     check(

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -50,9 +51,26 @@ def require_list(value: Any, label: str) -> list[Any]:
     return value
 
 
+def module_available(module: str, extra_paths: list[Path] | None = None) -> bool:
+    added: list[str] = []
+    for path in extra_paths or []:
+        text = str(path)
+        if path.exists() and text not in sys.path:
+            sys.path.insert(0, text)
+            added.append(text)
+    try:
+        return importlib.util.find_spec(module) is not None
+    finally:
+        for text in added:
+            try:
+                sys.path.remove(text)
+            except ValueError:
+                pass
+
+
 def env_probe(args: argparse.Namespace) -> dict[str, Any]:
-    cv2_available = importlib.util.find_spec("cv2") is not None
-    torch_available = importlib.util.find_spec("torch") is not None
+    cv2_available = module_available("cv2")
+    torch_available = module_available("torch")
     cuda_available = False
     torch_version = None
     if torch_available:
@@ -64,29 +82,70 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - diagnostic only
             torch_version = f"import_error:{type(exc).__name__}:{exc}"
             cuda_available = False
-    repo_candidates = [Path(raw) for raw in args.samwise_repo_candidates]
-    checkpoint_candidates = [Path(raw) for raw in args.samwise_checkpoint_candidates]
-    existing_repos = [str(path) for path in repo_candidates if path.exists()]
-    existing_checkpoints = [str(path) for path in checkpoint_candidates if path.exists()]
-    blockers: list[str] = []
+    samwise_repo_candidates = [Path(raw) for raw in args.samwise_repo_candidates]
+    samwise_checkpoint_candidates = [Path(raw) for raw in args.samwise_checkpoint_candidates]
+    existing_samwise_repos = [str(path) for path in samwise_repo_candidates if path.exists()]
+    existing_samwise_checkpoints = [str(path) for path in samwise_checkpoint_candidates if path.exists()]
+    samwise_blockers: list[str] = []
     if not cv2_available:
-        blockers.append("python_cv2_unavailable_for_existing_samwise_runner")
+        samwise_blockers.append("python_cv2_unavailable_for_existing_samwise_runner")
     if not cuda_available:
-        blockers.append("cuda_unavailable_for_existing_samwise_runner")
-    if not existing_repos:
-        blockers.append("samwise_repo_not_found_in_known_paths")
-    if not existing_checkpoints:
-        blockers.append("samwise_checkpoint_not_found_in_known_paths")
+        samwise_blockers.append("cuda_unavailable_for_existing_samwise_runner")
+    if not existing_samwise_repos:
+        samwise_blockers.append("samwise_repo_not_found_in_known_paths")
+    if not existing_samwise_checkpoints:
+        samwise_blockers.append("samwise_checkpoint_not_found_in_known_paths")
+    samwise_ready = not samwise_blockers
+
+    sam2_repo_candidates = [Path(raw) for raw in args.sam2_repo_candidates]
+    sam2_checkpoint_candidates = [Path(raw) for raw in args.sam2_checkpoint_candidates]
+    existing_sam2_repos = [str(path) for path in sam2_repo_candidates if path.exists()]
+    existing_sam2_checkpoints = [str(path) for path in sam2_checkpoint_candidates if path.exists()]
+    sam2_import_available = module_available("sam2.build_sam", sam2_repo_candidates) and module_available("sam2.sam2_image_predictor", sam2_repo_candidates)
+    segment_anything_available = module_available("segment_anything")
+    sam_v1_checkpoint_candidates = [Path(raw) for raw in args.sam_v1_checkpoint_candidates]
+    existing_sam_v1_checkpoints = [str(path) for path in sam_v1_checkpoint_candidates if path.exists()]
+    groundingdino_available = module_available("groundingdino")
+    transformers_available = module_available("transformers")
+    ultralytics_available = module_available("ultralytics")
+    promptable_sam2_ready = cuda_available and sam2_import_available and bool(existing_sam2_checkpoints)
+    promptable_sam_v1_ready = cuda_available and segment_anything_available and bool(existing_sam_v1_checkpoints)
+    promptable_segmentation_backend_available = promptable_sam2_ready or promptable_sam_v1_ready
+    open_vocab_or_referring_prompt_backend_available = samwise_ready or groundingdino_available
+    local_new_mask_generation_ready = samwise_ready or (promptable_segmentation_backend_available and open_vocab_or_referring_prompt_backend_available)
+
+    blockers: list[str] = []
+    blockers.extend(samwise_blockers)
+    if promptable_segmentation_backend_available and not open_vocab_or_referring_prompt_backend_available:
+        blockers.append("promptable_sam_backend_available_but_no_open_vocab_or_referring_part_prompt_backend")
+    if not promptable_segmentation_backend_available and not samwise_ready:
+        blockers.append("no_promptable_sam_backend_ready")
     return {
         "cv2_available": cv2_available,
         "torch_available": torch_available,
         "torch_version": torch_version,
         "cuda_available": cuda_available,
-        "samwise_repo_candidates_checked": [str(path) for path in repo_candidates],
-        "samwise_checkpoint_candidates_checked": [str(path) for path in checkpoint_candidates],
-        "existing_samwise_repos": existing_repos,
-        "existing_samwise_checkpoints": existing_checkpoints,
-        "existing_samwise_runner_locally_ready": not blockers,
+        "samwise_repo_candidates_checked": [str(path) for path in samwise_repo_candidates],
+        "samwise_checkpoint_candidates_checked": [str(path) for path in samwise_checkpoint_candidates],
+        "existing_samwise_repos": existing_samwise_repos,
+        "existing_samwise_checkpoints": existing_samwise_checkpoints,
+        "existing_samwise_runner_locally_ready": samwise_ready,
+        "sam2_repo_candidates_checked": [str(path) for path in sam2_repo_candidates],
+        "sam2_checkpoint_candidates_checked": [str(path) for path in sam2_checkpoint_candidates],
+        "existing_sam2_repos": existing_sam2_repos,
+        "existing_sam2_checkpoints": existing_sam2_checkpoints,
+        "sam2_import_available": sam2_import_available,
+        "promptable_sam2_ready": promptable_sam2_ready,
+        "segment_anything_available": segment_anything_available,
+        "sam_v1_checkpoint_candidates_checked": [str(path) for path in sam_v1_checkpoint_candidates],
+        "existing_sam_v1_checkpoints": existing_sam_v1_checkpoints,
+        "promptable_sam_v1_ready": promptable_sam_v1_ready,
+        "groundingdino_available": groundingdino_available,
+        "transformers_available": transformers_available,
+        "ultralytics_available": ultralytics_available,
+        "promptable_segmentation_backend_available": promptable_segmentation_backend_available,
+        "open_vocab_or_referring_prompt_backend_available": open_vocab_or_referring_prompt_backend_available,
+        "local_new_mask_generation_ready": local_new_mask_generation_ready,
         "local_generation_blockers": blockers,
     }
 
@@ -110,10 +169,13 @@ def case_report(case: str, args: argparse.Namespace, env: dict[str, Any]) -> dic
     for raw_row in require_list(blocker_report.get("object_rows"), "blocker object rows"):
         row = require_dict(raw_row, "blocker row")
         state, blockers = acquisition_state(row)
-        locally_runnable = bool(env.get("existing_samwise_runner_locally_ready"))
+        locally_runnable = bool(env.get("local_new_mask_generation_ready"))
         next_actions = list(row.get("required_next_evidence", [])) if isinstance(row.get("required_next_evidence"), list) else []
         if not locally_runnable:
-            next_actions.append("provision runnable open-vocabulary/referring video segmentation backend or provide precomputed part tracks")
+            if env.get("promptable_segmentation_backend_available") is True:
+                next_actions.append("provision referring/open-vocabulary part prompt backend or provide precomputed part tracks; promptable SAM assets are present")
+            else:
+                next_actions.append("provision runnable open-vocabulary/referring video segmentation backend or provide precomputed part tracks")
         object_rows.append(
             {
                 "object_id": row.get("object_id"),
@@ -204,6 +266,34 @@ def parse_args() -> argparse.Namespace:
             "/data2/ego_annotation_models/samwise.pth",
             "/home/yiwen/models/samwise.pth",
             "/home/yiwen/checkpoints/samwise.pth",
+        ],
+    )
+    parser.add_argument(
+        "--sam2-repo-candidates",
+        nargs="+",
+        default=[
+            "third_party/sam2",
+            "/home/yiwen/ego_annotation/third_party/sam2",
+            "/home/yiwen/sam2",
+            "/data2/sam2",
+        ],
+    )
+    parser.add_argument(
+        "--sam2-checkpoint-candidates",
+        nargs="+",
+        default=[
+            "/data2/ego_annotation_outputs/checkpoints/sam2.1_hiera_small.pt",
+            "/data2/checkpoints/sam2.1_hiera_small.pt",
+            "/home/yiwen/ego_annotation/checkpoints/sam2.1_hiera_small.pt",
+        ],
+    )
+    parser.add_argument(
+        "--sam-v1-checkpoint-candidates",
+        nargs="+",
+        default=[
+            "/home/yiwen/ego_annotation/checkpoints/sam_vit_b_01ec64.pth",
+            "/data2/checkpoints/sam_vit_b_01ec64.pth",
+            "/data2/ego_annotation_outputs/checkpoints/sam_vit_b_01ec64.pth",
         ],
     )
     return parser.parse_args()

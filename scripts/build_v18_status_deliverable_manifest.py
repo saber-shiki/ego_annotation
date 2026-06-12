@@ -408,6 +408,9 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_pose_ready_count": part_mask_acquisition.get("part_pose_ready_count"),
             "object_pose_requirement_met_count": part_mask_acquisition.get("object_pose_requirement_met_count"),
             "environment": part_mask_acquisition.get("environment"),
+            "promptable_segmentation_backend_available": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("promptable_segmentation_backend_available"),
+            "open_vocab_or_referring_prompt_backend_available": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("open_vocab_or_referring_prompt_backend_available"),
+            "local_new_mask_generation_ready": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("local_new_mask_generation_ready"),
         },
         "status_deliverable_ready": True,
         "final_pose_complete_deliverable_ready": False,
@@ -667,6 +670,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("mask_evidence_created_count"), "mask evidence created count")
         for case in cases
     )
+    promptable_segmentation_backend_available = any(
+        bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("promptable_segmentation_backend_available"))
+        for case in cases
+    )
+    open_vocab_or_referring_prompt_backend_available = all(
+        bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("open_vocab_or_referring_prompt_backend_available"))
+        for case in cases
+    )
+    local_new_mask_generation_ready = all(
+        bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("local_new_mask_generation_ready"))
+        for case in cases
+    )
     manifest = {
         "method": "build_v18_status_deliverable_manifest",
         "status": STATUS,
@@ -740,6 +755,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "required_part_object_blocker_count": required_part_object_blocker_count,
         "contact_ownership_ready_count": contact_ownership_ready_count,
         "part_mask_acquisition_object_count": part_mask_acquisition_object_count,
+        "promptable_segmentation_backend_available": promptable_segmentation_backend_available,
+        "open_vocab_or_referring_prompt_backend_available": open_vocab_or_referring_prompt_backend_available,
+        "local_new_mask_generation_ready": local_new_mask_generation_ready,
         "local_new_mask_generation_ready_count": local_new_mask_generation_ready_count,
         "mask_evidence_created_count": mask_evidence_created_count,
         "cached_evidence_to_status_runtime_measured": bool(measured_runtime.get("cached_evidence_to_status_runtime_measured")),
