@@ -424,6 +424,9 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "articulation_fit_supported_count": articulation_fit.get("articulation_fit_supported_count"),
             "articulation_fit_rejected_count": articulation_fit.get("articulation_fit_rejected_count"),
             "articulation_fit_underconstrained_count": articulation_fit.get("articulation_fit_underconstrained_count"),
+            "radial_residual_outlier_frame_count": articulation_fit.get("radial_residual_outlier_frame_count"),
+            "plane_residual_outlier_frame_count": articulation_fit.get("plane_residual_outlier_frame_count"),
+            "combined_residual_outlier_frame_count": articulation_fit.get("combined_residual_outlier_frame_count"),
             "articulation_model_ready_count": articulation_fit.get("articulation_model_ready_count"),
             "part_pose_ready_count": articulation_fit.get("part_pose_ready_count"),
             "object_pose_requirement_met_count": articulation_fit.get("object_pose_requirement_met_count"),
@@ -778,6 +781,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("articulation_fit_qc"), "articulation fit qc").get("articulation_fit_rejected_count"), "articulation fit rejected count")
         for case in cases
     )
+    articulation_radial_residual_outlier_frame_count = sum(
+        require_int(require_dict(case.get("articulation_fit_qc"), "articulation fit qc").get("radial_residual_outlier_frame_count"), "articulation radial outlier count")
+        for case in cases
+    )
+    articulation_plane_residual_outlier_frame_count = sum(
+        require_int(require_dict(case.get("articulation_fit_qc"), "articulation fit qc").get("plane_residual_outlier_frame_count"), "articulation plane outlier count")
+        for case in cases
+    )
+    articulation_combined_residual_outlier_frame_count = sum(
+        require_int(require_dict(case.get("articulation_fit_qc"), "articulation fit qc").get("combined_residual_outlier_frame_count"), "articulation combined outlier count")
+        for case in cases
+    )
     part_se3_pair_count = sum(
         require_int(require_dict(case.get("part_se3_surface_residual_qc"), "part se3 surface residual qc").get("part_se3_pair_count"), "part se3 pair count")
         for case in cases
@@ -1005,6 +1020,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "articulation_fit_probe_count": articulation_fit_probe_count,
         "articulation_fit_supported_count": articulation_fit_supported_count,
         "articulation_fit_rejected_count": articulation_fit_rejected_count,
+        "articulation_radial_residual_outlier_frame_count": articulation_radial_residual_outlier_frame_count,
+        "articulation_plane_residual_outlier_frame_count": articulation_plane_residual_outlier_frame_count,
+        "articulation_combined_residual_outlier_frame_count": articulation_combined_residual_outlier_frame_count,
         "part_se3_pair_count": part_se3_pair_count,
         "part_se3_surface_supported_count": part_se3_surface_supported_count,
         "part_se3_surface_rejected_count": part_se3_surface_rejected_count,

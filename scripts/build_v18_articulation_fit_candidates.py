@@ -135,6 +135,24 @@ def part_center_rows(surface_rows: list[dict[str, Any]], transforms: dict[int, n
     return out
 
 
+def contiguous_components(frame_indices: list[int]) -> list[dict[str, int]]:
+    if not frame_indices:
+        return []
+    frames = sorted(set(int(frame) for frame in frame_indices))
+    components: list[dict[str, int]] = []
+    start = frames[0]
+    prev = frames[0]
+    for frame in frames[1:]:
+        if frame == prev + 1:
+            prev = frame
+            continue
+        components.append({"frame_start": start, "frame_end": prev, "frame_count": prev - start + 1})
+        start = frame
+        prev = frame
+    components.append({"frame_start": start, "frame_end": prev, "frame_count": prev - start + 1})
+    return components
+
+
 def fit_circle_3d(points: np.ndarray) -> dict[str, Any]:
     if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] < 3:
         raise RuntimeError("circle fit requires at least three 3D points")
@@ -161,6 +179,8 @@ def fit_circle_3d(points: np.ndarray) -> dict[str, Any]:
         "circle_angle_span_deg": float(angle_span * 180.0 / math.pi),
         "radial_residual_m": stats(radial_residual),
         "plane_residual_m": stats(plane_residual),
+        "radial_residual_values_m": [float(v) for v in radial_residual.tolist()],
+        "plane_residual_values_m": [float(v) for v in plane_residual.tolist()],
         "singular_values": [float(v) for v in singular_values.tolist()],
     }
 
@@ -200,6 +220,53 @@ def articulation_probes(model_report: dict[str, Any]) -> list[dict[str, Any]]:
     return probes
 
 
+def articulation_residual_rows(shared: list[int], first: dict[int, dict[str, Any]], second: dict[int, dict[str, Any]], fit: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    radial_values = [float(v) for v in require_list(fit.get("radial_residual_values_m"), "radial residual values")]
+    plane_values = [float(v) for v in require_list(fit.get("plane_residual_values_m"), "plane residual values")]
+    rows: list[dict[str, Any]] = []
+    for index, frame_idx in enumerate(shared):
+        relative_vector = second[frame_idx]["center_world_m"] - first[frame_idx]["center_world_m"]
+        row = {
+            "frame_idx": frame_idx,
+            "radial_residual_m": radial_values[index],
+            "plane_residual_m": plane_values[index],
+            "relative_center_distance_m": float(np.linalg.norm(relative_vector)),
+            "first_part_vertices": first[frame_idx].get("vertices"),
+            "second_part_vertices": second[frame_idx].get("vertices"),
+            "first_part_containment_in_object": first[frame_idx].get("part_containment_in_object"),
+            "second_part_containment_in_object": second[frame_idx].get("part_containment_in_object"),
+        }
+        if index > 0:
+            prev_vector = second[shared[index - 1]]["center_world_m"] - first[shared[index - 1]]["center_world_m"]
+            row["step_from_previous_shared_frame_m"] = float(np.linalg.norm(relative_vector - prev_vector))
+        else:
+            row["step_from_previous_shared_frame_m"] = None
+        rows.append(row)
+    radial_outliers = [row for row in rows if float(row["radial_residual_m"]) > float(args.max_radial_p95_residual_m)]
+    plane_outliers = [row for row in rows if float(row["plane_residual_m"]) > float(args.max_plane_p95_residual_m)]
+    combined_indices = sorted({int(row["frame_idx"]) for row in radial_outliers + plane_outliers})
+    worst_rows = sorted(
+        rows,
+        key=lambda row: max(
+            float(row["radial_residual_m"]) / max(float(args.max_radial_p95_residual_m), 1e-9),
+            float(row["plane_residual_m"]) / max(float(args.max_plane_p95_residual_m), 1e-9),
+        ),
+        reverse=True,
+    )[: int(args.max_reported_outlier_frames)]
+    return {
+        "frame_residual_rows": rows,
+        "radial_residual_outlier_threshold_m": float(args.max_radial_p95_residual_m),
+        "plane_residual_outlier_threshold_m": float(args.max_plane_p95_residual_m),
+        "radial_residual_outlier_frame_count": len(radial_outliers),
+        "plane_residual_outlier_frame_count": len(plane_outliers),
+        "combined_residual_outlier_frame_count": len(combined_indices),
+        "radial_residual_outlier_frames": radial_outliers,
+        "plane_residual_outlier_frames": plane_outliers,
+        "combined_residual_outlier_frame_components": contiguous_components(combined_indices),
+        "worst_residual_frames": worst_rows,
+    }
+
+
 def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict[str, Any]]]], args: argparse.Namespace) -> dict[str, Any]:
     object_id = str(probe.get("object_id"))
     labels = [str(item) for item in require_list(probe.get("part_track_labels"), "part labels")]
@@ -213,6 +280,7 @@ def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict
     adjacent_step = np.linalg.norm(np.diff(relative_vectors, axis=0), axis=1) if relative_vectors.shape[0] > 1 else np.asarray([], dtype=np.float64)
     if relative_vectors.shape[0] >= 3:
         fit = fit_circle_3d(relative_vectors)
+        residual_report = articulation_residual_rows(shared, first, second, fit, args)
         state, blockers = classify_fit(fit, len(shared), args)
     else:
         fit = {
@@ -222,7 +290,21 @@ def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict
             "circle_angle_span_deg": None,
             "radial_residual_m": stats([]),
             "plane_residual_m": stats([]),
+            "radial_residual_values_m": [],
+            "plane_residual_values_m": [],
             "singular_values": [],
+        }
+        residual_report = {
+            "frame_residual_rows": [],
+            "radial_residual_outlier_threshold_m": float(args.max_radial_p95_residual_m),
+            "plane_residual_outlier_threshold_m": float(args.max_plane_p95_residual_m),
+            "radial_residual_outlier_frame_count": 0,
+            "plane_residual_outlier_frame_count": 0,
+            "combined_residual_outlier_frame_count": 0,
+            "radial_residual_outlier_frames": [],
+            "plane_residual_outlier_frames": [],
+            "combined_residual_outlier_frame_components": [],
+            "worst_residual_frames": [],
         }
         state, blockers = "articulation_fit_underconstrained", ["too_few_shared_part_frames_for_articulation_fit"]
     return {
@@ -238,6 +320,7 @@ def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict
         "relative_center_distance_m": stats(relative_norms),
         "adjacent_relative_vector_step_m": stats(adjacent_step),
         **fit,
+        **residual_report,
         "articulation_fit_state": state,
         "fit_blockers": blockers,
         "acceptance_thresholds": {
@@ -265,6 +348,9 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     centers = part_center_rows(surface_rows, transforms)
     rows = [fit_probe(probe, centers, args) for probe in articulation_probes(model_report)]
     state_counts = Counter(str(row.get("articulation_fit_state")) for row in rows)
+    total_radial_outliers = sum(int(row.get("radial_residual_outlier_frame_count", 0)) for row in rows)
+    total_plane_outliers = sum(int(row.get("plane_residual_outlier_frame_count", 0)) for row in rows)
+    total_combined_outliers = sum(int(row.get("combined_residual_outlier_frame_count", 0)) for row in rows)
     report = {
         "method": "build_v18_articulation_fit_candidates",
         "status": STATUS,
@@ -280,6 +366,9 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "articulation_fit_supported_count": state_counts.get("articulation_fit_residual_supported_visible_center_only_not_pose", 0),
         "articulation_fit_rejected_count": state_counts.get("articulation_fit_residual_rejected", 0),
         "articulation_fit_underconstrained_count": state_counts.get("articulation_fit_underconstrained", 0),
+        "radial_residual_outlier_frame_count": total_radial_outliers,
+        "plane_residual_outlier_frame_count": total_plane_outliers,
+        "combined_residual_outlier_frame_count": total_combined_outliers,
         "rows": rows,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
@@ -298,6 +387,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     state_counts: Counter[str] = Counter()
     for report in reports:
         state_counts.update(report["articulation_fit_state_counts"])
+    total_radial_outliers = sum(int(report.get("radial_residual_outlier_frame_count", 0)) for report in reports)
+    total_plane_outliers = sum(int(report.get("plane_residual_outlier_frame_count", 0)) for report in reports)
+    total_combined_outliers = sum(int(report.get("combined_residual_outlier_frame_count", 0)) for report in reports)
     summary = {
         "method": "build_v18_articulation_fit_candidates",
         "status": STATUS,
@@ -309,6 +401,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "articulation_fit_supported_count": state_counts.get("articulation_fit_residual_supported_visible_center_only_not_pose", 0),
         "articulation_fit_rejected_count": state_counts.get("articulation_fit_residual_rejected", 0),
         "articulation_fit_underconstrained_count": state_counts.get("articulation_fit_underconstrained", 0),
+        "radial_residual_outlier_frame_count": total_radial_outliers,
+        "plane_residual_outlier_frame_count": total_plane_outliers,
+        "combined_residual_outlier_frame_count": total_combined_outliers,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
         "object_pose_requirement_met_count": 0,
@@ -319,6 +414,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "report_path": str(args.output_root / str(report["case"]) / "v18_articulation_fit_candidates_report.json"),
                 "articulation_fit_probe_count": report["articulation_fit_probe_count"],
                 "articulation_fit_state_counts": report["articulation_fit_state_counts"],
+                "radial_residual_outlier_frame_count": report.get("radial_residual_outlier_frame_count", 0),
+                "plane_residual_outlier_frame_count": report.get("plane_residual_outlier_frame_count", 0),
+                "combined_residual_outlier_frame_count": report.get("combined_residual_outlier_frame_count", 0),
                 **FALSE_READY,
             }
             for report in reports
@@ -342,6 +440,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-radial-median-residual-m", type=float, default=0.02)
     parser.add_argument("--max-radial-p95-residual-m", type=float, default=0.06)
     parser.add_argument("--max-plane-p95-residual-m", type=float, default=0.03)
+    parser.add_argument("--max-reported-outlier-frames", type=int, default=12)
     return parser.parse_args()
 
 
