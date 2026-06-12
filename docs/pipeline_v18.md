@@ -26,7 +26,7 @@ This section is the V18 contract. Cached artifacts may be used as memoized stage
 6. **Factor graph.** Variables are bounded camera/depth correction, hand state, object/part SE(3), articulation parameter, contact switch, and occlusion owner. Factors are hand observation residuals, object mask/depth/registration residuals, temporal/rigid/articulation consistency, occlusion depth ordering, and contact/nonpenetration. Contact factors are active only when both hand and object/part geometry are valid.
 7. **Outputs.** The deliverable remains full-duration raw overlay, metric/world render, side-by-side video, runtime report, and validation artifacts. Status videos and audits validate implementation; they do not replace the pipeline.
 
-Current implementation gap: existing V18 code does not yet satisfy this contract. The current hand branch uses WiLoR only; HaWoR is not integrated. V18 now has generated OWLv2→SAM2 temporal part tracks, but they are visible-mask evidence only: the pink-lid can has only one generated part track, no object has a validated part model, and depth-fused reconstruction plus the factor graph are not implemented. The next work must close these gaps rather than produce more non-readiness summaries.
+Current implementation gap: existing V18 code does not yet satisfy this contract. V18 now has an explicit HaWoR/WiLoR/RTMLib hand-baseline branch, but HaWoR coverage is partial rather than full-video and no occluded hand pose is accepted. V18 also has generated OWLv2→SAM2 temporal part tracks, but they are visible-mask evidence only: the pink-lid can has only one generated part track, no object has a validated part model, and depth-fused reconstruction plus the factor graph are not implemented. The next work must close these gaps rather than produce more non-readiness summaries.
 
 ## Implementation Checkpoint 1: Runtime And Visibility Scaffold
 
@@ -305,9 +305,9 @@ V18 now has a measured runtime artifact for the implemented status pipeline:
 /data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime/
 ```
 
-`run_v18_measured_status_pipeline.py` runs 27 current V18 stages in dependency order, including OWLv2→SAM2 part-track generation and status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured generated-only run succeeded in 433.04 seconds over 67.0 seconds of representative video, or 6.46x video duration. The slowest stages were OWLv2→SAM2 part tracks (255.18 s), world/status render (61.29 s), status overlay render (58.79 s), part visible-surface extraction (20.28 s), side-by-side render (18.82 s), and SAM promptable proposal probe (5.14 s).
+`run_v18_measured_status_pipeline.py` runs 28 current V18 stages in dependency order, including HaWoR/WiLoR/RTMLib hand-baseline reduction, OWLv2→SAM2 part-track generation, and status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured generated-only run succeeded in 437.27 seconds over 67.0 seconds of representative video, or 6.53x video duration. The slowest stages were OWLv2→SAM2 part tracks (256.27 s), world/status render (61.83 s), status overlay render (59.49 s), part visible-surface extraction (20.34 s), side-by-side render (19.83 s), and SAM promptable proposal probe (5.32 s).
 
-This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth evidence is cached from V16/V17/V18 artifacts, while the OWLv2→SAM2 part-track stage is regenerated inside this measured pipeline. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=6.4633`, while final pose/contact readiness remains false.
+This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream raw hand/object/depth model outputs are cached from V16/V17/V18 artifacts, while the HaWoR/WiLoR/RTMLib hand-baseline reducer and OWLv2→SAM2 part-track stage are regenerated inside this measured pipeline. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=6.5265`, while final pose/contact readiness remains false.
 
 Remaining gap after this checkpoint: measure true fresh raw-video-to-status runtime only after the perception backend is provisioned; measure final runtime only after final geometry/pose/contact stages exist.
 
@@ -341,9 +341,9 @@ V18 now writes a machine-readable invariant audit:
 /data2/ego_annotation_outputs/v18_status_invariant_audit/
 ```
 
-`audit_v18_status_invariants.py` checks the generated status manifest, runtime report, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, generated-only part-track source manifest, part-split evidence, part visible surfaces, part-object blockers, and part-mask acquisition plan. The current audit passes 57 required checks with zero failures.
+`audit_v18_status_invariants.py` checks the generated status manifest, runtime report, HaWoR/WiLoR/RTMLib hand-baseline summary, visibility/occlusion summary, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, generated-only part-track source manifest, part-split evidence, part visible surfaces, part-object blockers, and part-mask acquisition plan. The current audit passes 61 required checks with zero failures.
 
-The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, occlusion depth-order evidence not promoted to ownership, visible part-subset archives not evidence-ready under generated-only evidence, promptable SAM assets and saved proposal masks blocked by the promotion gate rather than treated as accepted referring/open-vocabulary part-mask tracks, generated-only OWLv2→SAM2 source scope/counts, 5 accepted generated part assignments, 753 part-surface rows, all required part objects still blocked by missing part-model candidates, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`. The measured runtime orchestrator writes the runtime report, refreshes the manifest, runs the post-report audit, and refreshes the manifest again so the audit observes the same runtime ratio that the final manifest reports.
+The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, WiLoR measurement count, HaWoR partial coverage recorded without full-video readiness, RTMLib `loaded` status normalized for trash, no HaWoR occlusion pose accepted, object/part pose readiness false, contact and occlusion ownership readiness zero, occlusion depth-order evidence not promoted to ownership, visible part-subset archives not evidence-ready under generated-only evidence, promptable SAM assets and saved proposal masks blocked by the promotion gate rather than treated as accepted referring/open-vocabulary part-mask tracks, generated-only OWLv2→SAM2 source scope/counts, 5 accepted generated part assignments, 753 part-surface rows, all required part objects still blocked by missing part-model candidates, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`. The measured runtime orchestrator writes the runtime report, refreshes the manifest, runs the post-report audit, and refreshes the manifest again so the audit observes the same runtime ratio that the final manifest reports.
 
 Remaining gap after this checkpoint: keep this audit in the validation path for future V18 changes; add new required checks when new geometry, pose, contact, or perception-backend stages are introduced.
 
@@ -581,6 +581,23 @@ The full two-case run produced 109 OWLv2 candidate part boxes and 5 accepted sem
 
 This is real part-mask and visible-geometry progress, not pose completion. The current downstream blocker has moved: off-white can and faucet handle are no longer blocked by missing accepted part masks; they are blocked by missing part-model candidates/residual validation. Pink-lid can has generated mask evidence but only one part track, so it is insufficient for split-model evidence. Hidden geometry, part pose, contact ownership, occlusion ownership, and final pose-complete readiness remain false.
 
+
+## Implementation Checkpoint 27: HaWoR/WiLoR/RTMLib Hand Baseline Branch
+
+V18 now writes an explicit hand-baseline branch artifact:
+
+```text
+/data2/ego_annotation_outputs/v18_hand_baseline_branch/
+```
+
+`build_v18_hand_baseline_branch.py` joins full-timeline WiLoR visible-frame measurements, HaWoR temporal hand measurements, RTMLib 2D keypoint anchors, and the interior-owned hand/depth graph. `build_v18_visibility_occlusion_state.py` now consumes this branch and normalizes RTMLib measurement-manifest status `loaded` as a valid source status. This fixes the previous silent omission where the trash RTMLib file existed but `rtmlib_hand2d` was reported as `None`.
+
+Observed hand-branch evidence across the two representative cases: 4,020 hand rows, 3,361 WiLoR measurement rows, 182 HaWoR rows, 132 available HaWoR visible measurements, 50 HaWoR motion-infill candidates, 1 RTMLib-loaded case, 1,041 RTMLib frames with hands, and 1,551 RTMLib/WiLoR comparison rows. HaWoR coverage is trash-only and limited to frames 840--930; task5 has no HaWoR rows. Strict full-video readiness requires an available HaWoR measurement for every frame/hand-side, and the current run has only 132 available HaWoR frame-side measurements out of 4,020 required frame-side slots.
+
+No occluded hand pose is accepted: `hawor_full_video_baseline_ready_all_cases=false`, `hawor_temporal_occlusion_pose_accepted_count=0`, and `pose_filled_through_occlusion_rows=0`. The explicit blockers are missing full-video HaWoR coverage and missing score components for metric-depth absolute residual, temporal acceleration, and hand bone-scale error.
+
+This checkpoint restores HaWoR as an explicit V18 baseline source, but it does not satisfy the binding full-video HaWoR hand contract. The next hand step is to generate or recover full-video HaWoR-equivalent temporal measurements and validate them against WiLoR, RTMLib, and metric depth before any occlusion pose fill is allowed.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
@@ -646,7 +663,7 @@ Every summary JSON must include runtime, frame-count equality, readiness flags, 
 
 ## Immediate Implementation Order
 
-1. Integrate the HaWoR hand branch as the required temporal/occlusion baseline and compare it against WiLoR/RTMLib/depth with the fixed residual criteria.
+1. Extend or rerun HaWoR to full-video coverage and add the missing residual components needed for accepted temporal/occlusion hand states; keep current partial HaWoR rows candidate-only until then.
 2. Continue the object/part path from the accepted OWLv2→SAM2 tracks: part visible surfaces -> part-model candidate residuals -> rigid/articulated/deformable decision.
 3. Implement depth-fused rigid/part reconstruction only where the residual acceptance tests can be evaluated.
 4. Implement the bounded factor graph over camera/depth correction, hand state, object/part SE(3), articulation, contact switch, and occlusion owner.

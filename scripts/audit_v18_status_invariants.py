@@ -49,6 +49,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     start = time.perf_counter()
     manifest_path = args.status_manifest_root / "v18_status_deliverable_manifest.json"
     runtime_path = args.measured_runtime_root / "v18_measured_status_pipeline_runtime_report.json"
+    hand_baseline_path = args.hand_baseline_root / "v18_hand_baseline_branch_summary.json"
+    visibility_summary_path = args.visibility_occlusion_root / "v18_visibility_occlusion_state_summary.json"
     subset_summary_path = args.visible_part_subset_root / "v18_visible_part_subset_archive_summary.json"
     occlusion_summary_path = args.occlusion_owner_candidates_root / "v18_occlusion_owner_candidates_summary.json"
     occlusion_depth_summary_path = args.occlusion_depth_evidence_root / "v18_occlusion_depth_order_evidence_summary.json"
@@ -63,6 +65,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     promotion_gate_path = args.part_mask_promotion_gate_root / "v18_part_mask_promotion_gate_summary.json"
     manifest = require_dict(load_json(manifest_path), "status manifest")
     runtime = require_dict(load_json(runtime_path), "runtime report")
+    hand_baseline = require_dict(load_json(hand_baseline_path), "hand baseline summary")
+    visibility = require_dict(load_json(visibility_summary_path), "visibility occlusion summary")
     subset = require_dict(load_json(subset_summary_path), "visible part subset summary")
     occlusion = require_dict(load_json(occlusion_summary_path), "occlusion candidates summary")
     occlusion_depth = require_dict(load_json(occlusion_depth_summary_path), "occlusion depth-order evidence summary")
@@ -109,6 +113,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     check(checks, "empty_task5_subset_not_ready", task5_subset.get("visible_part_subset_archive_ready") is False, task5_subset.get("visible_part_subset_archive_ready"), False)
     check(checks, "physical_schema_object_count", physical.get("object_count") == manifest.get("physical_state_schema_object_count") == 13, {"schema": physical.get("object_count"), "manifest": manifest.get("physical_state_schema_object_count")}, 13)
     check(checks, "structured_part_motion_required_three", manifest.get("structured_part_or_relative_motion_required_count") == 3, manifest.get("structured_part_or_relative_motion_required_count"), 3)
+    check(checks, "wilor_hand_measurement_count", hand_baseline.get("wilor_measurement_row_count") == manifest.get("wilor_measurement_row_count") == 3361, {"hand_baseline": hand_baseline.get("wilor_measurement_row_count"), "manifest": manifest.get("wilor_measurement_row_count")}, 3361)
+    check(checks, "hawor_baseline_partial_not_full_video", hand_baseline.get("hawor_measurement_row_count") == visibility.get("hawor_measurement_row_count") == manifest.get("hawor_measurement_row_count") == 182 and hand_baseline.get("hawor_available_measurement_count") == visibility.get("hawor_available_measurement_count") == manifest.get("hawor_available_measurement_count") == 132 and hand_baseline.get("hawor_motion_infill_candidate_count") == visibility.get("hawor_motion_infill_candidate_count") == manifest.get("hawor_motion_infill_candidate_count") == 50 and manifest.get("hawor_full_video_baseline_ready_all_cases") is False, {"hand_baseline": {"rows": hand_baseline.get("hawor_measurement_row_count"), "available": hand_baseline.get("hawor_available_measurement_count"), "infill": hand_baseline.get("hawor_motion_infill_candidate_count")}, "visibility": {"rows": visibility.get("hawor_measurement_row_count"), "available": visibility.get("hawor_available_measurement_count"), "infill": visibility.get("hawor_motion_infill_candidate_count")}, "manifest": {"rows": manifest.get("hawor_measurement_row_count"), "available": manifest.get("hawor_available_measurement_count"), "infill": manifest.get("hawor_motion_infill_candidate_count"), "full_video_ready": manifest.get("hawor_full_video_baseline_ready_all_cases")}}, "182 rows / 132 available / 50 infill / full-video ready false")
+    check(checks, "hawor_occlusion_pose_not_accepted", hand_baseline.get("temporal_occlusion_pose_accepted_count") == visibility.get("hawor_temporal_occlusion_pose_accepted_count") == manifest.get("hawor_temporal_occlusion_pose_accepted_count") == 0 and manifest.get("pose_filled_through_occlusion_rows") == 0, {"hand_baseline": hand_baseline.get("temporal_occlusion_pose_accepted_count"), "visibility": visibility.get("hawor_temporal_occlusion_pose_accepted_count"), "manifest": manifest.get("hawor_temporal_occlusion_pose_accepted_count"), "pose_filled": manifest.get("pose_filled_through_occlusion_rows")}, 0)
+    check(checks, "rtmlib_loaded_status_normalized", hand_baseline.get("rtmlib_loaded_case_count") == visibility.get("rtmlib_loaded_case_count") == manifest.get("rtmlib_loaded_case_count") == 1 and hand_baseline.get("rtmlib_frames_with_hands") == visibility.get("rtmlib_frames_with_hands") == manifest.get("rtmlib_frames_with_hands") == 1041 and hand_baseline.get("rtmlib_wilor_comparison_count") == visibility.get("rtmlib_wilor_comparison_count") == manifest.get("rtmlib_wilor_comparison_count") == 1551, {"hand_baseline": {"cases": hand_baseline.get("rtmlib_loaded_case_count"), "frames": hand_baseline.get("rtmlib_frames_with_hands"), "comparisons": hand_baseline.get("rtmlib_wilor_comparison_count")}, "visibility": {"cases": visibility.get("rtmlib_loaded_case_count"), "frames": visibility.get("rtmlib_frames_with_hands"), "comparisons": visibility.get("rtmlib_wilor_comparison_count")}, "manifest": {"cases": manifest.get("rtmlib_loaded_case_count"), "frames": manifest.get("rtmlib_frames_with_hands"), "comparisons": manifest.get("rtmlib_wilor_comparison_count")}}, "1 case / 1041 frames / 1551 comparisons")
     check(checks, "part_track_source_ready_all_cases", manifest.get("part_track_source_manifest_ready_all_cases") is True, manifest.get("part_track_source_manifest_ready_all_cases"), True)
     check(checks, "part_track_uniform_generation_ready", part_source.get("uniform_part_track_generation_ready") is True and manifest.get("uniform_part_track_generation_ready") is True, {"source": part_source.get("uniform_part_track_generation_ready"), "manifest": manifest.get("uniform_part_track_generation_ready")}, True)
     check(checks, "part_track_source_scope_generated_only", part_source.get("part_track_candidate_source_scope") == "v18_owlv2_sam2_generated_only" and part_split.get("part_track_candidate_source_scope") == "v18_owlv2_sam2_generated_only", {"source": part_source.get("part_track_candidate_source_scope"), "split": part_split.get("part_track_candidate_source_scope")}, "v18_owlv2_sam2_generated_only")
@@ -232,6 +240,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "sources": {
             "status_manifest": str(manifest_path),
             "runtime_report": str(runtime_path),
+            "hand_baseline_summary": str(hand_baseline_path),
+            "visibility_occlusion_summary": str(visibility_summary_path),
             "visible_part_subset_summary": str(subset_summary_path),
             "occlusion_candidates_summary": str(occlusion_summary_path),
             "occlusion_depth_order_evidence_summary": str(occlusion_depth_summary_path),
@@ -258,6 +268,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--status-manifest-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_deliverable_manifest"))
     parser.add_argument("--measured-runtime-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime"))
+    parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
+    parser.add_argument("--visibility-occlusion-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visibility_occlusion_state"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
     parser.add_argument("--occlusion-owner-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_candidates"))
     parser.add_argument("--occlusion-depth-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_depth_order_evidence"))

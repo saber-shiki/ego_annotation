@@ -13,9 +13,9 @@ from typing import Any
 STATUS = "v18_measured_status_pipeline_runtime"
 CLAIM = (
     "This artifact measures the implemented V18 cached-evidence-to-status pipeline by running the current V18 "
-    "reducers and status renderers in dependency order. It includes raw-frame status rendering, but upstream hand, "
-    "object, depth, and part-track evidence are cached V16/V17/V18 inputs. It is not proof of fresh raw-video-to-final "
-    "pose-complete runtime."
+    "reducers and status renderers in dependency order. It includes raw-frame status rendering and regenerates the "
+    "V18 HaWoR/WiLoR/RTMLib hand-baseline reducer and OWLv2->SAM2 part-track reducer, but upstream raw hand/object/depth "
+    "model outputs remain cached V16/V17/V18 inputs. It is not proof of fresh raw-video-to-final pose-complete runtime."
 )
 
 FALSE_READY: dict[str, bool] = {
@@ -31,7 +31,8 @@ FALSE_READY: dict[str, bool] = {
 STAGES: list[dict[str, Any]] = [
     {"id": "runtime_manifest", "script": "scripts/build_v18_runtime_manifest.py", "source_scope": "static_design_budget"},
     {"id": "physical_state_schema", "script": "scripts/build_v18_physical_state_schema.py", "source_scope": "cached_v17_roster_and_timeline"},
-    {"id": "visibility_occlusion_state", "script": "scripts/build_v18_visibility_occlusion_state.py", "source_scope": "cached_v16_v17_measurements"},
+    {"id": "hand_baseline_branch", "script": "scripts/build_v18_hand_baseline_branch.py", "source_scope": "cached_wilor_hawor_rtmlib_measurements_plus_interior_hand_depth"},
+    {"id": "visibility_occlusion_state", "script": "scripts/build_v18_visibility_occlusion_state.py", "source_scope": "cached_measurements_plus_v18_hand_baseline_branch"},
     {"id": "fast_motion_state", "script": "scripts/build_v18_fast_motion_state.py", "source_scope": "cached_visibility_surfaces_material_tracks"},
     {"id": "consistency_graph", "script": "scripts/build_v18_consistency_graph.py", "source_scope": "cached_visibility_motion_contact_depth"},
     {"id": "annotation_state", "script": "scripts/build_v18_annotation_state.py", "source_scope": "cached_timeline_and_v18_reducers"},

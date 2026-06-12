@@ -179,7 +179,7 @@ def source_from_measurement_manifest(manifest: dict[str, Any], source_key: str) 
         return None
     for raw in rows:
         row = require_dict(raw, source_key)
-        if row.get("status") == "ok" and row.get("path"):
+        if row.get("status") in {"ok", "loaded"} and row.get("path"):
             return Path(require_str(row.get("path"), f"{source_key}.path"))
     return None
 
@@ -286,11 +286,26 @@ def interior_hand_lookup(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
     return best
 
 
+def hand_baseline_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
+    payload = require_dict(load_json(path), f"hand baseline {path}")
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for raw_frame in require_list(payload.get("frames"), "hand baseline frames"):
+        frame = require_dict(raw_frame, "hand baseline frame")
+        frame_idx = require_int(frame.get("frame_idx"), "hand baseline frame_idx")
+        for raw_hand in require_list(frame.get("hands"), "hand baseline hands"):
+            hand = require_dict(raw_hand, "hand baseline hand")
+            side = require_str(hand.get("hand_side"), "hand baseline hand_side")
+            if side in HAND_SIDES:
+                out[(frame_idx, side)] = hand
+    return out
+
+
 def hand_rows(
     frame_count: int,
     wilor: dict[tuple[int, str], dict[str, Any]],
     rtmlib: dict[int, list[dict[str, Any]]],
     interior: dict[tuple[int, str], dict[str, Any]],
+    hand_baseline: dict[tuple[int, str], dict[str, Any]],
     active_objects_by_frame: dict[int, list[dict[str, Any]]],
     max_gap: int,
 ) -> tuple[list[dict[str, Any]], Counter[str], Counter[str]]:
@@ -306,6 +321,7 @@ def hand_rows(
             w = wilor.get((frame_idx, side))
             metric = interior.get((frame_idx, side))
             rtmlib_rows = rtmlib.get(frame_idx, [])
+            baseline = hand_baseline.get((frame_idx, side), {})
             evidence_sources: list[str] = []
             if w is not None:
                 evidence_sources.append("wilor_raw")
@@ -313,6 +329,10 @@ def hand_rows(
                 evidence_sources.append("v17_interior_owned_hand_graph")
             if rtmlib_rows:
                 evidence_sources.append("rtmlib_hand2d_unsided")
+            if baseline.get("hawor_candidate_present") is True:
+                evidence_sources.append("hawor_temporal_baseline")
+            if baseline.get("rtmlib_wilor_comparison_available") is True:
+                evidence_sources.append("rtmlib_wilor_2d_anchor")
             score = finite_float(w.get("score"), "WiLoR score") if w is not None else None
             if score is not None and score >= 0.35:
                 visibility = "visible"
@@ -361,6 +381,15 @@ def hand_rows(
                 "bounded_gap_evidence": gap_flags.get((frame_idx, side)),
                 "metric_depth_state": metric.get("interior_state") if metric is not None else "not_evaluated_in_interior_owned_graph",
                 "metric_depth_compatible": metric.get("interior_metric_depth_compatible") if metric is not None else False,
+                "hand_baseline_state": baseline.get("hand_baseline_state"),
+                "hand_baseline_acceptance_blockers": baseline.get("acceptance_blockers", []),
+                "hawor_candidate_present": baseline.get("hawor_candidate_present", False),
+                "hawor_measurement_available": baseline.get("hawor_measurement_available", False),
+                "hawor_evidence_role": baseline.get("hawor_evidence_role"),
+                "hawor_projection_residual_px_median": baseline.get("hawor_projection_residual_px_median"),
+                "rtmlib_wilor_comparison_available": baseline.get("rtmlib_wilor_comparison_available", False),
+                "rtmlib_wilor_median_keypoint_delta_px": baseline.get("rtmlib_wilor_median_keypoint_delta_px"),
+                "hawor_temporal_occlusion_pose_accepted": baseline.get("temporal_occlusion_pose_accepted", False),
                 "pose_claim": "no_certain_pose_if_unobserved" if visibility == "unresolved" else "observed_or_partially_observed_measurement",
             }
             rows.append(row)
@@ -471,17 +500,22 @@ def case_state(case: str, args: argparse.Namespace) -> dict[str, Any]:
     visible_surface_path = existing(args.visible_surface_root / case / "v17_multi_object_visible_surface_report.json", f"{case} visible surface report")
     visible_surface = require_dict(load_json(visible_surface_path), f"{case} visible surface report")
     interior_path = existing(args.interior_hand_graph_root / case / "v17_interior_owned_full_residual_hand_graph.json", f"{case} interior hand graph")
+    hand_baseline_path = existing(args.hand_baseline_root / case / "v18_hand_baseline_branch.json", f"{case} V18 hand baseline branch")
+    hand_baseline_report_path = existing(args.hand_baseline_root / case / "v18_hand_baseline_branch_report.json", f"{case} V18 hand baseline report")
+    hand_baseline_report = require_dict(load_json(hand_baseline_report_path), f"{case} hand baseline report")
 
     objects, by_frame_object, active_objects_by_frame = object_lookup(timeline, roster_by_object_id, physical_schema_by_object_id)
     surfaces, rejected_surfaces = surface_lookup(visible_surface)
     wilor = best_wilor_by_frame_side(wilor_path, frame_count)
     rtmlib = rtmlib_by_frame(rtmlib_path, frame_count)
     interior = interior_hand_lookup(interior_path)
+    hand_baseline = hand_baseline_index(hand_baseline_path)
     hands, hand_visibility_counts, hand_occlusion_counts = hand_rows(
         frame_count=frame_count,
         wilor=wilor,
         rtmlib=rtmlib,
         interior=interior,
+        hand_baseline=hand_baseline,
         active_objects_by_frame=active_objects_by_frame,
         max_gap=int(args.max_short_occlusion_gap_frames),
     )
@@ -526,6 +560,8 @@ def case_state(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "v18_physical_state_schema": str(physical_schema_path),
             "v17_visible_surface_report": str(visible_surface_path),
             "v17_interior_owned_hand_graph": str(interior_path),
+            "v18_hand_baseline_branch": str(hand_baseline_path),
+            "v18_hand_baseline_branch_report": str(hand_baseline_report_path),
         },
         "state_path": str(state_path),
         "hand_track_count": len(HAND_SIDES),
@@ -538,6 +574,14 @@ def case_state(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "object_geometry_scope_counts": dict(sorted(obj_geometry_counts.items())),
         "object_model_physical_state_type_counts": dict(sorted(obj_physical_counts.items())),
         "metric_depth_compatible_hand_rows": sum(1 for row in hands if row.get("metric_depth_compatible") is True),
+        "hawor_measurement_row_count": hand_baseline_report.get("hawor_measurement_row_count"),
+        "hawor_available_measurement_count": hand_baseline_report.get("hawor_available_measurement_count"),
+        "hawor_motion_infill_candidate_count": hand_baseline_report.get("hawor_motion_infill_candidate_count"),
+        "hawor_full_video_baseline_ready": hand_baseline_report.get("hawor_full_video_baseline_ready"),
+        "rtmlib_source_status_normalized": hand_baseline_report.get("rtmlib_source_status_normalized"),
+        "rtmlib_frames_with_hands": hand_baseline_report.get("rtmlib_frames_with_hands"),
+        "rtmlib_wilor_comparison_count": hand_baseline_report.get("rtmlib_wilor_comparison_count"),
+        "hawor_temporal_occlusion_pose_accepted_count": hand_baseline_report.get("temporal_occlusion_pose_accepted_count"),
         "unresolved_hand_rows": hand_visibility_counts.get("unresolved", 0),
         "unresolved_object_rows": obj_visibility_counts.get("unresolved", 0),
         "occlusion_pose_policy": "no_pose_filled_for_unobserved_rows_in_this_scaffold",
@@ -575,6 +619,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "object_visibility_state_counts": report["object_visibility_state_counts"],
                 "object_geometry_scope_counts": report["object_geometry_scope_counts"],
                 "object_model_physical_state_type_counts": report["object_model_physical_state_type_counts"],
+                "hawor_measurement_row_count": report.get("hawor_measurement_row_count"),
+                "hawor_available_measurement_count": report.get("hawor_available_measurement_count"),
+                "hawor_motion_infill_candidate_count": report.get("hawor_motion_infill_candidate_count"),
+                "hawor_full_video_baseline_ready": report.get("hawor_full_video_baseline_ready"),
+                "rtmlib_source_status_normalized": report.get("rtmlib_source_status_normalized"),
+                "rtmlib_frames_with_hands": report.get("rtmlib_frames_with_hands"),
                 "unresolved_hand_rows": report["unresolved_hand_rows"],
                 "unresolved_object_rows": report["unresolved_object_rows"],
                 **FALSE_READY,
@@ -583,6 +633,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         ],
         "total_unresolved_hand_rows": sum(require_int(report.get("unresolved_hand_rows"), "unresolved hand rows") for report in reports),
         "total_unresolved_object_rows": sum(require_int(report.get("unresolved_object_rows"), "unresolved object rows") for report in reports),
+        "hawor_measurement_row_count": sum(require_int(report.get("hawor_measurement_row_count"), "HaWoR rows") for report in reports),
+        "hawor_available_measurement_count": sum(require_int(report.get("hawor_available_measurement_count"), "HaWoR available") for report in reports),
+        "hawor_motion_infill_candidate_count": sum(require_int(report.get("hawor_motion_infill_candidate_count"), "HaWoR infill") for report in reports),
+        "hawor_full_video_baseline_ready_all_cases": all(report.get("hawor_full_video_baseline_ready") is True for report in reports),
+        "rtmlib_loaded_case_count": sum(1 for report in reports if report.get("rtmlib_source_status_normalized") is True),
+        "rtmlib_frames_with_hands": sum(require_int(report.get("rtmlib_frames_with_hands"), "RTMLib frames") for report in reports),
+        "rtmlib_wilor_comparison_count": sum(require_int(report.get("rtmlib_wilor_comparison_count"), "RTMLib comparisons") for report in reports),
+        "hawor_temporal_occlusion_pose_accepted_count": sum(require_int(report.get("hawor_temporal_occlusion_pose_accepted_count"), "HaWoR accepted occlusion") for report in reports),
         "occlusion_pose_policy": "no_pose_filled_for_unobserved_rows_in_this_scaffold",
         "object_geometry_policy": "visible_surface_only_is_not_complete_object_pose",
         **FALSE_READY,
@@ -599,6 +657,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--visible-surface-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_multi_object_visible_surfaces"))
     parser.add_argument("--interior-hand-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_interior_owned_full_residual_hand_graph"))
+    parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visibility_occlusion_state"))
     parser.add_argument("--max-short-occlusion-gap-frames", type=int, default=15)
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])

@@ -22,13 +22,15 @@ FALSE_READY: dict[str, bool] = {
 STATUS = "v18_status_deliverable_manifest"
 CLAIM = (
     "This manifest closes a V18 status deliverable: full-duration 2D overlay, abstract world/status, "
-    "side-by-side status videos, bounded state evidence, occlusion owner-candidate evidence, occlusion depth-order "
-    "triage evidence, visible-surface geometry evidence, structured physical-state schema evidence, an object completion eligibility gate, part-track source "
+    "side-by-side status videos, HaWoR/WiLoR/RTMLib hand-baseline evidence, bounded state evidence, "
+    "occlusion owner-candidate evidence, occlusion depth-order triage evidence, visible-surface geometry evidence, "
+    "structured physical-state schema evidence, an object completion eligibility gate, generated-only part-track source "
     "manifest, part-split mask evidence audit, part visible-surface evidence, part-motion state evidence, part-motion "
-    "confound QC, bounded visible part-model candidate evidence, a materialized visible part-subset archive, explicit "
-    "part-object blocker records, promptable SAM proposal evidence, promptable proposal promotion-gate evidence, part-mask acquisition status, measured cached-evidence-to-status runtime evidence, "
-    "and invariant audit evidence. It does not close final hidden object geometry, object pose, part pose, articulation "
-    "model, physical contact requirements, occluder ownership, depth ordering, or fresh raw-video-to-final runtime."
+    "confound QC, explicit part-object blocker records, promptable SAM proposal evidence, promptable proposal "
+    "promotion-gate evidence, part-mask acquisition status, measured cached-evidence-to-status runtime evidence, "
+    "and invariant audit evidence. It does not close full-video HaWoR readiness, occluded hand pose, final hidden "
+    "object geometry, object pose, part pose, articulation model, physical contact requirements, occluder ownership, "
+    "depth ordering, or fresh raw-video-to-final runtime."
 )
 
 
@@ -118,6 +120,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     side_qc_path = args.render_root / case / "v18_status_side_by_side_qc.json"
     visible_geometry_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
     physical_schema_path = args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"
+    hand_baseline_path = args.hand_baseline_root / case / "v18_hand_baseline_branch_report.json"
     completion_gate_path = args.completion_gate_root / case / "v18_object_completion_gate_report.json"
     part_split_path = args.part_split_root / case / "v18_part_split_evidence_report.json"
     part_track_source_path = args.part_track_source_root / case / "v18_part_track_source_manifest_report.json"
@@ -139,6 +142,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     side = require_dict(load_json(side_qc_path), f"{case} side qc")
     visible_geometry = require_dict(load_json(visible_geometry_path), f"{case} visible geometry")
     physical_schema = require_dict(load_json(physical_schema_path), f"{case} physical state schema")
+    hand_baseline = require_dict(load_json(hand_baseline_path), f"{case} hand baseline branch")
     completion_gate = require_dict(load_json(completion_gate_path), f"{case} completion gate")
     part_split = require_dict(load_json(part_split_path), f"{case} part split evidence")
     part_track_source = require_dict(load_json(part_track_source_path), f"{case} part-track source manifest")
@@ -228,6 +232,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "visible_geometry_archive_report": str(visible_geometry_path),
             "visible_geometry_archive_npz": visible_geometry.get("archive_npz"),
             "physical_state_schema_report": str(physical_schema_path),
+            "hand_baseline_branch_report": str(hand_baseline_path),
             "object_completion_gate_report": str(completion_gate_path),
             "part_split_evidence_report": str(part_split_path),
             "part_track_source_manifest_report": str(part_track_source_path),
@@ -316,6 +321,23 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "changed_from_legacy_keyword_count": physical_schema.get("changed_from_legacy_keyword_count"),
             "part_pose_ready_count": physical_schema.get("part_pose_ready_count"),
             "object_pose_requirement_met_count": physical_schema.get("object_pose_requirement_met_count"),
+        },
+        "hand_baseline_qc": {
+            "hand_state_row_count": hand_baseline.get("hand_state_row_count"),
+            "hand_baseline_state_counts": hand_baseline.get("hand_baseline_state_counts"),
+            "wilor_measurement_row_count": hand_baseline.get("wilor_measurement_row_count"),
+            "hawor_measurement_row_count": hand_baseline.get("hawor_measurement_row_count"),
+            "hawor_available_measurement_count": hand_baseline.get("hawor_available_measurement_count"),
+            "hawor_motion_infill_candidate_count": hand_baseline.get("hawor_motion_infill_candidate_count"),
+            "hawor_unique_frame_count": hand_baseline.get("hawor_unique_frame_count"),
+            "hawor_full_video_baseline_ready": hand_baseline.get("hawor_full_video_baseline_ready"),
+            "hawor_full_video_blockers": hand_baseline.get("hawor_full_video_blockers"),
+            "rtmlib_source_status_normalized": hand_baseline.get("rtmlib_source_status_normalized"),
+            "rtmlib_manifest_status": hand_baseline.get("rtmlib_manifest_status"),
+            "rtmlib_frames_with_hands": hand_baseline.get("rtmlib_frames_with_hands"),
+            "rtmlib_wilor_comparison_count": hand_baseline.get("rtmlib_wilor_comparison_count"),
+            "temporal_occlusion_pose_accepted_count": hand_baseline.get("temporal_occlusion_pose_accepted_count"),
+            "pose_filled_through_occlusion_rows": hand_baseline.get("pose_filled_through_occlusion_rows"),
         },
         "completion_gate_qc": {
             "completion_gate_state_counts": completion_gate.get("completion_gate_state_counts"),
@@ -571,6 +593,45 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         )
         for case in cases
     )
+    hand_baseline_row_count = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("hand_state_row_count"), "hand baseline rows")
+        for case in cases
+    )
+    wilor_measurement_row_count = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("wilor_measurement_row_count"), "WiLoR rows")
+        for case in cases
+    )
+    hawor_measurement_row_count = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("hawor_measurement_row_count"), "HaWoR rows")
+        for case in cases
+    )
+    hawor_available_measurement_count = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("hawor_available_measurement_count"), "HaWoR available")
+        for case in cases
+    )
+    hawor_motion_infill_candidate_count = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("hawor_motion_infill_candidate_count"), "HaWoR infill")
+        for case in cases
+    )
+    hawor_full_video_baseline_ready_all_cases = all(
+        bool(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("hawor_full_video_baseline_ready"))
+        for case in cases
+    )
+    rtmlib_loaded_case_count = sum(
+        1 for case in cases if bool(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("rtmlib_source_status_normalized"))
+    )
+    rtmlib_frames_with_hands = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("rtmlib_frames_with_hands"), "RTMLib frames")
+        for case in cases
+    )
+    rtmlib_wilor_comparison_count = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("rtmlib_wilor_comparison_count"), "RTMLib WiLoR comparisons")
+        for case in cases
+    )
+    hawor_temporal_occlusion_pose_accepted_count = sum(
+        require_int(require_dict(case.get("hand_baseline_qc"), "hand baseline qc").get("temporal_occlusion_pose_accepted_count"), "HaWoR accepted occlusion")
+        for case in cases
+    )
     completion_candidate_count = sum(
         require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("completion_candidate_count"), "completion candidates")
         for case in cases
@@ -814,6 +875,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "structured_part_or_relative_motion_required_count": structured_part_or_relative_motion_required_count,
         "structured_secondary_deformable_or_surface_component_count": structured_secondary_deformable_or_surface_component_count,
         "physical_state_changed_from_legacy_keyword_count": physical_state_changed_from_legacy_keyword_count,
+        "hand_baseline_row_count": hand_baseline_row_count,
+        "wilor_measurement_row_count": wilor_measurement_row_count,
+        "hawor_measurement_row_count": hawor_measurement_row_count,
+        "hawor_available_measurement_count": hawor_available_measurement_count,
+        "hawor_motion_infill_candidate_count": hawor_motion_infill_candidate_count,
+        "hawor_full_video_baseline_ready_all_cases": hawor_full_video_baseline_ready_all_cases,
+        "rtmlib_loaded_case_count": rtmlib_loaded_case_count,
+        "rtmlib_frames_with_hands": rtmlib_frames_with_hands,
+        "rtmlib_wilor_comparison_count": rtmlib_wilor_comparison_count,
+        "hawor_temporal_occlusion_pose_accepted_count": hawor_temporal_occlusion_pose_accepted_count,
         "object_completion_candidate_count": completion_candidate_count,
         "object_part_split_candidate_count": part_split_candidate_count,
         "object_completion_run_count": completion_run_count,
@@ -899,6 +970,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--occlusion-depth-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_depth_order_evidence"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
+    parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
     parser.add_argument("--completion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
     parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
     parser.add_argument("--part-split-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_split_evidence"))
