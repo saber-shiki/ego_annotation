@@ -794,6 +794,12 @@ V18 factor-graph occlusion-owner variables now consume the temporal occlusion-ow
 
 This changes factor-graph evidence integration only; accepted occlusion ownership still requires source depth/temporal acceptance and remains zero on the representative videos. Build-only checks after this change showed trash 115 occlusion-owner variables with 94 temporal-selected candidates and 112 mesh-supported candidates, accepted 0; task5 1 variable with 1 mesh-supported candidate, accepted 0.
 
+## Implementation Checkpoint 52: Hand Baseline Score Components
+
+`build_v18_hand_baseline_branch.py` now computes the three previously-missing hand-baseline score components when supporting evidence exists. Metric depth uses the absolute `interior_median_gap_m` from the V17 interior hand graph. Temporal acceleration uses an adjacent-frame second difference of the HaWoR 3D joint centroid. Bone-scale consistency uses per-side median HaWoR 3D bone lengths within the source annotation. Source HaWoR annotation paths are hashed in the report so these evidence terms do not depend only on mutable paths.
+
+The current representative evidence remains partial. Trash has 843 metric-depth component rows, 178 temporal-acceleration rows, and 182 bone-scale rows; task5 has 1083 metric-depth rows but no HaWoR geometry for temporal/bone components. A review caught an over-broad `supported` hand-state label; the final taxonomy only uses `hawor_visible_measurement_score_components_supported_no_occluded_pose_acceptance` when no active blockers remain. Accepted occluded-hand pose and pose fill-through-occlusion remain zero for both videos. This checkpoint improves the hand evidence ledger; it does not solve full-video HaWoR coverage, accepted occlusion ownership, or pose fill-through.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
@@ -859,7 +865,7 @@ Every summary JSON must include runtime, frame-count equality, readiness flags, 
 
 ## Immediate Implementation Order
 
-1. Extend or rerun HaWoR to full-video coverage and add the missing residual components needed for accepted temporal/occlusion hand states; keep current partial HaWoR rows candidate-only until then.
+1. Extend or rerun HaWoR to full-video coverage and validate occlusion-specific hand evidence; current residual components are partial evidence only and current HaWoR rows remain candidate-only for occluded pose.
 2. Continue the object/part path from the accepted OWLv2→SAM2 tracks: part visible surfaces -> part-model candidate residuals -> rigid/articulated/deformable decision.
 3. Implement depth-fused rigid/part reconstruction only where the residual acceptance tests can be evaluated.
 4. Implement the bounded factor graph over camera/depth correction, hand state, object/part SE(3), articulation, contact switch, and occlusion owner.
