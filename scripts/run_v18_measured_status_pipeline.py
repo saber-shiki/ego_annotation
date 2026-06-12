@@ -53,6 +53,7 @@ STAGES: list[dict[str, Any]] = [
     {"id": "part_object_blocker_manifest", "script": "scripts/build_v18_part_object_blocker_manifest.py", "source_scope": "part_evidence_and_completion_gate"},
     {"id": "sam_promptable_part_proposals", "script": "scripts/build_v18_sam_promptable_part_proposals.py", "source_scope": "promptable_sam_probe_on_selected_blocked_object_frames_not_accepted_tracks"},
     {"id": "part_mask_acquisition_plan", "script": "scripts/build_v18_part_mask_acquisition_plan.py", "source_scope": "part_object_blockers_and_backend_probe"},
+    {"id": "part_mask_promotion_gate", "script": "scripts/build_v18_part_mask_promotion_gate.py", "source_scope": "promptable_proposals_plus_acquisition_status_no_promotion"},
     {"id": "status_deliverable_manifest_pre_audit", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts_before_audit"},
     {"id": "status_invariant_audit", "script": "scripts/audit_v18_status_invariants.py", "source_scope": "current_status_manifest_and_generated_artifacts"},
     {"id": "status_deliverable_manifest", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts_with_latest_audit"},
