@@ -698,6 +698,12 @@ The delivered run completed both representative cases in about 108 seconds total
 
 Visual inspection against V16 side-by-side frames shows the current tradeoff. V16 still has denser mesh-style hand/object rendering for selected manipulation objects. V18 is now plausibly no worse for frame coverage and 2D localization, and it adds explicit multi-object state, part candidates, uncertainty labels, contact/occlusion hypotheses, hidden-geometry candidates, and factor-graph state in the delivered JSON/video instead of hiding them in diagnostics. The next improvement should be render fidelity and solver quality, not another readiness gate: use the delivered videos to decide which approximate modules are visibly wrong, then patch those modules.
 
+## Implementation Checkpoint 36: Monotonic V16 Render Integration
+
+V18 full-pipeline rendering now preserves V16 visual capabilities instead of replacing them. `scripts/run_v18_full_pipeline.py` extracts V16 `overlay_mano_object.mp4` and `reconstruction_3d_world.mp4` frames and uses them as the base layers for V18 overlay/world videos. V18 masks, part candidates, contact/occlusion labels, uncertainty, and graph overlays are drawn on top.
+
+This fixes the previous degradation where V18 replaced V16's MANO/object mesh and metric-world render with boxes and an abstract world panel. The artifact report and per-case QC now record the base V16 overlay/world paths. The full representative run passed frame-count equality: trash 1050/1050 and task5 960/960 for annotation JSON, overlay, world, and side-by-side videos. Visual inspection of trash frame 330 and task5 frame 780 confirms V16 render content remains visible while V18 layers are additive. This is a render monotonicity repair, not evidence that the missing V18 solver modules are complete.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

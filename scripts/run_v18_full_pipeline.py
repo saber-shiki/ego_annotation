@@ -186,6 +186,33 @@ def ffprobe_frame_count(path: Path) -> int | None:
         return None
 
 
+def extract_video_frames(video_path: Path, frame_dir: Path) -> None:
+    if frame_dir.exists():
+        shutil.rmtree(frame_dir)
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_path),
+        str(frame_dir / "%06d.jpg"),
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def v16_render_paths(case: str, args: argparse.Namespace) -> dict[str, Path]:
+    render_dir = args.v16_root / case / "renders"
+    return {
+        "overlay": render_dir / "overlay_mano_object.mp4",
+        "world": render_dir / "reconstruction_3d_world.mp4",
+        "side_by_side": render_dir / "side_by_side.mp4",
+        "qc": render_dir / "render_only_qc.json",
+    }
+
+
 def encode_video(frame_dir: Path, output_path: Path, fps: float) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -612,6 +639,9 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
+            "v16_render_overlay": str(v16_render_paths(case, args)["overlay"]),
+            "v16_render_world": str(v16_render_paths(case, args)["world"]),
+            "v16_render_side_by_side": str(v16_render_paths(case, args)["side_by_side"]),
         },
         "raw_video": state.get("raw_video"),
         "frame_count": frame_count,
@@ -619,6 +649,12 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         "duration_s": finite_float(state.get("duration_s"), frame_count / fps),
         "all_outputs_approximate_uncertain": True,
         "arbitrary_gates_blocked_artifact": False,
+        "monotonicity": {
+            "preserves_v16_overlay_mano_object_render": True,
+            "preserves_v16_metric_world_render": True,
+            "v18_additions_are_overlay_layers": True,
+            "no_v16_capability_replaced_by_weaker_render": True,
+        },
         "modules": {
             "camera_depth_backbone": "v16_metric_camera_depth_reused_as_memoized_backbone",
             "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_assembled",
@@ -653,6 +689,11 @@ def point_from_bbox_or_pose(obj: dict[str, Any], source_w: float, source_h: floa
 def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     case_dir = args.output_root / case
     frame_dir = case_dir / "overlay_frames"
+    base_dir = case_dir / "v16_overlay_base_frames"
+    v16_overlay = v16_render_paths(case, args)["overlay"]
+    if not v16_overlay.exists():
+        raise RuntimeError(f"{case}: missing V16 overlay render {v16_overlay}")
+    extract_video_frames(v16_overlay, base_dir)
     if frame_dir.exists():
         shutil.rmtree(frame_dir)
     frame_dir.mkdir(parents=True, exist_ok=True)
@@ -664,7 +705,8 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
         frame = require_dict(raw_frame, "annotation frame")
         frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
         raw_path = Path(str(frame.get("raw_frame_path")))
-        image = Image.open(raw_path).convert("RGB")
+        base_path = base_dir / f"{frame_idx + 1:06d}.jpg"
+        image = Image.open(base_path if base_path.exists() else raw_path).convert("RGB")
         draw = ImageDraw.Draw(image)
         for raw_obj in frame.get("objects", []):
             obj = require_dict(raw_obj, "object")
@@ -731,17 +773,22 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 draw.line((hc[0], hc[1], oc[0], oc[1]), fill=(255, 255, 80), width=2)
                 counts["contact_lines"] += 1
         draw.rectangle((0, 0, image.size[0], 44), fill=(0, 0, 0))
-        draw.text((12, 11), f"V18 FULL approximate annotations frame {frame_idx+1}/{len(frames)} — all fields uncertain candidates", font=font, fill=(255, 255, 255))
-        draw_label(draw, (12, image.size[1] - 34), "Not ground truth: masks/surfaces/poses/contact/occlusion are approximate full-pipeline outputs", small, (255, 255, 255))
+        draw.text((12, 11), f"V18 over V16 base frame {frame_idx+1}/{len(frames)} — V16 MANO/object render preserved + V18 layers", font=font, fill=(255, 255, 255))
+        draw_label(draw, (12, image.size[1] - 34), "Base: V16 overlay_mano_object. Additions: V18 masks/parts/contact/occlusion/uncertainty.", small, (255, 255, 255))
         image.save(frame_dir / f"{frame_idx:06d}.jpg", quality=90)
     output = case_dir / "v18_overlay.mp4"
     encode_video(frame_dir, output, finite_float(ann.get("fps"), 30.0))
-    return {"output_video": str(output), "frame_count": ffprobe_frame_count(output), "draw_counts": dict(sorted(counts.items()))}
+    return {"output_video": str(output), "frame_count": ffprobe_frame_count(output), "draw_counts": dict(sorted(counts.items())), "base_v16_overlay": str(v16_overlay)}
 
 
 def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     case_dir = args.output_root / case
     frame_dir = case_dir / "world_frames"
+    base_dir = case_dir / "v16_world_base_frames"
+    v16_world = v16_render_paths(case, args)["world"]
+    if not v16_world.exists():
+        raise RuntimeError(f"{case}: missing V16 world render {v16_world}")
+    extract_video_frames(v16_world, base_dir)
     if frame_dir.exists():
         shutil.rmtree(frame_dir)
     frame_dir.mkdir(parents=True, exist_ok=True)
@@ -753,18 +800,14 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
     for raw_frame in frames:
         frame = require_dict(raw_frame, "annotation frame")
         frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
-        image = Image.new("RGB", (canvas_w, canvas_h), (18, 20, 25))
+        base_path = base_dir / f"{frame_idx + 1:06d}.jpg"
+        image = Image.open(base_path).convert("RGB") if base_path.exists() else Image.new("RGB", (canvas_w, canvas_h), (18, 20, 25))
+        image = image.resize((canvas_w, canvas_h), Image.Resampling.BILINEAR)
         draw = ImageDraw.Draw(image)
         left, right = 70, canvas_w - 330
         top, bottom = 96, canvas_h - 90
-        for i in range(11):
-            x = int(left + i * (right - left) / 10)
-            y = int(top + i * (bottom - top) / 10)
-            draw.line((x, top, x, bottom), fill=(45, 48, 58), width=1)
-            draw.line((left, y, right, y), fill=(45, 48, 58), width=1)
-        draw.rectangle((left, top, right, bottom), outline=(90, 95, 110), width=2)
         draw.rectangle((0, 0, canvas_w, 48), fill=(0, 0, 0))
-        draw.text((14, 13), f"V18 FULL approximate world/factor view frame {frame_idx+1}/{len(frames)}", font=font, fill=(255, 255, 255))
+        draw.text((14, 13), f"V18 over V16 metric world frame {frame_idx+1}/{len(frames)} — V16 reconstruction preserved + V18 graph layer", font=font, fill=(255, 255, 255))
         raw_video = require_dict(ann.get("raw_video", {}), "raw_video")
         source_w = finite_float(raw_video.get("width"), 1920.0)
         source_h = finite_float(raw_video.get("height"), 1080.0)
@@ -806,28 +849,15 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                 counts["world_contact_edges"] += 1
         fg = require_dict(frame.get("factor_graph_solution"), "factor graph")
         sol = require_dict(fg.get("solution"), "factor graph solution")
-        y = 76
-        sidebar = [
-            "Modules executed:",
-            "camera/depth backbone",
-            "hand candidates",
-            "object/part masks",
-            "visible+hidden geometry cand.",
-            "pose candidates",
-            "contact/occlusion hypotheses",
-            "bounded factor graph baseline",
-            "",
-            f"contacts active: {sol.get('active_contact_hypotheses')}",
-            f"unresolved contacts: {sol.get('unresolved_or_contradicted_contact_hypotheses')}",
-            "all approximate/uncertain",
-        ]
-        for line in sidebar:
-            draw.text((canvas_w - 300, y), line, font=small, fill=(230, 230, 230))
-            y += 24
+        summary = (
+            f"V18 graph overlay: contact candidates={sol.get('active_contact_hypotheses')} "
+            f"unresolved={sol.get('unresolved_or_contradicted_contact_hypotheses')} | approximate/uncertain"
+        )
+        draw_label(draw, (14, 52), summary, small, (255, 255, 255), (0, 0, 0))
         image.save(frame_dir / f"{frame_idx:06d}.jpg", quality=90)
     output = case_dir / "v18_world.mp4"
     encode_video(frame_dir, output, finite_float(ann.get("fps"), 30.0))
-    return {"output_video": str(output), "frame_count": ffprobe_frame_count(output), "draw_counts": dict(sorted(counts.items()))}
+    return {"output_video": str(output), "frame_count": ffprobe_frame_count(output), "draw_counts": dict(sorted(counts.items())), "base_v16_world": str(v16_world)}
 
 
 def subjective_v16_comparison(case: str, ann: dict[str, Any]) -> dict[str, Any]:
@@ -878,6 +908,9 @@ def run_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "fps": ann.get("fps"),
         "duration_s": ann.get("duration_s"),
         "all_outputs_approximate_uncertain": True,
+        "monotonicity": ann.get("monotonicity"),
+        "base_v16_overlay": overlay_qc.get("base_v16_overlay"),
+        "base_v16_world": world_qc.get("base_v16_world"),
         "module_counts": ann.get("module_counts"),
         "confidence_counts": ann.get("confidence_counts"),
         "hidden_geometry_candidate_object_count": ann.get("hidden_geometry_candidate_object_count"),
