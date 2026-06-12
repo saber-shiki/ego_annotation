@@ -441,6 +441,42 @@ def load_part_surface_index(path: Path) -> dict[tuple[int, str], list[dict[str, 
     return out
 
 
+def load_depth_fused_reconstruction_index(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "depth fused reconstruction report")
+    out: dict[str, dict[str, Any]] = {}
+    for raw in require_list(report.get("object_rows"), "depth fused object rows"):
+        row = require_dict(raw, "depth fused object row")
+        object_id = str(row.get("object_id"))
+        raw_mesh = row.get("mesh_reconstruction")
+        mesh: dict[str, Any] = raw_mesh if isinstance(raw_mesh, dict) else {}
+        out[object_id] = {
+            "method": "depth_fused_visible_surface_poisson_and_hull_candidate",
+            "scope": "graph_se3_aligned_depth_fused_visible_geometry_not_accepted_complete_hidden_geometry",
+            "source_report": str(path),
+            "source_frame_count": row.get("source_frame_count"),
+            "source_point_count": row.get("source_point_count"),
+            "sampled_point_count": row.get("sampled_point_count"),
+            "canonical_coordinate_source": row.get("canonical_coordinate_source"),
+            "canonical_bbox_min_m": row.get("canonical_bbox_min_m"),
+            "canonical_bbox_max_m": row.get("canonical_bbox_max_m"),
+            "fused_point_cloud_path": mesh.get("fused_point_cloud_path"),
+            "poisson_mesh_path": mesh.get("poisson_mesh_path"),
+            "poisson_vertices": mesh.get("poisson_vertices"),
+            "poisson_faces": mesh.get("poisson_faces"),
+            "convex_hull_mesh_path": mesh.get("convex_hull_mesh_path"),
+            "convex_hull_vertices": mesh.get("convex_hull_vertices"),
+            "convex_hull_faces": mesh.get("convex_hull_faces"),
+            "mesh_status": mesh.get("status"),
+            "mesh_blockers": mesh.get("blockers"),
+            "hidden_geometry_status": row.get("hidden_geometry_status"),
+            "object_geometry_complete": False,
+            "uncertainty": "candidate_visible_depth_fusion_with_unaccepted_hidden_completion",
+        }
+    return out
+
+
 def index_bounded_frames(path: Path) -> dict[int, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1083,6 +1119,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     v16_frames = index_v16_frames(v16_path)
     bounded_index = index_bounded_frames(args.bounded_root / case / "v18_bounded_state_solution.json")
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
+    depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
     articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
     frame_count = require_int(state.get("frame_count"), "frame_count")
@@ -1143,7 +1180,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             geom = geom_index.get((frame_idx, object_id))
             parts = part_index.get((frame_idx, object_id), [])
             pose = object_pose_candidate(obj, geom)
-            completion = completion_by_object.get(object_id, {
+            completion = depth_fused_by_object.get(object_id) or completion_by_object.get(object_id, {
                 "method": "no_visible_surface_completion_candidate_available",
                 "scope": "explicit_unresolved_hidden_geometry_candidate",
                 "uncertainty": "unknown",
@@ -1220,6 +1257,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "bounded_state_solution": str(args.bounded_root / case / "v18_bounded_state_solution.json"),
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
+            "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "articulation_fit_candidates": str(args.articulation_root / case / "v18_articulation_fit_candidates_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
             "v16_render_overlay": str(v16_render_paths(case, args)["overlay"]),
@@ -1242,7 +1280,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "camera_depth_backbone": "v16_metric_camera_depth_reused_as_memoized_backbone",
             "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_assembled",
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
-            "geometry_reconstruction": "visible_surface_archive_plus_pca_mirror_hidden_geometry_candidates",
+            "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
             "contact_ownership": "image_overlap_depth_candidate_contact_hypotheses",
             "occlusion_ownership": "bounded_owner_candidate_hypotheses",
@@ -1541,6 +1579,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bounded-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
+    parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()

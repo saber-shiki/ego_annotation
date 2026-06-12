@@ -710,6 +710,12 @@ This fixes the previous degradation where V18 replaced V16's MANO/object mesh an
 
 This is meaningful progress only for the factor-graph mechanism, and its scope is bounded. Object SE(3) observations now use visible-surface translation plus PCA-derived rotation vectors when the metric visible point cloud supports them. Part rotations are still not solved because the current part-surface artifact records center/extent/counts rather than part point coordinates. Camera/depth correction is still a prior-only identity variable. Contact and occlusion energies still consume current overlap/depth-candidate evidence and do not yet implement full geometry nonpenetration or accepted depth-order ownership. Therefore this checkpoint is not the completed V18 physical graph; it is the first explicit numerical graph that future modules can replace/refine.
 
+## Implementation Checkpoint 38: Depth-Fused Visible Geometry Reconstruction
+
+V18 now builds a real geometry reconstruction artifact in `scripts/build_v18_depth_fused_reconstruction.py`. It fuses metric visible-surface vertices into graph-object coordinates using the V18 object SE(3) estimates, writes per-object fused point clouds, and reconstructs Poisson and convex-hull mesh candidates. The default path does not use BundleSDF, NeRF, or test-time neural reconstruction. `scripts/validate_v18_depth_fused_reconstruction.py` checks that point clouds/meshes exist while also requiring the artifact not to claim complete hidden geometry. `scripts/render_v18_depth_fused_reconstruction_sheet.py` renders QC sheets for subjective inspection.
+
+The reconstruction is now integrated back into `run_v18_full_pipeline.py`: hidden-geometry candidates prefer the depth-fused reconstruction report and fall back to the older PCA mirror only when the fused artifact is absent. This is a stronger geometry artifact than the previous PCA mirror, but it still does not satisfy completed hidden/full object geometry. The current mesh candidates are visible-depth fusion/completion candidates with outliers and incomplete hidden surfaces; object_geometry_complete and hidden_geometry_reconstructed remain false.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
