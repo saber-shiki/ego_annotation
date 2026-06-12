@@ -322,12 +322,12 @@ def build_surface_icp_probes(surface_rows: list[dict[str, Any]], archive_path: P
     return {key: surface_icp_probe(key[0], key[1], rows, arrays, args) for key, rows in sorted(grouped.items())}
 
 
-def rejected_probe_from_pair(index: int, object_id: str, pair: dict[str, Any], surface_probes: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+def pair_probe_payload(index: int, object_id: str, pair: dict[str, Any], surface_probes: dict[tuple[str, str], dict[str, Any]], *, state: str, reasons: list[str]) -> dict[str, Any]:
     return {
-        "candidate_id": f"{object_id}::rejected_pair_residual_probe::{index:02d}",
+        "candidate_id": f"{object_id}::pair_surface_residual_probe::{index:02d}",
         "object_id": object_id,
         "candidate_type": "two_part_relative_motion_residual_probe",
-        "candidate_state": "rejected_residual_probe_not_part_model",
+        "candidate_state": state,
         "part_track_labels": [str(pair.get("part_a")), str(pair.get("part_b"))],
         "shared_frame_count": pair.get("shared_frame_count"),
         "frame_min": pair.get("frame_min"),
@@ -336,13 +336,31 @@ def rejected_probe_from_pair(index: int, object_id: str, pair: dict[str, Any], s
         "p95_minus_p05_distance_m": pair.get("p95_minus_p05_distance_m"),
         "pair_motion_state": pair.get("pair_motion_state"),
         "pair_qc_state": pair.get("pair_qc_state"),
-        "rejection_reasons": list(pair.get("qc_blockers", [])) if isinstance(pair.get("qc_blockers"), list) else [str(pair.get("pair_qc_state"))],
+        "rejection_reasons": reasons,
         "surface_icp_probes": [surface_probes.get((object_id, str(label))) for label in [pair.get("part_a"), pair.get("part_b")] if surface_probes.get((object_id, str(label))) is not None],
         "eligible_for_hidden_geometry_completion": False,
         "articulation_model_ready": False,
         "part_pose_ready": False,
         "object_pose_requirement_met": False,
     }
+
+
+def rejected_probe_from_pair(index: int, object_id: str, pair: dict[str, Any], surface_probes: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+    reasons = list(pair.get("qc_blockers", [])) if isinstance(pair.get("qc_blockers"), list) else [str(pair.get("pair_qc_state"))]
+    if not reasons:
+        reasons = [str(pair.get("pair_qc_state"))]
+    return pair_probe_payload(index, object_id, pair, surface_probes, state="rejected_residual_probe_not_part_model", reasons=reasons)
+
+
+def articulation_hypothesis_probe_from_pair(index: int, object_id: str, pair: dict[str, Any], surface_probes: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+    return pair_probe_payload(
+        index,
+        object_id,
+        pair,
+        surface_probes,
+        state="articulation_hypothesis_not_fitted_no_pose",
+        reasons=["articulation_parameter_fit_not_implemented", "joint_axis_not_estimated", "hidden_geometry_not_completed"],
+    )
 
 
 def rejected_probe_from_single(index: int, object_id: str, part: dict[str, Any], surface_probes: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
@@ -417,6 +435,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         stable_edges: list[tuple[str, str]] = []
         stable_edge_rows: list[dict[str, Any]] = []
         confounded_variable_count = 0
+        articulation_hypothesis_pair_count = 0
         rejected_obj_candidates: list[dict[str, Any]] = []
         pair_rows = [require_dict(raw_pair, "qc pair row") for raw_pair in require_list(obj.get("pair_rows"), "qc pair rows")]
         for raw_pair in pair_rows:
@@ -430,7 +449,12 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             else:
                 if pair.get("pair_qc_state") == "variable_pair_confounded_by_part_surface_quality":
                     confounded_variable_count += 1
-                rejected_obj_candidates.append(rejected_probe_from_pair(len(rejected_obj_candidates) + 1, object_id, pair, surface_icp_probes))
+                    rejected_obj_candidates.append(rejected_probe_from_pair(len(rejected_obj_candidates) + 1, object_id, pair, surface_icp_probes))
+                elif pair.get("pair_qc_state") == "variable_pair_between_robust_surfaces_articulation_hypothesis":
+                    articulation_hypothesis_pair_count += 1
+                    rejected_obj_candidates.append(articulation_hypothesis_probe_from_pair(len(rejected_obj_candidates) + 1, object_id, pair, surface_icp_probes))
+                else:
+                    rejected_obj_candidates.append(rejected_probe_from_pair(len(rejected_obj_candidates) + 1, object_id, pair, surface_icp_probes))
         components = stable_components(stable_edges)
         obj_candidates: list[dict[str, Any]] = []
         for index, labels in enumerate(components, start=1):
@@ -448,6 +472,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         rejected_candidates.extend(rejected_obj_candidates)
         if obj_candidates:
             state = "visible_stable_part_subset_candidates_only"
+        elif articulation_hypothesis_pair_count:
+            state = "articulation_hypothesis_not_fitted"
         elif rejected_obj_candidates:
             state = "part_model_residual_probes_rejected"
         elif confounded_variable_count:
@@ -467,6 +493,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "part_model_candidate_state": state,
                 "stable_component_count": len(components),
                 "confounded_variable_pair_count": confounded_variable_count,
+                "articulation_hypothesis_pair_count": articulation_hypothesis_pair_count,
                 "candidate_ids": [candidate["candidate_id"] for candidate in obj_candidates],
                 "rejected_candidate_ids": [candidate["candidate_id"] for candidate in rejected_obj_candidates],
                 "rejected_candidate_count": len(rejected_obj_candidates),
@@ -488,6 +515,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "rejected_candidate_count": len(rejected_candidates),
         "surface_icp_probe_count": len(surface_icp_probes),
         "surface_icp_probe_state_counts": dict(sorted(surface_icp_state_counts.items())),
+        "articulation_hypothesis_pair_count": sum(require_int(row.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for row in object_rows),
         "object_state_counts": dict(sorted(object_state_counts.items())),
         "object_rows": object_rows,
         "candidates": candidates,
@@ -525,6 +553,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "rejected_candidate_count": sum(require_int(report.get("rejected_candidate_count"), "rejected_candidate_count") for report in reports),
         "surface_icp_probe_count": sum(require_int(report.get("surface_icp_probe_count"), "surface_icp_probe_count") for report in reports),
         "surface_icp_probe_state_counts": dict(sorted(surface_icp_state_counts.items())),
+        "articulation_hypothesis_pair_count": sum(require_int(report.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for report in reports),
         "visible_subset_model_candidate_count": sum(require_int(report.get("visible_subset_model_candidate_count"), "visible_subset_count") for report in reports),
         "hidden_geometry_completion_candidate_count": 0,
         "articulation_model_candidate_count": 0,
@@ -541,6 +570,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "rejected_candidate_count": report["rejected_candidate_count"],
                 "surface_icp_probe_count": report["surface_icp_probe_count"],
                 "surface_icp_probe_state_counts": report["surface_icp_probe_state_counts"],
+                "articulation_hypothesis_pair_count": report["articulation_hypothesis_pair_count"],
                 "object_state_counts": report["object_state_counts"],
                 **FALSE_READY,
             }

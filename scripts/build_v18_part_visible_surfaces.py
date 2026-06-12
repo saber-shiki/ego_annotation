@@ -223,6 +223,9 @@ def surface_from_part_mask(
     faces = np.zeros((0, 3), dtype=np.int32)
     sampled_vertex_count = 0
     stride_used = stride_candidates[-1]
+    target_vertices = max(int(args.min_vertices), int(args.target_surface_vertices))
+    target_faces = max(int(args.min_faces), int(args.target_surface_faces))
+    target_met = False
     last_rejection = "too_few_sampled_vertices"
     fx, fy, cx, cy = depth["intrinsics"][int(depth_i)].astype(float).tolist()
     for stride in stride_candidates:
@@ -246,9 +249,14 @@ def surface_from_part_mask(
         if len(candidate_vertices) >= int(args.min_vertices) and len(candidate_faces) >= int(args.min_faces):
             vertices = candidate_vertices
             faces = candidate_faces
-            break
-        vertices = candidate_vertices
-        faces = candidate_faces
+            target_met = len(candidate_vertices) >= target_vertices and len(candidate_faces) >= target_faces
+            if target_met:
+                break
+            last_rejection = "surface_sampling_target_not_met_before_stride_exhausted"
+            continue
+        if len(candidate_vertices) > len(vertices) or len(candidate_faces) > len(faces):
+            vertices = candidate_vertices
+            faces = candidate_faces
         last_rejection = "too_few_vertices_or_faces_after_surface_connectivity"
     if len(vertices) < int(args.min_vertices) or len(faces) < int(args.min_faces):
         raise RuntimeError(last_rejection)
@@ -271,6 +279,9 @@ def surface_from_part_mask(
         "mask_stride_requested": base_stride,
         "mask_stride_used": stride_used,
         "sampled_vertex_count_before_connectivity": sampled_vertex_count,
+        "mask_sampling_target_vertices": target_vertices,
+        "mask_sampling_target_faces": target_faces,
+        "mask_sampling_target_met": target_met,
         "bbox_camera_min_m": vertices.min(axis=0).astype(float).tolist(),
         "bbox_camera_max_m": vertices.max(axis=0).astype(float).tolist(),
         "extent_camera_m": (vertices.max(axis=0) - vertices.min(axis=0)).astype(float).tolist(),
@@ -470,6 +481,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-depth-pixels", type=int, default=50)
     parser.add_argument("--min-vertices", type=int, default=8)
     parser.add_argument("--min-faces", type=int, default=6)
+    parser.add_argument("--target-surface-vertices", type=int, default=100)
+    parser.add_argument("--target-surface-faces", type=int, default=100)
     parser.add_argument("--min-depth-m", type=float, default=0.05)
     parser.add_argument("--max-depth-m", type=float, default=5.0)
     parser.add_argument("--depth-low-quantile", type=float, default=0.02)

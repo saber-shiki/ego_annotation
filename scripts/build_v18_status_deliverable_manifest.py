@@ -403,6 +403,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "rejected_candidate_count": part_model_candidates.get("rejected_candidate_count"),
             "surface_icp_probe_count": part_model_candidates.get("surface_icp_probe_count"),
             "surface_icp_probe_state_counts": part_model_candidates.get("surface_icp_probe_state_counts"),
+            "articulation_hypothesis_pair_count": part_model_candidates.get("articulation_hypothesis_pair_count"),
             "visible_subset_model_candidate_count": part_model_candidates.get("visible_subset_model_candidate_count"),
             "hidden_geometry_completion_candidate_count": part_model_candidates.get("hidden_geometry_completion_candidate_count"),
             "articulation_model_candidate_count": part_model_candidates.get("articulation_model_candidate_count"),
@@ -430,6 +431,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "rejected_part_model_candidate_count": part_object_blockers.get("rejected_part_model_candidate_count"),
             "surface_icp_probe_count": part_object_blockers.get("surface_icp_probe_count"),
             "surface_icp_probe_state_counts": part_object_blockers.get("surface_icp_probe_state_counts"),
+            "articulation_hypothesis_pair_count": part_object_blockers.get("articulation_hypothesis_pair_count"),
             "hidden_geometry_reconstructed_count": part_object_blockers.get("hidden_geometry_reconstructed_count"),
             "articulation_model_ready_count": part_object_blockers.get("articulation_model_ready_count"),
             "part_pose_ready_count": part_object_blockers.get("part_pose_ready_count"),
@@ -465,6 +467,8 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "object_count": part_mask_acquisition.get("object_count"),
             "local_new_mask_generation_ready_count": part_mask_acquisition.get("local_new_mask_generation_ready_count"),
             "mask_evidence_created_count": part_mask_acquisition.get("mask_evidence_created_count"),
+            "unclassified_acquisition_blocker_count": part_mask_acquisition.get("unclassified_acquisition_blocker_count"),
+            "acquisition_blocker_counts": part_mask_acquisition.get("acquisition_blocker_counts"),
             "part_pose_ready_count": part_mask_acquisition.get("part_pose_ready_count"),
             "object_pose_requirement_met_count": part_mask_acquisition.get("object_pose_requirement_met_count"),
             "environment": part_mask_acquisition.get("environment"),
@@ -734,6 +738,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             ).items()
         )
     )
+    part_articulation_hypothesis_pair_count = sum(
+        require_int(require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("articulation_hypothesis_pair_count"), "part articulation hypothesis pair count")
+        for case in cases
+    )
     visible_subset_model_candidate_count = sum(
         require_int(
             require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("visible_subset_model_candidate_count"),
@@ -843,6 +851,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("mask_evidence_created_count"), "mask evidence created count")
         for case in cases
     )
+    unclassified_acquisition_blocker_count = sum(
+        require_int(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("unclassified_acquisition_blocker_count"), "unclassified acquisition blocker count")
+        for case in cases
+    )
     promptable_segmentation_backend_available = any(
         bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("promptable_segmentation_backend_available"))
         for case in cases
@@ -937,6 +949,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "part_model_rejected_candidate_count": part_model_rejected_candidate_count,
         "part_surface_icp_probe_count": part_surface_icp_probe_count,
         "part_surface_icp_probe_state_counts": part_surface_icp_probe_state_counts,
+        "part_articulation_hypothesis_pair_count": part_articulation_hypothesis_pair_count,
         "visible_subset_model_candidate_count": visible_subset_model_candidate_count,
         "visible_part_subset_archive_file_written_all_cases": visible_part_subset_archive_file_written_all_cases,
         "visible_part_subset_archive_ready": visible_part_subset_archive_ready,
@@ -967,6 +980,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "local_new_mask_generation_ready": local_new_mask_generation_ready,
         "local_new_mask_generation_ready_count": local_new_mask_generation_ready_count,
         "mask_evidence_created_count": mask_evidence_created_count,
+        "unclassified_acquisition_blocker_count": unclassified_acquisition_blocker_count,
         "cached_evidence_to_status_runtime_measured": bool(measured_runtime.get("cached_evidence_to_status_runtime_measured")),
         "cached_evidence_to_status_runtime_report": str(measured_runtime_path) if measured_runtime else None,
         "cached_evidence_to_status_elapsed_s": measured_runtime.get("total_elapsed_s"),

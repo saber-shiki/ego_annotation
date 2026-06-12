@@ -6,6 +6,7 @@ import importlib.util
 import json
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -216,6 +217,10 @@ def acquisition_state(row: dict[str, Any]) -> tuple[str, list[str]]:
         )
     if state == "blocked_part_model_residual_probes_rejected":
         return "requires_repair_rejected_part_model_residual_probes", sorted(blockers | {"part_model_residual_probes_rejected"})
+    if state == "blocked_articulation_hypothesis_not_fitted":
+        return "requires_bounded_articulation_fit_after_generated_masks", sorted(
+            blockers | {"articulation_hypothesis_not_fitted", "articulation_parameter_fit_not_implemented"}
+        )
     if state == "blocked_no_part_model_candidate":
         return "requires_part_surface_model_candidate_after_generated_masks", sorted(blockers | {"part_model_candidate_missing"})
     return "requires_manual_triage", sorted(blockers | {"unclassified_part_object_blocker_state"})
@@ -273,6 +278,8 @@ def case_report(case: str, args: argparse.Namespace, env: dict[str, Any]) -> dic
         "local_new_mask_generation_ready_count": sum(1 for row in object_rows if row["local_new_mask_generation_ready"]),
         "mask_evidence_created_count": sum(int(row.get("generated_owlv2_sam2_track_count") or 0) for row in object_rows),
         "object_rows": object_rows,
+        "acquisition_blocker_counts": dict(sorted(Counter(item for row in object_rows for item in row.get("acquisition_blockers", [])).items())),
+        "unclassified_acquisition_blocker_count": sum(1 for row in object_rows for item in row.get("acquisition_blockers", []) if item == "unclassified_part_object_blocker_state"),
         "part_pose_ready_count": 0,
         "object_pose_requirement_met_count": 0,
         "default_path_uses_bundlesdf_or_nerf": False,
@@ -297,6 +304,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_count": sum(int(report["object_count"]) for report in reports),
         "local_new_mask_generation_ready_count": sum(int(report["local_new_mask_generation_ready_count"]) for report in reports),
         "mask_evidence_created_count": sum(int(report["mask_evidence_created_count"]) for report in reports),
+        "acquisition_blocker_counts": dict(sorted(sum((Counter(report.get("acquisition_blocker_counts", {})) for report in reports), Counter()).items())),
+        "unclassified_acquisition_blocker_count": sum(int(report.get("unclassified_acquisition_blocker_count", 0)) for report in reports),
         "part_pose_ready_count": 0,
         "object_pose_requirement_met_count": 0,
         "default_path_uses_bundlesdf_or_nerf": False,
@@ -306,6 +315,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "report_path": str(args.output_root / str(report["case"]) / "v18_part_mask_acquisition_plan_report.json"),
                 "object_count": report["object_count"],
                 "local_new_mask_generation_ready_count": report["local_new_mask_generation_ready_count"],
+                "unclassified_acquisition_blocker_count": report.get("unclassified_acquisition_blocker_count", 0),
                 **FALSE_READY,
             }
             for report in reports

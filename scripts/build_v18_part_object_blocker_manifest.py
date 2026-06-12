@@ -77,6 +77,13 @@ def blocker_state(part_row: dict[str, Any], candidate_row: dict[str, Any] | None
         blockers.add("missing_accepted_part_mask_evidence")
         next_evidence.add("obtain model-produced part plan and tracked part masks overlapping the object")
         return "blocked_missing_part_mask_evidence", sorted(blockers), sorted(next_evidence)
+    if candidate_row is not None and candidate_row.get("part_model_candidate_state") == "articulation_hypothesis_not_fitted":
+        blockers.add("articulation_hypothesis_not_fitted")
+        blockers.add("part_pose_not_estimated")
+        blockers.add("hidden_geometry_not_completed")
+        next_evidence.add("fit bounded articulation parameter and joint axis from robust part surfaces")
+        next_evidence.add("validate articulated part residuals before contact or object-pose promotion")
+        return "blocked_articulation_hypothesis_not_fitted", sorted(blockers), sorted(next_evidence)
     if candidate_row is not None and require_int(candidate_row.get("rejected_candidate_count", 0), "rejected candidate count") > 0:
         blockers.add("part_model_residual_probes_rejected")
         next_evidence.add("repair rejected part residual probes by improving sparse masks or collecting more shared-frame part surfaces")
@@ -143,6 +150,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "rejected_part_model_candidate_count": require_int(candidate_row.get("rejected_candidate_count", 0), "rejected candidate count") if candidate_row else 0,
                 "surface_icp_probe_count": require_int(candidate_row.get("surface_icp_probe_count", 0), "surface icp probe count") if candidate_row else 0,
                 "surface_icp_probe_state_counts": candidate_row.get("surface_icp_probe_state_counts", {}) if candidate_row else {},
+                "articulation_hypothesis_pair_count": require_int(candidate_row.get("articulation_hypothesis_pair_count", 0), "articulation hypothesis pair count") if candidate_row else 0,
                 "visible_subset_candidate_count": len(subset_records),
                 "visible_subset_rows": sum(require_int(record.get("archive_row_count"), "archive row count") for record in subset_records),
                 "visible_subset_vertices": sum(require_int(record.get("vertex_count"), "vertex count") for record in subset_records),
@@ -175,6 +183,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "rejected_part_model_candidate_count": sum(require_int(row.get("rejected_part_model_candidate_count"), "rejected candidate count") for row in object_rows),
         "surface_icp_probe_count": sum(require_int(row.get("surface_icp_probe_count"), "surface icp probe count") for row in object_rows),
         "surface_icp_probe_state_counts": dict(sorted(sum((Counter(require_dict(row.get("surface_icp_probe_state_counts"), "surface icp state counts")) for row in object_rows), Counter()).items())),
+        "articulation_hypothesis_pair_count": sum(require_int(row.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for row in object_rows),
         "hidden_geometry_reconstructed_count": 0,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
@@ -205,6 +214,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "rejected_part_model_candidate_count": sum(require_int(report.get("rejected_part_model_candidate_count"), "rejected candidate count") for report in reports),
         "surface_icp_probe_count": sum(require_int(report.get("surface_icp_probe_count"), "surface icp probe count") for report in reports),
         "surface_icp_probe_state_counts": dict(sorted(sum((Counter(require_dict(report.get("surface_icp_probe_state_counts"), "surface icp state counts")) for report in reports), Counter()).items())),
+        "articulation_hypothesis_pair_count": sum(require_int(report.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for report in reports),
         "hidden_geometry_reconstructed_count": 0,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
@@ -220,6 +230,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "rejected_part_model_candidate_count": report.get("rejected_part_model_candidate_count"),
                 "surface_icp_probe_count": report.get("surface_icp_probe_count"),
                 "surface_icp_probe_state_counts": report.get("surface_icp_probe_state_counts"),
+                "articulation_hypothesis_pair_count": report.get("articulation_hypothesis_pair_count"),
                 **FALSE_READY,
             }
             for report in reports
