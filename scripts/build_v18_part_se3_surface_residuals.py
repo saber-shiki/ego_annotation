@@ -187,6 +187,10 @@ def load_world_part_surfaces(surfaces_report: dict[str, Any], transforms: dict[i
                 "vertices_world_m": vertices_world,
                 "vertex_count": int(vertices_world.shape[0]),
                 "face_count": require_int(row.get("faces"), "faces"),
+                "part_containment_in_object": row.get("part_containment_in_object"),
+                "depth_median_m": row.get("depth_median_m"),
+                "mask_stride_used": row.get("mask_stride_used"),
+                "mask_sampling_target_met": row.get("mask_sampling_target_met"),
             }
         )
     return grouped
@@ -199,9 +203,29 @@ def select_rows(rows: list[dict[str, Any]], args: argparse.Namespace, allowed_fr
         if int(row.get("vertex_count", 0)) >= int(args.min_icp_points)
         and (allowed_frames is None or require_int(row.get("frame_idx"), "frame_idx") in allowed_frames)
     ]
+    if allowed_frames is not None and len(eligible) <= int(args.max_exhaustive_shared_frames):
+        return eligible
     if len(eligible) <= int(args.max_probe_frames):
         return eligible
     return [eligible[int(i)] for i in np.linspace(0, len(eligible) - 1, int(args.max_probe_frames), dtype=np.int64)]
+
+
+def contiguous_components(frame_indices: list[int]) -> list[dict[str, int]]:
+    if not frame_indices:
+        return []
+    frames = sorted(set(int(frame) for frame in frame_indices))
+    components: list[dict[str, int]] = []
+    start = frames[0]
+    prev = frames[0]
+    for frame in frames[1:]:
+        if frame == prev + 1:
+            prev = frame
+            continue
+        components.append({"frame_start": start, "frame_end": prev, "frame_count": prev - start + 1})
+        start = frame
+        prev = frame
+    components.append({"frame_start": start, "frame_end": prev, "frame_count": prev - start + 1})
+    return components
 
 
 def classify_part(part_row: dict[str, Any], args: argparse.Namespace) -> tuple[str, list[str]]:
@@ -238,13 +262,42 @@ def part_se3_probe(object_id: str, label: str, rows: list[dict[str, Any]], args:
         except RuntimeError as exc:
             rejected_frames.append({"frame_idx": row.get("frame_idx"), "reason": str(exc)})
             continue
-        frame_results.append({"frame_idx": row.get("frame_idx"), "archive_row_index": row.get("archive_row_index"), **result})
+        frame_results.append(
+            {
+                "frame_idx": row.get("frame_idx"),
+                "archive_row_index": row.get("archive_row_index"),
+                "vertex_count": row.get("vertex_count"),
+                "face_count": row.get("face_count"),
+                "part_containment_in_object": row.get("part_containment_in_object"),
+                "depth_median_m": row.get("depth_median_m"),
+                "mask_stride_used": row.get("mask_stride_used"),
+                "mask_sampling_target_met": row.get("mask_sampling_target_met"),
+                **result,
+            }
+        )
     medians = [float(result["residual_m"]["median"]) for result in frame_results if result.get("residual_m", {}).get("median") is not None]
     p95s = [float(result["residual_m"]["p95"]) for result in frame_results if result.get("residual_m", {}).get("p95") is not None]
     rotations = [float(result["icp_rotation_angle_deg"]) for result in frame_results]
     translations = [float(result["icp_translation_norm_m"]) for result in frame_results]
     vertex_counts = [int(row.get("vertex_count", 0)) for row in rows]
     face_counts = [int(row.get("face_count", 0)) for row in rows]
+    outlier_frames = [
+        {
+            "frame_idx": require_int(result.get("frame_idx"), "outlier frame_idx"),
+            "archive_row_index": result.get("archive_row_index"),
+            "residual_median_m": result.get("residual_m", {}).get("median"),
+            "residual_p95_m": result.get("residual_m", {}).get("p95"),
+            "vertex_count": result.get("vertex_count"),
+            "face_count": result.get("face_count"),
+            "part_containment_in_object": result.get("part_containment_in_object"),
+            "depth_median_m": result.get("depth_median_m"),
+            "mask_stride_used": result.get("mask_stride_used"),
+            "mask_sampling_target_met": result.get("mask_sampling_target_met"),
+        }
+        for result in frame_results
+        if (result.get("residual_m", {}).get("p95") is not None and float(result["residual_m"]["p95"]) > float(args.max_p95_of_p95_residual_m))
+    ]
+    outlier_frames_sorted = sorted(outlier_frames, key=lambda item: float(item.get("residual_p95_m") or 0.0), reverse=True)
     payload = {
         "object_id": object_id,
         "part_track_label": label,
@@ -266,6 +319,11 @@ def part_se3_probe(object_id: str, label: str, rows: list[dict[str, Any]], args:
         "per_frame_p95_residual_m": stats(p95s),
         "icp_rotation_angle_deg": stats(rotations),
         "icp_translation_norm_m": stats(translations),
+        "p95_residual_outlier_threshold_m": float(args.max_p95_of_p95_residual_m),
+        "p95_residual_outlier_frame_count": len(outlier_frames),
+        "p95_residual_outlier_frames": sorted(outlier_frames, key=lambda item: int(item["frame_idx"])),
+        "p95_residual_outlier_frame_components": contiguous_components([int(item["frame_idx"]) for item in outlier_frames]),
+        "worst_p95_residual_frames": outlier_frames_sorted[: int(args.max_reported_outlier_frames)],
         "frame_results": frame_results,
         "rejected_frames": rejected_frames,
         "acceptance_thresholds": {
@@ -407,11 +465,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-icp-points", type=int, default=30)
     parser.add_argument("--max-icp-points", type=int, default=512)
     parser.add_argument("--max-probe-frames", type=int, default=24)
+    parser.add_argument("--max-exhaustive-shared-frames", type=int, default=64)
     parser.add_argument("--icp-iterations", type=int, default=15)
     parser.add_argument("--icp-tolerance-m", type=float, default=1e-4)
     parser.add_argument("--min-successful-frames", type=int, default=8)
     parser.add_argument("--max-median-residual-m", type=float, default=0.02)
     parser.add_argument("--max-p95-of-p95-residual-m", type=float, default=0.06)
+    parser.add_argument("--max-reported-outlier-frames", type=int, default=8)
     return parser.parse_args()
 
 
