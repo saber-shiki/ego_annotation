@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has bounded scaffolds and a full-duration 2D status overlay, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, and side-by-side videos, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -85,6 +85,32 @@ V18 now writes a full-timeline renderable annotation state and full-duration sta
 - `task5_tomato_960`: `/data2/ego_annotation_outputs/v18_renders/task5_tomato_960/v18_status_overlay.mp4`, 960/960 frames, 1,733 hand boxes, 1,109 object masks, 187 unresolved-hand labels, and 40 unresolved-object labels.
 
 These videos are a real V18 status output, not a final pose-complete annotation. They satisfy the full-duration/same-frame-count render constraint for the 2D status overlay, and they make the missing geometry/contact state visible instead of hiding it. The remaining V18 gap is the actual bounded optimizer/geometry path and full 3D/side-by-side outputs.
+
+## Implementation Checkpoint 5: Bounded State Solution, World/Status, And Side-By-Side Status Deliverable
+
+V18 now writes a bounded fixed-pass state solution and a status-deliverable manifest:
+
+```text
+/data2/ego_annotation_outputs/v18_bounded_state_solution/
+/data2/ego_annotation_outputs/v18_status_deliverable_manifest/
+```
+
+`build_v18_bounded_state_solution.py` classifies hand observation gaps, object geometry scope, and contact modes without filling poses through occlusion or promoting image overlap to physical contact. Across both representative cases it reports:
+
+- Hand states: 1,257 observed depth-consistent, 2,058 observed depth-unchecked, 19 partial observations, 113 short-gap possible occlusion candidates left unfilled, 25 short gaps with no visible occluder evidence, and 548 long/open unresolved gaps.
+- Object states: 2,111 visible-surface-only rows with hidden geometry unresolved, 602 visible-mask-only/surface-rejected rows, 69 active-object visibility-unresolved rows, and 10,058 inactive/out-of-frame rows.
+- Contact states: 619 rejected under current metric-depth evidence, 1,490 image-overlap-only/near rows, 3,107 no-contact-image rows, and 348 unobserved pairs. Contact-factor-ready rows remain zero. Pose-filled-through-occlusion rows remain zero.
+
+V18 also now renders full-duration abstract world/status and side-by-side status videos:
+
+- `trash_1050`: `/data2/ego_annotation_outputs/v18_renders/trash_1050/v18_world_status.mp4` and `/data2/ego_annotation_outputs/v18_renders/trash_1050/v18_status_side_by_side.mp4`, both 1,050/1,050 frames.
+- `task5_tomato_960`: `/data2/ego_annotation_outputs/v18_renders/task5_tomato_960/v18_world_status.mp4` and `/data2/ego_annotation_outputs/v18_renders/task5_tomato_960/v18_status_side_by_side.mp4`, both 960/960 frames.
+
+The world/status render is deliberately image-normalized abstract status geometry, not a metric 3D reconstruction. The side-by-side videos place the raw-frame status overlay next to that abstract status view. Visual sheets were extracted for both cases for non-corruption checks.
+
+`build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 123.92 seconds for 67 seconds of source video, or 1.85x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
+
+Remaining gap after this checkpoint: implement or integrate a bounded object geometry/pose path that can actually reconstruct manipulated-object geometry where evidence supports it, validate contact ownership with metric depth and complete/appropriate geometry, and only then upgrade final annotation readiness.
 
 ## Design Goal
 
