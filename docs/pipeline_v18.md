@@ -138,11 +138,11 @@ V18 now writes an object completion/pose eligibility gate:
 
 `build_v18_object_completion_gate.py` uses V18 visible geometry and fast motion state to decide which objects may enter a future bounded completion path and which objects must remain blocked or visible-surface-only. It does not run completion and does not mark any object pose complete.
 
-Across 13 objects, the gate finds exactly 1 bounded rigid completion candidate: `object:pink_lid_trash_can_second`, with action `candidate_not_run`. It blocks or defers every other object: 3 deformable objects remain visible-surface-only/no rigid pose, 2 articulated objects require part models instead of single-object pose, 5 objects have no accepted visible surface, 1 object has only local motion not pose (`object:obj_tomato`), and 1 rigid-prior object has visible surface but lacks persistent motion/completion evidence.
+Across 13 objects, the reviewed gate finds zero single-rigid completion candidates. It identifies 2 part/relative-motion candidates that require an object/part split before any completion path: `object:off_white_trash_can_first` and `object:pink_lid_trash_can_second`, both with action `candidate_requires_part_model_not_run`. It blocks or defers the rest: 3 deformable objects remain visible-surface-only/no rigid pose, 1 articulated object requires a part model instead of single-object pose, 5 objects have no accepted visible surface, 1 object has only local motion not pose (`object:obj_tomato`), and 1 rigid-prior object has visible surface but lacks persistent motion/completion evidence.
 
-The updated status manifest reports `object_completion_candidate_count=1`, `object_completion_run_count=0`, and `object_completion_pose_ready_count=0`. This gate is a methodological guardrail: the next geometry step may only run bounded completion on eligible candidates and must keep all blocked states explicit.
+The updated status manifest reports `object_completion_candidate_count=0`, `object_part_split_candidate_count=2`, `object_completion_run_count=0`, and `object_completion_pose_ready_count=0`. This gate is a methodological guardrail: the next geometry step may only proceed after part-level object splitting or stronger geometry/motion evidence, and must keep all blocked states explicit.
 
-Remaining gap after this checkpoint: implement the bounded completion path for the eligible candidate(s), or integrate a bounded feed-forward/observed multi-view geometry prior, then validate object pose and contact ownership.
+Remaining gap after this checkpoint: implement part-level splitting/geometry evidence for the part-motion candidates, or integrate a bounded feed-forward/observed multi-view geometry prior, then validate object pose and contact ownership.
 
 ## Design Goal
 

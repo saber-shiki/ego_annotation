@@ -75,9 +75,28 @@ def fast_motion_by_object(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+def notes_indicate_part_or_relative_motion(notes: str) -> bool:
+    text = notes.lower()
+    part_terms = (
+        "part moves",
+        "parts move",
+        "relative motion",
+        "moves relative",
+        "position changes",
+        "changes position",
+        "opens",
+        "closes",
+        "hinge",
+        "hinged",
+        "articulated",
+    )
+    return any(term in text for term in part_terms)
+
+
 def classify_gate(geometry: dict[str, Any], motion: dict[str, Any]) -> tuple[str, str, list[str], list[str]]:
     physical = str(motion.get("model_physical_state_type", geometry.get("model_physical_state_type", "unknown")))
     fast_motion = str(motion.get("fast_motion_state", geometry.get("fast_motion_state", "motion_unresolved_no_surface")))
+    notes = str(motion.get("physical_notes", geometry.get("physical_notes", "")))
     surface_frames = require_int(geometry.get("surface_frame_count", 0), "surface_frame_count")
     rejected_frames = require_int(geometry.get("rejected_visible_frame_count", 0), "rejected_visible_frame_count")
     blockers: list[str] = []
@@ -88,6 +107,10 @@ def classify_gate(geometry: dict[str, Any], motion: dict[str, Any]) -> tuple[str
             blockers.append("visible_masks_failed_surface_acceptance")
         next_evidence.extend(["recover reliable metric depth for visible masks", "rerun visible-surface extraction under bounded thresholds"])
         return "blocked_no_visible_surface", "completion_not_allowed", blockers, next_evidence
+    if notes_indicate_part_or_relative_motion(notes):
+        blockers.append("model_notes_indicate_part_or_relative_motion")
+        next_evidence.extend(["part-level object split", "articulation/relative-motion model", "part-wise visible geometry support"])
+        return "part_motion_requires_part_split_no_single_rigid_completion", "candidate_requires_part_model_not_run", blockers, next_evidence
     if physical == "deformable":
         blockers.append("model_physical_state_deformable")
         next_evidence.extend(["deformable visible-surface tracking", "bounded nonrigid surface model or explicit hidden-geometry prior"])
@@ -168,6 +191,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "completion_gate_state_counts": dict(sorted(gate_counts.items())),
         "completion_action_counts": dict(sorted(action_counts.items())),
         "completion_candidate_count": gate_counts.get("bounded_rigid_completion_candidate_visible_surface_only", 0),
+        "part_split_candidate_count": gate_counts.get("part_motion_requires_part_split_no_single_rigid_completion", 0),
         "completion_run_count": 0,
         "hidden_geometry_reconstructed_count": 0,
         "complete_object_pose_ready_count": 0,
@@ -198,6 +222,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "completion_gate_state_counts": dict(sorted(gate_counts.items())),
         "completion_action_counts": dict(sorted(action_counts.items())),
         "completion_candidate_count": gate_counts.get("bounded_rigid_completion_candidate_visible_surface_only", 0),
+        "part_split_candidate_count": gate_counts.get("part_motion_requires_part_split_no_single_rigid_completion", 0),
         "completion_run_count": 0,
         "hidden_geometry_reconstructed_count": 0,
         "complete_object_pose_ready_count": 0,
@@ -209,6 +234,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "object_count": report["object_count"],
                 "completion_gate_state_counts": report["completion_gate_state_counts"],
                 "completion_candidate_count": report["completion_candidate_count"],
+                "part_split_candidate_count": report["part_split_candidate_count"],
                 **FALSE_READY,
             }
             for report in reports

@@ -188,6 +188,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "coordinate_frame": row.get("coordinate_frame"),
                 "npz_vertex_slice": [vertex_start, vertex_end],
                 "npz_face_slice": [face_start, face_end],
+                "face_index_convention": "global_vertex_indices",
+                "local_face_index_conversion": "subtract npz_vertex_slice[0] from each face index after slicing",
                 "vertex_count": vertex_count,
                 "face_count": face_count,
                 "center_world_m": row.get("center_world_m"),
@@ -244,6 +246,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "total_vertices": int(arrays["vertices"].shape[0]),
         "total_faces": int(arrays["faces"].shape[0]),
         "geometry_claim": "visible_surface_only_hidden_geometry_unresolved",
+        "face_index_convention": "global_vertex_indices",
+        "consumer_note": "Per-row face slices retain global indices into the archive vertices array. Convert to local row vertices by subtracting npz_vertex_slice[0].",
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
     }
@@ -277,6 +281,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "canonical_mesh_ready": False,
         "complete_object_pose_ready": False,
         "default_path_uses_bundlesdf_or_nerf": False,
+        "face_index_convention": "global_vertex_indices",
+        "consumer_note": "Per-row face slices retain global indices into the archive vertices array. Convert to local row vertices by subtracting npz_vertex_slice[0].",
         **FALSE_READY,
     }
     write_json(output_case_dir / "v18_visible_geometry_archive_report.json", case_payload)

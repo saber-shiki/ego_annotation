@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,53 @@ def require_float(value: Any, label: str) -> float:
     return float(value)
 
 
+
+
+def parse_rate(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    if "/" in value:
+        num, den = value.split("/", 1)
+        try:
+            denominator = float(den)
+            if denominator == 0.0:
+                return None
+            return float(num) / denominator
+        except ValueError:
+            return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def ffprobe_video_info(path: Path) -> dict[str, Any]:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=duration,avg_frame_rate",
+        "-of",
+        "json",
+        str(path),
+    ]
+    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe failed for {path}: {proc.stderr.strip()}")
+    payload = require_dict(json.loads(proc.stdout), f"ffprobe {path}")
+    streams = payload.get("streams")
+    if not isinstance(streams, list) or not streams:
+        raise RuntimeError(f"ffprobe found no video stream for {path}")
+    stream = require_dict(streams[0], f"ffprobe stream {path}")
+    duration_raw = stream.get("duration")
+    duration = float(duration_raw) if duration_raw is not None else None
+    fps = parse_rate(stream.get("avg_frame_rate"))
+    return {"duration_s": duration, "avg_frame_rate": fps}
+
+
 def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     annotation_path = args.annotation_root / case / "v18_annotation_state.json"
     solution_path = args.solution_root / case / "v18_bounded_state_solution.json"
@@ -92,6 +140,40 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     side_frames = require_int(side.get("side_by_side_frame_count"), "side side_by_side_frame_count")
     if not (overlay_frames == world_frames == side_frames == frame_count):
         raise RuntimeError(f"{case}: output video frame counts do not all equal {frame_count}")
+    overlay_path = Path(str(overlay.get("output_video")))
+    world_path = Path(str(world.get("output_video")))
+    side_path = Path(str(side.get("output_video")))
+    for label, video_path in (("overlay", overlay_path), ("world", world_path), ("side_by_side", side_path)):
+        if not video_path.exists():
+            raise RuntimeError(f"{case}: missing {label} video at {video_path}")
+    expected_fps = require_float(raw_video.get("fps"), "raw fps")
+    expected_duration_s = frame_count / expected_fps
+    duration_tolerance_s = max(0.05, 0.5 / expected_fps)
+    fps_tolerance = 1e-3
+    overlay_info = ffprobe_video_info(overlay_path)
+    world_info = ffprobe_video_info(world_path)
+    side_info = ffprobe_video_info(side_path)
+
+    def duration_ok(info: dict[str, Any]) -> bool:
+        duration = info.get("duration_s")
+        return isinstance(duration, float) and abs(duration - expected_duration_s) <= duration_tolerance_s
+
+    def fps_ok(info: dict[str, Any]) -> bool:
+        fps = info.get("avg_frame_rate")
+        return isinstance(fps, float) and abs(fps - expected_fps) <= fps_tolerance
+
+    duration_qc = {
+        "expected_fps": expected_fps,
+        "expected_duration_s": expected_duration_s,
+        "duration_tolerance_s": duration_tolerance_s,
+        "overlay": overlay_info,
+        "world_status": world_info,
+        "side_by_side": side_info,
+        "all_durations_match_raw": duration_ok(overlay_info) and duration_ok(world_info) and duration_ok(side_info),
+        "all_fps_match_raw": fps_ok(overlay_info) and fps_ok(world_info) and fps_ok(side_info),
+    }
+    if not duration_qc["all_durations_match_raw"] or not duration_qc["all_fps_match_raw"]:
+        raise RuntimeError(f"{case}: status video duration/FPS QC failed: {duration_qc}")
     render_elapsed_s = require_float(overlay.get("elapsed_s"), "overlay elapsed") + require_float(world.get("elapsed_s"), "world elapsed") + require_float(side.get("elapsed_s"), "side elapsed")
     return {
         "case": case,
@@ -127,6 +209,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "measured_render_to_video_ratio": render_elapsed_s / duration_s if duration_s > 0 else None,
             "under_10x_realtime_for_status_render": render_elapsed_s <= 10.0 * duration_s,
         },
+        "duration_qc": duration_qc,
         "bounded_state_qc": {
             "hand_solution_state_counts": solution.get("hand_solution_state_counts"),
             "object_solution_state_counts": solution.get("object_solution_state_counts"),
@@ -150,6 +233,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "completion_gate_state_counts": completion_gate.get("completion_gate_state_counts"),
             "completion_action_counts": completion_gate.get("completion_action_counts"),
             "completion_candidate_count": completion_gate.get("completion_candidate_count"),
+            "part_split_candidate_count": completion_gate.get("part_split_candidate_count"),
             "completion_run_count": completion_gate.get("completion_run_count"),
             "hidden_geometry_reconstructed_count": completion_gate.get("hidden_geometry_reconstructed_count"),
             "complete_object_pose_ready_count": completion_gate.get("complete_object_pose_ready_count"),
@@ -188,6 +272,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("complete_object_pose_ready_count"), "pose ready")
         for case in cases
     )
+    part_split_candidate_count = sum(
+        require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("part_split_candidate_count"), "part split candidates")
+        for case in cases
+    )
     manifest = {
         "method": "build_v18_status_deliverable_manifest",
         "status": STATUS,
@@ -200,6 +288,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "all_status_renders_under_10x_realtime": all(
             bool(require_dict(case.get("status_runtime_qc"), "runtime qc").get("under_10x_realtime_for_status_render")) for case in cases
         ),
+        "all_status_video_durations_match_raw": all(
+            bool(require_dict(case.get("duration_qc"), "duration qc").get("all_durations_match_raw")) for case in cases
+        ),
+        "all_status_video_fps_match_raw": all(
+            bool(require_dict(case.get("duration_qc"), "duration qc").get("all_fps_match_raw")) for case in cases
+        ),
         "visible_geometry_archive_ready": all(
             bool(require_dict(case.get("visible_geometry_qc"), "visible geometry qc").get("visible_geometry_archive_ready")) for case in cases
         ),
@@ -207,6 +301,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_geometry_vertices": visible_geometry_vertices,
         "visible_geometry_faces": visible_geometry_faces,
         "object_completion_candidate_count": completion_candidate_count,
+        "object_part_split_candidate_count": part_split_candidate_count,
         "object_completion_run_count": completion_run_count,
         "object_completion_pose_ready_count": completion_pose_ready_count,
         "total_duration_s": total_duration,
