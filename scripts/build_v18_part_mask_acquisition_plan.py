@@ -221,6 +221,14 @@ def acquisition_state(row: dict[str, Any]) -> tuple[str, list[str]]:
         return "requires_bounded_articulation_fit_after_generated_masks", sorted(
             blockers | {"articulation_hypothesis_not_fitted", "articulation_parameter_fit_not_implemented"}
         )
+    if state == "blocked_articulation_fit_supported_no_pose":
+        return "requires_full_part_pose_validation_after_articulation_fit", sorted(
+            blockers | {"articulation_fit_supported_but_not_pose", "full_part_se3_not_estimated"}
+        )
+    if state == "blocked_articulation_fit_residual_rejected":
+        return "requires_repair_articulation_fit_residuals", sorted(blockers | {"articulation_fit_residual_rejected"})
+    if state == "blocked_articulation_fit_underconstrained":
+        return "requires_more_shared_part_frames_for_articulation_fit", sorted(blockers | {"articulation_fit_underconstrained"})
     if state == "blocked_no_part_model_candidate":
         return "requires_part_surface_model_candidate_after_generated_masks", sorted(blockers | {"part_model_candidate_missing"})
     return "requires_manual_triage", sorted(blockers | {"unclassified_part_object_blocker_state"})

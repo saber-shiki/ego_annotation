@@ -69,7 +69,13 @@ def list_str(value: Any) -> list[str]:
     return [str(item) for item in value]
 
 
-def blocker_state(part_row: dict[str, Any], candidate_row: dict[str, Any] | None, subset_records: list[dict[str, Any]], qc_row: dict[str, Any] | None) -> tuple[str, list[str], list[str]]:
+def blocker_state(
+    part_row: dict[str, Any],
+    candidate_row: dict[str, Any] | None,
+    subset_records: list[dict[str, Any]],
+    qc_row: dict[str, Any] | None,
+    articulation_row: dict[str, Any] | None,
+) -> tuple[str, list[str], list[str]]:
     blockers = set(list_str(part_row.get("blockers")))
     next_evidence = set(list_str(part_row.get("required_next_evidence")))
     accepted_tracks = require_int(part_row.get("accepted_part_track_count"), "accepted part track count")
@@ -81,6 +87,20 @@ def blocker_state(part_row: dict[str, Any], candidate_row: dict[str, Any] | None
         blockers.add("articulation_hypothesis_not_fitted")
         blockers.add("part_pose_not_estimated")
         blockers.add("hidden_geometry_not_completed")
+        if articulation_row is not None:
+            fit_state = str(articulation_row.get("articulation_fit_state"))
+            fit_blockers = set(list_str(articulation_row.get("fit_blockers")))
+            if fit_state == "articulation_fit_residual_supported_visible_center_only_not_pose":
+                blockers.update({"articulation_fit_visible_center_supported_not_pose", "full_part_se3_not_estimated", "silhouette_residual_not_evaluated"})
+                next_evidence.update({"fit full part SE(3) and articulation parameter", "validate silhouette/depth residuals for articulated parts before contact or pose promotion"})
+                return "blocked_articulation_fit_supported_no_pose", sorted(blockers), sorted(next_evidence)
+            if fit_state == "articulation_fit_residual_rejected":
+                blockers.update({"articulation_fit_residual_rejected", *fit_blockers})
+                next_evidence.update({"repair articulation fit residuals with better part geometry or a different bounded articulation model", "do not promote rejected center-circle fit to part pose"})
+                return "blocked_articulation_fit_residual_rejected", sorted(blockers), sorted(next_evidence)
+            blockers.update({"articulation_fit_underconstrained", *fit_blockers})
+            next_evidence.add("collect enough robust shared-frame part centers for articulation fitting")
+            return "blocked_articulation_fit_underconstrained", sorted(blockers), sorted(next_evidence)
         next_evidence.add("fit bounded articulation parameter and joint axis from robust part surfaces")
         next_evidence.add("validate articulated part residuals before contact or object-pose promotion")
         return "blocked_articulation_hypothesis_not_fitted", sorted(blockers), sorted(next_evidence)
@@ -112,15 +132,18 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     completion_path = args.completion_gate_root / case / "v18_object_completion_gate_report.json"
     qc_path = args.part_motion_qc_root / case / "v18_part_motion_qc_report.json"
     candidates_path = args.part_model_candidates_root / case / "v18_part_model_candidates_report.json"
+    articulation_path = args.articulation_fit_root / case / "v18_articulation_fit_candidates_report.json"
     subset_path = args.visible_part_subset_root / case / "v18_visible_part_subset_archive_report.json"
     part_split = require_dict(load_json(part_split_path), f"{case} part split")
     completion = require_dict(load_json(completion_path), f"{case} completion gate")
     qc = require_dict(load_json(qc_path), f"{case} part motion qc")
     candidates = require_dict(load_json(candidates_path), f"{case} part model candidates")
+    articulation = require_dict(load_json(articulation_path), f"{case} articulation fit candidates")
     subset = require_dict(load_json(subset_path), f"{case} visible part subset")
     completion_by_object = rows_by_object(require_list(completion.get("object_rows"), "completion rows"))
     qc_by_object = rows_by_object(require_list(qc.get("object_rows"), "qc rows"))
     candidate_by_object = rows_by_object(require_list(candidates.get("object_rows"), "candidate object rows"))
+    articulation_by_object = rows_by_object(require_list(articulation.get("rows"), "articulation fit rows"))
     subset_records_by_object: dict[str, list[dict[str, Any]]] = {}
     for raw_record in require_list(subset.get("candidate_records"), "subset candidate records"):
         record = require_dict(raw_record, "subset candidate record")
@@ -133,8 +156,9 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         completion_row = completion_by_object.get(object_id, {})
         qc_row = qc_by_object.get(object_id)
         candidate_row = candidate_by_object.get(object_id)
+        articulation_row = articulation_by_object.get(object_id)
         subset_records = subset_records_by_object.get(object_id, [])
-        state, blockers, next_evidence = blocker_state(part_row, candidate_row, subset_records, qc_row)
+        state, blockers, next_evidence = blocker_state(part_row, candidate_row, subset_records, qc_row, articulation_row)
         state_counts[state] += 1
         object_rows.append(
             {
@@ -151,6 +175,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "surface_icp_probe_count": require_int(candidate_row.get("surface_icp_probe_count", 0), "surface icp probe count") if candidate_row else 0,
                 "surface_icp_probe_state_counts": candidate_row.get("surface_icp_probe_state_counts", {}) if candidate_row else {},
                 "articulation_hypothesis_pair_count": require_int(candidate_row.get("articulation_hypothesis_pair_count", 0), "articulation hypothesis pair count") if candidate_row else 0,
+                "articulation_fit_state": articulation_row.get("articulation_fit_state") if articulation_row else None,
+                "articulation_fit_shared_frame_count": articulation_row.get("shared_frame_count") if articulation_row else 0,
                 "visible_subset_candidate_count": len(subset_records),
                 "visible_subset_rows": sum(require_int(record.get("archive_row_count"), "archive row count") for record in subset_records),
                 "visible_subset_vertices": sum(require_int(record.get("vertex_count"), "vertex count") for record in subset_records),
@@ -175,6 +201,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "object_completion_gate": str(completion_path),
             "part_motion_qc": str(qc_path),
             "part_model_candidates": str(candidates_path),
+            "articulation_fit_candidates": str(articulation_path),
             "visible_part_subset_archive": str(subset_path),
         },
         "required_part_object_count": len(object_rows),
@@ -184,6 +211,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "surface_icp_probe_count": sum(require_int(row.get("surface_icp_probe_count"), "surface icp probe count") for row in object_rows),
         "surface_icp_probe_state_counts": dict(sorted(sum((Counter(require_dict(row.get("surface_icp_probe_state_counts"), "surface icp state counts")) for row in object_rows), Counter()).items())),
         "articulation_hypothesis_pair_count": sum(require_int(row.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for row in object_rows),
+        "articulation_fit_state_counts": dict(sorted(Counter(str(row.get("articulation_fit_state")) for row in object_rows if row.get("articulation_fit_state") is not None).items())),
         "hidden_geometry_reconstructed_count": 0,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
@@ -215,6 +243,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "surface_icp_probe_count": sum(require_int(report.get("surface_icp_probe_count"), "surface icp probe count") for report in reports),
         "surface_icp_probe_state_counts": dict(sorted(sum((Counter(require_dict(report.get("surface_icp_probe_state_counts"), "surface icp state counts")) for report in reports), Counter()).items())),
         "articulation_hypothesis_pair_count": sum(require_int(report.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for report in reports),
+        "articulation_fit_state_counts": dict(sorted(sum((Counter(require_dict(report.get("articulation_fit_state_counts"), "articulation fit state counts")) for report in reports), Counter()).items())),
         "hidden_geometry_reconstructed_count": 0,
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
@@ -231,6 +260,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "surface_icp_probe_count": report.get("surface_icp_probe_count"),
                 "surface_icp_probe_state_counts": report.get("surface_icp_probe_state_counts"),
                 "articulation_hypothesis_pair_count": report.get("articulation_hypothesis_pair_count"),
+                "articulation_fit_state_counts": report.get("articulation_fit_state_counts"),
                 **FALSE_READY,
             }
             for report in reports
@@ -247,6 +277,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--completion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
     parser.add_argument("--part-motion-qc-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_motion_qc"))
     parser.add_argument("--part-model-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_model_candidates"))
+    parser.add_argument("--articulation-fit-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
