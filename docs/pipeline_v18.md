@@ -32,6 +32,23 @@ V18 now has the first bounded scaffold artifacts, generated without heavy percep
 
 Readiness remains false. The next V18 step is fast object-surface/motion state and a bounded consistency graph; the scaffold only makes runtime and occlusion state explicit.
 
+## Implementation Checkpoint 2: Fast Object Motion State
+
+V18 now writes a cheap object surface/motion reducer:
+
+```text
+/data2/ego_annotation_outputs/v18_fast_motion_state/
+```
+
+`build_v18_fast_motion_state.py` consumes the V18 visibility/occlusion state plus existing V17 visible-surface/material-track/surface-replay evidence. It runs in under a second on the representative cases and does not run BundleSDF, NeRF, or any new reconstruction backend. The reducer preserves the distinction between visible-surface motion evidence and complete object pose.
+
+Current fast motion-state counts across both cases: 1 partial rigid visible-surface motion support, 1 local rigid-motion-only-not-pose, 3 deformable visible-surface/surface-motion states, 1 deformable unresolved/no-surface state, 2 articulated visible-surface unresolved states, 1 visible-surface-only motion unresolved state, and 4 motion-unresolved/no-surface states. Per-case observations:
+
+- `trash_1050`: black trash bag and white trash bag are deformable visible-surface states; off-white can is articulated/visible-surface unresolved; pink-lid can is the only partial rigid visible-surface motion-supported object, with 44 rigid-ready material pairs and 2 visible-surface replay-ready partial segments.
+- `task5_tomato_960`: faucet handle is articulated/visible-surface unresolved; tomato has local rigid motion only, not pose; tomato peel is deformable visible-surface/motion; several context objects have no usable surface/motion evidence and stay unresolved.
+
+This confirms the V18 design premise: fast model-produced physical state plus cheap residual summaries can prevent wasting GPU-hours on rigid reconstruction for deformable or unresolved objects. It still does not close object geometry, contact ownership, full consistency optimization, or rendering.
+
 ## Design Goal
 
 Build a full raw-video hand-object interaction annotation pipeline whose default path is fast, occlusion-aware, and honest about unresolved geometry. The direction remains hand detection + object detection + consistency optimization, but every required stage must have bounded cost and every inferred state must carry visibility and uncertainty.
