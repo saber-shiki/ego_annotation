@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, part-mask acquisition status, and measured cached-evidence-to-status runtime, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -282,6 +282,20 @@ The schema covers 13 objects and reports physical-state counts of 7 rigid, 3 def
 The updated status manifest reports `physical_state_schema_object_count=13`, `structured_part_or_relative_motion_required_count=3`, `structured_secondary_deformable_or_surface_component_count=1`, `physical_state_changed_from_legacy_keyword_count=1`, and `object_part_split_candidate_count=3`. Final hidden geometry, part pose, object pose, articulation model, and contact ownership remain false/zero.
 
 Remaining gap after this checkpoint: replace the deterministic schema adapter with direct structured model output when the perception backend is available; until then, downstream gates consume this single auditable schema rather than local ad-hoc text parsing.
+
+## Implementation Checkpoint 18: Measured Cached-Evidence-To-Status Runtime
+
+V18 now has a measured runtime artifact for the implemented status pipeline:
+
+```text
+/data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime/
+```
+
+`run_v18_measured_status_pipeline.py` runs 22 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 166.91 seconds over 67.0 seconds of representative video, or 2.49x video duration. The slowest stages were status overlay render (60.67 s), world/status render (57.34 s), side-by-side render (19.36 s), and part visible-surface extraction (17.48 s).
+
+This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.4912`, while final pose/contact readiness remains false.
+
+Remaining gap after this checkpoint: measure true fresh raw-video-to-status runtime only after the perception backend is provisioned; measure final runtime only after final geometry/pose/contact stages exist.
 
 ## Design Goal
 

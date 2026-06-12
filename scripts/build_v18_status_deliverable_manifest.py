@@ -26,8 +26,9 @@ CLAIM = (
     "schema evidence, an object completion eligibility gate, part-track source manifest, part-split mask evidence "
     "audit, part visible-surface evidence, part-motion state evidence, part-motion confound QC, bounded visible "
     "part-model candidate evidence, a materialized visible part-subset archive, explicit part-object blocker records, "
-    "and part-mask acquisition status. It does not close final hidden object geometry, object pose, part pose, "
-    "articulation model, or physical contact requirements."
+    "part-mask acquisition status, and measured cached-evidence-to-status runtime evidence. It does not close final "
+    "hidden object geometry, object pose, part pose, articulation model, physical contact requirements, or fresh "
+    "raw-video-to-final runtime."
 )
 
 
@@ -383,6 +384,8 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
 def build(args: argparse.Namespace) -> dict[str, Any]:
     start = time.perf_counter()
     cases = [read_case(case, args) for case in args.cases]
+    measured_runtime_path = args.measured_status_pipeline_runtime_root / "v18_measured_status_pipeline_runtime_report.json"
+    measured_runtime = require_dict(load_json(measured_runtime_path), "measured status pipeline runtime") if measured_runtime_path.exists() else {}
     elapsed = time.perf_counter() - start
     total_duration = sum(require_float(case.get("duration_s"), "case duration_s") for case in cases)
     total_render_elapsed = sum(require_float(require_dict(case.get("status_runtime_qc"), "runtime qc").get("measured_render_elapsed_s"), "render elapsed") for case in cases)
@@ -614,6 +617,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "part_mask_acquisition_object_count": part_mask_acquisition_object_count,
         "local_new_mask_generation_ready_count": local_new_mask_generation_ready_count,
         "mask_evidence_created_count": mask_evidence_created_count,
+        "cached_evidence_to_status_runtime_measured": bool(measured_runtime.get("cached_evidence_to_status_runtime_measured")),
+        "cached_evidence_to_status_runtime_report": str(measured_runtime_path) if measured_runtime else None,
+        "cached_evidence_to_status_elapsed_s": measured_runtime.get("total_elapsed_s"),
+        "cached_evidence_to_status_elapsed_to_video_ratio": measured_runtime.get("total_elapsed_to_video_ratio"),
+        "cached_evidence_to_status_stage_count": measured_runtime.get("stage_count"),
+        "fresh_raw_video_to_status_runtime_measured": bool(measured_runtime.get("fresh_raw_video_to_status_runtime_measured")),
+        "fresh_raw_video_to_final_pose_runtime_measured": bool(measured_runtime.get("fresh_raw_video_to_final_pose_runtime_measured")),
         "total_duration_s": total_duration,
         "total_measured_render_elapsed_s": total_render_elapsed,
         "total_measured_render_to_video_ratio": total_render_elapsed / total_duration if total_duration > 0 else None,
@@ -648,6 +658,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
     parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--part-mask-acquisition-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan"))
+    parser.add_argument("--measured-status-pipeline-runtime-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_deliverable_manifest"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
