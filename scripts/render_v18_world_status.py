@@ -26,8 +26,9 @@ FALSE_READY: dict[str, bool] = {
 
 STATUS = "v18_full_duration_world_status_render"
 CLAIM = (
-    "This render is a full-duration V18 world/status visualization of bounded state variables. "
-    "It is image-normalized abstract status geometry, not a metric 3D reconstruction or complete object pose."
+    "This render is a full-duration V18 world/status visualization of bounded state variables, including "
+    "candidate-only occlusion depth triage. It is image-normalized abstract status geometry, not a metric 3D "
+    "reconstruction or complete object pose."
 )
 
 
@@ -185,6 +186,18 @@ def contact_color(state: str) -> tuple[int, int, int] | None:
     return None
 
 
+def depth_triage_label_and_color(state: str, pair_count: int) -> tuple[str, tuple[int, int, int], str]:
+    if state == "row_scene_depth_supports_at_least_one_foreground_candidate_owner_unaccepted":
+        return f"depth triage: fg candidate support ({pair_count}) not owner", (255, 170, 80), "support"
+    if state == "row_scene_depth_contradicts_foreground_candidate_no_support":
+        return f"depth triage: contradicts fg occlusion ({pair_count})", (255, 90, 90), "contradiction"
+    if state == "row_metric_compatible_no_foreground_occluder_signal":
+        return f"depth triage: no fg signal ({pair_count})", (180, 210, 255), "metric_compatible"
+    if state in {"row_insufficient_object_surface_depth", "row_insufficient_or_untrusted_hand_depth_state"}:
+        return f"depth triage: insufficient ({pair_count})", (190, 190, 190), "insufficient"
+    return f"depth triage: {state or 'none'}", (170, 170, 170), "other"
+
+
 def draw_base(canvas_w: int, canvas_h: int, frame_idx: int, frame_count: int, font: Any, small_font: Any) -> Image.Image:
     image = Image.new("RGB", (canvas_w, canvas_h), (18, 20, 25))
     draw = ImageDraw.Draw(image)
@@ -211,6 +224,8 @@ def draw_base(canvas_w: int, canvas_h: int, frame_idx: int, frame_count: int, fo
         ((70, 230, 100), "hand observed depth-consistent"),
         ((80, 210, 255), "hand observed depth-unchecked"),
         ((255, 150, 60), "unfilled possible occlusion gap"),
+        ((255, 170, 80), "depth triage supports candidate, not owner"),
+        ((255, 90, 90), "depth triage contradicts fg occlusion"),
         ((255, 70, 70), "contact rejected by metric depth"),
         ((180, 180, 180), "image overlap only"),
     ]
@@ -292,9 +307,15 @@ def draw_world_frame(
                 x = int(round(sum(p[0] for p in valid_points) / len(valid_points)))
                 y = int(round(sum(p[1] for p in valid_points) / len(valid_points)))
                 hand_points[side] = (x, y)
+                depth_state = str(occ.get("depth_order_evidence_state") or "")
+                pair_count = require_int(occ.get("depth_order_candidate_pair_count", 0), "depth_order_candidate_pair_count")
+                depth_label, depth_color, depth_key = depth_triage_label_and_color(depth_state, pair_count)
                 draw.ellipse((x - 20, y - 20, x + 20, y + 20), outline=color, width=3)
                 draw.line((x - 18, y, x + 18, y), fill=color, width=2)
                 draw_label(draw, (x + 22, y - 12), f"{side} hand unfilled possible occlusion", small_font, color, (18, 20, 25))
+                if pair_count > 0:
+                    draw_label(draw, (x + 22, y + 12), depth_label[:90], small_font, depth_color, (18, 20, 25))
+                    counts[f"occlusion_depth_triage_{depth_key}_labels_drawn"] += 1
                 counts["hand_occlusion_candidates_drawn"] += 1
             else:
                 draw_label(draw, (canvas_w - 290, unresolved_y), f"{side} hand unresolved gap", small_font, color, (18, 20, 25))
@@ -331,7 +352,7 @@ def draw_world_frame(
     draw_label(
         draw,
         (70, canvas_h - 54),
-        "no pose filled through occlusion | contact-ready=0 | object hidden geometry unresolved | abstract coordinates from image boxes",
+        "no pose filled through occlusion | occlusion depth triage is candidate-only | contact-ready=0 | object hidden geometry unresolved",
         font,
         (255, 255, 255),
         (0, 0, 0),
@@ -400,6 +421,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "same_frame_count_as_raw": rendered_count == frame_count and video_frame_count == frame_count,
             "abstract_world_status_not_metric_3d": True,
             "uses_image_normalized_bbox_centers": True,
+            "occlusion_depth_triage_candidate_only": True,
             "pose_filled_through_occlusion": False,
             "contact_factor_ready_rows": 0,
             "not_complete_object_pose_deliverable": True,
