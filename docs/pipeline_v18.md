@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, and visible-surface geometry evidence, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, and part visible-surface evidence for one part-motion object, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -143,6 +143,23 @@ Across 13 objects, the reviewed gate finds zero single-rigid completion candidat
 The updated status manifest reports `object_completion_candidate_count=0`, `object_part_split_candidate_count=2`, `object_completion_run_count=0`, and `object_completion_pose_ready_count=0`. This gate is a methodological guardrail: the next geometry step may only proceed after part-level object splitting or stronger geometry/motion evidence, and must keep all blocked states explicit.
 
 Remaining gap after this checkpoint: implement part-level splitting/geometry evidence for the part-motion candidates, or integrate a bounded feed-forward/observed multi-view geometry prior, then validate object pose and contact ownership.
+
+## Implementation Checkpoint 8: Part-Split Evidence And Part Visible Surfaces
+
+V18 now audits cached model-produced part/segment tracks and extracts bounded part visible-surface evidence:
+
+```text
+/data2/ego_annotation_outputs/v18_part_split_evidence/
+/data2/ego_annotation_outputs/v18_part_visible_surfaces/
+```
+
+`build_v18_part_split_evidence.py` assigns candidate part tracks only by mask overlap/containment with the whole-object mask. It does not assign tracks by object name. Across the three objects requiring part/articulation handling (`object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`), it finds 4 accepted part-track assignments, all for `object:pink_lid_trash_can_second`: `pink_lid_outer_vertical_flange_edge`, `pink_lid_raised_annular_rim`, `pink_lid_top_dished_panel_visible`, and `second_can_exposed_opening_rim`. `object:off_white_trash_can_first` and `object:obj_faucet_handle` still have no accepted part-mask overlap evidence. A QC sheet is written at `/data2/ego_annotation_outputs/v18_part_split_evidence/trash_1050/v18_part_split_evidence_sheet.jpg`; the task5 sheet explicitly records no accepted part-mask overlap evidence.
+
+`build_v18_part_visible_surfaces.py` then extracts metric-depth-backed visible surfaces for the accepted part masks, without OpenCV and without BundleSDF/NeRF. It writes a compact NPZ archive in depth-camera coordinates. Current totals: 203 accepted part visible-surface frame rows for `object:pink_lid_trash_can_second`, 102,035 vertices, 174,456 faces, and 143 rejected candidate rows. Rejections are mostly missing metric depth after the depth archive ends, per-frame part/object containment failure, or too few connected sampled vertices/faces. Task5 has no part visible surfaces because no part masks were accepted.
+
+The updated status manifest reports `part_required_object_count=3`, `accepted_part_track_assignment_count=4`, `part_visible_surface_frame_rows=203`, `part_visible_surface_vertices=102035`, `part_visible_surface_faces=174456`, `part_pose_ready_count=0`, and `object_pose_requirement_met=false`. This advances V18 from whole-object visible surfaces to part-level visible surface evidence for one part-motion object, but it still does not reconstruct hidden part geometry, estimate part pose, or validate contact ownership.
+
+Remaining gap after this checkpoint: extract or produce part-mask evidence for the off-white can and faucet handle, convert part visible surfaces into a bounded part/articulation model only where supported, and then test pose/contact ownership against metric depth.
 
 ## Design Goal
 
