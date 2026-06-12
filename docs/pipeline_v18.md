@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, and part-motion diagnostics for one part-motion object, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, and part-motion confound QC for one part-motion object, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -174,6 +174,20 @@ V18 now writes bounded part-motion diagnostics:
 The updated status manifest reports `part_motion_object_count=1`, `articulation_model_ready_count=0`, and `part_pose_ready_count=0`. This means V18 has enough part visible-surface evidence to study a bounded part/articulation model for the pink-lid object, but not enough to accept part pose or contact ownership.
 
 Remaining gap after this checkpoint: resolve whether the variable part-pair distances are true articulation, mask drift, or depth/visibility noise; then formulate a bounded part model only if discriminating evidence supports it.
+
+## Implementation Checkpoint 10: Part-Motion Confound QC
+
+V18 now audits the part-motion diagnostic for quality confounds:
+
+```text
+/data2/ego_annotation_outputs/v18_part_motion_qc/
+```
+
+`build_v18_part_motion_qc.py` checks whether variable part-pair distances are supported by robust part surfaces or are confounded by sparse/unstable part tracks. For `object:pink_lid_trash_can_second`, 2 part tracks are robust and 2 are sparse/unstable. The single stable pair is supported by robust surfaces, while all 5 variable pairs involve a sparse/unstable part surface. The object-level QC state is `part_motion_confounded_by_sparse_tracks_with_some_stable_support`.
+
+The updated status manifest reports `part_motion_qc_object_count=1`, `articulation_model_ready_count=0`, and `part_pose_ready_count=0`. This prevents V18 from overinterpreting noisy variable pair distances as an articulation model.
+
+Remaining gap after this checkpoint: obtain stronger part-mask evidence for sparse tracks or fit only a bounded model for the robust stable lid-surface subset; do not fit/accept articulation from the confounded variable pairs.
 
 ## Design Goal
 
