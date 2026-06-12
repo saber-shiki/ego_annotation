@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, and a visible part-subset archive, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, and explicit part-object blocker records, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -216,6 +216,20 @@ V18 now materializes robust stable visible part-subset candidates as mesh archiv
 The updated manifest reports `visible_part_subset_archive_ready=true`, `visible_part_subset_archive_rows=139`, `visible_part_subset_vertices=98315`, and `visible_part_subset_faces=169356`. Hidden geometry, part pose, articulation readiness, contact readiness, and object pose remain false.
 
 Remaining gap after this checkpoint: build validation around the visible subset if useful, but do not promote it beyond visible surface evidence without hidden geometry, pose, and contact support.
+
+## Implementation Checkpoint 13: Part-Object Blocker Manifest
+
+V18 now writes explicit blockers for part/relative-motion objects:
+
+```text
+/data2/ego_annotation_outputs/v18_part_object_blocker_manifest/
+```
+
+`build_v18_part_object_blocker_manifest.py` joins part-split evidence, completion gating, part-motion QC, visible subset candidates, and the visible part-subset archive. It records 3 required part/articulation objects: `object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`. Two are `blocked_missing_part_mask_evidence`; the pink-lid object is `partial_visible_subset_only_blocked_no_pose`.
+
+The updated manifest reports `required_part_object_blocker_count=3` and `contact_ownership_ready_count=0`. This is an explicit stop against treating the visible pink-lid subset as hidden geometry, part pose, contact ownership, or final object pose.
+
+Remaining gap after this checkpoint: obtain accepted part-mask evidence for the off-white can and faucet handle, improve sparse pink-lid part masks if articulation is to be tested, and only then re-run part geometry/motion/contact checks.
 
 ## Design Goal
 

@@ -24,9 +24,9 @@ CLAIM = (
     "This manifest closes a V18 status deliverable: full-duration 2D overlay, abstract world/status, "
     "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, an object "
     "completion eligibility gate, part-split mask evidence audit, part visible-surface evidence, part-motion "
-    "state evidence, part-motion confound QC, bounded visible part-model candidate evidence, and a materialized "
-    "visible part-subset archive. It does not close final hidden object geometry, object pose, part pose, "
-    "articulation model, or physical contact requirements."
+    "state evidence, part-motion confound QC, bounded visible part-model candidate evidence, a materialized "
+    "visible part-subset archive, and explicit part-object blocker records. It does not close final hidden object "
+    "geometry, object pose, part pose, articulation model, or physical contact requirements."
 )
 
 
@@ -120,6 +120,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_motion_qc_path = args.part_motion_qc_root / case / "v18_part_motion_qc_report.json"
     part_model_candidates_path = args.part_model_candidates_root / case / "v18_part_model_candidates_report.json"
     visible_part_subset_path = args.visible_part_subset_root / case / "v18_visible_part_subset_archive_report.json"
+    part_object_blockers_path = args.part_object_blockers_root / case / "v18_part_object_blocker_manifest_report.json"
     annotation = require_dict(load_json(annotation_path), f"{case} annotation")
     solution = require_dict(load_json(solution_path), f"{case} solution")
     overlay = require_dict(load_json(overlay_qc_path), f"{case} overlay qc")
@@ -133,6 +134,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_motion_qc = require_dict(load_json(part_motion_qc_path), f"{case} part motion qc")
     part_model_candidates = require_dict(load_json(part_model_candidates_path), f"{case} part model candidates")
     visible_part_subset = require_dict(load_json(visible_part_subset_path), f"{case} visible part subset archive")
+    part_object_blockers = require_dict(load_json(part_object_blockers_path), f"{case} part object blockers")
     frame_count = require_int(annotation.get("frame_count"), "annotation frame_count")
     raw_frame_count = require_int(annotation.get("raw_frame_count"), "annotation raw_frame_count")
     raw_video = require_dict(annotation.get("raw_video"), "annotation raw_video")
@@ -216,6 +218,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_model_candidates_report": str(part_model_candidates_path),
             "visible_part_subset_archive_report": str(visible_part_subset_path),
             "visible_part_subset_archive_npz": visible_part_subset.get("archive_npz"),
+            "part_object_blocker_manifest": str(part_object_blockers_path),
         },
         "frame_count_qc": {
             "annotation_state_frames": frame_count,
@@ -315,6 +318,15 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "hidden_geometry_completion_candidate_count": visible_part_subset.get("hidden_geometry_completion_candidate_count"),
             "part_pose_ready_count": visible_part_subset.get("part_pose_ready_count"),
             "object_pose_requirement_met_count": visible_part_subset.get("object_pose_requirement_met_count"),
+        },
+        "part_object_blocker_qc": {
+            "required_part_object_count": part_object_blockers.get("required_part_object_count"),
+            "part_object_blocker_state_counts": part_object_blockers.get("part_object_blocker_state_counts"),
+            "hidden_geometry_reconstructed_count": part_object_blockers.get("hidden_geometry_reconstructed_count"),
+            "articulation_model_ready_count": part_object_blockers.get("articulation_model_ready_count"),
+            "part_pose_ready_count": part_object_blockers.get("part_pose_ready_count"),
+            "contact_ownership_ready_count": part_object_blockers.get("contact_ownership_ready_count"),
+            "object_pose_requirement_met_count": part_object_blockers.get("object_pose_requirement_met_count"),
         },
         "status_deliverable_ready": True,
         "final_pose_complete_deliverable_ready": False,
@@ -421,6 +433,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("visible_part_subset_archive_qc"), "visible part subset archive qc").get("total_faces"), "visible part subset faces")
         for case in cases
     )
+    required_part_object_blocker_count = sum(
+        require_int(require_dict(case.get("part_object_blocker_qc"), "part object blocker qc").get("required_part_object_count"), "required part object blocker count")
+        for case in cases
+    )
+    contact_ownership_ready_count = sum(
+        require_int(require_dict(case.get("part_object_blocker_qc"), "part object blocker qc").get("contact_ownership_ready_count"), "contact ownership ready count")
+        for case in cases
+    )
     manifest = {
         "method": "build_v18_status_deliverable_manifest",
         "status": STATUS,
@@ -465,6 +485,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_part_subset_archive_rows": visible_part_subset_archive_rows,
         "visible_part_subset_vertices": visible_part_subset_vertices,
         "visible_part_subset_faces": visible_part_subset_faces,
+        "required_part_object_blocker_count": required_part_object_blocker_count,
+        "contact_ownership_ready_count": contact_ownership_ready_count,
         "total_duration_s": total_duration,
         "total_measured_render_elapsed_s": total_render_elapsed,
         "total_measured_render_to_video_ratio": total_render_elapsed / total_duration if total_duration > 0 else None,
@@ -495,6 +517,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-motion-qc-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_motion_qc"))
     parser.add_argument("--part-model-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_model_candidates"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
+    parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_deliverable_manifest"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
