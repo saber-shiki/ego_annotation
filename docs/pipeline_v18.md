@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. No V18 implementation is accepted until this design is preserved and the first implementation obeys the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has bounded scaffolds and a full-duration 2D status overlay, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -67,6 +67,24 @@ Per-case counts:
 - `task5_tomato_960`: 522 image-contact candidates rejected by metric depth, 513 image-overlap-only rows, 1,167 no-contact-image rows, and 96 unobserved pairs.
 
 This preserves the V17 lesson in V18 form: projected hand/object overlap is not physical contact. The next implementation step is a bounded optimizer or state update that uses interior-owned hand depth, visible object surfaces, occlusion ownership, and fast motion state together; it must still keep unresolved states explicit when metric depth or geometry do not support contact.
+
+## Implementation Checkpoint 4: Renderable Annotation State And Status Overlay
+
+V18 now writes a full-timeline renderable annotation state and full-duration status overlay videos:
+
+```text
+/data2/ego_annotation_outputs/v18_annotation_state/
+/data2/ego_annotation_outputs/v18_renders/
+```
+
+`build_v18_annotation_state.py` joins V18 visibility/occlusion rows, fast motion state, consistency/contact rows, V17 timeline boxes/masks, and V16 raw-frame manifests into one per-frame state. Both representative cases match the raw frame count: `trash_1050` has 1,050 state frames and `task5_tomato_960` has 960 state frames. The joined state has 3,334 renderable hand-box rows and 2,713 renderable object-mask rows across both cases. It keeps `annotation_ready=false`, `object_geometry_complete=false`, and `object_pose_requirement_met=false`.
+
+`render_v18_status_overlay.py` renders full-duration MP4 status overlays from raw frames and verified object masks. The renderer completed both cases in 61.55 seconds total and the QC manifests report exact frame-count matches:
+
+- `trash_1050`: `/data2/ego_annotation_outputs/v18_renders/trash_1050/v18_status_overlay.mp4`, 1,050/1,050 frames, 1,601 hand boxes, 1,604 object masks, 499 unresolved-hand labels, and 29 unresolved-object labels.
+- `task5_tomato_960`: `/data2/ego_annotation_outputs/v18_renders/task5_tomato_960/v18_status_overlay.mp4`, 960/960 frames, 1,733 hand boxes, 1,109 object masks, 187 unresolved-hand labels, and 40 unresolved-object labels.
+
+These videos are a real V18 status output, not a final pose-complete annotation. They satisfy the full-duration/same-frame-count render constraint for the 2D status overlay, and they make the missing geometry/contact state visible instead of hiding it. The remaining V18 gap is the actual bounded optimizer/geometry path and full 3D/side-by-side outputs.
 
 ## Design Goal
 
