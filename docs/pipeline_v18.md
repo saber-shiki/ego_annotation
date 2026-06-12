@@ -679,6 +679,25 @@ The next required implementation artifact is:
 
 The report must compare delivered V18 videos against V16 by subjective judgment: what is no worse, what visibly improves, what remains approximate/uncertain, and what implementation mistakes were fixed. Diagnostics are allowed only when they directly repair this artifact path or explain the delivered artifact.
 
+## Implementation Checkpoint 35: Full Approximate Pipeline Artifact
+
+V18 now has an executable full-pipeline artifact writer:
+
+```text
+scripts/run_v18_full_pipeline.py
+/data2/ego_annotation_outputs/v18_full_pipeline/<case>/annotations_v18_full.json
+/data2/ego_annotation_outputs/v18_full_pipeline/<case>/v18_overlay.mp4
+/data2/ego_annotation_outputs/v18_full_pipeline/<case>/v18_world.mp4
+/data2/ego_annotation_outputs/v18_full_pipeline/<case>/v18_side_by_side.mp4
+/data2/ego_annotation_outputs/v18_full_pipeline/v18_full_pipeline_report.json
+```
+
+This is the artifact-first V18 baseline. It assembles the existing V16 camera/depth backbone, V18 hand evidence, generated OWLv2→SAM2 object/part masks, visible geometry archives, part surfaces, bounded occlusion candidates, approximate contact hypotheses, approximate hidden-geometry candidates, approximate object/part pose candidates, and a single-pass bounded factor-graph baseline into one full-video JSON schema. Every output is approximate and uncertain by design. No arbitrary threshold suppresses artifact production.
+
+The delivered run completed both representative cases in about 108 seconds total after rendering. Frame counts match raw videos: `trash_1050` has 1050 frames and `task5_tomato_960` has 960 frames in the annotation JSON, overlay video, world video, and side-by-side video. The JSON contains all named module families: camera/depth backbone, hand branch, object/part perception, geometry reconstruction, object/part pose candidates, contact ownership hypotheses, occlusion ownership hypotheses, and factor-graph baseline fields.
+
+Visual inspection against V16 side-by-side frames shows the current tradeoff. V16 still has denser mesh-style hand/object rendering for selected manipulation objects. V18 is now plausibly no worse for frame coverage and 2D localization, and it adds explicit multi-object state, part candidates, uncertainty labels, contact/occlusion hypotheses, hidden-geometry candidates, and factor-graph state in the delivered JSON/video instead of hiding them in diagnostics. The next improvement should be render fidelity and solver quality, not another readiness gate: use the delivered videos to decide which approximate modules are visibly wrong, then patch those modules.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
