@@ -41,6 +41,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require("contact_owner_graph" in str(modules.get("contact_ownership")) or "contact_owner" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
     require("signed_normal" in str(modules.get("contact_ownership")), f"{case}: signed nonpenetration evidence not listed in modules")
     require("hand_baseline_evidence" in str(modules.get("hand_branch")), f"{case}: hand baseline evidence not listed in modules")
+    require("temporal_occlusion_owner_graph" in str(modules.get("occlusion_ownership")), f"{case}: temporal occlusion owner graph not listed in modules")
     accepted_contact = 0
     selected_contact = 0
     occlusion_mesh_rows = 0
@@ -48,6 +49,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     hand_baseline_rows = 0
     camera_depth_observed_rows = 0
     signed_nonpenetration_rows = 0
+    occlusion_temporal_graph_rows = 0
     for frame in frames:
         if not isinstance(frame, dict):
             continue
@@ -82,6 +84,10 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
             occ_evidence = occ.get("mesh_owner_evidence")
             if isinstance(occ_evidence, list) and len(occ_evidence) > 0:
                 occlusion_mesh_rows += 1
+            temporal_occ = occ.get("temporal_owner_graph")
+            if isinstance(temporal_occ, dict):
+                occlusion_temporal_graph_rows += 1
+                require(temporal_occ.get("accepted_occlusion_owner") is not True, f"{case}: unsupported accepted temporal occlusion owner")
         fg_raw = frame.get("factor_graph_solution")
         fg: dict[str, Any] = fg_raw if isinstance(fg_raw, dict) else {}
         fg_variables_raw = fg.get("variables")
@@ -100,7 +106,8 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require(hand_baseline_rows > 0, f"{case}: no hand baseline rows integrated")
     require(camera_depth_observed_rows > 0, f"{case}: no observed camera/depth correction rows integrated")
     require(signed_nonpenetration_rows > 0, f"{case}: no signed nonpenetration evidence integrated")
-    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows}
+    require(occlusion_temporal_graph_rows > 0, f"{case}: no temporal occlusion owner graph rows integrated")
+    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows, "occlusion_temporal_graph_rows": occlusion_temporal_graph_rows}
 
 
 def main() -> None:

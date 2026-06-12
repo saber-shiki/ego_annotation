@@ -646,6 +646,30 @@ def load_hand_baseline_index(path: Path) -> dict[tuple[int, str], dict[str, Any]
     return out
 
 
+def load_occlusion_owner_graph_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "occlusion owner graph report")
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for raw_graph in require_list(report.get("hand_graphs"), "occlusion hand graphs"):
+        graph = require_dict(raw_graph, "occlusion hand graph")
+        for raw_assignment in require_list(graph.get("assignments", []), "occlusion assignments"):
+            assignment = require_dict(raw_assignment, "occlusion assignment")
+            frame_idx = require_int(assignment.get("frame_idx"), "occlusion assignment frame_idx")
+            hand_side = str(assignment.get("hand_side"))
+            out[(frame_idx, hand_side)] = {
+                "source_report": str(path),
+                "chosen_owner_object_id": assignment.get("chosen_owner_object_id"),
+                "accepted_occlusion_owner": assignment.get("accepted_occlusion_owner"),
+                "occlusion_owner_claim": assignment.get("occlusion_owner_claim"),
+                "unary_energy_margin": assignment.get("unary_energy_margin"),
+                "chosen_unary_energy": assignment.get("chosen_unary_energy"),
+                "next_best_unary_energy": assignment.get("next_best_unary_energy"),
+                "source_row": assignment.get("source_row"),
+            }
+    return out
+
+
 def load_signed_nonpenetration_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1427,6 +1451,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
     signed_nonpenetration_index = load_signed_nonpenetration_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
     occlusion_mesh_index = load_occlusion_mesh_owner_evidence_index(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json")
+    occlusion_owner_graph_index = load_occlusion_owner_graph_index(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json")
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
     articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
     frame_count = require_int(state.get("frame_count"), "frame_count")
@@ -1462,6 +1487,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             confidence = "medium" if hand.get("visibility_state") == "visible" and hand.get("metric_depth_compatible") else "low" if hand.get("visibility_state") in {"visible", "partially_visible"} else "unknown"
             confidence_counts[f"hand_{confidence}"] += 1
             occlusion_mesh_evidence = occlusion_mesh_index.get((frame_idx, side), [])
+            occlusion_owner_graph = occlusion_owner_graph_index.get((frame_idx, side))
             hands.append(
                 {
                     "hand_side": side,
@@ -1478,7 +1504,8 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                         "state": occlusion_solution.get("occluder_owner_status", "unresolved_or_not_applicable"),
                         "owner_candidates": owner_candidates,
                         "mesh_owner_evidence": occlusion_mesh_evidence,
-                        "accepted_occlusion_owner_count": sum(1 for row in occlusion_mesh_evidence if isinstance(row, dict) and row.get("accepted_occlusion_owner") is True),
+                        "temporal_owner_graph": occlusion_owner_graph,
+                        "accepted_occlusion_owner_count": int(any(isinstance(row, dict) and row.get("accepted_occlusion_owner") is True for row in occlusion_mesh_evidence) or (isinstance(occlusion_owner_graph, dict) and occlusion_owner_graph.get("accepted_occlusion_owner") is True)),
                         "confidence": "low" if owner_candidates else "unknown",
                     },
                 }
@@ -1577,6 +1604,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "contact_ownership_graph": str(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json"),
             "signed_nonpenetration_evidence": str(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json"),
             "occlusion_mesh_owner_evidence": str(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json"),
+            "occlusion_owner_graph": str(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json"),
             "articulation_fit_candidates": str(args.articulation_root / case / "v18_articulation_fit_candidates_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
             "v16_render_overlay": str(v16_render_paths(case, args)["overlay"]),
@@ -1602,7 +1630,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
             "contact_ownership": "temporal_contact_owner_graph_plus_local_signed_normal_nonpenetration_evidence_not_complete_sdf",
-            "occlusion_ownership": "bounded_owner_candidates_plus_mesh_temporal_support_no_new_acceptance",
+            "occlusion_ownership": "temporal_occlusion_owner_graph_over_bounded_candidates_no_unsupported_acceptance",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
         "factor_graph_summary": factor_graph_summary,
@@ -1905,6 +1933,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contact-ownership-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))
     parser.add_argument("--signed-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_signed_nonpenetration_evidence"))
     parser.add_argument("--occlusion-mesh-owner-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_mesh_owner_evidence"))
+    parser.add_argument("--occlusion-owner-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_graph"))
     parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()

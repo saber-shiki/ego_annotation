@@ -758,6 +758,12 @@ V18 now has local signed-distance evidence in `scripts/build_v18_signed_nonpenet
 
 The current evidence often flags local penetration, especially where meshes are thin, deformable, open, or normal projection is only a local approximation. Therefore the artifact is integrated into contact hypotheses as evidence only. It is not a watertight signed-distance field, not a complete nonpenetration solver, and it does not override contact ownership by itself.
 
+## Implementation Checkpoint 46: Temporal Occlusion Owner Graph
+
+V18 now has a temporal occlusion-owner graph in `scripts/build_v18_occlusion_owner_graph.py`. It solves an object-or-none sequence over bounded occlusion candidates using box coverage, candidate overlap, nearby mesh-contact support, and temporal continuity. The graph selects likely owners as evidence but only accepts ownership when source depth-order evidence already accepted it.
+
+Current representative outputs select 81 trash occlusion-owner rows and 0 task5 rows, while accepted occlusion ownership remains zero. `run_v18_full_pipeline.py` integrates each hand/frame assignment under `occlusion_owner_hypothesis.temporal_owner_graph`. This advances occlusion ownership from per-frame candidates to a temporal graph without making unsupported pose-fill or owner claims.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
