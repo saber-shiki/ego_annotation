@@ -23,10 +23,11 @@ STATUS = "v18_status_deliverable_manifest"
 CLAIM = (
     "This manifest closes a V18 status deliverable: full-duration 2D overlay, abstract world/status, "
     "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, an object "
-    "completion eligibility gate, part-split mask evidence audit, part visible-surface evidence, part-motion "
-    "state evidence, part-motion confound QC, bounded visible part-model candidate evidence, a materialized "
-    "visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status. It does "
-    "not close final hidden object geometry, object pose, part pose, articulation model, or physical contact requirements."
+    "completion eligibility gate, part-track source manifest, part-split mask evidence audit, part visible-surface "
+    "evidence, part-motion state evidence, part-motion confound QC, bounded visible part-model candidate evidence, "
+    "a materialized visible part-subset archive, explicit part-object blocker records, and part-mask acquisition "
+    "status. It does not close final hidden object geometry, object pose, part pose, articulation model, or physical "
+    "contact requirements."
 )
 
 
@@ -115,6 +116,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     visible_geometry_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
     completion_gate_path = args.completion_gate_root / case / "v18_object_completion_gate_report.json"
     part_split_path = args.part_split_root / case / "v18_part_split_evidence_report.json"
+    part_track_source_path = args.part_track_source_root / case / "v18_part_track_source_manifest_report.json"
     part_surfaces_path = args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"
     part_motion_path = args.part_motion_root / case / "v18_part_motion_state_report.json"
     part_motion_qc_path = args.part_motion_qc_root / case / "v18_part_motion_qc_report.json"
@@ -130,6 +132,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     visible_geometry = require_dict(load_json(visible_geometry_path), f"{case} visible geometry")
     completion_gate = require_dict(load_json(completion_gate_path), f"{case} completion gate")
     part_split = require_dict(load_json(part_split_path), f"{case} part split evidence")
+    part_track_source = require_dict(load_json(part_track_source_path), f"{case} part-track source manifest")
     part_surfaces = require_dict(load_json(part_surfaces_path), f"{case} part visible surfaces")
     part_motion = require_dict(load_json(part_motion_path), f"{case} part motion state")
     part_motion_qc = require_dict(load_json(part_motion_qc_path), f"{case} part motion qc")
@@ -213,6 +216,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "visible_geometry_archive_npz": visible_geometry.get("archive_npz"),
             "object_completion_gate_report": str(completion_gate_path),
             "part_split_evidence_report": str(part_split_path),
+            "part_track_source_manifest_report": str(part_track_source_path),
             "part_visible_surfaces_report": str(part_surfaces_path),
             "part_visible_surfaces_archive_npz": part_surfaces.get("archive_npz"),
             "part_motion_state_report": str(part_motion_path),
@@ -266,6 +270,16 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "hidden_geometry_reconstructed_count": completion_gate.get("hidden_geometry_reconstructed_count"),
             "complete_object_pose_ready_count": completion_gate.get("complete_object_pose_ready_count"),
         },
+        "part_track_source_qc": {
+            "candidate_source_manifest_ready": part_track_source.get("candidate_source_manifest_ready"),
+            "part_track_candidate_source_scope": part_track_source.get("part_track_candidate_source_scope"),
+            "uniform_part_track_generation_ready": part_track_source.get("uniform_part_track_generation_ready"),
+            "root_count": part_track_source.get("root_count"),
+            "existing_root_count": part_track_source.get("existing_root_count"),
+            "track_count": part_track_source.get("track_count"),
+            "usable_track_count": part_track_source.get("usable_track_count"),
+            "mask_evidence_created": part_track_source.get("mask_evidence_created"),
+        },
         "part_split_evidence_qc": {
             "part_required_object_count": part_split.get("part_required_object_count"),
             "discovered_part_track_count": part_split.get("discovered_part_track_count"),
@@ -274,6 +288,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_track_candidate_source_scope": part_split.get("part_track_candidate_source_scope"),
             "candidate_assignment_semantics": part_split.get("candidate_assignment_semantics"),
             "uniform_part_track_generation_ready": part_split.get("uniform_part_track_generation_ready"),
+            "part_track_source_manifest_ready": part_split.get("part_track_source_manifest_ready"),
             "part_geometry_extraction_ready_count": part_split.get("part_geometry_extraction_ready_count"),
             "part_pose_ready_count": part_split.get("part_pose_ready_count"),
         },
@@ -380,6 +395,22 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     part_split_candidate_count = sum(
         require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("part_split_candidate_count"), "part split candidates")
+        for case in cases
+    )
+    part_track_source_manifest_ready_all_cases = all(
+        bool(require_dict(case.get("part_track_source_qc"), "part track source qc").get("candidate_source_manifest_ready"))
+        for case in cases
+    )
+    part_track_source_root_count = sum(
+        require_int(require_dict(case.get("part_track_source_qc"), "part track source qc").get("root_count"), "part track source root count")
+        for case in cases
+    )
+    part_track_source_usable_track_count = sum(
+        require_int(require_dict(case.get("part_track_source_qc"), "part track source qc").get("usable_track_count"), "part track source usable track count")
+        for case in cases
+    )
+    uniform_part_track_generation_ready = all(
+        bool(require_dict(case.get("part_track_source_qc"), "part track source qc").get("uniform_part_track_generation_ready"))
         for case in cases
     )
     part_required_object_count = sum(
@@ -510,6 +541,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_part_split_candidate_count": part_split_candidate_count,
         "object_completion_run_count": completion_run_count,
         "object_completion_pose_ready_count": completion_pose_ready_count,
+        "part_track_source_manifest_ready_all_cases": part_track_source_manifest_ready_all_cases,
+        "part_track_source_root_count": part_track_source_root_count,
+        "part_track_source_usable_track_count": part_track_source_usable_track_count,
+        "uniform_part_track_generation_ready": uniform_part_track_generation_ready,
         "part_required_object_count": part_required_object_count,
         "accepted_part_track_assignment_count": accepted_part_track_assignment_count,
         "part_geometry_extraction_ready_count": part_geometry_ready_count,
@@ -559,6 +594,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_renders"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--completion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
+    parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
     parser.add_argument("--part-split-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_split_evidence"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--part-motion-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_motion_state"))

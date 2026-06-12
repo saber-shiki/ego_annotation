@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -252,6 +252,20 @@ A clean-room adversarial review found one false readiness issue and one source-s
 The part-split audit also now records `part_track_candidate_source_scope=cached_case_configured_roots_not_uniform_generation_backend` and `uniform_part_track_generation_ready=false`. This preserves the true scoped claim: assignment within the candidate pool is geometric overlap/containment, but the candidate pool itself is cached and nonuniform until a runnable open-vocabulary/referring segmentation backend is provisioned.
 
 Remaining gap after this checkpoint: replace cached case-configured part-track roots with a uniform model-produced part-track manifest or provisioned segmentation backend, then rerun the same overlap, geometry, motion, and blocker checks.
+
+## Implementation Checkpoint 16: Part-Track Source Manifest
+
+V18 now writes an explicit source-of-truth for part-track candidate inputs:
+
+```text
+/data2/ego_annotation_outputs/v18_part_track_source_manifest/
+```
+
+`build_v18_part_track_source_manifest.py` records the cached model/SAM2 part-track roots, discovered track counts, usable-track counts, and local generation backend readiness. Current source evidence is unchanged: 2 existing cached roots, 6 usable trash tracks, 0 task5 tracks, and `uniform_part_track_generation_ready=false` because no SAMWISE repo/checkpoint was found in configured paths.
+
+`build_v18_part_split_evidence.py` now consumes this manifest instead of carrying default case-specific roots internally. This turns the prior review caveat into an executable contract: source selection is explicit and auditable, while downstream assignment remains geometric overlap/containment against whole-object masks. The status manifest reports `part_track_source_manifest_ready_all_cases=true`, `part_track_source_root_count=2`, `part_track_source_usable_track_count=6`, and keeps `uniform_part_track_generation_ready=false`.
+
+Remaining gap after this checkpoint: replace the cached source manifest with a uniform model-produced part-track manifest once a runnable referring/open-vocabulary segmentation backend or precomputed part tracks are available.
 
 ## Design Goal
 

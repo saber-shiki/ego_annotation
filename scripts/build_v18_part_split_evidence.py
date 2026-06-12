@@ -32,13 +32,7 @@ CLAIM = (
     "with the whole-object mask. This does not create part geometry, estimate part pose, or complete object pose."
 )
 
-DEFAULT_PART_TRACK_ROOTS_BY_CASE: dict[str, list[Path]] = {
-    "trash_1050": [
-        Path("/data2/ego_annotation_outputs/representative_trash/v3_contact_surface_sam2_multi_840_930"),
-        Path("/data2/ego_annotation_outputs/representative_trash/v3_dense_lid_surface_sam2_image_858_880"),
-    ],
-    "task5_tomato_960": [],
-}
+PART_TRACK_SOURCE_SCOPE = "source_manifest_cached_case_configured_roots_not_uniform_generation_backend"
 PART_REQUIRED_ACTIONS = {"candidate_requires_part_model_not_run", "single_rigid_completion_not_allowed"}
 PART_REQUIRED_STATES = {
     "part_motion_requires_part_split_no_single_rigid_completion",
@@ -319,14 +313,28 @@ def evaluate_track_for_object(
     }
 
 
-def case_roots(case: str, args: argparse.Namespace) -> list[Path]:
-    roots = list(DEFAULT_PART_TRACK_ROOTS_BY_CASE.get(case, []))
+def case_track_source(case: str, args: argparse.Namespace) -> dict[str, Any]:
+    path = args.part_track_source_root / case / "v18_part_track_source_manifest_report.json"
+    if not path.exists():
+        raise RuntimeError(f"missing V18 part-track source manifest for {case}: {path}")
+    report = require_dict(load_json(path), f"{case} part-track source manifest")
+    roots = [Path(require_str(row.get("root"), "source root")) for row in require_list(report.get("root_records"), "root_records")]
+    extra_roots: list[Path] = []
     for item in args.extra_part_track_root:
         if item.startswith(f"{case}="):
-            roots.append(Path(item.split("=", 1)[1]))
+            extra_roots.append(Path(item.split("=", 1)[1]))
         elif "=" not in item:
-            roots.append(Path(item))
-    return roots
+            extra_roots.append(Path(item))
+    if extra_roots:
+        report = {
+            **report,
+            "part_track_candidate_source_scope": "source_manifest_plus_cli_extra_roots",
+            "extra_part_track_roots": [str(root) for root in extra_roots],
+            "uniform_part_track_generation_ready": False,
+        }
+    report["manifest_path"] = str(path)
+    report["resolved_roots_for_audit"] = [str(root) for root in [*roots, *extra_roots]]
+    return report
 
 
 def part_split_state(accepted_count: int) -> str:
@@ -345,7 +353,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     objects = part_required_objects(gate)
     object_ids = {require_str(row.get("object_id"), "part required object_id") for row in objects}
     object_masks = object_mask_index(annotation, object_ids)
-    roots = case_roots(case, args)
+    source_manifest = case_track_source(case, args)
+    roots = [Path(str(root)) for root in require_list(source_manifest.get("resolved_roots_for_audit"), "resolved roots for audit")]
     tracks = discover_tracks(roots)
     mask_cache: dict[str, np.ndarray] = {}
     rows: list[dict[str, Any]] = []
@@ -393,11 +402,15 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "sources": {
             "v18_object_completion_gate": str(gate_path),
             "v18_annotation_state": str(annotation_path),
+            "v18_part_track_source_manifest": str(source_manifest.get("manifest_path")),
             "part_track_roots": [str(root) for root in roots],
         },
-        "part_track_candidate_source_scope": "cached_case_configured_roots_not_uniform_generation_backend",
-        "candidate_assignment_semantics": "overlap_and_containment_with_whole_object_mask_after_candidate_pool_selection",
-        "uniform_part_track_generation_ready": False,
+        "part_track_candidate_source_scope": source_manifest.get("part_track_candidate_source_scope", PART_TRACK_SOURCE_SCOPE),
+        "candidate_assignment_semantics": source_manifest.get(
+            "candidate_assignment_semantics_required_downstream", "overlap_and_containment_with_whole_object_mask_after_candidate_pool_selection"
+        ),
+        "uniform_part_track_generation_ready": bool(source_manifest.get("uniform_part_track_generation_ready")),
+        "part_track_source_manifest_ready": bool(source_manifest.get("candidate_source_manifest_ready")),
         "part_required_object_count": len(objects),
         "discovered_part_track_count": len(tracks),
         "accepted_part_track_assignment_count": accepted_track_count,
@@ -431,9 +444,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             require_int(report.get("accepted_part_track_assignment_count"), "accepted track count") for report in reports
         ),
         "part_split_evidence_state_counts": dict(sorted(state_counts.items())),
-        "part_track_candidate_source_scope": "cached_case_configured_roots_not_uniform_generation_backend",
+        "part_track_candidate_source_scope": "source_manifest_mixed" if len({str(report.get("part_track_candidate_source_scope")) for report in reports}) > 1 else str(reports[0].get("part_track_candidate_source_scope")),
         "candidate_assignment_semantics": "overlap_and_containment_with_whole_object_mask_after_candidate_pool_selection",
-        "uniform_part_track_generation_ready": False,
+        "uniform_part_track_generation_ready": all(bool(report.get("uniform_part_track_generation_ready")) for report in reports),
+        "part_track_source_manifest_ready_all_cases": all(bool(report.get("part_track_source_manifest_ready")) for report in reports),
         "part_geometry_extraction_ready_count": 0,
         "part_pose_ready_count": 0,
         "default_path_uses_bundlesdf_or_nerf": False,
@@ -445,6 +459,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "discovered_part_track_count": report["discovered_part_track_count"],
                 "accepted_part_track_assignment_count": report["accepted_part_track_assignment_count"],
                 "part_split_evidence_state_counts": report["part_split_evidence_state_counts"],
+                "part_track_candidate_source_scope": report.get("part_track_candidate_source_scope"),
+                "uniform_part_track_generation_ready": report.get("uniform_part_track_generation_ready"),
+                "part_track_source_manifest_ready": report.get("part_track_source_manifest_ready"),
                 **FALSE_READY,
             }
             for report in reports
@@ -459,6 +476,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--completion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
     parser.add_argument("--annotation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_annotation_state"))
+    parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_split_evidence"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     parser.add_argument("--extra-part-track-root", action="append", default=[])
