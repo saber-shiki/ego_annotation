@@ -37,6 +37,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require(isinstance(frames, list) and len(frames) == expected, f"{case}: annotation frame count mismatch")
     modules_raw = ann.get("modules")
     modules: dict[str, Any] = modules_raw if isinstance(modules_raw, dict) else {}
+    require("depth_scale_correction" in str(modules.get("camera_depth_backbone")), f"{case}: camera/depth correction not listed in modules")
     require("contact_owner_graph" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
     require("hand_baseline_evidence" in str(modules.get("hand_branch")), f"{case}: hand baseline evidence not listed in modules")
     accepted_contact = 0
@@ -44,6 +45,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     occlusion_mesh_rows = 0
     factor_contact_accept = 0
     hand_baseline_rows = 0
+    camera_depth_observed_rows = 0
     for frame in frames:
         if not isinstance(frame, dict):
             continue
@@ -75,6 +77,11 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
                 occlusion_mesh_rows += 1
         fg_raw = frame.get("factor_graph_solution")
         fg: dict[str, Any] = fg_raw if isinstance(fg_raw, dict) else {}
+        fg_variables_raw = fg.get("variables")
+        fg_variables: dict[str, Any] = fg_variables_raw if isinstance(fg_variables_raw, dict) else {}
+        camera_depth = fg_variables.get("camera_depth_correction") if isinstance(fg_variables.get("camera_depth_correction"), dict) else {}
+        if isinstance(camera_depth, dict) and camera_depth.get("has_direct_observation") is True:
+            camera_depth_observed_rows += 1
         solution_raw = fg.get("solution")
         solution: dict[str, Any] = solution_raw if isinstance(solution_raw, dict) else {}
         factor_contact_accept += int(solution.get("active_contact_hypotheses", 0))
@@ -84,7 +91,8 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require(occlusion_mesh_rows > 0, f"{case}: no occlusion mesh evidence integrated")
     require(factor_contact_accept > 0, f"{case}: factor graph contact switches absent")
     require(hand_baseline_rows > 0, f"{case}: no hand baseline rows integrated")
-    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows}
+    require(camera_depth_observed_rows > 0, f"{case}: no observed camera/depth correction rows integrated")
+    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows}
 
 
 def main() -> None:

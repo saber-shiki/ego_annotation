@@ -746,6 +746,12 @@ V18 now carries the hand-baseline branch rows into the final full annotations. `
 
 This is evidence integration, not accepted occluded-hand pose fill. Current outputs still keep `temporal_occlusion_pose_accepted=false` and `pose_claim=no_occluded_pose_accepted_from_current_hand_baseline`; trash has HaWoR candidate rows, while task5 has explicit HaWoR-missing blockers.
 
+## Implementation Checkpoint 44: Observed Camera/Depth Scale Correction
+
+V18 now has a camera/depth correction artifact in `scripts/build_v18_camera_depth_correction.py`. It samples the reused depth backend at V16 object centers and estimates a per-frame depth-scale correction from `V16 object depth / backend depth patch median`, then smooths log-scale observations temporally. `scripts/validate_v18_camera_depth_correction.py` checks full-timeline rows, direct observation counts, positive scale estimates, and lower energy than the identity prior.
+
+`run_v18_full_pipeline.py` now loads these correction rows into the factor graph as `camera_depth_correction` variables with observation/interpolation state. This replaces the previous identity-only prior with observed scale evidence. The scope remains limited: this is a scale correction for the reused backend, not a new SLAM solve, dense depth refit, or proof that all depth/camera geometry is accurate.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

@@ -583,6 +583,33 @@ def load_mesh_contact_evidence_index(path: Path) -> dict[tuple[int, str, str], d
     return out
 
 
+def load_camera_depth_correction_index(path: Path) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
+    if not path.exists():
+        return {}, {}
+    report = require_dict(load_json(path), "camera depth correction report")
+    out: dict[int, dict[str, Any]] = {}
+    for raw in require_list(report.get("rows"), "camera depth correction rows"):
+        row = require_dict(raw, "camera depth correction row")
+        frame_idx = require_int(row.get("frame_idx"), "camera depth frame_idx")
+        out[frame_idx] = {
+            "source_report": str(path),
+            "depth_scale_estimate": row.get("depth_scale_estimate"),
+            "log_depth_scale_estimate": row.get("log_depth_scale_estimate"),
+            "state": row.get("state"),
+            "has_direct_observation": row.get("has_direct_observation"),
+            "observation": row.get("observation"),
+        }
+    summary = {
+        "source_report": str(path),
+        "observation_rows": report.get("observation_rows"),
+        "full_timeline_rows": report.get("full_timeline_rows"),
+        "depth_scale_estimate_stats": report.get("depth_scale_estimate_stats"),
+        "objective": report.get("objective"),
+        "camera_depth_correction_complete": report.get("camera_depth_correction_complete"),
+    }
+    return out, summary
+
+
 def load_hand_baseline_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1053,7 +1080,14 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, Any], articulation_index: dict[int, list[dict[str, Any]]], articulation_sources: list[dict[str, Any]]) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
+def solve_v18_factor_graph(
+    frames: list[dict[str, Any]],
+    raw_video: dict[str, Any],
+    articulation_index: dict[int, list[dict[str, Any]]],
+    articulation_sources: list[dict[str, Any]],
+    camera_depth_correction_index: dict[int, dict[str, Any]],
+    camera_depth_correction_summary: dict[str, Any],
+) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
     width = finite_float(raw_video.get("width"), 1920.0) if isinstance(raw_video, dict) else 1920.0
     height = finite_float(raw_video.get("height"), 1080.0) if isinstance(raw_video, dict) else 1080.0
     hand_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1061,7 +1095,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
     part_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     articulation_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     per_frame_terms: dict[int, dict[str, Any]] = defaultdict(lambda: {
-        "variables": {"hand_state": [], "object_se3": [], "part_se3": [], "articulation_parameter": [], "contact_switch": [], "occlusion_owner": []},
+        "variables": {"camera_depth_correction": [], "hand_state": [], "object_se3": [], "part_se3": [], "articulation_parameter": [], "contact_switch": [], "occlusion_owner": []},
         "factor_energy_initial": defaultdict(float),
         "factor_energy_after": defaultdict(float),
         "factor_counts": Counter(),
@@ -1176,6 +1210,39 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
     absorb_series("part_se3", part_obs, temporal_weight=1.0, default_weight=1.0, unit="camera_m_translation_plus_optional_pca_rotvec_rad")
     absorb_series("articulation_parameter", articulation_obs, temporal_weight=1.0, default_weight=0.5, unit="relative_part_center_distance_m")
 
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "graph frame_idx")
+        terms = per_frame_terms[frame_idx]
+        correction = camera_depth_correction_index.get(frame_idx, {})
+        scale = finite_float(correction.get("depth_scale_estimate"), 1.0) if correction else 1.0
+        log_scale = finite_float(correction.get("log_depth_scale_estimate"), 0.0) if correction else 0.0
+        observation_raw = correction.get("observation") if isinstance(correction.get("observation"), dict) else None
+        has_direct = bool(correction.get("has_direct_observation") is True)
+        variable = {
+            "variable_id": "camera_depth_scale",
+            "estimate_scale": scale,
+            "estimate_log_scale": log_scale,
+            "state": correction.get("state", "missing_camera_depth_correction_artifact_identity_prior"),
+            "has_direct_observation": has_direct,
+            "observation": observation_raw,
+            "estimate_semantics": "scale_from_backend_depth_to_v16_metric_object_depth",
+        }
+        terms["variables"]["camera_depth_correction"].append(variable)
+        variable_counts["camera_depth_correction"] += 1
+        if has_direct and isinstance(observation_raw, dict):
+            obs_log = finite_float(observation_raw.get("log_depth_scale_observation"), log_scale)
+            initial_e = (0.0 - obs_log) ** 2
+            after_e = (log_scale - obs_log) ** 2
+            terms["factor_counts"]["camera_depth_correction_observation"] += 1
+            factor_counts["camera_depth_correction_observation"] += 1
+            terms["factor_energy_initial"]["camera_depth_correction_observation"] += initial_e
+            terms["factor_energy_after"]["camera_depth_correction_observation"] += after_e
+            energy_initial_total += initial_e
+            energy_after_total += after_e
+        else:
+            terms["factor_counts"]["camera_depth_correction_interpolation"] += 1
+            factor_counts["camera_depth_correction_interpolation"] += 1
+
     active_contact_count = 0
     unresolved_contact_count = 0
     accepted_owner_count = 0
@@ -1229,7 +1296,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             "solver": "v18_numerical_temporal_factor_graph_v1",
             "graph_scope": "full_case_temporal_graph_with_per_frame_marginals",
             "variables": {
-                "camera_depth_correction": {"variable_id": "camera_depth_scale", "estimate": 1.0, "prior": 1.0, "state": "identity_depth_scale_prior_no_casewide_refit_observation"},
+                "camera_depth_correction": terms["variables"]["camera_depth_correction"][0] if terms["variables"].get("camera_depth_correction") else {"variable_id": "camera_depth_scale", "estimate_scale": 1.0, "estimate_log_scale": 0.0, "state": "missing_camera_depth_correction_artifact_identity_prior"},
                 "hand_state": terms["variables"]["hand_state"],
                 "object_se3": terms["variables"]["object_se3"],
                 "part_se3": terms["variables"]["part_se3"],
@@ -1261,7 +1328,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
         "solver": "v18_numerical_temporal_factor_graph_v1",
         "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "articulation_parameter", "contact_switch", "occlusion_owner"],
         "implemented_variable_status": {
-            "camera_depth_correction": "prior_only_identity_scale_no_casewide_depth_refit_observation",
+            "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
             "hand_state": "normalized_bbox_center_track_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available",
@@ -1270,6 +1337,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             "occlusion_owner": "discrete_energy_over_owner_candidates_without_new_depth_order_acceptance",
         },
         "implemented_factor_families": [
+            "camera_depth_scale_observation_residual",
             "hand_bbox_observation_residual",
             "visible_object_surface_pose_observation_residual",
             "visible_part_surface_pose_observation_residual",
@@ -1279,6 +1347,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             "occlusion_owner_candidate_energy",
         ],
         "spec_factor_gaps_remaining": [
+            "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
             "object_mask_depth_registration_residual_is_visible_surface_only_not_complete_geometry_registration",
             "part_SE3_uses_visible_surface_PCA_pose_not_complete_or_occlusion_filled_part_pose",
             "contact_signed_nonpenetration_is_not_yet_solved; current graph uses unsigned mesh distance and temporal ownership",
@@ -1298,6 +1367,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             "continuous_series_count": len(series_summaries),
             "series_summaries": series_summaries,
         },
+        "camera_depth_correction_summary": camera_depth_correction_summary,
         "articulation_sources": articulation_sources,
         "solution_counts": {
             "active_contact_switches": active_contact_count,
@@ -1318,6 +1388,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     v16_path = args.v16_root / case / "annotations_v16_full.json"
     v16_frames = index_v16_frames(v16_path)
     bounded_index = index_bounded_frames(args.bounded_root / case / "v18_bounded_state_solution.json")
+    camera_depth_correction_index, camera_depth_correction_summary = load_camera_depth_correction_index(args.camera_depth_correction_root / case / "v18_camera_depth_correction_report.json")
     hand_baseline_index = load_hand_baseline_index(args.hand_baseline_root / case / "v18_hand_baseline_branch.json")
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
@@ -1450,7 +1521,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 },
             }
         )
-    factor_graph_by_frame, factor_graph_summary = solve_v18_factor_graph(frames, require_dict(state.get("raw_video", {}), "raw_video"), articulation_index, articulation_sources)
+    factor_graph_by_frame, factor_graph_summary = solve_v18_factor_graph(frames, require_dict(state.get("raw_video", {}), "raw_video"), articulation_index, articulation_sources, camera_depth_correction_index, camera_depth_correction_summary)
     for frame in frames:
         frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
         frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
@@ -1465,6 +1536,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "v18_annotation_state": str(state_path),
             "v16_annotations": str(v16_path),
             "bounded_state_solution": str(args.bounded_root / case / "v18_bounded_state_solution.json"),
+            "camera_depth_correction": str(args.camera_depth_correction_root / case / "v18_camera_depth_correction_report.json"),
             "hand_baseline_branch": str(args.hand_baseline_root / case / "v18_hand_baseline_branch.json"),
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
@@ -1491,7 +1563,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "no_v16_capability_replaced_by_weaker_render": True,
         },
         "modules": {
-            "camera_depth_backbone": "v16_metric_camera_depth_reused_as_memoized_backbone",
+            "camera_depth_backbone": "v16_metric_camera_depth_reused_with_observed_backend_to_metric_depth_scale_correction_variables",
             "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_with_integrated_hand_baseline_evidence_and_blockers",
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
@@ -1791,6 +1863,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--annotation-state-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_annotation_state"))
     parser.add_argument("--v16-root", type=Path, default=Path("/data2/ego_annotation_outputs/v16_full_pipeline"))
     parser.add_argument("--bounded-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
+    parser.add_argument("--camera-depth-correction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_camera_depth_correction"))
     parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
