@@ -13,6 +13,9 @@ from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from scipy.sparse import diags  # type: ignore[reportMissingTypeStubs]
+from scipy.sparse.linalg import spsolve  # type: ignore[reportMissingTypeStubs]
+from scipy.spatial.transform import Rotation  # type: ignore[reportMissingTypeStubs]
 
 STATUS = "v18_full_pipeline"
 HAND_EDGES = [
@@ -288,6 +291,42 @@ def stats(values: list[float]) -> dict[str, Any]:
     return {"count": len(xs), "median": pct(50), "p95": pct(95), "min": xs[0], "max": xs[-1]}
 
 
+
+def pca_pose_observation(points: np.ndarray) -> dict[str, Any] | None:
+    if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] < 6 or not np.isfinite(points).all():
+        return None
+    center = points.mean(axis=0)
+    centered = points - center
+    try:
+        _, singular_values, vt = np.linalg.svd(centered, full_matrices=False)
+    except np.linalg.LinAlgError:
+        return None
+    if vt.shape != (3, 3) or not np.isfinite(vt).all():
+        return None
+    axes = vt.T.copy()
+    # Deterministic sign convention reduces arbitrary PCA sign flips without pretending semantic orientation is known.
+    for col in range(3):
+        dominant = int(np.argmax(np.abs(axes[:, col])))
+        if axes[dominant, col] < 0:
+            axes[:, col] *= -1.0
+    if np.linalg.det(axes) < 0:
+        axes[:, 2] *= -1.0
+    try:
+        rotation_vector = Rotation.from_matrix(axes).as_rotvec()
+    except ValueError:
+        return None
+    extent = points.max(axis=0) - points.min(axis=0)
+    denom = float(singular_values[0]) if singular_values.shape[0] and singular_values[0] > 1e-9 else 1.0
+    anisotropy = float((singular_values[0] - singular_values[-1]) / denom) if singular_values.shape[0] == 3 else 0.0
+    return {
+        "center": center,
+        "rotation_matrix": axes,
+        "rotation_vector": rotation_vector,
+        "extent": extent,
+        "singular_values": singular_values,
+        "anisotropy": anisotropy,
+    }
+
 def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, dict[str, Any]], Path | None]:
     if not report_path.exists():
         return {}, {}, None
@@ -314,6 +353,7 @@ def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str]
         mn = pts.min(axis=0)
         mx = pts.max(axis=0)
         center = pts.mean(axis=0)
+        pca_pose = pca_pose_observation(pts)
         index[(int(frame_idx[row_idx]), obj)] = {
             "archive_npz": str(archive_path),
             "archive_row_index": row_idx,
@@ -322,6 +362,10 @@ def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str]
             "world_bbox_max_m": [float(v) for v in mx.tolist()],
             "world_centroid_m": [float(v) for v in center.tolist()],
             "extent_m": [float(v) for v in (mx - mn).tolist()],
+            "pca_rotation_world_from_object": [float(v) for v in pca_pose["rotation_vector"].tolist()] if pca_pose else None,
+            "pca_rotation_matrix_world_from_object": [[float(x) for x in row] for row in pca_pose["rotation_matrix"].tolist()] if pca_pose else None,
+            "pca_singular_values": [float(v) for v in pca_pose["singular_values"].tolist()] if pca_pose else None,
+            "pca_anisotropy": float(pca_pose["anisotropy"]) if pca_pose else None,
         }
         by_object_vertices[obj].append(pts)
     completion: dict[str, dict[str, Any]] = {}
@@ -455,16 +499,22 @@ def object_pose_candidate(obj: dict[str, Any], geom: dict[str, Any] | None) -> d
         return {
             "type": "approximate_visible_surface_world_se3_candidate",
             "translation_world_m": geom.get("world_centroid_m"),
-            "rotation_world_from_object": "pca_or_identity_not_stabilized_in_baseline",
+            "rotation_world_from_object_rotvec": geom.get("pca_rotation_world_from_object"),
+            "rotation_world_from_object_matrix": geom.get("pca_rotation_matrix_world_from_object"),
+            "rotation_source": "PCA_axes_from_visible_metric_surface_points_with_sign_canonicalization",
             "scale_extent_m": geom.get("extent_m"),
+            "pca_singular_values": geom.get("pca_singular_values"),
+            "pca_anisotropy": geom.get("pca_anisotropy"),
             "confidence": confidence,
-            "uncertainty": "visible_surface_partial_candidate_not_ground_truth_pose",
+            "uncertainty": "visible_surface_partial_se3_candidate_not_canonical_object_pose",
             "source": {"visible_surface_npz": geom.get("archive_npz"), "archive_row_index": geom.get("archive_row_index")},
         }
     return {
         "type": "approximate_image_bbox_pose_candidate_or_unresolved",
         "translation_world_m": None,
-        "rotation_world_from_object": "unknown",
+        "rotation_world_from_object_rotvec": None,
+        "rotation_world_from_object_matrix": None,
+        "rotation_source": "unobserved",
         "scale_extent_m": None,
         "confidence": "unknown" if obj.get("visibility_state") != "out_of_frame" else "inactive",
         "uncertainty": "no_depth_backed_surface_for_frame",
@@ -472,33 +522,559 @@ def object_pose_candidate(obj: dict[str, Any], geom: dict[str, Any] | None) -> d
     }
 
 
-def factor_graph_frame(frame: dict[str, Any], objects: list[dict[str, Any]], hands: list[dict[str, Any]], contact_hypotheses: list[dict[str, Any]]) -> dict[str, Any]:
-    active_contacts = [c for c in contact_hypotheses if c.get("confidence") in {"medium", "low"}]
-    unresolved_contacts = [c for c in contact_hypotheses if c.get("confidence") in {"unknown", "very_low_depth_contradiction"}]
+
+def bbox_area_float(value: Any) -> float | None:
+    box = bbox_tuple(value)
+    if box is None:
+        return None
+    x0, y0, x1, y1 = box
+    return float(max(0, x1 - x0) * max(0, y1 - y0))
+
+
+def bbox_intersection_area(a: Any, b: Any) -> float:
+    ba = bbox_tuple(a)
+    bb = bbox_tuple(b)
+    if ba is None or bb is None:
+        return 0.0
+    ax0, ay0, ax1, ay1 = ba
+    bx0, by0, bx1, by1 = bb
+    iw = max(0, min(ax1, bx1) - max(ax0, bx0))
+    ih = max(0, min(ay1, by1) - max(ay0, by0))
+    return float(iw * ih)
+
+
+def bbox_iou_value(a: Any, b: Any) -> float:
+    inter = bbox_intersection_area(a, b)
+    aa = bbox_area_float(a) or 0.0
+    bb = bbox_area_float(b) or 0.0
+    denom = aa + bb - inter
+    return inter / denom if denom > 0 else 0.0
+
+
+def bbox_min_coverage(a: Any, b: Any) -> float:
+    inter = bbox_intersection_area(a, b)
+    aa = bbox_area_float(a) or 0.0
+    bb = bbox_area_float(b) or 0.0
+    denom = min(aa, bb)
+    return inter / denom if denom > 0 else 0.0
+
+
+def bbox_center_distance_norm(a: Any, b: Any, width: float, height: float) -> float | None:
+    ca = bbox_center(a)
+    cb = bbox_center(b)
+    if ca is None or cb is None:
+        return None
+    diag = math.hypot(width, height)
+    if diag <= 0:
+        return None
+    return math.hypot(ca[0] - cb[0], ca[1] - cb[1]) / diag
+
+
+def numeric_vector(value: Any, dim: int) -> np.ndarray | None:
+    if not (isinstance(value, list) and len(value) == dim):
+        return None
+    vals = [finite_float(v, float("nan")) for v in value]
+    if not all(math.isfinite(v) for v in vals):
+        return None
+    return np.asarray(vals, dtype=np.float64)
+
+
+def solve_tridiagonal(lower: np.ndarray, diag: np.ndarray, upper: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    """Solve the temporal normal equations with SciPy sparse linear algebra.
+
+    The matrix is tridiagonal because the current continuous factors are
+    observation terms plus adjacent-frame temporal terms.  The factor graph
+    construction is explicit in `solve_temporal_series`; this function only
+    delegates the numerical linear solve to SciPy instead of maintaining a
+    hand-written optimizer in the artifact script.
+    """
+    n = int(diag.shape[0])
+    if n == 0:
+        return rhs.copy()
+    if n == 1:
+        return rhs / diag[0]
+    matrix = diags([lower, diag, upper], offsets=[-1, 0, 1], shape=(n, n), format="csc")  # type: ignore[reportArgumentType]
+    solved = spsolve(matrix, rhs)
+    out = np.asarray(solved, dtype=np.float64)
+    if out.ndim == 1 and rhs.ndim == 2:
+        out = out[:, None]
+    return out
+
+
+def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: float, default_obs_weight: float, unit: str) -> dict[str, Any]:
+    clean: list[dict[str, Any]] = []
+    for obs in observations:
+        value = obs.get("value")
+        if isinstance(value, np.ndarray) and value.ndim == 1 and np.isfinite(value).all():
+            clean.append(obs)
+    clean.sort(key=lambda item: (require_int(item.get("frame_idx"), "series frame_idx"), str(item.get("variable_id"))))
+    if not clean:
+        return {"estimates": {}, "summary": {"variable_count": 0, "factor_count": 0, "energy_initial": 0.0, "energy_after": 0.0, "unit": unit, "dimension": 0}}
+    n = len(clean)
+    dim = int(clean[0]["value"].shape[0])
+    diag = np.zeros(n, dtype=np.float64)
+    lower = np.zeros(max(0, n - 1), dtype=np.float64)
+    upper = np.zeros(max(0, n - 1), dtype=np.float64)
+    rhs = np.zeros((n, dim), dtype=np.float64)
+    y = np.vstack([obs["value"] for obs in clean]).astype(np.float64)
+    obs_weights = np.asarray([max(1e-6, finite_float(obs.get("weight"), default_obs_weight)) for obs in clean], dtype=np.float64)
+    for i, w in enumerate(obs_weights):
+        diag[i] += w
+        rhs[i] += w * y[i]
+    edge_weights: list[float] = []
+    for i in range(1, n):
+        dt = max(1, require_int(clean[i].get("frame_idx"), "series frame_idx") - require_int(clean[i - 1].get("frame_idx"), "series frame_idx"))
+        ew = temporal_weight / float(dt * dt)
+        edge_weights.append(ew)
+        diag[i - 1] += ew
+        diag[i] += ew
+        upper[i - 1] -= ew
+        lower[i - 1] -= ew
+    # The positive prior below is not a fallback value; it keeps the linear system nonsingular for one-observation tracks.
+    diag += 1e-9
+    estimate = np.zeros((n, dim), dtype=np.float64)
+    for d in range(dim):
+        estimate[:, d] = solve_tridiagonal(lower, diag, upper, rhs[:, d])
+
+    def total_energy(x: np.ndarray) -> float:
+        obs_e = float(np.sum(obs_weights[:, None] * (x - y) ** 2))
+        tmp_e = 0.0
+        for j, ew in enumerate(edge_weights, start=1):
+            tmp_e += float(ew * np.sum((x[j] - x[j - 1]) ** 2))
+        return obs_e + tmp_e
+
+    initial = y.copy()
+    energy_initial = total_energy(initial)
+    energy_after = total_energy(estimate)
+    estimates: dict[int, dict[str, Any]] = {}
+    for i, obs in enumerate(clean):
+        frame_idx = require_int(obs.get("frame_idx"), "series frame_idx")
+        obs_residual = float(np.linalg.norm(estimate[i] - y[i]))
+        temporal_before = 0.0
+        temporal_after = 0.0
+        if i > 0:
+            temporal_before += float(edge_weights[i - 1] * np.sum((initial[i] - initial[i - 1]) ** 2))
+            temporal_after += float(edge_weights[i - 1] * np.sum((estimate[i] - estimate[i - 1]) ** 2))
+        if i < n - 1:
+            temporal_before += float(edge_weights[i] * np.sum((initial[i + 1] - initial[i]) ** 2))
+            temporal_after += float(edge_weights[i] * np.sum((estimate[i + 1] - estimate[i]) ** 2))
+        estimates[frame_idx] = {
+            "variable_id": obs.get("variable_id"),
+            "source": obs.get("source"),
+            "initial": [float(v) for v in initial[i].tolist()],
+            "estimate": [float(v) for v in estimate[i].tolist()],
+            "observation_weight": float(obs_weights[i]),
+            "observation_residual_norm": obs_residual,
+            "local_temporal_energy_initial": temporal_before / 2.0,
+            "local_temporal_energy_after": temporal_after / 2.0,
+            "unit": unit,
+            "dimension": dim,
+            "estimate_semantics": "translation_xyz_m_and_rotation_vector_xyz_rad" if dim == 6 and "rotvec" in unit else "observable_coordinate_vector",
+        }
     return {
-        "solver": "v18_bounded_single_pass_factor_graph_baseline",
-        "variables": {
-            "camera_depth_correction": "identity_candidate_with_uncertainty",
-            "hand_state_count": len(hands),
-            "object_or_part_pose_candidate_count": len(objects),
-            "contact_switch_candidate_count": len(contact_hypotheses),
-            "occlusion_owner_candidate_count": sum(1 for h in hands if h.get("occlusion_owner_hypothesis", {}).get("owner_candidates")),
-        },
-        "factors": [
-            "hand_observation_residual",
-            "object_mask_depth_surface_residual",
-            "temporal_visibility_prior",
-            "contact_overlap_depth_prior",
-            "occlusion_owner_candidate_prior",
-        ],
-        "solution": {
-            "state": "approximate_candidate_solution",
-            "active_contact_hypotheses": len(active_contacts),
-            "unresolved_or_contradicted_contact_hypotheses": len(unresolved_contacts),
-            "all_outputs_approximate_uncertain": True,
+        "estimates": estimates,
+        "summary": {
+            "variable_count": n,
+            "factor_count": n + len(edge_weights),
+            "observation_factor_count": n,
+            "temporal_factor_count": len(edge_weights),
+            "energy_initial": energy_initial,
+            "energy_after": energy_after,
+            "energy_delta": energy_initial - energy_after,
+            "unit": unit,
+            "dimension": dim,
+            "estimate_semantics": "translation_xyz_m_and_rotation_vector_xyz_rad" if dim == 6 and "rotvec" in unit else "observable_coordinate_vector",
         },
     }
 
+
+def load_articulation_index(path: Path) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
+    if not path.exists():
+        return {}, []
+    report = require_dict(load_json(path), "articulation fit report")
+    per_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    sources: list[dict[str, Any]] = []
+    for raw in require_list(report.get("rows"), "articulation rows"):
+        row = require_dict(raw, "articulation row")
+        object_id = str(row.get("object_id"))
+        source_id = str(row.get("source_candidate_id", object_id))
+        fit_state = str(row.get("articulation_fit_state"))
+        source_summary = {
+            "object_id": object_id,
+            "source_candidate_id": source_id,
+            "part_track_labels": row.get("part_track_labels"),
+            "fit_type": row.get("fit_type"),
+            "fit_scope": row.get("fit_scope"),
+            "coordinate_frame": row.get("coordinate_frame"),
+            "shared_frame_count": row.get("shared_frame_count"),
+            "circle_radius_m": row.get("circle_radius_m"),
+            "circle_angle_span_deg": row.get("circle_angle_span_deg"),
+            "radial_residual_m": row.get("radial_residual_m"),
+            "plane_residual_m": row.get("plane_residual_m"),
+            "articulation_fit_state": fit_state,
+            "articulation_model_ready": row.get("articulation_model_ready"),
+            "part_pose_ready": row.get("part_pose_ready"),
+            "fit_blockers": row.get("fit_blockers"),
+        }
+        sources.append(source_summary)
+        for raw_frame in row.get("frame_residual_rows", []):
+            if not isinstance(raw_frame, dict):
+                continue
+            frame_idx = require_int(raw_frame.get("frame_idx"), "articulation residual frame_idx")
+            rel = finite_float(raw_frame.get("relative_center_distance_m"), float("nan"))
+            radial = finite_float(raw_frame.get("radial_residual_m"), float("nan"))
+            plane = finite_float(raw_frame.get("plane_residual_m"), float("nan"))
+            if not math.isfinite(rel):
+                continue
+            per_frame[frame_idx].append(
+                {
+                    "object_id": object_id,
+                    "source_candidate_id": source_id,
+                    "part_track_labels": row.get("part_track_labels"),
+                    "articulation_coordinate_observation_m": rel,
+                    "radial_residual_m": radial if math.isfinite(radial) else None,
+                    "plane_residual_m": plane if math.isfinite(plane) else None,
+                    "fit_state": fit_state,
+                    "articulation_model_ready": row.get("articulation_model_ready"),
+                    "source_summary": source_summary,
+                }
+            )
+    return per_frame, sources
+
+
+def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None, width: float, height: float) -> dict[str, Any]:
+    hand_box = hand.get("bbox_xyxy") if hand else None
+    obj_box = obj.get("bbox_xyxy") if obj else None
+    iou = bbox_iou_value(hand_box, obj_box)
+    coverage = bbox_min_coverage(hand_box, obj_box)
+    dist = bbox_center_distance_norm(hand_box, obj_box, width, height)
+    dist_term = (dist if dist is not None else 1.0) ** 2
+    image_overlap = bool(hyp.get("evidence", {}).get("image_overlap_candidate"))
+    image_contact = bool(hyp.get("evidence", {}).get("pair_contact_image_candidate"))
+    depth_compatible = bool(hyp.get("evidence", {}).get("metric_depth_compatible_candidate"))
+    depth_state = str(hyp.get("evidence", {}).get("pair_depth_gap_state"))
+    depth_contradiction = "behind" in depth_state or "contradiction" in str(hyp.get("state")) or "rejected" in str(hyp.get("state"))
+    image_support = max(iou, coverage, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
+    # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
+    on_energy = (1.0 - image_support) ** 2 + dist_term
+    if depth_compatible:
+        on_energy *= 0.5
+    if depth_contradiction:
+        on_energy += 1.5
+    off_energy = image_support ** 2
+    if depth_compatible:
+        off_energy += 0.5
+    if depth_contradiction:
+        off_energy *= 0.5
+    switch_on = on_energy < off_energy
+    return {
+        "hand_side": hyp.get("hand_side"),
+        "object_id": hyp.get("object_id"),
+        "variable_id": f"contact::{hyp.get('hand_side')}::{hyp.get('object_id')}",
+        "estimate": bool(switch_on),
+        "on_energy": float(on_energy),
+        "off_energy": float(off_energy),
+        "chosen_energy": float(on_energy if switch_on else off_energy),
+        "image_iou": float(iou),
+        "min_box_coverage": float(coverage),
+        "center_distance_norm": float(dist) if dist is not None else None,
+        "depth_contradiction": bool(depth_contradiction),
+        "metric_depth_compatible_candidate": depth_compatible,
+        "evidence": hyp.get("evidence"),
+    }
+
+
+def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
+    occlusion = hand.get("occlusion_owner_hypothesis")
+    if not isinstance(occlusion, dict):
+        return None
+    candidates = occlusion.get("owner_candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    evaluated: list[dict[str, Any]] = []
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        iou = finite_float(cand.get("iou"), 0.0)
+        hand_cov = finite_float(cand.get("hand_box_coverage_by_object_box"), 0.0)
+        object_cov = finite_float(cand.get("object_box_coverage_by_hand_box"), 0.0)
+        depth_resolved = bool(cand.get("depth_order_resolved") or cand.get("occluder_owner_accepted"))
+        support = max(0.0, min(1.0, 0.45 * iou + 0.45 * hand_cov + 0.10 * object_cov))
+        energy = (1.0 - support) ** 2
+        if not depth_resolved:
+            energy += 0.25
+        evaluated.append(
+            {
+                "object_id": cand.get("object_id"),
+                "name": cand.get("name"),
+                "energy": float(energy),
+                "box_iou": float(iou),
+                "hand_coverage": float(hand_cov),
+                "object_coverage": float(object_cov),
+                "depth_order_resolved": depth_resolved,
+                "accepted_by_depth_evidence": bool(cand.get("occluder_owner_accepted")),
+            }
+        )
+    if not evaluated:
+        return None
+    # Unowned is an explicit competing state. It prevents weak overlap evidence from being mislabeled accepted ownership.
+    evaluated.append({"object_id": None, "name": "unowned", "energy": 0.55, "box_iou": 0.0, "hand_coverage": 0.0, "object_coverage": 0.0, "depth_order_resolved": False, "accepted_by_depth_evidence": False})
+    chosen = min(evaluated, key=lambda row: finite_float(row.get("energy"), 999.0))
+    return {
+        "hand_side": hand.get("hand_side"),
+        "variable_id": f"occlusion_owner::{hand.get('hand_side')}",
+        "chosen_owner_object_id": chosen.get("object_id"),
+        "chosen_owner_name": chosen.get("name"),
+        "chosen_energy": chosen.get("energy"),
+        "accepted_owner": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence")),
+        "state": "accepted_depth_order_owner" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") else "inferred_candidate_or_unowned_not_accepted",
+        "candidate_energies": evaluated,
+    }
+
+
+def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, Any], articulation_index: dict[int, list[dict[str, Any]]], articulation_sources: list[dict[str, Any]]) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
+    width = finite_float(raw_video.get("width"), 1920.0) if isinstance(raw_video, dict) else 1920.0
+    height = finite_float(raw_video.get("height"), 1080.0) if isinstance(raw_video, dict) else 1080.0
+    hand_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    object_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    part_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    articulation_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    per_frame_terms: dict[int, dict[str, Any]] = defaultdict(lambda: {
+        "variables": {"hand_state": [], "object_se3": [], "part_se3": [], "articulation_parameter": [], "contact_switch": [], "occlusion_owner": []},
+        "factor_energy_initial": defaultdict(float),
+        "factor_energy_after": defaultdict(float),
+        "factor_counts": Counter(),
+    })
+    hand_lookup_by_frame: dict[int, dict[str, dict[str, Any]]] = {}
+    object_lookup_by_frame: dict[int, dict[str, dict[str, Any]]] = {}
+
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "graph frame_idx")
+        hand_lookup = {str(h.get("hand_side")): h for h in frame.get("hands", []) if isinstance(h, dict)}
+        object_lookup = {str(o.get("object_id")): o for o in frame.get("objects", []) if isinstance(o, dict)}
+        hand_lookup_by_frame[frame_idx] = hand_lookup
+        object_lookup_by_frame[frame_idx] = object_lookup
+        for hand in hand_lookup.values():
+            center = bbox_center(hand.get("bbox_xyxy"))
+            if center is None or width <= 0 or height <= 0:
+                continue
+            side = str(hand.get("hand_side"))
+            confidence = str(hand.get("confidence"))
+            weight = 4.0 if confidence == "medium" else 1.5 if confidence == "low" else 0.5
+            hand_obs[f"hand::{side}"].append({"frame_idx": frame_idx, "variable_id": f"hand::{side}", "value": np.asarray([center[0] / width, center[1] / height], dtype=np.float64), "weight": weight, "source": "bbox_center_normalized"})
+        for obj in object_lookup.values():
+            pose_raw = obj.get("object_pose_candidate")
+            pose: dict[str, Any] = pose_raw if isinstance(pose_raw, dict) else {}
+            trans = numeric_vector(pose.get("translation_world_m"), 3)
+            rotvec = numeric_vector(pose.get("rotation_world_from_object_rotvec"), 3)
+            if trans is not None:
+                geom_raw = obj.get("visible_geometry_candidate")
+                geom: dict[str, Any] = geom_raw if isinstance(geom_raw, dict) else {}
+                vertices = max(1.0, finite_float(geom.get("vertex_count"), 1.0))
+                anisotropy = max(0.0, finite_float(geom.get("pca_anisotropy"), 0.0))
+                weight = min(8.0, 1.0 + math.log1p(vertices) / 2.0)
+                object_id = str(obj.get("object_id"))
+                if rotvec is not None:
+                    value = np.concatenate([trans, rotvec])
+                    source = "visible_surface_world_centroid_plus_pca_rotvec"
+                    weight *= max(0.5, min(1.5, anisotropy + 0.5))
+                else:
+                    value = trans
+                    source = "visible_surface_world_centroid_translation_only_rotation_unobserved"
+                object_obs[f"object_se3::{object_id}"].append({"frame_idx": frame_idx, "variable_id": f"object_se3::{object_id}", "value": value, "weight": weight, "source": source})
+            for part in obj.get("parts", []):
+                if not isinstance(part, dict):
+                    continue
+                center = numeric_vector(part.get("center_camera_m"), 3)
+                if center is None:
+                    continue
+                label = str(part.get("part_track_label"))
+                object_id = str(obj.get("object_id"))
+                containment = finite_float(part.get("part_containment_in_object"), 0.5)
+                weight = max(0.25, min(4.0, 0.5 + 3.0 * containment))
+                part_obs[f"part_se3::{object_id}::{label}"].append({"frame_idx": frame_idx, "variable_id": f"part_se3::{object_id}::{label}", "value": center, "weight": weight, "source": "part_visible_surface_center_camera"})
+        for art in articulation_index.get(frame_idx, []):
+            object_id = str(art.get("object_id"))
+            source_id = str(art.get("source_candidate_id"))
+            value = np.asarray([finite_float(art.get("articulation_coordinate_observation_m"), 0.0)], dtype=np.float64)
+            state = str(art.get("fit_state"))
+            weight = 2.0 if "supported" in state else 0.5
+            articulation_obs[f"articulation::{object_id}::{source_id}"].append({"frame_idx": frame_idx, "variable_id": f"articulation::{object_id}::{source_id}", "value": value, "weight": weight, "source": "visible_part_relative_center_distance"})
+
+    series_summaries: dict[str, Any] = {}
+    variable_counts = Counter()
+    factor_counts = Counter()
+    energy_initial_total = 0.0
+    energy_after_total = 0.0
+
+    def absorb_series(kind: str, grouped: dict[str, list[dict[str, Any]]], temporal_weight: float, default_weight: float, unit: str) -> None:
+        nonlocal energy_initial_total, energy_after_total
+        for variable_id, obs in grouped.items():
+            solved = solve_temporal_series(obs, temporal_weight, default_weight, unit)
+            summary = solved["summary"]
+            series_summaries[variable_id] = summary
+            variable_counts[kind] += int(summary.get("variable_count", 0))
+            factor_counts[f"{kind}_observation"] += int(summary.get("observation_factor_count", 0))
+            factor_counts[f"{kind}_temporal"] += int(summary.get("temporal_factor_count", 0))
+            energy_initial_total += finite_float(summary.get("energy_initial"), 0.0)
+            energy_after_total += finite_float(summary.get("energy_after"), 0.0)
+            for frame_idx, est in solved["estimates"].items():
+                terms = per_frame_terms[frame_idx]
+                if kind == "hand_state":
+                    terms["variables"]["hand_state"].append(est)
+                elif kind == "object_se3":
+                    terms["variables"]["object_se3"].append(est)
+                elif kind == "part_se3":
+                    terms["variables"]["part_se3"].append(est)
+                elif kind == "articulation_parameter":
+                    terms["variables"]["articulation_parameter"].append(est)
+                obs_energy = est["observation_weight"] * (est["observation_residual_norm"] ** 2)
+                terms["factor_energy_after"][f"{kind}_observation"] += obs_energy
+                terms["factor_energy_after"][f"{kind}_temporal"] += finite_float(est.get("local_temporal_energy_after"), 0.0)
+                terms["factor_energy_initial"][f"{kind}_temporal"] += finite_float(est.get("local_temporal_energy_initial"), 0.0)
+                terms["factor_counts"][f"{kind}_observation"] += 1
+                terms["factor_counts"][f"{kind}_temporal"] += 1
+
+    absorb_series("hand_state", hand_obs, temporal_weight=0.8, default_weight=1.0, unit="normalized_image_xy")
+    absorb_series("object_se3", object_obs, temporal_weight=2.0, default_weight=1.0, unit="world_m_translation_plus_optional_pca_rotvec_rad")
+    absorb_series("part_se3", part_obs, temporal_weight=1.0, default_weight=1.0, unit="camera_m_translation")
+    absorb_series("articulation_parameter", articulation_obs, temporal_weight=1.0, default_weight=0.5, unit="relative_part_center_distance_m")
+
+    active_contact_count = 0
+    unresolved_contact_count = 0
+    accepted_owner_count = 0
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "graph frame_idx")
+        hands = hand_lookup_by_frame.get(frame_idx, {})
+        objects = object_lookup_by_frame.get(frame_idx, {})
+        terms = per_frame_terms[frame_idx]
+        for hyp in frame.get("contact_hypotheses", []):
+            if not isinstance(hyp, dict):
+                continue
+            switch = contact_switch_energy(hyp, hands.get(str(hyp.get("hand_side"))), objects.get(str(hyp.get("object_id"))), width, height)
+            terms["variables"]["contact_switch"].append(switch)
+            terms["factor_counts"]["contact_switch_discrete"] += 1
+            factor_counts["contact_switch_discrete"] += 1
+            variable_counts["contact_switch"] += 1
+            energy_initial_total += finite_float(switch.get("off_energy"), 0.0)
+            energy_after_total += finite_float(switch.get("chosen_energy"), 0.0)
+            terms["factor_energy_initial"]["contact_switch_discrete"] += finite_float(switch.get("off_energy"), 0.0)
+            terms["factor_energy_after"]["contact_switch_discrete"] += finite_float(switch.get("chosen_energy"), 0.0)
+            if switch.get("estimate") is True:
+                active_contact_count += 1
+            elif hyp.get("confidence") in {"unknown", "very_low_depth_contradiction"}:
+                unresolved_contact_count += 1
+        for hand in hands.values():
+            owner = occlusion_owner_energy(hand)
+            if owner is None:
+                continue
+            terms["variables"]["occlusion_owner"].append(owner)
+            terms["factor_counts"]["occlusion_owner_discrete"] += 1
+            factor_counts["occlusion_owner_discrete"] += 1
+            variable_counts["occlusion_owner"] += 1
+            initial_energy = 0.55
+            chosen_energy = finite_float(owner.get("chosen_energy"), initial_energy)
+            energy_initial_total += initial_energy
+            energy_after_total += chosen_energy
+            terms["factor_energy_initial"]["occlusion_owner_discrete"] += initial_energy
+            terms["factor_energy_after"]["occlusion_owner_discrete"] += chosen_energy
+            if owner.get("accepted_owner") is True:
+                accepted_owner_count += 1
+
+    by_frame: dict[int, dict[str, Any]] = {}
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "graph frame_idx")
+        terms = per_frame_terms[frame_idx]
+        local_initial = float(sum(float(v) for v in terms["factor_energy_initial"].values()))
+        local_after = float(sum(float(v) for v in terms["factor_energy_after"].values()))
+        contact_switches = terms["variables"]["contact_switch"]
+        occlusion_owners = terms["variables"]["occlusion_owner"]
+        by_frame[frame_idx] = {
+            "solver": "v18_numerical_temporal_factor_graph_v1",
+            "graph_scope": "full_case_temporal_graph_with_per_frame_marginals",
+            "variables": {
+                "camera_depth_correction": {"variable_id": "camera_depth_scale", "estimate": 1.0, "prior": 1.0, "state": "identity_depth_scale_prior_no_casewide_refit_observation"},
+                "hand_state": terms["variables"]["hand_state"],
+                "object_se3": terms["variables"]["object_se3"],
+                "part_se3": terms["variables"]["part_se3"],
+                "articulation_parameter": terms["variables"]["articulation_parameter"],
+                "contact_switch": contact_switches,
+                "occlusion_owner": occlusion_owners,
+            },
+            "factors": dict(sorted(terms["factor_counts"].items())),
+            "objective": {
+                "local_energy_initial": local_initial,
+                "local_energy_after": local_after,
+                "local_energy_delta": local_initial - local_after,
+                "energy_units": "mixed_normalized_squared_residuals_with_metric_translation_and_rotation_vector_terms",
+            },
+            "inference": {
+                "continuous_method": "weighted_temporal_least_squares_scipy_sparse_spsolve",
+                "discrete_method": "exact_min_energy_choice_for_binary_contact_and_occlusion_owner_variables",
+                "not_solved_by_threshold_gate": True,
+            },
+            "solution": {
+                "state": "numerical_factor_graph_candidate_solution",
+                "active_contact_hypotheses": sum(1 for row in contact_switches if row.get("estimate") is True),
+                "unresolved_or_contradicted_contact_hypotheses": sum(1 for row in contact_switches if row.get("depth_contradiction") or row.get("metric_depth_compatible_candidate") is False),
+                "accepted_occlusion_owner_count": sum(1 for row in occlusion_owners if row.get("accepted_owner") is True),
+                "all_outputs_approximate_uncertain": True,
+            },
+        }
+    summary = {
+        "solver": "v18_numerical_temporal_factor_graph_v1",
+        "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "articulation_parameter", "contact_switch", "occlusion_owner"],
+        "implemented_variable_status": {
+            "camera_depth_correction": "prior_only_identity_scale_no_casewide_depth_refit_observation",
+            "hand_state": "normalized_bbox_center_track_observation",
+            "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available",
+            "part_se3": "visible_part_center_translation_only_rotation_unresolved_in_current_part_surface_artifact",
+            "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
+            "contact_switch": "discrete_energy_from_overlap_and_available_depth_candidate_evidence",
+            "occlusion_owner": "discrete_energy_over_owner_candidates_without_new_depth_order_acceptance",
+        },
+        "implemented_factor_families": [
+            "hand_bbox_observation_residual",
+            "visible_object_surface_pose_observation_residual",
+            "visible_part_center_observation_residual",
+            "adjacent_frame_temporal_consistency",
+            "articulation_visible_coordinate_residual",
+            "contact_overlap_depth_candidate_energy",
+            "occlusion_owner_candidate_energy",
+        ],
+        "spec_factor_gaps_remaining": [
+            "object_mask_depth_registration_residual_is_visible_surface_only_not_complete_geometry_registration",
+            "rigid_articulation_consistency_does_not_yet_solve_full_part_SE3",
+            "contact_nonpenetration_is_not_yet_full_geometry_nonpenetration",
+            "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
+        ],
+        "variable_counts": dict(sorted(variable_counts.items())),
+        "factor_counts": dict(sorted(factor_counts.items())),
+        "objective": {
+            "energy_initial": energy_initial_total,
+            "energy_after": energy_after_total,
+            "energy_delta": energy_initial_total - energy_after_total,
+            "energy_units": "mixed_normalized_squared_residuals_with_metric_translation_and_rotation_vector_terms",
+        },
+        "inference": {
+            "continuous_method": "weighted temporal least-squares solved by SciPy sparse linear systems for each observed track",
+            "discrete_method": "exact min-energy assignment for each contact switch and occlusion owner variable",
+            "continuous_series_count": len(series_summaries),
+            "series_summaries": series_summaries,
+        },
+        "articulation_sources": articulation_sources,
+        "solution_counts": {
+            "active_contact_switches": active_contact_count,
+            "unresolved_or_depth_contradicted_contacts": unresolved_contact_count,
+            "accepted_occlusion_owners": accepted_owner_count,
+        },
+        "limitations": [
+            "The graph estimates candidate states from available observations; it does not invent hidden object geometry where no reconstruction exists.",
+            "Object SE(3) variables use visible-surface translation plus PCA rotation observations when available; part rotations remain unresolved because the current part-surface artifact stores center/extent/counts but not part point coordinates.",
+            "Occlusion owner variables compete over candidates, but accepted ownership remains false unless depth-order evidence supports it.",
+        ],
+    }
+    return by_frame, summary
 
 def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any]:
     state_path = args.annotation_state_root / case / "v18_annotation_state.json"
@@ -508,6 +1084,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     bounded_index = index_bounded_frames(args.bounded_root / case / "v18_bounded_state_solution.json")
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
+    articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
     frame_count = require_int(state.get("frame_count"), "frame_count")
     fps = finite_float(state.get("fps"), 30.0)
     frames: list[dict[str, Any]] = []
@@ -617,7 +1194,6 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 "hands": hands,
                 "objects": objects,
                 "contact_hypotheses": contact_hypotheses,
-                "factor_graph_solution": factor_graph_frame(src_frame, objects, hands, contact_hypotheses),
                 "frame_summary": {
                     "hand_count": len(hands),
                     "object_count": len(objects),
@@ -627,6 +1203,12 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 },
             }
         )
+    factor_graph_by_frame, factor_graph_summary = solve_v18_factor_graph(frames, require_dict(state.get("raw_video", {}), "raw_video"), articulation_index, articulation_sources)
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
+        frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
+    module_counts["factor_graph_variables"] += sum(int(v) for v in factor_graph_summary.get("variable_counts", {}).values())
+    module_counts["factor_graph_factors"] += sum(int(v) for v in factor_graph_summary.get("factor_counts", {}).values())
     out = {
         "method": "run_v18_full_pipeline",
         "status": STATUS,
@@ -638,6 +1220,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "bounded_state_solution": str(args.bounded_root / case / "v18_bounded_state_solution.json"),
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
+            "articulation_fit_candidates": str(args.articulation_root / case / "v18_articulation_fit_candidates_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
             "v16_render_overlay": str(v16_render_paths(case, args)["overlay"]),
             "v16_render_world": str(v16_render_paths(case, args)["world"]),
@@ -663,8 +1246,9 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
             "contact_ownership": "image_overlap_depth_candidate_contact_hypotheses",
             "occlusion_ownership": "bounded_owner_candidate_hypotheses",
-            "factor_graph": "single_pass_candidate_factor_graph_baseline",
+            "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
+        "factor_graph_summary": factor_graph_summary,
         "module_counts": dict(sorted(module_counts.items())),
         "confidence_counts": dict(sorted(confidence_counts.items())),
         "hidden_geometry_candidate_object_count": len(completion_by_object),
@@ -957,6 +1541,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bounded-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
+    parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
 

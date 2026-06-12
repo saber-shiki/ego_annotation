@@ -704,6 +704,12 @@ V18 full-pipeline rendering now preserves V16 visual capabilities instead of rep
 
 This fixes the previous degradation where V18 replaced V16's MANO/object mesh and metric-world render with boxes and an abstract world panel. The artifact report and per-case QC now record the base V16 overlay/world paths. The full representative run passed frame-count equality: trash 1050/1050 and task5 960/960 for annotation JSON, overlay, world, and side-by-side videos. Visual inspection of trash frame 330 and task5 frame 780 confirms V16 render content remains visible while V18 layers are additive. This is a render monotonicity repair, not evidence that the missing V18 solver modules are complete.
 
+## Implementation Checkpoint 37: Numerical Observable-State Factor Graph WIP
+
+`run_v18_full_pipeline.py` now materializes an explicit numerical factor graph instead of the earlier string/count placeholder. The graph contains named variables for camera/depth scale, hands, object SE(3), part visible centers, articulation coordinates, contact switches, and occlusion-owner choices. Continuous observed tracks are solved with SciPy sparse linear systems over observation and adjacent-frame temporal factors. Discrete contact and occlusion-owner variables are assigned by explicit per-candidate energies. The artifact records variable counts, factor counts, per-series energy before/after inference, and per-frame local objectives.
+
+This is meaningful progress only for the factor-graph mechanism, and its scope is bounded. Object SE(3) observations now use visible-surface translation plus PCA-derived rotation vectors when the metric visible point cloud supports them. Part rotations are still not solved because the current part-surface artifact records center/extent/counts rather than part point coordinates. Camera/depth correction is still a prior-only identity variable. Contact and occlusion energies still consume current overlap/depth-candidate evidence and do not yet implement full geometry nonpenetration or accepted depth-order ownership. Therefore this checkpoint is not the completed V18 physical graph; it is the first explicit numerical graph that future modules can replace/refine.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
