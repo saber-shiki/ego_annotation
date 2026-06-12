@@ -27,8 +27,9 @@ FALSE_READY: dict[str, bool] = {
 STATUS = "v18_part_split_evidence_audit"
 CLAIM = (
     "This artifact audits cached model-produced part/segment tracks for objects that require part or articulation "
-    "handling. A part track is assigned only by mask overlap/containment with the whole-object mask. This does "
-    "not create part geometry, estimate part pose, or complete object pose."
+    "handling. Candidate track roots are currently case-configured cached evidence, not a complete uniform V18 "
+    "part-generation backend. Within that candidate pool, a part track is assigned only by mask overlap/containment "
+    "with the whole-object mask. This does not create part geometry, estimate part pose, or complete object pose."
 )
 
 DEFAULT_PART_TRACK_ROOTS_BY_CASE: dict[str, list[Path]] = {
@@ -394,6 +395,9 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "v18_annotation_state": str(annotation_path),
             "part_track_roots": [str(root) for root in roots],
         },
+        "part_track_candidate_source_scope": "cached_case_configured_roots_not_uniform_generation_backend",
+        "candidate_assignment_semantics": "overlap_and_containment_with_whole_object_mask_after_candidate_pool_selection",
+        "uniform_part_track_generation_ready": False,
         "part_required_object_count": len(objects),
         "discovered_part_track_count": len(tracks),
         "accepted_part_track_assignment_count": accepted_track_count,
@@ -427,6 +431,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             require_int(report.get("accepted_part_track_assignment_count"), "accepted track count") for report in reports
         ),
         "part_split_evidence_state_counts": dict(sorted(state_counts.items())),
+        "part_track_candidate_source_scope": "cached_case_configured_roots_not_uniform_generation_backend",
+        "candidate_assignment_semantics": "overlap_and_containment_with_whole_object_mask_after_candidate_pool_selection",
+        "uniform_part_track_generation_ready": False,
         "part_geometry_extraction_ready_count": 0,
         "part_pose_ready_count": 0,
         "default_path_uses_bundlesdf_or_nerf": False,

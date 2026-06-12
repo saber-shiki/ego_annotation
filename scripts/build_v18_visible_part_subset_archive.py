@@ -199,6 +199,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         v18_archive_metadata_json=np.asarray(json.dumps(metadata)),
     )
     label_counts = Counter(selected_part_labels)
+    nonempty_ready = bool(candidate_records and row_records and int(out_vertices.shape[0]) > 0 and int(out_faces.shape[0]) > 0)
     report = {
         "method": "build_v18_visible_part_subset_archive",
         "status": STATUS,
@@ -214,7 +215,9 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "rows_by_part_track": dict(sorted(label_counts.items())),
         "candidate_records": candidate_records,
         "row_records": row_records,
-        "visible_part_subset_archive_ready": True,
+        "visible_part_subset_archive_file_written": True,
+        "visible_part_subset_archive_ready": nonempty_ready,
+        "visible_part_subset_archive_ready_scope": "nonempty_candidate_archive_only",
         "hidden_geometry_completion_candidate_count": 0,
         "part_pose_ready_count": 0,
         "object_pose_requirement_met_count": 0,
@@ -241,7 +244,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "unique_frame_count_sum_by_case": sum(require_int(report.get("unique_frame_count"), "unique_frame_count") for report in reports),
         "total_vertices": sum(require_int(report.get("total_vertices"), "total_vertices") for report in reports),
         "total_faces": sum(require_int(report.get("total_faces"), "total_faces") for report in reports),
-        "visible_part_subset_archive_ready": all(bool(report.get("visible_part_subset_archive_ready")) for report in reports),
+        "visible_part_subset_archive_file_written_all_cases": all(bool(report.get("visible_part_subset_archive_file_written")) for report in reports),
+        "visible_part_subset_archive_ready": any(bool(report.get("visible_part_subset_archive_ready")) for report in reports),
+        "visible_part_subset_archive_ready_scope": "one_or_more_nonempty_candidate_archives",
+        "visible_part_subset_archive_ready_count": sum(1 for report in reports if bool(report.get("visible_part_subset_archive_ready"))),
+        "all_cases_visible_part_subset_archive_ready": all(bool(report.get("visible_part_subset_archive_ready")) for report in reports),
         "hidden_geometry_completion_candidate_count": 0,
         "part_pose_ready_count": 0,
         "object_pose_requirement_met_count": 0,

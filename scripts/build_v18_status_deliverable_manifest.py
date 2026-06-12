@@ -271,6 +271,9 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "discovered_part_track_count": part_split.get("discovered_part_track_count"),
             "accepted_part_track_assignment_count": part_split.get("accepted_part_track_assignment_count"),
             "part_split_evidence_state_counts": part_split.get("part_split_evidence_state_counts"),
+            "part_track_candidate_source_scope": part_split.get("part_track_candidate_source_scope"),
+            "candidate_assignment_semantics": part_split.get("candidate_assignment_semantics"),
+            "uniform_part_track_generation_ready": part_split.get("uniform_part_track_generation_ready"),
             "part_geometry_extraction_ready_count": part_split.get("part_geometry_extraction_ready_count"),
             "part_pose_ready_count": part_split.get("part_pose_ready_count"),
         },
@@ -312,7 +315,9 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "object_state_counts": part_model_candidates.get("object_state_counts"),
         },
         "visible_part_subset_archive_qc": {
+            "visible_part_subset_archive_file_written": visible_part_subset.get("visible_part_subset_archive_file_written"),
             "visible_part_subset_archive_ready": visible_part_subset.get("visible_part_subset_archive_ready"),
+            "visible_part_subset_archive_ready_scope": visible_part_subset.get("visible_part_subset_archive_ready_scope"),
             "candidate_count": visible_part_subset.get("candidate_count"),
             "archive_row_count": visible_part_subset.get("archive_row_count"),
             "unique_frame_count": visible_part_subset.get("unique_frame_count"),
@@ -428,8 +433,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         )
         for case in cases
     )
-    visible_part_subset_archive_ready = all(
+    visible_part_subset_archive_ready_count = sum(
+        1
+        for case in cases
+        if bool(require_dict(case.get("visible_part_subset_archive_qc"), "visible part subset archive qc").get("visible_part_subset_archive_ready"))
+    )
+    visible_part_subset_archive_ready = visible_part_subset_archive_ready_count > 0
+    all_cases_visible_part_subset_archive_ready = all(
         bool(require_dict(case.get("visible_part_subset_archive_qc"), "visible part subset archive qc").get("visible_part_subset_archive_ready"))
+        for case in cases
+    )
+    visible_part_subset_archive_file_written_all_cases = all(
+        bool(require_dict(case.get("visible_part_subset_archive_qc"), "visible part subset archive qc").get("visible_part_subset_archive_file_written"))
         for case in cases
     )
     visible_part_subset_archive_rows = sum(
@@ -507,7 +522,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "part_motion_qc_object_count": part_motion_qc_object_count,
         "part_model_candidate_count": part_model_candidate_count,
         "visible_subset_model_candidate_count": visible_subset_model_candidate_count,
+        "visible_part_subset_archive_file_written_all_cases": visible_part_subset_archive_file_written_all_cases,
         "visible_part_subset_archive_ready": visible_part_subset_archive_ready,
+        "visible_part_subset_archive_ready_scope": "one_or_more_nonempty_candidate_archives",
+        "visible_part_subset_archive_ready_count": visible_part_subset_archive_ready_count,
+        "all_cases_visible_part_subset_archive_ready": all_cases_visible_part_subset_archive_ready,
         "visible_part_subset_archive_rows": visible_part_subset_archive_rows,
         "visible_part_subset_vertices": visible_part_subset_vertices,
         "visible_part_subset_faces": visible_part_subset_faces,

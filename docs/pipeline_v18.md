@@ -153,7 +153,7 @@ V18 now audits cached model-produced part/segment tracks and extracts bounded pa
 /data2/ego_annotation_outputs/v18_part_visible_surfaces/
 ```
 
-`build_v18_part_split_evidence.py` assigns candidate part tracks only by mask overlap/containment with the whole-object mask. It does not assign tracks by object name. Across the three objects requiring part/articulation handling (`object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`), it finds 4 accepted part-track assignments, all for `object:pink_lid_trash_can_second`: `pink_lid_outer_vertical_flange_edge`, `pink_lid_raised_annular_rim`, `pink_lid_top_dished_panel_visible`, and `second_can_exposed_opening_rim`. `object:off_white_trash_can_first` and `object:obj_faucet_handle` still have no accepted part-mask overlap evidence. A QC sheet is written at `/data2/ego_annotation_outputs/v18_part_split_evidence/trash_1050/v18_part_split_evidence_sheet.jpg`; the task5 sheet explicitly records no accepted part-mask overlap evidence.
+`build_v18_part_split_evidence.py` uses cached, case-configured candidate part-track roots; this is not yet a complete uniform V18 part-generation backend. Within that selected candidate pool, assignments are made only by mask overlap/containment with the whole-object mask, not by object name. Across the three objects requiring part/articulation handling (`object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`), it finds 4 accepted part-track assignments, all for `object:pink_lid_trash_can_second`: `pink_lid_outer_vertical_flange_edge`, `pink_lid_raised_annular_rim`, `pink_lid_top_dished_panel_visible`, and `second_can_exposed_opening_rim`. `object:off_white_trash_can_first` and `object:obj_faucet_handle` still have no accepted part-mask overlap evidence. A QC sheet is written at `/data2/ego_annotation_outputs/v18_part_split_evidence/trash_1050/v18_part_split_evidence_sheet.jpg`; the task5 sheet explicitly records no accepted part-mask overlap evidence.
 
 `build_v18_part_visible_surfaces.py` then extracts metric-depth-backed visible surfaces for the accepted part masks, without OpenCV and without BundleSDF/NeRF. It writes a compact NPZ archive in depth-camera coordinates. Current totals: 203 accepted part visible-surface frame rows for `object:pink_lid_trash_can_second`, 102,035 vertices, 174,456 faces, and 143 rejected candidate rows. Rejections are mostly missing metric depth after the depth archive ends, per-frame part/object containment failure, or too few connected sampled vertices/faces. Task5 has no part visible surfaces because no part masks were accepted.
 
@@ -213,7 +213,7 @@ V18 now materializes robust stable visible part-subset candidates as mesh archiv
 
 `build_v18_visible_part_subset_archive.py` copies only observed depth-backed surfaces from the accepted robust stable part subset, rebases global face indices, and preserves row provenance back to the part visible-surface archive. The archive contains one candidate for `object:pink_lid_trash_can_second`, 139 surface rows, 70 unique frames, 98,315 vertices, and 169,356 faces. The earlier written 170,062-face count was a stale human-side count; source rows, source NPZ offsets, candidate records, and the new archive all support 169,356 faces.
 
-The updated manifest reports `visible_part_subset_archive_ready=true`, `visible_part_subset_archive_rows=139`, `visible_part_subset_vertices=98315`, and `visible_part_subset_faces=169356`. Hidden geometry, part pose, articulation readiness, contact readiness, and object pose remain false.
+The updated manifest reports `visible_part_subset_archive_file_written_all_cases=true`, `visible_part_subset_archive_ready_count=1`, `all_cases_visible_part_subset_archive_ready=false`, `visible_part_subset_archive_rows=139`, `visible_part_subset_vertices=98315`, and `visible_part_subset_faces=169356`. The task5 empty archive file is not marked evidence-ready. Hidden geometry, part pose, articulation readiness, contact readiness, and object pose remain false.
 
 Remaining gap after this checkpoint: build validation around the visible subset if useful, but do not promote it beyond visible surface evidence without hidden geometry, pose, and contact support.
 
@@ -244,6 +244,14 @@ V18 now records the status of acquiring missing or improved part masks:
 The `.venv` environment has Python cv2, torch, and CUDA available, but no SAMWISE repo or checkpoint was found in the checked paths, so `local_new_mask_generation_ready_count=0` and `mask_evidence_created_count=0`. The updated status manifest records those counts and keeps `part_pose_ready_count=0`.
 
 Remaining gap after this checkpoint: provision a runnable open-vocabulary/referring video segmentation backend or provide precomputed part tracks, then rerun part-split evidence and downstream part geometry/motion checks.
+
+## Implementation Checkpoint 15: Review-Driven Readiness And Source-Scope Corrections
+
+A clean-room adversarial review found one false readiness issue and one source-scope caveat. V18 now separates visible part-subset archive file creation from non-empty evidence readiness: `trash_1050` has a non-empty visible subset archive, while `task5_tomato_960` writes an empty archive file but is not evidence-ready. The status manifest reports `visible_part_subset_archive_ready_count=1` and `all_cases_visible_part_subset_archive_ready=false`.
+
+The part-split audit also now records `part_track_candidate_source_scope=cached_case_configured_roots_not_uniform_generation_backend` and `uniform_part_track_generation_ready=false`. This preserves the true scoped claim: assignment within the candidate pool is geometric overlap/containment, but the candidate pool itself is cached and nonuniform until a runnable open-vocabulary/referring segmentation backend is provisioned.
+
+Remaining gap after this checkpoint: replace cached case-configured part-track roots with a uniform model-produced part-track manifest or provisioned segmentation backend, then rerun the same overlap, geometry, motion, and blocker checks.
 
 ## Design Goal
 
