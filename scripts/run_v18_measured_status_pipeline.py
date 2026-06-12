@@ -121,8 +121,13 @@ def final_manifest_summary(path: Path) -> dict[str, Any]:
     return {"manifest_exists": True, **{key: manifest.get(key) for key in keys}}
 
 
-def post_report_status_manifest_refresh(args: argparse.Namespace) -> dict[str, Any]:
-    stage = {"id": "post_report_status_manifest_refresh", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "refresh_manifest_after_runtime_report_write"}
+def post_report_status_manifest_refresh(args: argparse.Namespace, stage_id: str, source_scope: str) -> dict[str, Any]:
+    stage = {"id": stage_id, "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": source_scope}
+    return run_stage(stage, args)
+
+
+def post_report_status_invariant_audit(args: argparse.Namespace) -> dict[str, Any]:
+    stage = {"id": "post_report_status_invariant_audit", "script": "scripts/audit_v18_status_invariants.py", "source_scope": "audit_manifest_after_runtime_report_refresh"}
     return run_stage(stage, args)
 
 
@@ -177,12 +182,31 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     write_json(report_path, report)
     if failed_stage is not None:
         raise RuntimeError(f"V18 measured status pipeline failed at stage {failed_stage}; see {args.output_root}")
-    refresh_row = post_report_status_manifest_refresh(args)
-    report["post_report_status_manifest_refresh"] = refresh_row
+    runtime_refresh_row = post_report_status_manifest_refresh(
+        args,
+        "post_report_status_manifest_refresh",
+        "refresh_manifest_after_runtime_report_write",
+    )
+    report["post_report_status_manifest_refresh"] = runtime_refresh_row
     report["status_manifest_summary_after_report_refresh"] = final_manifest_summary(manifest_path)
     write_json(report_path, report)
-    if not refresh_row.get("success"):
-        raise RuntimeError(f"V18 measured status pipeline post-report manifest refresh failed; see {refresh_row.get('stderr_path')}")
+    if not runtime_refresh_row.get("success"):
+        raise RuntimeError(f"V18 measured status pipeline post-report manifest refresh failed; see {runtime_refresh_row.get('stderr_path')}")
+    audit_refresh_row = post_report_status_invariant_audit(args)
+    report["post_report_status_invariant_audit"] = audit_refresh_row
+    write_json(report_path, report)
+    if not audit_refresh_row.get("success"):
+        raise RuntimeError(f"V18 measured status pipeline post-report invariant audit failed; see {audit_refresh_row.get('stderr_path')}")
+    final_manifest_refresh_row = post_report_status_manifest_refresh(
+        args,
+        "post_audit_status_manifest_refresh",
+        "refresh_manifest_after_post_report_audit",
+    )
+    report["post_audit_status_manifest_refresh"] = final_manifest_refresh_row
+    report["status_manifest_summary_after_post_audit_refresh"] = final_manifest_summary(manifest_path)
+    write_json(report_path, report)
+    if not final_manifest_refresh_row.get("success"):
+        raise RuntimeError(f"V18 measured status pipeline post-audit manifest refresh failed; see {final_manifest_refresh_row.get('stderr_path')}")
     print(json.dumps(report, indent=2))
     return report
 
