@@ -32,6 +32,16 @@ Distinguish these states explicitly:
 
 Every complete pipeline version should be run end-to-end, rendered, inspected, and compared to the previous version using subjective judgment when ground truth is absent. Intensive reasoning/research belongs after seeing the delivered pipeline output and should inform the next pipeline version or patch.
 
+## Integrity And Monotonicity
+
+Do not cheat by substituting a convenient proxy for a named pipeline mechanism. Approximate measurements are expected; approximate implementation of the spec is not allowed. If the design names a variable family, factor family, reconstruction stage, render layer, or model branch, the code and final artifact must contain that mechanism explicitly. A centroid is not object pose; a smoother is not a factor graph; mask overlap is not contact ownership; an abstract panel is not a metric 3D render; a status field is not an implemented module.
+
+V18 and later versions must be monotonic relative to the previous working version unless a design amendment explicitly rejects a previous capability as invalid. Monotonicity means preserving every valid prior capability and adding new capability on top. Do not replace V16 MANO rendering, object mesh rendering, camera/depth backbone, or metric world visualization with weaker boxes, labels, abstract panels, or schema fields. If a new module is weaker than the previous version for a field, keep the previous version's output as the base layer and add the new module as an additional uncertain hypothesis.
+
+If visual inspection reveals degradation relative to the previous version, report and fix it immediately. Do not call it a tradeoff. There is no compensation for losing an existing capability; monotonic progress requires preservation plus extension.
+
+When a module is hard, implement the specified mechanism directly at the best available fidelity before the deadline. Do not rename a partial helper as the module. If a mechanism is approximate, expose the approximation in estimates and uncertainty, not in the existence or identity of the mechanism.
+
 ## Versioning And Delivery
 
 Starting at v16, every pipeline version is a complete pipeline version. A version cannot close with component evidence, a short window, or a partial render. A full version may be approximate and uncertain, but it must execute the named modules and produce full-video artifacts.
