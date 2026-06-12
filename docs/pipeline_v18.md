@@ -788,6 +788,12 @@ V18 factor-graph contact switches are no longer solved as independent per-frame 
 
 Build-only checks after this change produced gap-valid temporal contact factors for adjacent rows within the 30-frame gap window (trash 3256, task5 2276), with no active contact switch carrying a nonpenetration conflict. This is still a candidate contact-switch graph, not proof of physical contact ownership or complete nonpenetration, but it adds a real temporal factor family to the V18 factor graph.
 
+## Implementation Checkpoint 51: Occlusion Owner Factor Evidence Integration
+
+V18 factor-graph occlusion-owner variables now consume the temporal occlusion-owner graph assignment, mesh-contact temporal support, and depth-evidence state already present in final hand annotations. Candidate energies include box overlap, mesh support, temporal selection, foreground-support/contradiction depth states, and an explicit unowned competitor.
+
+This changes factor-graph evidence integration only; accepted occlusion ownership still requires source depth/temporal acceptance and remains zero on the representative videos. Build-only checks after this change showed trash 115 occlusion-owner variables with 94 temporal-selected candidates and 112 mesh-supported candidates, accepted 0; task5 1 variable with 1 mesh-supported candidate, accepted 0.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

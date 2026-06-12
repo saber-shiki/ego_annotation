@@ -32,9 +32,9 @@ def validate_case(path: Path) -> dict[str, Any]:
     variable_counts = fg.get("variable_counts")
     factor_counts = fg.get("factor_counts")
     require(isinstance(variable_counts, dict) and isinstance(factor_counts, dict), f"{case}: counts missing")
-    for key in ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "contact_switch"]:
+    for key in ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "contact_switch", "occlusion_owner"]:
         require(int(variable_counts.get(key, 0)) > 0, f"{case}: missing {key} variables")
-    for key in ["camera_depth_correction_observation", "hand_state_observation", "object_se3_observation", "part_se3_observation", "contact_switch_discrete", "contact_switch_temporal"]:
+    for key in ["camera_depth_correction_observation", "hand_state_observation", "object_se3_observation", "part_se3_observation", "contact_switch_discrete", "contact_switch_temporal", "occlusion_owner_discrete"]:
         require(int(factor_counts.get(key, 0)) > 0, f"{case}: missing {key} factors")
     implemented_status = fg.get("implemented_variable_status")
     spec_gaps = fg.get("spec_factor_gaps_remaining")
@@ -66,6 +66,10 @@ def validate_case(path: Path) -> dict[str, Any]:
     temporal_contact_active_conflicts = 0
     temporal_contact_bad_gaps = 0
     local_temporal_factor_count_sum = 0
+    occlusion_owner_rows = 0
+    occlusion_owner_with_temporal_or_mesh = 0
+    accepted_occlusion_owner_rows = 0
+    local_occlusion_factor_count_sum = 0
     for frame in frames:
         g = frame.get("factor_graph_solution")
         if isinstance(g, dict) and isinstance(g.get("variables"), dict) and isinstance(g.get("objective"), dict):
@@ -73,8 +77,39 @@ def validate_case(path: Path) -> dict[str, Any]:
             factors_raw = g.get("factors")
             factors: dict[str, Any] = factors_raw if isinstance(factors_raw, dict) else {}
             local_temporal_factor_count_sum += int(factors.get("contact_switch_temporal", 0))
+            local_occlusion_factor_count_sum += int(factors.get("occlusion_owner_discrete", 0))
             variables_raw = g.get("variables")
             variables: dict[str, Any] = variables_raw if isinstance(variables_raw, dict) else {}
+            occlusion_raw = variables.get("occlusion_owner")
+            if isinstance(occlusion_raw, list):
+                for occ_raw in occlusion_raw:
+                    occ: dict[str, Any] = occ_raw if isinstance(occ_raw, dict) else {}
+                    occlusion_owner_rows += 1
+                    require(occ.get("inference_method") == "box_mesh_depth_temporal_energy_with_unowned_competitor", f"{case}: occlusion owner lacks integrated inference method")
+                    if occ.get("accepted_owner") is True:
+                        accepted_occlusion_owner_rows += 1
+                    candidates_raw = occ.get("candidate_energies")
+                    candidates: list[Any] = candidates_raw if isinstance(candidates_raw, list) else []
+                    require(len(candidates) > 0, f"{case}: occlusion owner candidates missing")
+                    unowned_count = 0
+                    for cand_raw in candidates:
+                        cand: dict[str, Any] = cand_raw if isinstance(cand_raw, dict) else {}
+                        if cand.get("object_id") is None:
+                            unowned_count += 1
+                        else:
+                            require("mesh_temporal_support" in cand and "temporal_graph_selected" in cand and "depth_evidence_state" in cand, f"{case}: occlusion candidate missing mesh/temporal/depth fields")
+                            depth_state = str(cand.get("depth_evidence_state"))
+                            expected_support = "foreground" in depth_state and "support" in depth_state and "no_support" not in depth_state and "contradict" not in depth_state
+                            expected_contradiction = "foreground" in depth_state and "contradict" in depth_state
+                            require(cand.get("foreground_depth_support") is expected_support, f"{case}: foreground support flag mismatch")
+                            require(cand.get("foreground_depth_contradiction") is expected_contradiction, f"{case}: foreground contradiction flag mismatch")
+                            if cand.get("temporal_graph_selected") is True or float(cand.get("mesh_temporal_support", 0.0)) > 0.0:
+                                occlusion_owner_with_temporal_or_mesh += 1
+                    require(unowned_count == 1, f"{case}: occlusion owner missing exactly one unowned competitor")
+                    if occ.get("accepted_owner") is True:
+                        chosen = occ.get("chosen_owner_object_id")
+                        chosen_candidates = [cand for cand in candidates if isinstance(cand, dict) and cand.get("object_id") == chosen]
+                        require(any(cand.get("accepted_by_depth_evidence") is True or cand.get("temporal_graph_accepted") is True for cand in chosen_candidates), f"{case}: accepted occlusion owner lacks source support")
             contact_raw = variables.get("contact_switch")
             if isinstance(contact_raw, list):
                 for row_raw in contact_raw:
@@ -97,6 +132,9 @@ def validate_case(path: Path) -> dict[str, Any]:
                     elif isinstance(gap, int) and gap <= int(row.get("temporal_contact_max_gap_frames", 30)) and gap > 0:
                         temporal_contact_bad_gaps += 1
     require(frame_with_graph == len(frames), f"{case}: not every frame has graph solution")
+    require(occlusion_owner_rows == int(variable_counts.get("occlusion_owner", -1)), f"{case}: occlusion owner variable count mismatch")
+    require(local_occlusion_factor_count_sum == occlusion_owner_rows and occlusion_owner_rows == int(factor_counts.get("occlusion_owner_discrete", -1)), f"{case}: occlusion owner factor count mismatch")
+    require(occlusion_owner_with_temporal_or_mesh > 0, f"{case}: occlusion owner variables missing temporal/mesh evidence")
     require(temporal_contact_rows == int(variable_counts.get("contact_switch", -1)), f"{case}: contact switch variable count mismatch")
     require(temporal_contact_factor_rows == int(factor_counts.get("contact_switch_temporal", -1)), f"{case}: temporal contact factor count mismatch")
     require(local_temporal_factor_count_sum == temporal_contact_factor_rows, f"{case}: local temporal contact factor sum mismatch")
@@ -114,6 +152,7 @@ def validate_case(path: Path) -> dict[str, Any]:
         "part_6d_series_count": part_6d_count,
         "contact_switch_temporal_factors": int(factor_counts.get("contact_switch_temporal", 0)),
         "contact_switch_temporal_rows": temporal_contact_rows,
+        "occlusion_owner_rows": occlusion_owner_rows,
         "frame_with_graph_count": frame_with_graph,
     }
 

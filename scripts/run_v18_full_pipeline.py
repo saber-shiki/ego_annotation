@@ -1173,34 +1173,68 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
     candidates = occlusion.get("owner_candidates")
     if not isinstance(candidates, list) or not candidates:
         return None
+    mesh_rows_raw = occlusion.get("mesh_owner_evidence")
+    mesh_rows = mesh_rows_raw if isinstance(mesh_rows_raw, list) else []
+    mesh_by_object: dict[str, dict[str, Any]] = {}
+    for row in mesh_rows:
+        if isinstance(row, dict):
+            mesh_by_object[str(row.get("object_id"))] = row
+    temporal_raw = occlusion.get("temporal_owner_graph")
+    temporal_graph: dict[str, Any] = temporal_raw if isinstance(temporal_raw, dict) else {}
+    temporal_chosen = str(temporal_graph.get("chosen_owner_object_id")) if temporal_graph.get("chosen_owner_object_id") is not None else None
     evaluated: list[dict[str, Any]] = []
     for cand in candidates:
         if not isinstance(cand, dict):
             continue
-        iou = finite_float(cand.get("iou"), 0.0)
-        hand_cov = finite_float(cand.get("hand_box_coverage_by_object_box"), 0.0)
+        object_id = str(cand.get("object_id"))
+        mesh_row = mesh_by_object.get(object_id, {})
+        mesh_support_raw = mesh_row.get("mesh_contact_temporal_support") if isinstance(mesh_row, dict) else None
+        mesh_support_dict: dict[str, Any] = mesh_support_raw if isinstance(mesh_support_raw, dict) else {}
+        mesh_support = max(0.0, min(1.0, finite_float(mesh_support_dict.get("max_support"), 0.0)))
+        iou = finite_float(cand.get("iou"), finite_float(mesh_row.get("bbox_iou"), 0.0))
+        hand_cov = finite_float(cand.get("hand_box_coverage_by_object_box"), finite_float(mesh_row.get("hand_box_coverage_by_object_box"), 0.0))
         object_cov = finite_float(cand.get("object_box_coverage_by_hand_box"), 0.0)
-        depth_resolved = bool(cand.get("depth_order_resolved") or cand.get("occluder_owner_accepted"))
-        support = max(0.0, min(1.0, 0.45 * iou + 0.45 * hand_cov + 0.10 * object_cov))
+        depth_state = str(mesh_row.get("source_depth_order_state") or cand.get("depth_order_state") or cand.get("source_depth_order_state") or "unknown_depth_order_state")
+        depth_resolved = bool(cand.get("depth_order_resolved") or cand.get("occluder_owner_accepted") or mesh_row.get("depth_order_resolved"))
+        depth_accept = bool(cand.get("occluder_owner_accepted") is True or mesh_row.get("accepted_occlusion_owner") is True or temporal_graph.get("accepted_occlusion_owner") is True and temporal_chosen == object_id)
+        temporal_selected = bool(temporal_chosen == object_id)
+        foreground_support = ("foreground" in depth_state and "support" in depth_state and "no_support" not in depth_state and "contradict" not in depth_state)
+        foreground_contradiction = "foreground" in depth_state and "contradict" in depth_state
+        support = max(0.0, min(1.0, 0.34 * iou + 0.34 * hand_cov + 0.08 * object_cov + 0.16 * mesh_support + (0.08 if temporal_selected else 0.0)))
         energy = (1.0 - support) ** 2
+        if foreground_support:
+            energy *= 0.75
+        if temporal_selected:
+            energy *= 0.85
+        if foreground_contradiction:
+            energy += 0.60
         if not depth_resolved:
             energy += 0.25
+        if depth_accept:
+            energy *= 0.35
         evaluated.append(
             {
-                "object_id": cand.get("object_id"),
+                "object_id": object_id,
                 "name": cand.get("name"),
                 "energy": float(energy),
                 "box_iou": float(iou),
                 "hand_coverage": float(hand_cov),
                 "object_coverage": float(object_cov),
+                "mesh_temporal_support": float(mesh_support),
+                "temporal_graph_selected": temporal_selected,
+                "temporal_graph_accepted": bool(temporal_graph.get("accepted_occlusion_owner") is True and temporal_selected),
+                "depth_evidence_state": depth_state,
+                "foreground_depth_support": foreground_support,
+                "foreground_depth_contradiction": foreground_contradiction,
                 "depth_order_resolved": depth_resolved,
-                "accepted_by_depth_evidence": bool(cand.get("occluder_owner_accepted")),
+                "accepted_by_depth_evidence": depth_accept,
+                "evidence_scope": "box_mesh_temporal_depth_energy_not_ownership_acceptance",
             }
         )
     if not evaluated:
         return None
     # Unowned is an explicit competing state. It prevents weak overlap evidence from being mislabeled accepted ownership.
-    evaluated.append({"object_id": None, "name": "unowned", "energy": 0.55, "box_iou": 0.0, "hand_coverage": 0.0, "object_coverage": 0.0, "depth_order_resolved": False, "accepted_by_depth_evidence": False})
+    evaluated.append({"object_id": None, "name": "unowned", "energy": 0.55, "box_iou": 0.0, "hand_coverage": 0.0, "object_coverage": 0.0, "mesh_temporal_support": 0.0, "temporal_graph_selected": False, "temporal_graph_accepted": False, "depth_evidence_state": "unowned_competing_state", "foreground_depth_support": False, "foreground_depth_contradiction": False, "depth_order_resolved": False, "accepted_by_depth_evidence": False, "evidence_scope": "explicit_unowned_competitor"})
     chosen = min(evaluated, key=lambda row: finite_float(row.get("energy"), 999.0))
     return {
         "hand_side": hand.get("hand_side"),
@@ -1210,6 +1244,8 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
         "chosen_energy": chosen.get("energy"),
         "accepted_owner": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence")),
         "state": "accepted_depth_order_owner" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") else "inferred_candidate_or_unowned_not_accepted",
+        "inference_method": "box_mesh_depth_temporal_energy_with_unowned_competitor",
+        "acceptance_policy": "accepted_owner_requires_source_depth_or_temporal_graph_acceptance",
         "candidate_energies": evaluated,
     }
 
@@ -1544,7 +1580,7 @@ def solve_v18_factor_graph(
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
             "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_and_contact_owner_graph_evidence",
-            "occlusion_owner": "discrete_energy_over_owner_candidates_without_new_depth_order_acceptance",
+            "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence_without_new_depth_order_acceptance",
         },
         "implemented_factor_families": [
             "camera_depth_scale_observation_residual",
@@ -1555,7 +1591,7 @@ def solve_v18_factor_graph(
             "articulation_visible_coordinate_residual",
             "contact_overlap_depth_mesh_distance_owner_graph_and_local_nonpenetration_energy",
             "contact_switch_temporal_continuity_factor",
-            "occlusion_owner_candidate_energy",
+            "occlusion_owner_box_mesh_depth_temporal_candidate_energy",
         ],
         "spec_factor_gaps_remaining": [
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
