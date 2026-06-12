@@ -56,6 +56,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     physical_schema_path = args.physical_state_schema_root / "v18_physical_state_schema_summary.json"
     part_source_path = args.part_track_source_root / "v18_part_track_source_manifest_summary.json"
     acquisition_path = args.part_mask_acquisition_root / "v18_part_mask_acquisition_plan_summary.json"
+    sam_promptable_path = args.sam_promptable_proposals_root / "v18_sam_promptable_part_proposals_summary.json"
     manifest = require_dict(load_json(manifest_path), "status manifest")
     runtime = require_dict(load_json(runtime_path), "runtime report")
     subset = require_dict(load_json(subset_summary_path), "visible part subset summary")
@@ -65,6 +66,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     physical = require_dict(load_json(physical_schema_path), "physical schema summary")
     part_source = require_dict(load_json(part_source_path), "part source summary")
     acquisition = require_dict(load_json(acquisition_path), "part mask acquisition summary")
+    sam_promptable = require_dict(load_json(sam_promptable_path), "SAM promptable proposals summary")
 
     checks: list[dict[str, Any]] = []
     check(checks, "status_deliverable_ready", manifest.get("status_deliverable_ready") is True, manifest.get("status_deliverable_ready"), True)
@@ -118,6 +120,19 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "promptable true, referring/open-vocab false, local generation false",
     )
     check(checks, "mask_evidence_created_zero", acquisition.get("mask_evidence_created_count") == manifest.get("mask_evidence_created_count") == 0, {"acquisition": acquisition.get("mask_evidence_created_count"), "manifest": manifest.get("mask_evidence_created_count")}, 0)
+    check(
+        checks,
+        "sam_promptable_proposals_not_accepted_part_tracks",
+        sam_promptable.get("saved_promptable_proposal_mask_count") == manifest.get("sam_promptable_saved_proposal_mask_count")
+        and sam_promptable.get("accepted_part_track_count") == manifest.get("sam_promptable_accepted_part_track_count") == 0
+        and sam_promptable.get("mask_evidence_created_count") == manifest.get("sam_promptable_mask_evidence_created_count") == 0,
+        {
+            "saved_proposals": manifest.get("sam_promptable_saved_proposal_mask_count"),
+            "accepted_part_tracks": manifest.get("sam_promptable_accepted_part_track_count"),
+            "mask_evidence_created": manifest.get("sam_promptable_mask_evidence_created_count"),
+        },
+        "saved proposals allowed, accepted tracks/mask evidence zero",
+    )
     check(checks, "occlusion_candidate_count_matches", occlusion.get("candidate_owner_row_count") == manifest.get("occlusion_candidate_owner_row_count") == bounded.get("occlusion_owner_candidate_rows") == manifest.get("bounded_occlusion_owner_candidate_rows"), {"occlusion": occlusion.get("candidate_owner_row_count"), "bounded": bounded.get("occlusion_owner_candidate_rows"), "manifest": manifest.get("occlusion_candidate_owner_row_count")}, 116)
     check(
         checks,
@@ -190,6 +205,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "physical_schema_summary": str(physical_schema_path),
             "part_track_source_summary": str(part_source_path),
             "part_mask_acquisition_summary": str(acquisition_path),
+            "sam_promptable_proposals_summary": str(sam_promptable_path),
         },
     }
     write_json(args.output_root / "v18_status_invariant_audit_report.json", report)
@@ -211,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
     parser.add_argument("--part-mask-acquisition-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan"))
+    parser.add_argument("--sam-promptable-proposals-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_sam_promptable_part_proposals"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_invariant_audit"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()

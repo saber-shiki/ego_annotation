@@ -26,7 +26,7 @@ CLAIM = (
     "triage evidence, visible-surface geometry evidence, structured physical-state schema evidence, an object completion eligibility gate, part-track source "
     "manifest, part-split mask evidence audit, part visible-surface evidence, part-motion state evidence, part-motion "
     "confound QC, bounded visible part-model candidate evidence, a materialized visible part-subset archive, explicit "
-    "part-object blocker records, part-mask acquisition status, measured cached-evidence-to-status runtime evidence, "
+    "part-object blocker records, promptable SAM proposal evidence, part-mask acquisition status, measured cached-evidence-to-status runtime evidence, "
     "and invariant audit evidence. It does not close final hidden object geometry, object pose, part pose, articulation "
     "model, physical contact requirements, occluder ownership, depth ordering, or fresh raw-video-to-final runtime."
 )
@@ -127,6 +127,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_model_candidates_path = args.part_model_candidates_root / case / "v18_part_model_candidates_report.json"
     visible_part_subset_path = args.visible_part_subset_root / case / "v18_visible_part_subset_archive_report.json"
     part_object_blockers_path = args.part_object_blockers_root / case / "v18_part_object_blocker_manifest_report.json"
+    sam_promptable_proposals_path = args.sam_promptable_proposals_root / case / "v18_sam_promptable_part_proposals_report.json"
     part_mask_acquisition_path = args.part_mask_acquisition_root / case / "v18_part_mask_acquisition_plan_report.json"
     annotation = require_dict(load_json(annotation_path), f"{case} annotation")
     solution = require_dict(load_json(solution_path), f"{case} solution")
@@ -146,6 +147,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_model_candidates = require_dict(load_json(part_model_candidates_path), f"{case} part model candidates")
     visible_part_subset = require_dict(load_json(visible_part_subset_path), f"{case} visible part subset archive")
     part_object_blockers = require_dict(load_json(part_object_blockers_path), f"{case} part object blockers")
+    sam_promptable_proposals = require_dict(load_json(sam_promptable_proposals_path), f"{case} SAM promptable proposals")
     part_mask_acquisition = require_dict(load_json(part_mask_acquisition_path), f"{case} part mask acquisition plan")
     frame_count = require_int(annotation.get("frame_count"), "annotation frame_count")
     raw_frame_count = require_int(annotation.get("raw_frame_count"), "annotation raw_frame_count")
@@ -235,6 +237,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "visible_part_subset_archive_report": str(visible_part_subset_path),
             "visible_part_subset_archive_npz": visible_part_subset.get("archive_npz"),
             "part_object_blocker_manifest": str(part_object_blockers_path),
+            "sam_promptable_part_proposals": str(sam_promptable_proposals_path),
             "part_mask_acquisition_plan": str(part_mask_acquisition_path),
         },
         "frame_count_qc": {
@@ -400,6 +403,19 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_pose_ready_count": part_object_blockers.get("part_pose_ready_count"),
             "contact_ownership_ready_count": part_object_blockers.get("contact_ownership_ready_count"),
             "object_pose_requirement_met_count": part_object_blockers.get("object_pose_requirement_met_count"),
+        },
+        "sam_promptable_proposal_qc": {
+            "object_count": sam_promptable_proposals.get("object_count"),
+            "selected_frame_count": sam_promptable_proposals.get("selected_frame_count"),
+            "prompt_point_count": sam_promptable_proposals.get("prompt_point_count"),
+            "raw_sam_mask_candidate_count": sam_promptable_proposals.get("raw_sam_mask_candidate_count"),
+            "saved_promptable_proposal_mask_count": sam_promptable_proposals.get("saved_promptable_proposal_mask_count"),
+            "proposal_state_counts": sam_promptable_proposals.get("proposal_state_counts"),
+            "accepted_part_track_count": sam_promptable_proposals.get("accepted_part_track_count"),
+            "semantic_part_label_ready_count": sam_promptable_proposals.get("semantic_part_label_ready_count"),
+            "mask_evidence_created_count": sam_promptable_proposals.get("mask_evidence_created_count"),
+            "part_pose_ready_count": sam_promptable_proposals.get("part_pose_ready_count"),
+            "object_pose_requirement_met_count": sam_promptable_proposals.get("object_pose_requirement_met_count"),
         },
         "part_mask_acquisition_qc": {
             "object_count": part_mask_acquisition.get("object_count"),
@@ -655,6 +671,36 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("part_object_blocker_qc"), "part object blocker qc").get("contact_ownership_ready_count"), "contact ownership ready count")
         for case in cases
     )
+    sam_promptable_selected_frame_count = sum(
+        require_int(require_dict(case.get("sam_promptable_proposal_qc"), "sam proposal qc").get("selected_frame_count"), "sam selected frame count")
+        for case in cases
+    )
+    sam_promptable_raw_candidate_count = sum(
+        require_int(require_dict(case.get("sam_promptable_proposal_qc"), "sam proposal qc").get("raw_sam_mask_candidate_count"), "sam raw candidate count")
+        for case in cases
+    )
+    sam_promptable_saved_proposal_mask_count = sum(
+        require_int(require_dict(case.get("sam_promptable_proposal_qc"), "sam proposal qc").get("saved_promptable_proposal_mask_count"), "sam saved proposal count")
+        for case in cases
+    )
+    sam_promptable_not_referring_part_track_count = sum(
+        require_int(
+            require_dict(require_dict(case.get("sam_promptable_proposal_qc"), "sam proposal qc").get("proposal_state_counts"), "sam proposal state counts").get(
+                "promptable_sam_proposal_not_referring_part_track",
+                0,
+            ),
+            "sam not referring part track proposal count",
+        )
+        for case in cases
+    )
+    sam_promptable_accepted_part_track_count = sum(
+        require_int(require_dict(case.get("sam_promptable_proposal_qc"), "sam proposal qc").get("accepted_part_track_count"), "sam accepted part track count")
+        for case in cases
+    )
+    sam_promptable_mask_evidence_created_count = sum(
+        require_int(require_dict(case.get("sam_promptable_proposal_qc"), "sam proposal qc").get("mask_evidence_created_count"), "sam mask evidence created count")
+        for case in cases
+    )
     part_mask_acquisition_object_count = sum(
         require_int(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("object_count"), "part mask acquisition object count")
         for case in cases
@@ -754,6 +800,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_part_subset_faces": visible_part_subset_faces,
         "required_part_object_blocker_count": required_part_object_blocker_count,
         "contact_ownership_ready_count": contact_ownership_ready_count,
+        "sam_promptable_selected_frame_count": sam_promptable_selected_frame_count,
+        "sam_promptable_raw_mask_candidate_count": sam_promptable_raw_candidate_count,
+        "sam_promptable_saved_proposal_mask_count": sam_promptable_saved_proposal_mask_count,
+        "sam_promptable_not_referring_part_track_count": sam_promptable_not_referring_part_track_count,
+        "sam_promptable_accepted_part_track_count": sam_promptable_accepted_part_track_count,
+        "sam_promptable_mask_evidence_created_count": sam_promptable_mask_evidence_created_count,
         "part_mask_acquisition_object_count": part_mask_acquisition_object_count,
         "promptable_segmentation_backend_available": promptable_segmentation_backend_available,
         "open_vocab_or_referring_prompt_backend_available": open_vocab_or_referring_prompt_backend_available,
@@ -806,6 +858,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-model-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_model_candidates"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
     parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
+    parser.add_argument("--sam-promptable-proposals-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_sam_promptable_part_proposals"))
     parser.add_argument("--part-mask-acquisition-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan"))
     parser.add_argument("--measured-status-pipeline-runtime-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime"))
     parser.add_argument("--status-invariant-audit-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_invariant_audit"))
