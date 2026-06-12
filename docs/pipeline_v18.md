@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, and part visible-surface evidence for one part-motion object, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, and part-motion diagnostics for one part-motion object, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -160,6 +160,20 @@ V18 now audits cached model-produced part/segment tracks and extracts bounded pa
 The updated status manifest reports `part_required_object_count=3`, `accepted_part_track_assignment_count=4`, `part_visible_surface_frame_rows=203`, `part_visible_surface_vertices=102035`, `part_visible_surface_faces=174456`, `part_pose_ready_count=0`, and `object_pose_requirement_met=false`. This advances V18 from whole-object visible surfaces to part-level visible surface evidence for one part-motion object, but it still does not reconstruct hidden part geometry, estimate part pose, or validate contact ownership.
 
 Remaining gap after this checkpoint: extract or produce part-mask evidence for the off-white can and faucet handle, convert part visible surfaces into a bounded part/articulation model only where supported, and then test pose/contact ownership against metric depth.
+
+## Implementation Checkpoint 9: Part-Motion State Reducer
+
+V18 now writes bounded part-motion diagnostics:
+
+```text
+/data2/ego_annotation_outputs/v18_part_motion_state/
+```
+
+`build_v18_part_motion_state.py` reduces part visible-surface centers into pairwise relative-distance summaries. It does not estimate part pose, articulation parameters, hidden geometry, or object pose. For `object:pink_lid_trash_can_second`, the reducer sees 4 part tracks and 6 part-pair relationships: 1 pair is a relative-distance-stable candidate, while 5 pairs are relative-distance-variable or mask-inconsistent. The object-level state is `mixed_part_motion_evidence_requires_articulation_or_mask_qc`.
+
+The updated status manifest reports `part_motion_object_count=1`, `articulation_model_ready_count=0`, and `part_pose_ready_count=0`. This means V18 has enough part visible-surface evidence to study a bounded part/articulation model for the pink-lid object, but not enough to accept part pose or contact ownership.
+
+Remaining gap after this checkpoint: resolve whether the variable part-pair distances are true articulation, mask drift, or depth/visibility noise; then formulate a bounded part model only if discriminating evidence supports it.
 
 ## Design Goal
 
