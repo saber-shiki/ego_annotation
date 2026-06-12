@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, and one bounded visible part-model candidate, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, and a visible part-subset archive, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -197,11 +197,25 @@ V18 now records bounded visible part-model candidates:
 /data2/ego_annotation_outputs/v18_part_model_candidates/
 ```
 
-`build_v18_part_model_candidates.py` converts only robust stable part-pair evidence into candidate records. It produced one candidate for `object:pink_lid_trash_can_second`: `pink_lid_raised_annular_rim` + `pink_lid_top_dished_panel_visible`, covering 70 unique frames, 98,315 vertices, and 170,062 faces in visible-surface rows. The candidate is explicitly scoped as `visible_surface_subset_only`.
+`build_v18_part_model_candidates.py` converts only robust stable part-pair evidence into candidate records. It produced one candidate for `object:pink_lid_trash_can_second`: `pink_lid_raised_annular_rim` + `pink_lid_top_dished_panel_visible`, covering 70 unique frames, 98,315 vertices, and 169,356 faces in visible-surface rows. The candidate is explicitly scoped as `visible_surface_subset_only`.
 
 The updated status manifest reports `part_model_candidate_count=1` and `visible_subset_model_candidate_count=1`, while `articulation_model_ready_count=0`, `part_pose_ready_count=0`, and `object_pose_requirement_met=false`. Confounded variable pairs and sparse part tracks remain excluded.
 
 Remaining gap after this checkpoint: either obtain better masks for sparse parts or build a bounded visible-subset model from the robust lid/rim subset; neither path may be promoted to full object pose without hidden geometry and pose evidence.
+
+## Implementation Checkpoint 12: Materialized Visible Part-Subset Archive
+
+V18 now materializes robust stable visible part-subset candidates as mesh archives:
+
+```text
+/data2/ego_annotation_outputs/v18_visible_part_subset_archive/
+```
+
+`build_v18_visible_part_subset_archive.py` copies only observed depth-backed surfaces from the accepted robust stable part subset, rebases global face indices, and preserves row provenance back to the part visible-surface archive. The archive contains one candidate for `object:pink_lid_trash_can_second`, 139 surface rows, 70 unique frames, 98,315 vertices, and 169,356 faces. The earlier written 170,062-face count was a stale human-side count; source rows, source NPZ offsets, candidate records, and the new archive all support 169,356 faces.
+
+The updated manifest reports `visible_part_subset_archive_ready=true`, `visible_part_subset_archive_rows=139`, `visible_part_subset_vertices=98315`, and `visible_part_subset_faces=169356`. Hidden geometry, part pose, articulation readiness, contact readiness, and object pose remain false.
+
+Remaining gap after this checkpoint: build validation around the visible subset if useful, but do not promote it beyond visible surface evidence without hidden geometry, pose, and contact support.
 
 ## Design Goal
 
