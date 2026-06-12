@@ -489,6 +489,28 @@ def index_v16_frames(path: Path) -> dict[int, dict[str, Any]]:
     return {require_int(frame.get("frame_idx"), "v16 frame_idx"): require_dict(frame, "v16 frame") for frame in require_list(report.get("frames"), "v16 frames")}
 
 
+def load_occlusion_mesh_owner_evidence_index(path: Path) -> dict[tuple[int, str], list[dict[str, Any]]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "occlusion mesh owner evidence report")
+    out: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+    for raw in require_list(report.get("rows"), "occlusion mesh owner rows"):
+        row = require_dict(raw, "occlusion mesh owner row")
+        frame_idx = require_int(row.get("frame_idx"), "occlusion mesh frame_idx")
+        key = (frame_idx, str(row.get("hand_side")))
+        out[key].append({
+            "source_report": str(path),
+            "object_id": row.get("object_id"),
+            "object_name": row.get("object_name"),
+            "bbox_iou": row.get("bbox_iou"),
+            "source_depth_order_state": row.get("source_depth_order_state"),
+            "mesh_contact_temporal_support": row.get("mesh_contact_temporal_support"),
+            "occlusion_owner_claim": row.get("occlusion_owner_claim"),
+            "accepted_occlusion_owner": row.get("accepted_occlusion_owner"),
+        })
+    return dict(out)
+
+
 def load_mesh_contact_evidence_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1143,6 +1165,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
+    occlusion_mesh_index = load_occlusion_mesh_owner_evidence_index(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json")
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
     articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
     frame_count = require_int(state.get("frame_count"), "frame_count")
@@ -1176,6 +1199,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             }
             confidence = "medium" if hand.get("visibility_state") == "visible" and hand.get("metric_depth_compatible") else "low" if hand.get("visibility_state") in {"visible", "partially_visible"} else "unknown"
             confidence_counts[f"hand_{confidence}"] += 1
+            occlusion_mesh_evidence = occlusion_mesh_index.get((frame_idx, side), [])
             hands.append(
                 {
                     "hand_side": side,
@@ -1190,6 +1214,8 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "occlusion_owner_hypothesis": {
                         "state": occlusion_solution.get("occluder_owner_status", "unresolved_or_not_applicable"),
                         "owner_candidates": owner_candidates,
+                        "mesh_owner_evidence": occlusion_mesh_evidence,
+                        "accepted_occlusion_owner_count": sum(1 for row in occlusion_mesh_evidence if isinstance(row, dict) and row.get("accepted_occlusion_owner") is True),
                         "confidence": "low" if owner_candidates else "unknown",
                     },
                 }
@@ -1282,6 +1308,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
+            "occlusion_mesh_owner_evidence": str(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json"),
             "articulation_fit_candidates": str(args.articulation_root / case / "v18_articulation_fit_candidates_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
             "v16_render_overlay": str(v16_render_paths(case, args)["overlay"]),
@@ -1307,7 +1334,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
             "contact_ownership": "image_overlap_depth_plus_v16_mesh_distance_contact_evidence_no_accepted_ownership",
-            "occlusion_ownership": "bounded_owner_candidate_hypotheses",
+            "occlusion_ownership": "bounded_owner_candidates_plus_mesh_temporal_support_no_new_acceptance",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
         "factor_graph_summary": factor_graph_summary,
@@ -1605,6 +1632,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
+    parser.add_argument("--occlusion-mesh-owner-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_mesh_owner_evidence"))
     parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()

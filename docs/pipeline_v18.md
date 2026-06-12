@@ -722,6 +722,12 @@ V18 now has a mesh-distance contact evidence artifact in `scripts/build_v18_mesh
 
 This is contact evidence, not accepted contact ownership. The artifact intentionally keeps `contact_ownership_accepted_rows = 0`; it does not solve full hand-object nonpenetration or multi-object ownership. It does, however, expose useful contradictions: some image/depth contact rows previously rejected by the older depth heuristic have sub-millimeter V16 mesh distances. `run_v18_full_pipeline.py` now includes this mesh-contact evidence under each contact hypothesis when available.
 
+## Implementation Checkpoint 40: Occlusion Owner Evidence From Mesh Contact
+
+V18 now has an occlusion-owner evidence artifact in `scripts/build_v18_occlusion_mesh_owner_evidence.py`. It combines bounded occlusion-owner candidates with nearby V16 mesh-contact support over a temporal window. This does not accept new owners without depth-order acceptance; it records `not_accepted_owner_without_depth_order_acceptance` when mesh support exists but depth order remains unresolved.
+
+The artifact is integrated into `run_v18_full_pipeline.py` under each hand's `occlusion_owner_hypothesis.mesh_owner_evidence`. Current representative outputs have mesh-support evidence for many trash candidates and one task5 candidate, but accepted occlusion owner count remains zero. This is a stronger evidence layer, not solved occlusion ownership or pose fill-through-occlusion.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
