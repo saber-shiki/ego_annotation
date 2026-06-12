@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, occlusion owner-candidate evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, part-mask acquisition status, and measured cached-evidence-to-status runtime, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, occlusion owner-candidate evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, part-mask acquisition status, measured cached-evidence-to-status runtime, and a passing invariant audit, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -318,6 +318,20 @@ The bounded state solution now consumes `/data2/ego_annotation_outputs/v18_occlu
 The status manifest reports `bounded_occlusion_owner_candidate_rows=116`, `bounded_occluder_owner_accepted_rows=0`, `bounded_occlusion_depth_order_resolved_rows=0`, and `pose_filled_through_occlusion_rows=0`. The measured status pipeline was rerun after this integration and remains a cached-evidence-to-status measurement, not fresh raw-video-to-final runtime.
 
 Remaining gap after this checkpoint: add metric depth ordering or explicit visibility reasoning before any candidate can become an accepted occluder owner.
+
+## Implementation Checkpoint 21: Status Invariant Audit
+
+V18 now writes a machine-readable invariant audit:
+
+```text
+/data2/ego_annotation_outputs/v18_status_invariant_audit/
+```
+
+`audit_v18_status_invariants.py` checks the generated status manifest, runtime report, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, part-track source manifest, and part-mask acquisition plan. The current audit passes 46 required checks with zero failures.
+
+The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, task5 empty visible part-subset archive not evidence-ready, uniform part-track generation not ready, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`.
+
+Remaining gap after this checkpoint: keep this audit in the validation path for future V18 changes; add new required checks when new geometry, pose, contact, or perception-backend stages are introduced.
 
 ## Design Goal
 
