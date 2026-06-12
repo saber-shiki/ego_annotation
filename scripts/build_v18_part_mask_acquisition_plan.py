@@ -229,6 +229,14 @@ def acquisition_state(row: dict[str, Any]) -> tuple[str, list[str]]:
         return "requires_repair_articulation_fit_residuals", sorted(blockers | {"articulation_fit_residual_rejected"})
     if state == "blocked_articulation_fit_underconstrained":
         return "requires_more_shared_part_frames_for_articulation_fit", sorted(blockers | {"articulation_fit_underconstrained"})
+    if state == "blocked_part_se3_surface_residual_rejected":
+        return "requires_repair_part_se3_surface_residuals", sorted(blockers | {"part_se3_surface_residual_rejected"})
+    if state == "blocked_part_se3_supported_no_silhouette_depth_pose":
+        return "requires_silhouette_depth_hidden_geometry_validation_after_part_se3", sorted(
+            blockers | {"part_se3_supported_visible_only_not_pose", "silhouette_residual_not_evaluated", "hidden_geometry_not_completed"}
+        )
+    if state == "blocked_part_se3_surface_residual_not_supported":
+        return "requires_repair_part_se3_surface_residuals", sorted(blockers | {"part_se3_surface_residual_not_supported"})
     if state == "blocked_no_part_model_candidate":
         return "requires_part_surface_model_candidate_after_generated_masks", sorted(blockers | {"part_model_candidate_missing"})
     return "requires_manual_triage", sorted(blockers | {"unclassified_part_object_blocker_state"})

@@ -130,6 +130,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_motion_qc_path = args.part_motion_qc_root / case / "v18_part_motion_qc_report.json"
     part_model_candidates_path = args.part_model_candidates_root / case / "v18_part_model_candidates_report.json"
     articulation_fit_path = args.articulation_fit_root / case / "v18_articulation_fit_candidates_report.json"
+    part_se3_path = args.part_se3_root / case / "v18_part_se3_surface_residuals_report.json"
     visible_part_subset_path = args.visible_part_subset_root / case / "v18_visible_part_subset_archive_report.json"
     part_object_blockers_path = args.part_object_blockers_root / case / "v18_part_object_blocker_manifest_report.json"
     sam_promptable_proposals_path = args.sam_promptable_proposals_root / case / "v18_sam_promptable_part_proposals_report.json"
@@ -153,6 +154,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_motion_qc = require_dict(load_json(part_motion_qc_path), f"{case} part motion qc")
     part_model_candidates = require_dict(load_json(part_model_candidates_path), f"{case} part model candidates")
     articulation_fit = require_dict(load_json(articulation_fit_path), f"{case} articulation fit candidates")
+    part_se3 = require_dict(load_json(part_se3_path), f"{case} part se3 surface residuals")
     visible_part_subset = require_dict(load_json(visible_part_subset_path), f"{case} visible part subset archive")
     part_object_blockers = require_dict(load_json(part_object_blockers_path), f"{case} part object blockers")
     sam_promptable_proposals = require_dict(load_json(sam_promptable_proposals_path), f"{case} SAM promptable proposals")
@@ -245,6 +247,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_motion_qc_report": str(part_motion_qc_path),
             "part_model_candidates_report": str(part_model_candidates_path),
             "articulation_fit_candidates_report": str(articulation_fit_path),
+            "part_se3_surface_residuals_report": str(part_se3_path),
             "visible_part_subset_archive_report": str(visible_part_subset_path),
             "visible_part_subset_archive_npz": visible_part_subset.get("archive_npz"),
             "part_object_blocker_manifest": str(part_object_blockers_path),
@@ -424,6 +427,14 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "articulation_model_ready_count": articulation_fit.get("articulation_model_ready_count"),
             "part_pose_ready_count": articulation_fit.get("part_pose_ready_count"),
             "object_pose_requirement_met_count": articulation_fit.get("object_pose_requirement_met_count"),
+        },
+        "part_se3_surface_residual_qc": {
+            "part_se3_pair_count": part_se3.get("part_se3_pair_count"),
+            "part_se3_pair_state_counts": part_se3.get("part_se3_pair_state_counts"),
+            "part_surface_se3_state_counts": part_se3.get("part_surface_se3_state_counts"),
+            "part_pose_ready_count": part_se3.get("part_pose_ready_count"),
+            "contact_ownership_ready_count": part_se3.get("contact_ownership_ready_count"),
+            "object_pose_requirement_met_count": part_se3.get("object_pose_requirement_met_count"),
         },
         "visible_part_subset_archive_qc": {
             "visible_part_subset_archive_file_written": visible_part_subset.get("visible_part_subset_archive_file_written"),
@@ -767,6 +778,22 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("articulation_fit_qc"), "articulation fit qc").get("articulation_fit_rejected_count"), "articulation fit rejected count")
         for case in cases
     )
+    part_se3_pair_count = sum(
+        require_int(require_dict(case.get("part_se3_surface_residual_qc"), "part se3 surface residual qc").get("part_se3_pair_count"), "part se3 pair count")
+        for case in cases
+    )
+    part_se3_surface_supported_count = sum(
+        int(require_dict(require_dict(case.get("part_se3_surface_residual_qc"), "part se3 surface residual qc").get("part_surface_se3_state_counts"), "part surface se3 states").get("part_surface_se3_residual_supported_visible_only_not_pose", 0))
+        for case in cases
+    )
+    part_se3_surface_rejected_count = sum(
+        int(require_dict(require_dict(case.get("part_se3_surface_residual_qc"), "part se3 surface residual qc").get("part_surface_se3_state_counts"), "part surface se3 states").get("part_surface_se3_residual_rejected", 0))
+        for case in cases
+    )
+    part_se3_pair_rejected_count = sum(
+        int(require_dict(require_dict(case.get("part_se3_surface_residual_qc"), "part se3 surface residual qc").get("part_se3_pair_state_counts"), "part se3 pair states").get("part_se3_surface_residual_rejected", 0))
+        for case in cases
+    )
     visible_subset_model_candidate_count = sum(
         require_int(
             require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("visible_subset_model_candidate_count"),
@@ -978,6 +1005,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "articulation_fit_probe_count": articulation_fit_probe_count,
         "articulation_fit_supported_count": articulation_fit_supported_count,
         "articulation_fit_rejected_count": articulation_fit_rejected_count,
+        "part_se3_pair_count": part_se3_pair_count,
+        "part_se3_surface_supported_count": part_se3_surface_supported_count,
+        "part_se3_surface_rejected_count": part_se3_surface_rejected_count,
+        "part_se3_pair_rejected_count": part_se3_pair_rejected_count,
         "visible_subset_model_candidate_count": visible_subset_model_candidate_count,
         "visible_part_subset_archive_file_written_all_cases": visible_part_subset_archive_file_written_all_cases,
         "visible_part_subset_archive_ready": visible_part_subset_archive_ready,
@@ -1055,6 +1086,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-motion-qc-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_motion_qc"))
     parser.add_argument("--part-model-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_model_candidates"))
     parser.add_argument("--articulation-fit-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
+    parser.add_argument("--part-se3-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_se3_surface_residuals"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
     parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--sam-promptable-proposals-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_sam_promptable_part_proposals"))
