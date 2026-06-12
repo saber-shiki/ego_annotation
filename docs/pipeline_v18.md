@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, occlusion owner-candidate evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, part-mask acquisition status, measured cached-evidence-to-status runtime, and a passing invariant audit, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, occlusion owner-candidate evidence, occlusion depth-order triage evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, part-mask acquisition status, measured cached-evidence-to-status runtime, and a passing invariant audit, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -108,7 +108,7 @@ V18 also now renders full-duration abstract world/status and side-by-side status
 
 The world/status render is deliberately image-normalized abstract status geometry, not a metric 3D reconstruction. The side-by-side videos place the raw-frame status overlay next to that abstract status view. Visual sheets were extracted for both cases for non-corruption checks.
 
-`build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 121.35 seconds for 67 seconds of source video, or 1.81x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
+`build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 124.70 seconds for 67 seconds of source video, or 1.86x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
 
 Remaining gap after this checkpoint: implement or integrate a bounded object geometry/pose path that can actually reconstruct manipulated-object geometry where evidence supports it, validate contact ownership with metric depth and complete/appropriate geometry, and only then upgrade final annotation readiness.
 
@@ -291,9 +291,9 @@ V18 now has a measured runtime artifact for the implemented status pipeline:
 /data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime/
 ```
 
-`run_v18_measured_status_pipeline.py` runs 25 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 159.37 seconds over 67.0 seconds of representative video, or 2.38x video duration. The slowest stages were status overlay render (58.99 s), world/status render (57.66 s), side-by-side render (18.38 s), and part visible-surface extraction (11.30 s).
+`run_v18_measured_status_pipeline.py` runs 26 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 167.84 seconds over 67.0 seconds of representative video, or 2.51x video duration. The slowest stages were status overlay render (60.28 s), world/status render (58.63 s), side-by-side render (19.66 s), and part visible-surface extraction (16.08 s).
 
-This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.3787`, while final pose/contact readiness remains false.
+This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.5050`, while final pose/contact readiness remains false.
 
 Remaining gap after this checkpoint: measure true fresh raw-video-to-status runtime only after the perception backend is provisioned; measure final runtime only after final geometry/pose/contact stages exist.
 
@@ -327,11 +327,27 @@ V18 now writes a machine-readable invariant audit:
 /data2/ego_annotation_outputs/v18_status_invariant_audit/
 ```
 
-`audit_v18_status_invariants.py` checks the generated status manifest, runtime report, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, part-track source manifest, and part-mask acquisition plan. The current audit passes 46 required checks with zero failures.
+`audit_v18_status_invariants.py` checks the generated status manifest, runtime report, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, part-track source manifest, and part-mask acquisition plan. The current audit passes 49 required checks with zero failures.
 
-The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, task5 empty visible part-subset archive not evidence-ready, uniform part-track generation not ready, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`. The measured runtime orchestrator now runs manifest, audit, post-report manifest refresh, post-report audit, and final manifest-refresh steps so the audit observes the same runtime ratio that the final manifest reports.
+The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, occlusion depth-order evidence not promoted to ownership, task5 empty visible part-subset archive not evidence-ready, uniform part-track generation not ready, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`. The measured runtime orchestrator now runs manifest, audit, post-report manifest refresh, post-report audit, and final manifest-refresh steps so the audit observes the same runtime ratio that the final manifest reports.
 
 Remaining gap after this checkpoint: keep this audit in the validation path for future V18 changes; add new required checks when new geometry, pose, contact, or perception-backend stages are introduced.
+
+## Implementation Checkpoint 22: Occlusion Depth-Order Triage Evidence
+
+V18 now writes bounded scene-depth triage for occlusion-owner candidates:
+
+```text
+/data2/ego_annotation_outputs/v18_occlusion_depth_order_evidence/
+```
+
+`build_v18_occlusion_depth_order_evidence.py` consumes the occlusion owner-candidate rows, V18 hand visibility/depth states, and V17 same-frame object visible-surface depth summaries. It classifies each candidate object pair as scene-depth support for a foreground-occluder candidate, scene-depth contradiction, metric-compatible/no foreground signal, insufficient object surface depth, or insufficient/untrusted hand depth. This is candidate triage only: it does not assign an occluder owner, does not resolve object-specific depth ordering, does not fill pose, and does not validate contact.
+
+Current evidence covers 116 owner-candidate hand rows and 166 candidate object pairs. 160 pairs have same-frame object visible-surface depth. The depth triage finds 1 pair where scene depth supports a foreground-occluder candidate but ownership remains unaccepted, 27 pairs where scene depth contradicts a foreground-occluder explanation for the current hand state, 13 pairs with metric-compatible/no foreground occlusion signal, and 125 pairs with insufficient object-surface or hand-depth evidence.
+
+The bounded state solution now projects these counts while keeping `occluder_owner_accepted_rows=0`, `occlusion_depth_order_resolved_rows=0`, and `pose_filled_through_occlusion_rows=0`. The status manifest reports `occlusion_depth_evidence_candidate_pair_rows=166`, `occlusion_depth_evidence_foreground_support_pair_rows=1`, `occlusion_depth_evidence_foreground_contradiction_pair_rows=27`, `occlusion_depth_evidence_owner_accepted_count=0`, and `occlusion_depth_evidence_depth_order_resolved_count=0`.
+
+Remaining gap after this checkpoint: convert depth triage into accepted ownership only with object-specific visibility/depth reasoning and a valid temporal hand model; current evidence mostly rules out or fails to evaluate candidate rows rather than solving occlusion.
 
 ## Design Goal
 

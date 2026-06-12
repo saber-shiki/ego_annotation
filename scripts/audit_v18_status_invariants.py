@@ -51,6 +51,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     runtime_path = args.measured_runtime_root / "v18_measured_status_pipeline_runtime_report.json"
     subset_summary_path = args.visible_part_subset_root / "v18_visible_part_subset_archive_summary.json"
     occlusion_summary_path = args.occlusion_owner_candidates_root / "v18_occlusion_owner_candidates_summary.json"
+    occlusion_depth_summary_path = args.occlusion_depth_evidence_root / "v18_occlusion_depth_order_evidence_summary.json"
     bounded_summary_path = args.bounded_state_root / "v18_bounded_state_solution_summary.json"
     physical_schema_path = args.physical_state_schema_root / "v18_physical_state_schema_summary.json"
     part_source_path = args.part_track_source_root / "v18_part_track_source_manifest_summary.json"
@@ -59,6 +60,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     runtime = require_dict(load_json(runtime_path), "runtime report")
     subset = require_dict(load_json(subset_summary_path), "visible part subset summary")
     occlusion = require_dict(load_json(occlusion_summary_path), "occlusion candidates summary")
+    occlusion_depth = require_dict(load_json(occlusion_depth_summary_path), "occlusion depth-order evidence summary")
     bounded = require_dict(load_json(bounded_summary_path), "bounded state summary")
     physical = require_dict(load_json(physical_schema_path), "physical schema summary")
     part_source = require_dict(load_json(part_source_path), "part source summary")
@@ -102,6 +104,42 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     check(checks, "part_mask_generation_not_ready", manifest.get("local_new_mask_generation_ready_count") == 0, manifest.get("local_new_mask_generation_ready_count"), 0)
     check(checks, "mask_evidence_created_zero", acquisition.get("mask_evidence_created_count") == manifest.get("mask_evidence_created_count") == 0, {"acquisition": acquisition.get("mask_evidence_created_count"), "manifest": manifest.get("mask_evidence_created_count")}, 0)
     check(checks, "occlusion_candidate_count_matches", occlusion.get("candidate_owner_row_count") == manifest.get("occlusion_candidate_owner_row_count") == bounded.get("occlusion_owner_candidate_rows") == manifest.get("bounded_occlusion_owner_candidate_rows"), {"occlusion": occlusion.get("candidate_owner_row_count"), "bounded": bounded.get("occlusion_owner_candidate_rows"), "manifest": manifest.get("occlusion_candidate_owner_row_count")}, 116)
+    check(
+        checks,
+        "occlusion_depth_candidate_pairs_match",
+        occlusion_depth.get("candidate_pair_count") == manifest.get("occlusion_depth_evidence_candidate_pair_rows") == bounded.get("occlusion_depth_evidence_candidate_pair_rows"),
+        {
+            "depth_summary": occlusion_depth.get("candidate_pair_count"),
+            "manifest": manifest.get("occlusion_depth_evidence_candidate_pair_rows"),
+            "bounded": bounded.get("occlusion_depth_evidence_candidate_pair_rows"),
+        },
+        "all equal",
+    )
+    depth_partition_total = sum(
+        int(manifest.get(key) or 0)
+        for key in [
+            "occlusion_depth_evidence_foreground_support_pair_rows",
+            "occlusion_depth_evidence_foreground_contradiction_pair_rows",
+            "occlusion_depth_evidence_metric_compatible_pair_rows",
+            "occlusion_depth_evidence_insufficient_pair_rows",
+        ]
+    )
+    check(checks, "occlusion_depth_evidence_partition", depth_partition_total == manifest.get("occlusion_depth_evidence_candidate_pair_rows"), depth_partition_total, manifest.get("occlusion_depth_evidence_candidate_pair_rows"))
+    check(
+        checks,
+        "occlusion_depth_evidence_no_acceptance",
+        occlusion_depth.get("occluder_owner_accepted_count") == manifest.get("occlusion_depth_evidence_owner_accepted_count") == 0
+        and occlusion_depth.get("depth_order_resolved_count") == manifest.get("occlusion_depth_evidence_depth_order_resolved_count") == 0
+        and occlusion_depth.get("pose_filled_through_occlusion_rows") == 0,
+        {
+            "depth_owner_accepted": occlusion_depth.get("occluder_owner_accepted_count"),
+            "manifest_owner_accepted": manifest.get("occlusion_depth_evidence_owner_accepted_count"),
+            "depth_resolved": occlusion_depth.get("depth_order_resolved_count"),
+            "manifest_resolved": manifest.get("occlusion_depth_evidence_depth_order_resolved_count"),
+            "pose_filled": occlusion_depth.get("pose_filled_through_occlusion_rows"),
+        },
+        "all zero",
+    )
     check(checks, "runtime_pipeline_success", runtime.get("pipeline_success") is True, runtime.get("pipeline_success"), True)
     check(checks, "runtime_stage_count_matches_manifest", runtime.get("stage_count") == manifest.get("cached_evidence_to_status_stage_count"), {"runtime": runtime.get("stage_count"), "manifest": manifest.get("cached_evidence_to_status_stage_count")}, manifest.get("cached_evidence_to_status_stage_count"))
     check(checks, "cached_runtime_measured", manifest.get("cached_evidence_to_status_runtime_measured") is True, manifest.get("cached_evidence_to_status_runtime_measured"), True)
@@ -132,6 +170,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_report": str(runtime_path),
             "visible_part_subset_summary": str(subset_summary_path),
             "occlusion_candidates_summary": str(occlusion_summary_path),
+            "occlusion_depth_order_evidence_summary": str(occlusion_depth_summary_path),
             "bounded_state_summary": str(bounded_summary_path),
             "physical_schema_summary": str(physical_schema_path),
             "part_track_source_summary": str(part_source_path),
@@ -152,6 +191,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measured-runtime-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
     parser.add_argument("--occlusion-owner-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_candidates"))
+    parser.add_argument("--occlusion-depth-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_depth_order_evidence"))
     parser.add_argument("--bounded-state-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))

@@ -149,7 +149,7 @@ def dag_template() -> list[dict[str, Any]]:
             "default_path": True,
             "stage_kind": "fixed_iteration_robust_graph",
             "forbidden_heavy_backend": False,
-            "outputs": ["consistent_hand_object_state", "rejected_factors", "unresolved_rows"],
+            "outputs": ["consistent_hand_object_state", "occlusion_depth_order_candidate_evidence", "rejected_factors", "unresolved_rows"],
         },
         {
             "stage_id": "full_duration_render",
