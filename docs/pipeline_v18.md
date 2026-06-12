@@ -740,6 +740,12 @@ V18 now consumes the part visible-surface archive `v18_part_visible_surfaces_cam
 
 The numerical factor graph now uses 6D part SE(3) observations (`translation_xyz_m_and_rotation_vector_xyz_rad`) when these PCA rotations exist. This advances the part pose mechanism beyond center-only translation. The scope remains limited: PCA orientation is visible-surface-only, sign-canonicalized, and not a canonical full part pose through occlusion or hidden geometry.
 
+## Implementation Checkpoint 43: Integrated Hand Baseline Evidence
+
+V18 now carries the hand-baseline branch rows into the final full annotations. `run_v18_full_pipeline.py` reads `v18_hand_baseline_branch.json` and attaches each hand's HaWoR/WiLoR/RTMLib/interior-depth state, score components, blockers, and pose claim under `hand_baseline_branch`. The full artifact therefore preserves why HaWoR is present or absent for every frame-side rather than reducing the branch to a boolean.
+
+This is evidence integration, not accepted occluded-hand pose fill. Current outputs still keep `temporal_occlusion_pose_accepted=false` and `pose_claim=no_occluded_pose_accepted_from_current_hand_baseline`; trash has HaWoR candidate rows, while task5 has explicit HaWoR-missing blockers.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

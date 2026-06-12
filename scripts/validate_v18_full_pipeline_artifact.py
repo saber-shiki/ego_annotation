@@ -38,10 +38,12 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     modules_raw = ann.get("modules")
     modules: dict[str, Any] = modules_raw if isinstance(modules_raw, dict) else {}
     require("contact_owner_graph" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
+    require("hand_baseline_evidence" in str(modules.get("hand_branch")), f"{case}: hand baseline evidence not listed in modules")
     accepted_contact = 0
     selected_contact = 0
     occlusion_mesh_rows = 0
     factor_contact_accept = 0
+    hand_baseline_rows = 0
     for frame in frames:
         if not isinstance(frame, dict):
             continue
@@ -61,6 +63,11 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
         for hand in frame.get("hands", []):
             if not isinstance(hand, dict):
                 continue
+            baseline_raw = hand.get("hand_baseline_branch")
+            baseline: dict[str, Any] = baseline_raw if isinstance(baseline_raw, dict) else {}
+            if baseline.get("hand_baseline_state"):
+                hand_baseline_rows += 1
+            require(baseline.get("temporal_occlusion_pose_accepted") is not True, f"{case}: unsupported accepted occlusion hand pose")
             occ_raw = hand.get("occlusion_owner_hypothesis")
             occ: dict[str, Any] = occ_raw if isinstance(occ_raw, dict) else {}
             occ_evidence = occ.get("mesh_owner_evidence")
@@ -76,7 +83,8 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
         require(selected_contact >= accepted_contact, f"{case}: selected contact count less than accepted count")
     require(occlusion_mesh_rows > 0, f"{case}: no occlusion mesh evidence integrated")
     require(factor_contact_accept > 0, f"{case}: factor graph contact switches absent")
-    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept}
+    require(hand_baseline_rows > 0, f"{case}: no hand baseline rows integrated")
+    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows}
 
 
 def main() -> None:

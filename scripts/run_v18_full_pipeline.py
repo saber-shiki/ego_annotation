@@ -583,6 +583,42 @@ def load_mesh_contact_evidence_index(path: Path) -> dict[tuple[int, str, str], d
     return out
 
 
+def load_hand_baseline_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "hand baseline branch")
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for raw_frame in require_list(report.get("frames"), "hand baseline frames"):
+        frame = require_dict(raw_frame, "hand baseline frame")
+        frame_idx = require_int(frame.get("frame_idx"), "hand baseline frame_idx")
+        for raw_hand in require_list(frame.get("hands", []), "hand baseline hands"):
+            hand = require_dict(raw_hand, "hand baseline hand")
+            side = str(hand.get("hand_side"))
+            out[(frame_idx, side)] = {
+                "source_report": str(path),
+                "hand_baseline_state": hand.get("hand_baseline_state"),
+                "acceptance_blockers": hand.get("acceptance_blockers"),
+                "baseline_score_components": hand.get("baseline_score_components"),
+                "wilor_measurement_available": hand.get("wilor_measurement_available"),
+                "wilor_confidence": hand.get("wilor_confidence"),
+                "wilor_bbox_xyxy": hand.get("wilor_bbox_xyxy"),
+                "hawor_candidate_present": hand.get("hawor_candidate_present"),
+                "hawor_measurement_available": hand.get("hawor_measurement_available"),
+                "hawor_evidence_role": hand.get("hawor_evidence_role"),
+                "hawor_confidence": hand.get("hawor_confidence"),
+                "hawor_projection_residual_px_median": hand.get("hawor_projection_residual_px_median"),
+                "hawor_projection_residual_px_p95": hand.get("hawor_projection_residual_px_p95"),
+                "rtmlib_frame_detection_count": hand.get("rtmlib_frame_detection_count"),
+                "rtmlib_wilor_comparison_available": hand.get("rtmlib_wilor_comparison_available"),
+                "rtmlib_wilor_median_keypoint_delta_px": hand.get("rtmlib_wilor_median_keypoint_delta_px"),
+                "interior_metric_depth_state": hand.get("interior_metric_depth_state"),
+                "interior_metric_depth_compatible": hand.get("interior_metric_depth_compatible"),
+                "temporal_occlusion_pose_accepted": hand.get("temporal_occlusion_pose_accepted"),
+                "pose_claim": hand.get("pose_claim"),
+            }
+    return out
+
+
 def load_contact_ownership_graph_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1282,6 +1318,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     v16_path = args.v16_root / case / "annotations_v16_full.json"
     v16_frames = index_v16_frames(v16_path)
     bounded_index = index_bounded_frames(args.bounded_root / case / "v18_bounded_state_solution.json")
+    hand_baseline_index = load_hand_baseline_index(args.hand_baseline_root / case / "v18_hand_baseline_branch.json")
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
@@ -1307,11 +1344,12 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             side = str(hand.get("hand_side"))
             v16_hand = v16_hands.get(side, {})
             bounded_hand = bounded_hands_by_side.get(side, {})
+            baseline = hand_baseline_index.get((frame_idx, side), {})
             occlusion_solution = require_dict(bounded_hand.get("occlusion_solution", {}), "occlusion solution") if bounded_hand else {}
             owner_candidates = occlusion_solution.get("owner_candidate_objects", []) if isinstance(occlusion_solution.get("owner_candidate_objects", []), list) else []
             mano_candidate = {
                 "source": v16_hand.get("backend", "V16_or_V18_hand_baseline"),
-                "bbox_xyxy": hand.get("bbox_xyxy") or v16_hand.get("bbox_xyxy"),
+                "bbox_xyxy": hand.get("bbox_xyxy") or v16_hand.get("bbox_xyxy") or baseline.get("wilor_bbox_xyxy"),
                 "joints3d_camera": v16_hand.get("joints3d_camera"),
                 "cam_t": v16_hand.get("cam_t"),
                 "source_intrinsics": v16_hand.get("source_intrinsics"),
@@ -1327,9 +1365,10 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "visibility_state": hand.get("visibility_state"),
                     "bbox_xyxy": hand.get("bbox_xyxy") or v16_hand.get("bbox_xyxy"),
                     "mano_candidate": mano_candidate,
-                    "hawor_candidate_present": hand.get("hawor_candidate_present"),
-                    "wilor_or_v16_candidate_present": bool(v16_hand) or hand.get("renderable_bbox") is True,
-                    "rtmlib_anchor_available": hand.get("rtmlib_wilor_comparison_available"),
+                    "hawor_candidate_present": bool(hand.get("hawor_candidate_present") or baseline.get("hawor_candidate_present")),
+                    "wilor_or_v16_candidate_present": bool(v16_hand) or hand.get("renderable_bbox") is True or baseline.get("wilor_measurement_available") is True,
+                    "rtmlib_anchor_available": bool(hand.get("rtmlib_wilor_comparison_available") or baseline.get("rtmlib_wilor_comparison_available")),
+                    "hand_baseline_branch": baseline or {"state": "missing_hand_baseline_branch_row"},
                     "confidence": confidence,
                     "uncertainty": "all_hand_outputs_approximate",
                     "occlusion_owner_hypothesis": {
@@ -1426,6 +1465,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "v18_annotation_state": str(state_path),
             "v16_annotations": str(v16_path),
             "bounded_state_solution": str(args.bounded_root / case / "v18_bounded_state_solution.json"),
+            "hand_baseline_branch": str(args.hand_baseline_root / case / "v18_hand_baseline_branch.json"),
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
@@ -1452,7 +1492,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         },
         "modules": {
             "camera_depth_backbone": "v16_metric_camera_depth_reused_as_memoized_backbone",
-            "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_assembled",
+            "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_with_integrated_hand_baseline_evidence_and_blockers",
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
@@ -1751,6 +1791,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--annotation-state-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_annotation_state"))
     parser.add_argument("--v16-root", type=Path, default=Path("/data2/ego_annotation_outputs/v16_full_pipeline"))
     parser.add_argument("--bounded-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
+    parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
