@@ -23,8 +23,9 @@ FALSE_READY: dict[str, bool] = {
 STATUS = "v18_bounded_fixed_pass_state_solution"
 CLAIM = (
     "This artifact is a bounded fixed-pass V18 state solution over renderable annotation evidence. "
-    "It classifies observation, unresolved gaps, object geometry scope, and contact status without filling "
-    "occluded poses or promoting visible masks/surfaces to complete object pose."
+    "It classifies observation, unresolved gaps, occlusion owner candidates, object geometry scope, and contact "
+    "status without accepting occluder ownership, filling occluded poses, or promoting visible masks/surfaces to "
+    "complete object pose."
 )
 HAND_SIDES = ("left", "right")
 
@@ -190,6 +191,16 @@ def object_solution_state(obj: dict[str, Any]) -> str:
     return "inactive_or_out_of_frame"
 
 
+def occlusion_candidate_index(report: dict[str, Any]) -> dict[tuple[int, str], dict[str, Any]]:
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("row_records"), "occlusion candidate row_records"):
+        row = require_dict(raw, "occlusion candidate row")
+        frame_idx = require_int(row.get("frame_idx"), "occlusion candidate frame_idx")
+        hand_side = require_str(row.get("hand_side"), "occlusion candidate hand_side")
+        out[(frame_idx, hand_side)] = row
+    return out
+
+
 def contact_solution_state(contact: dict[str, Any]) -> tuple[str, str, list[str]]:
     state = str(contact.get("v18_consistency_state"))
     blockers_raw = contact.get("blockers", [])
@@ -209,7 +220,10 @@ def contact_solution_state(contact: dict[str, Any]) -> tuple[str, str, list[str]
 
 def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     state_path = args.annotation_root / case / "v18_annotation_state.json"
+    occlusion_candidates_path = args.occlusion_owner_candidates_root / case / "v18_occlusion_owner_candidates_report.json"
     state = require_dict(load_json(state_path), f"{case} annotation state")
+    occlusion_candidates = require_dict(load_json(occlusion_candidates_path), f"{case} occlusion owner candidates")
+    occlusion_candidate_by_hand = occlusion_candidate_index(occlusion_candidates)
     frames_raw = [require_dict(raw, "annotation frame") for raw in require_list(state.get("frames"), "annotation frames")]
     frame_count = require_int(state.get("frame_count"), "frame_count")
     if len(frames_raw) != frame_count:
@@ -222,6 +236,9 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     occlusion_counts: Counter[str] = Counter()
     contact_ready_rows = 0
     pose_filled_rows = 0
+    occlusion_owner_candidate_rows = 0
+    occluder_owner_accepted_rows = 0
+    occlusion_depth_order_resolved_rows = 0
     for frame in frames_raw:
         frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
         hand_rows: list[dict[str, Any]] = []
@@ -232,6 +249,23 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             side = require_str(hand.get("hand_side"), "hand_side")
             gap_info = gap_index.get((frame_idx, side))
             solution_state, extra = hand_solution_state(hand, gap_info)
+            occlusion_candidate = occlusion_candidate_by_hand.get((frame_idx, side))
+            if occlusion_candidate is not None:
+                extra = {
+                    **extra,
+                    "owner_candidate_state": occlusion_candidate.get("candidate_state"),
+                    "owner_candidate_count": occlusion_candidate.get("candidate_count"),
+                    "owner_candidate_objects": occlusion_candidate.get("candidate_objects", []),
+                    "owner_candidate_source": "v18_occlusion_owner_candidates",
+                    "occluder_owner_accepted": False,
+                    "depth_order_resolved": False,
+                }
+                if require_int(occlusion_candidate.get("candidate_count"), "candidate count") > 0:
+                    occlusion_owner_candidate_rows += 1
+                if occlusion_candidate.get("occluder_owner_accepted") is True:
+                    occluder_owner_accepted_rows += 1
+                if occlusion_candidate.get("depth_order_resolved") is True:
+                    occlusion_depth_order_resolved_rows += 1
             hand_counts[solution_state] += 1
             if extra.get("bounded_occlusion_candidate") is True:
                 occlusion_counts["short_gap_possible_occlusion_unfilled"] += 1
@@ -322,6 +356,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                         for row in hand_rows
                         if require_dict(row.get("occlusion_solution"), "occlusion_solution").get("bounded_occlusion_candidate") is True
                     ),
+                    "occlusion_owner_candidate_rows": sum(
+                        1
+                        for row in hand_rows
+                        if require_int(require_dict(row.get("occlusion_solution"), "occlusion_solution").get("owner_candidate_count", 0), "owner candidate count") > 0
+                    ),
                     "status": "bounded_state_classified_no_pose_fill",
                 },
             }
@@ -331,7 +370,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "status": STATUS,
         "claim": CLAIM,
         "case": case,
-        "sources": {"v18_annotation_state": str(state_path)},
+        "sources": {"v18_annotation_state": str(state_path), "v18_occlusion_owner_candidates": str(occlusion_candidates_path)},
         "frame_count": frame_count,
         "raw_frame_count": state.get("raw_frame_count"),
         "frame_count_match": frame_count == state.get("raw_frame_count") == len(frames),
@@ -341,6 +380,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "hand_unresolved_gap_classification",
                 "object_geometry_scope_projection",
                 "contact_mode_projection_from_consistency_depth_evidence",
+                "occlusion_owner_candidate_projection_without_owner_acceptance",
             ],
             "max_hand_gap_frames": args.max_hand_gap_frames,
             "pose_fill_policy": "never_fill_pose_without_depth_order_owner_and_validated_temporal_model",
@@ -352,6 +392,9 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "contact_solution_state_counts": dict(sorted(contact_counts.items())),
         "occlusion_solution_counts": dict(sorted(occlusion_counts.items())),
         "contact_factor_ready_rows": contact_ready_rows,
+        "occlusion_owner_candidate_rows": occlusion_owner_candidate_rows,
+        "occluder_owner_accepted_rows": occluder_owner_accepted_rows,
+        "occlusion_depth_order_resolved_rows": occlusion_depth_order_resolved_rows,
         "pose_filled_through_occlusion_rows": pose_filled_rows,
         "ready_for_world_status_render": True,
         "frames": frames,
@@ -387,6 +430,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "contact_solution_state_counts": dict(sorted(contact_counts.items())),
         "occlusion_solution_counts": dict(sorted(occlusion_counts.items())),
         "contact_factor_ready_rows": sum(require_int(report.get("contact_factor_ready_rows"), "contact ready") for report in reports),
+        "occlusion_owner_candidate_rows": sum(require_int(report.get("occlusion_owner_candidate_rows"), "occlusion owner candidates") for report in reports),
+        "occluder_owner_accepted_rows": sum(require_int(report.get("occluder_owner_accepted_rows"), "occluder accepted") for report in reports),
+        "occlusion_depth_order_resolved_rows": sum(require_int(report.get("occlusion_depth_order_resolved_rows"), "occlusion depth order") for report in reports),
         "pose_filled_through_occlusion_rows": sum(require_int(report.get("pose_filled_through_occlusion_rows"), "pose filled") for report in reports),
         "ready_for_world_status_render": True,
         "cases": [
@@ -398,6 +444,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_solution_state_counts": report["hand_solution_state_counts"],
                 "object_solution_state_counts": report["object_solution_state_counts"],
                 "contact_solution_state_counts": report["contact_solution_state_counts"],
+                "occlusion_owner_candidate_rows": report["occlusion_owner_candidate_rows"],
+                "occluder_owner_accepted_rows": report["occluder_owner_accepted_rows"],
+                "occlusion_depth_order_resolved_rows": report["occlusion_depth_order_resolved_rows"],
                 **FALSE_READY,
             }
             for report in reports
@@ -411,6 +460,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--annotation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_annotation_state"))
+    parser.add_argument("--occlusion-owner-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_candidates"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     parser.add_argument("--max-hand-gap-frames", type=int, default=12)

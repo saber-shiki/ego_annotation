@@ -263,6 +263,9 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "contact_solution_state_counts": solution.get("contact_solution_state_counts"),
             "occlusion_solution_counts": solution.get("occlusion_solution_counts"),
             "contact_factor_ready_rows": solution.get("contact_factor_ready_rows"),
+            "occlusion_owner_candidate_rows": solution.get("occlusion_owner_candidate_rows"),
+            "occluder_owner_accepted_rows": solution.get("occluder_owner_accepted_rows"),
+            "occlusion_depth_order_resolved_rows": solution.get("occlusion_depth_order_resolved_rows"),
             "pose_filled_through_occlusion_rows": solution.get("pose_filled_through_occlusion_rows"),
         },
         "visible_geometry_qc": {
@@ -410,6 +413,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     occlusion_depth_order_resolved_count = sum(
         require_int(require_dict(case.get("occlusion_owner_candidate_qc"), "occlusion candidate qc").get("depth_order_resolved_count"), "occlusion depth order")
+        for case in cases
+    )
+    bounded_occlusion_owner_candidate_rows = sum(
+        require_int(require_dict(case.get("bounded_state_qc"), "bounded qc").get("occlusion_owner_candidate_rows"), "bounded occlusion candidate rows")
+        for case in cases
+    )
+    bounded_occluder_owner_accepted_rows = sum(
+        require_int(require_dict(case.get("bounded_state_qc"), "bounded qc").get("occluder_owner_accepted_rows"), "bounded occluder accepted rows")
+        for case in cases
+    )
+    bounded_occlusion_depth_order_resolved_rows = sum(
+        require_int(require_dict(case.get("bounded_state_qc"), "bounded qc").get("occlusion_depth_order_resolved_rows"), "bounded occlusion depth rows")
         for case in cases
     )
     visible_surface_rows = sum(
@@ -600,6 +615,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "occlusion_candidate_owner_row_count": occlusion_candidate_owner_row_count,
         "occluder_owner_accepted_count": occluder_owner_accepted_count,
         "occlusion_depth_order_resolved_count": occlusion_depth_order_resolved_count,
+        "bounded_occlusion_owner_candidate_rows": bounded_occlusion_owner_candidate_rows,
+        "bounded_occluder_owner_accepted_rows": bounded_occluder_owner_accepted_rows,
+        "bounded_occlusion_depth_order_resolved_rows": bounded_occlusion_depth_order_resolved_rows,
         "visible_geometry_archive_ready": all(
             bool(require_dict(case.get("visible_geometry_qc"), "visible geometry qc").get("visible_geometry_archive_ready")) for case in cases
         ),
