@@ -752,6 +752,12 @@ V18 now has a camera/depth correction artifact in `scripts/build_v18_camera_dept
 
 `run_v18_full_pipeline.py` now loads these correction rows into the factor graph as `camera_depth_correction` variables with observation/interpolation state. This replaces the previous identity-only prior with observed scale evidence. The scope remains limited: this is a scale correction for the reused backend, not a new SLAM solve, dense depth refit, or proof that all depth/camera geometry is accurate.
 
+## Implementation Checkpoint 45: Local Signed Nonpenetration Evidence
+
+V18 now has local signed-distance evidence in `scripts/build_v18_signed_nonpenetration_evidence.py`. For accepted contact-owner rows, it loads the V16 object mesh faces and V16 hand vertices, orients face normals outward from the mesh centroid, and records nearest-face normal-projection signed distances. `scripts/validate_v18_signed_nonpenetration_evidence.py` checks that the evidence is present and that it does not claim complete nonpenetration.
+
+The current evidence often flags local penetration, especially where meshes are thin, deformable, open, or normal projection is only a local approximation. Therefore the artifact is integrated into contact hypotheses as evidence only. It is not a watertight signed-distance field, not a complete nonpenetration solver, and it does not override contact ownership by itself.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

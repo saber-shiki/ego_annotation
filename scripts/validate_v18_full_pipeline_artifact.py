@@ -38,7 +38,8 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     modules_raw = ann.get("modules")
     modules: dict[str, Any] = modules_raw if isinstance(modules_raw, dict) else {}
     require("depth_scale_correction" in str(modules.get("camera_depth_backbone")), f"{case}: camera/depth correction not listed in modules")
-    require("contact_owner_graph" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
+    require("contact_owner_graph" in str(modules.get("contact_ownership")) or "contact_owner" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
+    require("signed_normal" in str(modules.get("contact_ownership")), f"{case}: signed nonpenetration evidence not listed in modules")
     require("hand_baseline_evidence" in str(modules.get("hand_branch")), f"{case}: hand baseline evidence not listed in modules")
     accepted_contact = 0
     selected_contact = 0
@@ -46,6 +47,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     factor_contact_accept = 0
     hand_baseline_rows = 0
     camera_depth_observed_rows = 0
+    signed_nonpenetration_rows = 0
     for frame in frames:
         if not isinstance(frame, dict):
             continue
@@ -56,6 +58,11 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
             evidence: dict[str, Any] = evidence_raw if isinstance(evidence_raw, dict) else {}
             graph_raw = evidence.get("contact_ownership_graph")
             graph: dict[str, Any] | None = graph_raw if isinstance(graph_raw, dict) else None
+            signed_raw = evidence.get("signed_nonpenetration_evidence")
+            signed: dict[str, Any] | None = signed_raw if isinstance(signed_raw, dict) else None
+            if signed is not None:
+                signed_nonpenetration_rows += 1
+                require(signed.get("signed_nonpenetration_complete") is False, f"{case}: signed evidence overclaims complete nonpenetration")
             if graph:
                 if graph.get("selected_by_contact_graph") is True:
                     selected_contact += 1
@@ -92,7 +99,8 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require(factor_contact_accept > 0, f"{case}: factor graph contact switches absent")
     require(hand_baseline_rows > 0, f"{case}: no hand baseline rows integrated")
     require(camera_depth_observed_rows > 0, f"{case}: no observed camera/depth correction rows integrated")
-    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows}
+    require(signed_nonpenetration_rows > 0, f"{case}: no signed nonpenetration evidence integrated")
+    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows}
 
 
 def main() -> None:

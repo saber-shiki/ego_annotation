@@ -646,6 +646,31 @@ def load_hand_baseline_index(path: Path) -> dict[tuple[int, str], dict[str, Any]
     return out
 
 
+def load_signed_nonpenetration_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "signed nonpenetration evidence report")
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("rows"), "signed nonpenetration rows"):
+        row = require_dict(raw, "signed nonpenetration row")
+        frame_idx = require_int(row.get("frame_idx"), "signed nonpenetration frame_idx")
+        key = (frame_idx, str(row.get("hand_side")), str(row.get("object_id")))
+        out[key] = {
+            "source_report": str(path),
+            "signed_nonpenetration_claim": row.get("signed_nonpenetration_claim"),
+            "signed_nonpenetration_complete": row.get("signed_nonpenetration_complete"),
+            "local_penetration_detected": row.get("local_penetration_detected"),
+            "min_local_signed_distance_m": row.get("min_local_signed_distance_m"),
+            "median_local_signed_distance_m": row.get("median_local_signed_distance_m"),
+            "min_abs_local_signed_distance_m": row.get("min_abs_local_signed_distance_m"),
+            "negative_signed_distance_fraction": row.get("negative_signed_distance_fraction"),
+            "local_signed_distance_semantics": row.get("local_signed_distance_semantics"),
+            "penetration_tolerance_m": row.get("penetration_tolerance_m"),
+            "blocker": row.get("blocker"),
+        }
+    return out
+
+
 def load_contact_ownership_graph_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
     if not path.exists():
         return {}
@@ -680,7 +705,12 @@ def hand_by_side(v16_frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def contact_hypothesis(contact_row: dict[str, Any], mesh_contact: dict[str, Any] | None = None, contact_owner_graph: dict[str, Any] | None = None) -> dict[str, Any]:
+def contact_hypothesis(
+    contact_row: dict[str, Any],
+    mesh_contact: dict[str, Any] | None = None,
+    contact_owner_graph: dict[str, Any] | None = None,
+    signed_nonpenetration: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     state = str(contact_row.get("v18_consistency_state"))
     if contact_row.get("metric_depth_compatible_candidate") is True:
         confidence = "medium"
@@ -714,6 +744,7 @@ def contact_hypothesis(contact_row: dict[str, Any], mesh_contact: dict[str, Any]
             "pair_depth_gap_state": contact_row.get("pair_depth_gap_state"),
             "mesh_contact_evidence": mesh_contact,
             "contact_ownership_graph": contact_owner_graph,
+            "signed_nonpenetration_evidence": signed_nonpenetration,
         },
     }
 
@@ -1394,6 +1425,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
     contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
+    signed_nonpenetration_index = load_signed_nonpenetration_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
     occlusion_mesh_index = load_occlusion_mesh_owner_evidence_index(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json")
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
     articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
@@ -1471,7 +1503,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     row = dict(raw_contact)
                     row["object_id"] = object_id
                     contact_key = (frame_idx, str(row.get("hand_side")), object_id)
-                    hyp = contact_hypothesis(row, mesh_contact_index.get(contact_key), contact_owner_index.get(contact_key))
+                    hyp = contact_hypothesis(row, mesh_contact_index.get(contact_key), contact_owner_index.get(contact_key), signed_nonpenetration_index.get(contact_key))
                     contact_hypotheses.append(hyp)
                     object_contacts.append(hyp)
             confidence = "low" if geom is not None else "very_low" if obj.get("visibility_state") == "visible" else "unknown"
@@ -1543,6 +1575,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
             "contact_ownership_graph": str(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json"),
+            "signed_nonpenetration_evidence": str(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json"),
             "occlusion_mesh_owner_evidence": str(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json"),
             "articulation_fit_candidates": str(args.articulation_root / case / "v18_articulation_fit_candidates_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
@@ -1568,7 +1601,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
-            "contact_ownership": "temporal_discrete_contact_owner_graph_over_v16_mesh_distance_with_partial_accepted_ownership_signed_nonpenetration_unresolved",
+            "contact_ownership": "temporal_contact_owner_graph_plus_local_signed_normal_nonpenetration_evidence_not_complete_sdf",
             "occlusion_ownership": "bounded_owner_candidates_plus_mesh_temporal_support_no_new_acceptance",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
@@ -1870,6 +1903,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
     parser.add_argument("--contact-ownership-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))
+    parser.add_argument("--signed-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_signed_nonpenetration_evidence"))
     parser.add_argument("--occlusion-mesh-owner-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_mesh_owner_evidence"))
     parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
