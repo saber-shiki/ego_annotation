@@ -108,18 +108,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     check(checks, "part_mask_generation_not_ready", manifest.get("local_new_mask_generation_ready_count") == 0, manifest.get("local_new_mask_generation_ready_count"), 0)
     check(
         checks,
-        "promptable_segmentation_not_sufficient_for_local_generation",
+        "promptable_and_open_vocab_detector_not_sufficient_without_part_prompt_plan",
         acquisition.get("environment", {}).get("promptable_segmentation_backend_available") is True
         and manifest.get("promptable_segmentation_backend_available") is True
-        and acquisition.get("environment", {}).get("open_vocab_or_referring_prompt_backend_available") is False
-        and manifest.get("open_vocab_or_referring_prompt_backend_available") is False
+        and acquisition.get("environment", {}).get("open_vocab_detector_backend_cached_available") is True
+        and manifest.get("open_vocab_detector_backend_cached_available") is True
+        and acquisition.get("environment", {}).get("open_vocab_or_referring_prompt_backend_available") is True
+        and manifest.get("open_vocab_or_referring_prompt_backend_available") is True
+        and manifest.get("model_produced_part_prompt_plan_ready") is False
         and manifest.get("local_new_mask_generation_ready") is False,
         {
             "promptable": manifest.get("promptable_segmentation_backend_available"),
+            "open_vocab_detector_cached": manifest.get("open_vocab_detector_backend_cached_available"),
             "open_vocab_or_referring": manifest.get("open_vocab_or_referring_prompt_backend_available"),
+            "part_prompt_plan_ready": manifest.get("model_produced_part_prompt_plan_ready"),
             "local_ready": manifest.get("local_new_mask_generation_ready"),
         },
-        "promptable true, referring/open-vocab false, local generation false",
+        "promptable true, open-vocab detector cached true, part prompt plan false, local generation false",
     )
     check(checks, "mask_evidence_created_zero", acquisition.get("mask_evidence_created_count") == manifest.get("mask_evidence_created_count") == 0, {"acquisition": acquisition.get("mask_evidence_created_count"), "manifest": manifest.get("mask_evidence_created_count")}, 0)
     check(

@@ -108,15 +108,33 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
     groundingdino_available = module_available("groundingdino")
     transformers_available = module_available("transformers")
     ultralytics_available = module_available("ultralytics")
+    owlv2_model_cache_candidates = [Path(raw) for raw in args.owlv2_model_cache_candidates]
+    existing_owlv2_model_caches = [str(path) for path in owlv2_model_cache_candidates if path.exists()]
+    owlv2_transformers_class_available = False
+    if transformers_available:
+        try:
+            from transformers import Owlv2ForObjectDetection, Owlv2Processor  # noqa: F401  # type: ignore[import-not-found]
+
+            owlv2_transformers_class_available = True
+        except Exception:  # pragma: no cover - diagnostic only
+            owlv2_transformers_class_available = False
+    open_vocab_detector_backend_cached_available = owlv2_transformers_class_available and bool(existing_owlv2_model_caches)
     promptable_sam2_ready = cuda_available and sam2_import_available and bool(existing_sam2_checkpoints)
     promptable_sam_v1_ready = cuda_available and segment_anything_available and bool(existing_sam_v1_checkpoints)
     promptable_segmentation_backend_available = promptable_sam2_ready or promptable_sam_v1_ready
-    open_vocab_or_referring_prompt_backend_available = samwise_ready or groundingdino_available
-    local_new_mask_generation_ready = samwise_ready or (promptable_segmentation_backend_available and open_vocab_or_referring_prompt_backend_available)
+    open_vocab_or_referring_prompt_backend_available = samwise_ready or groundingdino_available or open_vocab_detector_backend_cached_available
+    model_produced_part_prompt_plan_ready = False
+    local_new_mask_generation_ready = samwise_ready or (
+        promptable_segmentation_backend_available
+        and open_vocab_or_referring_prompt_backend_available
+        and model_produced_part_prompt_plan_ready
+    )
 
     blockers: list[str] = []
     blockers.extend(samwise_blockers)
-    if promptable_segmentation_backend_available and not open_vocab_or_referring_prompt_backend_available:
+    if promptable_segmentation_backend_available and open_vocab_detector_backend_cached_available and not model_produced_part_prompt_plan_ready:
+        blockers.append("open_vocab_detector_cached_but_model_produced_part_prompt_plan_not_ready")
+    elif promptable_segmentation_backend_available and not open_vocab_or_referring_prompt_backend_available:
         blockers.append("promptable_sam_backend_available_but_no_open_vocab_or_referring_part_prompt_backend")
     if not promptable_segmentation_backend_available and not samwise_ready:
         blockers.append("no_promptable_sam_backend_ready")
@@ -143,8 +161,13 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
         "groundingdino_available": groundingdino_available,
         "transformers_available": transformers_available,
         "ultralytics_available": ultralytics_available,
+        "owlv2_model_cache_candidates_checked": [str(path) for path in owlv2_model_cache_candidates],
+        "existing_owlv2_model_caches": existing_owlv2_model_caches,
+        "owlv2_transformers_class_available": owlv2_transformers_class_available,
+        "open_vocab_detector_backend_cached_available": open_vocab_detector_backend_cached_available,
         "promptable_segmentation_backend_available": promptable_segmentation_backend_available,
         "open_vocab_or_referring_prompt_backend_available": open_vocab_or_referring_prompt_backend_available,
+        "model_produced_part_prompt_plan_ready": model_produced_part_prompt_plan_ready,
         "local_new_mask_generation_ready": local_new_mask_generation_ready,
         "local_generation_blockers": blockers,
     }
@@ -294,6 +317,14 @@ def parse_args() -> argparse.Namespace:
             "/home/yiwen/ego_annotation/checkpoints/sam_vit_b_01ec64.pth",
             "/data2/checkpoints/sam_vit_b_01ec64.pth",
             "/data2/ego_annotation_outputs/checkpoints/sam_vit_b_01ec64.pth",
+        ],
+    )
+    parser.add_argument(
+        "--owlv2-model-cache-candidates",
+        nargs="+",
+        default=[
+            "/home/yiwen/.cache/huggingface/hub/models--google--owlv2-base-patch16-ensemble/snapshots/cfd3195ba4ea9592eec887ded089f4c08eff231d",
+            "/home/yiwen/.cache/huggingface/hub/models--google--owlv2-base-patch16-ensemble",
         ],
     )
     return parser.parse_args()

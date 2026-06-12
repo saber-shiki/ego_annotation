@@ -440,7 +440,9 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "object_pose_requirement_met_count": part_mask_acquisition.get("object_pose_requirement_met_count"),
             "environment": part_mask_acquisition.get("environment"),
             "promptable_segmentation_backend_available": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("promptable_segmentation_backend_available"),
+            "open_vocab_detector_backend_cached_available": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("open_vocab_detector_backend_cached_available"),
             "open_vocab_or_referring_prompt_backend_available": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("open_vocab_or_referring_prompt_backend_available"),
+            "model_produced_part_prompt_plan_ready": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("model_produced_part_prompt_plan_ready"),
             "local_new_mask_generation_ready": require_dict(part_mask_acquisition.get("environment"), "part mask acquisition environment").get("local_new_mask_generation_ready"),
         },
         "status_deliverable_ready": True,
@@ -754,8 +756,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("promptable_segmentation_backend_available"))
         for case in cases
     )
-    open_vocab_or_referring_prompt_backend_available = all(
+    open_vocab_detector_backend_cached_available = any(
+        bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("open_vocab_detector_backend_cached_available"))
+        for case in cases
+    )
+    open_vocab_or_referring_prompt_backend_available = any(
         bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("open_vocab_or_referring_prompt_backend_available"))
+        for case in cases
+    )
+    model_produced_part_prompt_plan_ready = all(
+        bool(require_dict(case.get("part_mask_acquisition_qc"), "part mask acquisition qc").get("model_produced_part_prompt_plan_ready"))
         for case in cases
     )
     local_new_mask_generation_ready = all(
@@ -846,7 +856,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "part_mask_promotion_gate_mask_evidence_created_count": part_mask_promotion_gate_mask_evidence_created_count,
         "part_mask_acquisition_object_count": part_mask_acquisition_object_count,
         "promptable_segmentation_backend_available": promptable_segmentation_backend_available,
+        "open_vocab_detector_backend_cached_available": open_vocab_detector_backend_cached_available,
         "open_vocab_or_referring_prompt_backend_available": open_vocab_or_referring_prompt_backend_available,
+        "model_produced_part_prompt_plan_ready": model_produced_part_prompt_plan_ready,
         "local_new_mask_generation_ready": local_new_mask_generation_ready,
         "local_new_mask_generation_ready_count": local_new_mask_generation_ready_count,
         "mask_evidence_created_count": mask_evidence_created_count,

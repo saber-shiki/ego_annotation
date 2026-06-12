@@ -108,7 +108,7 @@ V18 also now renders full-duration abstract world/status and side-by-side status
 
 The world/status render is deliberately image-normalized abstract status geometry, not a metric 3D reconstruction. The side-by-side videos place the raw-frame status overlay next to that abstract status view. Visual sheets were extracted for both cases for non-corruption checks.
 
-`build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 127.48 seconds for 67 seconds of source video, or 1.90x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
+`build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 128.50 seconds for 67 seconds of source video, or 1.92x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
 
 Remaining gap after this checkpoint: implement or integrate a bounded object geometry/pose path that can actually reconstruct manipulated-object geometry where evidence supports it, validate contact ownership with metric depth and complete/appropriate geometry, and only then upgrade final annotation readiness.
 
@@ -291,9 +291,9 @@ V18 now has a measured runtime artifact for the implemented status pipeline:
 /data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime/
 ```
 
-`run_v18_measured_status_pipeline.py` runs 28 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 174.80 seconds over 67.0 seconds of representative video, or 2.61x video duration. The slowest stages were world/status render (62.36 s), status overlay render (60.87 s), side-by-side render (17.77 s), part visible-surface extraction (15.78 s), and SAM promptable proposal probe (5.06 s).
+`run_v18_measured_status_pipeline.py` runs 28 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 181.22 seconds over 67.0 seconds of representative video, or 2.70x video duration. The slowest stages were world/status render (62.61 s), status overlay render (60.25 s), side-by-side render (19.50 s), part visible-surface extraction (17.31 s), SAM promptable proposal probe (5.18 s), and part-mask acquisition probe (4.22 s).
 
-This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.6090`, while final pose/contact readiness remains false.
+This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.7047`, while final pose/contact readiness remains false.
 
 Remaining gap after this checkpoint: measure true fresh raw-video-to-status runtime only after the perception backend is provisioned; measure final runtime only after final geometry/pose/contact stages exist.
 
@@ -359,9 +359,9 @@ V18 now distinguishes promptable segmentation assets from a complete referring/o
 
 `build_v18_part_mask_acquisition_plan.py` still finds no runnable SAMWISE repo/checkpoint. A broader probe finds promptable segmentation assets: `third_party/sam2`, `/data2/ego_annotation_outputs/checkpoints/sam2.1_hiera_small.pt`, the `segment_anything` Python package, and `/home/yiwen/ego_annotation/checkpoints/sam_vit_b_01ec64.pth`. CUDA, torch, and cv2 are available, so `promptable_segmentation_backend_available=true`.
 
-This does not unblock new part masks by itself. The local environment still lacks a referring/open-vocabulary part prompt backend (`groundingdino_available=false`, `open_vocab_or_referring_prompt_backend_available=false`), so `local_new_mask_generation_ready=false`, `local_new_mask_generation_ready_count=0`, and `mask_evidence_created_count=0`. The status manifest now carries these fields and the invariant audit checks that promptable SAM assets are not falsely promoted into local part-mask generation readiness.
+This does not unblock new part masks by itself. The local environment also has a cached OWLv2 open-vocabulary detector through `transformers`, so `open_vocab_detector_backend_cached_available=true` and `open_vocab_or_referring_prompt_backend_available=true`. The missing piece is now more specific: no model-produced part prompt plan is ready (`model_produced_part_prompt_plan_ready=false`), so `local_new_mask_generation_ready=false`, `local_new_mask_generation_ready_count=0`, and `mask_evidence_created_count=0`. The status manifest carries these fields and the invariant audit checks that promptable SAM assets plus a cached open-vocabulary detector are still not enough without a part prompt plan.
 
-Remaining gap after this checkpoint: provision a referring/open-vocabulary prompt source for SAM/SAM2, provide precomputed part tracks, or implement a reviewed model-produced prompt acquisition stage before rerunning part-split and downstream geometry/motion/contact checks.
+Remaining gap after this checkpoint: implement a reviewed model-produced part prompt plan for the cached OWLv2/SAM path, provision another referring prompt source, or provide precomputed part tracks before rerunning part-split and downstream geometry/motion/contact checks.
 
 ## Implementation Checkpoint 24: Promptable SAM Proposal Probe
 
@@ -387,7 +387,7 @@ V18 now gates promptable SAM proposal masks before they can affect part evidence
 /data2/ego_annotation_outputs/v18_part_mask_promotion_gate/
 ```
 
-`build_v18_part_mask_promotion_gate.py` joins the part-object blockers, promptable SAM proposal probe, and acquisition/backend status. All 3 part/relative-motion objects have saved promptable proposal masks, but all 3 are classified as `blocked_promptable_proposals_need_semantic_temporal_validation`. The gate blockers are generic: promptable SAM proposals are not referring part tracks, no temporal part-track association exists, no semantic part label is attached, and no open-vocabulary/referring prompt backend is ready.
+`build_v18_part_mask_promotion_gate.py` joins the part-object blockers, promptable SAM proposal probe, and acquisition/backend status. All 3 part/relative-motion objects have saved promptable proposal masks, but all 3 are classified as `blocked_promptable_proposals_need_semantic_temporal_validation`. The gate blockers are generic: promptable SAM proposals are not referring part tracks, no temporal part-track association exists, no semantic part label is attached, and no model-produced part prompt plan is ready for the cached open-vocabulary detector.
 
 The gate records `saved_promptable_proposal_mask_count=40` and `objects_with_saved_promptable_proposals_count=3`, while preserving `promoted_part_track_count=0`, `mask_evidence_created_count=0`, `part_geometry_extraction_ready_count=0`, `part_pose_ready_count=0`, `object_pose_requirement_met_count=0`, and `contact_ownership_ready_count=0`. The status manifest and invariant audit now carry these fields.
 
