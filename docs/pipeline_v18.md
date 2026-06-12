@@ -128,6 +128,22 @@ The status manifest now points to these archives and reports `visible_geometry_a
 
 Remaining gap after this checkpoint: a bounded method that completes manipulated-object geometry where warranted, estimates object pose only under that geometry support, and validates contact ownership.
 
+## Implementation Checkpoint 7: Object Completion Eligibility Gate
+
+V18 now writes an object completion/pose eligibility gate:
+
+```text
+/data2/ego_annotation_outputs/v18_object_completion_gate/
+```
+
+`build_v18_object_completion_gate.py` uses V18 visible geometry and fast motion state to decide which objects may enter a future bounded completion path and which objects must remain blocked or visible-surface-only. It does not run completion and does not mark any object pose complete.
+
+Across 13 objects, the gate finds exactly 1 bounded rigid completion candidate: `object:pink_lid_trash_can_second`, with action `candidate_not_run`. It blocks or defers every other object: 3 deformable objects remain visible-surface-only/no rigid pose, 2 articulated objects require part models instead of single-object pose, 5 objects have no accepted visible surface, 1 object has only local motion not pose (`object:obj_tomato`), and 1 rigid-prior object has visible surface but lacks persistent motion/completion evidence.
+
+The updated status manifest reports `object_completion_candidate_count=1`, `object_completion_run_count=0`, and `object_completion_pose_ready_count=0`. This gate is a methodological guardrail: the next geometry step may only run bounded completion on eligible candidates and must keep all blocked states explicit.
+
+Remaining gap after this checkpoint: implement the bounded completion path for the eligible candidate(s), or integrate a bounded feed-forward/observed multi-view geometry prior, then validate object pose and contact ownership.
+
 ## Design Goal
 
 Build a full raw-video hand-object interaction annotation pipeline whose default path is fast, occlusion-aware, and honest about unresolved geometry. The direction remains hand detection + object detection + consistency optimization, but every required stage must have bounded cost and every inferred state must carry visibility and uncertainty.

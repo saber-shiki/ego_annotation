@@ -21,8 +21,9 @@ FALSE_READY: dict[str, bool] = {
 STATUS = "v18_status_deliverable_manifest"
 CLAIM = (
     "This manifest closes a V18 status deliverable: full-duration 2D overlay, abstract world/status, "
-    "side-by-side status videos, bounded state evidence, and visible-surface geometry evidence. It does not "
-    "close final hidden object geometry, object pose, or physical contact requirements."
+    "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, and an object "
+    "completion eligibility gate. It does not close final hidden object geometry, object pose, or physical "
+    "contact requirements."
 )
 
 
@@ -62,12 +63,14 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     world_qc_path = args.render_root / case / "v18_world_status_qc.json"
     side_qc_path = args.render_root / case / "v18_status_side_by_side_qc.json"
     visible_geometry_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
+    completion_gate_path = args.completion_gate_root / case / "v18_object_completion_gate_report.json"
     annotation = require_dict(load_json(annotation_path), f"{case} annotation")
     solution = require_dict(load_json(solution_path), f"{case} solution")
     overlay = require_dict(load_json(overlay_qc_path), f"{case} overlay qc")
     world = require_dict(load_json(world_qc_path), f"{case} world qc")
     side = require_dict(load_json(side_qc_path), f"{case} side qc")
     visible_geometry = require_dict(load_json(visible_geometry_path), f"{case} visible geometry")
+    completion_gate = require_dict(load_json(completion_gate_path), f"{case} completion gate")
     frame_count = require_int(annotation.get("frame_count"), "annotation frame_count")
     raw_frame_count = require_int(annotation.get("raw_frame_count"), "annotation raw_frame_count")
     raw_video = require_dict(annotation.get("raw_video"), "annotation raw_video")
@@ -108,6 +111,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "side_by_side_qc": str(side_qc_path),
             "visible_geometry_archive_report": str(visible_geometry_path),
             "visible_geometry_archive_npz": visible_geometry.get("archive_npz"),
+            "object_completion_gate_report": str(completion_gate_path),
         },
         "frame_count_qc": {
             "annotation_state_frames": frame_count,
@@ -142,6 +146,14 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "canonical_mesh_ready": visible_geometry.get("canonical_mesh_ready"),
             "complete_object_pose_ready": visible_geometry.get("complete_object_pose_ready"),
         },
+        "completion_gate_qc": {
+            "completion_gate_state_counts": completion_gate.get("completion_gate_state_counts"),
+            "completion_action_counts": completion_gate.get("completion_action_counts"),
+            "completion_candidate_count": completion_gate.get("completion_candidate_count"),
+            "completion_run_count": completion_gate.get("completion_run_count"),
+            "hidden_geometry_reconstructed_count": completion_gate.get("hidden_geometry_reconstructed_count"),
+            "complete_object_pose_ready_count": completion_gate.get("complete_object_pose_ready_count"),
+        },
         "status_deliverable_ready": True,
         "final_pose_complete_deliverable_ready": False,
         **FALSE_READY,
@@ -164,6 +176,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     visible_geometry_faces = sum(
         require_int(require_dict(case.get("visible_geometry_qc"), "visible geometry qc").get("total_faces"), "faces") for case in cases
     )
+    completion_candidate_count = sum(
+        require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("completion_candidate_count"), "completion candidates")
+        for case in cases
+    )
+    completion_run_count = sum(
+        require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("completion_run_count"), "completion run")
+        for case in cases
+    )
+    completion_pose_ready_count = sum(
+        require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("complete_object_pose_ready_count"), "pose ready")
+        for case in cases
+    )
     manifest = {
         "method": "build_v18_status_deliverable_manifest",
         "status": STATUS,
@@ -182,6 +206,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_geometry_surface_frame_rows": visible_surface_rows,
         "visible_geometry_vertices": visible_geometry_vertices,
         "visible_geometry_faces": visible_geometry_faces,
+        "object_completion_candidate_count": completion_candidate_count,
+        "object_completion_run_count": completion_run_count,
+        "object_completion_pose_ready_count": completion_pose_ready_count,
         "total_duration_s": total_duration,
         "total_measured_render_elapsed_s": total_render_elapsed,
         "total_measured_render_to_video_ratio": total_render_elapsed / total_duration if total_duration > 0 else None,
@@ -205,6 +232,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--solution-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--render-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_renders"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
+    parser.add_argument("--completion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_deliverable_manifest"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
