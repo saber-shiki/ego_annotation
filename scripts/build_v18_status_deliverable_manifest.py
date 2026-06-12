@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -400,6 +401,8 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "part_model_candidate_qc": {
             "candidate_count": part_model_candidates.get("candidate_count"),
             "rejected_candidate_count": part_model_candidates.get("rejected_candidate_count"),
+            "surface_icp_probe_count": part_model_candidates.get("surface_icp_probe_count"),
+            "surface_icp_probe_state_counts": part_model_candidates.get("surface_icp_probe_state_counts"),
             "visible_subset_model_candidate_count": part_model_candidates.get("visible_subset_model_candidate_count"),
             "hidden_geometry_completion_candidate_count": part_model_candidates.get("hidden_geometry_completion_candidate_count"),
             "articulation_model_candidate_count": part_model_candidates.get("articulation_model_candidate_count"),
@@ -425,6 +428,8 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "required_part_object_count": part_object_blockers.get("required_part_object_count"),
             "part_object_blocker_state_counts": part_object_blockers.get("part_object_blocker_state_counts"),
             "rejected_part_model_candidate_count": part_object_blockers.get("rejected_part_model_candidate_count"),
+            "surface_icp_probe_count": part_object_blockers.get("surface_icp_probe_count"),
+            "surface_icp_probe_state_counts": part_object_blockers.get("surface_icp_probe_state_counts"),
             "hidden_geometry_reconstructed_count": part_object_blockers.get("hidden_geometry_reconstructed_count"),
             "articulation_model_ready_count": part_object_blockers.get("articulation_model_ready_count"),
             "part_pose_ready_count": part_object_blockers.get("part_pose_ready_count"),
@@ -714,6 +719,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         require_int(require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("rejected_candidate_count"), "rejected part model candidate count")
         for case in cases
     )
+    part_surface_icp_probe_count = sum(
+        require_int(require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("surface_icp_probe_count"), "part surface icp probe count")
+        for case in cases
+    )
+    part_surface_icp_probe_state_counts = dict(
+        sorted(
+            sum(
+                (
+                    Counter(require_dict(require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("surface_icp_probe_state_counts"), "part surface icp state counts"))
+                    for case in cases
+                ),
+                Counter(),
+            ).items()
+        )
+    )
     visible_subset_model_candidate_count = sum(
         require_int(
             require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("visible_subset_model_candidate_count"),
@@ -915,6 +935,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "part_motion_qc_object_count": part_motion_qc_object_count,
         "part_model_candidate_count": part_model_candidate_count,
         "part_model_rejected_candidate_count": part_model_rejected_candidate_count,
+        "part_surface_icp_probe_count": part_surface_icp_probe_count,
+        "part_surface_icp_probe_state_counts": part_surface_icp_probe_state_counts,
         "visible_subset_model_candidate_count": visible_subset_model_candidate_count,
         "visible_part_subset_archive_file_written_all_cases": visible_part_subset_archive_file_written_all_cases,
         "visible_part_subset_archive_ready": visible_part_subset_archive_ready,
