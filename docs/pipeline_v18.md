@@ -291,9 +291,9 @@ V18 now has a measured runtime artifact for the implemented status pipeline:
 /data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime/
 ```
 
-`run_v18_measured_status_pipeline.py` runs 23 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 167.62 seconds over 67.0 seconds of representative video, or 2.50x video duration. The slowest stages were status overlay render (61.85 s), world/status render (56.94 s), side-by-side render (18.46 s), and part visible-surface extraction (16.65 s).
+`run_v18_measured_status_pipeline.py` runs 25 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 157.87 seconds over 67.0 seconds of representative video, or 2.36x video duration. The slowest stages were status overlay render (57.95 s), world/status render (57.64 s), side-by-side render (18.21 s), and part visible-surface extraction (11.42 s).
 
-This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.5018`, while final pose/contact readiness remains false.
+This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.3562`, while final pose/contact readiness remains false.
 
 Remaining gap after this checkpoint: measure true fresh raw-video-to-status runtime only after the perception backend is provisioned; measure final runtime only after final geometry/pose/contact stages exist.
 
@@ -315,7 +315,7 @@ Remaining gap after this checkpoint: resolve candidate ownership only with depth
 
 The bounded state solution now consumes `/data2/ego_annotation_outputs/v18_occlusion_owner_candidates/` and projects owner-candidate evidence into hand occlusion solution rows. This keeps candidate evidence available to renderers and future optimizers while preserving the invariant that ownership and depth ordering are not accepted.
 
-The status manifest reports `bounded_occlusion_owner_candidate_rows=116`, `bounded_occluder_owner_accepted_rows=0`, `bounded_occlusion_depth_order_resolved_rows=0`, and `pose_filled_through_occlusion_rows=0`. The measured status pipeline was rerun after this integration and remains a cached-evidence-to-status measurement, not fresh raw-video-to-final runtime.
+The status manifest reports `bounded_occlusion_owner_candidate_rows=116`, `bounded_occluder_owner_accepted_rows=0`, `bounded_occlusion_depth_order_resolved_rows=0`, and `pose_filled_through_occlusion_rows=0`. The measured status pipeline was rerun after this integration and after adding the invariant audit stages; it remains a cached-evidence-to-status measurement, not fresh raw-video-to-final runtime.
 
 Remaining gap after this checkpoint: add metric depth ordering or explicit visibility reasoning before any candidate can become an accepted occluder owner.
 
@@ -329,7 +329,7 @@ V18 now writes a machine-readable invariant audit:
 
 `audit_v18_status_invariants.py` checks the generated status manifest, runtime report, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, part-track source manifest, and part-mask acquisition plan. The current audit passes 46 required checks with zero failures.
 
-The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, task5 empty visible part-subset archive not evidence-ready, uniform part-track generation not ready, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`.
+The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, task5 empty visible part-subset archive not evidence-ready, uniform part-track generation not ready, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`. The measured runtime orchestrator now runs manifest, audit, and post-report manifest-refresh stages so the status manifest links the latest runtime/audit artifacts.
 
 Remaining gap after this checkpoint: keep this audit in the validation path for future V18 changes; add new required checks when new geometry, pose, contact, or perception-backend stages are introduced.
 

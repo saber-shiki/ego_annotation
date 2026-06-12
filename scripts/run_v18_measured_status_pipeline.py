@@ -51,7 +51,9 @@ STAGES: list[dict[str, Any]] = [
     {"id": "visible_part_subset_archive", "script": "scripts/build_v18_visible_part_subset_archive.py", "source_scope": "part_model_candidates_and_part_surfaces"},
     {"id": "part_object_blocker_manifest", "script": "scripts/build_v18_part_object_blocker_manifest.py", "source_scope": "part_evidence_and_completion_gate"},
     {"id": "part_mask_acquisition_plan", "script": "scripts/build_v18_part_mask_acquisition_plan.py", "source_scope": "part_object_blockers_and_backend_probe"},
-    {"id": "status_deliverable_manifest", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts"},
+    {"id": "status_deliverable_manifest_pre_audit", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts_before_audit"},
+    {"id": "status_invariant_audit", "script": "scripts/audit_v18_status_invariants.py", "source_scope": "current_status_manifest_and_generated_artifacts"},
+    {"id": "status_deliverable_manifest", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts_with_latest_audit"},
 ]
 
 
@@ -119,6 +121,11 @@ def final_manifest_summary(path: Path) -> dict[str, Any]:
     return {"manifest_exists": True, **{key: manifest.get(key) for key in keys}}
 
 
+def post_report_status_manifest_refresh(args: argparse.Namespace) -> dict[str, Any]:
+    stage = {"id": "post_report_status_manifest_refresh", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "refresh_manifest_after_runtime_report_write"}
+    return run_stage(stage, args)
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
     start = time.perf_counter()
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -166,9 +173,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "default_path_uses_bundlesdf_or_nerf": False,
         **FALSE_READY,
     }
-    write_json(args.output_root / "v18_measured_status_pipeline_runtime_report.json", report)
+    report_path = args.output_root / "v18_measured_status_pipeline_runtime_report.json"
+    write_json(report_path, report)
     if failed_stage is not None:
         raise RuntimeError(f"V18 measured status pipeline failed at stage {failed_stage}; see {args.output_root}")
+    refresh_row = post_report_status_manifest_refresh(args)
+    report["post_report_status_manifest_refresh"] = refresh_row
+    report["status_manifest_summary_after_report_refresh"] = final_manifest_summary(manifest_path)
+    write_json(report_path, report)
+    if not refresh_row.get("success"):
+        raise RuntimeError(f"V18 measured status pipeline post-report manifest refresh failed; see {refresh_row.get('stderr_path')}")
     print(json.dumps(report, indent=2))
     return report
 
