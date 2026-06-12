@@ -782,6 +782,12 @@ V18 now has `scripts/build_v18_triangle_nonpenetration_evidence.py`, a stronger 
 
 Representative V16 object meshes are open: triangle evidence reports zero watertight rows for both videos. Current counts are trash 295 evaluated rows / 293 local triangle penetration rows / 0 watertight rows; task5 721 evaluated rows / 703 local triangle penetration rows / 0 watertight rows. `run_v18_full_pipeline.py` now preserves this evidence in contact hypotheses and vetoes accepted contact ownership/factor contact switches when either signed-normal or nearest-triangle evidence reports local penetration. This is still not a complete SDF or nonpenetration solver.
 
+## Implementation Checkpoint 50: Temporal Contact Switch Factors
+
+V18 factor-graph contact switches are no longer solved as independent per-frame choices. `solve_v18_factor_graph()` now groups each hand/object contact variable across time and runs a gap-aware binary Viterbi inference with explicit temporal switch penalties. Temporal continuity is applied only across gaps of at most 30 frames, and the on-state remains hard-vetoed when local nonpenetration evidence reports conflict.
+
+Build-only checks after this change produced gap-valid temporal contact factors for adjacent rows within the 30-frame gap window (trash 3256, task5 2276), with no active contact switch carrying a nonpenetration conflict. This is still a candidate contact-switch graph, not proof of physical contact ownership or complete nonpenetration, but it adds a real temporal factor family to the V18 factor graph.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

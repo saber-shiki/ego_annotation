@@ -1380,6 +1380,11 @@ def solve_v18_factor_graph(
     active_contact_count = 0
     unresolved_contact_count = 0
     accepted_owner_count = 0
+    contact_switch_series: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+    contact_temporal_switch_count = 0
+    contact_temporal_energy_after_total = 0.0
+    contact_temporal_switch_penalty = 0.18
+    contact_temporal_max_gap_frames = 30
     for frame in frames:
         frame_idx = require_int(frame.get("frame_idx"), "graph frame_idx")
         hands = hand_lookup_by_frame.get(frame_idx, {})
@@ -1389,17 +1394,16 @@ def solve_v18_factor_graph(
             if not isinstance(hyp, dict):
                 continue
             switch = contact_switch_energy(hyp, hands.get(str(hyp.get("hand_side"))), objects.get(str(hyp.get("object_id"))), width, height)
+            switch["independent_estimate"] = switch.get("estimate")
+            switch["independent_chosen_energy"] = switch.get("chosen_energy")
+            switch["temporal_contact_switch_penalty"] = contact_temporal_switch_penalty
+            switch["temporal_contact_max_gap_frames"] = contact_temporal_max_gap_frames
             terms["variables"]["contact_switch"].append(switch)
+            contact_switch_series[str(switch.get("variable_id"))].append((frame_idx, switch))
             terms["factor_counts"]["contact_switch_discrete"] += 1
             factor_counts["contact_switch_discrete"] += 1
             variable_counts["contact_switch"] += 1
-            energy_initial_total += finite_float(switch.get("off_energy"), 0.0)
-            energy_after_total += finite_float(switch.get("chosen_energy"), 0.0)
-            terms["factor_energy_initial"]["contact_switch_discrete"] += finite_float(switch.get("off_energy"), 0.0)
-            terms["factor_energy_after"]["contact_switch_discrete"] += finite_float(switch.get("chosen_energy"), 0.0)
-            if switch.get("estimate") is True:
-                active_contact_count += 1
-            elif hyp.get("confidence") in {"unknown", "very_low_depth_contradiction"}:
+            if hyp.get("confidence") in {"unknown", "very_low_depth_contradiction"}:
                 unresolved_contact_count += 1
         for hand in hands.values():
             owner = occlusion_owner_energy(hand)
@@ -1417,6 +1421,78 @@ def solve_v18_factor_graph(
             terms["factor_energy_after"]["occlusion_owner_discrete"] += chosen_energy
             if owner.get("accepted_owner") is True:
                 accepted_owner_count += 1
+
+    for variable_id, sequence in contact_switch_series.items():
+        sequence.sort(key=lambda item: item[0])
+        if not sequence:
+            continue
+        off_costs: list[float] = []
+        on_costs: list[float] = []
+        for _, switch in sequence:
+            off_costs.append(finite_float(switch.get("off_energy"), 0.0))
+            on_energy = finite_float(switch.get("on_energy"), 0.0)
+            if switch.get("nonpenetration_conflict") is True:
+                on_energy += 1e6
+            on_costs.append(on_energy)
+        dp_off = [off_costs[0]]
+        dp_on = [on_costs[0]]
+        back_off: list[bool] = [False]
+        back_on: list[bool] = [True]
+        for i in range(1, len(sequence)):
+            frame_gap = max(1, sequence[i][0] - sequence[i - 1][0])
+            transition = contact_temporal_switch_penalty / float(frame_gap) if frame_gap <= contact_temporal_max_gap_frames else 0.0
+            stay_off = dp_off[i - 1]
+            flip_to_off = dp_on[i - 1] + transition
+            if stay_off <= flip_to_off:
+                dp_off.append(stay_off + off_costs[i])
+                back_off.append(False)
+            else:
+                dp_off.append(flip_to_off + off_costs[i])
+                back_off.append(True)
+            stay_on = dp_on[i - 1]
+            flip_to_on = dp_off[i - 1] + transition
+            if stay_on <= flip_to_on:
+                dp_on.append(stay_on + on_costs[i])
+                back_on.append(True)
+            else:
+                dp_on.append(flip_to_on + on_costs[i])
+                back_on.append(False)
+        state = dp_on[-1] < dp_off[-1]
+        states = [state]
+        for i in range(len(sequence) - 1, 0, -1):
+            state = back_on[i] if states[-1] else back_off[i]
+            states.append(state)
+        states.reverse()
+        prev_state: bool | None = None
+        for i, ((frame_idx, switch), state) in enumerate(zip(sequence, states)):
+            terms = per_frame_terms[frame_idx]
+            frame_gap = (frame_idx - sequence[i - 1][0]) if i > 0 else None
+            transition_applied = bool(i > 0 and isinstance(frame_gap, int) and frame_gap <= contact_temporal_max_gap_frames)
+            temporal_energy = 0.0
+            if i > 0 and isinstance(frame_gap, int) and transition_applied and prev_state is not None and prev_state != state:
+                temporal_energy = contact_temporal_switch_penalty / float(max(1, frame_gap))
+                contact_temporal_switch_count += 1
+            chosen_energy = finite_float(switch.get("on_energy" if state else "off_energy"), 0.0)
+            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True)
+            switch["chosen_energy"] = chosen_energy if switch["estimate"] else finite_float(switch.get("off_energy"), 0.0)
+            switch["temporal_contact_variable_id"] = variable_id
+            switch["temporal_contact_previous_frame_gap"] = frame_gap
+            switch["temporal_contact_transition_applied"] = transition_applied
+            switch["temporal_contact_has_factor"] = transition_applied
+            switch["temporal_contact_transition_energy_after"] = temporal_energy
+            switch["temporal_inference_method"] = "gap_aware_binary_viterbi_contact_switch"
+            terms["factor_energy_initial"]["contact_switch_discrete"] += finite_float(switch.get("off_energy"), 0.0)
+            terms["factor_energy_after"]["contact_switch_discrete"] += finite_float(switch.get("chosen_energy"), 0.0)
+            if transition_applied:
+                terms["factor_counts"]["contact_switch_temporal"] += 1
+                terms["factor_energy_after"]["contact_switch_temporal"] += temporal_energy
+                factor_counts["contact_switch_temporal"] += 1
+            energy_initial_total += finite_float(switch.get("off_energy"), 0.0)
+            energy_after_total += finite_float(switch.get("chosen_energy"), 0.0) + temporal_energy
+            contact_temporal_energy_after_total += temporal_energy
+            if switch.get("estimate") is True:
+                active_contact_count += 1
+            prev_state = bool(switch.get("estimate"))
 
     by_frame: dict[int, dict[str, Any]] = {}
     for frame in frames:
@@ -1447,7 +1523,7 @@ def solve_v18_factor_graph(
             },
             "inference": {
                 "continuous_method": "weighted_temporal_least_squares_scipy_sparse_spsolve",
-                "discrete_method": "exact_min_energy_choice_for_binary_contact_and_occlusion_owner_variables",
+                "discrete_method": "gap_aware_binary_viterbi_for_contact_switches_and_exact_min_energy_occlusion_owner_choice",
                 "not_solved_by_threshold_gate": True,
             },
             "solution": {
@@ -1478,6 +1554,7 @@ def solve_v18_factor_graph(
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
             "contact_overlap_depth_mesh_distance_owner_graph_and_local_nonpenetration_energy",
+            "contact_switch_temporal_continuity_factor",
             "occlusion_owner_candidate_energy",
         ],
         "spec_factor_gaps_remaining": [
@@ -1497,7 +1574,7 @@ def solve_v18_factor_graph(
         },
         "inference": {
             "continuous_method": "weighted temporal least-squares solved by SciPy sparse linear systems for each observed track",
-            "discrete_method": "exact min-energy assignment for each contact switch and occlusion owner variable",
+            "discrete_method": "gap-aware binary Viterbi for temporal contact switch variables plus exact min-energy occlusion owner assignment",
             "continuous_series_count": len(series_summaries),
             "series_summaries": series_summaries,
         },
@@ -1505,6 +1582,8 @@ def solve_v18_factor_graph(
         "articulation_sources": articulation_sources,
         "solution_counts": {
             "active_contact_switches": active_contact_count,
+            "contact_temporal_switch_count": contact_temporal_switch_count,
+            "contact_temporal_energy_after": contact_temporal_energy_after_total,
             "unresolved_or_depth_contradicted_contacts": unresolved_contact_count,
             "accepted_occlusion_owners": accepted_owner_count,
         },
