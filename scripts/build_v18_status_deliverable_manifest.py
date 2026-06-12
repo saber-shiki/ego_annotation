@@ -24,8 +24,8 @@ CLAIM = (
     "This manifest closes a V18 status deliverable: full-duration 2D overlay, abstract world/status, "
     "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, an object "
     "completion eligibility gate, part-split mask evidence audit, part visible-surface evidence, part-motion "
-    "state evidence, and part-motion confound QC. It does not close final hidden object geometry, object pose, "
-    "part pose, articulation model, or physical contact requirements."
+    "state evidence, part-motion confound QC, and bounded visible part-model candidate evidence. It does not "
+    "close final hidden object geometry, object pose, part pose, articulation model, or physical contact requirements."
 )
 
 
@@ -117,6 +117,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_surfaces_path = args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"
     part_motion_path = args.part_motion_root / case / "v18_part_motion_state_report.json"
     part_motion_qc_path = args.part_motion_qc_root / case / "v18_part_motion_qc_report.json"
+    part_model_candidates_path = args.part_model_candidates_root / case / "v18_part_model_candidates_report.json"
     annotation = require_dict(load_json(annotation_path), f"{case} annotation")
     solution = require_dict(load_json(solution_path), f"{case} solution")
     overlay = require_dict(load_json(overlay_qc_path), f"{case} overlay qc")
@@ -128,6 +129,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     part_surfaces = require_dict(load_json(part_surfaces_path), f"{case} part visible surfaces")
     part_motion = require_dict(load_json(part_motion_path), f"{case} part motion state")
     part_motion_qc = require_dict(load_json(part_motion_qc_path), f"{case} part motion qc")
+    part_model_candidates = require_dict(load_json(part_model_candidates_path), f"{case} part model candidates")
     frame_count = require_int(annotation.get("frame_count"), "annotation frame_count")
     raw_frame_count = require_int(annotation.get("raw_frame_count"), "annotation raw_frame_count")
     raw_video = require_dict(annotation.get("raw_video"), "annotation raw_video")
@@ -208,6 +210,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_visible_surfaces_archive_npz": part_surfaces.get("archive_npz"),
             "part_motion_state_report": str(part_motion_path),
             "part_motion_qc_report": str(part_motion_qc_path),
+            "part_model_candidates_report": str(part_model_candidates_path),
         },
         "frame_count_qc": {
             "annotation_state_frames": frame_count,
@@ -287,6 +290,16 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "part_pose_ready_count": part_motion_qc.get("part_pose_ready_count"),
             "object_pose_requirement_met_count": part_motion_qc.get("object_pose_requirement_met_count"),
         },
+        "part_model_candidate_qc": {
+            "candidate_count": part_model_candidates.get("candidate_count"),
+            "visible_subset_model_candidate_count": part_model_candidates.get("visible_subset_model_candidate_count"),
+            "hidden_geometry_completion_candidate_count": part_model_candidates.get("hidden_geometry_completion_candidate_count"),
+            "articulation_model_candidate_count": part_model_candidates.get("articulation_model_candidate_count"),
+            "articulation_model_ready_count": part_model_candidates.get("articulation_model_ready_count"),
+            "part_pose_ready_count": part_model_candidates.get("part_pose_ready_count"),
+            "object_pose_requirement_met_count": part_model_candidates.get("object_pose_requirement_met_count"),
+            "object_state_counts": part_model_candidates.get("object_state_counts"),
+        },
         "status_deliverable_ready": True,
         "final_pose_complete_deliverable_ready": False,
         **FALSE_READY,
@@ -365,6 +378,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         sum(require_dict(case.get("part_motion_confound_qc"), "part motion confound qc").get("part_motion_qc_state_counts", {}).values())
         for case in cases
     )
+    part_model_candidate_count = sum(
+        require_int(require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("candidate_count"), "part model candidate count")
+        for case in cases
+    )
+    visible_subset_model_candidate_count = sum(
+        require_int(
+            require_dict(case.get("part_model_candidate_qc"), "part model candidate qc").get("visible_subset_model_candidate_count"),
+            "visible subset model candidate count",
+        )
+        for case in cases
+    )
     manifest = {
         "method": "build_v18_status_deliverable_manifest",
         "status": STATUS,
@@ -403,6 +427,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "part_motion_object_count": part_motion_object_count,
         "articulation_model_ready_count": articulation_model_ready_count,
         "part_motion_qc_object_count": part_motion_qc_object_count,
+        "part_model_candidate_count": part_model_candidate_count,
+        "visible_subset_model_candidate_count": visible_subset_model_candidate_count,
         "total_duration_s": total_duration,
         "total_measured_render_elapsed_s": total_render_elapsed,
         "total_measured_render_to_video_ratio": total_render_elapsed / total_duration if total_duration > 0 else None,
@@ -431,6 +457,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--part-motion-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_motion_state"))
     parser.add_argument("--part-motion-qc-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_motion_qc"))
+    parser.add_argument("--part-model-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_model_candidates"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_status_deliverable_manifest"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
