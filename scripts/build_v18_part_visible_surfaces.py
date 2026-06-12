@@ -205,23 +205,53 @@ def surface_from_part_mask(
     lo = float(np.quantile(values, float(args.depth_low_quantile)))
     hi = float(np.quantile(values, float(args.depth_high_quantile)))
     keep = valid & (depth_m >= lo) & (depth_m <= hi)
-    ys = np.arange(0, depth_m.shape[0], int(args.mask_stride), dtype=np.int32)
-    xs = np.arange(0, depth_m.shape[1], int(args.mask_stride), dtype=np.int32)
-    grid_x, grid_y = np.meshgrid(xs, ys)
-    sampled = keep[np.ix_(ys, xs)]
-    flat_x = grid_x[sampled].astype(np.float64)
-    flat_y = grid_y[sampled].astype(np.float64)
-    flat_z = depth_m[np.ix_(ys, xs)][sampled].astype(np.float64)
-    if len(flat_z) < int(args.min_vertices):
-        raise RuntimeError("too_few_sampled_vertices")
+    keep_ys, keep_xs = np.nonzero(keep)
+    if keep_xs.size == 0:
+        raise RuntimeError("too_few_valid_masked_depth_pixels")
+    y0, y1 = int(keep_ys.min()), int(keep_ys.max())
+    x0, x1 = int(keep_xs.min()), int(keep_xs.max())
+    base_stride = max(1, int(args.mask_stride))
+    stride_candidates: list[int] = []
+    stride = base_stride
+    while stride > 1:
+        stride_candidates.append(stride)
+        stride = max(1, stride // 2)
+    stride_candidates.append(1)
+    if not bool(args.adaptive_small_mask_stride):
+        stride_candidates = [base_stride]
+    vertices = np.zeros((0, 3), dtype=np.float64)
+    faces = np.zeros((0, 3), dtype=np.int32)
+    sampled_vertex_count = 0
+    stride_used = stride_candidates[-1]
+    last_rejection = "too_few_sampled_vertices"
     fx, fy, cx, cy = depth["intrinsics"][int(depth_i)].astype(float).tolist()
-    vertices = np.column_stack(((flat_x - cx) * flat_z / fx, (flat_y - cy) * flat_z / fy, flat_z))
-    index_grid = np.full(sampled.shape, -1, dtype=np.int32)
-    index_grid[sampled] = np.arange(len(vertices), dtype=np.int32)
-    faces = build_faces(index_grid, vertices, float(args.max_triangle_edge_m))
-    vertices, faces = remove_unreferenced(vertices, faces)
+    for stride in stride_candidates:
+        ys = np.arange(y0, y1 + 1, stride, dtype=np.int32)
+        xs = np.arange(x0, x1 + 1, stride, dtype=np.int32)
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        sampled = keep[np.ix_(ys, xs)]
+        flat_x = grid_x[sampled].astype(np.float64)
+        flat_y = grid_y[sampled].astype(np.float64)
+        flat_z = depth_m[np.ix_(ys, xs)][sampled].astype(np.float64)
+        sampled_vertex_count = int(len(flat_z))
+        stride_used = int(stride)
+        if len(flat_z) < int(args.min_vertices):
+            last_rejection = "too_few_sampled_vertices"
+            continue
+        candidate_vertices = np.column_stack(((flat_x - cx) * flat_z / fx, (flat_y - cy) * flat_z / fy, flat_z))
+        index_grid = np.full(sampled.shape, -1, dtype=np.int32)
+        index_grid[sampled] = np.arange(len(candidate_vertices), dtype=np.int32)
+        candidate_faces = build_faces(index_grid, candidate_vertices, float(args.max_triangle_edge_m))
+        candidate_vertices, candidate_faces = remove_unreferenced(candidate_vertices, candidate_faces)
+        if len(candidate_vertices) >= int(args.min_vertices) and len(candidate_faces) >= int(args.min_faces):
+            vertices = candidate_vertices
+            faces = candidate_faces
+            break
+        vertices = candidate_vertices
+        faces = candidate_faces
+        last_rejection = "too_few_vertices_or_faces_after_surface_connectivity"
     if len(vertices) < int(args.min_vertices) or len(faces) < int(args.min_faces):
-        raise RuntimeError("too_few_vertices_or_faces_after_surface_connectivity")
+        raise RuntimeError(last_rejection)
     row = {
         "frame_idx": frame_idx,
         "status": "accepted_part_visible_surface",
@@ -238,6 +268,9 @@ def surface_from_part_mask(
         "depth_intrinsics_fx_fy_cx_cy": [float(fx), float(fy), float(cx), float(cy)],
         "vertices": int(len(vertices)),
         "faces": int(len(faces)),
+        "mask_stride_requested": base_stride,
+        "mask_stride_used": stride_used,
+        "sampled_vertex_count_before_connectivity": sampled_vertex_count,
         "bbox_camera_min_m": vertices.min(axis=0).astype(float).tolist(),
         "bbox_camera_max_m": vertices.max(axis=0).astype(float).tolist(),
         "extent_camera_m": (vertices.max(axis=0) - vertices.min(axis=0)).astype(float).tolist(),
@@ -433,6 +466,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     parser.add_argument("--mask-stride", type=int, default=8)
+    parser.add_argument("--adaptive-small-mask-stride", action="store_true", default=True)
     parser.add_argument("--min-depth-pixels", type=int, default=50)
     parser.add_argument("--min-vertices", type=int, default=8)
     parser.add_argument("--min-faces", type=int, default=6)
