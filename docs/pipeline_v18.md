@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, and side-by-side videos, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, and visible-surface geometry evidence, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -111,6 +111,22 @@ The world/status render is deliberately image-normalized abstract status geometr
 `build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 123.92 seconds for 67 seconds of source video, or 1.85x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
 
 Remaining gap after this checkpoint: implement or integrate a bounded object geometry/pose path that can actually reconstruct manipulated-object geometry where evidence supports it, validate contact ownership with metric depth and complete/appropriate geometry, and only then upgrade final annotation readiness.
+
+## Implementation Checkpoint 6: Visible-Surface Geometry Archive
+
+V18 now stages actual depth-backed visible-surface geometry evidence:
+
+```text
+/data2/ego_annotation_outputs/v18_visible_geometry_archive/
+```
+
+`build_v18_visible_geometry_archive.py` validates and copies the compact visible-surface NPZ archives into V18, then writes per-case reports with per-frame surface offsets, vertex/face counts, bounded object state, and explicit geometry claims. It preserves the V17 visible-surface measurement evidence as V18 geometry evidence, but it does not reconstruct hidden geometry, canonical meshes, or complete object pose.
+
+Across both representative cases the archive contains 2,111 accepted depth-backed visible-surface frame rows, 602 rejected visible-mask rows, 1,212,570 vertices, and 2,107,754 faces. Object-level status counts are: 1 partial rigid visible-surface archive ready but not complete pose, 7 visible-surface archives with hidden geometry unresolved, and 5 visible masks without accepted surface. Geometry claims are 8 depth-backed visible-surface-only objects and 5 objects with no accepted visible surface.
+
+The status manifest now points to these archives and reports `visible_geometry_archive_ready=true`, while keeping `hidden_geometry_reconstructed=false`, `canonical_mesh_ready=false`, `complete_object_pose_ready=false`, `object_geometry_complete=false`, and `object_pose_requirement_met=false`. This is the first V18 object-geometry artifact, scoped to observed visible surfaces only.
+
+Remaining gap after this checkpoint: a bounded method that completes manipulated-object geometry where warranted, estimates object pose only under that geometry support, and validates contact ownership.
 
 ## Design Goal
 
