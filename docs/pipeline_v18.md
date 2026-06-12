@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, part-mask acquisition status, and measured cached-evidence-to-status runtime, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, occlusion owner-candidate evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, part-mask acquisition status, and measured cached-evidence-to-status runtime, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -291,11 +291,25 @@ V18 now has a measured runtime artifact for the implemented status pipeline:
 /data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime/
 ```
 
-`run_v18_measured_status_pipeline.py` runs 22 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 166.91 seconds over 67.0 seconds of representative video, or 2.49x video duration. The slowest stages were status overlay render (60.67 s), world/status render (57.34 s), side-by-side render (19.36 s), and part visible-surface extraction (17.48 s).
+`run_v18_measured_status_pipeline.py` runs 23 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 160.53 seconds over 67.0 seconds of representative video, or 2.40x video duration. The slowest stages were status overlay render (57.93 s), world/status render (55.69 s), side-by-side render (18.59 s), and part visible-surface extraction (15.84 s).
 
-This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.4912`, while final pose/contact readiness remains false.
+This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=2.3959`, while final pose/contact readiness remains false.
 
 Remaining gap after this checkpoint: measure true fresh raw-video-to-status runtime only after the perception backend is provisioned; measure final runtime only after final geometry/pose/contact stages exist.
+
+## Implementation Checkpoint 19: Occlusion Owner-Candidate Evidence
+
+V18 now writes bounded occlusion owner-candidate evidence:
+
+```text
+/data2/ego_annotation_outputs/v18_occlusion_owner_candidates/
+```
+
+`build_v18_occlusion_owner_candidates.py` examines unresolved hand rows. For short detector gaps, it interpolates the neighboring observed hand boxes and tests overlap with current visible object boxes. This produces possible occluder-owner candidates but does not accept owner identity, depth ordering, contact, or hand pose through occlusion.
+
+Across both representative cases there are 686 unresolved hand rows. The reducer finds 116 short-gap rows with visible-object overlap owner candidates, 51 short-gap rows with no visible-object overlap candidate, and 519 unbounded unresolved rows without temporal-gap evidence. Candidate objects are mostly trash-case objects: black trash bag (78 candidate rows), white trash bag (38), pink-lid trash can second (26), off-white trash can first (23), and one tomato row. The status manifest reports `occlusion_candidate_owner_row_count=116`, `occluder_owner_accepted_count=0`, `occlusion_depth_order_resolved_count=0`, and `pose_filled_through_occlusion_rows=0`.
+
+Remaining gap after this checkpoint: resolve candidate ownership only with depth ordering and visibility evidence; do not fill poses or contact from box overlap alone.
 
 ## Design Goal
 

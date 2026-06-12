@@ -35,6 +35,7 @@ STAGES: list[dict[str, Any]] = [
     {"id": "fast_motion_state", "script": "scripts/build_v18_fast_motion_state.py", "source_scope": "cached_visibility_surfaces_material_tracks"},
     {"id": "consistency_graph", "script": "scripts/build_v18_consistency_graph.py", "source_scope": "cached_visibility_motion_contact_depth"},
     {"id": "annotation_state", "script": "scripts/build_v18_annotation_state.py", "source_scope": "cached_timeline_and_v18_reducers"},
+    {"id": "occlusion_owner_candidates", "script": "scripts/build_v18_occlusion_owner_candidates.py", "source_scope": "annotation_state_and_visibility_short_gaps"},
     {"id": "bounded_state_solution", "script": "scripts/build_v18_bounded_state_solution.py", "source_scope": "cached_v18_state_reducers"},
     {"id": "status_overlay_render", "script": "scripts/render_v18_status_overlay.py", "source_scope": "raw_frames_plus_cached_annotation_state"},
     {"id": "world_status_render", "script": "scripts/render_v18_world_status.py", "source_scope": "cached_bounded_state_solution"},

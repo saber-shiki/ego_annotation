@@ -22,13 +22,13 @@ FALSE_READY: dict[str, bool] = {
 STATUS = "v18_status_deliverable_manifest"
 CLAIM = (
     "This manifest closes a V18 status deliverable: full-duration 2D overlay, abstract world/status, "
-    "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, structured physical-state "
-    "schema evidence, an object completion eligibility gate, part-track source manifest, part-split mask evidence "
-    "audit, part visible-surface evidence, part-motion state evidence, part-motion confound QC, bounded visible "
-    "part-model candidate evidence, a materialized visible part-subset archive, explicit part-object blocker records, "
-    "part-mask acquisition status, and measured cached-evidence-to-status runtime evidence. It does not close final "
-    "hidden object geometry, object pose, part pose, articulation model, physical contact requirements, or fresh "
-    "raw-video-to-final runtime."
+    "side-by-side status videos, bounded state evidence, occlusion owner-candidate evidence, visible-surface geometry "
+    "evidence, structured physical-state schema evidence, an object completion eligibility gate, part-track source "
+    "manifest, part-split mask evidence audit, part visible-surface evidence, part-motion state evidence, part-motion "
+    "confound QC, bounded visible part-model candidate evidence, a materialized visible part-subset archive, explicit "
+    "part-object blocker records, part-mask acquisition status, and measured cached-evidence-to-status runtime evidence. "
+    "It does not close final hidden object geometry, object pose, part pose, articulation model, physical contact "
+    "requirements, occluder ownership, depth ordering, or fresh raw-video-to-final runtime."
 )
 
 
@@ -113,6 +113,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     solution_path = args.solution_root / case / "v18_bounded_state_solution.json"
     overlay_qc_path = args.render_root / case / "v18_status_overlay_qc.json"
     world_qc_path = args.render_root / case / "v18_world_status_qc.json"
+    occlusion_candidates_path = args.occlusion_owner_candidates_root / case / "v18_occlusion_owner_candidates_report.json"
     side_qc_path = args.render_root / case / "v18_status_side_by_side_qc.json"
     visible_geometry_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
     physical_schema_path = args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"
@@ -130,6 +131,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     solution = require_dict(load_json(solution_path), f"{case} solution")
     overlay = require_dict(load_json(overlay_qc_path), f"{case} overlay qc")
     world = require_dict(load_json(world_qc_path), f"{case} world qc")
+    occlusion_candidates = require_dict(load_json(occlusion_candidates_path), f"{case} occlusion owner candidates")
     side = require_dict(load_json(side_qc_path), f"{case} side qc")
     visible_geometry = require_dict(load_json(visible_geometry_path), f"{case} visible geometry")
     physical_schema = require_dict(load_json(physical_schema_path), f"{case} physical state schema")
@@ -214,6 +216,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "side_by_side_status_video": side.get("output_video"),
             "status_overlay_qc": str(overlay_qc_path),
             "world_status_qc": str(world_qc_path),
+            "occlusion_owner_candidates_report": str(occlusion_candidates_path),
             "side_by_side_qc": str(side_qc_path),
             "visible_geometry_archive_report": str(visible_geometry_path),
             "visible_geometry_archive_npz": visible_geometry.get("archive_npz"),
@@ -246,6 +249,14 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "under_10x_realtime_for_status_render": render_elapsed_s <= 10.0 * duration_s,
         },
         "duration_qc": duration_qc,
+        "occlusion_owner_candidate_qc": {
+            "unresolved_hand_row_count": occlusion_candidates.get("unresolved_hand_row_count"),
+            "candidate_state_counts": occlusion_candidates.get("candidate_state_counts"),
+            "candidate_owner_row_count": occlusion_candidates.get("candidate_owner_row_count"),
+            "occluder_owner_accepted_count": occlusion_candidates.get("occluder_owner_accepted_count"),
+            "depth_order_resolved_count": occlusion_candidates.get("depth_order_resolved_count"),
+            "pose_filled_through_occlusion_rows": occlusion_candidates.get("pose_filled_through_occlusion_rows"),
+        },
         "bounded_state_qc": {
             "hand_solution_state_counts": solution.get("hand_solution_state_counts"),
             "object_solution_state_counts": solution.get("object_solution_state_counts"),
@@ -389,6 +400,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     elapsed = time.perf_counter() - start
     total_duration = sum(require_float(case.get("duration_s"), "case duration_s") for case in cases)
     total_render_elapsed = sum(require_float(require_dict(case.get("status_runtime_qc"), "runtime qc").get("measured_render_elapsed_s"), "render elapsed") for case in cases)
+    occlusion_candidate_owner_row_count = sum(
+        require_int(require_dict(case.get("occlusion_owner_candidate_qc"), "occlusion candidate qc").get("candidate_owner_row_count"), "occlusion candidate rows")
+        for case in cases
+    )
+    occluder_owner_accepted_count = sum(
+        require_int(require_dict(case.get("occlusion_owner_candidate_qc"), "occlusion candidate qc").get("occluder_owner_accepted_count"), "occluder accepted")
+        for case in cases
+    )
+    occlusion_depth_order_resolved_count = sum(
+        require_int(require_dict(case.get("occlusion_owner_candidate_qc"), "occlusion candidate qc").get("depth_order_resolved_count"), "occlusion depth order")
+        for case in cases
+    )
     visible_surface_rows = sum(
         require_int(require_dict(case.get("visible_geometry_qc"), "visible geometry qc").get("surface_frame_rows"), "surface rows")
         for case in cases
@@ -574,6 +597,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "all_status_video_fps_match_raw": all(
             bool(require_dict(case.get("duration_qc"), "duration qc").get("all_fps_match_raw")) for case in cases
         ),
+        "occlusion_candidate_owner_row_count": occlusion_candidate_owner_row_count,
+        "occluder_owner_accepted_count": occluder_owner_accepted_count,
+        "occlusion_depth_order_resolved_count": occlusion_depth_order_resolved_count,
         "visible_geometry_archive_ready": all(
             bool(require_dict(case.get("visible_geometry_qc"), "visible geometry qc").get("visible_geometry_archive_ready")) for case in cases
         ),
@@ -646,6 +672,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--annotation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_annotation_state"))
     parser.add_argument("--solution-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--render-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_renders"))
+    parser.add_argument("--occlusion-owner-candidates-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_candidates"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--completion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
