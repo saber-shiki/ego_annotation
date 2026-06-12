@@ -532,6 +532,31 @@ def load_mesh_contact_evidence_index(path: Path) -> dict[tuple[int, str, str], d
     return out
 
 
+def load_contact_ownership_graph_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "contact ownership graph report")
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("rows"), "contact ownership graph rows"):
+        row = require_dict(raw, "contact ownership graph row")
+        frame_idx = require_int(row.get("frame_idx"), "contact ownership frame_idx")
+        key = (frame_idx, str(row.get("hand_side")), str(row.get("object_id")))
+        out[key] = {
+            "source_report": str(path),
+            "selected_by_contact_graph": row.get("selected_by_contact_graph"),
+            "accepted_contact_owner": row.get("accepted_contact_owner"),
+            "contact_owner_claim": row.get("contact_owner_claim"),
+            "graph_assignment": row.get("graph_assignment"),
+            "min_hand_surface_to_v16_object_mesh_m": row.get("min_hand_surface_to_v16_object_mesh_m"),
+            "mesh_contact_support_score": row.get("mesh_contact_support_score"),
+            "v16_mesh_match": row.get("v16_mesh_match"),
+            "blockers": row.get("blockers"),
+            "nonpenetration_status": row.get("nonpenetration_status"),
+        }
+    return out
+
+
+
 def hand_by_side(v16_frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for raw in v16_frame.get("hands", []):
@@ -541,7 +566,7 @@ def hand_by_side(v16_frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def contact_hypothesis(contact_row: dict[str, Any], mesh_contact: dict[str, Any] | None = None) -> dict[str, Any]:
+def contact_hypothesis(contact_row: dict[str, Any], mesh_contact: dict[str, Any] | None = None, contact_owner_graph: dict[str, Any] | None = None) -> dict[str, Any]:
     state = str(contact_row.get("v18_consistency_state"))
     if contact_row.get("metric_depth_compatible_candidate") is True:
         confidence = "medium"
@@ -555,6 +580,12 @@ def contact_hypothesis(contact_row: dict[str, Any], mesh_contact: dict[str, Any]
     else:
         confidence = "unknown"
         ownership = "unresolved"
+    if contact_owner_graph and contact_owner_graph.get("accepted_contact_owner") is True:
+        confidence = "medium_temporal_mesh_contact_owner"
+        ownership = "accepted_contact_owner_by_temporal_mesh_distance_graph"
+    elif contact_owner_graph and contact_owner_graph.get("selected_by_contact_graph") is True:
+        confidence = "low_temporal_mesh_selected_not_accepted"
+        ownership = "selected_by_contact_graph_not_accepted"
     return {
         "hand_side": contact_row.get("hand_side"),
         "object_id": contact_row.get("object_id"),
@@ -568,6 +599,7 @@ def contact_hypothesis(contact_row: dict[str, Any], mesh_contact: dict[str, Any]
             "metric_depth_compatible_candidate": contact_row.get("metric_depth_compatible_candidate"),
             "pair_depth_gap_state": contact_row.get("pair_depth_gap_state"),
             "mesh_contact_evidence": mesh_contact,
+            "contact_ownership_graph": contact_owner_graph,
         },
     }
 
@@ -829,22 +861,41 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
     coverage = bbox_min_coverage(hand_box, obj_box)
     dist = bbox_center_distance_norm(hand_box, obj_box, width, height)
     dist_term = (dist if dist is not None else 1.0) ** 2
-    image_overlap = bool(hyp.get("evidence", {}).get("image_overlap_candidate"))
-    image_contact = bool(hyp.get("evidence", {}).get("pair_contact_image_candidate"))
-    depth_compatible = bool(hyp.get("evidence", {}).get("metric_depth_compatible_candidate"))
-    depth_state = str(hyp.get("evidence", {}).get("pair_depth_gap_state"))
+    evidence_raw = hyp.get("evidence")
+    evidence: dict[str, Any] = evidence_raw if isinstance(evidence_raw, dict) else {}
+    image_overlap = bool(evidence.get("image_overlap_candidate"))
+    image_contact = bool(evidence.get("pair_contact_image_candidate"))
+    depth_compatible = bool(evidence.get("metric_depth_compatible_candidate"))
+    depth_state = str(evidence.get("pair_depth_gap_state"))
     depth_contradiction = "behind" in depth_state or "contradiction" in str(hyp.get("state")) or "rejected" in str(hyp.get("state"))
-    image_support = max(iou, coverage, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
+    mesh_candidate = evidence.get("mesh_contact_evidence")
+    mesh_raw: dict[str, Any] = mesh_candidate if isinstance(mesh_candidate, dict) else {}
+    mesh_support = max(0.0, min(1.0, finite_float(mesh_raw.get("mesh_contact_support_score"), 0.0)))
+    owner_candidate = evidence.get("contact_ownership_graph")
+    owner_raw: dict[str, Any] = owner_candidate if isinstance(owner_candidate, dict) else {}
+    accepted_contact_owner = bool(owner_raw.get("accepted_contact_owner") is True)
+    selected_contact_owner = bool(owner_raw.get("selected_by_contact_graph") is True)
+    image_support = max(iou, coverage, mesh_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
     # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
     on_energy = (1.0 - image_support) ** 2 + dist_term
     if depth_compatible:
         on_energy *= 0.5
     if depth_contradiction:
         on_energy += 1.5
+    if mesh_support > 0.0:
+        on_energy += (1.0 - mesh_support) ** 2
+    if accepted_contact_owner:
+        on_energy *= 0.35
+    elif selected_contact_owner:
+        on_energy *= 0.75
     off_energy = image_support ** 2
     if depth_compatible:
         off_energy += 0.5
-    if depth_contradiction:
+    if mesh_support > 0.0:
+        off_energy += mesh_support
+    if accepted_contact_owner:
+        off_energy += 1.0
+    if depth_contradiction and not accepted_contact_owner:
         off_energy *= 0.5
     switch_on = on_energy < off_energy
     return {
@@ -860,6 +911,9 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "center_distance_norm": float(dist) if dist is not None else None,
         "depth_contradiction": bool(depth_contradiction),
         "metric_depth_compatible_candidate": depth_compatible,
+        "mesh_contact_support_score": mesh_support,
+        "selected_contact_owner": selected_contact_owner,
+        "accepted_contact_owner": accepted_contact_owner,
         "evidence": hyp.get("evidence"),
     }
 
@@ -1110,7 +1164,7 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available",
             "part_se3": "visible_part_center_translation_only_rotation_unresolved_in_current_part_surface_artifact",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
-            "contact_switch": "discrete_energy_from_overlap_and_available_depth_candidate_evidence",
+            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_and_contact_owner_graph_evidence",
             "occlusion_owner": "discrete_energy_over_owner_candidates_without_new_depth_order_acceptance",
         },
         "implemented_factor_families": [
@@ -1119,13 +1173,13 @@ def solve_v18_factor_graph(frames: list[dict[str, Any]], raw_video: dict[str, An
             "visible_part_center_observation_residual",
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
-            "contact_overlap_depth_candidate_energy",
+            "contact_overlap_depth_mesh_distance_owner_graph_energy",
             "occlusion_owner_candidate_energy",
         ],
         "spec_factor_gaps_remaining": [
             "object_mask_depth_registration_residual_is_visible_surface_only_not_complete_geometry_registration",
             "rigid_articulation_consistency_does_not_yet_solve_full_part_SE3",
-            "contact_nonpenetration_is_not_yet_full_geometry_nonpenetration",
+            "contact_signed_nonpenetration_is_not_yet_solved; current graph uses unsigned mesh distance and temporal ownership",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),
@@ -1165,6 +1219,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
+    contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
     occlusion_mesh_index = load_occlusion_mesh_owner_evidence_index(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json")
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
     articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
@@ -1239,7 +1294,8 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 if isinstance(raw_contact, dict):
                     row = dict(raw_contact)
                     row["object_id"] = object_id
-                    hyp = contact_hypothesis(row, mesh_contact_index.get((frame_idx, str(row.get("hand_side")), object_id)))
+                    contact_key = (frame_idx, str(row.get("hand_side")), object_id)
+                    hyp = contact_hypothesis(row, mesh_contact_index.get(contact_key), contact_owner_index.get(contact_key))
                     contact_hypotheses.append(hyp)
                     object_contacts.append(hyp)
             confidence = "low" if geom is not None else "very_low" if obj.get("visibility_state") == "visible" else "unknown"
@@ -1308,6 +1364,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
+            "contact_ownership_graph": str(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json"),
             "occlusion_mesh_owner_evidence": str(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json"),
             "articulation_fit_candidates": str(args.articulation_root / case / "v18_articulation_fit_candidates_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
@@ -1333,7 +1390,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
-            "contact_ownership": "image_overlap_depth_plus_v16_mesh_distance_contact_evidence_no_accepted_ownership",
+            "contact_ownership": "temporal_discrete_contact_owner_graph_over_v16_mesh_distance_with_partial_accepted_ownership_signed_nonpenetration_unresolved",
             "occlusion_ownership": "bounded_owner_candidates_plus_mesh_temporal_support_no_new_acceptance",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
@@ -1632,6 +1689,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
+    parser.add_argument("--contact-ownership-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))
     parser.add_argument("--occlusion-mesh-owner-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_mesh_owner_evidence"))
     parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])

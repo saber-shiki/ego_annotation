@@ -728,6 +728,12 @@ V18 now has an occlusion-owner evidence artifact in `scripts/build_v18_occlusion
 
 The artifact is integrated into `run_v18_full_pipeline.py` under each hand's `occlusion_owner_hypothesis.mesh_owner_evidence`. Current representative outputs have mesh-support evidence for many trash candidates and one task5 candidate, but accepted occlusion owner count remains zero. This is a stronger evidence layer, not solved occlusion ownership or pose fill-through-occlusion.
 
+## Implementation Checkpoint 41: Temporal Mesh-Distance Contact Ownership Graph
+
+V18 now has a discrete hand-level contact-ownership graph in `scripts/build_v18_contact_ownership_graph.py`. For each hand and frame it chooses one state from `{none} ∪ candidate V18 object ids` using V16 MANO-to-object mesh distances, image/depth evidence penalties, V16-to-V18 mesh association evidence, and temporal continuity. `scripts/validate_v18_contact_ownership_graph.py` enforces that accepted rows have close metric distance, adequate V16/V18 association, an energy margin, and no source blockers.
+
+Current representative outputs accept partial contact ownership: trash has 295 accepted rows and task5 has 721 accepted rows. Low-association false positives remain selected-but-not-accepted rather than promoted. The graph is integrated into `run_v18_full_pipeline.py`; accepted rows appear in each `contact_hypothesis.contact_owner_hypothesis` and also influence the factor-graph contact-switch energy. This still does not solve signed nonpenetration or complete multi-object contact ownership; `signed_nonpenetration_solved=false` and `contact_ownership_complete=false` remain explicit.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

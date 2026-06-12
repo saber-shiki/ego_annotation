@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+
+
+def load_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def require(cond: bool, message: str) -> None:
+    if not cond:
+        raise RuntimeError(message)
+
+
+def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> dict[str, Any]:
+    case = str(case_report.get("case"))
+    require(case_report.get("frame_count_match") is True, f"{case}: frame counts do not match")
+    expected = int(case_report.get("expected_frame_count", -1))
+    require(expected > 0, f"{case}: missing expected frame count")
+    require(int(case_report.get("overlay_frame_count", -1)) == expected, f"{case}: overlay frame count mismatch")
+    require(int(case_report.get("world_frame_count", -1)) == expected, f"{case}: world frame count mismatch")
+    require(int(case_report.get("side_by_side_frame_count", -1)) == expected, f"{case}: side-by-side frame count mismatch")
+    monotonicity_raw = case_report.get("monotonicity")
+    monotonicity: dict[str, Any] = monotonicity_raw if isinstance(monotonicity_raw, dict) else {}
+    require(monotonicity.get("preserves_v16_overlay_mano_object_render") is True, f"{case}: V16 overlay not preserved")
+    require(monotonicity.get("preserves_v16_metric_world_render") is True, f"{case}: V16 world render not preserved")
+    for key in ["annotations", "overlay_video", "world_video", "side_by_side_video", "base_v16_overlay", "base_v16_world"]:
+        path = Path(str(case_report.get(key)))
+        require(path.exists(), f"{case}: missing {key}: {path}")
+    ann = load_json(Path(str(case_report.get("annotations"))))
+    frames = ann.get("frames")
+    require(isinstance(frames, list) and len(frames) == expected, f"{case}: annotation frame count mismatch")
+    modules_raw = ann.get("modules")
+    modules: dict[str, Any] = modules_raw if isinstance(modules_raw, dict) else {}
+    require("contact_owner_graph" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
+    accepted_contact = 0
+    selected_contact = 0
+    occlusion_mesh_rows = 0
+    factor_contact_accept = 0
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        for hyp in frame.get("contact_hypotheses", []):
+            if not isinstance(hyp, dict):
+                continue
+            evidence_raw = hyp.get("evidence")
+            evidence: dict[str, Any] = evidence_raw if isinstance(evidence_raw, dict) else {}
+            graph_raw = evidence.get("contact_ownership_graph")
+            graph: dict[str, Any] | None = graph_raw if isinstance(graph_raw, dict) else None
+            if graph:
+                if graph.get("selected_by_contact_graph") is True:
+                    selected_contact += 1
+                if graph.get("accepted_contact_owner") is True:
+                    accepted_contact += 1
+                    require(hyp.get("contact_owner_hypothesis") == "accepted_contact_owner_by_temporal_mesh_distance_graph", f"{case}: accepted graph row not reflected in hypothesis")
+        for hand in frame.get("hands", []):
+            if not isinstance(hand, dict):
+                continue
+            occ_raw = hand.get("occlusion_owner_hypothesis")
+            occ: dict[str, Any] = occ_raw if isinstance(occ_raw, dict) else {}
+            occ_evidence = occ.get("mesh_owner_evidence")
+            if isinstance(occ_evidence, list) and len(occ_evidence) > 0:
+                occlusion_mesh_rows += 1
+        fg_raw = frame.get("factor_graph_solution")
+        fg: dict[str, Any] = fg_raw if isinstance(fg_raw, dict) else {}
+        solution_raw = fg.get("solution")
+        solution: dict[str, Any] = solution_raw if isinstance(solution_raw, dict) else {}
+        factor_contact_accept += int(solution.get("active_contact_hypotheses", 0))
+    if require_contact_owner:
+        require(accepted_contact > 0, f"{case}: no accepted contact owner rows in final annotations")
+        require(selected_contact >= accepted_contact, f"{case}: selected contact count less than accepted count")
+    require(occlusion_mesh_rows > 0, f"{case}: no occlusion mesh evidence integrated")
+    require(factor_contact_accept > 0, f"{case}: factor graph contact switches absent")
+    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_full_pipeline/v18_full_pipeline_report.json"))
+    parser.add_argument("--require-contact-owner", action="store_true", default=True)
+    args = parser.parse_args()
+    report = load_json(args.report)
+    require(report.get("all_frame_counts_match") is True, "global frame count mismatch")
+    cases = report.get("cases")
+    require(isinstance(cases, list) and len(cases) > 0, "report has no cases")
+    rows = [validate_case(case_report, args.require_contact_owner) for case_report in cases if isinstance(case_report, dict)]
+    print(json.dumps({"status": "ok", "cases": rows}, indent=2))
+
+
+if __name__ == "__main__":
+    main()
