@@ -14,6 +14,20 @@ V17 failed as a pipeline design, not merely as an unfinished run:
 
 All V17 readiness flags remain false: `v3_solver_complete=false`, `annotation_ready=false`, `deliverable_ready=false`, `accuracy_target_met=false`, `object_geometry_complete=false`, `object_pose_requirement_met=false`, and `rigid_pose_requirement_met=false`.
 
+## Binding Baseline Pipeline
+
+This section is the V18 contract. Cached artifacts may be used as memoized stage outputs, but the logical pipeline is self-contained from raw video and named model/config inputs. A component named here cannot be silently replaced; replacement requires an evidence-backed design amendment.
+
+1. **Camera/depth backbone.** Run DROID-SLAM-style camera tracking and the project metric-depth backend on every raw frame. These produce the camera/depth coordinate backbone and measurement factors, not unquestioned physical truth. The graph may use bounded camera/depth correction variables.
+2. **Hand branch.** Run HaWoR, WiLoR, and RTMLib on the full video. HaWoR is the required temporal/occlusion hand baseline. WiLoR is the visible-frame MANO candidate stream. RTMLib is the independent 2D keypoint anchor. For visible frames, compare candidates by `score = median_2d_reprojection_px/25 + median_metric_depth_abs_m/0.05 + temporal_acceleration_m/0.05 + hand_bone_scale_error_m/0.025`. A hand state is accepted only if median 2D residual is below 35 px, median metric-depth residual below 0.08 m, and hand bone scale is plausible. HaWoR may predict through occlusion only when both boundary frames pass those checks and the HaWoR temporal continuation remains within the same thresholds; otherwise the hand remains unresolved/uncertain.
+3. **Object/part perception.** A VLM planner produces object roster, physical-state proposals, and object/part prompts. OWLv2 produces text-conditioned keyframe boxes. SAM2 is the baseline video segmentation/tracking model that converts prompts into temporal object/part masks. SAM v1 is not the baseline tracking path.
+4. **Physical-state decision.** VLM labels are hypotheses, not branch logic. Rigid, articulated, deformable, and unresolved states are accepted by residual tests over masks, depth, and temporal geometry; not by object name, category, color, material, or action phrase.
+5. **Geometry/reconstruction.** Accepted masks plus metric depth produce visible point clouds/surfaces. Rigid objects or rigid parts use multi-frame depth fusion with SE(3) registration; acceptance requires median surface residual below 0.02 m, p95 residual below 0.06 m, and projected silhouette IoU at least 0.70 on validation frames. Articulated objects reconstruct parts separately and accept a hinge/relative-transform model only if it beats the single-rigid residual. Deformable or under-observed objects remain visible-surface-only.
+6. **Factor graph.** Variables are bounded camera/depth correction, hand state, object/part SE(3), articulation parameter, contact switch, and occlusion owner. Factors are hand observation residuals, object mask/depth/registration residuals, temporal/rigid/articulation consistency, occlusion depth ordering, and contact/nonpenetration. Contact factors are active only when both hand and object/part geometry are valid.
+7. **Outputs.** The deliverable remains full-duration raw overlay, metric/world render, side-by-side video, runtime report, and validation artifacts. Status videos and audits validate implementation; they do not replace the pipeline.
+
+Current implementation gap: existing V18 code does not yet satisfy this contract. The current hand branch uses WiLoR only; HaWoR is not integrated. OWLv2→SAM2 temporal object/part tracks are not implemented. Depth-fused reconstruction and the factor graph are not implemented. The next work must close these gaps rather than produce more non-readiness summaries.
+
 ## Implementation Checkpoint 1: Runtime And Visibility Scaffold
 
 V18 now has the first bounded scaffold artifacts, generated without heavy perception or reconstruction:
