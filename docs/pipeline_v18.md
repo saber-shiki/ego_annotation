@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, and part-mask acquisition status, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -25,10 +25,10 @@ V18 now has the first bounded scaffold artifacts, generated without heavy percep
 
 `build_v18_runtime_manifest.py` writes the default V18 DAG and hard budget contract before any heavy stage runs. The planned default critical path is 7.75x real time, under the initial 10x hard ceiling: 271.25 seconds for `trash_1050` (35.0 s raw video) and 248.0 seconds for `task5_tomato_960` (32.0 s raw video). The default DAG contains no BundleSDF, NeRF, neural-field training, or all-face CPU raster stage. This is a plan/budget gate, not proof that later implementation will meet the budget.
 
-`build_v18_visibility_occlusion_state.py` writes full-timeline hand and object visibility rows from existing fast evidence. It does not infer certain poses through occlusion. Unobserved hands are marked unresolved, with possible short occlusion recorded only as an unowned hypothesis when bounded detector gaps overlap visible active objects. Object geometry is scoped as visible depth-backed surface, visible mask with rejected surface, or no visible geometry; every object row keeps `object_geometry_complete=false` and `object_pose_requirement_met=false`. Physical state types are recovered from model-produced VLM physical notes rather than object-name branches. Current counts:
+`build_v18_visibility_occlusion_state.py` writes full-timeline hand and object visibility rows from existing fast evidence. It does not infer certain poses through occlusion. Unobserved hands are marked unresolved, with possible short occlusion recorded only as an unowned hypothesis when bounded detector gaps overlap visible active objects. Object geometry is scoped as visible depth-backed surface, visible mask with rejected surface, or no visible geometry; every object row keeps `object_geometry_complete=false` and `object_pose_requirement_met=false`. Physical state types are recovered from a structured schema over model-produced VLM physical notes rather than object-name branches. Current counts:
 
 - `trash_1050`: 2,100 hand-state rows with 1,593 visible, 8 partially visible, and 499 unresolved; 4,200 object-state rows with 1,604 visible, 29 unresolved active-mask gaps, and 2,567 out-of-frame/inactive rows; object geometry scopes are 1,417 visible depth-backed surfaces, 187 visible masks with rejected surfaces, and 2,596 no-visible-geometry rows. Model physical states: 2 deformable, 1 articulated, 1 rigid.
-- `task5_tomato_960`: 1,920 hand-state rows with 1,722 visible, 11 partially visible, and 187 unresolved; 8,640 object-state rows with 1,109 visible, 40 unresolved active-mask gaps, and 7,491 out-of-frame/inactive rows; object geometry scopes are 694 visible depth-backed surfaces, 415 visible masks with rejected surfaces, and 7,531 no-visible-geometry rows. Model physical states: 5 rigid, 2 deformable, 1 articulated, 1 unknown.
+- `task5_tomato_960`: 1,920 hand-state rows with 1,722 visible, 11 partially visible, and 187 unresolved; 8,640 object-state rows with 1,109 visible, 40 unresolved active-mask gaps, and 7,491 out-of-frame/inactive rows; object geometry scopes are 694 visible depth-backed surfaces, 415 visible masks with rejected surfaces, and 7,531 no-visible-geometry rows. Model physical states: 6 rigid, 1 deformable, 1 articulated, 1 unknown.
 
 Readiness remains false. The next V18 step is fast object-surface/motion state and a bounded consistency graph; the scaffold only makes runtime and occlusion state explicit.
 
@@ -42,7 +42,7 @@ V18 now writes a cheap object surface/motion reducer:
 
 `build_v18_fast_motion_state.py` consumes the V18 visibility/occlusion state plus existing V17 visible-surface/material-track/surface-replay evidence. It runs in under a second on the representative cases and does not run BundleSDF, NeRF, or any new reconstruction backend. The reducer preserves the distinction between visible-surface motion evidence and complete object pose.
 
-Current fast motion-state counts across both cases: 1 partial rigid visible-surface motion support, 1 local rigid-motion-only-not-pose, 3 deformable visible-surface/surface-motion states, 1 deformable unresolved/no-surface state, 2 articulated visible-surface unresolved states, 1 visible-surface-only motion unresolved state, and 4 motion-unresolved/no-surface states. Per-case observations:
+Current fast motion-state counts across both cases: 1 partial rigid visible-surface motion support, 1 local rigid-motion-only-not-pose, 3 deformable visible-surface/surface-motion states, 2 articulated visible-surface unresolved states, 1 visible-surface-only motion unresolved state, and 5 motion-unresolved/no-surface states. Per-case observations:
 
 - `trash_1050`: black trash bag and white trash bag are deformable visible-surface states; off-white can is articulated/visible-surface unresolved; pink-lid can is the only partial rigid visible-surface motion-supported object, with 44 rigid-ready material pairs and 2 visible-surface replay-ready partial segments.
 - `task5_tomato_960`: faucet handle is articulated/visible-surface unresolved; tomato has local rigid motion only, not pose; tomato peel is deformable visible-surface/motion; several context objects have no usable surface/motion evidence and stay unresolved.
@@ -138,9 +138,9 @@ V18 now writes an object completion/pose eligibility gate:
 
 `build_v18_object_completion_gate.py` uses V18 visible geometry and fast motion state to decide which objects may enter a future bounded completion path and which objects must remain blocked or visible-surface-only. It does not run completion and does not mark any object pose complete.
 
-Across 13 objects, the reviewed gate finds zero single-rigid completion candidates. It identifies 2 part/relative-motion candidates that require an object/part split before any completion path: `object:off_white_trash_can_first` and `object:pink_lid_trash_can_second`, both with action `candidate_requires_part_model_not_run`. It blocks or defers the rest: 3 deformable objects remain visible-surface-only/no rigid pose, 1 articulated object requires a part model instead of single-object pose, 5 objects have no accepted visible surface, 1 object has only local motion not pose (`object:obj_tomato`), and 1 rigid-prior object has visible surface but lacks persistent motion/completion evidence.
+Across 13 objects, the reviewed gate finds zero single-rigid completion candidates. It identifies 3 part/relative-motion candidates that require an object/part split before any completion path: `object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`, each with action `candidate_requires_part_model_not_run`. It blocks or defers the rest: 3 deformable objects remain visible-surface-only/no rigid pose, 5 objects have no accepted visible surface, 1 object has only local motion not pose (`object:obj_tomato`), and 1 rigid-prior object has visible surface but lacks persistent motion/completion evidence.
 
-The updated status manifest reports `object_completion_candidate_count=0`, `object_part_split_candidate_count=2`, `object_completion_run_count=0`, and `object_completion_pose_ready_count=0`. This gate is a methodological guardrail: the next geometry step may only proceed after part-level object splitting or stronger geometry/motion evidence, and must keep all blocked states explicit.
+The updated status manifest reports `object_completion_candidate_count=0`, `object_part_split_candidate_count=3`, `object_completion_run_count=0`, and `object_completion_pose_ready_count=0`. This gate is a methodological guardrail: the next geometry step may only proceed after part-level object splitting or stronger geometry/motion evidence, and must keep all blocked states explicit.
 
 Remaining gap after this checkpoint: implement part-level splitting/geometry evidence for the part-motion candidates, or integrate a bounded feed-forward/observed multi-view geometry prior, then validate object pose and contact ownership.
 
@@ -266,6 +266,22 @@ V18 now writes an explicit source-of-truth for part-track candidate inputs:
 `build_v18_part_split_evidence.py` now consumes this manifest instead of carrying default case-specific roots internally. This turns the prior review caveat into an executable contract: source selection is explicit and auditable, while downstream assignment remains geometric overlap/containment against whole-object masks. The status manifest reports `part_track_source_manifest_ready_all_cases=true`, `part_track_source_root_count=2`, `part_track_source_usable_track_count=6`, and keeps `uniform_part_track_generation_ready=false`.
 
 Remaining gap after this checkpoint: replace the cached source manifest with a uniform model-produced part-track manifest once a runnable referring/open-vocabulary segmentation backend or precomputed part tracks are available.
+
+## Implementation Checkpoint 17: Structured Physical-State Schema
+
+V18 now centralizes physical-state interpretation:
+
+```text
+/data2/ego_annotation_outputs/v18_physical_state_schema/
+```
+
+`build_v18_physical_state_schema.py` converts model-produced physical notes into structured fields: primary whole-object physical state, part/relative-motion requirement, secondary deformable/surface-component evidence, optical difficulty, and unresolved surface-change flags. Visibility now consumes this schema, fast-motion rows propagate its fields, and the object-completion gate consumes the structured `requires_part_or_relative_motion_model` flag instead of reparsing notes locally.
+
+The schema covers 13 objects and reports physical-state counts of 7 rigid, 3 deformable, 2 articulated, and 1 unknown. It identifies 3 part/relative-motion-required objects: `object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`. One object changes from the old keyword mapping: `object:obj_plastic_wrapped_plate` is now primary rigid with a secondary deformable/optical surface component instead of a deformable object.
+
+The updated status manifest reports `physical_state_schema_object_count=13`, `structured_part_or_relative_motion_required_count=3`, `structured_secondary_deformable_or_surface_component_count=1`, `physical_state_changed_from_legacy_keyword_count=1`, and `object_part_split_candidate_count=3`. Final hidden geometry, part pose, object pose, articulation model, and contact ownership remain false/zero.
+
+Remaining gap after this checkpoint: replace the deterministic schema adapter with direct structured model output when the perception backend is available; until then, downstream gates consume this single auditable schema rather than local ad-hoc text parsing.
 
 ## Design Goal
 

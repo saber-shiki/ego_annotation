@@ -75,28 +75,13 @@ def fast_motion_by_object(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def notes_indicate_part_or_relative_motion(notes: str) -> bool:
-    text = notes.lower()
-    part_terms = (
-        "part moves",
-        "parts move",
-        "relative motion",
-        "moves relative",
-        "position changes",
-        "changes position",
-        "opens",
-        "closes",
-        "hinge",
-        "hinged",
-        "articulated",
+def classify_gate(geometry: dict[str, Any], motion: dict[str, Any], physical_schema: dict[str, Any]) -> tuple[str, str, list[str], list[str]]:
+    physical = str(
+        physical_schema.get("model_physical_state_type")
+        or motion.get("model_physical_state_type", geometry.get("model_physical_state_type", "unknown"))
     )
-    return any(term in text for term in part_terms)
-
-
-def classify_gate(geometry: dict[str, Any], motion: dict[str, Any]) -> tuple[str, str, list[str], list[str]]:
-    physical = str(motion.get("model_physical_state_type", geometry.get("model_physical_state_type", "unknown")))
     fast_motion = str(motion.get("fast_motion_state", geometry.get("fast_motion_state", "motion_unresolved_no_surface")))
-    notes = str(motion.get("physical_notes", geometry.get("physical_notes", "")))
+    requires_part_motion = bool(physical_schema.get("requires_part_or_relative_motion_model"))
     surface_frames = require_int(geometry.get("surface_frame_count", 0), "surface_frame_count")
     rejected_frames = require_int(geometry.get("rejected_visible_frame_count", 0), "rejected_visible_frame_count")
     blockers: list[str] = []
@@ -107,8 +92,8 @@ def classify_gate(geometry: dict[str, Any], motion: dict[str, Any]) -> tuple[str
             blockers.append("visible_masks_failed_surface_acceptance")
         next_evidence.extend(["recover reliable metric depth for visible masks", "rerun visible-surface extraction under bounded thresholds"])
         return "blocked_no_visible_surface", "completion_not_allowed", blockers, next_evidence
-    if notes_indicate_part_or_relative_motion(notes):
-        blockers.append("model_notes_indicate_part_or_relative_motion")
+    if requires_part_motion:
+        blockers.append("structured_schema_requires_part_or_relative_motion_model")
         next_evidence.extend(["part-level object split", "articulation/relative-motion model", "part-wise visible geometry support"])
         return "part_motion_requires_part_split_no_single_rigid_completion", "candidate_requires_part_model_not_run", blockers, next_evidence
     if physical == "deformable":
@@ -143,18 +128,25 @@ def classify_gate(geometry: dict[str, Any], motion: dict[str, Any]) -> tuple[str
 def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     geometry_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
     motion_path = args.fast_motion_root / case / "v18_fast_motion_state_report.json"
+    physical_schema_path = args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"
     geometry_report = require_dict(load_json(geometry_path), f"{case} visible geometry report")
     motion_report = require_dict(load_json(motion_path), f"{case} fast motion report")
+    physical_schema_report = require_dict(load_json(physical_schema_path), f"{case} physical state schema")
+    physical_schema_index = {
+        require_str(row.get("object_id"), "physical schema object_id"): row
+        for row in [require_dict(raw, "physical schema object row") for raw in require_list(physical_schema_report.get("object_rows"), "physical schema object rows")]
+    }
     geometry_index = visible_geometry_by_object(geometry_report)
     motion_index = fast_motion_by_object(motion_report)
-    object_ids = sorted(set(geometry_index) | set(motion_index))
+    object_ids = sorted(set(geometry_index) | set(motion_index) | set(physical_schema_index))
     rows: list[dict[str, Any]] = []
     gate_counts: Counter[str] = Counter()
     action_counts: Counter[str] = Counter()
     for object_id in object_ids:
         geometry = geometry_index.get(object_id, {})
         motion = motion_index.get(object_id, {})
-        gate_state, action, blockers, next_evidence = classify_gate(geometry, motion)
+        physical_schema = physical_schema_index.get(object_id, {})
+        gate_state, action, blockers, next_evidence = classify_gate(geometry, motion, physical_schema)
         gate_counts[gate_state] += 1
         action_counts[action] += 1
         rows.append(
@@ -162,7 +154,12 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "object_id": object_id,
                 "track_id": motion.get("track_id", geometry.get("track_id")),
                 "name": motion.get("name", geometry.get("name")),
-                "model_physical_state_type": motion.get("model_physical_state_type", geometry.get("model_physical_state_type")),
+                "model_physical_state_type": physical_schema.get("model_physical_state_type", motion.get("model_physical_state_type", geometry.get("model_physical_state_type"))),
+                "physical_state_source": physical_schema.get("physical_state_source"),
+                "requires_part_or_relative_motion_model": bool(physical_schema.get("requires_part_or_relative_motion_model")),
+                "part_or_relative_motion_evidence_terms": physical_schema.get("part_or_relative_motion_evidence_terms", []),
+                "secondary_deformable_or_surface_component": bool(physical_schema.get("secondary_deformable_or_surface_component")),
+                "legacy_keyword_physical_state_type": physical_schema.get("legacy_keyword_physical_state_type"),
                 "fast_motion_state": motion.get("fast_motion_state", geometry.get("fast_motion_state")),
                 "visible_geometry_status": geometry.get("v18_visible_geometry_status"),
                 "surface_frame_count": geometry.get("surface_frame_count", 0),
@@ -186,7 +183,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "status": STATUS,
         "claim": CLAIM,
         "case": case,
-        "sources": {"v18_visible_geometry_archive": str(geometry_path), "v18_fast_motion_state": str(motion_path)},
+        "sources": {"v18_visible_geometry_archive": str(geometry_path), "v18_fast_motion_state": str(motion_path), "v18_physical_state_schema": str(physical_schema_path)},
         "object_count": len(rows),
         "completion_gate_state_counts": dict(sorted(gate_counts.items())),
         "completion_action_counts": dict(sorted(action_counts.items())),
@@ -249,6 +246,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--fast-motion-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_fast_motion_state"))
+    parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()

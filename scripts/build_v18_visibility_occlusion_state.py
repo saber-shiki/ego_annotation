@@ -204,6 +204,7 @@ def visible_window_flags(frame_count: int, observed_frames_by_side: dict[str, se
 def object_lookup(
     timeline: dict[str, Any],
     roster_by_object_id: dict[str, dict[str, Any]],
+    physical_schema_by_object_id: dict[str, dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[tuple[int, str], dict[str, Any]], dict[int, list[dict[str, Any]]]]:
     objects = []
     for row in [require_dict(raw, "timeline object") for raw in require_list(timeline.get("objects"), "timeline objects")]:
@@ -211,10 +212,29 @@ def object_lookup(
         # The V17 timeline intentionally kept mask/interval state small and dropped VLM physical notes.
         # V18 restores those model-produced physical notes from the roster instead of branching on names.
         roster_row = roster_by_object_id.get(object_id, {})
+        schema_row = physical_schema_by_object_id.get(object_id, {})
         merged = {**row}
         for key in ("physical_notes", "role_status", "source"):
             if key not in merged or merged.get(key) is None:
                 merged[key] = roster_row.get(key)
+        for key in (
+            "model_physical_state_type",
+            "physical_state_source",
+            "requires_part_or_relative_motion_model",
+            "part_or_relative_motion_evidence_terms",
+            "primary_articulation_evidence_terms",
+            "secondary_deformable_or_surface_component",
+            "secondary_deformable_evidence_terms",
+            "optical_difficulty",
+            "optical_evidence_terms",
+            "surface_change_without_pose_state",
+            "surface_change_evidence_terms",
+            "schema_confidence",
+            "schema_blockers",
+            "legacy_keyword_physical_state_type",
+        ):
+            if key in schema_row:
+                merged[key] = schema_row.get(key)
         objects.append(merged)
     by_frame_object: dict[tuple[int, str], dict[str, Any]] = {}
     active_by_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -360,7 +380,7 @@ def object_rows(
     physical_counts: Counter[str] = Counter()
     for obj in objects:
         object_id = require_str(obj.get("object_id"), "object_id")
-        physical_state = physical_state_from_notes(obj.get("physical_notes"))
+        physical_state = str(obj.get("model_physical_state_type") or physical_state_from_notes(obj.get("physical_notes")))
         physical_counts[physical_state] += 1
         for frame_idx in range(frame_count):
             source = by_frame_object.get((frame_idx, object_id))
@@ -399,8 +419,16 @@ def object_rows(
                     "track_id": obj.get("track_id"),
                     "name": obj.get("name"),
                     "model_physical_state_type": physical_state,
-                    "physical_state_source": "vlm_physical_notes_keyword_mapping" if obj.get("physical_notes") else "unknown_no_model_notes",
+                    "physical_state_source": obj.get("physical_state_source") or ("vlm_physical_notes_keyword_mapping" if obj.get("physical_notes") else "unknown_no_model_notes"),
                     "physical_notes": obj.get("physical_notes"),
+                    "requires_part_or_relative_motion_model": bool(obj.get("requires_part_or_relative_motion_model")),
+                    "part_or_relative_motion_evidence_terms": obj.get("part_or_relative_motion_evidence_terms", []),
+                    "primary_articulation_evidence_terms": obj.get("primary_articulation_evidence_terms", []),
+                    "secondary_deformable_or_surface_component": bool(obj.get("secondary_deformable_or_surface_component")),
+                    "optical_difficulty": bool(obj.get("optical_difficulty")),
+                    "surface_change_without_pose_state": bool(obj.get("surface_change_without_pose_state")),
+                    "physical_state_schema_confidence": obj.get("schema_confidence"),
+                    "legacy_keyword_physical_state_type": obj.get("legacy_keyword_physical_state_type"),
                     "visibility_state": visibility,
                     "mask_evidence_state": mask_state,
                     "occlusion_state": "observed_or_inactive" if visibility in {"visible", "out_of_frame"} else "active_interval_missing_mask_unresolved_possible_occlusion",
@@ -434,11 +462,17 @@ def case_state(case: str, args: argparse.Namespace) -> dict[str, Any]:
     roster_path = existing(Path(require_str(measurement_manifest.get("object_roster"), f"{case} object_roster")), f"{case} object roster")
     roster_rows = [require_dict(row, "object roster row") for row in require_list(load_json(roster_path), f"{case} object roster")]
     roster_by_object_id = {require_str(row.get("object_id"), "roster object_id"): row for row in roster_rows}
+    physical_schema_path = existing(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json", f"{case} physical state schema")
+    physical_schema = require_dict(load_json(physical_schema_path), f"{case} physical state schema")
+    physical_schema_by_object_id = {
+        require_str(row.get("object_id"), "schema object_id"): row
+        for row in [require_dict(raw, "schema object row") for raw in require_list(physical_schema.get("object_rows"), "schema object rows")]
+    }
     visible_surface_path = existing(args.visible_surface_root / case / "v17_multi_object_visible_surface_report.json", f"{case} visible surface report")
     visible_surface = require_dict(load_json(visible_surface_path), f"{case} visible surface report")
     interior_path = existing(args.interior_hand_graph_root / case / "v17_interior_owned_full_residual_hand_graph.json", f"{case} interior hand graph")
 
-    objects, by_frame_object, active_objects_by_frame = object_lookup(timeline, roster_by_object_id)
+    objects, by_frame_object, active_objects_by_frame = object_lookup(timeline, roster_by_object_id, physical_schema_by_object_id)
     surfaces, rejected_surfaces = surface_lookup(visible_surface)
     wilor = best_wilor_by_frame_side(wilor_path, frame_count)
     rtmlib = rtmlib_by_frame(rtmlib_path, frame_count)
@@ -489,6 +523,7 @@ def case_state(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "wilor_raw": str(wilor_path),
             "rtmlib_hand2d": str(rtmlib_path) if rtmlib_path else None,
             "v17_multi_object_timeline": str(timeline_path),
+            "v18_physical_state_schema": str(physical_schema_path),
             "v17_visible_surface_report": str(visible_surface_path),
             "v17_interior_owned_hand_graph": str(interior_path),
         },
@@ -561,6 +596,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--v16-root", type=Path, default=Path("/data2/ego_annotation_outputs/v16_full_pipeline"))
     parser.add_argument("--measurement-store-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_measurement_store"))
     parser.add_argument("--multi-object-timeline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_multi_object_timeline"))
+    parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--visible-surface-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_multi_object_visible_surfaces"))
     parser.add_argument("--interior-hand-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_interior_owned_full_residual_hand_graph"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visibility_occlusion_state"))

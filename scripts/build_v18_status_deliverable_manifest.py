@@ -22,12 +22,12 @@ FALSE_READY: dict[str, bool] = {
 STATUS = "v18_status_deliverable_manifest"
 CLAIM = (
     "This manifest closes a V18 status deliverable: full-duration 2D overlay, abstract world/status, "
-    "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, an object "
-    "completion eligibility gate, part-track source manifest, part-split mask evidence audit, part visible-surface "
-    "evidence, part-motion state evidence, part-motion confound QC, bounded visible part-model candidate evidence, "
-    "a materialized visible part-subset archive, explicit part-object blocker records, and part-mask acquisition "
-    "status. It does not close final hidden object geometry, object pose, part pose, articulation model, or physical "
-    "contact requirements."
+    "side-by-side status videos, bounded state evidence, visible-surface geometry evidence, structured physical-state "
+    "schema evidence, an object completion eligibility gate, part-track source manifest, part-split mask evidence "
+    "audit, part visible-surface evidence, part-motion state evidence, part-motion confound QC, bounded visible "
+    "part-model candidate evidence, a materialized visible part-subset archive, explicit part-object blocker records, "
+    "and part-mask acquisition status. It does not close final hidden object geometry, object pose, part pose, "
+    "articulation model, or physical contact requirements."
 )
 
 
@@ -114,6 +114,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     world_qc_path = args.render_root / case / "v18_world_status_qc.json"
     side_qc_path = args.render_root / case / "v18_status_side_by_side_qc.json"
     visible_geometry_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
+    physical_schema_path = args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"
     completion_gate_path = args.completion_gate_root / case / "v18_object_completion_gate_report.json"
     part_split_path = args.part_split_root / case / "v18_part_split_evidence_report.json"
     part_track_source_path = args.part_track_source_root / case / "v18_part_track_source_manifest_report.json"
@@ -130,6 +131,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     world = require_dict(load_json(world_qc_path), f"{case} world qc")
     side = require_dict(load_json(side_qc_path), f"{case} side qc")
     visible_geometry = require_dict(load_json(visible_geometry_path), f"{case} visible geometry")
+    physical_schema = require_dict(load_json(physical_schema_path), f"{case} physical state schema")
     completion_gate = require_dict(load_json(completion_gate_path), f"{case} completion gate")
     part_split = require_dict(load_json(part_split_path), f"{case} part split evidence")
     part_track_source = require_dict(load_json(part_track_source_path), f"{case} part-track source manifest")
@@ -214,6 +216,7 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "side_by_side_qc": str(side_qc_path),
             "visible_geometry_archive_report": str(visible_geometry_path),
             "visible_geometry_archive_npz": visible_geometry.get("archive_npz"),
+            "physical_state_schema_report": str(physical_schema_path),
             "object_completion_gate_report": str(completion_gate_path),
             "part_split_evidence_report": str(part_split_path),
             "part_track_source_manifest_report": str(part_track_source_path),
@@ -260,6 +263,18 @@ def read_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "hidden_geometry_reconstructed": visible_geometry.get("hidden_geometry_reconstructed"),
             "canonical_mesh_ready": visible_geometry.get("canonical_mesh_ready"),
             "complete_object_pose_ready": visible_geometry.get("complete_object_pose_ready"),
+        },
+        "physical_state_schema_qc": {
+            "object_count": physical_schema.get("object_count"),
+            "model_physical_state_type_counts": physical_schema.get("model_physical_state_type_counts"),
+            "legacy_keyword_physical_state_type_counts": physical_schema.get("legacy_keyword_physical_state_type_counts"),
+            "part_or_relative_motion_required_count": physical_schema.get("part_or_relative_motion_required_count"),
+            "secondary_deformable_or_surface_component_count": physical_schema.get("secondary_deformable_or_surface_component_count"),
+            "optical_difficulty_count": physical_schema.get("optical_difficulty_count"),
+            "surface_change_without_pose_state_count": physical_schema.get("surface_change_without_pose_state_count"),
+            "changed_from_legacy_keyword_count": physical_schema.get("changed_from_legacy_keyword_count"),
+            "part_pose_ready_count": physical_schema.get("part_pose_ready_count"),
+            "object_pose_requirement_met_count": physical_schema.get("object_pose_requirement_met_count"),
         },
         "completion_gate_qc": {
             "completion_gate_state_counts": completion_gate.get("completion_gate_state_counts"),
@@ -380,6 +395,31 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     visible_geometry_faces = sum(
         require_int(require_dict(case.get("visible_geometry_qc"), "visible geometry qc").get("total_faces"), "faces") for case in cases
+    )
+    physical_state_schema_object_count = sum(
+        require_int(require_dict(case.get("physical_state_schema_qc"), "physical schema qc").get("object_count"), "physical schema object count")
+        for case in cases
+    )
+    structured_part_or_relative_motion_required_count = sum(
+        require_int(
+            require_dict(case.get("physical_state_schema_qc"), "physical schema qc").get("part_or_relative_motion_required_count"),
+            "structured part motion count",
+        )
+        for case in cases
+    )
+    structured_secondary_deformable_or_surface_component_count = sum(
+        require_int(
+            require_dict(case.get("physical_state_schema_qc"), "physical schema qc").get("secondary_deformable_or_surface_component_count"),
+            "structured secondary deformable count",
+        )
+        for case in cases
+    )
+    physical_state_changed_from_legacy_keyword_count = sum(
+        require_int(
+            require_dict(case.get("physical_state_schema_qc"), "physical schema qc").get("changed_from_legacy_keyword_count"),
+            "physical state changed from legacy count",
+        )
+        for case in cases
     )
     completion_candidate_count = sum(
         require_int(require_dict(case.get("completion_gate_qc"), "completion gate qc").get("completion_candidate_count"), "completion candidates")
@@ -537,6 +577,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_geometry_surface_frame_rows": visible_surface_rows,
         "visible_geometry_vertices": visible_geometry_vertices,
         "visible_geometry_faces": visible_geometry_faces,
+        "physical_state_schema_object_count": physical_state_schema_object_count,
+        "structured_part_or_relative_motion_required_count": structured_part_or_relative_motion_required_count,
+        "structured_secondary_deformable_or_surface_component_count": structured_secondary_deformable_or_surface_component_count,
+        "physical_state_changed_from_legacy_keyword_count": physical_state_changed_from_legacy_keyword_count,
         "object_completion_candidate_count": completion_candidate_count,
         "object_part_split_candidate_count": part_split_candidate_count,
         "object_completion_run_count": completion_run_count,
@@ -593,6 +637,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--solution-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--render-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_renders"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
+    parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--completion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
     parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
     parser.add_argument("--part-split-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_split_evidence"))
