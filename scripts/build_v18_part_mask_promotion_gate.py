@@ -78,7 +78,7 @@ def proposal_by_object(proposal_report: dict[str, Any]) -> dict[str, dict[str, A
     return out
 
 
-def promotion_state(saved_count: int, promptable_candidates: int, open_vocab_ready: bool) -> tuple[str, list[str]]:
+def promotion_state(saved_count: int, promptable_candidates: int, open_vocab_ready: bool, part_prompt_plan_ready: bool) -> tuple[str, list[str]]:
     blockers = [
         "promptable_sam_proposals_are_not_referring_part_tracks",
         "no_temporal_part_track_association",
@@ -86,6 +86,8 @@ def promotion_state(saved_count: int, promptable_candidates: int, open_vocab_rea
     ]
     if not open_vocab_ready:
         blockers.append("open_vocab_or_referring_prompt_backend_not_ready")
+    if not part_prompt_plan_ready:
+        blockers.append("model_produced_part_prompt_plan_not_ready")
     if saved_count <= 0 and promptable_candidates <= 0:
         return "blocked_no_promptable_proposals", sorted(blockers + ["no_saved_promptable_proposals"])
     return "blocked_promptable_proposals_need_semantic_temporal_validation", sorted(blockers)
@@ -100,6 +102,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     acquisition_report = require_dict(load_json(acquisition_path), f"{case} acquisition report")
     acquisition_env = require_dict(acquisition_report.get("environment"), "acquisition environment")
     open_vocab_ready = bool(acquisition_env.get("open_vocab_or_referring_prompt_backend_available"))
+    part_prompt_plan_ready = bool(acquisition_env.get("model_produced_part_prompt_plan_ready"))
     blockers = blocker_by_object(blocker_report)
     proposals = proposal_by_object(proposal_report)
     object_rows: list[dict[str, Any]] = []
@@ -112,7 +115,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         proposal_counts = require_dict(proposal_report.get("proposal_state_counts"), "proposal state counts")
         # Use per-object saved/raw counts for readiness, and per-report state counts only for reporting totals.
         object_promptable_candidates = saved_count
-        state, state_blockers = promotion_state(saved_count, object_promptable_candidates, open_vocab_ready)
+        state, state_blockers = promotion_state(saved_count, object_promptable_candidates, open_vocab_ready, part_prompt_plan_ready)
         state_counts[state] += 1
         object_rows.append(
             {
@@ -125,6 +128,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "promotion_blockers": state_blockers,
                 "proposal_state_counts_report_scope": proposal_counts,
                 "open_vocab_or_referring_prompt_backend_available": open_vocab_ready,
+                "model_produced_part_prompt_plan_ready": part_prompt_plan_ready,
                 "promoted_part_track_count": 0,
                 "mask_evidence_created": False,
                 "part_geometry_extraction_ready": False,
