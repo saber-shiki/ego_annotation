@@ -716,6 +716,12 @@ V18 now builds a real geometry reconstruction artifact in `scripts/build_v18_dep
 
 The reconstruction is now integrated back into `run_v18_full_pipeline.py`: hidden-geometry candidates prefer the depth-fused reconstruction report and fall back to the older PCA mirror only when the fused artifact is absent. This is a stronger geometry artifact than the previous PCA mirror, but it still does not satisfy completed hidden/full object geometry. The current mesh candidates are visible-depth fusion/completion candidates with outliers and incomplete hidden surfaces; object_geometry_complete and hidden_geometry_reconstructed remain false.
 
+## Implementation Checkpoint 39: V16 Mesh-Distance Contact Evidence
+
+V18 now has a mesh-distance contact evidence artifact in `scripts/build_v18_mesh_contact_evidence.py`. The initial attempt to compare V18 depth-fused object clouds with MANO world hands exposed a coordinate mismatch: V18 visible geometry was hundreds of millimeters from V16 MANO hands even in known contact frames. The module was revised to use the monotonic V16 metric source: V16 MANO hand surface vertices and the V16 measured object mesh archive. For each frame, the V16 single-object mesh is associated to the V18 object with maximum bbox overlap, and existing V18 hand-object contact hypotheses receive metric hand-surface-to-object-mesh distances and support scores.
+
+This is contact evidence, not accepted contact ownership. The artifact intentionally keeps `contact_ownership_accepted_rows = 0`; it does not solve full hand-object nonpenetration or multi-object ownership. It does, however, expose useful contradictions: some image/depth contact rows previously rejected by the older depth heuristic have sub-millimeter V16 mesh distances. `run_v18_full_pipeline.py` now includes this mesh-contact evidence under each contact hypothesis when available.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

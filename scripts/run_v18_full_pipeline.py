@@ -489,6 +489,27 @@ def index_v16_frames(path: Path) -> dict[int, dict[str, Any]]:
     return {require_int(frame.get("frame_idx"), "v16 frame_idx"): require_dict(frame, "v16 frame") for frame in require_list(report.get("frames"), "v16 frames")}
 
 
+def load_mesh_contact_evidence_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "mesh contact evidence report")
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("rows"), "mesh contact rows"):
+        row = require_dict(raw, "mesh contact row")
+        frame_idx = require_int(row.get("frame_idx"), "mesh contact frame_idx")
+        key = (frame_idx, str(row.get("hand_side")), str(row.get("object_id")))
+        out[key] = {
+            "source_report": str(path),
+            "contact_owner_claim": row.get("contact_owner_claim"),
+            "min_hand_surface_to_v16_object_mesh_m": row.get("min_hand_surface_to_v16_object_mesh_m"),
+            "mesh_contact_support_score": row.get("mesh_contact_support_score"),
+            "mesh_contact_energy": row.get("mesh_contact_energy"),
+            "v16_mesh_match": row.get("v16_mesh_match"),
+            "blockers": row.get("blockers"),
+        }
+    return out
+
+
 def hand_by_side(v16_frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for raw in v16_frame.get("hands", []):
@@ -498,7 +519,7 @@ def hand_by_side(v16_frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def contact_hypothesis(contact_row: dict[str, Any]) -> dict[str, Any]:
+def contact_hypothesis(contact_row: dict[str, Any], mesh_contact: dict[str, Any] | None = None) -> dict[str, Any]:
     state = str(contact_row.get("v18_consistency_state"))
     if contact_row.get("metric_depth_compatible_candidate") is True:
         confidence = "medium"
@@ -524,6 +545,7 @@ def contact_hypothesis(contact_row: dict[str, Any]) -> dict[str, Any]:
             "pair_contact_image_candidate": contact_row.get("pair_contact_image_candidate"),
             "metric_depth_compatible_candidate": contact_row.get("metric_depth_compatible_candidate"),
             "pair_depth_gap_state": contact_row.get("pair_depth_gap_state"),
+            "mesh_contact_evidence": mesh_contact,
         },
     }
 
@@ -1120,6 +1142,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     bounded_index = index_bounded_frames(args.bounded_root / case / "v18_bounded_state_solution.json")
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
+    mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
     articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
     frame_count = require_int(state.get("frame_count"), "frame_count")
@@ -1190,7 +1213,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 if isinstance(raw_contact, dict):
                     row = dict(raw_contact)
                     row["object_id"] = object_id
-                    hyp = contact_hypothesis(row)
+                    hyp = contact_hypothesis(row, mesh_contact_index.get((frame_idx, str(row.get("hand_side")), object_id)))
                     contact_hypotheses.append(hyp)
                     object_contacts.append(hyp)
             confidence = "low" if geom is not None else "very_low" if obj.get("visibility_state") == "visible" else "unknown"
@@ -1258,6 +1281,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
+            "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
             "articulation_fit_candidates": str(args.articulation_root / case / "v18_articulation_fit_candidates_report.json"),
             "visible_geometry_archive_npz": str(visible_archive) if visible_archive else None,
             "v16_render_overlay": str(v16_render_paths(case, args)["overlay"]),
@@ -1282,7 +1306,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
             "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
             "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
-            "contact_ownership": "image_overlap_depth_candidate_contact_hypotheses",
+            "contact_ownership": "image_overlap_depth_plus_v16_mesh_distance_contact_evidence_no_accepted_ownership",
             "occlusion_ownership": "bounded_owner_candidate_hypotheses",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
@@ -1580,6 +1604,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
+    parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
     parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
