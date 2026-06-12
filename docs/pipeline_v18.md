@@ -766,7 +766,7 @@ Current representative outputs select 94 trash occlusion-owner rows and 0 task5 
 
 ## Implementation Checkpoint 47: Contact Signed-Conflict Veto and Mesh Evidence Provenance
 
-The contact graph still stores its temporal mesh-distance selections, but `run_v18_full_pipeline.py` no longer promotes a graph-accepted contact to final accepted ownership when local signed nonpenetration evidence reports penetration. Those rows are emitted as `contact_owner_graph_conflicted_by_local_signed_penetration_not_accepted`, and factor-graph contact switches are forced inactive under the same signed-conflict condition. Current representative build-only counts after the veto were: trash 4 final accepted / 291 conflicted graph-accepted rows; task5 17 final accepted / 704 conflicted graph-accepted rows.
+The contact graph still stores its temporal mesh-distance selections, but `run_v18_full_pipeline.py` no longer promotes a graph-accepted contact to final accepted ownership when local nonpenetration evidence reports penetration. Checkpoint 47 used signed-normal evidence only; Checkpoint 49 extends the veto with nearest-triangle local signed evidence. Those rows are emitted as `contact_owner_graph_conflicted_by_local_nonpenetration_evidence_not_accepted`, and factor-graph contact switches are forced inactive under the same conflict condition. Current build-only counts after nearest-triangle integration were: trash 2 final accepted / 293 conflicted graph-accepted rows; task5 16 final accepted / 705 conflicted graph-accepted rows.
 
 `build_v18_mesh_contact_evidence.py` now snapshots and hashes the full-annotation source used for mesh-distance evidence under each evidence output directory. This does not remove the bootstrap dependency on a full-annotation source, but it prevents the report from depending only on a mutable path after later full reruns overwrite `/data2/ego_annotation_outputs/v18_full_pipeline/<case>/annotations_v18_full.json`.
 
@@ -775,6 +775,12 @@ The contact graph still stores its temporal mesh-distance selections, but `run_v
 V18 now has an explicit pose fill-through-occlusion gate in `scripts/build_v18_occlusion_pose_fill_gate.py`. The gate joins the HaWoR/WiLoR hand-baseline branch with the temporal occlusion-owner graph. It can accept a filled occluded-hand pose only when occlusion ownership is accepted and the hand baseline has accepted temporal occlusion pose evidence; otherwise it writes blockers.
 
 Current representative outputs cover both hands for the full timeline (trash 2100 rows, task5 1920 rows). Trash has 182 HaWoR candidate/measurement rows, but zero pose-fill rows are accepted because accepted occlusion ownership and baseline acceptance are absent. Task5 has zero HaWoR candidate rows and zero accepted fills. This makes the missing pose-fill mechanism explicit without fabricating hand pose through occlusion.
+
+## Implementation Checkpoint 49: Nearest-Triangle Nonpenetration Evidence
+
+V18 now has `scripts/build_v18_triangle_nonpenetration_evidence.py`, a stronger local nonpenetration artifact than the earlier face-centroid normal projection. It samples V16 hand surface points for graph-accepted contact rows, queries nearest triangle centroids, computes closest points on candidate triangles, and records unsigned closest-triangle distances plus local oriented-normal signed distances. It also records edge-based mesh closure diagnostics.
+
+Representative V16 object meshes are open: triangle evidence reports zero watertight rows for both videos. Current counts are trash 295 evaluated rows / 293 local triangle penetration rows / 0 watertight rows; task5 721 evaluated rows / 703 local triangle penetration rows / 0 watertight rows. `run_v18_full_pipeline.py` now preserves this evidence in contact hypotheses and vetoes accepted contact ownership/factor contact switches when either signed-normal or nearest-triangle evidence reports local penetration. This is still not a complete SDF or nonpenetration solver.
 
 ## Pipeline DAG and Parallelism
 

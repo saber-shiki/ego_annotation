@@ -40,6 +40,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require("depth_scale_correction" in str(modules.get("camera_depth_backbone")), f"{case}: camera/depth correction not listed in modules")
     require("contact_owner_graph" in str(modules.get("contact_ownership")) or "contact_owner" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
     require("signed_normal" in str(modules.get("contact_ownership")), f"{case}: signed nonpenetration evidence not listed in modules")
+    require("triangle_nonpenetration" in str(modules.get("contact_ownership")), f"{case}: triangle nonpenetration evidence not listed in modules")
     require("hand_baseline_evidence" in str(modules.get("hand_branch")), f"{case}: hand baseline evidence not listed in modules")
     require("pose_fill_gate" in str(modules.get("hand_branch")), f"{case}: pose fill gate not listed in hand module")
     require("temporal_occlusion_owner_graph" in str(modules.get("occlusion_ownership")), f"{case}: temporal occlusion owner graph not listed in modules")
@@ -50,6 +51,7 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     hand_baseline_rows = 0
     camera_depth_observed_rows = 0
     signed_nonpenetration_rows = 0
+    triangle_nonpenetration_rows = 0
     occlusion_temporal_graph_rows = 0
     pose_fill_gate_rows = 0
     for frame in frames:
@@ -67,14 +69,21 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
             if signed is not None:
                 signed_nonpenetration_rows += 1
                 require(signed.get("signed_nonpenetration_complete") is False, f"{case}: signed evidence overclaims complete nonpenetration")
+            triangle_raw = evidence.get("triangle_nonpenetration_evidence")
+            triangle: dict[str, Any] | None = triangle_raw if isinstance(triangle_raw, dict) else None
+            if triangle is not None:
+                triangle_nonpenetration_rows += 1
+                require(triangle.get("triangle_nonpenetration_complete") is False, f"{case}: triangle evidence overclaims complete nonpenetration")
+                require(triangle.get("mesh_watertight_by_edges") is not True, f"{case}: unexpected watertight triangle evidence needs review")
             if graph:
                 if graph.get("selected_by_contact_graph") is True:
                     selected_contact += 1
                 if hyp.get("contact_owner_hypothesis") == "accepted_contact_owner_by_temporal_mesh_distance_graph":
                     require(signed is None or signed.get("local_penetration_detected") is not True, f"{case}: accepted contact owner contradicted by signed penetration")
+                    require(triangle is None or triangle.get("local_triangle_penetration_detected") is not True, f"{case}: accepted contact owner contradicted by triangle penetration")
                     accepted_contact += 1
                 elif graph.get("accepted_contact_owner") is True:
-                    require(hyp.get("contact_owner_hypothesis") == "contact_owner_graph_conflicted_by_local_signed_penetration_not_accepted", f"{case}: graph accepted row must be accepted or explicitly signed-conflicted")
+                    require(hyp.get("contact_owner_hypothesis") == "contact_owner_graph_conflicted_by_local_nonpenetration_evidence_not_accepted", f"{case}: graph accepted row must be accepted or explicitly nonpenetration-conflicted")
         for hand in frame.get("hands", []):
             if not isinstance(hand, dict):
                 continue
@@ -110,8 +119,12 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
         if isinstance(contact_switch_raw, list):
             for variable_raw in contact_switch_raw:
                 variable: dict[str, Any] = variable_raw if isinstance(variable_raw, dict) else {}
+                signed_var_conflict = variable.get("signed_nonpenetration_conflict") is True
+                triangle_var_conflict = variable.get("triangle_nonpenetration_conflict") is True
+                union_var_conflict = variable.get("nonpenetration_conflict") is True
+                require(union_var_conflict == bool(signed_var_conflict or triangle_var_conflict), f"{case}: nonpenetration conflict union inconsistent")
                 if variable.get("estimate") is True:
-                    require(variable.get("signed_nonpenetration_conflict") is not True, f"{case}: factor graph active contact despite signed nonpenetration conflict")
+                    require(not union_var_conflict, f"{case}: factor graph active contact despite nonpenetration conflict")
                     factor_contact_accept += 1
     if require_contact_owner:
         require(accepted_contact > 0, f"{case}: no accepted contact owner rows in final annotations")
@@ -121,9 +134,10 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
     require(hand_baseline_rows > 0, f"{case}: no hand baseline rows integrated")
     require(camera_depth_observed_rows > 0, f"{case}: no observed camera/depth correction rows integrated")
     require(signed_nonpenetration_rows > 0, f"{case}: no signed nonpenetration evidence integrated")
+    require(triangle_nonpenetration_rows > 0, f"{case}: no triangle nonpenetration evidence integrated")
     require(occlusion_temporal_graph_rows > 0, f"{case}: no temporal occlusion owner graph rows integrated")
     require(pose_fill_gate_rows == expected * 2, f"{case}: pose fill gate rows do not cover both hands/full timeline")
-    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows, "occlusion_temporal_graph_rows": occlusion_temporal_graph_rows, "pose_fill_gate_rows": pose_fill_gate_rows}
+    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows, "triangle_nonpenetration_rows": triangle_nonpenetration_rows, "occlusion_temporal_graph_rows": occlusion_temporal_graph_rows, "pose_fill_gate_rows": pose_fill_gate_rows}
 
 
 def main() -> None:
