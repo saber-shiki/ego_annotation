@@ -49,6 +49,25 @@ Current fast motion-state counts across both cases: 1 partial rigid visible-surf
 
 This confirms the V18 design premise: fast model-produced physical state plus cheap residual summaries can prevent wasting GPU-hours on rigid reconstruction for deformable or unresolved objects. It still does not close object geometry, contact ownership, full consistency optimization, or rendering.
 
+## Implementation Checkpoint 3: Consistency/Contact Scaffold
+
+V18 now writes a bounded consistency/contact reducer:
+
+```text
+/data2/ego_annotation_outputs/v18_consistency_graph/
+```
+
+`build_v18_consistency_graph.py` joins the V18 visibility/occlusion state, V18 fast motion state, V17 pairwise image contact, and V17 pairwise metric depth-gap evidence. It does not run a nonlinear optimizer and does not fill occluded poses. It exposes blocker classes that the future bounded optimizer must address.
+
+Across the two representative cases, the reducer materializes 5,564 hand-object pair rows: 619 image-contact candidates are rejected by metric-depth contradiction, 1,490 are image-overlap-only, 3,107 have no contact image evidence, and 348 are unobserved pairs. Contact-factor-ready rows remain zero. Blockers include 619 metric-depth contradictions, 619 incomplete-object-geometry rows, 679 hand-visibility-unresolved rows, 138 object-visibility-unresolved rows, and 1,490 image-overlap-is-not-contact rows.
+
+Per-case counts:
+
+- `trash_1050`: 97 image-contact candidates rejected by metric depth, 977 image-overlap-only rows, 1,940 no-contact-image rows, and 252 unobserved pairs.
+- `task5_tomato_960`: 522 image-contact candidates rejected by metric depth, 513 image-overlap-only rows, 1,167 no-contact-image rows, and 96 unobserved pairs.
+
+This preserves the V17 lesson in V18 form: projected hand/object overlap is not physical contact. The next implementation step is a bounded optimizer or state update that uses interior-owned hand depth, visible object surfaces, occlusion ownership, and fast motion state together; it must still keep unresolved states explicit when metric depth or geometry do not support contact.
+
 ## Design Goal
 
 Build a full raw-video hand-object interaction annotation pipeline whose default path is fast, occlusion-aware, and honest about unresolved geometry. The direction remains hand detection + object detection + consistency optimization, but every required stage must have bounded cost and every inferred state must carry visibility and uncertainty.
