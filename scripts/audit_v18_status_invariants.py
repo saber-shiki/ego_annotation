@@ -55,6 +55,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     bounded_summary_path = args.bounded_state_root / "v18_bounded_state_solution_summary.json"
     physical_schema_path = args.physical_state_schema_root / "v18_physical_state_schema_summary.json"
     part_source_path = args.part_track_source_root / "v18_part_track_source_manifest_summary.json"
+    part_split_path = args.part_split_evidence_root / "v18_part_split_evidence_summary.json"
+    part_surfaces_path = args.part_visible_surfaces_root / "v18_part_visible_surfaces_summary.json"
+    part_blockers_path = args.part_object_blockers_root / "v18_part_object_blocker_manifest_summary.json"
     acquisition_path = args.part_mask_acquisition_root / "v18_part_mask_acquisition_plan_summary.json"
     sam_promptable_path = args.sam_promptable_proposals_root / "v18_sam_promptable_part_proposals_summary.json"
     promotion_gate_path = args.part_mask_promotion_gate_root / "v18_part_mask_promotion_gate_summary.json"
@@ -66,6 +69,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     bounded = require_dict(load_json(bounded_summary_path), "bounded state summary")
     physical = require_dict(load_json(physical_schema_path), "physical schema summary")
     part_source = require_dict(load_json(part_source_path), "part source summary")
+    part_split = require_dict(load_json(part_split_path), "part split summary")
+    part_surfaces = require_dict(load_json(part_surfaces_path), "part visible surfaces summary")
+    part_blockers = require_dict(load_json(part_blockers_path), "part object blockers summary")
     acquisition = require_dict(load_json(acquisition_path), "part mask acquisition summary")
     sam_promptable = require_dict(load_json(sam_promptable_path), "SAM promptable proposals summary")
     promotion_gate = require_dict(load_json(promotion_gate_path), "part mask promotion gate summary")
@@ -96,7 +102,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     check(checks, "bounded_occluder_owner_accepted_zero", manifest.get("bounded_occluder_owner_accepted_rows") == 0, manifest.get("bounded_occluder_owner_accepted_rows"), 0)
     check(checks, "occlusion_depth_order_resolved_zero", manifest.get("occlusion_depth_order_resolved_count") == 0, manifest.get("occlusion_depth_order_resolved_count"), 0)
     check(checks, "bounded_occlusion_depth_order_zero", manifest.get("bounded_occlusion_depth_order_resolved_rows") == 0, manifest.get("bounded_occlusion_depth_order_resolved_rows"), 0)
-    check(checks, "visible_part_subset_ready_count_one", manifest.get("visible_part_subset_archive_ready_count") == 1, manifest.get("visible_part_subset_archive_ready_count"), 1)
+    check(checks, "generated_only_visible_part_subset_ready_zero", manifest.get("visible_part_subset_archive_ready_count") == 0, manifest.get("visible_part_subset_archive_ready_count"), 0)
     check(checks, "not_all_cases_visible_part_subset_ready", manifest.get("all_cases_visible_part_subset_archive_ready") is False, manifest.get("all_cases_visible_part_subset_archive_ready"), False)
     check(checks, "subset_summary_ready_count_matches_manifest", subset.get("visible_part_subset_archive_ready_count") == manifest.get("visible_part_subset_archive_ready_count"), subset.get("visible_part_subset_archive_ready_count"), manifest.get("visible_part_subset_archive_ready_count"))
     task5_subset = require_dict(load_json(args.visible_part_subset_root / "task5_tomato_960" / "v18_visible_part_subset_archive_report.json"), "task5 subset report")
@@ -104,29 +110,36 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     check(checks, "physical_schema_object_count", physical.get("object_count") == manifest.get("physical_state_schema_object_count") == 13, {"schema": physical.get("object_count"), "manifest": manifest.get("physical_state_schema_object_count")}, 13)
     check(checks, "structured_part_motion_required_three", manifest.get("structured_part_or_relative_motion_required_count") == 3, manifest.get("structured_part_or_relative_motion_required_count"), 3)
     check(checks, "part_track_source_ready_all_cases", manifest.get("part_track_source_manifest_ready_all_cases") is True, manifest.get("part_track_source_manifest_ready_all_cases"), True)
-    check(checks, "part_track_uniform_generation_false", part_source.get("uniform_part_track_generation_ready") is False and manifest.get("uniform_part_track_generation_ready") is False, {"source": part_source.get("uniform_part_track_generation_ready"), "manifest": manifest.get("uniform_part_track_generation_ready")}, False)
-    check(checks, "part_mask_generation_not_ready", manifest.get("local_new_mask_generation_ready_count") == 0, manifest.get("local_new_mask_generation_ready_count"), 0)
+    check(checks, "part_track_uniform_generation_ready", part_source.get("uniform_part_track_generation_ready") is True and manifest.get("uniform_part_track_generation_ready") is True, {"source": part_source.get("uniform_part_track_generation_ready"), "manifest": manifest.get("uniform_part_track_generation_ready")}, True)
+    check(checks, "part_track_source_scope_generated_only", part_source.get("part_track_candidate_source_scope") == "v18_owlv2_sam2_generated_only" and part_split.get("part_track_candidate_source_scope") == "v18_owlv2_sam2_generated_only", {"source": part_source.get("part_track_candidate_source_scope"), "split": part_split.get("part_track_candidate_source_scope")}, "v18_owlv2_sam2_generated_only")
+    check(checks, "part_track_source_counts_generated_only", part_source.get("root_count") == manifest.get("part_track_source_root_count") == 2 and part_source.get("usable_track_count") == manifest.get("part_track_source_usable_track_count") == 5, {"source_roots": part_source.get("root_count"), "manifest_roots": manifest.get("part_track_source_root_count"), "source_usable": part_source.get("usable_track_count"), "manifest_usable": manifest.get("part_track_source_usable_track_count")}, "2 roots, 5 usable tracks")
+    check(checks, "part_split_generated_assignment_counts", part_split.get("accepted_part_track_assignment_count") == manifest.get("accepted_part_track_assignment_count") == 5, {"split": part_split.get("accepted_part_track_assignment_count"), "manifest": manifest.get("accepted_part_track_assignment_count")}, 5)
+    check(checks, "part_surface_generated_counts", part_surfaces.get("surface_frame_rows") == manifest.get("part_visible_surface_frame_rows") == 753 and part_surfaces.get("total_vertices") == manifest.get("part_visible_surface_vertices") == 232551 and part_surfaces.get("total_faces") == manifest.get("part_visible_surface_faces") == 408455, {"surface_rows": part_surfaces.get("surface_frame_rows"), "manifest_rows": manifest.get("part_visible_surface_frame_rows"), "vertices": part_surfaces.get("total_vertices"), "manifest_vertices": manifest.get("part_visible_surface_vertices"), "faces": part_surfaces.get("total_faces"), "manifest_faces": manifest.get("part_visible_surface_faces")}, "753 rows / 232551 vertices / 408455 faces")
+    check(checks, "part_object_blockers_no_pose_promotion", part_blockers.get("part_object_blocker_state_counts") == {"blocked_no_part_model_candidate": 3}, part_blockers.get("part_object_blocker_state_counts"), {"blocked_no_part_model_candidate": 3})
+    check(checks, "part_mask_generation_ready_for_required_objects", manifest.get("local_new_mask_generation_ready_count") == manifest.get("part_mask_acquisition_object_count") == 3, {"local_ready_count": manifest.get("local_new_mask_generation_ready_count"), "object_count": manifest.get("part_mask_acquisition_object_count")}, 3)
     check(
         checks,
-        "promptable_and_open_vocab_detector_not_sufficient_without_part_prompt_plan",
+        "owlv2_sam2_part_prompt_plan_generated_masks_ready",
         acquisition.get("environment", {}).get("promptable_segmentation_backend_available") is True
         and manifest.get("promptable_segmentation_backend_available") is True
         and acquisition.get("environment", {}).get("open_vocab_detector_backend_cached_available") is True
         and manifest.get("open_vocab_detector_backend_cached_available") is True
         and acquisition.get("environment", {}).get("open_vocab_or_referring_prompt_backend_available") is True
         and manifest.get("open_vocab_or_referring_prompt_backend_available") is True
-        and manifest.get("model_produced_part_prompt_plan_ready") is False
-        and manifest.get("local_new_mask_generation_ready") is False,
+        and acquisition.get("environment", {}).get("owlv2_sam2_part_tracks_ready") is True
+        and manifest.get("model_produced_part_prompt_plan_ready") is True
+        and manifest.get("local_new_mask_generation_ready") is True,
         {
             "promptable": manifest.get("promptable_segmentation_backend_available"),
             "open_vocab_detector_cached": manifest.get("open_vocab_detector_backend_cached_available"),
             "open_vocab_or_referring": manifest.get("open_vocab_or_referring_prompt_backend_available"),
+            "owlv2_sam2_ready": acquisition.get("environment", {}).get("owlv2_sam2_part_tracks_ready"),
             "part_prompt_plan_ready": manifest.get("model_produced_part_prompt_plan_ready"),
             "local_ready": manifest.get("local_new_mask_generation_ready"),
         },
-        "promptable true, open-vocab detector cached true, part prompt plan false, local generation false",
+        "promptable true, open-vocab detector cached true, OWLv2->SAM2 tracks ready, local generation true",
     )
-    check(checks, "mask_evidence_created_zero", acquisition.get("mask_evidence_created_count") == manifest.get("mask_evidence_created_count") == 0, {"acquisition": acquisition.get("mask_evidence_created_count"), "manifest": manifest.get("mask_evidence_created_count")}, 0)
+    check(checks, "mask_evidence_created_matches_generated_tracks", acquisition.get("mask_evidence_created_count") == manifest.get("mask_evidence_created_count") == 5, {"acquisition": acquisition.get("mask_evidence_created_count"), "manifest": manifest.get("mask_evidence_created_count")}, 5)
     check(
         checks,
         "sam_promptable_proposals_not_accepted_part_tracks",
@@ -225,6 +238,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "bounded_state_summary": str(bounded_summary_path),
             "physical_schema_summary": str(physical_schema_path),
             "part_track_source_summary": str(part_source_path),
+            "part_split_evidence_summary": str(part_split_path),
+            "part_visible_surfaces_summary": str(part_surfaces_path),
+            "part_object_blockers_summary": str(part_blockers_path),
             "part_mask_acquisition_summary": str(acquisition_path),
             "sam_promptable_proposals_summary": str(sam_promptable_path),
             "part_mask_promotion_gate_summary": str(promotion_gate_path),
@@ -248,6 +264,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bounded-state-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--part-track-source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
+    parser.add_argument("--part-split-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_split_evidence"))
+    parser.add_argument("--part-visible-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
+    parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--part-mask-acquisition-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan"))
     parser.add_argument("--sam-promptable-proposals-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_sam_promptable_part_proposals"))
     parser.add_argument("--part-mask-promotion-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_promotion_gate"))

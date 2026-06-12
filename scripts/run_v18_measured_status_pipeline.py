@@ -43,7 +43,8 @@ STAGES: list[dict[str, Any]] = [
     {"id": "side_by_side_render", "script": "scripts/render_v18_side_by_side.py", "source_scope": "status_overlay_and_world_status_videos"},
     {"id": "visible_geometry_archive", "script": "scripts/build_v18_visible_geometry_archive.py", "source_scope": "cached_v17_visible_surfaces"},
     {"id": "object_completion_gate", "script": "scripts/build_v18_object_completion_gate.py", "source_scope": "v18_visible_geometry_fast_motion_physical_schema"},
-    {"id": "part_track_source_manifest", "script": "scripts/build_v18_part_track_source_manifest.py", "source_scope": "cached_part_track_roots_and_backend_probe"},
+    {"id": "owlv2_sam2_part_tracks", "script": "scripts/build_v18_owlv2_sam2_part_tracks.py", "source_scope": "vlm_physical_notes_plus_owlv2_keyframe_boxes_plus_sam2_video_tracking"},
+    {"id": "part_track_source_manifest", "script": "scripts/build_v18_part_track_source_manifest.py", "source_scope": "v18_owlv2_sam2_generated_tracks_only_by_default"},
     {"id": "part_split_evidence", "script": "scripts/build_v18_part_split_evidence.py", "source_scope": "part_source_manifest_plus_whole_object_masks"},
     {"id": "part_visible_surfaces", "script": "scripts/build_v18_part_visible_surfaces.py", "source_scope": "accepted_part_masks_plus_cached_metric_depth"},
     {"id": "part_motion_state", "script": "scripts/build_v18_part_motion_state.py", "source_scope": "part_visible_surfaces"},
@@ -54,9 +55,7 @@ STAGES: list[dict[str, Any]] = [
     {"id": "sam_promptable_part_proposals", "script": "scripts/build_v18_sam_promptable_part_proposals.py", "source_scope": "promptable_sam_probe_on_selected_blocked_object_frames_not_accepted_tracks"},
     {"id": "part_mask_acquisition_plan", "script": "scripts/build_v18_part_mask_acquisition_plan.py", "source_scope": "part_object_blockers_and_backend_probe"},
     {"id": "part_mask_promotion_gate", "script": "scripts/build_v18_part_mask_promotion_gate.py", "source_scope": "promptable_proposals_plus_acquisition_status_no_promotion"},
-    {"id": "status_deliverable_manifest_pre_audit", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts_before_audit"},
-    {"id": "status_invariant_audit", "script": "scripts/audit_v18_status_invariants.py", "source_scope": "current_status_manifest_and_generated_artifacts"},
-    {"id": "status_deliverable_manifest", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts_with_latest_audit"},
+    {"id": "status_deliverable_manifest_pre_report", "script": "scripts/build_v18_status_deliverable_manifest.py", "source_scope": "all_current_v18_status_artifacts_before_runtime_report_write"},
 ]
 
 

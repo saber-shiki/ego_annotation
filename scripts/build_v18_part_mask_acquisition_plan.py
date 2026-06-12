@@ -23,8 +23,8 @@ FALSE_READY: dict[str, bool] = {
 STATUS = "v18_part_mask_acquisition_plan"
 CLAIM = (
     "This artifact records what evidence is needed to acquire missing or improved part masks for V18 "
-    "part/relative-motion objects, and whether the current local environment can run the available mask-generation "
-    "scripts. It does not create masks, geometry, contact ownership, or pose."
+    "part/relative-motion objects, whether the local V18 OWLv2->SAM2 path has generated accepted tracks, "
+    "and whether mask evidence exists. It does not create geometry, contact ownership, or pose."
 )
 
 
@@ -66,6 +66,33 @@ def module_available(module: str, extra_paths: list[Path] | None = None) -> bool
                 sys.path.remove(text)
             except ValueError:
                 pass
+
+
+def generated_owlv2_sam2_summary(args: argparse.Namespace) -> dict[str, Any]:
+    summary_path = args.owlv2_sam2_tracks_root / "v18_owlv2_sam2_part_tracks_summary.json"
+    if not summary_path.exists():
+        return {"summary_path": str(summary_path), "summary_exists": False, "accepted_track_count": 0}
+    summary = require_dict(load_json(summary_path), "OWLv2 SAM2 summary")
+    return {
+        "summary_path": str(summary_path),
+        "summary_exists": True,
+        "accepted_track_count": int(summary.get("accepted_track_count") or 0),
+        "mask_evidence_created_count": int(summary.get("mask_evidence_created_count") or 0),
+    }
+
+
+def accepted_tracks_by_object(case: str, args: argparse.Namespace) -> dict[str, int]:
+    report_path = args.owlv2_sam2_tracks_root / case / "v18_owlv2_sam2_part_tracks_report.json"
+    if not report_path.exists():
+        return {}
+    report = require_dict(load_json(report_path), f"{case} OWLv2 SAM2 part tracks")
+    counts: dict[str, int] = {}
+    for raw in require_list(report.get("track_records", []), "OWLv2 SAM2 track records"):
+        row = require_dict(raw, "track row")
+        if row.get("accepted_as_semantic_temporal_part_track") is True:
+            object_id = str(row.get("object_id"))
+            counts[object_id] = counts.get(object_id, 0) + 1
+    return counts
 
 
 def env_probe(args: argparse.Namespace) -> dict[str, Any]:
@@ -121,9 +148,12 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
     open_vocab_detector_backend_cached_available = owlv2_transformers_class_available and bool(existing_owlv2_model_caches)
     promptable_sam2_ready = cuda_available and sam2_import_available and bool(existing_sam2_checkpoints)
     promptable_sam_v1_ready = cuda_available and segment_anything_available and bool(existing_sam_v1_checkpoints)
-    promptable_segmentation_backend_available = promptable_sam2_ready or promptable_sam_v1_ready
+    # V18 baseline is OWLv2 -> SAM2 video tracking. SAM v1 availability is diagnostic only and must not satisfy readiness.
+    promptable_segmentation_backend_available = promptable_sam2_ready
     open_vocab_or_referring_prompt_backend_available = samwise_ready or groundingdino_available or open_vocab_detector_backend_cached_available
-    model_produced_part_prompt_plan_ready = False
+    generated_summary = generated_owlv2_sam2_summary(args)
+    owlv2_sam2_tracks_ready = bool(generated_summary.get("summary_exists")) and int(generated_summary.get("accepted_track_count") or 0) > 0
+    model_produced_part_prompt_plan_ready = owlv2_sam2_tracks_ready
     local_new_mask_generation_ready = samwise_ready or (
         promptable_segmentation_backend_available
         and open_vocab_or_referring_prompt_backend_available
@@ -165,6 +195,8 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
         "existing_owlv2_model_caches": existing_owlv2_model_caches,
         "owlv2_transformers_class_available": owlv2_transformers_class_available,
         "open_vocab_detector_backend_cached_available": open_vocab_detector_backend_cached_available,
+        "owlv2_sam2_generated_summary": generated_summary,
+        "owlv2_sam2_part_tracks_ready": owlv2_sam2_tracks_ready,
         "promptable_segmentation_backend_available": promptable_segmentation_backend_available,
         "open_vocab_or_referring_prompt_backend_available": open_vocab_or_referring_prompt_backend_available,
         "model_produced_part_prompt_plan_ready": model_produced_part_prompt_plan_ready,
@@ -182,21 +214,31 @@ def acquisition_state(row: dict[str, Any]) -> tuple[str, list[str]]:
         return "requires_improved_sparse_part_masks_or_visible_subset_only_model", sorted(
             blockers | {"partial_visible_subset_not_full_part_model"}
         )
+    if state == "blocked_no_part_model_candidate":
+        return "requires_part_surface_model_candidate_after_generated_masks", sorted(blockers | {"part_model_candidate_missing"})
     return "requires_manual_triage", sorted(blockers | {"unclassified_part_object_blocker_state"})
 
 
 def case_report(case: str, args: argparse.Namespace, env: dict[str, Any]) -> dict[str, Any]:
     blocker_path = args.part_object_blockers_root / case / "v18_part_object_blocker_manifest_report.json"
     blocker_report = require_dict(load_json(blocker_path), f"{case} blocker report")
+    generated_counts = accepted_tracks_by_object(case, args)
     object_rows: list[dict[str, Any]] = []
     for raw_row in require_list(blocker_report.get("object_rows"), "blocker object rows"):
         row = require_dict(raw_row, "blocker row")
+        object_id = str(row.get("object_id"))
         state, blockers = acquisition_state(row)
+        generated_track_count = int(generated_counts.get(object_id, 0))
+        if generated_track_count > 0:
+            state = "model_produced_owlv2_sam2_part_masks_available"
+            blockers = [item for item in blockers if item != "no_accepted_part_mask_evidence"]
         locally_runnable = bool(env.get("local_new_mask_generation_ready"))
         next_actions = list(row.get("required_next_evidence", [])) if isinstance(row.get("required_next_evidence"), list) else []
-        if not locally_runnable:
+        if generated_track_count > 0:
+            next_actions.append("feed generated OWLv2->SAM2 tracks into part-surface geometry and residual checks")
+        elif not locally_runnable:
             if env.get("promptable_segmentation_backend_available") is True:
-                next_actions.append("provision referring/open-vocabulary part prompt backend or provide precomputed part tracks; promptable SAM assets are present")
+                next_actions.append("run or repair OWLv2->SAM2 part prompt/tracking path or provide precomputed part tracks; promptable SAM assets are present")
             else:
                 next_actions.append("provision runnable open-vocabulary/referring video segmentation backend or provide precomputed part tracks")
         object_rows.append(
@@ -209,9 +251,10 @@ def case_report(case: str, args: argparse.Namespace, env: dict[str, Any]) -> dic
                 "accepted_part_track_count": row.get("accepted_part_track_count"),
                 "visible_subset_candidate_count": row.get("visible_subset_candidate_count"),
                 "local_new_mask_generation_ready": locally_runnable,
-                "acquisition_blockers": blockers + list(env.get("local_generation_blockers", [])),
+                "generated_owlv2_sam2_track_count": generated_track_count,
+                "acquisition_blockers": blockers + ([] if generated_track_count > 0 else list(env.get("local_generation_blockers", []))),
                 "required_next_actions": sorted(set(str(item) for item in next_actions)),
-                "mask_evidence_created": False,
+                "mask_evidence_created": generated_track_count > 0,
                 "part_geometry_created": False,
                 "part_pose_ready": False,
                 "object_pose_requirement_met": False,
@@ -222,11 +265,11 @@ def case_report(case: str, args: argparse.Namespace, env: dict[str, Any]) -> dic
         "status": STATUS,
         "claim": CLAIM,
         "case": case,
-        "sources": {"part_object_blockers": str(blocker_path)},
+        "sources": {"part_object_blockers": str(blocker_path), "owlv2_sam2_part_tracks": str(args.owlv2_sam2_tracks_root / case / "v18_owlv2_sam2_part_tracks_report.json")},
         "environment": env,
         "object_count": len(object_rows),
         "local_new_mask_generation_ready_count": sum(1 for row in object_rows if row["local_new_mask_generation_ready"]),
-        "mask_evidence_created_count": 0,
+        "mask_evidence_created_count": sum(int(row.get("generated_owlv2_sam2_track_count") or 0) for row in object_rows),
         "object_rows": object_rows,
         "part_pose_ready_count": 0,
         "object_pose_requirement_met_count": 0,
@@ -251,7 +294,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "environment": env,
         "object_count": sum(int(report["object_count"]) for report in reports),
         "local_new_mask_generation_ready_count": sum(int(report["local_new_mask_generation_ready_count"]) for report in reports),
-        "mask_evidence_created_count": 0,
+        "mask_evidence_created_count": sum(int(report["mask_evidence_created_count"]) for report in reports),
         "part_pose_ready_count": 0,
         "object_pose_requirement_met_count": 0,
         "default_path_uses_bundlesdf_or_nerf": False,
@@ -275,6 +318,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--part-object-blockers-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_mask_acquisition_plan"))
+    parser.add_argument("--owlv2-sam2-tracks-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_owlv2_sam2_part_tracks"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     parser.add_argument(
         "--samwise-repo-candidates",

@@ -22,19 +22,18 @@ FALSE_READY: dict[str, bool] = {
 
 STATUS = "v18_part_track_source_manifest"
 CLAIM = (
-    "This artifact is the V18 source-of-truth for part-track candidate inputs. Current candidates are cached, "
-    "case-configured model/SAM2 evidence, not a uniform raw-video-to-part-track generation backend. Downstream "
-    "assignment must still use geometric overlap/containment with whole-object masks and must not treat candidate "
-    "source availability as pose, hidden geometry, or contact evidence."
+    "This artifact is the V18 source-of-truth for part-track candidate inputs. The default V18 pool contains only "
+    "generated OWLv2->SAM2 accepted part-track roots. Legacy cached roots are allowed only through explicit debug "
+    "CLI arguments and make the candidate source pool non-uniform. Downstream assignment must still use geometric "
+    "overlap/containment with whole-object masks and must not treat candidate source availability as pose, hidden "
+    "geometry, or contact evidence."
 )
 
 DEFAULT_CACHED_PART_TRACK_ROOTS_BY_CASE: dict[str, list[Path]] = {
-    "trash_1050": [
-        Path("/data2/ego_annotation_outputs/representative_trash/v3_contact_surface_sam2_multi_840_930"),
-        Path("/data2/ego_annotation_outputs/representative_trash/v3_dense_lid_surface_sam2_image_858_880"),
-    ],
+    "trash_1050": [],
     "task5_tomato_960": [],
 }
+DEFAULT_V18_OWLV2_SAM2_TRACK_ROOT = Path("/data2/ego_annotation_outputs/v18_owlv2_sam2_part_tracks")
 
 
 def load_json(path: Path) -> Any:
@@ -117,6 +116,15 @@ def discover_tracks(roots: list[Path]) -> list[dict[str, Any]]:
     return records
 
 
+def generated_owlv2_sam2_summary(args: argparse.Namespace) -> dict[str, Any]:
+    summary_path = args.owlv2_sam2_tracks_root / "v18_owlv2_sam2_part_tracks_summary.json"
+    if not summary_path.exists():
+        return {"summary_path": str(summary_path), "summary_exists": False, "accepted_track_count": 0}
+    summary = require_dict(load_json(summary_path), "OWLv2 SAM2 part-track summary")
+    accepted = int(summary.get("accepted_track_count") or 0)
+    return {"summary_path": str(summary_path), "summary_exists": True, "accepted_track_count": accepted}
+
+
 def env_probe(args: argparse.Namespace) -> dict[str, Any]:
     cv2_available = importlib.util.find_spec("cv2") is not None
     torch_available = importlib.util.find_spec("torch") is not None
@@ -134,6 +142,8 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
     checkpoint_candidates = [Path(raw) for raw in args.samwise_checkpoint_candidates]
     existing_repos = [str(path) for path in repo_candidates if path.exists()]
     existing_checkpoints = [str(path) for path in checkpoint_candidates if path.exists()]
+    generated_summary = generated_owlv2_sam2_summary(args)
+    owlv2_sam2_ready = bool(generated_summary.get("summary_exists")) and int(generated_summary.get("accepted_track_count") or 0) > 0
     backend_blockers: list[str] = []
     if not cv2_available:
         backend_blockers.append("python_cv2_unavailable_for_existing_samwise_runner")
@@ -143,6 +153,11 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
         backend_blockers.append("samwise_repo_not_found_in_known_paths")
     if not existing_checkpoints:
         backend_blockers.append("samwise_checkpoint_not_found_in_known_paths")
+    samwise_ready = not backend_blockers
+    if not owlv2_sam2_ready:
+        backend_blockers.append("v18_owlv2_sam2_part_tracks_not_generated_or_no_accepted_tracks")
+    uniform_ready = samwise_ready or owlv2_sam2_ready
+    backend = "owlv2_sam2_part_tracks" if owlv2_sam2_ready else ("samwise_referring_masks_candidate" if samwise_ready else None)
     return {
         "cv2_available": cv2_available,
         "torch_available": torch_available,
@@ -152,14 +167,23 @@ def env_probe(args: argparse.Namespace) -> dict[str, Any]:
         "samwise_checkpoint_candidates_checked": [str(path) for path in checkpoint_candidates],
         "existing_samwise_repos": existing_repos,
         "existing_samwise_checkpoints": existing_checkpoints,
-        "uniform_part_track_generation_ready": not backend_blockers,
-        "uniform_generation_backend": "samwise_referring_masks_candidate" if not backend_blockers else None,
-        "uniform_generation_blockers": backend_blockers,
+        "owlv2_sam2_generated_summary": generated_summary,
+        "owlv2_sam2_part_tracks_ready": owlv2_sam2_ready,
+        "uniform_part_track_generation_ready": uniform_ready,
+        "uniform_generation_backend": backend,
+        "uniform_generation_blockers": [] if uniform_ready else backend_blockers,
     }
 
 
+def source_type_for_root(root: Path) -> tuple[str, str]:
+    if "v18_owlv2_sam2_part_tracks" in str(root):
+        return "v18_owlv2_sam2_generated_part_track_root", "uniform_v18_owlv2_sam2_generation"
+    return "cached_model_sam2_part_track_root", "case_configured_cached_evidence"
+
+
 def roots_for_case(case: str, args: argparse.Namespace) -> list[Path]:
-    roots = list(DEFAULT_CACHED_PART_TRACK_ROOTS_BY_CASE.get(case, []))
+    roots = [args.owlv2_sam2_tracks_root / case / "accepted_tracks"]
+    roots.extend(DEFAULT_CACHED_PART_TRACK_ROOTS_BY_CASE.get(case, []))
     for item in args.extra_cached_part_track_root:
         if item.startswith(f"{case}="):
             roots.append(Path(item.split("=", 1)[1]))
@@ -168,29 +192,43 @@ def roots_for_case(case: str, args: argparse.Namespace) -> list[Path]:
     return roots
 
 
+def candidate_source_scope(root_records: list[dict[str, Any]]) -> str:
+    has_generated = any(row.get("source_type") == "v18_owlv2_sam2_generated_part_track_root" and row.get("exists") for row in root_records)
+    has_cached = any(row.get("source_type") == "cached_model_sam2_part_track_root" and row.get("exists") for row in root_records)
+    if has_generated and not has_cached:
+        return "v18_owlv2_sam2_generated_only"
+    if has_generated and has_cached:
+        return "v18_owlv2_sam2_generated_plus_explicit_cached_debug_roots"
+    return "cached_case_configured_roots_not_uniform_generation_backend"
+
+
 def case_report(case: str, args: argparse.Namespace, env: dict[str, Any]) -> dict[str, Any]:
     roots = roots_for_case(case, args)
-    root_records = [
-        {
-            "root": str(root),
-            "exists": root.exists(),
-            "source_type": "cached_model_sam2_part_track_root",
-            "source_scope": "case_configured_cached_evidence",
-        }
-        for root in roots
-    ]
+    root_records = []
+    for root in roots:
+        source_type, source_scope = source_type_for_root(root)
+        root_records.append(
+            {
+                "root": str(root),
+                "exists": root.exists(),
+                "source_type": source_type,
+                "source_scope": source_scope,
+            }
+        )
     tracks = discover_tracks(roots)
     label_counts = Counter(str(track.get("track_label")) for track in tracks)
     usable_tracks = [track for track in tracks if bool(track.get("usable_for_overlap_audit"))]
+    source_scope = candidate_source_scope(root_records)
+    uniform_source_pool = source_scope == "v18_owlv2_sam2_generated_only"
     report = {
         "method": "build_v18_part_track_source_manifest",
         "status": STATUS,
         "claim": CLAIM,
         "case": case,
-        "part_track_candidate_source_scope": "cached_case_configured_roots_not_uniform_generation_backend",
+        "part_track_candidate_source_scope": source_scope,
         "candidate_source_manifest_ready": True,
-        "uniform_part_track_generation_ready": bool(env.get("uniform_part_track_generation_ready")),
-        "uniform_generation_blockers": env.get("uniform_generation_blockers"),
+        "uniform_part_track_generation_ready": bool(env.get("uniform_part_track_generation_ready")) and uniform_source_pool,
+        "uniform_generation_blockers": env.get("uniform_generation_blockers") if uniform_source_pool else ["candidate_pool_contains_explicit_cached_debug_roots"],
         "candidate_assignment_semantics_required_downstream": "overlap_and_containment_with_whole_object_mask_after_candidate_pool_selection",
         "root_count": len(root_records),
         "existing_root_count": sum(1 for root in root_records if bool(root.get("exists"))),
@@ -215,6 +253,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     env = env_probe(args)
     reports = [case_report(case, args, env) for case in args.cases]
     elapsed = time.perf_counter() - start
+    summary_scope = "v18_owlv2_sam2_generated_only" if reports and all(str(report.get("part_track_candidate_source_scope")) == "v18_owlv2_sam2_generated_only" for report in reports) else ("v18_owlv2_sam2_generated_plus_explicit_cached_debug_roots" if any(str(report.get("part_track_candidate_source_scope")) == "v18_owlv2_sam2_generated_plus_explicit_cached_debug_roots" for report in reports) else "cached_case_configured_roots_not_uniform_generation_backend")
+    uniform_source_pool = summary_scope == "v18_owlv2_sam2_generated_only"
     summary = {
         "method": "build_v18_part_track_source_manifest",
         "status": STATUS,
@@ -222,10 +262,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "case_count": len(reports),
         "build_elapsed_s": elapsed,
         "environment": env,
-        "part_track_candidate_source_scope": "cached_case_configured_roots_not_uniform_generation_backend",
+        "part_track_candidate_source_scope": summary_scope,
         "candidate_source_manifest_ready": True,
-        "uniform_part_track_generation_ready": bool(env.get("uniform_part_track_generation_ready")),
-        "uniform_generation_blockers": env.get("uniform_generation_blockers"),
+        "uniform_part_track_generation_ready": bool(env.get("uniform_part_track_generation_ready")) and uniform_source_pool,
+        "uniform_generation_blockers": env.get("uniform_generation_blockers") if uniform_source_pool else ["candidate_pool_contains_explicit_cached_debug_roots"],
         "root_count": sum(int(report["root_count"]) for report in reports),
         "existing_root_count": sum(int(report["existing_root_count"]) for report in reports),
         "track_count": sum(int(report["track_count"]) for report in reports),
@@ -257,6 +297,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_track_source_manifest"))
+    parser.add_argument("--owlv2-sam2-tracks-root", type=Path, default=DEFAULT_V18_OWLV2_SAM2_TRACK_ROOT)
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     parser.add_argument("--extra-cached-part-track-root", action="append", default=[])
     parser.add_argument(

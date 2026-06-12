@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, occlusion owner-candidate evidence, occlusion depth-order triage evidence, a part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, one bounded visible part-model candidate, a visible part-subset archive, explicit part-object blocker records, promptable SAM proposal evidence, promptable proposal promotion-gate evidence, part-mask acquisition status, measured cached-evidence-to-status runtime, and a passing invariant audit, but it is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
+V18 is open as a redesign after formal V17 failure. Current V18 implementation has a bounded fixed-pass status deliverable with full-duration 2D overlay, abstract world/status, side-by-side videos, visible-surface geometry evidence, structured physical-state schema evidence, occlusion owner-candidate evidence, occlusion depth-order triage evidence, generated OWLv2→SAM2 part-track evidence, a generated-only part-track source manifest, part visible-surface evidence, part-motion diagnostics, part-motion confound QC, explicit part-object blocker records, promptable SAM proposal evidence, promptable proposal promotion-gate evidence, part-mask acquisition status, measured cached-evidence-to-status runtime, and a passing invariant audit. It has no accepted part-model candidate, no evidence-ready visible part-subset archive, and is not a final pose-complete annotation pipeline. Any accepted V18 implementation must preserve this design and obey the runtime and occlusion constraints below.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -26,7 +26,7 @@ This section is the V18 contract. Cached artifacts may be used as memoized stage
 6. **Factor graph.** Variables are bounded camera/depth correction, hand state, object/part SE(3), articulation parameter, contact switch, and occlusion owner. Factors are hand observation residuals, object mask/depth/registration residuals, temporal/rigid/articulation consistency, occlusion depth ordering, and contact/nonpenetration. Contact factors are active only when both hand and object/part geometry are valid.
 7. **Outputs.** The deliverable remains full-duration raw overlay, metric/world render, side-by-side video, runtime report, and validation artifacts. Status videos and audits validate implementation; they do not replace the pipeline.
 
-Current implementation gap: existing V18 code does not yet satisfy this contract. The current hand branch uses WiLoR only; HaWoR is not integrated. OWLv2→SAM2 temporal object/part tracks are not implemented. Depth-fused reconstruction and the factor graph are not implemented. The next work must close these gaps rather than produce more non-readiness summaries.
+Current implementation gap: existing V18 code does not yet satisfy this contract. The current hand branch uses WiLoR only; HaWoR is not integrated. V18 now has generated OWLv2→SAM2 temporal part tracks, but they are visible-mask evidence only: the pink-lid can has only one generated part track, no object has a validated part model, and depth-fused reconstruction plus the factor graph are not implemented. The next work must close these gaps rather than produce more non-readiness summaries.
 
 ## Implementation Checkpoint 1: Runtime And Visibility Scaffold
 
@@ -122,7 +122,7 @@ V18 also now renders full-duration abstract world/status and side-by-side status
 
 The world/status render is deliberately image-normalized abstract status geometry, not a metric 3D reconstruction. The side-by-side videos place the raw-frame status overlay next to that abstract status view. Visual sheets were extracted for both cases for non-corruption checks.
 
-`build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 151.98 seconds for 67 seconds of source video, or 2.27x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
+`build_v18_status_deliverable_manifest.py` writes `/data2/ego_annotation_outputs/v18_status_deliverable_manifest/v18_status_deliverable_manifest.json`. The manifest marks `status_deliverable_ready=true` and `final_pose_complete_deliverable_ready=false`. Measured render time for the status outputs is 126.15 seconds for 67 seconds of source video, or 1.88x real time, under the 10x V18 status-render budget. This closes a V18 status deliverable, not the final geometry/pose/contact deliverable.
 
 Remaining gap after this checkpoint: implement or integrate a bounded object geometry/pose path that can actually reconstruct manipulated-object geometry where evidence supports it, validate contact ownership with metric depth and complete/appropriate geometry, and only then upgrade final annotation readiness.
 
@@ -160,20 +160,20 @@ Remaining gap after this checkpoint: implement part-level splitting/geometry evi
 
 ## Implementation Checkpoint 8: Part-Split Evidence And Part Visible Surfaces
 
-V18 now audits cached model-produced part/segment tracks and extracts bounded part visible-surface evidence:
+V18 now audits generated model-produced part/segment tracks and extracts bounded part visible-surface evidence:
 
 ```text
 /data2/ego_annotation_outputs/v18_part_split_evidence/
 /data2/ego_annotation_outputs/v18_part_visible_surfaces/
 ```
 
-`build_v18_part_split_evidence.py` uses cached, case-configured candidate part-track roots; this is not yet a complete uniform V18 part-generation backend. Within that selected candidate pool, assignments are made only by mask overlap/containment with the whole-object mask, not by object name. Across the three objects requiring part/articulation handling (`object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`), it finds 4 accepted part-track assignments, all for `object:pink_lid_trash_can_second`: `pink_lid_outer_vertical_flange_edge`, `pink_lid_raised_annular_rim`, `pink_lid_top_dished_panel_visible`, and `second_can_exposed_opening_rim`. `object:off_white_trash_can_first` and `object:obj_faucet_handle` still have no accepted part-mask overlap evidence. A QC sheet is written at `/data2/ego_annotation_outputs/v18_part_split_evidence/trash_1050/v18_part_split_evidence_sheet.jpg`; the task5 sheet explicitly records no accepted part-mask overlap evidence.
+`build_v18_part_split_evidence.py` uses the generated-only part-track source manifest by default. Legacy cached roots are opt-in debug inputs and make the source pool non-uniform. Within the selected candidate pool, assignments are made only by mask overlap/containment with the whole-object mask, not by object name. Across the three objects requiring part/articulation handling (`object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`), it finds 5 accepted generated part-track assignments: two for off-white can, one for pink-lid can, and two for faucet handle. Pink-lid is explicitly `single_part_mask_evidence_insufficient_for_split`.
 
-`build_v18_part_visible_surfaces.py` then extracts metric-depth-backed visible surfaces for the accepted part masks, without OpenCV and without BundleSDF/NeRF. It writes a compact NPZ archive in depth-camera coordinates. Current totals: 203 accepted part visible-surface frame rows for `object:pink_lid_trash_can_second`, 102,035 vertices, 174,456 faces, and 143 rejected candidate rows. Rejections are mostly missing metric depth after the depth archive ends, per-frame part/object containment failure, or too few connected sampled vertices/faces. Task5 has no part visible surfaces because no part masks were accepted.
+`build_v18_part_visible_surfaces.py` then extracts metric-depth-backed visible surfaces for the accepted generated part masks, without OpenCV and without BundleSDF/NeRF. It writes a compact NPZ archive in depth-camera coordinates. Current totals: 753 accepted part visible-surface frame rows, 232,551 vertices, and 408,455 faces. Rejections remain scoped to missing metric depth, part/object containment failure, or too few connected sampled vertices/faces.
 
-The updated status manifest reports `part_required_object_count=3`, `accepted_part_track_assignment_count=4`, `part_visible_surface_frame_rows=203`, `part_visible_surface_vertices=102035`, `part_visible_surface_faces=174456`, `part_pose_ready_count=0`, and `object_pose_requirement_met=false`. This advances V18 from whole-object visible surfaces to part-level visible surface evidence for one part-motion object, but it still does not reconstruct hidden part geometry, estimate part pose, or validate contact ownership.
+The updated status manifest reports `part_required_object_count=3`, `accepted_part_track_assignment_count=5`, `part_visible_surface_frame_rows=753`, `part_visible_surface_vertices=232551`, `part_visible_surface_faces=408455`, `part_pose_ready_count=0`, and `object_pose_requirement_met=false`. This advances V18 from whole-object visible surfaces to generated part-level visible surface evidence, but it still does not reconstruct hidden part geometry, estimate part pose, or validate contact ownership.
 
-Remaining gap after this checkpoint: extract or produce part-mask evidence for the off-white can and faucet handle, convert part visible surfaces into a bounded part/articulation model only where supported, and then test pose/contact ownership against metric depth.
+Remaining gap after this checkpoint: convert generated part visible surfaces into bounded part/articulation model candidates only where supported by residuals, get more pink-lid part evidence if a split model is required, and then test pose/contact ownership against metric depth.
 
 ## Implementation Checkpoint 9: Part-Motion State Reducer
 
@@ -227,7 +227,7 @@ V18 now materializes robust stable visible part-subset candidates as mesh archiv
 
 `build_v18_visible_part_subset_archive.py` copies only observed depth-backed surfaces from the accepted robust stable part subset, rebases global face indices, and preserves row provenance back to the part visible-surface archive. The archive contains one candidate for `object:pink_lid_trash_can_second`, 139 surface rows, 70 unique frames, 98,315 vertices, and 169,356 faces. The earlier written 170,062-face count was a stale human-side count; source rows, source NPZ offsets, candidate records, and the new archive all support 169,356 faces.
 
-The updated manifest reports `visible_part_subset_archive_file_written_all_cases=true`, `visible_part_subset_archive_ready_count=1`, `all_cases_visible_part_subset_archive_ready=false`, `visible_part_subset_archive_rows=139`, `visible_part_subset_vertices=98315`, and `visible_part_subset_faces=169356`. The task5 empty archive file is not marked evidence-ready. Hidden geometry, part pose, articulation readiness, contact readiness, and object pose remain false.
+The earlier mixed-source manifest reported one visible part-subset archive for the pink-lid object. After the generated-only source correction in Checkpoint 26, the current manifest reports `visible_part_subset_archive_ready_count=0` and `all_cases_visible_part_subset_archive_ready=false`. Hidden geometry, part pose, articulation readiness, contact readiness, and object pose remain false.
 
 Remaining gap after this checkpoint: build validation around the visible subset if useful, but do not promote it beyond visible surface evidence without hidden geometry, pose, and contact support.
 
@@ -239,11 +239,11 @@ V18 now writes explicit blockers for part/relative-motion objects:
 /data2/ego_annotation_outputs/v18_part_object_blocker_manifest/
 ```
 
-`build_v18_part_object_blocker_manifest.py` joins part-split evidence, completion gating, part-motion QC, visible subset candidates, and the visible part-subset archive. It records 3 required part/articulation objects: `object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`. Two are `blocked_missing_part_mask_evidence`; the pink-lid object is `partial_visible_subset_only_blocked_no_pose`.
+`build_v18_part_object_blocker_manifest.py` joins part-split evidence, completion gating, part-motion QC, visible subset candidates, and the visible part-subset archive. It records 3 required part/articulation objects: `object:off_white_trash_can_first`, `object:pink_lid_trash_can_second`, and `object:obj_faucet_handle`. After the generated-only OWLv2→SAM2 source correction, all three are `blocked_no_part_model_candidate`; off-white can and faucet handle have two accepted generated part tracks each, while pink-lid can has one generated part track and remains insufficient for a split model.
 
-The updated manifest reports `required_part_object_blocker_count=3` and `contact_ownership_ready_count=0`. This is an explicit stop against treating the visible pink-lid subset as hidden geometry, part pose, contact ownership, or final object pose.
+The updated manifest reports `required_part_object_blocker_count=3`, `visible_part_subset_archive_ready_count=0`, and `contact_ownership_ready_count=0`. This is an explicit stop against treating generated masks or visible surfaces as hidden geometry, part pose, contact ownership, or final object pose.
 
-Remaining gap after this checkpoint: obtain accepted part-mask evidence for the off-white can and faucet handle, improve sparse pink-lid part masks if articulation is to be tested, and only then re-run part geometry/motion/contact checks.
+Remaining gap after this checkpoint: use the generated part masks to fit and reject/accept part-model candidates under residual tests; obtain additional pink-lid part evidence if a split model is required; only then re-run geometry/motion/contact checks.
 
 ## Implementation Checkpoint 14: Part-Mask Acquisition Status
 
@@ -255,17 +255,17 @@ V18 now records the status of acquiring missing or improved part masks:
 
 `build_v18_part_mask_acquisition_plan.py` turns the blocker manifest into object-level acquisition requirements and probes local runner prerequisites. It covers the same 3 part/relative-motion objects. `object:off_white_trash_can_first` and `object:obj_faucet_handle` require new model-produced part masks. `object:pink_lid_trash_can_second` requires improved sparse part masks or visible-subset-only modeling.
 
-The `.venv` environment has Python cv2, torch, and CUDA available, but no SAMWISE repo or checkpoint was found in the checked paths, so `local_new_mask_generation_ready_count=0` and `mask_evidence_created_count=0`. The updated status manifest records those counts and keeps `part_pose_ready_count=0`.
+The `.venv` environment has Python cv2, torch, CUDA, local SAM2, and local OWLv2 available, but no SAMWISE repo or checkpoint was found in the checked paths. At this checkpoint no model-produced V18 part masks had been generated; Checkpoint 26 supersedes that blocker with the OWLv2→SAM2 generated-track path. The current status manifest records `local_new_mask_generation_ready_count=3` and `mask_evidence_created_count=5`, while keeping `part_pose_ready_count=0`.
 
 Remaining gap after this checkpoint: provision a runnable open-vocabulary/referring video segmentation backend or provide precomputed part tracks, then rerun part-split evidence and downstream part geometry/motion checks.
 
 ## Implementation Checkpoint 15: Review-Driven Readiness And Source-Scope Corrections
 
-A clean-room adversarial review found one false readiness issue and one source-scope caveat. V18 now separates visible part-subset archive file creation from non-empty evidence readiness: `trash_1050` has a non-empty visible subset archive, while `task5_tomato_960` writes an empty archive file but is not evidence-ready. The status manifest reports `visible_part_subset_archive_ready_count=1` and `all_cases_visible_part_subset_archive_ready=false`.
+A clean-room adversarial review found one false readiness issue and one source-scope caveat. V18 separates visible part-subset archive file creation from evidence readiness. After the generated-only source correction, no visible part-subset archive is evidence-ready: `visible_part_subset_archive_ready_count=0` and `all_cases_visible_part_subset_archive_ready=false`.
 
-The part-split audit also now records `part_track_candidate_source_scope=cached_case_configured_roots_not_uniform_generation_backend` and `uniform_part_track_generation_ready=false`. This preserves the true scoped claim: assignment within the candidate pool is geometric overlap/containment, but the candidate pool itself is cached and nonuniform until a runnable open-vocabulary/referring segmentation backend is provisioned.
+The later generated-only source correction records `part_track_candidate_source_scope=v18_owlv2_sam2_generated_only` and `uniform_part_track_generation_ready=true`. This preserves the true scoped claim: source selection is uniform and auditable, while downstream assignment remains geometric overlap/containment against whole-object masks.
 
-Remaining gap after this checkpoint: replace cached case-configured part-track roots with a uniform model-produced part-track manifest or provisioned segmentation backend, then rerun the same overlap, geometry, motion, and blocker checks.
+Remaining gap after this checkpoint: continue from generated masks to residual-tested part models, reconstruction, contact/depth ownership, and graph factors.
 
 ## Implementation Checkpoint 16: Part-Track Source Manifest
 
@@ -275,11 +275,11 @@ V18 now writes an explicit source-of-truth for part-track candidate inputs:
 /data2/ego_annotation_outputs/v18_part_track_source_manifest/
 ```
 
-`build_v18_part_track_source_manifest.py` records the cached model/SAM2 part-track roots, discovered track counts, usable-track counts, and local generation backend readiness. Current source evidence is unchanged: 2 existing cached roots, 6 usable trash tracks, 0 task5 tracks, and `uniform_part_track_generation_ready=false` because no SAMWISE repo/checkpoint was found in configured paths.
+`build_v18_part_track_source_manifest.py` records generated OWLv2→SAM2 part-track roots, discovered track counts, usable-track counts, and source-scope readiness. Legacy cached roots are no longer default inputs; they require explicit debug CLI arguments and make the pool non-uniform.
 
-`build_v18_part_split_evidence.py` now consumes this manifest instead of carrying default case-specific roots internally. This turns the prior review caveat into an executable contract: source selection is explicit and auditable, while downstream assignment remains geometric overlap/containment against whole-object masks. The status manifest reports `part_track_source_manifest_ready_all_cases=true`, `part_track_source_root_count=2`, `part_track_source_usable_track_count=6`, and keeps `uniform_part_track_generation_ready=false`.
+`build_v18_part_split_evidence.py` consumes this manifest instead of carrying case-specific roots internally. This turns the prior review caveat into an executable contract: source selection is explicit and auditable, while downstream assignment remains geometric overlap/containment against whole-object masks. The current status manifest reports `part_track_source_manifest_ready_all_cases=true`, `part_track_source_root_count=2`, `part_track_source_usable_track_count=5`, and `uniform_part_track_generation_ready=true`.
 
-Remaining gap after this checkpoint: replace the cached source manifest with a uniform model-produced part-track manifest once a runnable referring/open-vocabulary segmentation backend or precomputed part tracks are available.
+Remaining gap after this checkpoint: use the uniform generated tracks to fit residual-tested part models and reject/accept reconstruction/contact claims.
 
 ## Implementation Checkpoint 17: Structured Physical-State Schema
 
@@ -305,9 +305,9 @@ V18 now has a measured runtime artifact for the implemented status pipeline:
 /data2/ego_annotation_outputs/v18_measured_status_pipeline_runtime/
 ```
 
-`run_v18_measured_status_pipeline.py` runs 28 current V18 stages in dependency order, including status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured run succeeded in 215.18 seconds over 67.0 seconds of representative video, or 3.21x video duration. The slowest stages were status overlay render (70.88 s), world/status render (69.81 s), side-by-side render (28.06 s), part visible-surface extraction (19.99 s), SAM promptable proposal probe (6.64 s), and part-mask acquisition probe (5.32 s).
+`run_v18_measured_status_pipeline.py` runs 27 current V18 stages in dependency order, including OWLv2→SAM2 part-track generation and status overlay/world/side-by-side rendering, and writes per-stage stdout/stderr logs plus a runtime report. The measured generated-only run succeeded in 433.04 seconds over 67.0 seconds of representative video, or 6.46x video duration. The slowest stages were OWLv2→SAM2 part tracks (255.18 s), world/status render (61.29 s), status overlay render (58.79 s), part visible-surface extraction (20.28 s), side-by-side render (18.82 s), and SAM promptable proposal probe (5.14 s).
 
-This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth/part-track evidence is cached from V16/V17/V18 artifacts. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=3.2117`, while final pose/contact readiness remains false.
+This is explicitly `cached_evidence_to_status_runtime_measured=true`, not fresh raw-video runtime. The report keeps `fresh_raw_video_to_status_runtime_measured=false` and `fresh_raw_video_to_final_pose_runtime_measured=false` because upstream hand/object/depth evidence is cached from V16/V17/V18 artifacts, while the OWLv2→SAM2 part-track stage is regenerated inside this measured pipeline. The status manifest now links this report and records `cached_evidence_to_status_elapsed_to_video_ratio=6.4633`, while final pose/contact readiness remains false.
 
 Remaining gap after this checkpoint: measure true fresh raw-video-to-status runtime only after the perception backend is provisioned; measure final runtime only after final geometry/pose/contact stages exist.
 
@@ -341,9 +341,9 @@ V18 now writes a machine-readable invariant audit:
 /data2/ego_annotation_outputs/v18_status_invariant_audit/
 ```
 
-`audit_v18_status_invariants.py` checks the generated status manifest, runtime report, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, part-track source manifest, and part-mask acquisition plan. The current audit passes 52 required checks with zero failures.
+`audit_v18_status_invariants.py` checks the generated status manifest, runtime report, visible part-subset reports, occlusion candidate reports, bounded state summary, physical-state schema, generated-only part-track source manifest, part-split evidence, part visible surfaces, part-object blockers, and part-mask acquisition plan. The current audit passes 57 required checks with zero failures.
 
-The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, occlusion depth-order evidence not promoted to ownership, task5 empty visible part-subset archive not evidence-ready, promptable SAM assets and saved proposal masks blocked by the promotion gate rather than treated as accepted referring/open-vocabulary part-mask tracks, uniform part-track generation not ready, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`. The measured runtime orchestrator now runs manifest, audit, post-report manifest refresh, post-report audit, and final manifest-refresh steps so the audit observes the same runtime ratio that the final manifest reports.
+The audit enforces the main scoped claims: status deliverable ready, final pose-complete deliverable not ready, full-duration/frame-count/FPS checks true, BundleSDF/NeRF absent from the default path, object/part pose readiness false, contact and occlusion ownership readiness zero, occlusion depth-order evidence not promoted to ownership, visible part-subset archives not evidence-ready under generated-only evidence, promptable SAM assets and saved proposal masks blocked by the promotion gate rather than treated as accepted referring/open-vocabulary part-mask tracks, generated-only OWLv2→SAM2 source scope/counts, 5 accepted generated part assignments, 753 part-surface rows, all required part objects still blocked by missing part-model candidates, fresh raw-video runtime not measured, and cached-evidence-to-status runtime under 10x. The status manifest links the latest audit and reports `status_invariant_audit_passed=true`. The measured runtime orchestrator writes the runtime report, refreshes the manifest, runs the post-report audit, and refreshes the manifest again so the audit observes the same runtime ratio that the final manifest reports.
 
 Remaining gap after this checkpoint: keep this audit in the validation path for future V18 changes; add new required checks when new geometry, pose, contact, or perception-backend stages are introduced.
 
@@ -373,9 +373,9 @@ V18 now distinguishes promptable segmentation assets from a complete referring/o
 
 `build_v18_part_mask_acquisition_plan.py` still finds no runnable SAMWISE repo/checkpoint. A broader probe finds promptable segmentation assets: `third_party/sam2`, `/data2/ego_annotation_outputs/checkpoints/sam2.1_hiera_small.pt`, the `segment_anything` Python package, and `/home/yiwen/ego_annotation/checkpoints/sam_vit_b_01ec64.pth`. CUDA, torch, and cv2 are available, so `promptable_segmentation_backend_available=true`.
 
-This does not unblock new part masks by itself. The local environment also has a cached OWLv2 open-vocabulary detector through `transformers`, so `open_vocab_detector_backend_cached_available=true` and `open_vocab_or_referring_prompt_backend_available=true`. The missing piece is now more specific: no model-produced part prompt plan is ready (`model_produced_part_prompt_plan_ready=false`), so `local_new_mask_generation_ready=false`, `local_new_mask_generation_ready_count=0`, and `mask_evidence_created_count=0`. The status manifest carries these fields and the invariant audit checks that promptable SAM assets plus a cached open-vocabulary detector are still not enough without a part prompt plan.
+This checkpoint originally identified the missing piece as the absence of a model-produced part prompt plan. Checkpoint 26 implements that plan with OWLv2 keyframe detections and SAM2 video tracking. The current manifest now records `open_vocab_detector_backend_cached_available=true`, `open_vocab_or_referring_prompt_backend_available=true`, `model_produced_part_prompt_plan_ready=true`, `local_new_mask_generation_ready=true`, `local_new_mask_generation_ready_count=3`, and `mask_evidence_created_count=5`.
 
-Remaining gap after this checkpoint: implement a reviewed model-produced part prompt plan for the cached OWLv2/SAM path, provision another referring prompt source, or provide precomputed part tracks before rerunning part-split and downstream geometry/motion/contact checks.
+Remaining gap after Checkpoint 26: use the generated OWLv2→SAM2 tracks to build part-model candidates, reconstruction residuals, contact/depth ownership, and final graph factors; do not stop at mask evidence.
 
 ## Implementation Checkpoint 24: Promptable SAM Proposal Probe
 
@@ -561,6 +561,26 @@ Factors:
 
 The optimizer must expose unresolved rows and rejected factors. It must not hide broken contracts with silent fallbacks.
 
+## Implementation Checkpoint 26: OWLv2→SAM2 Semantic Part Tracks
+
+V18 now has the first executable baseline object/part perception stage required by the binding pipeline:
+
+```text
+/data2/ego_annotation_outputs/v18_owlv2_sam2_part_tracks/
+```
+
+`build_v18_owlv2_sam2_part_tracks.py` uses the V18 physical-state schema notes as the model-produced source for part terms, runs cached OWLv2 on selected object keyframes, prompts SAM2 video tracking with accepted OWLv2 boxes, and writes accepted tracks in the downstream `sam2_track.json` format. SAM v1 is not used in this stage.
+
+The full two-case run produced 109 OWLv2 candidate part boxes and 5 accepted semantic temporal SAM2 part tracks, with 1 rejected track. Accepted tracks are:
+
+- `object:off_white_trash_can_first`: `owlv2_sam2_off_white_trash_can_first_hinge` and `owlv2_sam2_off_white_trash_can_first_lid`.
+- `object:pink_lid_trash_can_second`: `owlv2_sam2_pink_lid_trash_can_second_lid`.
+- `object:obj_faucet_handle`: `owlv2_sam2_obj_faucet_handle_handle` and `owlv2_sam2_obj_faucet_handle_lever`.
+
+`build_v18_part_track_source_manifest.py` now defaults to these generated accepted-track roots only. Legacy cached roots are opt-in debug inputs and make the source pool non-uniform. After rerunning the downstream part chain with generated-only evidence, V18 has 5 usable generated tracks and 5 accepted part-track assignments. Off-white can and faucet handle each have two accepted generated tracks; pink-lid can has one generated track and is explicitly `single_part_mask_evidence_insufficient_for_split`. Part visible-surface extraction now produces 753 depth-backed part surface rows, 232,551 vertices, and 408,455 faces.
+
+This is real part-mask and visible-geometry progress, not pose completion. The current downstream blocker has moved: off-white can and faucet handle are no longer blocked by missing accepted part masks; they are blocked by missing part-model candidates/residual validation. Pink-lid can has generated mask evidence but only one part track, so it is insufficient for split-model evidence. Hidden geometry, part pose, contact ownership, occlusion ownership, and final pose-complete readiness remain false.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
@@ -626,10 +646,9 @@ Every summary JSON must include runtime, frame-count equality, readiness flags, 
 
 ## Immediate Implementation Order
 
-1. Build the V18 runtime/DAG manifest and hard-stop budget checks before adding perception logic.
-2. Build full-timeline visibility/occlusion schema for hands and objects.
-3. Assemble fast measurements from existing frame/depth/hand/object artifacts where available; do not run BundleSDF.
-4. Implement visible object surface extraction + cheap motion-state residuals under per-object time caps.
-5. Implement bounded hand/object/contact/occlusion consistency graph.
-6. Render full-duration outputs with uncertainty/occlusion status.
-7. Evaluate on `trash_1050` and `task5_tomato_960`; if runtime or occlusion handling fails, mark V18 failed quickly and preserve the causal evidence.
+1. Integrate the HaWoR hand branch as the required temporal/occlusion baseline and compare it against WiLoR/RTMLib/depth with the fixed residual criteria.
+2. Continue the object/part path from the accepted OWLv2→SAM2 tracks: part visible surfaces -> part-model candidate residuals -> rigid/articulated/deformable decision.
+3. Implement depth-fused rigid/part reconstruction only where the residual acceptance tests can be evaluated.
+4. Implement the bounded factor graph over camera/depth correction, hand state, object/part SE(3), articulation, contact switch, and occlusion owner.
+5. Render full-duration outputs with uncertainty/occlusion status and run runtime/manifest/audit checks only as validation of these implementation artifacts.
+6. Evaluate on `trash_1050` and `task5_tomato_960`; if runtime, HaWoR validation, SAM2 tracking, reconstruction, or graph optimization fails, preserve the concrete failed residuals and causal evidence.

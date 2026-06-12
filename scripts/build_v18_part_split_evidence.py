@@ -26,13 +26,14 @@ FALSE_READY: dict[str, bool] = {
 
 STATUS = "v18_part_split_evidence_audit"
 CLAIM = (
-    "This artifact audits cached model-produced part/segment tracks for objects that require part or articulation "
-    "handling. Candidate track roots are currently case-configured cached evidence, not a complete uniform V18 "
-    "part-generation backend. Within that candidate pool, a part track is assigned only by mask overlap/containment "
-    "with the whole-object mask. This does not create part geometry, estimate part pose, or complete object pose."
+    "This artifact audits model-produced part/segment tracks for objects that require part or articulation handling. "
+    "The default V18 candidate pool comes from the part-track source manifest, currently generated OWLv2->SAM2 "
+    "tracks only; explicit extra cached roots are debug inputs and make the source pool non-uniform. Within the "
+    "selected candidate pool, a part track is assigned only by mask overlap/containment with the whole-object mask. "
+    "This does not create part geometry, estimate part pose, or complete object pose."
 )
 
-PART_TRACK_SOURCE_SCOPE = "source_manifest_cached_case_configured_roots_not_uniform_generation_backend"
+PART_TRACK_SOURCE_SCOPE = "v18_owlv2_sam2_generated_only"
 PART_REQUIRED_ACTIONS = {"candidate_requires_part_model_not_run", "single_rigid_completion_not_allowed"}
 PART_REQUIRED_STATES = {
     "part_motion_requires_part_split_no_single_rigid_completion",
