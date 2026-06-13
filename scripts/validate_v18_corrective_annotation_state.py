@@ -32,6 +32,17 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(isinstance(frames, list), f"{case}: frames is not a list", failures)
     require(len(frames) == expected_count, f"{case}: frame count {len(frames)} != source {expected_count}", failures)
     require(ann.get("status") == "corrective_state_delta_not_full_v18_closure", f"{case}: incorrect scoped status", failures)
+    forbidden_contact_strings = ["accepted_contact_owner_by", "accepted_contact_owner_before", "accepted_before_nonpenetration_veto", "graph_accepted"]
+    for rel in [
+        f"{case}/contact_acceptance_audit/v18_contact_acceptance_audit_report.json",
+        f"{case}/contact_nonpenetration_state/v18_contact_nonpenetration_state_report.json",
+        f"{case}/nonpenetration_repair_proposal/v18_nonpenetration_repair_proposal_report.json",
+    ]:
+        report_path = root / rel
+        if report_path.exists():
+            text = report_path.read_text(encoding="utf-8")
+            for forbidden in forbidden_contact_strings:
+                require(forbidden not in text, f"{case}: stale contact acceptance string {forbidden} remains in {rel}", failures)
     require(int(counts.get("graph_shifted_mano_states", 0)) > 0, f"{case}: no graph-shifted MANO states", failures)
     require(int(counts.get("graph_hand_states", 0)) == int(counts.get("graph_shifted_mano_states", -1)), f"{case}: graph hand count != shifted MANO count", failures)
     require(int(counts.get("graph_object_se3_states", 0)) > 0, f"{case}: no graph object SE3 states", failures)

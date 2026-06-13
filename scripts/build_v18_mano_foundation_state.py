@@ -483,14 +483,14 @@ def write_markdown(root: Path, reports: list[dict[str, Any]]) -> None:
             f"- Foundational MANO valid: `{r['foundational_mano_state_valid']}`.",
             f"- Current V18 full hand rows: `{current['counts'].get('hand_rows', 0)}`; camera joint candidates: `{current['counts'].get('camera_joint_candidates', 0)}`; stored MANO surfaces: `{current['counts'].get('surface_candidates_stored_in_v18_full', 0)}`; stored MANO params: `{current['counts'].get('mano_params_stored_in_v18_full', 0)}`.",
             f"- Recovered WiLoR full virtual-camera MANO candidates: `{wilor.get('complete_virtual_camera_candidate_rows', 0)}` raw rows, `{wilor.get('unique_virtual_camera_frame_side_rows', 0)}/{r['expected_two_hand_rows']}` unique frame-side rows; side frames: `{wilor.get('frames_by_side')}`; internal projection residual px: `{wilor.get('wilor_internal_projection_residual_px_median')}`; metric-world alignment valid: `{wilor.get('metric_world_alignment_valid')}`; NPZ: `{wilor.get('npz_path')}`.",
-            f"- HaWoR complete virtual-camera MANO rows: `{hawor.get('complete_world_surface_param_rows', 0)}/{r['expected_two_hand_rows']}`; measurement rows: `{hawor.get('measurement_available_complete_rows', 0)}`; motion-infill rows: `{hawor.get('motion_infill_complete_rows', 0)}`; side frames: `{hawor.get('frames_by_side')}`.",
+            f"- HaWoR complete world MANO rows: `{hawor.get('complete_world_surface_param_rows', 0)}/{r['expected_two_hand_rows']}`; measurement rows: `{hawor.get('measurement_available_complete_rows')}`; motion-infill rows: `{hawor.get('motion_infill_complete_rows')}`; side frames: `{hawor.get('frames_by_side')}`.",
             f"- Blocking reasons: `{r['blocking_reasons']}`.",
             "",
         ]
     lines += [
         "## Current commitment",
         "",
-        "Recovered WiLoR world surfaces are real MANO candidate evidence, but V18 is still not physically valid: coverage is not full two-hand timeline, current V18 annotations had dropped surfaces/params, HaWoR is missing or window-limited, and no downstream physical solver consumes this foundation yet.",
+        "Recovered WiLoR virtual-camera surfaces are real MANO candidate evidence, but V18 is still not physically valid: they are not metric-world aligned, coverage is not full two-hand timeline, current V18 annotations had dropped surfaces/params, HaWoR is missing or window-limited, and no downstream physical solver consumes a metric-aligned foundation yet.",
     ]
     (root / "V18_MANO_FOUNDATION_AUDIT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

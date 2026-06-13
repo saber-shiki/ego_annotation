@@ -238,13 +238,16 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         if (frame_idx, side) not in hand_cache:
             hand_cache[(frame_idx, side)] = hand_points(v16_frames.get(frame_idx, {}), side, args.max_hand_points)
         points, hand_blocker, hand_source = hand_cache[(frame_idx, side)]
+        source_claim = str(row.get("contact_owner_claim") or "")
+        if source_claim.startswith("accepted_contact_owner"):
+            source_claim = source_claim.replace("accepted_contact_owner", "source_graph_contact_candidate", 1)
         proposal = {
             "frame_idx": frame_idx,
             "hand_side": side,
             "object_id": oid,
-            "source_contact_owner_claim": row.get("contact_owner_claim"),
-            "source_contact_owner_claim_context": "contact_graph_claim_before_local_nonpenetration_veto_not_final_contact_acceptance",
-            "accepted_before_nonpenetration_veto": row.get("accepted_contact_owner"),
+            "source_contact_owner_claim": source_claim,
+            "source_contact_owner_claim_context": "contact_graph_candidate_before_local_nonpenetration_veto_not_final_contact_acceptance",
+            "source_graph_contact_candidate_before_nonpenetration_veto": bool(row.get("accepted_contact_owner")),
             "source_min_unsigned_distance_m": row.get("min_hand_surface_to_v16_object_mesh_m"),
             "source_triangle_min_signed_m": tri.get("min_local_triangle_signed_distance_m"),
             "source_triangle_negative_fraction": tri.get("negative_triangle_signed_distance_fraction"),

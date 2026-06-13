@@ -166,6 +166,9 @@ def audit_rows(contact_report: dict[str, Any], signed_rows: dict[tuple[int, str,
         signed = signed_rows.get(key)
         triangle = triangle_rows.get(key)
         category, strict = classify_contact(row, signed, triangle)
+        source_claim = str(row.get("contact_owner_claim") or "")
+        if source_claim.startswith("accepted_contact_owner"):
+            source_claim = source_claim.replace("accepted_contact_owner", "source_graph_contact_candidate", 1)
         rows.append({
             "frame_idx": frame_idx,
             "hand_side": side,
@@ -174,9 +177,8 @@ def audit_rows(contact_report: dict[str, Any], signed_rows: dict[tuple[int, str,
             "strict_promotable_contact": strict,
             "selected_by_contact_graph": True,
             "source_graph_contact_candidate_before_physical_veto": bool(row.get("accepted_contact_owner")),
-            "source_graph_contact_candidate_before_physical_veto": bool(row.get("accepted_contact_owner")),
-            "contact_owner_claim": row.get("contact_owner_claim"),
-            "contact_owner_claim_context": "source_contact_graph_claim_before_local_nonpenetration_and_completeness_veto_not_final_contact_acceptance",
+            "contact_owner_claim": source_claim,
+            "contact_owner_claim_context": "source_contact_graph_candidate_before_local_nonpenetration_and_completeness_veto_not_final_contact_acceptance",
             "unary_energy_margin": row.get("unary_energy_margin"),
             "min_hand_surface_to_object_mesh_m": row.get("min_hand_surface_to_object_mesh_m"),
             "signed_available": signed is not None,
