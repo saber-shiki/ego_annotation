@@ -64,6 +64,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("validate_hawor_bridge_downstream_coverage", [py, "scripts/validate_v18_hawor_bridge_downstream_coverage.py", "--root", str(args.output_root)]),
         ("corrective_review_sheets", [py, "scripts/build_v18_corrective_review_sheets.py", "--corrective-root", str(args.output_root)]),
         ("corrective_montage", [py, "scripts/render_v18_corrective_montage.py", "--output-root", str(args.output_root)]),
+        ("post_bridge_targeted_validation_report", [py, "scripts/build_v18_post_bridge_targeted_validation_report.py", "--output-root", str(args.output_root)]),
         ("corrective_bundle_manifest", [py, "scripts/build_v18_corrective_bundle_manifest.py", "--output-root", str(args.output_root)]),
     ]
     results = []

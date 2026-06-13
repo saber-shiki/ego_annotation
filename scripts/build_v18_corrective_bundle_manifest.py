@@ -172,6 +172,9 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         f"HaWoR bridge downstream coverage: status `{manifest.get('hawor_bridge_downstream_coverage', {}).get('status')}`; all cases downstream accepted `{manifest.get('hawor_bridge_downstream_coverage', {}).get('all_cases_downstream_accepted')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_downstream_coverage_summary', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_downstream_coverage_markdown', {}).get('path')}`",
+        f"Post-bridge targeted validation: status `{manifest.get('post_bridge_targeted_validation', {}).get('status')}`; long pipeline rerun after bridge changes `{manifest.get('post_bridge_targeted_validation', {}).get('long_pipeline_rerun_after_bridge_changes')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('post_bridge_targeted_validation_report', {}).get('path')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('pipeline_report_scope_note', {}).get('path')}`",
         "",
     ]
     for case in manifest["cases"]:
@@ -236,6 +239,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     hawor_bridge_quality_summary = load_json(hawor_bridge_quality_summary_path) if hawor_bridge_quality_summary_path.exists() else None
     hawor_bridge_downstream_coverage_path = args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_downstream_coverage_summary.json"
     hawor_bridge_downstream_coverage = load_json(hawor_bridge_downstream_coverage_path) if hawor_bridge_downstream_coverage_path.exists() else None
+    post_bridge_validation_path = args.output_root / "v18_post_bridge_targeted_validation_report.json"
+    post_bridge_validation = load_json(post_bridge_validation_path) if post_bridge_validation_path.exists() else None
     manifest = {
         "method": "build_v18_corrective_bundle_manifest",
         "status": "corrective_bundle_index_not_full_v18_closure",
@@ -253,6 +258,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "hawor_bridge_quality_markdown": file_info(args.output_root / "hawor_bridge_state" / "V18_HAWOR_BRIDGE_QUALITY_STATE.md"),
             "hawor_bridge_downstream_coverage_summary": file_info(hawor_bridge_downstream_coverage_path),
             "hawor_bridge_downstream_coverage_markdown": file_info(args.output_root / "hawor_bridge_state" / "V18_HAWOR_BRIDGE_DOWNSTREAM_COVERAGE.md"),
+            "post_bridge_targeted_validation_report": file_info(post_bridge_validation_path),
+            "pipeline_report_scope_note": file_info(args.output_root / "V18_PIPELINE_REPORT_SCOPE_NOTE.md"),
         },
         "hawor_provisioning_audit": {
             "status": hawor_audit.get("status") if isinstance(hawor_audit, dict) else None,
@@ -289,6 +296,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "status": hawor_bridge_downstream_coverage.get("status") if isinstance(hawor_bridge_downstream_coverage, dict) else None,
             "all_cases_downstream_accepted": hawor_bridge_downstream_coverage.get("all_cases_downstream_accepted") if isinstance(hawor_bridge_downstream_coverage, dict) else None,
             "claim_scope": hawor_bridge_downstream_coverage.get("claim_scope") if isinstance(hawor_bridge_downstream_coverage, dict) else None,
+        },
+        "post_bridge_targeted_validation": {
+            "status": post_bridge_validation.get("status") if isinstance(post_bridge_validation, dict) else None,
+            "claim_scope": post_bridge_validation.get("claim_scope") if isinstance(post_bridge_validation, dict) else None,
+            "long_pipeline_rerun_after_bridge_changes": post_bridge_validation.get("long_pipeline_rerun_after_bridge_changes") if isinstance(post_bridge_validation, dict) else None,
+            "pre_bridge_pipeline_report": post_bridge_validation.get("pre_bridge_pipeline_report") if isinstance(post_bridge_validation, dict) else None,
         },
         "cases": cases,
         "all_listed_video_frame_counts_match": all(case["all_listed_video_frame_counts_match"] for case in cases),
