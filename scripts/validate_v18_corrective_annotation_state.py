@@ -49,6 +49,8 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     repair_postcheck_mismatch = 0
     occlusion_audit_bad_semantics = 0
     occlusion_audit_strict_or_accepted = 0
+    contact_audit_bad_semantics = 0
+    contact_audit_strict = 0
     for frame in frames if isinstance(frames, list) else []:
         if not isinstance(frame, dict):
             continue
@@ -83,6 +85,14 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
                     occlusion_audit_bad_semantics += 1
                 if audit.get("strict_promotable_owner") is True or audit.get("accepted_occlusion_owner") is True:
                     occlusion_audit_strict_or_accepted += 1
+            contact_audit_rows = hand.get("contact_acceptance_audit") if isinstance(hand.get("contact_acceptance_audit"), list) else []
+            for audit in contact_audit_rows:
+                if not isinstance(audit, dict):
+                    continue
+                if audit.get("state_role") != "contact_acceptance_audit_not_contact_assignment_not_complete_nonpenetration":
+                    contact_audit_bad_semantics += 1
+                if audit.get("strict_promotable_contact") is True:
+                    contact_audit_strict += 1
             repair = hand.get("nonpenetration_repair_proposal", {}) if isinstance(hand.get("nonpenetration_repair_proposal"), dict) else {}
             if repair:
                 if repair.get("applied_to_annotation") is not False or repair.get("proposal_complete_nonpenetration") is not False:
@@ -128,6 +138,8 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(repair_postcheck_mismatch == 0, f"{case}: repair candidate postcheck status mismatch: {repair_postcheck_mismatch}", failures)
     require(occlusion_audit_bad_semantics == 0, f"{case}: occlusion acceptance audit rows with assignment/pose-fill semantics: {occlusion_audit_bad_semantics}", failures)
     require(occlusion_audit_strict_or_accepted == 0, f"{case}: occlusion audit rows unexpectedly strict-promotable or accepted: {occlusion_audit_strict_or_accepted}", failures)
+    require(contact_audit_bad_semantics == 0, f"{case}: contact acceptance audit rows with assignment/complete-nonpenetration semantics: {contact_audit_bad_semantics}", failures)
+    require(contact_audit_strict == 0, f"{case}: contact audit rows unexpectedly strict-promotable: {contact_audit_strict}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
         require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1901, f"{case}: expected 1901 temporal smoothed MANO2D states", failures)
@@ -144,6 +156,11 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(ann.get("occlusion_owner_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable occlusion audit rows", failures)
         require(ann.get("occlusion_owner_selected_rows") == 64, f"{case}: selected owner row metadata should be 64", failures)
         require(ann.get("contact_graph_selected_rows") == 371, f"{case}: expected 371 selected contact rows", failures)
+        require(int(counts.get("contact_acceptance_audit_rows", 0)) == 371, f"{case}: expected 371 contact acceptance audit rows", failures)
+        require(int(counts.get("contact_acceptance::graph_accepted_local_penetration_veto", 0)) == 293, f"{case}: expected 293 contact audit penetration veto rows", failures)
+        require(int(counts.get("contact_acceptance::graph_accepted_local_no_penetration_open_mesh_not_strict", 0)) == 2, f"{case}: expected 2 contact audit local-no-penetration open-mesh rows", failures)
+        require(int(counts.get("contact_acceptance::graph_selected_not_contact_accepted", 0)) == 76, f"{case}: expected 76 contact audit graph-selected-not-accepted rows", failures)
+        require(ann.get("contact_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable contact audit rows", failures)
         require(int(counts.get("contact_nonpenetration_states", 0)) == 371, f"{case}: expected 371 contact/nonpenetration states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 293, f"{case}: expected 293 local penetration contact veto states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 2, f"{case}: expected 2 graph-accepted contact states without local penetration flag", failures)
@@ -167,6 +184,11 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1859, f"{case}: expected 1859 temporal smoothed MANO2D states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)
         require(ann.get("contact_graph_selected_rows") == 808, f"{case}: expected 808 selected contact rows", failures)
+        require(int(counts.get("contact_acceptance_audit_rows", 0)) == 808, f"{case}: expected 808 contact acceptance audit rows", failures)
+        require(int(counts.get("contact_acceptance::graph_accepted_local_penetration_veto", 0)) == 705, f"{case}: expected 705 contact audit penetration veto rows", failures)
+        require(int(counts.get("contact_acceptance::graph_accepted_local_no_penetration_open_mesh_not_strict", 0)) == 16, f"{case}: expected 16 contact audit local-no-penetration open-mesh rows", failures)
+        require(int(counts.get("contact_acceptance::graph_selected_not_contact_accepted", 0)) == 87, f"{case}: expected 87 contact audit graph-selected-not-accepted rows", failures)
+        require(ann.get("contact_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable contact audit rows", failures)
         require(int(counts.get("contact_nonpenetration_states", 0)) == 808, f"{case}: expected 808 contact/nonpenetration states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 705, f"{case}: expected 705 local penetration contact veto states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 16, f"{case}: expected 16 graph-accepted contact states without local penetration flag", failures)

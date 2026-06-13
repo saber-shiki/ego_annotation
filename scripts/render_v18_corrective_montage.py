@@ -88,6 +88,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         ("HaWoR prior / provisioning failure", args.output_root / case / "hawor_ghost_attempt" / "frames"),
         ("tentative occlusion owner", args.output_root / case / "occlusion_owner_best_effort" / "frames"),
         ("occlusion acceptance audit", args.output_root / case / "occlusion_owner_acceptance_audit" / "frames"),
+        ("contact acceptance audit", args.output_root / case / "contact_acceptance_audit" / "frames"),
         ("contact + local nonpenetration", args.output_root / case / "contact_nonpenetration_state" / "frames"),
         ("generic rigid fused-canonical SE3", args.output_root / case / "rigid_se3_attempt" / "world_frames"),
         ("frame-local visible surface", args.output_root / case / "visible_surface_state" / "world_frames"),

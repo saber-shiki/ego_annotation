@@ -266,6 +266,17 @@ def selected_contact_index(report_path: Path) -> tuple[dict[tuple[int, str], dic
     return out, report
 
 
+def contact_acceptance_audit_index(report_path: Path) -> tuple[dict[tuple[int, str], list[dict[str, Any]]], dict[str, Any]]:
+    if not report_path.exists():
+        return {}, {}
+    report = load_json(report_path)
+    out: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in report.get("rows", []) if isinstance(report.get("rows"), list) else []:
+        if isinstance(row, dict):
+            out[(int(row.get("frame_idx", -1)), str(row.get("hand_side")))].append(row)
+    return out, report
+
+
 def nonpenetration_row_index(report_path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
     if not report_path.exists():
         return {}
@@ -348,6 +359,7 @@ def hand_corrective_state(
     occlusion_owner_row: dict[str, Any] | None,
     occlusion_acceptance_rows: list[dict[str, Any]],
     contact_row: dict[str, Any] | None,
+    contact_acceptance_rows: list[dict[str, Any]],
     signed_nonpenetration_row: dict[str, Any] | None,
     triangle_nonpenetration_row: dict[str, Any] | None,
     nonpenetration_repair_row: dict[str, Any] | None,
@@ -483,6 +495,26 @@ def hand_corrective_state(
             })
         out["occlusion_owner_acceptance_audit"] = audit_states
         out["uncertainty"].append("occlusion_owner_acceptance_audit_does_not_assign_owner_or_pose_fill")
+    if contact_acceptance_rows:
+        audit_states = []
+        for row in contact_acceptance_rows:
+            audit_states.append({
+                "object_id": row.get("object_id"),
+                "category": row.get("category"),
+                "strict_promotable_contact": bool(row.get("strict_promotable_contact")),
+                "accepted_contact_owner_before_physical_veto": bool(row.get("accepted_contact_owner_before_physical_veto")),
+                "signed_local_penetration_detected": bool(row.get("signed_local_penetration_detected")),
+                "triangle_local_penetration_detected": bool(row.get("triangle_local_penetration_detected")),
+                "triangle_mesh_watertight_by_edges": bool(row.get("triangle_mesh_watertight_by_edges")),
+                "signed_complete": bool(row.get("signed_complete")),
+                "triangle_complete": bool(row.get("triangle_complete")),
+                "signed_min_local_distance_m": row.get("signed_min_local_distance_m"),
+                "triangle_min_local_distance_m": row.get("triangle_min_local_distance_m"),
+                "triangle_boundary_edge_count": row.get("triangle_boundary_edge_count"),
+                "state_role": "contact_acceptance_audit_not_contact_assignment_not_complete_nonpenetration",
+            })
+        out["contact_acceptance_audit"] = audit_states
+        out["uncertainty"].append("contact_acceptance_audit_does_not_assign_contact_or_complete_nonpenetration")
     if contact_row is not None:
         oid = str(contact_row.get("chosen_owner_object_id"))
         signed_pen = bool(signed_nonpenetration_row and signed_nonpenetration_row.get("local_penetration_detected"))
@@ -652,6 +684,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     occlusion_owner_rows, occlusion_owner_report = selected_occlusion_owner_index(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json")
     occlusion_audit_rows, occlusion_audit_report = occlusion_acceptance_audit_index(args.corrective_root / case / "occlusion_owner_acceptance_audit" / "v18_occlusion_owner_acceptance_audit_report.json")
     contact_rows, contact_report = selected_contact_index(args.contact_graph_root / case / "v18_contact_ownership_graph_report.json")
+    contact_audit_rows, contact_audit_report = contact_acceptance_audit_index(args.corrective_root / case / "contact_acceptance_audit" / "v18_contact_acceptance_audit_report.json")
     signed_rows = nonpenetration_row_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
     triangle_rows = nonpenetration_row_index(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json")
     residual_rows, residual_report = rigid_residual_row_index(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
@@ -680,6 +713,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 occlusion_owner_rows.get((frame_idx, side)),
                 occlusion_audit_rows.get((frame_idx, side), []),
                 contact_rows.get((frame_idx, side)),
+                contact_audit_rows.get((frame_idx, side), []),
                 signed_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 triangle_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 repair_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
@@ -707,6 +741,13 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                     category = audit_state.get("category")
                     if isinstance(category, str):
                         counts[f"occlusion_owner_acceptance::{category}"] += 1
+            contact_audit_states = state.get("contact_acceptance_audit") if isinstance(state.get("contact_acceptance_audit"), list) else []
+            for audit_state in contact_audit_states:
+                if isinstance(audit_state, dict):
+                    counts["contact_acceptance_audit_rows"] += 1
+                    category = audit_state.get("category")
+                    if isinstance(category, str):
+                        counts[f"contact_acceptance::{category}"] += 1
             if "contact_nonpenetration_state" in state:
                 counts["contact_nonpenetration_states"] += 1
                 contact_status = state["contact_nonpenetration_state"].get("status")
@@ -779,6 +820,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "signed_nonpenetration_report": str(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json"),
             "triangle_nonpenetration_report": str(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json"),
             "contact_nonpenetration_state_report": str(args.corrective_root / case / "contact_nonpenetration_state" / "v18_contact_nonpenetration_state_report.json"),
+            "contact_acceptance_audit_report": str(args.corrective_root / case / "contact_acceptance_audit" / "v18_contact_acceptance_audit_report.json"),
             "rigid_se3_residual_check_report": str(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json"),
             "nonpenetration_repair_proposal_report": str(args.corrective_root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json"),
             "temporal_hand_pose_smoothing_report": str(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json"),
@@ -790,6 +832,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "occlusion_owner_acceptance_audit_strict_promotable_rows": occlusion_audit_report.get("strict_promotable_owner_rows") if isinstance(occlusion_audit_report, dict) else None,
         "contact_graph_selected_rows": len(contact_rows),
         "contact_graph_accepted_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows") if isinstance(contact_report, dict) else None,
+        "contact_acceptance_audit_category_counts": contact_audit_report.get("category_counts") if isinstance(contact_audit_report, dict) else None,
+        "contact_acceptance_audit_strict_promotable_rows": contact_audit_report.get("strict_promotable_contact_rows") if isinstance(contact_audit_report, dict) else None,
         "rigid_residual_candidate_objects": residual_report.get("candidate_objects") if isinstance(residual_report, dict) else None,
         "nonpenetration_repair_proposal_status_counts": repair_report.get("proposal_status_counts") if isinstance(repair_report, dict) else None,
         "temporal_hand_pose_smoothing_draw_counts": smoothed_hand_report.get("draw_counts") if isinstance(smoothed_hand_report, dict) else None,
