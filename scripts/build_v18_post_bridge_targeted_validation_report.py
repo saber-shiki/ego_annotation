@@ -47,6 +47,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     validations = [run_command(command, args.repo_root) for command in commands]
     old_pipeline = args.output_root / "v18_corrective_1600_pipeline_report.json"
     old_payload = load_json(old_pipeline) if old_pipeline.exists() else None
+    active_partial = args.output_root / "v18_corrective_1600_pipeline_report.partial.json"
+    stale_partial_archives = sorted(str(p) for p in (args.output_root / "stale_pipeline_partials").glob("*.json")) if (args.output_root / "stale_pipeline_partials").exists() else []
     report = {
         "method": "build_v18_post_bridge_targeted_validation_report",
         "status": "ok" if all(v["status"] == "ok" for v in validations) else "failed",
@@ -62,6 +64,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "long_pipeline_rerun_after_bridge_changes": False,
         "why_not_rerun_long_pipeline": "task5_HaWoR_provisioning_blocker_remains_unresolved; targeted validators are the honest current evidence for bridge/quality/coverage additions",
+        "active_partial_pipeline_report": {
+            "path": str(active_partial),
+            "exists": active_partial.exists(),
+            "expected_current_state": "absent_after_success_or_explicit_stale_archive",
+        },
+        "stale_partial_pipeline_report_archives": stale_partial_archives,
         "validations": validations,
         "artifacts_validated": [
             str(args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_state_summary.json"),
@@ -81,7 +89,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "It records the earlier 21-stage diagnostic corrective bundle and was not rerun after HaWoR bridge, bridge-quality, annotation integration, and downstream-coverage stages were added.\n\n"
         "Current post-bridge evidence is the targeted validation report:\n\n"
         f"- `{args.output_root / 'v18_post_bridge_targeted_validation_report.json'}`\n\n"
-        "This note exists to prevent the old 21/21 report from being misread as current validation of the committed runner.\n",
+        f"Active partial report exists: `{active_partial.exists()}`. "
+        "Any interrupted stale partial evidence is preserved under `stale_pipeline_partials/` rather than the active `.partial.json` path.\n\n"
+        "This note exists to prevent the old 21/21 report or interrupted partial reports from being misread as current validation of the committed runner.\n",
         encoding="utf-8",
     )
     print(json.dumps(report, indent=2, sort_keys=True))
