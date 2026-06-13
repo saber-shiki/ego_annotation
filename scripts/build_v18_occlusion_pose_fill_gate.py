@@ -23,6 +23,21 @@ def write_json(path: Path, payload: Any) -> None:
 
 def occlusion_owner_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
     report = load_json(path)
+    candidate_rows: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for raw_row in report.get("rows", []):
+        if not isinstance(raw_row, dict) or not isinstance(raw_row.get("frame_idx"), int):
+            continue
+        key = (int(raw_row["frame_idx"]), str(raw_row.get("hand_side")))
+        candidate_rows.setdefault(key, []).append(
+            {
+                "object_id": raw_row.get("object_id"),
+                "selected_by_occlusion_graph": raw_row.get("selected_by_occlusion_graph"),
+                "accepted_occlusion_owner": raw_row.get("accepted_occlusion_owner"),
+                "depth_pair_evidence_state": raw_row.get("depth_pair_evidence_state"),
+                "acceptance_gate": raw_row.get("acceptance_gate"),
+                "acceptance_blockers": raw_row.get("acceptance_blockers"),
+            }
+        )
     out: dict[tuple[int, str], dict[str, Any]] = {}
     for graph in report.get("hand_graphs", []):
         if not isinstance(graph, dict):
@@ -30,7 +45,8 @@ def occlusion_owner_index(path: Path) -> dict[tuple[int, str], dict[str, Any]]:
         for raw in graph.get("assignments", []):
             if not isinstance(raw, dict) or not isinstance(raw.get("frame_idx"), int):
                 continue
-            out[(int(raw["frame_idx"]), str(raw.get("hand_side")))] = raw
+            key = (int(raw["frame_idx"]), str(raw.get("hand_side")))
+            out[key] = {**raw, "candidate_rows": candidate_rows.get(key, [])}
     return out
 
 
@@ -44,8 +60,21 @@ def gate_row(hand: dict[str, Any], owner: dict[str, Any] | None) -> dict[str, An
     hawor_candidate = bool(hand.get("hawor_candidate_present") is True)
     interior_depth = bool(hand.get("interior_metric_depth_compatible") is True)
     baseline_accepted = bool(hand.get("temporal_occlusion_pose_accepted") is True)
+    owner_candidate_rows = owner.get("candidate_rows", []) if isinstance(owner, dict) else []
+    owner_acceptance_blockers: list[str] = []
+    if isinstance(owner_candidate_rows, list):
+        for raw_candidate in owner_candidate_rows:
+            if not isinstance(raw_candidate, dict):
+                continue
+            for raw_blocker in raw_candidate.get("acceptance_blockers", []):
+                if isinstance(raw_blocker, str) and raw_blocker not in owner_acceptance_blockers:
+                    owner_acceptance_blockers.append(raw_blocker)
     if not owner_accepted:
         blockers.append("accepted_occlusion_owner_missing")
+        for raw_blocker in owner_acceptance_blockers:
+            prefixed = f"occlusion_owner_{raw_blocker}"
+            if prefixed not in blockers:
+                blockers.append(prefixed)
     if not hawor_available:
         blockers.append("hawor_measurement_missing_for_frame_side")
     if not hawor_candidate:
@@ -71,6 +100,8 @@ def gate_row(hand: dict[str, Any], owner: dict[str, Any] | None) -> dict[str, An
         "hawor_evidence_role": hand.get("hawor_evidence_role"),
         "interior_metric_depth_compatible": interior_depth,
         "hand_baseline_temporal_occlusion_pose_accepted": baseline_accepted,
+        "occlusion_owner_acceptance_blockers": owner_acceptance_blockers,
+        "source_occlusion_owner_candidate_rows": owner_candidate_rows,
         "blockers": blockers,
         "source_hand_baseline_row": hand,
         "source_occlusion_owner_assignment": owner,

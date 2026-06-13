@@ -630,6 +630,8 @@ def load_occlusion_pose_fill_gate_index(path: Path) -> dict[tuple[int, str], dic
             "hawor_candidate_present": row.get("hawor_candidate_present"),
             "interior_metric_depth_compatible": row.get("interior_metric_depth_compatible"),
             "hand_baseline_temporal_occlusion_pose_accepted": row.get("hand_baseline_temporal_occlusion_pose_accepted"),
+            "occlusion_owner_acceptance_blockers": row.get("occlusion_owner_acceptance_blockers"),
+            "source_occlusion_owner_candidate_rows": row.get("source_occlusion_owner_candidate_rows"),
             "blockers": row.get("blockers"),
         }
     return out

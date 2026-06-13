@@ -806,6 +806,12 @@ The current representative evidence remains partial. Trash has 843 metric-depth 
 
 The current representative evidence still supports zero accepted owners. Trash has one strict depth+mesh candidate: frame 850, right hand, `object:white_trash_bag`, with foreground-depth support and mesh support ≈0.972. It remains not accepted because the temporal graph does not select it and source depth order/owner acceptance are unresolved. The full annotations now expose this rejected support row and its blockers under the hand `mesh_owner_evidence`, so the negative evidence is preserved rather than hidden. Depth-aware graph selection drops trash selected owner rows from 94 to 64 by penalizing contradicted candidates; task5 remains selected 0 / accepted 0. Pose fill-through remains accepted 0 for both videos.
 
+## Implementation Checkpoint 54: Pose-Fill Owner-Blocker Propagation
+
+`build_v18_occlusion_pose_fill_gate.py` now carries occlusion-owner graph candidate blockers into each pose-fill row. When a hand has owner candidates but no accepted owner, the pose-fill blockers include `occlusion_owner_*` prefixed reasons and the raw owner candidate gate rows are preserved. The final full annotations preserve these fields through `run_v18_full_pipeline.py`.
+
+For the strongest current rejected owner candidate (trash frame 850, right hand, `object:white_trash_bag`), the final pose-fill gate now exposes the owner blockers `source_depth_order_not_resolved`, `source_occluder_owner_not_accepted`, `temporal_graph_margin_below_acceptance_threshold`, and `temporal_graph_not_selected`. Pose fill-through remains accepted 0 for both representative videos.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:

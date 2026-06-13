@@ -25,10 +25,16 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(report.get("pose_fill_through_occlusion_complete") is False, f"{case}: overclaims complete pose fill")
     accepted = 0
     candidate = 0
+    owner_blocker_rows = 0
     for row in rows:
         require(isinstance(row, dict), f"{case}: malformed row")
         if row.get("hawor_candidate_present") is True or row.get("hawor_measurement_available") is True:
             candidate += 1
+        owner_candidate_rows = row.get("source_occlusion_owner_candidate_rows")
+        owner_blockers = row.get("occlusion_owner_acceptance_blockers")
+        if isinstance(owner_candidate_rows, list) and len(owner_candidate_rows) > 0 and row.get("accepted_occlusion_owner") is not True:
+            require(isinstance(owner_blockers, list) and len(owner_blockers) > 0, f"{case}: owner candidate rows lack propagated owner blockers")
+            owner_blocker_rows += 1
         if row.get("pose_fill_through_occlusion_accepted") is True:
             accepted += 1
             require(row.get("accepted_occlusion_owner") is True, f"{case}: pose fill accepted without accepted owner")
@@ -40,7 +46,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(accepted == int(report.get("pose_fill_through_occlusion_accepted_rows", -1)), f"{case}: accepted count mismatch")
     require(candidate == int(report.get("pose_fill_candidate_rows", -1)), f"{case}: candidate count mismatch")
     require(accepted == 0, f"{case}: unexpected accepted pose fill without reviewed support")
-    return {"case": case, "row_count": len(rows), "pose_fill_candidate_rows": candidate, "pose_fill_through_occlusion_accepted_rows": accepted}
+    return {"case": case, "row_count": len(rows), "pose_fill_candidate_rows": candidate, "pose_fill_through_occlusion_accepted_rows": accepted, "owner_blocker_rows": owner_blocker_rows}
 
 
 def main() -> None:
