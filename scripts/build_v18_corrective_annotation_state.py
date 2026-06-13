@@ -287,6 +287,17 @@ def nonpenetration_repair_row_index(report_path: Path) -> tuple[dict[tuple[int, 
     return out, report
 
 
+def temporal_smoothed_hand_row_index(report_path: Path) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    if not report_path.exists():
+        return {}, {}
+    report = load_json(report_path)
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in report.get("smoothed_rows", []) if isinstance(report.get("smoothed_rows"), list) else []:
+        if isinstance(row, dict):
+            out[(int(row.get("frame_idx", -1)), str(row.get("hand_side")))] = row
+    return out, report
+
+
 def stable_rigid_pose_index(frames: list[Any], candidate_ids: set[str], radius: int) -> dict[tuple[int, str], list[float]]:
     raw: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     for raw_frame in frames:
@@ -326,6 +337,7 @@ def hand_corrective_state(
     signed_nonpenetration_row: dict[str, Any] | None,
     triangle_nonpenetration_row: dict[str, Any] | None,
     nonpenetration_repair_row: dict[str, Any] | None,
+    temporal_smoothed_hand_row: dict[str, Any] | None,
     source_w: float,
     source_h: float,
 ) -> dict[str, Any]:
@@ -369,6 +381,17 @@ def hand_corrective_state(
         out["best_current_state"] = "graph_shifted_mano_if_available_else_graph_shifted_bbox"
     else:
         out["uncertainty"].append("missing_factor_graph_hand_state")
+
+    if temporal_smoothed_hand_row is not None:
+        out["temporal_smoothed_mano2d_state"] = {
+            "status": temporal_smoothed_hand_row.get("status"),
+            "joints2d_source_px": temporal_smoothed_hand_row.get("joints2d_source_px"),
+            "accepted_3d_mano_pose": False,
+            "state_role": temporal_smoothed_hand_row.get("state_role") or "image_space_temporal_smoothing_not_3d_mano_optimization",
+        }
+        if out["best_current_state"] == "graph_shifted_mano_if_available_else_graph_shifted_bbox":
+            out["best_current_state"] = "temporal_smoothed_graph_shifted_mano2d_if_available_else_graph_shifted_bbox"
+        out["uncertainty"].append("temporal_smoothed_mano2d_is_not_3d_mano_optimization_or_physical_pose")
 
     if hawor_row is not None:
         prior: dict[str, Any] = {
@@ -584,6 +607,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     triangle_rows = nonpenetration_row_index(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json")
     residual_rows, residual_report = rigid_residual_row_index(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
     repair_rows, repair_report = nonpenetration_repair_row_index(args.corrective_root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json")
+    smoothed_hand_rows, smoothed_hand_report = temporal_smoothed_hand_row_index(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json")
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
     out_frames: list[dict[str, Any]] = []
@@ -609,6 +633,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 signed_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 triangle_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 repair_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
+                smoothed_hand_rows.get((frame_idx, side)),
                 source_w,
                 source_h,
             )
@@ -635,6 +660,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             if isinstance(repair_status, str):
                 counts["nonpenetration_repair_proposal_states"] += 1
                 counts[f"nonpenetration_repair::{repair_status}"] += 1
+            smooth_state = state.get("temporal_smoothed_mano2d_state", {}) if isinstance(state.get("temporal_smoothed_mano2d_state"), dict) else {}
+            smooth_status = smooth_state.get("status")
+            if isinstance(smooth_status, str):
+                counts["temporal_smoothed_mano2d_states"] += 1
+                counts[f"temporal_smoothed_mano2d::{smooth_status}"] += 1
             hand_states.append(state)
         object_states = []
         for obj in frame.get("objects", []):
@@ -693,6 +723,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "contact_nonpenetration_state_report": str(args.corrective_root / case / "contact_nonpenetration_state" / "v18_contact_nonpenetration_state_report.json"),
             "rigid_se3_residual_check_report": str(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json"),
             "nonpenetration_repair_proposal_report": str(args.corrective_root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json"),
+            "temporal_hand_pose_smoothing_report": str(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json"),
         },
         "occlusion_owner_selected_rows": len(occlusion_owner_rows),
         "occlusion_owner_strict_accepted_rows": 0,
@@ -701,6 +732,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "contact_graph_accepted_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows") if isinstance(contact_report, dict) else None,
         "rigid_residual_candidate_objects": residual_report.get("candidate_objects") if isinstance(residual_report, dict) else None,
         "nonpenetration_repair_proposal_status_counts": repair_report.get("proposal_status_counts") if isinstance(repair_report, dict) else None,
+        "temporal_hand_pose_smoothing_draw_counts": smoothed_hand_report.get("draw_counts") if isinstance(smoothed_hand_report, dict) else None,
+        "temporal_hand_pose_smoothing_jitter_probe": smoothed_hand_report.get("jitter_probe") if isinstance(smoothed_hand_report, dict) else None,
         "counts": dict(sorted(counts.items())),
         "rigid_candidate_ids": sorted(rigid_candidates),
         "hawor_measurement_rows": len(hawor_index),

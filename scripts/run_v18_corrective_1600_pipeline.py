@@ -36,6 +36,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     py = args.python
     stages = [
         ("graph_corrective_render", [py, "scripts/render_v18_corrective_state.py", "--output-root", str(args.output_root)]),
+        ("temporal_hand_pose_smoothing", [py, "scripts/render_v18_temporal_hand_pose_smoothing.py", "--output-root", str(args.output_root)]),
         ("generic_rigid_se3_attempt", [py, "scripts/render_v18_rigid_se3_attempt.py", "--output-root", str(args.output_root), "--max-points-per-object", "900"]),
         ("hawor_ghost_or_failure", [py, "scripts/render_v18_hawor_ghost_attempt.py", "--output-root", str(args.output_root)]),
         ("visible_surface_state", [py, "scripts/render_v18_visible_surface_state.py", "--output-root", str(args.output_root)]),

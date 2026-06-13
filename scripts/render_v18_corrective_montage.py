@@ -84,6 +84,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     labels_paths = [
         ("previous V18 overlay", args.previous_root / case / "overlay_frames"),
         ("graph-driven hand/object state", args.output_root / case / "corrective_overlay_frames"),
+        ("temporal 2D MANO smoothing", args.output_root / case / "temporal_hand_pose_smoothing" / "frames"),
         ("HaWoR prior / provisioning failure", args.output_root / case / "hawor_ghost_attempt" / "frames"),
         ("tentative occlusion owner", args.output_root / case / "occlusion_owner_best_effort" / "frames"),
         ("contact + local nonpenetration", args.output_root / case / "contact_nonpenetration_state" / "frames"),

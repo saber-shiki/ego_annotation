@@ -41,9 +41,21 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     graph_pose_without_uncertainty = 0
     graph_pose_marked_accepted = 0
     nonrigid_graph_pose_best_current = 0
+    smoothed_marked_accepted_3d = 0
+    smoothed_without_uncertainty = 0
     for frame in frames if isinstance(frames, list) else []:
         if not isinstance(frame, dict):
             continue
+        for hand in frame.get("hands", []):
+            if not isinstance(hand, dict):
+                continue
+            smoothed = hand.get("temporal_smoothed_mano2d_state", {}) if isinstance(hand.get("temporal_smoothed_mano2d_state"), dict) else {}
+            if smoothed:
+                if smoothed.get("accepted_3d_mano_pose") is not False:
+                    smoothed_marked_accepted_3d += 1
+                uncertainty = hand.get("uncertainty") if isinstance(hand.get("uncertainty"), list) else []
+                if "temporal_smoothed_mano2d_is_not_3d_mano_optimization_or_physical_pose" not in uncertainty:
+                    smoothed_without_uncertainty += 1
         for obj in frame.get("objects", []):
             if not isinstance(obj, dict):
                 continue
@@ -67,8 +79,11 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(nonrigid_graph_pose_best_current == 0, f"{case}: non-rigid graph SE3 rows still marked best-current graph_object_se3_observation: {nonrigid_graph_pose_best_current}", failures)
     require(stable_without_uncertainty == 0, f"{case}: stable rigid rows without uncertainty: {stable_without_uncertainty}", failures)
     require(stable_without_residual == 0, f"{case}: stable rigid rows without residual check: {stable_without_residual}", failures)
+    require(smoothed_marked_accepted_3d == 0, f"{case}: temporal smoothed MANO2D rows marked accepted 3D: {smoothed_marked_accepted_3d}", failures)
+    require(smoothed_without_uncertainty == 0, f"{case}: temporal smoothed MANO2D rows without scope uncertainty: {smoothed_without_uncertainty}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
+        require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1901, f"{case}: expected 1901 temporal smoothed MANO2D states", failures)
         require(int(counts.get("pose_fill_best_effort_states", 0)) == 50, f"{case}: expected 50 HaWoR motion-infill pose-fill best-effort states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 232, f"{case}: expected 232 visible surface states for the rigid lid", failures)
         require(int(counts.get("occlusion_owner_best_effort_states", 0)) == 64, f"{case}: expected 64 tentative occlusion owner rows", failures)
@@ -90,6 +105,7 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("pose_fill_best_effort_states", 0)) == 0, f"{case}: expected zero pose-fill best-effort rows without HaWoR", failures)
         require(ann.get("occlusion_owner_selected_rows") == 0, f"{case}: expected zero selected tentative occlusion owner rows", failures)
         require(int(counts.get("hawor_provisioning_failed_hand_states", 0)) == 1920, f"{case}: expected 1920 HaWoR provisioning-failure hand states", failures)
+        require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1859, f"{case}: expected 1859 temporal smoothed MANO2D states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)
         require(ann.get("contact_graph_selected_rows") == 808, f"{case}: expected 808 selected contact rows", failures)
         require(int(counts.get("contact_nonpenetration_states", 0)) == 808, f"{case}: expected 808 contact/nonpenetration states", failures)
