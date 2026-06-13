@@ -24,7 +24,7 @@ EXPECTED_JOINTS = 21
 EXPECTED_CASES = ("trash_1050", "task5_tomato_960")
 DEFAULT_HAWOR_OUTPUTS = {
     "trash_1050": Path("/data2/ego_annotation_outputs/representative_trash/v3_hawor_world/hawor_world_hands.npz"),
-    "task5_tomato_960": None,
+    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz"),
 }
 
 

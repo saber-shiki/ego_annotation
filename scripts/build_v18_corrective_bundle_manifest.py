@@ -168,6 +168,9 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         f"HaWoR hard requirement: status `{manifest.get('hawor_hard_requirement_state', {}).get('status')}`; all cases met `{manifest.get('hawor_hard_requirement_state', {}).get('all_cases_hawor_requirement_met')}`; physical hand state valid `{manifest.get('hawor_hard_requirement_state', {}).get('v18_physical_hand_state_valid_from_hawor')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_requirement_state', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_requirement_markdown', {}).get('path')}`",
+        f"Task5 HaWoR export contract: status `{manifest.get('hawor_task5_export_contract', {}).get('status')}`; expected output exists `{manifest.get('hawor_task5_export_contract', {}).get('expected_local_output_npz', {}).get('exists')}`; accepted requirement `{manifest.get('hawor_task5_export_contract', {}).get('acceptance_flags', {}).get('accepted_v18_hawor_requirement_met')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_task5_export_contract', {}).get('path')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_task5_export_contract_markdown', {}).get('path')}`",
         f"HaWoR bridge state: status `{manifest.get('hawor_bridge_state', {}).get('status')}`; all cases accepted `{manifest.get('hawor_bridge_state', {}).get('all_cases_hawor_bridge_accepted')}`; physical hand state valid `{manifest.get('hawor_bridge_state', {}).get('v18_physical_hand_state_valid_from_bridge')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_summary', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_markdown', {}).get('path')}`",
@@ -243,6 +246,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     mano_summary = load_json(mano_summary_path) if mano_summary_path.exists() else None
     hawor_requirement_path = args.output_root / "hawor_requirement_state" / "v18_hawor_requirement_state.json"
     hawor_requirement = load_json(hawor_requirement_path) if hawor_requirement_path.exists() else None
+    hawor_task5_contract_path = args.output_root / "hawor_task5_export_contract" / "v18_hawor_task5_export_contract.json"
+    hawor_task5_contract = load_json(hawor_task5_contract_path) if hawor_task5_contract_path.exists() else None
     hawor_bridge_summary_path = args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_state_summary.json"
     hawor_bridge_summary = load_json(hawor_bridge_summary_path) if hawor_bridge_summary_path.exists() else None
     hawor_bridge_quality_summary_path = args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_quality_state_summary.json"
@@ -264,6 +269,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "mano_foundation_markdown": file_info(args.output_root / "mano_foundation_audit" / "V18_MANO_FOUNDATION_AUDIT.md"),
             "hawor_requirement_state": file_info(hawor_requirement_path),
             "hawor_requirement_markdown": file_info(args.output_root / "hawor_requirement_state" / "V18_HAWOR_REQUIREMENT_STATE.md"),
+            "hawor_task5_export_contract": file_info(hawor_task5_contract_path),
+            "hawor_task5_export_contract_markdown": file_info(args.output_root / "hawor_task5_export_contract" / "V18_HAWOR_TASK5_EXPORT_CONTRACT.md"),
             "hawor_bridge_summary": file_info(hawor_bridge_summary_path),
             "hawor_bridge_markdown": file_info(args.output_root / "hawor_bridge_state" / "V18_HAWOR_BRIDGE_STATE.md"),
             "hawor_bridge_quality_summary": file_info(hawor_bridge_quality_summary_path),
@@ -291,6 +298,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "v18_physical_hand_state_valid_from_hawor": hawor_requirement.get("v18_physical_hand_state_valid_from_hawor") if isinstance(hawor_requirement, dict) else None,
             "blocking_reasons": hawor_requirement.get("blocking_reasons") if isinstance(hawor_requirement, dict) else None,
             "claim_scope": hawor_requirement.get("claim_scope") if isinstance(hawor_requirement, dict) else None,
+        },
+        "hawor_task5_export_contract": {
+            "status": hawor_task5_contract.get("status") if isinstance(hawor_task5_contract, dict) else None,
+            "expected_local_output_npz": hawor_task5_contract.get("expected_local_output_npz") if isinstance(hawor_task5_contract, dict) else None,
+            "remote_export_command": hawor_task5_contract.get("remote_export_command") if isinstance(hawor_task5_contract, dict) else None,
+            "acceptance_flags": hawor_task5_contract.get("acceptance_flags") if isinstance(hawor_task5_contract, dict) else None,
+            "blocking_reasons": hawor_task5_contract.get("blocking_reasons") if isinstance(hawor_task5_contract, dict) else None,
+            "claim_scope": hawor_task5_contract.get("claim_scope") if isinstance(hawor_task5_contract, dict) else None,
         },
         "hawor_bridge_state": {
             "status": hawor_bridge_summary.get("status") if isinstance(hawor_bridge_summary, dict) else None,

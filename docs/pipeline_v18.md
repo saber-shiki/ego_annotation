@@ -837,6 +837,22 @@ The subset policy keeps only visible projection-supported trash bridge rows with
 
 This policy is a guardrail, not a physical result: it does not accept HaWoR as the V18 foundation, does not accept metric hand state, and does not recompute or accept contact, occlusion ownership, pose fill, nonpenetration, or V18 closure. It implies that future local downstream work, if attempted before task5 provisioning, should start with candidate-only trash contact recomputation rather than occlusion ownership. Full V18 physical validity still requires real time-indexed HaWoR/metric MANO for all cases, especially task5.
 
+## Implementation Checkpoint 57: Task5 HaWoR Export Contract
+
+V18 now records an explicit task5 HaWoR export contract under:
+
+```text
+/data2/ego_annotation_outputs/v18_corrective_1600/hawor_task5_export_contract/
+```
+
+The contract names the task5 raw clip, the expected local HaWoR output path, the remote task5 export command, required HaWoR/MANO assets, and the post-ingest validators. `remote_run_hawor_export.sh` now supports `EGO_HAWOR_CASE=task5_tomato_960` so task5 export is not hidden behind the previous trash-only default. The expected local task5 output path is:
+
+```text
+/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz
+```
+
+Current status remains blocked because that NPZ is absent and the local HaWoR repo/checkpoints/config/`MANO_LEFT.pkl` are still missing. The contract is not execution evidence and does not accept the HaWoR requirement, metric hand state, contact, occlusion, nonpenetration, or V18 closure.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
@@ -902,10 +918,11 @@ Every summary JSON must include runtime, frame-count equality, readiness flags, 
 
 ## Immediate Implementation Order
 
-1. Provision and run real HaWoR/metric MANO for task5; without task5 HaWoR, V18 physical hand/contact/occlusion claims remain invalid. Trash bridge rows remain candidate-only until accepted by explicit bridge/foundation criteria.
-2. If doing local pre-provisioning work, use the HaWoR bridge subset policy only as a candidate queue: trash contact rows have a strict subset, occlusion ownership currently has none. Do not treat the policy as accepted hand state.
-3. Continue the object/part path from the accepted OWLv2→SAM2 tracks: part visible surfaces -> part-model candidate residuals -> rigid/articulated/deformable decision.
-4. Implement depth-fused rigid/part reconstruction only where the residual acceptance tests can be evaluated.
-5. Implement the bounded factor graph over camera/depth correction, hand state, object/part SE(3), articulation, contact switch, and occlusion owner.
-6. Render full-duration outputs with uncertainty/occlusion status and run runtime/manifest/audit checks only as validation of these implementation artifacts.
-7. Evaluate on `trash_1050` and `task5_tomato_960`; if runtime, HaWoR validation, SAM2 tracking, reconstruction, or graph optimization fails, preserve the concrete failed residuals and causal evidence.
+1. Provision and run real HaWoR/metric MANO for task5 using the task5 HaWoR export contract; without task5 HaWoR, V18 physical hand/contact/occlusion claims remain invalid. Trash bridge rows remain candidate-only until accepted by explicit bridge/foundation criteria.
+2. After copying a real task5 `hawor_world_hands.npz` into the contract path, rebuild/validate HaWoR requirement and bridge state before any downstream claim.
+3. If doing local pre-provisioning work, use the HaWoR bridge subset policy only as a candidate queue: trash contact rows have a strict subset, occlusion ownership currently has none. Do not treat the policy as accepted hand state.
+4. Continue the object/part path from the accepted OWLv2→SAM2 tracks: part visible surfaces -> part-model candidate residuals -> rigid/articulated/deformable decision.
+5. Implement depth-fused rigid/part reconstruction only where the residual acceptance tests can be evaluated.
+6. Implement the bounded factor graph over camera/depth correction, hand state, object/part SE(3), articulation, contact switch, and occlusion owner.
+7. Render full-duration outputs with uncertainty/occlusion status and run runtime/manifest/audit checks only as validation of these implementation artifacts.
+8. Evaluate on `trash_1050` and `task5_tomato_960`; if runtime, HaWoR validation, SAM2 tracking, reconstruction, or graph optimization fails, preserve the concrete failed residuals and causal evidence.

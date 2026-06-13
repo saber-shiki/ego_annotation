@@ -47,6 +47,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("validate_hawor_bridge_quality_state", [py, "scripts/validate_v18_hawor_bridge_quality_state.py", "--root", str(args.output_root)]),
         ("hawor_hard_requirement_state", [py, "scripts/build_v18_hawor_requirement_state.py", "--output-root", str(args.output_root), "--hash-sources"]),
         ("validate_hawor_hard_requirement_state", [py, "scripts/validate_v18_hawor_requirement_state.py", "--root", str(args.output_root)]),
+        ("hawor_task5_export_contract", [py, "scripts/build_v18_hawor_task5_export_contract.py", "--output-root", str(args.output_root)]),
+        ("validate_hawor_task5_export_contract", [py, "scripts/validate_v18_hawor_task5_export_contract.py", "--root", str(args.output_root)]),
         ("mano_foundation_state", [py, "scripts/build_v18_mano_foundation_state.py", "--output-root", str(args.output_root / "mano_foundation_audit"), "--hash-sources"]),
         ("validate_mano_foundation_state", [py, "scripts/validate_v18_mano_foundation_state.py", "--root", str(args.output_root / "mano_foundation_audit")]),
         ("mano_foundation_overlay", [py, "scripts/render_v18_mano_foundation_overlay.py", "--output-root", str(args.output_root)]),

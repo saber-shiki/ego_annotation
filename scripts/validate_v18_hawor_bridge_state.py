@@ -67,13 +67,21 @@ def validate_trash(case: dict[str, Any], failures: list[str]) -> None:
 
 
 def validate_task5(case: dict[str, Any], failures: list[str]) -> None:
-    require(case.get("status") == "blocked_no_hawor_npz_for_case", f"task5 status unexpected: {case.get('status')}", failures)
     require(case.get("accepted_v18_hawor_foundation") is False, "task5 bridge must not be accepted foundation", failures)
-    require(case.get("bridge_candidate_rows") == 0, f"task5 expected 0 bridge rows, got {case.get('bridge_candidate_rows')}", failures)
-    require(case.get("bridge_candidate_npz") is None, f"task5 should not have bridge NPZ: {case.get('bridge_candidate_npz')}", failures)
+    require(case.get("hawor_npz") == "/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz", f"task5 bridge should point to contract NPZ path, got {case.get('hawor_npz')}", failures)
     blockers = case.get("blocking_reasons") if isinstance(case.get("blocking_reasons"), list) else []
-    for blocker in ["case_hawor_world_hands_npz_missing", "HaWoR_repo_weights_or_MANO_assets_missing_locally"]:
-        require(blocker in blockers, f"task5 missing blocker {blocker}", failures)
+    if case.get("status") == "blocked_no_hawor_npz_for_case":
+        require(case.get("bridge_candidate_rows") == 0, f"task5 expected 0 bridge rows, got {case.get('bridge_candidate_rows')}", failures)
+        require(case.get("bridge_candidate_npz") is None, f"task5 should not have bridge NPZ while blocked: {case.get('bridge_candidate_npz')}", failures)
+        for blocker in ["case_hawor_world_hands_npz_missing", "HaWoR_repo_weights_or_MANO_assets_missing_locally"]:
+            require(blocker in blockers, f"task5 missing blocker {blocker}", failures)
+    elif case.get("status") == "hawor_bridge_candidate_built_not_accepted":
+        require(int(case.get("expected_frame_side_rows") or 0) == 1920, f"task5 expected frame-side rows 1920, got {case.get('expected_frame_side_rows')}", failures)
+        require(int(case.get("bridge_candidate_rows") or 0) <= 1920, f"task5 bridge rows cannot exceed 1920, got {case.get('bridge_candidate_rows')}", failures)
+        require(case.get("bridge_candidate_npz") is not None, "task5 present bridge should record bridge NPZ", failures)
+        require("bridge_candidate_not_consumed_by_contact_occlusion_nonpenetration" in blockers, "task5 present bridge must keep downstream-not-consumed blocker", failures)
+    else:
+        require(False, f"task5 status unexpected: {case.get('status')}", failures)
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -81,7 +89,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     path = args.root / "hawor_bridge_state" / "v18_hawor_bridge_state_summary.json"
     require(path.exists(), f"missing summary {path}", failures)
     summary = load_json(path) if path.exists() else {}
-    require(summary.get("status") == "trash_bridge_candidate_built_task5_blocked_not_v18_foundation", f"summary status unexpected: {summary.get('status')}", failures)
+    require(summary.get("status") in {"trash_bridge_candidate_built_task5_blocked_not_v18_foundation", "hawor_bridge_candidates_built_not_v18_foundation"}, f"summary status unexpected: {summary.get('status')}", failures)
     require(summary.get("all_cases_hawor_bridge_accepted") is False, "all_cases_hawor_bridge_accepted must be false", failures)
     require(summary.get("v18_physical_hand_state_valid_from_bridge") is False, "physical hand state from bridge must be false", failures)
     require(summary.get("claim_scope") == "HaWoR_bridge_candidate_state_no_model_substitution_no_full_V18_closure", f"summary claim scope unexpected: {summary.get('claim_scope')}", failures)

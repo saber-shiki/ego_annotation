@@ -16,10 +16,7 @@ EXPECTED = {
         "full_timeline_hawor_npz_shape_valid": True,
     },
     "task5_tomato_960": {
-        "status": "blocked_no_case_hawor_output",
         "expected_frame_side_rows": 1920,
-        "available_hawor_frame_side_rows": 0,
-        "full_timeline_hawor_npz_shape_valid": False,
     },
 }
 
@@ -83,10 +80,30 @@ def validate_case(case: dict[str, Any], failures: list[str]) -> dict[str, Any]:
             require(int(np.count_nonzero(z["left_valid"])) == 1049, f"{name}: left valid count mismatch", failures)
             require(int(np.count_nonzero(z["right_valid"])) == 1049, f"{name}: right valid count mismatch", failures)
     if name == "task5_tomato_960":
-        for blocker in ["case_hawor_world_hands_npz_missing", "HaWoR_repo_weights_or_MANO_assets_missing_locally"]:
-            require(blocker in blockers, f"{name}: missing blocker {blocker}", failures)
         npz_info = case.get("hawor_output") if isinstance(case.get("hawor_output"), dict) else {}
-        require(npz_info.get("exists") is False, f"{name}: task5 should have no HaWoR NPZ in current evidence", failures)
+        expected_contract_path = "/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz"
+        require(npz_info.get("path") == expected_contract_path, f"{name}: expected contract HaWoR path {expected_contract_path}, got {npz_info.get('path')}", failures)
+        if npz_info.get("exists") is False:
+            require(case.get("status") == "blocked_no_case_hawor_output", f"{name}: absent NPZ should keep blocked status, got {case.get('status')}", failures)
+            require(case.get("available_hawor_frame_side_rows") == 0, f"{name}: absent NPZ should have 0 rows, got {case.get('available_hawor_frame_side_rows')}", failures)
+            require(case.get("full_timeline_hawor_npz_shape_valid") is False, f"{name}: absent NPZ shape valid should be false", failures)
+            for blocker in ["case_hawor_world_hands_npz_missing", "HaWoR_repo_weights_or_MANO_assets_missing_locally"]:
+                require(blocker in blockers, f"{name}: missing blocker {blocker}", failures)
+        elif npz_info.get("exists") is True:
+            require(case.get("status") in {"hawor_output_available_but_not_accepted_v18_foundation", "hawor_output_present_but_invalid"}, f"{name}: present NPZ status unexpected {case.get('status')}", failures)
+            require(case.get("accepted_v18_hawor_requirement_met") is False, f"{name}: present NPZ must still not auto-accept requirement", failures)
+            require(case.get("accepted_metric_hand_state_from_hawor") is False, f"{name}: present NPZ must still not auto-accept metric hand state", failures)
+            npz_path = Path(str(npz_info.get("path")))
+            if npz_path.exists():
+                z = np.load(npz_path)
+                require(z["left_vertices_world_m"].shape == (960, 778, 3), f"{name}: left vertices shape mismatch", failures)
+                require(z["right_vertices_world_m"].shape == (960, 778, 3), f"{name}: right vertices shape mismatch", failures)
+                require(z["left_joints_world_m"].shape == (960, 21, 3), f"{name}: left joints shape mismatch", failures)
+                require(z["right_joints_world_m"].shape == (960, 21, 3), f"{name}: right joints shape mismatch", failures)
+                require(z["frame_idx"].shape == (960,), f"{name}: frame_idx shape mismatch", failures)
+                require(int(z["frame_idx"][0]) == 0 and int(z["frame_idx"][-1]) == 959, f"{name}: frame_idx range mismatch", failures)
+        else:
+            require(False, f"{name}: hawor_output.exists must be boolean false/true", failures)
     return {"case": name, "status": case.get("status"), "available_hawor_frame_side_rows": case.get("available_hawor_frame_side_rows")}
 
 

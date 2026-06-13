@@ -25,7 +25,7 @@ EXPECTED_VERTICES = 778
 EXPECTED_JOINTS = 21
 DEFAULT_HAWOR_OUTPUTS = {
     "trash_1050": Path("/data2/ego_annotation_outputs/representative_trash/v3_hawor_world/hawor_world_hands.npz"),
-    "task5_tomato_960": None,
+    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz"),
 }
 
 
@@ -456,9 +456,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     start = time.perf_counter()
     cases = [build_case(case, args) for case in args.cases]
     all_accepted = all(case.get("accepted_v18_hawor_foundation") is True for case in cases)
+    any_blocked = any(case.get("status") == "blocked_no_hawor_npz_for_case" for case in cases)
     summary = {
         "method": "build_v18_hawor_bridge_state",
-        "status": "trash_bridge_candidate_built_task5_blocked_not_v18_foundation",
+        "status": "trash_bridge_candidate_built_task5_blocked_not_v18_foundation" if any_blocked else "hawor_bridge_candidates_built_not_v18_foundation",
         "claim_scope": "HaWoR_bridge_candidate_state_no_model_substitution_no_full_V18_closure",
         "output_root": str(args.output_root),
         "all_cases_hawor_bridge_accepted": all_accepted,
