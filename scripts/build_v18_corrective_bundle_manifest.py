@@ -59,6 +59,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
     hawor = load_json(root / case / "hawor_ghost_attempt" / "v18_hawor_ghost_attempt_report.json")
     hand_smoothing = load_json(root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json")
     owner = load_json(root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json")
+    owner_audit = load_json(root / case / "occlusion_owner_acceptance_audit" / "v18_occlusion_owner_acceptance_audit_report.json")
     contact = load_json(root / case / "contact_nonpenetration_state" / "v18_contact_nonpenetration_state_report.json")
     residual = load_json(root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
     repair = load_json(root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json")
@@ -73,6 +74,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
         "hawor_ghost_or_failure": hawor,
         "temporal_hand_pose_smoothing": hand_smoothing,
         "tentative_occlusion_owner": owner,
+        "occlusion_owner_acceptance_audit": owner_audit,
         "contact_nonpenetration": contact,
         "rigid_se3_residual_check": residual,
         "nonpenetration_repair_proposal": repair,
@@ -93,6 +95,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
             "hawor_ghost_or_failure": {"measurement_rows": hawor.get("measurement_rows"), "draw_counts": hawor.get("draw_counts"), "execution_failure_logs": hawor.get("execution_failure_logs"), "claim_scope": hawor.get("claim_scope")},
             "temporal_hand_pose_smoothing": {"draw_counts": hand_smoothing.get("draw_counts"), "jitter_probe": hand_smoothing.get("jitter_probe"), "claim_scope": hand_smoothing.get("claim_scope")},
             "tentative_occlusion_owner": {"selected_tentative_owner_rows": owner.get("selected_tentative_owner_rows"), "strict_accepted_owner_rows": owner.get("strict_accepted_owner_rows"), "owner_object_counts": owner.get("owner_object_counts"), "acceptance_blocker_counts": owner.get("acceptance_blocker_counts"), "claim_scope": owner.get("claim_scope")},
+            "occlusion_owner_acceptance_audit": {"candidate_rows": owner_audit.get("candidate_rows"), "strict_promotable_owner_rows": owner_audit.get("strict_promotable_owner_rows"), "category_counts": owner_audit.get("category_counts"), "claim_scope": owner_audit.get("claim_scope")},
             "contact_nonpenetration": {"contact_graph_selected_rows": contact.get("contact_graph_selected_rows"), "contact_graph_accepted_rows_before_nonpenetration_veto": contact.get("contact_graph_accepted_rows_before_nonpenetration_veto"), "signed_local_penetration_rows": contact.get("signed_local_penetration_rows"), "triangle_local_penetration_rows": contact.get("triangle_local_penetration_rows"), "mesh_watertight_rows": contact.get("mesh_watertight_rows"), "claim_scope": contact.get("claim_scope")},
             "rigid_se3_residual_check": {"candidate_objects": residual.get("candidate_objects"), "claim_scope": residual.get("claim_scope")},
             "nonpenetration_repair_proposal": {"proposal_rows": repair.get("proposal_rows"), "proposal_status_counts": repair.get("proposal_status_counts"), "claim_scope": repair.get("claim_scope")},
@@ -121,9 +124,11 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         owner = case["mechanisms"]["tentative_occlusion_owner"]
         hawor = case["mechanisms"]["hawor_ghost_or_failure"]
         hand_smoothing = case["mechanisms"]["temporal_hand_pose_smoothing"]
+        owner_audit = case["mechanisms"]["occlusion_owner_acceptance_audit"]
         contact = case["mechanisms"]["contact_nonpenetration"]
         lines += [
             f"Tentative owner rows: `{owner.get('selected_tentative_owner_rows')}`; strict accepted: `{owner.get('strict_accepted_owner_rows')}`",
+            f"Occlusion acceptance audit rows: `{owner_audit.get('candidate_rows')}`; strict promotable: `{owner_audit.get('strict_promotable_owner_rows')}`; categories: `{owner_audit.get('category_counts')}`",
             f"Contact rows selected: `{contact.get('contact_graph_selected_rows')}`; graph-accepted before local veto: `{contact.get('contact_graph_accepted_rows_before_nonpenetration_veto')}`; signed/triangle penetration rows: `{contact.get('signed_local_penetration_rows')}` / `{contact.get('triangle_local_penetration_rows')}`",
             f"Repair proposal rows: `{case['mechanisms']['nonpenetration_repair_proposal'].get('proposal_rows')}`; statuses: `{case['mechanisms']['nonpenetration_repair_proposal'].get('proposal_status_counts')}`",
             f"Temporal smoothed MANO2D draw counts: `{hand_smoothing.get('draw_counts')}`",

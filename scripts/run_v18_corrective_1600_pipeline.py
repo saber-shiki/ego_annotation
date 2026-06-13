@@ -41,6 +41,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("hawor_ghost_or_failure", [py, "scripts/render_v18_hawor_ghost_attempt.py", "--output-root", str(args.output_root)]),
         ("visible_surface_state", [py, "scripts/render_v18_visible_surface_state.py", "--output-root", str(args.output_root)]),
         ("tentative_occlusion_owner", [py, "scripts/render_v18_occlusion_owner_best_effort.py", "--output-root", str(args.output_root)]),
+        ("occlusion_owner_acceptance_audit", [py, "scripts/render_v18_occlusion_owner_acceptance_audit.py", "--output-root", str(args.output_root)]),
         ("contact_nonpenetration_state", [py, "scripts/render_v18_contact_nonpenetration_state.py", "--output-root", str(args.output_root)]),
         ("nonpenetration_repair_proposal", [py, "scripts/render_v18_nonpenetration_repair_proposal.py", "--output-root", str(args.output_root)]),
         ("rigid_se3_residual_check", [py, "scripts/render_v18_rigid_se3_residual_check.py", "--output-root", str(args.output_root)]),

@@ -238,6 +238,17 @@ def selected_occlusion_owner_index(report_path: Path) -> tuple[dict[tuple[int, s
     return out, report
 
 
+def occlusion_acceptance_audit_index(report_path: Path) -> tuple[dict[tuple[int, str], list[dict[str, Any]]], dict[str, Any]]:
+    if not report_path.exists():
+        return {}, {}
+    report = load_json(report_path)
+    out: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in report.get("rows", []) if isinstance(report.get("rows"), list) else []:
+        if isinstance(row, dict):
+            out[(int(row.get("frame_idx", -1)), str(row.get("hand_side")))].append(row)
+    return out, report
+
+
 def selected_contact_index(report_path: Path) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
     if not report_path.exists():
         return {}, {}
@@ -335,6 +346,7 @@ def hand_corrective_state(
     hawor_hand: dict[str, Any] | None,
     hawor_available_for_case: bool,
     occlusion_owner_row: dict[str, Any] | None,
+    occlusion_acceptance_rows: list[dict[str, Any]],
     contact_row: dict[str, Any] | None,
     signed_nonpenetration_row: dict[str, Any] | None,
     triangle_nonpenetration_row: dict[str, Any] | None,
@@ -449,6 +461,28 @@ def hand_corrective_state(
             "mesh_temporal_support": source_row.get("mesh_contact_temporal_support"),
             "state_role": "best_current_tentative_owner_with_blockers_not_pose_fill_acceptance",
         }
+    if occlusion_acceptance_rows:
+        audit_states = []
+        for row in occlusion_acceptance_rows:
+            audit_states.append({
+                "object_id": row.get("object_id"),
+                "category": row.get("category"),
+                "strict_promotable_owner": bool(row.get("strict_promotable_owner")),
+                "accepted_occlusion_owner": bool(row.get("accepted_occlusion_owner")),
+                "selected_by_temporal_graph": bool(row.get("selected_by_temporal_graph")),
+                "exact_foreground_depth_support": bool(row.get("exact_foreground_depth_support")),
+                "same_frame_foreground_contradiction_count": row.get("same_frame_foreground_contradiction_count"),
+                "mesh_temporal_support": row.get("mesh_temporal_support"),
+                "temporal_graph_margin": row.get("temporal_graph_margin"),
+                "source_depth_order_resolved": bool(row.get("source_depth_order_resolved")),
+                "source_occluder_owner_accepted": bool(row.get("source_occluder_owner_accepted")),
+                "depth_pair_evidence_state": row.get("depth_pair_evidence_state"),
+                "acceptance_blockers": row.get("acceptance_blockers") if isinstance(row.get("acceptance_blockers"), list) else [],
+                "evidence_scope": row.get("evidence_scope"),
+                "state_role": "occlusion_owner_acceptance_audit_not_assignment_not_pose_fill",
+            })
+        out["occlusion_owner_acceptance_audit"] = audit_states
+        out["uncertainty"].append("occlusion_owner_acceptance_audit_does_not_assign_owner_or_pose_fill")
     if contact_row is not None:
         oid = str(contact_row.get("chosen_owner_object_id"))
         signed_pen = bool(signed_nonpenetration_row and signed_nonpenetration_row.get("local_penetration_detected"))
@@ -616,6 +650,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     rigid_candidates = rigid_candidates_from_report(rigid_report_path)
     visible_rows, visible_archive_npz = visible_surface_row_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json", set(rigid_candidates))
     occlusion_owner_rows, occlusion_owner_report = selected_occlusion_owner_index(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json")
+    occlusion_audit_rows, occlusion_audit_report = occlusion_acceptance_audit_index(args.corrective_root / case / "occlusion_owner_acceptance_audit" / "v18_occlusion_owner_acceptance_audit_report.json")
     contact_rows, contact_report = selected_contact_index(args.contact_graph_root / case / "v18_contact_ownership_graph_report.json")
     signed_rows = nonpenetration_row_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
     triangle_rows = nonpenetration_row_index(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json")
@@ -643,6 +678,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 hawor_hands.get((frame_idx, side)),
                 bool(hawor_index),
                 occlusion_owner_rows.get((frame_idx, side)),
+                occlusion_audit_rows.get((frame_idx, side), []),
                 contact_rows.get((frame_idx, side)),
                 signed_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 triangle_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
@@ -664,6 +700,13 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 counts["pose_fill_best_effort_states"] += 1
             if "occlusion_owner_best_effort" in state:
                 counts["occlusion_owner_best_effort_states"] += 1
+            audit_states = state.get("occlusion_owner_acceptance_audit") if isinstance(state.get("occlusion_owner_acceptance_audit"), list) else []
+            for audit_state in audit_states:
+                if isinstance(audit_state, dict):
+                    counts["occlusion_owner_acceptance_audit_rows"] += 1
+                    category = audit_state.get("category")
+                    if isinstance(category, str):
+                        counts[f"occlusion_owner_acceptance::{category}"] += 1
             if "contact_nonpenetration_state" in state:
                 counts["contact_nonpenetration_states"] += 1
                 contact_status = state["contact_nonpenetration_state"].get("status")
@@ -731,6 +774,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "visible_surface_state_report": str(args.corrective_root / case / "visible_surface_state" / "v18_visible_surface_state_report.json"),
             "occlusion_owner_graph_report": str(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json"),
             "occlusion_owner_best_effort_report": str(args.corrective_root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json"),
+            "occlusion_owner_acceptance_audit_report": str(args.corrective_root / case / "occlusion_owner_acceptance_audit" / "v18_occlusion_owner_acceptance_audit_report.json"),
             "contact_ownership_graph_report": str(args.contact_graph_root / case / "v18_contact_ownership_graph_report.json"),
             "signed_nonpenetration_report": str(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json"),
             "triangle_nonpenetration_report": str(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json"),
@@ -742,6 +786,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "occlusion_owner_selected_rows": len(occlusion_owner_rows),
         "occlusion_owner_strict_accepted_rows": 0,
         "occlusion_owner_acceptance_blocker_counts": occlusion_owner_report.get("acceptance_blocker_counts") if isinstance(occlusion_owner_report, dict) else None,
+        "occlusion_owner_acceptance_audit_category_counts": occlusion_audit_report.get("category_counts") if isinstance(occlusion_audit_report, dict) else None,
+        "occlusion_owner_acceptance_audit_strict_promotable_rows": occlusion_audit_report.get("strict_promotable_owner_rows") if isinstance(occlusion_audit_report, dict) else None,
         "contact_graph_selected_rows": len(contact_rows),
         "contact_graph_accepted_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows") if isinstance(contact_report, dict) else None,
         "rigid_residual_candidate_objects": residual_report.get("candidate_objects") if isinstance(residual_report, dict) else None,

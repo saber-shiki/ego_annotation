@@ -47,6 +47,8 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     smoothed_applied_gate_violation = 0
     repair_bad_semantics = 0
     repair_postcheck_mismatch = 0
+    occlusion_audit_bad_semantics = 0
+    occlusion_audit_strict_or_accepted = 0
     for frame in frames if isinstance(frames, list) else []:
         if not isinstance(frame, dict):
             continue
@@ -71,6 +73,16 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
                         smoothed_applied_gate_violation += 1
                     if int(smoothed.get("output_out_of_source_frame_joint_count") or 0) != 0:
                         smoothed_applied_gate_violation += 1
+            audit_rows = hand.get("occlusion_owner_acceptance_audit") if isinstance(hand.get("occlusion_owner_acceptance_audit"), list) else []
+            for audit in audit_rows:
+                if not isinstance(audit, dict):
+                    continue
+                if audit.get("state_role") != "occlusion_owner_acceptance_audit_not_assignment_not_pose_fill":
+                    occlusion_audit_bad_semantics += 1
+                if audit.get("evidence_scope") != "acceptance_audit_only_not_owner_assignment_or_pose_fill":
+                    occlusion_audit_bad_semantics += 1
+                if audit.get("strict_promotable_owner") is True or audit.get("accepted_occlusion_owner") is True:
+                    occlusion_audit_strict_or_accepted += 1
             repair = hand.get("nonpenetration_repair_proposal", {}) if isinstance(hand.get("nonpenetration_repair_proposal"), dict) else {}
             if repair:
                 if repair.get("applied_to_annotation") is not False or repair.get("proposal_complete_nonpenetration") is not False:
@@ -114,12 +126,22 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(smoothed_applied_gate_violation == 0, f"{case}: applied temporal smoothing rows violating anchor/bounds gates: {smoothed_applied_gate_violation}", failures)
     require(repair_bad_semantics == 0, f"{case}: repair candidate rows with applied/complete/missing-V16 semantics: {repair_bad_semantics}", failures)
     require(repair_postcheck_mismatch == 0, f"{case}: repair candidate postcheck status mismatch: {repair_postcheck_mismatch}", failures)
+    require(occlusion_audit_bad_semantics == 0, f"{case}: occlusion acceptance audit rows with assignment/pose-fill semantics: {occlusion_audit_bad_semantics}", failures)
+    require(occlusion_audit_strict_or_accepted == 0, f"{case}: occlusion audit rows unexpectedly strict-promotable or accepted: {occlusion_audit_strict_or_accepted}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
         require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1901, f"{case}: expected 1901 temporal smoothed MANO2D states", failures)
         require(int(counts.get("pose_fill_best_effort_states", 0)) == 50, f"{case}: expected 50 HaWoR motion-infill pose-fill best-effort states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 232, f"{case}: expected 232 visible surface states for the rigid lid", failures)
         require(int(counts.get("occlusion_owner_best_effort_states", 0)) == 64, f"{case}: expected 64 tentative occlusion owner rows", failures)
+        require(int(counts.get("occlusion_owner_acceptance_audit_rows", 0)) == 165, f"{case}: expected 165 occlusion acceptance audit rows", failures)
+        require(int(counts.get("occlusion_owner_acceptance::direct_depth_mesh_support_not_temporal_selected", 0)) == 1, f"{case}: expected 1 direct-depth mesh row not selected", failures)
+        require(int(counts.get("occlusion_owner_acceptance::foreground_depth_contradicts_candidate", 0)) == 27, f"{case}: expected 27 foreground-depth contradiction rows", failures)
+        require(int(counts.get("occlusion_owner_acceptance::not_selected_no_direct_depth_support", 0)) == 73, f"{case}: expected 73 not-selected/no-direct-depth rows", failures)
+        require(int(counts.get("occlusion_owner_acceptance::temporal_selected_mesh_margin_supported_depth_missing", 0)) == 24, f"{case}: expected 24 temporal-selected mesh/margin supported depth-missing rows", failures)
+        require(int(counts.get("occlusion_owner_acceptance::temporal_selected_mesh_support_low_or_missing", 0)) == 15, f"{case}: expected 15 temporal-selected mesh-low rows", failures)
+        require(int(counts.get("occlusion_owner_acceptance::temporal_selected_mesh_supported_margin_low", 0)) == 25, f"{case}: expected 25 temporal-selected margin-low rows", failures)
+        require(ann.get("occlusion_owner_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable occlusion audit rows", failures)
         require(ann.get("occlusion_owner_selected_rows") == 64, f"{case}: selected owner row metadata should be 64", failures)
         require(ann.get("contact_graph_selected_rows") == 371, f"{case}: expected 371 selected contact rows", failures)
         require(int(counts.get("contact_nonpenetration_states", 0)) == 371, f"{case}: expected 371 contact/nonpenetration states", failures)
@@ -138,6 +160,9 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(ann.get("hawor_measurement_rows") == 0, f"{case}: expected zero HaWoR measurement rows", failures)
         require(int(counts.get("pose_fill_best_effort_states", 0)) == 0, f"{case}: expected zero pose-fill best-effort rows without HaWoR", failures)
         require(ann.get("occlusion_owner_selected_rows") == 0, f"{case}: expected zero selected tentative occlusion owner rows", failures)
+        require(int(counts.get("occlusion_owner_acceptance_audit_rows", 0)) == 1, f"{case}: expected 1 occlusion acceptance audit row", failures)
+        require(int(counts.get("occlusion_owner_acceptance::not_selected_no_direct_depth_support", 0)) == 1, f"{case}: expected 1 not-selected/no-direct-depth audit row", failures)
+        require(ann.get("occlusion_owner_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable occlusion audit rows", failures)
         require(int(counts.get("hawor_provisioning_failed_hand_states", 0)) == 1920, f"{case}: expected 1920 HaWoR provisioning-failure hand states", failures)
         require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1859, f"{case}: expected 1859 temporal smoothed MANO2D states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)
