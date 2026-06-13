@@ -203,6 +203,22 @@ def rigid_candidates_from_report(path: Path) -> dict[str, dict[str, Any]]:
     return {str(k): v for k, v in candidates.items() if isinstance(v, dict)} if isinstance(candidates, dict) else {}
 
 
+def visible_surface_row_index(report_path: Path, candidate_ids: set[str]) -> tuple[dict[tuple[int, str], dict[str, Any]], str | None]:
+    if not report_path.exists():
+        return {}, None
+    report = load_json(report_path)
+    rows = report.get("surface_archive_rows", [])
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        oid = str(row.get("object_id"))
+        if oid in candidate_ids:
+            out[(int(row.get("frame_idx", -1)), oid)] = row
+    archive_npz = report.get("archive_npz")
+    return out, str(archive_npz) if isinstance(archive_npz, str) else None
+
+
 def stable_rigid_pose_index(frames: list[Any], candidate_ids: set[str], radius: int) -> dict[tuple[int, str], list[float]]:
     raw: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     for raw_frame in frames:
@@ -306,7 +322,7 @@ def hand_corrective_state(
     return out
 
 
-def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dict[str, Any] | None, rigid_candidate: dict[str, Any] | None, stable_pose: list[float] | None) -> dict[str, Any]:
+def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dict[str, Any] | None, rigid_candidate: dict[str, Any] | None, stable_pose: list[float] | None, visible_surface_row: dict[str, Any] | None) -> dict[str, Any]:
     oid = str(obj.get("object_id"))
     out: dict[str, Any] = {
         "object_id": oid,
@@ -328,6 +344,20 @@ def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dic
         out["best_current_state"] = "graph_object_se3_observation"
     else:
         out["uncertainty"].append("missing_factor_graph_object_se3_for_frame")
+    if visible_surface_row is not None:
+        out["frame_local_visible_surface_state"] = {
+            "status": "available_best_visible_geometry_evidence",
+            "vertex_count": visible_surface_row.get("vertex_count"),
+            "face_count": visible_surface_row.get("face_count"),
+            "center_world_m": rounded(visible_surface_row.get("center_world_m"), 6),
+            "bbox_world_min_m": rounded(visible_surface_row.get("bbox_world_min_m"), 6),
+            "bbox_world_max_m": rounded(visible_surface_row.get("bbox_world_max_m"), 6),
+            "world_extent_m": rounded(visible_surface_row.get("world_extent_m"), 6),
+            "mask_path": visible_surface_row.get("mask_path"),
+            "state_role": "frame_local_rgbd_visible_surface_not_hidden_completion",
+        }
+        if out["best_current_state"] == "source_object_state_no_graph_pose":
+            out["best_current_state"] = "frame_local_visible_surface_geometry"
     if rigid_candidate is not None:
         attempt: dict[str, Any] = {
             "status": "candidate_selected_by_generic_metadata",
@@ -343,7 +373,7 @@ def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dic
         if stable_pose is not None:
             attempt["stable_pose6_world_from_object"] = rounded(stable_pose, 6)
             attempt["status"] = "stable_pose_available_uncertain_render_driver"
-            out["best_current_state"] = "generic_rigid_se3_stable_prior_when_rendered"
+            out["best_current_state"] = "generic_rigid_se3_stable_prior_plus_frame_local_visible_surface_when_available"
         else:
             attempt["status"] = "selected_but_no_graph_pose_this_frame"
             out["uncertainty"].append("rigid_candidate_without_pose_this_frame")
@@ -369,6 +399,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     hawor_hands = load_hawor_source_hands(hawor_sources)
     rigid_report_path = args.corrective_root / case / "rigid_se3_attempt" / "v18_rigid_se3_attempt_report.json"
     rigid_candidates = rigid_candidates_from_report(rigid_report_path)
+    visible_rows, visible_archive_npz = visible_surface_row_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json", set(rigid_candidates))
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
     out_frames: list[dict[str, Any]] = []
@@ -407,9 +438,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             if not isinstance(obj, dict):
                 continue
             oid = str(obj.get("object_id"))
-            state = object_corrective_state(frame_idx, obj, graph_objects.get(oid), rigid_candidates.get(oid), stable_pose.get((frame_idx, oid)))
+            state = object_corrective_state(frame_idx, obj, graph_objects.get(oid), rigid_candidates.get(oid), stable_pose.get((frame_idx, oid)), visible_rows.get((frame_idx, oid)))
             if "graph_object_se3" in state:
                 counts["graph_object_se3_states"] += 1
+            if "frame_local_visible_surface_state" in state:
+                counts["frame_local_visible_surface_states"] += 1
             if state.get("generic_rigid_se3_attempt", {}).get("stable_pose6_world_from_object") is not None:
                 counts["generic_rigid_stable_pose_states"] += 1
             object_states.append(state)
@@ -441,6 +474,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "task5_export_attempt": str(args.corrective_root / "hawor_execution_attempt" / "task5_tomato_960" / "export_hawor_world_attempt.log"),
                 "setup_preflight_attempt": str(args.corrective_root / "hawor_execution_attempt" / "setup_preflight" / "remote_setup_hawor_local_attempt.log"),
             },
+            "visible_surface_archive_npz": visible_archive_npz,
+            "visible_surface_state_report": str(args.corrective_root / case / "visible_surface_state" / "v18_visible_surface_state_report.json"),
         },
         "counts": dict(sorted(counts.items())),
         "rigid_candidate_ids": sorted(rigid_candidates),
@@ -482,6 +517,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_full_pipeline"))
     parser.add_argument("--measurement-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_measurement_store"))
     parser.add_argument("--corrective-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600"))
+    parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600"))
     parser.add_argument("--translation-smoothing-radius", type=int, default=3)
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])

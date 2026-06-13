@@ -33,21 +33,40 @@ def load_panel(path: Path, label: str, size: tuple[int, int]) -> Image.Image:
     return canvas
 
 
+def text_panel(label: str, lines: list[str], size: tuple[int, int]) -> Image.Image:
+    canvas = Image.new("RGB", size, (12, 14, 20))
+    d = ImageDraw.Draw(canvas)
+    d.rectangle((0, 0, size[0], 30), fill=(0, 0, 0))
+    d.text((8, 7), label, fill=(255, 255, 255), font=font(15))
+    y = 48
+    for line in lines:
+        d.text((14, y), line, fill=(230, 230, 230), font=font(18))
+        y += 30
+    return canvas
+
+
 def make_sheet(case: str, frame_idx: int, output_root: Path, corrective_root: Path, previous_root: Path) -> Path:
     frame = f"{frame_idx:06d}.jpg"
-    panels: list[tuple[str, Path]] = [
-        ("previous V18 overlay (V16-base)", previous_root / case / "overlay_frames" / frame),
-        ("corrective graph-driven overlay", corrective_root / case / "corrective_overlay_frames" / frame),
-        ("HaWoR ghost / execution failure", corrective_root / case / "hawor_ghost_attempt" / "frames" / frame),
-        ("generic rigid SE3 world", corrective_root / case / "rigid_se3_attempt" / "world_frames" / frame),
+    panels: list[Image.Image] = [
+        load_panel(previous_root / case / "overlay_frames" / frame, "previous V18 overlay (V16-base)", (640, 320)),
+        load_panel(corrective_root / case / "corrective_overlay_frames" / frame, "corrective graph-driven overlay", (640, 320)),
+        load_panel(corrective_root / case / "hawor_ghost_attempt" / "frames" / frame, "HaWoR ghost / execution failure", (640, 320)),
+        load_panel(corrective_root / case / "rigid_se3_attempt" / "world_frames" / frame, "generic rigid SE3 fused-canonical attempt", (640, 320)),
+        load_panel(corrective_root / case / "visible_surface_state" / "world_frames" / frame, "frame-local visible surface state", (640, 320)),
+        text_panel("scope / interpretation", [
+            "Graph render drives hand boxes + shifted MANO skeletons.",
+            "Rigid SE3 panel tests fused canonical geometry under generic prior.",
+            "Visible-surface panel shows frame-local RGBD geometry evidence.",
+            "HaWoR panel shows prior where available or provisioning failure.",
+            "None of these claim full V18 closure or solved occlusion/contact.",
+        ], (640, 320)),
     ]
-    panel_size = (640, 360)
-    sheet = Image.new("RGB", (panel_size[0] * 2, panel_size[1] * 2 + 42), (10, 10, 12))
+    panel_size = (640, 320)
+    sheet = Image.new("RGB", (panel_size[0] * 2, panel_size[1] * 3 + 42), (10, 10, 12))
     d = ImageDraw.Draw(sheet)
     d.rectangle((0, 0, sheet.size[0], 42), fill=(0, 0, 0))
     d.text((12, 10), f"V18 corrective review — {case} frame {frame_idx}", fill=(255, 255, 255), font=font(20))
-    for i, (label, path) in enumerate(panels):
-        panel = load_panel(path, label, panel_size)
+    for i, panel in enumerate(panels):
         x = (i % 2) * panel_size[0]
         y = 42 + (i // 2) * panel_size[1]
         sheet.paste(panel, (x, y))

@@ -35,14 +35,18 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(int(counts.get("graph_shifted_mano_states", 0)) > 0, f"{case}: no graph-shifted MANO states", failures)
     require(int(counts.get("graph_hand_states", 0)) == int(counts.get("graph_shifted_mano_states", -1)), f"{case}: graph hand count != shifted MANO count", failures)
     require(int(counts.get("graph_object_se3_states", 0)) > 0, f"{case}: no graph object SE3 states", failures)
+    require(int(counts.get("frame_local_visible_surface_states", 0)) > 0, f"{case}: no frame-local visible surface states", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
+        require(int(counts.get("frame_local_visible_surface_states", 0)) == 232, f"{case}: expected 232 visible surface states for the rigid lid", failures)
         require("object:pink_lid_trash_can_second" in ann.get("rigid_candidate_ids", []), f"{case}: missing pink lid rigid candidate", failures)
     if case == "task5_tomato_960":
         require(ann.get("hawor_measurement_rows") == 0, f"{case}: expected zero HaWoR measurement rows", failures)
         require(int(counts.get("hawor_provisioning_failed_hand_states", 0)) == 1920, f"{case}: expected 1920 HaWoR provisioning-failure hand states", failures)
+        require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)
         require("object:obj_tomato" in ann.get("rigid_candidate_ids", []), f"{case}: missing tomato generic rigid candidate", failures)
         tomato_pose_rows = 0
+        tomato_surface_rows = 0
         for frame in frames:
             if not isinstance(frame, dict):
                 continue
@@ -51,7 +55,10 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
                     attempt = obj.get("generic_rigid_se3_attempt", {}) if isinstance(obj.get("generic_rigid_se3_attempt"), dict) else {}
                     if attempt.get("stable_pose6_world_from_object") is not None:
                         tomato_pose_rows += 1
+                    if isinstance(obj.get("frame_local_visible_surface_state"), dict):
+                        tomato_surface_rows += 1
         require(tomato_pose_rows > 0, f"{case}: no tomato stable rigid pose rows", failures)
+        require(tomato_surface_rows == 447, f"{case}: tomato visible surface rows {tomato_surface_rows} != 447", failures)
     return {"case": case, "frame_count": len(frames), "counts": counts, "path": str(path)}
 
 
