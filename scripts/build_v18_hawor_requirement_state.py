@@ -137,6 +137,11 @@ def validate_hawor_npz(path: Path, expected_frame_count: int) -> tuple[dict[str,
         return {"status": "invalid_hawor_npz_missing_arrays", "missing_arrays": missing}, {}
     frame_idx = np.asarray(z["frame_idx"], dtype=np.int32)
     arrays: dict[str, np.ndarray] = {key: np.asarray(z[key]) for key in z.files}
+    optional_provenance_keys = ["video_sha256", "checkpoint_sha256", "infiller_weight_sha256", "model_config_sha256"]
+    npz_provenance = {
+        key: (str(np.asarray(z[key]).reshape(-1)[0]) if key in z.files and np.asarray(z[key]).size else None)
+        for key in optional_provenance_keys
+    }
     failures: list[str] = []
     if frame_idx.shape != (expected_frame_count,):
         failures.append(f"frame_idx_shape_{frame_idx.shape}_expected_{expected_frame_count}")
@@ -198,6 +203,7 @@ def validate_hawor_npz(path: Path, expected_frame_count: int) -> tuple[dict[str,
         "img_focal": float(np.asarray(z["img_focal"]).reshape(-1)[0]) if np.asarray(z["img_focal"]).size else None,
         "video_path_recorded_in_npz": str(np.asarray(z["video_path"]).reshape(-1)[0]) if np.asarray(z["video_path"]).size else None,
         "seq_folder_recorded_in_npz": str(np.asarray(z["seq_folder"]).reshape(-1)[0]) if np.asarray(z["seq_folder"]).size else None,
+        "npz_provenance": npz_provenance,
         "sides": side_reports,
     }, arrays
 
@@ -257,17 +263,33 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
     # and downstream contact/occlusion/nonpenetration are recomputed from the HaWoR state.
     expected_clip_sha256 = EXPECTED_SOURCE_CLIP_SHA256.get(case)
     qc_video_sha256 = qc.get("video_sha256") if isinstance(qc, dict) else None
+    npz_provenance = npz_report.get("npz_provenance") if isinstance(npz_report.get("npz_provenance"), dict) else {}
+    npz_video_sha256 = npz_provenance.get("video_sha256")
     qc_video_sha256_matches_expected = bool(expected_clip_sha256 and qc_video_sha256 == expected_clip_sha256)
+    npz_video_sha256_matches_expected = bool(expected_clip_sha256 and npz_video_sha256 == expected_clip_sha256)
+    qc_npz_video_sha256_match = bool(qc_video_sha256 and npz_video_sha256 and qc_video_sha256 == npz_video_sha256)
     if expected_clip_sha256 and not qc_video_sha256_matches_expected:
         blockers.append("hawor_qc_video_sha256_missing_or_mismatch_for_expected_case_clip")
+    if expected_clip_sha256 and not npz_video_sha256_matches_expected:
+        blockers.append("hawor_npz_video_sha256_missing_or_mismatch_for_expected_case_clip")
+    if expected_clip_sha256 and not qc_npz_video_sha256_match:
+        blockers.append("hawor_qc_npz_video_sha256_mismatch")
     qc_export_provenance = qc.get("export_provenance") if isinstance(qc, dict) and isinstance(qc.get("export_provenance"), dict) else {}
     required_export_assets = ("checkpoint", "infiller_weight", "model_config")
-    qc_export_asset_hashes_present = all(
-        isinstance(qc_export_provenance.get(name), dict) and isinstance(qc_export_provenance[name].get("sha256"), str) and len(qc_export_provenance[name].get("sha256", "")) == 64
+    qc_export_asset_hashes = {
+        name: (qc_export_provenance.get(name, {}).get("sha256") if isinstance(qc_export_provenance.get(name), dict) else None)
         for name in required_export_assets
-    )
+    }
+    npz_export_asset_hashes = {name: npz_provenance.get(f"{name}_sha256") for name in required_export_assets}
+    qc_export_asset_hashes_present = all(isinstance(qc_export_asset_hashes.get(name), str) and len(qc_export_asset_hashes.get(name, "")) == 64 for name in required_export_assets)
+    npz_export_asset_hashes_present = all(isinstance(npz_export_asset_hashes.get(name), str) and len(npz_export_asset_hashes.get(name, "")) == 64 for name in required_export_assets)
+    qc_npz_export_asset_hashes_match = all(qc_export_asset_hashes.get(name) and npz_export_asset_hashes.get(name) and qc_export_asset_hashes.get(name) == npz_export_asset_hashes.get(name) for name in required_export_assets)
     if expected_clip_sha256 and not qc_export_asset_hashes_present:
         blockers.append("hawor_qc_export_asset_hashes_missing_for_expected_case")
+    if expected_clip_sha256 and not npz_export_asset_hashes_present:
+        blockers.append("hawor_npz_export_asset_hashes_missing_for_expected_case")
+    if expected_clip_sha256 and not qc_npz_export_asset_hashes_match:
+        blockers.append("hawor_qc_npz_export_asset_hashes_mismatch")
     if isinstance(bridge, dict) and bridge.get("bridge_candidate_rows"):
         blockers.append("HaWoR_current_V18_bridge_candidate_built_not_foundation_accepted")
         bridge_blockers = bridge.get("blocking_reasons") if isinstance(bridge.get("blocking_reasons"), list) else []
@@ -285,8 +307,15 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         "qc_valid_hand_frames": qc.get("valid_hand_frames") if isinstance(qc, dict) else None,
         "expected_source_clip_sha256": expected_clip_sha256,
         "qc_video_sha256": qc_video_sha256,
+        "npz_video_sha256": npz_video_sha256,
         "qc_video_sha256_matches_expected": qc_video_sha256_matches_expected if expected_clip_sha256 else None,
+        "npz_video_sha256_matches_expected": npz_video_sha256_matches_expected if expected_clip_sha256 else None,
+        "qc_npz_video_sha256_match": qc_npz_video_sha256_match if expected_clip_sha256 else None,
         "qc_export_asset_hashes_present": qc_export_asset_hashes_present if expected_clip_sha256 else None,
+        "npz_export_asset_hashes_present": npz_export_asset_hashes_present if expected_clip_sha256 else None,
+        "qc_npz_export_asset_hashes_match": qc_npz_export_asset_hashes_match if expected_clip_sha256 else None,
+        "qc_export_asset_hashes": qc_export_asset_hashes if expected_clip_sha256 else None,
+        "npz_export_asset_hashes": npz_export_asset_hashes if expected_clip_sha256 else None,
         "qc_export_provenance": qc_export_provenance if expected_clip_sha256 else None,
         "npz_validation": npz_report,
         "available_hawor_frame_side_rows": available_rows,
