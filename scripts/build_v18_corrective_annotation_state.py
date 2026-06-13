@@ -701,8 +701,15 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     smoothed_hand_rows, smoothed_hand_report = temporal_smoothed_hand_row_index(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json")
     geometry_coverage = geometry_coverage_report(args.corrective_root / case / "geometry_coverage_audit" / "v18_geometry_coverage_audit_report.json")
     geometry_summaries = geometry_coverage.get("object_summaries", {}) if isinstance(geometry_coverage.get("object_summaries"), dict) else {}
+    mano_foundation_path = args.corrective_root / "mano_foundation_audit" / case / "v18_mano_foundation_state_report.json"
+    mano_foundation = load_json(mano_foundation_path) if mano_foundation_path.exists() else {}
+    wilor_foundation = mano_foundation.get("recovered_wilor_world_mano_candidates", {}) if isinstance(mano_foundation.get("recovered_wilor_world_mano_candidates"), dict) else {}
+    hawor_foundation = mano_foundation.get("hawor_world_mano_candidates", {}) if isinstance(mano_foundation.get("hawor_world_mano_candidates"), dict) else {}
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
+    counts["mano_foundation_recovered_wilor_world_rows"] = int(wilor_foundation.get("complete_world_rows", 0)) if isinstance(wilor_foundation.get("complete_world_rows", 0), int) else int(float(wilor_foundation.get("complete_world_rows", 0) or 0))
+    counts["mano_foundation_recovered_wilor_unique_frame_side_rows"] = int(wilor_foundation.get("unique_complete_world_frame_side_rows", 0)) if isinstance(wilor_foundation.get("unique_complete_world_frame_side_rows", 0), int) else int(float(wilor_foundation.get("unique_complete_world_frame_side_rows", 0) or 0))
+    counts["mano_foundation_hawor_world_rows"] = int(hawor_foundation.get("complete_world_surface_param_rows", 0)) if isinstance(hawor_foundation.get("complete_world_surface_param_rows", 0), int) else int(float(hawor_foundation.get("complete_world_surface_param_rows", 0) or 0))
     for summary in geometry_summaries.values():
         if isinstance(summary, dict):
             counts["geometry_coverage_audit_objects"] += 1
@@ -842,6 +849,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "rigid_se3_residual_check_report": str(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json"),
             "nonpenetration_repair_proposal_report": str(args.corrective_root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json"),
             "temporal_hand_pose_smoothing_report": str(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json"),
+            "mano_foundation_report": str(mano_foundation_path),
+            "mano_foundation_wilor_world_npz": wilor_foundation.get("npz_path") if isinstance(wilor_foundation, dict) else None,
         },
         "occlusion_owner_selected_rows": len(occlusion_owner_rows),
         "occlusion_owner_strict_accepted_rows": 0,
@@ -856,6 +865,13 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "geometry_coverage_audit_status_counts": geometry_coverage.get("status_counts") if isinstance(geometry_coverage, dict) else None,
         "geometry_coverage_audit_stable_pose_source": geometry_coverage.get("stable_pose_source") if isinstance(geometry_coverage, dict) else None,
         "geometry_coverage_audit_object_summaries": geometry_summaries,
+        "foundational_mano_state_valid": mano_foundation.get("foundational_mano_state_valid") if isinstance(mano_foundation, dict) else None,
+        "v18_physical_pipeline_valid_without_further_hand_work": mano_foundation.get("v18_physical_pipeline_valid_without_further_hand_work") if isinstance(mano_foundation, dict) else None,
+        "mano_foundation_blocking_reasons": mano_foundation.get("blocking_reasons") if isinstance(mano_foundation, dict) else None,
+        "mano_foundation_recovered_wilor_world_rows": wilor_foundation.get("complete_world_rows") if isinstance(wilor_foundation, dict) else None,
+        "mano_foundation_recovered_wilor_unique_frame_side_rows": wilor_foundation.get("unique_complete_world_frame_side_rows") if isinstance(wilor_foundation, dict) else None,
+        "mano_foundation_recovered_wilor_projection_residual_px_median": wilor_foundation.get("projection_residual_px_median") if isinstance(wilor_foundation, dict) else None,
+        "mano_foundation_hawor_world_rows": hawor_foundation.get("complete_world_surface_param_rows") if isinstance(hawor_foundation, dict) else None,
         "nonpenetration_repair_proposal_status_counts": repair_report.get("proposal_status_counts") if isinstance(repair_report, dict) else None,
         "temporal_hand_pose_smoothing_draw_counts": smoothed_hand_report.get("draw_counts") if isinstance(smoothed_hand_report, dict) else None,
         "temporal_hand_pose_smoothing_jitter_probe": smoothed_hand_report.get("jitter_probe") if isinstance(smoothed_hand_report, dict) else None,

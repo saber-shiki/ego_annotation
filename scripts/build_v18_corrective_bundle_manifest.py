@@ -66,6 +66,8 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
     residual = load_json(root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
     repair = load_json(root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json")
     montage = load_json(root / case / "corrective_montage" / "v18_corrective_montage_report.json")
+    mano = load_json(root / "mano_foundation_audit" / case / "v18_mano_foundation_state_report.json")
+    mano_overlay = load_json(root / "mano_foundation_audit" / case / "v18_mano_foundation_overlay_report.json")
     ann_path = root / case / "annotations_v18_corrective_state.json"
     ann = load_json(ann_path)
     review_sheets = sorted((root / "review_sheets").glob(f"{case}_*_corrective_review.jpg"))
@@ -74,6 +76,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
         "generic_rigid_se3_attempt": rigid,
         "frame_local_visible_surface": visible,
         "geometry_coverage_audit": geometry_coverage,
+        "mano_foundation_overlay": mano_overlay,
         "hawor_ghost_or_failure": hawor,
         "temporal_hand_pose_smoothing": hand_smoothing,
         "tentative_occlusion_owner": owner,
@@ -106,6 +109,13 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
             "rigid_se3_residual_check": {"candidate_objects": residual.get("candidate_objects"), "claim_scope": residual.get("claim_scope")},
             "nonpenetration_repair_proposal": {"proposal_rows": repair.get("proposal_rows"), "proposal_status_counts": repair.get("proposal_status_counts"), "claim_scope": repair.get("claim_scope")},
             "corrective_montage": {"panels": montage.get("panels"), "claim_scope": montage.get("claim_scope")},
+            "mano_foundation_state": {"foundational_mano_state_valid": mano.get("foundational_mano_state_valid"), "blocking_reasons": mano.get("blocking_reasons"), "current_v18_full_mano_storage": mano.get("current_v18_full_mano_storage"), "recovered_wilor_world_mano_candidates": mano.get("recovered_wilor_world_mano_candidates"), "hawor_world_mano_candidates": mano.get("hawor_world_mano_candidates"), "claim_scope": mano.get("claim_scope")},
+            "mano_foundation_overlay": {"available_frame_side_rows": mano_overlay.get("available_frame_side_rows"), "draw_counts": mano_overlay.get("draw_counts"), "foundational_mano_state_valid": mano_overlay.get("foundational_mano_state_valid"), "claim_scope": mano_overlay.get("claim_scope")},
+        },
+        "mano_foundation_artifacts": {
+            "report": file_info(root / "mano_foundation_audit" / case / "v18_mano_foundation_state_report.json"),
+            "wilor_world_npz": file_info(Path(str(mano.get("recovered_wilor_world_mano_candidates", {}).get("npz_path")))) if isinstance(mano.get("recovered_wilor_world_mano_candidates"), dict) and mano.get("recovered_wilor_world_mano_candidates", {}).get("npz_path") else {"exists": False},
+            "overlay_report": file_info(root / "mano_foundation_audit" / case / "v18_mano_foundation_overlay_report.json"),
         },
         "videos": videos,
         "review_sheets": [file_info(p) for p in review_sheets],
@@ -127,6 +137,9 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         f"HaWoR provisioning audit: status `{manifest.get('hawor_provisioning_audit', {}).get('status')}`; missing `{manifest.get('hawor_provisioning_audit', {}).get('missing_required')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_provisioning_audit_report', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_provisioning_audit_markdown', {}).get('path')}`",
+        f"MANO foundation summary: valid `{manifest.get('mano_foundation_audit', {}).get('all_cases_foundational_mano_valid')}`; physical pipeline valid `{manifest.get('mano_foundation_audit', {}).get('v18_physical_pipeline_valid_without_further_hand_work')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('mano_foundation_summary', {}).get('path')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('mano_foundation_markdown', {}).get('path')}`",
         "",
     ]
     for case in manifest["cases"]:
@@ -139,7 +152,13 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         owner_audit = case["mechanisms"]["occlusion_owner_acceptance_audit"]
         contact = case["mechanisms"]["contact_nonpenetration"]
         contact_audit = case["mechanisms"]["contact_acceptance_audit"]
+        mano = case["mechanisms"]["mano_foundation_state"]
+        wilor_mano = mano.get("recovered_wilor_world_mano_candidates", {}) if isinstance(mano.get("recovered_wilor_world_mano_candidates"), dict) else {}
+        hawor_mano = mano.get("hawor_world_mano_candidates", {}) if isinstance(mano.get("hawor_world_mano_candidates"), dict) else {}
         lines += [
+            f"MANO foundation valid: `{mano.get('foundational_mano_state_valid')}`; recovered WiLoR raw candidates: `{wilor_mano.get('complete_world_rows')}`; unique frame-side rows: `{wilor_mano.get('unique_complete_world_frame_side_rows')}`; HaWoR world rows: `{hawor_mano.get('complete_world_surface_param_rows')}`; blockers: `{mano.get('blocking_reasons')}`",
+            f"MANO NPZ: `{case.get('mano_foundation_artifacts', {}).get('wilor_world_npz', {}).get('path')}`",
+            f"MANO overlay available frame-side rows: `{case['mechanisms']['mano_foundation_overlay'].get('available_frame_side_rows')}`",
             f"Tentative owner rows: `{owner.get('selected_tentative_owner_rows')}`; strict accepted: `{owner.get('strict_accepted_owner_rows')}`",
             f"Occlusion acceptance audit rows: `{owner_audit.get('candidate_rows')}`; strict promotable: `{owner_audit.get('strict_promotable_owner_rows')}`; categories: `{owner_audit.get('category_counts')}`",
             f"Contact rows selected: `{contact.get('contact_graph_selected_rows')}`; graph-accepted before local veto: `{contact.get('contact_graph_accepted_rows_before_nonpenetration_veto')}`; signed/triangle penetration rows: `{contact.get('signed_local_penetration_rows')}` / `{contact.get('triangle_local_penetration_rows')}`",
@@ -164,6 +183,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     cases = [case_bundle(case, args.output_root) for case in args.cases]
     hawor_audit_path = args.output_root / "hawor_provisioning_audit" / "v18_hawor_provisioning_audit_report.json"
     hawor_audit = load_json(hawor_audit_path) if hawor_audit_path.exists() else None
+    mano_summary_path = args.output_root / "mano_foundation_audit" / "v18_mano_foundation_audit_summary.json"
+    mano_summary = load_json(mano_summary_path) if mano_summary_path.exists() else None
     manifest = {
         "method": "build_v18_corrective_bundle_manifest",
         "status": "corrective_bundle_index_not_full_v18_closure",
@@ -171,11 +192,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "global_artifacts": {
             "hawor_provisioning_audit_report": file_info(hawor_audit_path),
             "hawor_provisioning_audit_markdown": file_info(args.output_root / "hawor_provisioning_audit" / "V18_HAWOR_PROVISIONING_AUDIT.md"),
+            "mano_foundation_summary": file_info(mano_summary_path),
+            "mano_foundation_markdown": file_info(args.output_root / "mano_foundation_audit" / "V18_MANO_FOUNDATION_AUDIT.md"),
         },
         "hawor_provisioning_audit": {
             "status": hawor_audit.get("status") if isinstance(hawor_audit, dict) else None,
             "missing_required": hawor_audit.get("missing_required") if isinstance(hawor_audit, dict) else None,
             "claim_scope": hawor_audit.get("claim_scope") if isinstance(hawor_audit, dict) else None,
+        },
+        "mano_foundation_audit": {
+            "all_cases_foundational_mano_valid": mano_summary.get("all_cases_foundational_mano_valid") if isinstance(mano_summary, dict) else None,
+            "v18_physical_pipeline_valid_without_further_hand_work": mano_summary.get("v18_physical_pipeline_valid_without_further_hand_work") if isinstance(mano_summary, dict) else None,
+            "claim_scope": mano_summary.get("claim_scope") if isinstance(mano_summary, dict) else None,
         },
         "cases": cases,
         "all_listed_video_frame_counts_match": all(case["all_listed_video_frame_counts_match"] for case in cases),
