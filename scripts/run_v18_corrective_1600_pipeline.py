@@ -60,6 +60,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("rigid_se3_residual_check", [py, "scripts/render_v18_rigid_se3_residual_check.py", "--output-root", str(args.output_root)]),
         ("corrective_annotation_state", [py, "scripts/build_v18_corrective_annotation_state.py", "--output-root", str(args.output_root), "--corrective-root", str(args.output_root)]),
         ("validate_corrective_annotation_state", [py, "scripts/validate_v18_corrective_annotation_state.py", "--root", str(args.output_root)]),
+        ("hawor_bridge_downstream_coverage", [py, "scripts/build_v18_hawor_bridge_downstream_coverage.py", "--output-root", str(args.output_root)]),
+        ("validate_hawor_bridge_downstream_coverage", [py, "scripts/validate_v18_hawor_bridge_downstream_coverage.py", "--root", str(args.output_root)]),
         ("corrective_review_sheets", [py, "scripts/build_v18_corrective_review_sheets.py", "--corrective-root", str(args.output_root)]),
         ("corrective_montage", [py, "scripts/render_v18_corrective_montage.py", "--output-root", str(args.output_root)]),
         ("corrective_bundle_manifest", [py, "scripts/build_v18_corrective_bundle_manifest.py", "--output-root", str(args.output_root)]),
