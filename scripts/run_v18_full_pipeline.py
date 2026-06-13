@@ -675,6 +675,25 @@ def load_occlusion_owner_graph_index(path: Path) -> dict[tuple[int, str], dict[s
     if not path.exists():
         return {}
     report = require_dict(load_json(path), "occlusion owner graph report")
+    rows_by_hand: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+    for raw_row in require_list(report.get("rows"), "occlusion owner graph rows"):
+        row = require_dict(raw_row, "occlusion owner graph row")
+        frame_idx = require_int(row.get("frame_idx"), "occlusion graph row frame_idx")
+        hand_side = str(row.get("hand_side"))
+        rows_by_hand[(frame_idx, hand_side)].append(
+            {
+                "object_id": row.get("object_id"),
+                "selected_by_occlusion_graph": row.get("selected_by_occlusion_graph"),
+                "accepted_occlusion_owner": row.get("accepted_occlusion_owner"),
+                "occlusion_owner_claim": row.get("occlusion_owner_claim"),
+                "depth_pair_evidence_state": row.get("depth_pair_evidence_state"),
+                "same_frame_foreground_support_count": row.get("same_frame_foreground_support_count"),
+                "same_frame_foreground_contradiction_count": row.get("same_frame_foreground_contradiction_count"),
+                "acceptance_gate": row.get("acceptance_gate"),
+                "acceptance_blockers": row.get("acceptance_blockers"),
+                "temporal_graph_assignment": row.get("temporal_graph_assignment"),
+            }
+        )
     out: dict[tuple[int, str], dict[str, Any]] = {}
     for raw_graph in require_list(report.get("hand_graphs"), "occlusion hand graphs"):
         graph = require_dict(raw_graph, "occlusion hand graph")
@@ -684,12 +703,16 @@ def load_occlusion_owner_graph_index(path: Path) -> dict[tuple[int, str], dict[s
             hand_side = str(assignment.get("hand_side"))
             out[(frame_idx, hand_side)] = {
                 "source_report": str(path),
+                "candidate_rows": rows_by_hand.get((frame_idx, hand_side), []),
                 "chosen_owner_object_id": assignment.get("chosen_owner_object_id"),
                 "accepted_occlusion_owner": assignment.get("accepted_occlusion_owner"),
                 "occlusion_owner_claim": assignment.get("occlusion_owner_claim"),
                 "unary_energy_margin": assignment.get("unary_energy_margin"),
                 "chosen_unary_energy": assignment.get("chosen_unary_energy"),
                 "next_best_unary_energy": assignment.get("next_best_unary_energy"),
+                "acceptance_gate": assignment.get("acceptance_gate"),
+                "acceptance_blockers": assignment.get("acceptance_blockers"),
+                "depth_pair_evidence_state": assignment.get("depth_pair_evidence_state"),
                 "source_row": assignment.get("source_row"),
             }
     return out
@@ -1194,9 +1217,9 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
         iou = finite_float(cand.get("iou"), finite_float(mesh_row.get("bbox_iou"), 0.0))
         hand_cov = finite_float(cand.get("hand_box_coverage_by_object_box"), finite_float(mesh_row.get("hand_box_coverage_by_object_box"), 0.0))
         object_cov = finite_float(cand.get("object_box_coverage_by_hand_box"), 0.0)
-        depth_state = str(mesh_row.get("source_depth_order_state") or cand.get("depth_order_state") or cand.get("source_depth_order_state") or "unknown_depth_order_state")
+        depth_state = str(mesh_row.get("depth_pair_evidence_state") or mesh_row.get("source_depth_order_state") or cand.get("depth_order_state") or cand.get("source_depth_order_state") or "unknown_depth_order_state")
         depth_resolved = bool(cand.get("depth_order_resolved") or cand.get("occluder_owner_accepted") or mesh_row.get("depth_order_resolved"))
-        depth_accept = bool(cand.get("occluder_owner_accepted") is True or mesh_row.get("accepted_occlusion_owner") is True or temporal_graph.get("accepted_occlusion_owner") is True and temporal_chosen == object_id)
+        depth_accept = bool(cand.get("occluder_owner_accepted") is True or mesh_row.get("accepted_occlusion_owner") is True or (temporal_graph.get("accepted_occlusion_owner") is True and temporal_chosen == object_id))
         temporal_selected = bool(temporal_chosen == object_id)
         foreground_support = ("foreground" in depth_state and "support" in depth_state and "no_support" not in depth_state and "contradict" not in depth_state)
         foreground_contradiction = "foreground" in depth_state and "contradict" in depth_state
@@ -1683,8 +1706,32 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             }
             confidence = "medium" if hand.get("visibility_state") == "visible" and hand.get("metric_depth_compatible") else "low" if hand.get("visibility_state") in {"visible", "partially_visible"} else "unknown"
             confidence_counts[f"hand_{confidence}"] += 1
-            occlusion_mesh_evidence = occlusion_mesh_index.get((frame_idx, side), [])
+            occlusion_mesh_evidence_raw = occlusion_mesh_index.get((frame_idx, side), [])
             occlusion_owner_graph = occlusion_owner_graph_index.get((frame_idx, side))
+            graph_candidate_rows: dict[str, dict[str, Any]] = {}
+            if isinstance(occlusion_owner_graph, dict):
+                for raw_graph_row in occlusion_owner_graph.get("candidate_rows", []):
+                    if isinstance(raw_graph_row, dict):
+                        graph_candidate_rows[str(raw_graph_row.get("object_id"))] = raw_graph_row
+            occlusion_mesh_evidence: list[dict[str, Any]] = []
+            for raw_mesh_row in occlusion_mesh_evidence_raw:
+                mesh_row = dict(raw_mesh_row) if isinstance(raw_mesh_row, dict) else {}
+                graph_row = graph_candidate_rows.get(str(mesh_row.get("object_id")))
+                if graph_row is not None:
+                    mesh_row.update(
+                        {
+                            "occlusion_owner_graph_row": graph_row,
+                            "selected_by_occlusion_graph": graph_row.get("selected_by_occlusion_graph"),
+                            "accepted_occlusion_owner": graph_row.get("accepted_occlusion_owner"),
+                            "occlusion_owner_claim": graph_row.get("occlusion_owner_claim"),
+                            "depth_pair_evidence_state": graph_row.get("depth_pair_evidence_state"),
+                            "same_frame_foreground_support_count": graph_row.get("same_frame_foreground_support_count"),
+                            "same_frame_foreground_contradiction_count": graph_row.get("same_frame_foreground_contradiction_count"),
+                            "acceptance_gate": graph_row.get("acceptance_gate"),
+                            "acceptance_blockers": graph_row.get("acceptance_blockers"),
+                        }
+                    )
+                occlusion_mesh_evidence.append(mesh_row)
             hands.append(
                 {
                     "hand_side": side,

@@ -107,7 +107,15 @@ def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> d
             temporal_occ = occ.get("temporal_owner_graph")
             if isinstance(temporal_occ, dict):
                 occlusion_temporal_graph_rows += 1
-                require(temporal_occ.get("accepted_occlusion_owner") is not True, f"{case}: unsupported accepted temporal occlusion owner")
+                gate_raw = temporal_occ.get("acceptance_gate")
+                gate: dict[str, Any] = gate_raw if isinstance(gate_raw, dict) else {}
+                blockers_raw = temporal_occ.get("acceptance_blockers")
+                blockers = blockers_raw if isinstance(blockers_raw, list) else gate.get("acceptance_blockers")
+                if temporal_occ.get("accepted_occlusion_owner") is True:
+                    require(gate.get("accepted_by_strict_depth_mesh_temporal_gate") is True, f"{case}: accepted temporal occlusion owner failed strict gate")
+                    require(isinstance(blockers, list) and len(blockers) == 0, f"{case}: accepted temporal occlusion owner has blockers")
+                elif gate:
+                    require(isinstance(blockers, list) and len(blockers) > 0, f"{case}: nonaccepted temporal occlusion owner lacks blockers")
         fg_raw = frame.get("factor_graph_solution")
         fg: dict[str, Any] = fg_raw if isinstance(fg_raw, dict) else {}
         fg_variables_raw = fg.get("variables")

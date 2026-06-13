@@ -800,6 +800,12 @@ This changes factor-graph evidence integration only; accepted occlusion ownershi
 
 The current representative evidence remains partial. Trash has 843 metric-depth component rows, 178 temporal-acceleration rows, and 182 bone-scale rows; task5 has 1083 metric-depth rows but no HaWoR geometry for temporal/bone components. A review caught an over-broad `supported` hand-state label; the final taxonomy only uses `hawor_visible_measurement_score_components_supported_no_occluded_pose_acceptance` when no active blockers remain. Accepted occluded-hand pose and pose fill-through-occlusion remain zero for both videos. This checkpoint improves the hand evidence ledger; it does not solve full-video HaWoR coverage, accepted occlusion ownership, or pose fill-through.
 
+## Implementation Checkpoint 53: Strict Occlusion Owner Acceptance Gate
+
+`build_v18_occlusion_owner_graph.py` now consumes exact pair-level depth-order evidence from `v18_occlusion_depth_order_evidence` instead of relying only on row-level source status. Candidate energies penalize exact foreground-depth contradictions and reward exact foreground-depth support for selection, while each candidate row receives a strict acceptance gate with explicit blockers. The gate requires temporal graph selection, exact foreground-depth support, no same-frame foreground contradiction, sufficient mesh temporal support, temporal margin, resolved source depth order, and source owner acceptance.
+
+The current representative evidence still supports zero accepted owners. Trash has one strict depth+mesh candidate: frame 850, right hand, `object:white_trash_bag`, with foreground-depth support and mesh support ≈0.972. It remains not accepted because the temporal graph does not select it and source depth order/owner acceptance are unresolved. The full annotations now expose this rejected support row and its blockers under the hand `mesh_owner_evidence`, so the negative evidence is preserved rather than hidden. Depth-aware graph selection drops trash selected owner rows from 94 to 64 by penalizing contradicted candidates; task5 remains selected 0 / accepted 0. Pose fill-through remains accepted 0 for both videos.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
