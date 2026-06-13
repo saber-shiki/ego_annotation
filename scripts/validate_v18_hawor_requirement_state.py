@@ -55,11 +55,24 @@ def validate_case(case: dict[str, Any], failures: list[str]) -> dict[str, Any]:
         require(forbidden not in sanitized, f"{name}: substitute backend/probe string appears outside no-substitution scope: {forbidden}", failures)
     blockers = case.get("blocking_reasons") if isinstance(case.get("blocking_reasons"), list) else []
     if name == "trash_1050":
-        for blocker in [
-            "HaWoR_coordinate_bridge_to_current_V18_world_not_residual_checked_for_full_pipeline",
-            "contact_occlusion_nonpenetration_not_recomputed_from_HaWoR_full_timeline_state",
-        ]:
-            require(blocker in blockers, f"{name}: missing blocker {blocker}", failures)
+        bridge = case.get("current_v18_bridge_candidate") if isinstance(case.get("current_v18_bridge_candidate"), dict) else {}
+        if bridge.get("exists") is True:
+            require(bridge.get("status") == "trash_hawor_bridge_candidate_built_not_accepted", f"{name}: unexpected bridge status {bridge.get('status')}", failures)
+            require(bridge.get("bridge_candidate_rows") == 2098, f"{name}: unexpected bridge candidate rows {bridge.get('bridge_candidate_rows')}", failures)
+            require(bridge.get("accepted_v18_hawor_foundation") is False, f"{name}: bridge must not be accepted foundation", failures)
+            for blocker in [
+                "HaWoR_current_V18_bridge_candidate_built_not_foundation_accepted",
+                "HaWoR_bridge_projection_residual_tail_blocks_foundation_acceptance",
+                "single_global_HaWoR_to_V18_world_sim3_alignment_too_loose_for_physical_contact",
+                "contact_occlusion_nonpenetration_not_recomputed_from_HaWoR_full_timeline_state",
+            ]:
+                require(blocker in blockers, f"{name}: missing blocker {blocker}", failures)
+        else:
+            for blocker in [
+                "HaWoR_coordinate_bridge_to_current_V18_world_not_residual_checked_for_full_pipeline",
+                "contact_occlusion_nonpenetration_not_recomputed_from_HaWoR_full_timeline_state",
+            ]:
+                require(blocker in blockers, f"{name}: missing blocker {blocker}", failures)
         npz_info = case.get("hawor_output") if isinstance(case.get("hawor_output"), dict) else {}
         require(npz_info.get("exists") is True, f"{name}: expected existing HaWoR NPZ", failures)
         npz_path = Path(str(npz_info.get("path")))

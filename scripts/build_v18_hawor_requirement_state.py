@@ -203,6 +203,8 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
     local_clip = clip_for_case(case, args.v16_root)
     configured_path = DEFAULT_HAWOR_OUTPUTS.get(case)
     output_path = Path(str(configured_path)) if configured_path is not None else None
+    bridge_path = args.output_root / "hawor_bridge_state" / case / "v18_hawor_bridge_state_report.json"
+    bridge = load_json(bridge_path) if bridge_path.exists() else None
     report: dict[str, Any] = {
         "case": case,
         "expected_frame_count": expected_frames,
@@ -212,6 +214,15 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         "accepted_metric_hand_state_from_hawor": False,
         "hawor_output": file_info(output_path, hash_file=bool(args.hash_sources)),
         "local_raw_clip": local_clip,
+        "current_v18_bridge_candidate": {
+            "report_path": str(bridge_path),
+            "exists": bridge_path.exists(),
+            "status": bridge.get("status") if isinstance(bridge, dict) else None,
+            "bridge_candidate_rows": bridge.get("bridge_candidate_rows") if isinstance(bridge, dict) else None,
+            "accepted_v18_hawor_foundation": bridge.get("accepted_v18_hawor_foundation") if isinstance(bridge, dict) else None,
+            "reference_projection_residual_px_median_per_row": bridge.get("reference_projection_residual_px_median_per_row") if isinstance(bridge, dict) else None,
+            "blocking_reasons": bridge.get("blocking_reasons") if isinstance(bridge, dict) else None,
+        },
         "claim_scope": "HaWoR_requirement_state_only_no_WiLoR_or_other_backend_substitution",
     }
     if output_path is None or not output_path.exists():
@@ -237,12 +248,19 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         blockers.append("hawor_npz_shape_or_content_invalid")
     if not full_valid_rows:
         blockers.append("hawor_valid_rows_do_not_cover_all_frame_sides")
-    # Even when a HaWoR NPZ exists, current V18 cannot accept it blindly because its coordinate bridge was
-    # previously shown to need residual checking. This artifact records availability, not acceptance.
-    blockers += [
-        "HaWoR_coordinate_bridge_to_current_V18_world_not_residual_checked_for_full_pipeline",
-        "contact_occlusion_nonpenetration_not_recomputed_from_HaWoR_full_timeline_state",
-    ]
+    # Even when a HaWoR NPZ exists, current V18 cannot accept it blindly. A bridge report can reduce
+    # uncertainty about the coordinate path, but it is still candidate-only until residual tails are explained
+    # and downstream contact/occlusion/nonpenetration are recomputed from the HaWoR state.
+    if isinstance(bridge, dict) and bridge.get("bridge_candidate_rows"):
+        blockers.append("HaWoR_current_V18_bridge_candidate_built_not_foundation_accepted")
+        bridge_blockers = bridge.get("blocking_reasons") if isinstance(bridge.get("blocking_reasons"), list) else []
+        if "projection_residual_tail_too_large_for_foundation_acceptance" in bridge_blockers:
+            blockers.append("HaWoR_bridge_projection_residual_tail_blocks_foundation_acceptance")
+        if "single_global_HaWoR_to_V18_world_sim3_alignment_too_loose_for_physical_contact" in bridge_blockers:
+            blockers.append("single_global_HaWoR_to_V18_world_sim3_alignment_too_loose_for_physical_contact")
+    else:
+        blockers.append("HaWoR_coordinate_bridge_to_current_V18_world_not_residual_checked_for_full_pipeline")
+    blockers.append("contact_occlusion_nonpenetration_not_recomputed_from_HaWoR_full_timeline_state")
     report.update({
         "status": "hawor_output_available_but_not_accepted_v18_foundation" if full_shape_valid else "hawor_output_present_but_invalid",
         "qc_report": file_info(qc_path, hash_file=bool(args.hash_sources)),

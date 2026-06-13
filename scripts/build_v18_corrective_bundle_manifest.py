@@ -72,6 +72,10 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
     hawor_requirement = load_json(hawor_requirement_path) if hawor_requirement_path.exists() else {}
     hawor_requirement_cases = hawor_requirement.get("cases") if isinstance(hawor_requirement.get("cases"), list) else []
     hawor_requirement_case = next((row for row in hawor_requirement_cases if isinstance(row, dict) and row.get("case") == case), {})
+    hawor_bridge_summary_path = root / "hawor_bridge_state" / "v18_hawor_bridge_state_summary.json"
+    hawor_bridge = load_json(hawor_bridge_summary_path) if hawor_bridge_summary_path.exists() else {}
+    hawor_bridge_cases = hawor_bridge.get("cases") if isinstance(hawor_bridge.get("cases"), list) else []
+    hawor_bridge_case = next((row for row in hawor_bridge_cases if isinstance(row, dict) and row.get("case") == case), {})
     ann_path = root / case / "annotations_v18_corrective_state.json"
     ann = load_json(ann_path)
     review_sheets = sorted((root / "review_sheets").glob(f"{case}_*_corrective_review.jpg"))
@@ -105,7 +109,8 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
             "frame_local_visible_surface": {"candidate_objects": visible.get("candidate_objects"), "claim_scope": visible.get("claim_scope")},
             "geometry_coverage_audit": {"object_count": geometry_coverage.get("object_count"), "status_counts": geometry_coverage.get("status_counts"), "object_summaries": geometry_coverage.get("object_summaries"), "claim_scope": geometry_coverage.get("claim_scope")},
             "hawor_ghost_or_failure": {"measurement_rows": hawor.get("measurement_rows"), "draw_counts": hawor.get("draw_counts"), "execution_failure_logs": hawor.get("execution_failure_logs"), "claim_scope": hawor.get("claim_scope")},
-            "hawor_hard_requirement_state": {"status": hawor_requirement_case.get("status"), "hard_requirement": hawor_requirement_case.get("hard_requirement"), "accepted_v18_hawor_requirement_met": hawor_requirement_case.get("accepted_v18_hawor_requirement_met"), "accepted_metric_hand_state_from_hawor": hawor_requirement_case.get("accepted_metric_hand_state_from_hawor"), "available_hawor_frame_side_rows": hawor_requirement_case.get("available_hawor_frame_side_rows"), "expected_frame_side_rows": hawor_requirement_case.get("expected_frame_side_rows"), "full_timeline_hawor_npz_shape_valid": hawor_requirement_case.get("full_timeline_hawor_npz_shape_valid"), "blocking_reasons": hawor_requirement_case.get("blocking_reasons"), "claim_scope": hawor_requirement_case.get("claim_scope")},
+            "hawor_hard_requirement_state": {"status": hawor_requirement_case.get("status"), "hard_requirement": hawor_requirement_case.get("hard_requirement"), "accepted_v18_hawor_requirement_met": hawor_requirement_case.get("accepted_v18_hawor_requirement_met"), "accepted_metric_hand_state_from_hawor": hawor_requirement_case.get("accepted_metric_hand_state_from_hawor"), "available_hawor_frame_side_rows": hawor_requirement_case.get("available_hawor_frame_side_rows"), "expected_frame_side_rows": hawor_requirement_case.get("expected_frame_side_rows"), "full_timeline_hawor_npz_shape_valid": hawor_requirement_case.get("full_timeline_hawor_npz_shape_valid"), "current_v18_bridge_candidate": hawor_requirement_case.get("current_v18_bridge_candidate"), "blocking_reasons": hawor_requirement_case.get("blocking_reasons"), "claim_scope": hawor_requirement_case.get("claim_scope")},
+            "hawor_bridge_state": {"status": hawor_bridge_case.get("status"), "bridge_candidate_rows": hawor_bridge_case.get("bridge_candidate_rows"), "expected_frame_side_rows": hawor_bridge_case.get("expected_frame_side_rows"), "accepted_v18_hawor_foundation": hawor_bridge_case.get("accepted_v18_hawor_foundation"), "reference_projection_residual_px_median_per_row": hawor_bridge_case.get("reference_projection_residual_px_median_per_row"), "reference_projection_residual_threshold_counts": hawor_bridge_case.get("reference_projection_residual_threshold_counts"), "bridge_candidate_npz": hawor_bridge_case.get("bridge_candidate_npz"), "review_report": file_info(root / "hawor_bridge_state" / case / "v18_hawor_bridge_review_report.json"), "review_sheet": file_info(root / "hawor_bridge_state" / case / "v18_hawor_bridge_residual_review_sheet.jpg"), "blocking_reasons": hawor_bridge_case.get("blocking_reasons"), "claim_scope": hawor_bridge_case.get("claim_scope")},
             "temporal_hand_pose_smoothing": {"draw_counts": hand_smoothing.get("draw_counts"), "jitter_probe": hand_smoothing.get("jitter_probe"), "claim_scope": hand_smoothing.get("claim_scope")},
             "tentative_occlusion_owner": {"selected_tentative_owner_rows": owner.get("selected_tentative_owner_rows"), "strict_accepted_owner_rows": owner.get("strict_accepted_owner_rows"), "owner_object_counts": owner.get("owner_object_counts"), "acceptance_blocker_counts": owner.get("acceptance_blocker_counts"), "claim_scope": owner.get("claim_scope")},
             "occlusion_owner_acceptance_audit": {"candidate_rows": owner_audit.get("candidate_rows"), "strict_promotable_owner_rows": owner_audit.get("strict_promotable_owner_rows"), "category_counts": owner_audit.get("category_counts"), "claim_scope": owner_audit.get("claim_scope")},
@@ -148,6 +153,9 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         f"HaWoR hard requirement: status `{manifest.get('hawor_hard_requirement_state', {}).get('status')}`; all cases met `{manifest.get('hawor_hard_requirement_state', {}).get('all_cases_hawor_requirement_met')}`; physical hand state valid `{manifest.get('hawor_hard_requirement_state', {}).get('v18_physical_hand_state_valid_from_hawor')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_requirement_state', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_requirement_markdown', {}).get('path')}`",
+        f"HaWoR bridge state: status `{manifest.get('hawor_bridge_state', {}).get('status')}`; all cases accepted `{manifest.get('hawor_bridge_state', {}).get('all_cases_hawor_bridge_accepted')}`; physical hand state valid `{manifest.get('hawor_bridge_state', {}).get('v18_physical_hand_state_valid_from_bridge')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_summary', {}).get('path')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_markdown', {}).get('path')}`",
         "",
     ]
     for case in manifest["cases"]:
@@ -157,6 +165,7 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         owner = case["mechanisms"]["tentative_occlusion_owner"]
         hawor = case["mechanisms"]["hawor_ghost_or_failure"]
         hawor_hard = case["mechanisms"].get("hawor_hard_requirement_state", {})
+        hawor_bridge = case["mechanisms"].get("hawor_bridge_state", {})
         hand_smoothing = case["mechanisms"]["temporal_hand_pose_smoothing"]
         owner_audit = case["mechanisms"]["occlusion_owner_acceptance_audit"]
         contact = case["mechanisms"]["contact_nonpenetration"]
@@ -167,6 +176,9 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         lines += [
             f"MANO foundation valid: `{mano.get('foundational_mano_state_valid')}`; recovered WiLoR virtual-camera raw candidates: `{wilor_mano.get('complete_virtual_camera_candidate_rows')}`; unique frame-side rows: `{wilor_mano.get('unique_virtual_camera_frame_side_rows')}`; metric-world aligned: `{wilor_mano.get('metric_world_alignment_valid')}`; HaWoR world rows: `{hawor_mano.get('complete_world_surface_param_rows')}`; blockers: `{mano.get('blocking_reasons')}`",
             f"HaWoR hard requirement state: status `{hawor_hard.get('status')}`; available HaWoR frame-side rows `{hawor_hard.get('available_hawor_frame_side_rows')}/{hawor_hard.get('expected_frame_side_rows')}`; requirement met `{hawor_hard.get('accepted_v18_hawor_requirement_met')}`; blockers `{hawor_hard.get('blocking_reasons')}`",
+            f"HaWoR bridge state: status `{hawor_bridge.get('status')}`; candidate rows `{hawor_bridge.get('bridge_candidate_rows')}/{hawor_bridge.get('expected_frame_side_rows')}`; accepted foundation `{hawor_bridge.get('accepted_v18_hawor_foundation')}`; median residual summary `{hawor_bridge.get('reference_projection_residual_px_median_per_row')}`; blockers `{hawor_bridge.get('blocking_reasons')}`",
+            f"HaWoR bridge NPZ: `{hawor_bridge.get('bridge_candidate_npz')}`",
+            f"HaWoR bridge residual review sheet: `{hawor_bridge.get('review_sheet', {}).get('path')}` exists=`{hawor_bridge.get('review_sheet', {}).get('exists')}`",
             f"MANO NPZ: `{case.get('mano_foundation_artifacts', {}).get('wilor_virtual_camera_npz', {}).get('path')}`",
             f"MANO overlay available frame-side rows: `{case['mechanisms']['mano_foundation_overlay'].get('available_frame_side_rows')}`",
             f"Tentative owner rows: `{owner.get('selected_tentative_owner_rows')}`; strict accepted: `{owner.get('strict_accepted_owner_rows')}`",
@@ -197,6 +209,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     mano_summary = load_json(mano_summary_path) if mano_summary_path.exists() else None
     hawor_requirement_path = args.output_root / "hawor_requirement_state" / "v18_hawor_requirement_state.json"
     hawor_requirement = load_json(hawor_requirement_path) if hawor_requirement_path.exists() else None
+    hawor_bridge_summary_path = args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_state_summary.json"
+    hawor_bridge_summary = load_json(hawor_bridge_summary_path) if hawor_bridge_summary_path.exists() else None
     manifest = {
         "method": "build_v18_corrective_bundle_manifest",
         "status": "corrective_bundle_index_not_full_v18_closure",
@@ -208,6 +222,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "mano_foundation_markdown": file_info(args.output_root / "mano_foundation_audit" / "V18_MANO_FOUNDATION_AUDIT.md"),
             "hawor_requirement_state": file_info(hawor_requirement_path),
             "hawor_requirement_markdown": file_info(args.output_root / "hawor_requirement_state" / "V18_HAWOR_REQUIREMENT_STATE.md"),
+            "hawor_bridge_summary": file_info(hawor_bridge_summary_path),
+            "hawor_bridge_markdown": file_info(args.output_root / "hawor_bridge_state" / "V18_HAWOR_BRIDGE_STATE.md"),
         },
         "hawor_provisioning_audit": {
             "status": hawor_audit.get("status") if isinstance(hawor_audit, dict) else None,
@@ -225,6 +241,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "v18_physical_hand_state_valid_from_hawor": hawor_requirement.get("v18_physical_hand_state_valid_from_hawor") if isinstance(hawor_requirement, dict) else None,
             "blocking_reasons": hawor_requirement.get("blocking_reasons") if isinstance(hawor_requirement, dict) else None,
             "claim_scope": hawor_requirement.get("claim_scope") if isinstance(hawor_requirement, dict) else None,
+        },
+        "hawor_bridge_state": {
+            "status": hawor_bridge_summary.get("status") if isinstance(hawor_bridge_summary, dict) else None,
+            "all_cases_hawor_bridge_accepted": hawor_bridge_summary.get("all_cases_hawor_bridge_accepted") if isinstance(hawor_bridge_summary, dict) else None,
+            "v18_physical_hand_state_valid_from_bridge": hawor_bridge_summary.get("v18_physical_hand_state_valid_from_bridge") if isinstance(hawor_bridge_summary, dict) else None,
+            "blocking_reasons": hawor_bridge_summary.get("blocking_reasons") if isinstance(hawor_bridge_summary, dict) else None,
+            "claim_scope": hawor_bridge_summary.get("claim_scope") if isinstance(hawor_bridge_summary, dict) else None,
         },
         "cases": cases,
         "all_listed_video_frame_counts_match": all(case["all_listed_video_frame_counts_match"] for case in cases),
