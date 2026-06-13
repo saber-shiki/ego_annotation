@@ -68,6 +68,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("validate_hawor_bridge_subset_policy", [py, "scripts/validate_v18_hawor_bridge_subset_policy.py", "--root", str(args.output_root)]),
         ("hawor_strict_contact_probe", [py, "scripts/build_v18_hawor_strict_contact_probe.py", "--output-root", str(args.output_root)]),
         ("validate_hawor_strict_contact_probe", [py, "scripts/validate_v18_hawor_strict_contact_probe.py", "--root", str(args.output_root)]),
+        ("hawor_temporal_offset_probe", [py, "scripts/build_v18_hawor_temporal_offset_probe.py", "--output-root", str(args.output_root)]),
+        ("validate_hawor_temporal_offset_probe", [py, "scripts/validate_v18_hawor_temporal_offset_probe.py", "--root", str(args.output_root)]),
         ("corrective_review_sheets", [py, "scripts/build_v18_corrective_review_sheets.py", "--corrective-root", str(args.output_root)]),
         ("corrective_montage", [py, "scripts/render_v18_corrective_montage.py", "--output-root", str(args.output_root)]),
         ("post_bridge_targeted_validation_report", [py, "scripts/build_v18_post_bridge_targeted_validation_report.py", "--output-root", str(args.output_root)]),

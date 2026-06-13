@@ -861,6 +861,14 @@ Current evidence: `223` strict trash contact rows evaluated, visible-surface min
 
 This is negative mechanism evidence: strict image-space bridge support does not imply 3D contact support. The leading mechanism is HaWoR bridge depth/scale mismatch; coordinate-frame mismatch with the visible-surface archive or a source-contact graph using a different hand/object geometry basis remain possible. The probe uses open visible object surfaces, so it cannot prove non-contact or nonpenetration; it only blocks immediate contact recomputation/acceptance from the trash bridge. Contact, nonpenetration, occlusion ownership, and V18 closure remain unaccepted.
 
+## Implementation Checkpoint 59: Temporal Offset Probe Rejects Simple Frame-Shift Explanation
+
+A candidate-only temporal-offset mechanism probe now evaluates whether the strict trash contact mismatch is explained by a fixed frame-index offset. For each strict contact row at frame `f`, it compares the visible object surface and camera at `f` against same-side HaWoR bridge hands from nearby frames `f + offset`, for offsets `[-5, 5]`.
+
+Current evidence: `223` rows evaluated. The dominant best-distance offset is `-5`, but it explains only `0.202` of rows; the dominant best-absolute-depth-gap offset is also `-5`, explaining only `0.193` of rows. Offset `0` distance median is `0.436 m`; best-any-offset distance median remains `0.393 m`. Offset `0` absolute camera-depth-gap median is `0.571 m`; best-any-offset absolute depth gap remains `0.541 m`.
+
+Interpretation: no consistent temporal offset explains the strict-contact mismatch. This makes a simple frame-index shift unlikely as the primary mechanism; scale/depth/coordinate-basis mismatch remains more plausible. The probe is diagnostic only and does not accept contact, nonpenetration, HaWoR foundation, or V18 closure.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
