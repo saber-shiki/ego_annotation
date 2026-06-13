@@ -16,9 +16,10 @@ from typing import Any
 
 TASK5_CASE = "task5_tomato_960"
 TASK5_LOCAL_CLIP = Path("/data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_5/20260118_1257_Rec3db6_P0_Sc6ab88_task_5.mp4")
+TASK5_REMOTE_ROOT = "/mnt/user-home/yiwen/ego_annotation_remote/hawor_work"
 TASK5_REMOTE_CLIP = "/mnt/user-home/yiwen/ego_annotation_remote/data/clip/20260118_1257_Rec3db6_P0_Sc6ab88_task_5.mp4"
 EXPECTED_LOCAL_OUTPUT_DIR = Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960")
-EXPECTED_REMOTE_OUTPUT_DIR = "$EGO_HAWOR_ROOT/outputs/task5_tomato_960_hawor_world"
+EXPECTED_REMOTE_OUTPUT_DIR = f"{TASK5_REMOTE_ROOT}/outputs/task5_tomato_960_hawor_world"
 EXPECTED_FRAME_COUNT = 960
 EXPECTED_FRAME_SIDE_ROWS = 1920
 EXPECTED_LOCAL_CLIP_SHA256 = "66791eaa646aac2e8cb24bb00fe30b2801436302327b1c46fea650446c41c4ac"
@@ -116,8 +117,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "CUDA-capable environment validated by remote_setup_hawor.sh",
         ],
         "current_missing_required_from_provisioning_audit": missing_required,
-        "setup_command": "EGO_HAWOR_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work EGO_MANO_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work/assets/mano scripts/remote_setup_hawor.sh",
-        "remote_export_command": f"EGO_HAWOR_CASE=task5_tomato_960 EGO_HAWOR_CLIP={args.remote_clip} EGO_HAWOR_CLIP_SHA256={remote_clip_sha256_env} EGO_HAWOR_OUTPUT_DIR={args.remote_output_dir} scripts/remote_run_hawor_export.sh",
+        "setup_command": f"EGO_HAWOR_ROOT={TASK5_REMOTE_ROOT} EGO_MANO_ROOT={TASK5_REMOTE_ROOT}/assets/mano scripts/remote_setup_hawor.sh",
+        "remote_export_command": f"EGO_HAWOR_ROOT={TASK5_REMOTE_ROOT} EGO_HAWOR_CASE=task5_tomato_960 EGO_HAWOR_CLIP={args.remote_clip} EGO_HAWOR_CLIP_SHA256={remote_clip_sha256_env} EGO_HAWOR_OUTPUT_DIR={args.remote_output_dir} scripts/remote_run_hawor_export.sh",
         "post_copy_expected_local_layout": {
             "npz": str(expected_npz),
             "qc_json": str(expected_qc),

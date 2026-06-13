@@ -52,9 +52,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require(flags.get("accepted_contact_occlusion_nonpenetration") is False, f"contract must not accept downstream physics: {flags}", failures)
     require(flags.get("task5_clip_identity_verified_locally") is True, f"contract should verify local task5 clip identity: {flags}", failures)
     remote_cmd = str(contract.get("remote_export_command"))
+    remote_root = "/mnt/user-home/yiwen/ego_annotation_remote/hawor_work"
+    expected_remote_output = f"{remote_root}/outputs/task5_tomato_960_hawor_world"
+    require(f"EGO_HAWOR_ROOT={remote_root}" in remote_cmd, f"remote command must set absolute HaWoR root: {remote_cmd}", failures)
     require("EGO_HAWOR_CASE=task5_tomato_960" in remote_cmd, f"remote command must select task5: {remote_cmd}", failures)
     require("20260118_1257_Rec3db6_P0_Sc6ab88_task_5" in remote_cmd, f"remote command must reference task5 clip: {remote_cmd}", failures)
     require(f"EGO_HAWOR_CLIP_SHA256={expected_sha256}" in remote_cmd, f"remote command must enforce task5 clip sha256: {remote_cmd}", failures)
+    require(f"EGO_HAWOR_OUTPUT_DIR={expected_remote_output}" in remote_cmd, f"remote command must set absolute task5 output dir: {remote_cmd}", failures)
+    require("EGO_HAWOR_OUTPUT_DIR=$EGO_HAWOR_ROOT" not in remote_cmd, f"remote command must not depend on caller shell EGO_HAWOR_ROOT expansion: {remote_cmd}", failures)
     require("20260108_1057_Recf94e_P0_S994da4_task_9" not in remote_cmd, f"remote command should not default to trash clip: {remote_cmd}", failures)
     blockers = contract.get("blocking_reasons") if isinstance(contract.get("blocking_reasons"), list) else []
     for blocker in [
