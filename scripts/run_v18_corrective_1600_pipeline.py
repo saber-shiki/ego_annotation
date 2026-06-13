@@ -40,6 +40,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("generic_rigid_se3_attempt", [py, "scripts/render_v18_rigid_se3_attempt.py", "--output-root", str(args.output_root), "--max-points-per-object", "900"]),
         ("hawor_ghost_or_failure", [py, "scripts/render_v18_hawor_ghost_attempt.py", "--output-root", str(args.output_root)]),
         ("hawor_provisioning_audit", [py, "scripts/audit_v18_hawor_provisioning.py", "--output-root", str(args.output_root)]),
+        ("hawor_hard_requirement_state", [py, "scripts/build_v18_hawor_requirement_state.py", "--output-root", str(args.output_root), "--hash-sources"]),
+        ("validate_hawor_hard_requirement_state", [py, "scripts/validate_v18_hawor_requirement_state.py", "--root", str(args.output_root)]),
         ("mano_foundation_state", [py, "scripts/build_v18_mano_foundation_state.py", "--output-root", str(args.output_root / "mano_foundation_audit"), "--hash-sources"]),
         ("validate_mano_foundation_state", [py, "scripts/validate_v18_mano_foundation_state.py", "--root", str(args.output_root / "mano_foundation_audit")]),
         ("mano_foundation_overlay", [py, "scripts/render_v18_mano_foundation_overlay.py", "--output-root", str(args.output_root)]),

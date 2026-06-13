@@ -68,6 +68,10 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
     montage = load_json(root / case / "corrective_montage" / "v18_corrective_montage_report.json")
     mano = load_json(root / "mano_foundation_audit" / case / "v18_mano_foundation_state_report.json")
     mano_overlay = load_json(root / "mano_foundation_audit" / case / "v18_mano_foundation_overlay_report.json")
+    hawor_requirement_path = root / "hawor_requirement_state" / "v18_hawor_requirement_state.json"
+    hawor_requirement = load_json(hawor_requirement_path) if hawor_requirement_path.exists() else {}
+    hawor_requirement_cases = hawor_requirement.get("cases") if isinstance(hawor_requirement.get("cases"), list) else []
+    hawor_requirement_case = next((row for row in hawor_requirement_cases if isinstance(row, dict) and row.get("case") == case), {})
     ann_path = root / case / "annotations_v18_corrective_state.json"
     ann = load_json(ann_path)
     review_sheets = sorted((root / "review_sheets").glob(f"{case}_*_corrective_review.jpg"))
@@ -101,6 +105,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
             "frame_local_visible_surface": {"candidate_objects": visible.get("candidate_objects"), "claim_scope": visible.get("claim_scope")},
             "geometry_coverage_audit": {"object_count": geometry_coverage.get("object_count"), "status_counts": geometry_coverage.get("status_counts"), "object_summaries": geometry_coverage.get("object_summaries"), "claim_scope": geometry_coverage.get("claim_scope")},
             "hawor_ghost_or_failure": {"measurement_rows": hawor.get("measurement_rows"), "draw_counts": hawor.get("draw_counts"), "execution_failure_logs": hawor.get("execution_failure_logs"), "claim_scope": hawor.get("claim_scope")},
+            "hawor_hard_requirement_state": {"status": hawor_requirement_case.get("status"), "hard_requirement": hawor_requirement_case.get("hard_requirement"), "accepted_v18_hawor_requirement_met": hawor_requirement_case.get("accepted_v18_hawor_requirement_met"), "accepted_metric_hand_state_from_hawor": hawor_requirement_case.get("accepted_metric_hand_state_from_hawor"), "available_hawor_frame_side_rows": hawor_requirement_case.get("available_hawor_frame_side_rows"), "expected_frame_side_rows": hawor_requirement_case.get("expected_frame_side_rows"), "full_timeline_hawor_npz_shape_valid": hawor_requirement_case.get("full_timeline_hawor_npz_shape_valid"), "blocking_reasons": hawor_requirement_case.get("blocking_reasons"), "claim_scope": hawor_requirement_case.get("claim_scope")},
             "temporal_hand_pose_smoothing": {"draw_counts": hand_smoothing.get("draw_counts"), "jitter_probe": hand_smoothing.get("jitter_probe"), "claim_scope": hand_smoothing.get("claim_scope")},
             "tentative_occlusion_owner": {"selected_tentative_owner_rows": owner.get("selected_tentative_owner_rows"), "strict_accepted_owner_rows": owner.get("strict_accepted_owner_rows"), "owner_object_counts": owner.get("owner_object_counts"), "acceptance_blocker_counts": owner.get("acceptance_blocker_counts"), "claim_scope": owner.get("claim_scope")},
             "occlusion_owner_acceptance_audit": {"candidate_rows": owner_audit.get("candidate_rows"), "strict_promotable_owner_rows": owner_audit.get("strict_promotable_owner_rows"), "category_counts": owner_audit.get("category_counts"), "claim_scope": owner_audit.get("claim_scope")},
@@ -140,6 +145,9 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         f"MANO foundation summary: valid `{manifest.get('mano_foundation_audit', {}).get('all_cases_foundational_mano_valid')}`; physical pipeline valid `{manifest.get('mano_foundation_audit', {}).get('v18_physical_pipeline_valid_without_further_hand_work')}`",
         f"- `{manifest.get('global_artifacts', {}).get('mano_foundation_summary', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('mano_foundation_markdown', {}).get('path')}`",
+        f"HaWoR hard requirement: status `{manifest.get('hawor_hard_requirement_state', {}).get('status')}`; all cases met `{manifest.get('hawor_hard_requirement_state', {}).get('all_cases_hawor_requirement_met')}`; physical hand state valid `{manifest.get('hawor_hard_requirement_state', {}).get('v18_physical_hand_state_valid_from_hawor')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_requirement_state', {}).get('path')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_requirement_markdown', {}).get('path')}`",
         "",
     ]
     for case in manifest["cases"]:
@@ -148,6 +156,7 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         lines += [f"Annotation state: `{ann['path']}`", f"Counts: `{ann.get('counts')}`", ""]
         owner = case["mechanisms"]["tentative_occlusion_owner"]
         hawor = case["mechanisms"]["hawor_ghost_or_failure"]
+        hawor_hard = case["mechanisms"].get("hawor_hard_requirement_state", {})
         hand_smoothing = case["mechanisms"]["temporal_hand_pose_smoothing"]
         owner_audit = case["mechanisms"]["occlusion_owner_acceptance_audit"]
         contact = case["mechanisms"]["contact_nonpenetration"]
@@ -157,6 +166,7 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         hawor_mano = mano.get("hawor_world_mano_candidates", {}) if isinstance(mano.get("hawor_world_mano_candidates"), dict) else {}
         lines += [
             f"MANO foundation valid: `{mano.get('foundational_mano_state_valid')}`; recovered WiLoR virtual-camera raw candidates: `{wilor_mano.get('complete_virtual_camera_candidate_rows')}`; unique frame-side rows: `{wilor_mano.get('unique_virtual_camera_frame_side_rows')}`; metric-world aligned: `{wilor_mano.get('metric_world_alignment_valid')}`; HaWoR world rows: `{hawor_mano.get('complete_world_surface_param_rows')}`; blockers: `{mano.get('blocking_reasons')}`",
+            f"HaWoR hard requirement state: status `{hawor_hard.get('status')}`; available HaWoR frame-side rows `{hawor_hard.get('available_hawor_frame_side_rows')}/{hawor_hard.get('expected_frame_side_rows')}`; requirement met `{hawor_hard.get('accepted_v18_hawor_requirement_met')}`; blockers `{hawor_hard.get('blocking_reasons')}`",
             f"MANO NPZ: `{case.get('mano_foundation_artifacts', {}).get('wilor_virtual_camera_npz', {}).get('path')}`",
             f"MANO overlay available frame-side rows: `{case['mechanisms']['mano_foundation_overlay'].get('available_frame_side_rows')}`",
             f"Tentative owner rows: `{owner.get('selected_tentative_owner_rows')}`; strict accepted: `{owner.get('strict_accepted_owner_rows')}`",
@@ -185,6 +195,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     hawor_audit = load_json(hawor_audit_path) if hawor_audit_path.exists() else None
     mano_summary_path = args.output_root / "mano_foundation_audit" / "v18_mano_foundation_audit_summary.json"
     mano_summary = load_json(mano_summary_path) if mano_summary_path.exists() else None
+    hawor_requirement_path = args.output_root / "hawor_requirement_state" / "v18_hawor_requirement_state.json"
+    hawor_requirement = load_json(hawor_requirement_path) if hawor_requirement_path.exists() else None
     manifest = {
         "method": "build_v18_corrective_bundle_manifest",
         "status": "corrective_bundle_index_not_full_v18_closure",
@@ -194,6 +206,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "hawor_provisioning_audit_markdown": file_info(args.output_root / "hawor_provisioning_audit" / "V18_HAWOR_PROVISIONING_AUDIT.md"),
             "mano_foundation_summary": file_info(mano_summary_path),
             "mano_foundation_markdown": file_info(args.output_root / "mano_foundation_audit" / "V18_MANO_FOUNDATION_AUDIT.md"),
+            "hawor_requirement_state": file_info(hawor_requirement_path),
+            "hawor_requirement_markdown": file_info(args.output_root / "hawor_requirement_state" / "V18_HAWOR_REQUIREMENT_STATE.md"),
         },
         "hawor_provisioning_audit": {
             "status": hawor_audit.get("status") if isinstance(hawor_audit, dict) else None,
@@ -204,6 +218,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "all_cases_foundational_mano_valid": mano_summary.get("all_cases_foundational_mano_valid") if isinstance(mano_summary, dict) else None,
             "v18_physical_pipeline_valid_without_further_hand_work": mano_summary.get("v18_physical_pipeline_valid_without_further_hand_work") if isinstance(mano_summary, dict) else None,
             "claim_scope": mano_summary.get("claim_scope") if isinstance(mano_summary, dict) else None,
+        },
+        "hawor_hard_requirement_state": {
+            "status": hawor_requirement.get("status") if isinstance(hawor_requirement, dict) else None,
+            "all_cases_hawor_requirement_met": hawor_requirement.get("all_cases_hawor_requirement_met") if isinstance(hawor_requirement, dict) else None,
+            "v18_physical_hand_state_valid_from_hawor": hawor_requirement.get("v18_physical_hand_state_valid_from_hawor") if isinstance(hawor_requirement, dict) else None,
+            "blocking_reasons": hawor_requirement.get("blocking_reasons") if isinstance(hawor_requirement, dict) else None,
+            "claim_scope": hawor_requirement.get("claim_scope") if isinstance(hawor_requirement, dict) else None,
         },
         "cases": cases,
         "all_listed_video_frame_counts_match": all(case["all_listed_video_frame_counts_match"] for case in cases),
