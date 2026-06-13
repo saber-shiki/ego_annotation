@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${EGO_HAWOR_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote/hawor_work}"
 CASE="${EGO_HAWOR_CASE:-trash_1050}"
 IMG_FOCAL="${EGO_HAWOR_IMG_FOCAL:-2304}"
@@ -37,7 +38,8 @@ for required in \
   "$CHECKPOINT" \
   "$INFILLER" \
   "$CONFIG" \
-  "$CLIP"; do
+  "$CLIP" \
+  "$SCRIPT_DIR/export_hawor_world.py"; do
   if [ ! -e "$required" ]; then
     echo "missing required HaWoR export input: $required" >&2
     exit 1
@@ -65,7 +67,7 @@ export PYTHONPATH="$HAWOR_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 echo "running HaWoR export case=$CASE clip=$CLIP output=$OUTPUT_DIR" >&2
-python repo/scripts/export_hawor_world.py \
+python "$SCRIPT_DIR/export_hawor_world.py" \
   --hawor-root "$HAWOR_ROOT" \
   --video_path "$CLIP" \
   --checkpoint "$CHECKPOINT" \
