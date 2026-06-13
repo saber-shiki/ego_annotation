@@ -115,6 +115,36 @@ def bbox_contains_fraction(points2d: np.ndarray, bbox: Any) -> float | None:
     return float(np.mean(inside))
 
 
+def image_inside_fraction(points2d: np.ndarray, width: float = 1920.0, height: float = 1080.0) -> float:
+    inside = (points2d[:, 0] >= 0.0) & (points2d[:, 0] < width) & (points2d[:, 1] >= 0.0) & (points2d[:, 1] < height)
+    return float(np.mean(inside))
+
+
+def visibility_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("current_visibility_state"))
+        out[key] = out.get(key, 0) + 1
+    return dict(sorted(out.items()))
+
+
+def residual_tail_summary(rows: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
+    selected = [row for row in rows if float(row.get("projection_residual_px_median", -1.0)) > threshold]
+    if not selected:
+        return {"threshold_px": threshold, "count": 0}
+    return {
+        "threshold_px": threshold,
+        "count": int(len(selected)),
+        "frame_min": int(min(int(row["frame_idx"]) for row in selected)),
+        "frame_max": int(max(int(row["frame_idx"]) for row in selected)),
+        "residual_median_px": float(np.median([float(row["projection_residual_px_median"]) for row in selected])),
+        "current_visibility_counts": visibility_counts(selected),
+        "hawor_projected_inside_image_fraction": summarize([float(row["hawor_projected_inside_image_fraction"]) for row in selected]),
+        "reference_projected_inside_image_fraction": summarize([float(row["reference_projected_inside_image_fraction"]) for row in selected]),
+        "preview": selected[:24],
+    }
+
+
 def estimate_sim3(source: np.ndarray, target: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
     if source.shape != target.shape or source.ndim != 2 or source.shape[1] != 3 or len(source) < 3:
         raise RuntimeError("Sim3 alignment requires matching Nx3 arrays with at least 3 points")
@@ -244,6 +274,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     median_depth: list[float] = []
     reference_sources: list[str] = []
     row_reports: list[dict[str, Any]] = []
+    residual_classification_rows: list[dict[str, Any]] = []
     rows_without_reference = 0
     nonpositive_depth_rows = 0
     skipped_rows: list[dict[str, Any]] = []
@@ -287,6 +318,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 residual = np.linalg.norm(projected - reference, axis=1)
                 med = float(np.median(residual))
                 p95 = float(np.percentile(residual, 95.0))
+                h_inside = image_inside_fraction(projected)
+                r_inside = image_inside_fraction(reference)
                 projection_median.append(med)
                 projection_p95.append(p95)
                 row.update({
@@ -295,6 +328,18 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                     "reference_projection_source_backend": ref_source,
                     "projection_residual_px_median": med,
                     "projection_residual_px_p95": p95,
+                    "hawor_projected_inside_image_fraction": h_inside,
+                    "reference_projected_inside_image_fraction": r_inside,
+                    "current_visibility_state": current_hands.get(side, {}).get("visibility_state"),
+                })
+                residual_classification_rows.append({
+                    "frame_idx": frame_idx,
+                    "side": side,
+                    "projection_residual_px_median": med,
+                    "projection_residual_px_p95": p95,
+                    "hawor_projected_inside_image_fraction": h_inside,
+                    "reference_projected_inside_image_fraction": r_inside,
+                    "current_visibility_state": current_hands.get(side, {}).get("visibility_state"),
                 })
                 if ref_source:
                     reference_sources.append(ref_source)
@@ -363,6 +408,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "reference_projection_residual_px_median_per_row": residual_summary,
         "reference_projection_residual_px_p95_per_row": summarize(projection_p95),
         "reference_projection_residual_threshold_counts": residual_threshold_counts,
+        "projection_residual_tail_localization": {
+            "median_px_gt_200": residual_tail_summary(residual_classification_rows, 200.0),
+            "median_px_gt_500": residual_tail_summary(residual_classification_rows, 500.0),
+            "median_px_gt_1000": residual_tail_summary(residual_classification_rows, 1000.0),
+        },
         "projected_hawor_joints_inside_current_bbox_fraction": summarize(bbox_inside),
         "median_hawor_camera_depth_m": summarize(median_depth),
         "camera_trajectory_alignment": camera_alignment,

@@ -34,6 +34,14 @@ def validate_trash(case: dict[str, Any], failures: list[str]) -> None:
     require(p95 > 500.0, f"trash residual tail should block acceptance, p95={p95}", failures)
     thresholds = case.get("reference_projection_residual_threshold_counts") if isinstance(case.get("reference_projection_residual_threshold_counts"), dict) else {}
     require(thresholds.get("median_px_gt_200", 0) > 0, "trash should preserve large-residual rows as blocker evidence", failures)
+    tail = case.get("projection_residual_tail_localization") if isinstance(case.get("projection_residual_tail_localization"), dict) else {}
+    tail_1000 = tail.get("median_px_gt_1000") if isinstance(tail.get("median_px_gt_1000"), dict) else {}
+    require(tail_1000.get("count") == 30, f"trash expected 30 >1000px tail rows, got {tail_1000.get('count')}", failures)
+    require(tail_1000.get("frame_min") == 509 and tail_1000.get("frame_max") == 528, f"trash >1000px tail should remain localized to frames 509-528, got {tail_1000.get('frame_min')}-{tail_1000.get('frame_max')}", failures)
+    visibility = tail_1000.get("current_visibility_counts") if isinstance(tail_1000.get("current_visibility_counts"), dict) else {}
+    require(int(visibility.get("unresolved", 0)) >= 29, f"trash >1000px tail should mostly be unresolved visibility, got {visibility}", failures)
+    hawor_inside = tail_1000.get("hawor_projected_inside_image_fraction") if isinstance(tail_1000.get("hawor_projected_inside_image_fraction"), dict) else {}
+    require(float(hawor_inside.get("median", 999.0)) == 0.0, f"trash >1000px tail should preserve HaWoR out-of-frame evidence, got {hawor_inside}", failures)
     cam = case.get("camera_trajectory_alignment") if isinstance(case.get("camera_trajectory_alignment"), dict) else {}
     global_err = cam.get("global_sim3", {}).get("error_m", {}) if isinstance(cam.get("global_sim3"), dict) else {}
     require(float(global_err.get("median", 999.0)) > 0.1, f"global Sim3 median unexpectedly small; check acceptance logic: {global_err}", failures)
