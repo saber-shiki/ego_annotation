@@ -8,6 +8,7 @@ the current external blocker into a reproducible HaWoR export.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -20,6 +21,14 @@ EXPECTED_LOCAL_OUTPUT_DIR = Path("/data2/ego_annotation_outputs/v18_corrective_1
 EXPECTED_REMOTE_OUTPUT_DIR = "$EGO_HAWOR_ROOT/outputs/task5_tomato_960_hawor_world"
 EXPECTED_FRAME_COUNT = 960
 EXPECTED_FRAME_SIDE_ROWS = 1920
+EXPECTED_LOCAL_CLIP_SHA256 = "66791eaa646aac2e8cb24bb00fe30b2801436302327b1c46fea650446c41c4ac"
+EXPECTED_VIDEO_METADATA = {
+    "frame_count": EXPECTED_FRAME_COUNT,
+    "fps": 30.0,
+    "width": 1920,
+    "height": 1080,
+    "duration_s": 32.0,
+}
 
 
 def load_json(path: Path) -> Any:
@@ -34,8 +43,22 @@ def write_json(path: Path, payload: Any) -> None:
         f.write("\n")
 
 
-def file_info(path: Path) -> dict[str, Any]:
-    return {"path": str(path), "exists": path.exists(), "is_file": path.is_file() if path.exists() else False, "bytes": path.stat().st_size if path.exists() and path.is_file() else None}
+def sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def file_info(path: Path, *, hash_file: bool = False) -> dict[str, Any]:
+    info = {"path": str(path), "exists": path.exists(), "is_file": path.is_file() if path.exists() else False, "bytes": path.stat().st_size if path.exists() and path.is_file() else None}
+    if hash_file and path.exists() and path.is_file():
+        info["sha256"] = sha256(path)
+    return info
 
 
 def task5_requirement_case(requirement: dict[str, Any]) -> dict[str, Any]:
@@ -56,6 +79,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     expected_qc = args.expected_local_output_dir / "qc_hawor_world_hands.json"
     missing_required = provisioning.get("missing_required") if isinstance(provisioning.get("missing_required"), list) else []
     output_exists = expected_npz.exists()
+    local_clip_info = file_info(TASK5_LOCAL_CLIP, hash_file=True)
+    local_clip_sha256 = local_clip_info.get("sha256")
+    local_clip_matches_expected = local_clip_sha256 == EXPECTED_LOCAL_CLIP_SHA256
+    remote_clip_sha256_env = local_clip_sha256 or EXPECTED_LOCAL_CLIP_SHA256
     status = "task5_hawor_output_present_needs_requirement_rebuild" if output_exists else "blocked_task5_hawor_export_contract_written_waiting_for_external_assets_or_output"
     report = {
         "method": "build_v18_hawor_task5_export_contract",
@@ -64,7 +91,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "case": TASK5_CASE,
         "expected_frame_count": EXPECTED_FRAME_COUNT,
         "expected_frame_side_rows": EXPECTED_FRAME_SIDE_ROWS,
-        "local_raw_clip": file_info(TASK5_LOCAL_CLIP),
+        "local_raw_clip": local_clip_info,
+        "task5_clip_identity": {
+            "expected_local_clip_sha256": EXPECTED_LOCAL_CLIP_SHA256,
+            "local_clip_sha256": local_clip_sha256,
+            "local_clip_matches_expected_sha256": local_clip_matches_expected,
+            "expected_video_metadata": EXPECTED_VIDEO_METADATA,
+            "remote_clip_sha256_env": remote_clip_sha256_env,
+            "remote_preflight_enforced_by": "scripts/remote_run_hawor_export.sh EGO_HAWOR_CLIP_SHA256",
+            "identity_claim_scope": "clip_identity_guard_only_no_HaWoR_or_physical_acceptance",
+        },
         "remote_clip_expected_path": args.remote_clip,
         "expected_local_output_npz": file_info(expected_npz),
         "expected_local_qc_json": file_info(expected_qc),
@@ -81,7 +117,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ],
         "current_missing_required_from_provisioning_audit": missing_required,
         "setup_command": "EGO_HAWOR_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work EGO_MANO_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work/assets/mano scripts/remote_setup_hawor.sh",
-        "remote_export_command": f"EGO_HAWOR_CASE=task5_tomato_960 EGO_HAWOR_CLIP={args.remote_clip} EGO_HAWOR_OUTPUT_DIR={args.remote_output_dir} scripts/remote_run_hawor_export.sh",
+        "remote_export_command": f"EGO_HAWOR_CASE=task5_tomato_960 EGO_HAWOR_CLIP={args.remote_clip} EGO_HAWOR_CLIP_SHA256={remote_clip_sha256_env} EGO_HAWOR_OUTPUT_DIR={args.remote_output_dir} scripts/remote_run_hawor_export.sh",
         "post_copy_expected_local_layout": {
             "npz": str(expected_npz),
             "qc_json": str(expected_qc),
@@ -99,6 +135,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ],
         "acceptance_flags": {
             "task5_hawor_output_present": output_exists,
+            "task5_clip_identity_verified_locally": local_clip_matches_expected,
             "accepted_v18_hawor_requirement_met": False,
             "accepted_metric_hand_state_from_hawor": False,
             "accepted_contact_occlusion_nonpenetration": False,
@@ -113,7 +150,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "external_HaWoR_assets_or_output_required_for_task5",
             "do_not_substitute_WiLoR_HaMeR_MANO2D_or_depth_probe",
             "post_ingest_bridge_and_downstream_validation_required_before_any_physical_claim",
-        ] + (["task5_expected_hawor_npz_absent_at_contract_path"] if not output_exists else ["task5_hawor_npz_present_but_not_validated_or_accepted_by_this_contract"]),
+            "remote_task5_clip_sha256_must_match_contract_before_export",
+        ] + (["task5_local_clip_sha256_mismatch_or_missing"] if not local_clip_matches_expected else []) + (["task5_expected_hawor_npz_absent_at_contract_path"] if not output_exists else ["task5_hawor_npz_present_but_not_validated_or_accepted_by_this_contract"]),
         "elapsed_s": time.perf_counter() - start,
     }
     out_dir = args.output_root / "hawor_task5_export_contract"
@@ -125,6 +163,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "",
         f"Status: `{status}`",
         f"Task5 local clip: `{TASK5_LOCAL_CLIP}` exists=`{TASK5_LOCAL_CLIP.exists()}`",
+        f"Task5 local clip SHA256: `{local_clip_sha256}` expected=`{EXPECTED_LOCAL_CLIP_SHA256}` match=`{local_clip_matches_expected}`",
+        f"Remote export command includes `EGO_HAWOR_CLIP_SHA256={remote_clip_sha256_env}` and `remote_run_hawor_export.sh` refuses mismatches.",
         f"Expected local output NPZ: `{expected_npz}` exists=`{expected_npz.exists()}`",
         f"Expected frame-side rows: `{EXPECTED_FRAME_SIDE_ROWS}`",
         "",

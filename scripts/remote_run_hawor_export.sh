@@ -44,6 +44,20 @@ for required in \
   fi
 done
 
+if [ -n "${EGO_HAWOR_CLIP_SHA256:-}" ]; then
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "EGO_HAWOR_CLIP_SHA256 was provided but sha256sum is unavailable" >&2
+    exit 1
+  fi
+  ACTUAL_CLIP_SHA256="$(sha256sum "$CLIP" | awk '{print $1}')"
+  if [ "$ACTUAL_CLIP_SHA256" != "$EGO_HAWOR_CLIP_SHA256" ]; then
+    echo "task clip sha256 mismatch for $CLIP" >&2
+    echo "expected: $EGO_HAWOR_CLIP_SHA256" >&2
+    echo "actual:   $ACTUAL_CLIP_SHA256" >&2
+    exit 1
+  fi
+fi
+
 mkdir -p "$OUTPUT_DIR"
 cd "$ROOT"
 source .venv_hawor/bin/activate

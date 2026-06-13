@@ -28,23 +28,35 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require(contract.get("expected_frame_count") == 960, f"expected_frame_count unexpected {contract.get('expected_frame_count')}", failures)
     require(contract.get("expected_frame_side_rows") == 1920, f"expected_frame_side_rows unexpected {contract.get('expected_frame_side_rows')}", failures)
     local_clip = contract.get("local_raw_clip") if isinstance(contract.get("local_raw_clip"), dict) else {}
+    expected_sha256 = "66791eaa646aac2e8cb24bb00fe30b2801436302327b1c46fea650446c41c4ac"
     require(local_clip.get("exists") is True, f"task5 local clip should exist for contract: {local_clip}", failures)
     require(str(local_clip.get("path", "")).endswith("20260118_1257_Rec3db6_P0_Sc6ab88_task_5.mp4"), f"contract local clip is not task5: {local_clip}", failures)
+    require(local_clip.get("sha256") == expected_sha256, f"task5 local clip sha256 mismatch: {local_clip}", failures)
+    identity = contract.get("task5_clip_identity") if isinstance(contract.get("task5_clip_identity"), dict) else {}
+    require(identity.get("expected_local_clip_sha256") == expected_sha256, f"identity expected sha unexpected: {identity}", failures)
+    require(identity.get("local_clip_sha256") == expected_sha256, f"identity local sha unexpected: {identity}", failures)
+    require(identity.get("local_clip_matches_expected_sha256") is True, f"identity should verify local clip: {identity}", failures)
+    require(identity.get("remote_clip_sha256_env") == expected_sha256, f"remote sha env unexpected: {identity}", failures)
+    metadata = identity.get("expected_video_metadata") if isinstance(identity.get("expected_video_metadata"), dict) else {}
+    require(metadata.get("frame_count") == 960 and metadata.get("width") == 1920 and metadata.get("height") == 1080 and metadata.get("fps") == 30.0, f"expected video metadata unexpected: {metadata}", failures)
     expected_npz = contract.get("expected_local_output_npz") if isinstance(contract.get("expected_local_output_npz"), dict) else {}
     require(expected_npz.get("path") == "/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz", f"expected task5 NPZ path unexpected {expected_npz}", failures)
     flags = contract.get("acceptance_flags") if isinstance(contract.get("acceptance_flags"), dict) else {}
     require(flags.get("accepted_v18_hawor_requirement_met") is False, f"contract must not accept HaWoR requirement: {flags}", failures)
     require(flags.get("accepted_metric_hand_state_from_hawor") is False, f"contract must not accept metric hand state: {flags}", failures)
     require(flags.get("accepted_contact_occlusion_nonpenetration") is False, f"contract must not accept downstream physics: {flags}", failures)
+    require(flags.get("task5_clip_identity_verified_locally") is True, f"contract should verify local task5 clip identity: {flags}", failures)
     remote_cmd = str(contract.get("remote_export_command"))
     require("EGO_HAWOR_CASE=task5_tomato_960" in remote_cmd, f"remote command must select task5: {remote_cmd}", failures)
     require("20260118_1257_Rec3db6_P0_Sc6ab88_task_5" in remote_cmd, f"remote command must reference task5 clip: {remote_cmd}", failures)
+    require(f"EGO_HAWOR_CLIP_SHA256={expected_sha256}" in remote_cmd, f"remote command must enforce task5 clip sha256: {remote_cmd}", failures)
     require("20260108_1057_Recf94e_P0_S994da4_task_9" not in remote_cmd, f"remote command should not default to trash clip: {remote_cmd}", failures)
     blockers = contract.get("blocking_reasons") if isinstance(contract.get("blocking_reasons"), list) else []
     for blocker in [
         "external_HaWoR_assets_or_output_required_for_task5",
         "do_not_substitute_WiLoR_HaMeR_MANO2D_or_depth_probe",
         "post_ingest_bridge_and_downstream_validation_required_before_any_physical_claim",
+        "remote_task5_clip_sha256_must_match_contract_before_export",
     ]:
         require(blocker in blockers, f"missing blocker {blocker}", failures)
     if expected_npz.get("exists") is False:

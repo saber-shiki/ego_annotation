@@ -845,7 +845,7 @@ V18 now records an explicit task5 HaWoR export contract under:
 /data2/ego_annotation_outputs/v18_corrective_1600/hawor_task5_export_contract/
 ```
 
-The contract names the task5 raw clip, the expected local HaWoR output path, the remote task5 export command, required HaWoR/MANO assets, and the post-ingest validators. `remote_run_hawor_export.sh` now supports `EGO_HAWOR_CASE=task5_tomato_960` so task5 export is not hidden behind the previous trash-only default. The expected local task5 output path is:
+The contract names the task5 raw clip, the expected local HaWoR output path, the remote task5 export command, required HaWoR/MANO assets, and the post-ingest validators. It also records the task5 source clip SHA256 `66791eaa646aac2e8cb24bb00fe30b2801436302327b1c46fea650446c41c4ac` plus expected 960-frame/30fps/1920x1080 identity metadata. `remote_run_hawor_export.sh` now supports `EGO_HAWOR_CASE=task5_tomato_960` and refuses export if `EGO_HAWOR_CLIP_SHA256` is provided and the remote clip hash differs, so task5 export is not hidden behind the previous trash-only default or a wrong remote video. The expected local task5 output path is:
 
 ```text
 /data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz
