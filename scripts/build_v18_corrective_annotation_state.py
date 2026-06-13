@@ -503,6 +503,8 @@ def hand_corrective_state(
                 "category": row.get("category"),
                 "strict_promotable_contact": bool(row.get("strict_promotable_contact")),
                 "accepted_contact_owner_before_physical_veto": bool(row.get("accepted_contact_owner_before_physical_veto")),
+                "source_graph_contact_candidate_before_physical_veto": bool(row.get("source_graph_contact_candidate_before_physical_veto")),
+                "contact_owner_claim_context": row.get("contact_owner_claim_context"),
                 "signed_local_penetration_detected": bool(row.get("signed_local_penetration_detected")),
                 "triangle_local_penetration_detected": bool(row.get("triangle_local_penetration_detected")),
                 "triangle_mesh_watertight_by_edges": bool(row.get("triangle_mesh_watertight_by_edges")),
