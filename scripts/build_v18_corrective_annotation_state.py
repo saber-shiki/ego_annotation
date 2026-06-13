@@ -509,7 +509,7 @@ def hand_corrective_state(
                 "object_id": row.get("object_id"),
                 "category": row.get("category"),
                 "strict_promotable_contact": bool(row.get("strict_promotable_contact")),
-                "accepted_contact_owner_before_physical_veto": bool(row.get("accepted_contact_owner_before_physical_veto")),
+                "source_graph_contact_candidate_before_physical_veto": bool(row.get("source_graph_contact_candidate_before_physical_veto")),
                 "source_graph_contact_candidate_before_physical_veto": bool(row.get("source_graph_contact_candidate_before_physical_veto")),
                 "contact_owner_claim_context": row.get("contact_owner_claim_context"),
                 "signed_local_penetration_detected": bool(row.get("signed_local_penetration_detected")),
@@ -531,13 +531,13 @@ def hand_corrective_state(
         if not contact_row.get("accepted_contact_owner"):
             status = "graph_selected_not_accepted"
         elif signed_pen or tri_pen:
-            status = "graph_accepted_but_local_penetration_veto"
+            status = "source_graph_candidate_but_local_penetration_veto"
         else:
-            status = "graph_accepted_no_local_penetration_flag"
+            status = "source_graph_candidate_no_local_penetration_flag"
         out["contact_nonpenetration_state"] = {
             "status": status,
             "chosen_contact_object_id": oid,
-            "accepted_contact_owner_before_nonpenetration_veto": contact_row.get("accepted_contact_owner"),
+            "source_graph_contact_candidate_before_nonpenetration_veto": bool(contact_row.get("accepted_contact_owner")),
             "min_hand_surface_to_object_mesh_m": contact_row.get("min_hand_surface_to_object_mesh_m"),
             "unary_energy_margin": contact_row.get("unary_energy_margin"),
             "source_row_blockers": contact_row.get("source_row_blockers"),
@@ -703,12 +703,12 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     geometry_summaries = geometry_coverage.get("object_summaries", {}) if isinstance(geometry_coverage.get("object_summaries"), dict) else {}
     mano_foundation_path = args.corrective_root / "mano_foundation_audit" / case / "v18_mano_foundation_state_report.json"
     mano_foundation = load_json(mano_foundation_path) if mano_foundation_path.exists() else {}
-    wilor_foundation = mano_foundation.get("recovered_wilor_world_mano_candidates", {}) if isinstance(mano_foundation.get("recovered_wilor_world_mano_candidates"), dict) else {}
+    wilor_foundation = mano_foundation.get("recovered_wilor_virtual_camera_mano_candidates", {}) if isinstance(mano_foundation.get("recovered_wilor_virtual_camera_mano_candidates"), dict) else {}
     hawor_foundation = mano_foundation.get("hawor_world_mano_candidates", {}) if isinstance(mano_foundation.get("hawor_world_mano_candidates"), dict) else {}
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
-    counts["mano_foundation_recovered_wilor_world_rows"] = int(wilor_foundation.get("complete_world_rows", 0)) if isinstance(wilor_foundation.get("complete_world_rows", 0), int) else int(float(wilor_foundation.get("complete_world_rows", 0) or 0))
-    counts["mano_foundation_recovered_wilor_unique_frame_side_rows"] = int(wilor_foundation.get("unique_complete_world_frame_side_rows", 0)) if isinstance(wilor_foundation.get("unique_complete_world_frame_side_rows", 0), int) else int(float(wilor_foundation.get("unique_complete_world_frame_side_rows", 0) or 0))
+    counts["mano_foundation_wilor_virtual_candidate_rows"] = int(wilor_foundation.get("complete_virtual_camera_candidate_rows", 0)) if isinstance(wilor_foundation.get("complete_virtual_camera_candidate_rows", 0), int) else int(float(wilor_foundation.get("complete_virtual_camera_candidate_rows", 0) or 0))
+    counts["mano_foundation_wilor_virtual_unique_frame_side_rows"] = int(wilor_foundation.get("unique_virtual_camera_frame_side_rows", 0)) if isinstance(wilor_foundation.get("unique_virtual_camera_frame_side_rows", 0), int) else int(float(wilor_foundation.get("unique_virtual_camera_frame_side_rows", 0) or 0))
     counts["mano_foundation_hawor_world_rows"] = int(hawor_foundation.get("complete_world_surface_param_rows", 0)) if isinstance(hawor_foundation.get("complete_world_surface_param_rows", 0), int) else int(float(hawor_foundation.get("complete_world_surface_param_rows", 0) or 0))
     for summary in geometry_summaries.values():
         if isinstance(summary, dict):
@@ -850,7 +850,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "nonpenetration_repair_proposal_report": str(args.corrective_root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json"),
             "temporal_hand_pose_smoothing_report": str(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json"),
             "mano_foundation_report": str(mano_foundation_path),
-            "mano_foundation_wilor_world_npz": wilor_foundation.get("npz_path") if isinstance(wilor_foundation, dict) else None,
+            "mano_foundation_wilor_virtual_camera_npz": wilor_foundation.get("npz_path") if isinstance(wilor_foundation, dict) else None,
         },
         "occlusion_owner_selected_rows": len(occlusion_owner_rows),
         "occlusion_owner_strict_accepted_rows": 0,
@@ -858,7 +858,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "occlusion_owner_acceptance_audit_category_counts": occlusion_audit_report.get("category_counts") if isinstance(occlusion_audit_report, dict) else None,
         "occlusion_owner_acceptance_audit_strict_promotable_rows": occlusion_audit_report.get("strict_promotable_owner_rows") if isinstance(occlusion_audit_report, dict) else None,
         "contact_graph_selected_rows": len(contact_rows),
-        "contact_graph_accepted_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows") if isinstance(contact_report, dict) else None,
+        "source_graph_contact_candidate_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows") if isinstance(contact_report, dict) else None,
         "contact_acceptance_audit_category_counts": contact_audit_report.get("category_counts") if isinstance(contact_audit_report, dict) else None,
         "contact_acceptance_audit_strict_promotable_rows": contact_audit_report.get("strict_promotable_contact_rows") if isinstance(contact_audit_report, dict) else None,
         "rigid_residual_candidate_objects": residual_report.get("candidate_objects") if isinstance(residual_report, dict) else None,
@@ -868,9 +868,10 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "foundational_mano_state_valid": mano_foundation.get("foundational_mano_state_valid") if isinstance(mano_foundation, dict) else None,
         "v18_physical_pipeline_valid_without_further_hand_work": mano_foundation.get("v18_physical_pipeline_valid_without_further_hand_work") if isinstance(mano_foundation, dict) else None,
         "mano_foundation_blocking_reasons": mano_foundation.get("blocking_reasons") if isinstance(mano_foundation, dict) else None,
-        "mano_foundation_recovered_wilor_world_rows": wilor_foundation.get("complete_world_rows") if isinstance(wilor_foundation, dict) else None,
-        "mano_foundation_recovered_wilor_unique_frame_side_rows": wilor_foundation.get("unique_complete_world_frame_side_rows") if isinstance(wilor_foundation, dict) else None,
-        "mano_foundation_recovered_wilor_projection_residual_px_median": wilor_foundation.get("projection_residual_px_median") if isinstance(wilor_foundation, dict) else None,
+        "mano_foundation_wilor_virtual_candidate_rows": wilor_foundation.get("complete_virtual_camera_candidate_rows") if isinstance(wilor_foundation, dict) else None,
+        "mano_foundation_wilor_virtual_unique_frame_side_rows": wilor_foundation.get("unique_virtual_camera_frame_side_rows") if isinstance(wilor_foundation, dict) else None,
+        "mano_foundation_wilor_internal_projection_residual_px_median": wilor_foundation.get("wilor_internal_projection_residual_px_median") if isinstance(wilor_foundation, dict) else None,
+        "mano_foundation_wilor_metric_world_alignment_valid": wilor_foundation.get("metric_world_alignment_valid") if isinstance(wilor_foundation, dict) else None,
         "mano_foundation_hawor_world_rows": hawor_foundation.get("complete_world_surface_param_rows") if isinstance(hawor_foundation, dict) else None,
         "nonpenetration_repair_proposal_status_counts": repair_report.get("proposal_status_counts") if isinstance(repair_report, dict) else None,
         "temporal_hand_pose_smoothing_draw_counts": smoothed_hand_report.get("draw_counts") if isinstance(smoothed_hand_report, dict) else None,

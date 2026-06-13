@@ -149,8 +149,8 @@ def contact_status(row: dict[str, Any], signed: dict[str, Any] | None, tri: dict
     signed_pen = bool(signed and signed.get("local_penetration_detected"))
     tri_pen = bool(tri and tri.get("local_triangle_penetration_detected"))
     if signed_pen or tri_pen:
-        return "graph_accepted_but_local_penetration_veto", (255, 60, 60)
-    return "graph_accepted_no_local_penetration_flag", (80, 255, 120)
+        return "source_graph_candidate_but_local_penetration_veto", (255, 60, 60)
+    return "source_graph_candidate_no_local_penetration_flag", (80, 255, 120)
 
 
 def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -239,7 +239,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "frame_count": len(frames),
         "fps": fps,
         "contact_graph_selected_rows": contact_report.get("contact_graph_selected_rows"),
-        "contact_graph_accepted_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows"),
+        "source_graph_contact_candidate_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows"),
         "signed_local_penetration_rows": sum(1 for row in signed_idx.values() if row.get("local_penetration_detected")),
         "triangle_local_penetration_rows": sum(1 for row in tri_idx.values() if row.get("local_triangle_penetration_detected")),
         "mesh_watertight_rows": 0,

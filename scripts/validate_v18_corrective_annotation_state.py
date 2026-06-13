@@ -51,6 +51,7 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     occlusion_audit_strict_or_accepted = 0
     contact_audit_bad_semantics = 0
     contact_audit_strict = 0
+    stale_accepted_contact_semantics = 0
     for frame in frames if isinstance(frames, list) else []:
         if not isinstance(frame, dict):
             continue
@@ -91,8 +92,13 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
                     continue
                 if audit.get("state_role") != "contact_acceptance_audit_not_contact_assignment_not_complete_nonpenetration":
                     contact_audit_bad_semantics += 1
+                if "accepted_contact_owner_before_physical_veto" in audit:
+                    stale_accepted_contact_semantics += 1
                 if audit.get("strict_promotable_contact") is True:
                     contact_audit_strict += 1
+            contact_np = hand.get("contact_nonpenetration_state", {}) if isinstance(hand.get("contact_nonpenetration_state"), dict) else {}
+            if "accepted_contact_owner_before_nonpenetration_veto" in contact_np:
+                stale_accepted_contact_semantics += 1
             repair = hand.get("nonpenetration_repair_proposal", {}) if isinstance(hand.get("nonpenetration_repair_proposal"), dict) else {}
             if repair:
                 if repair.get("applied_to_annotation") is not False or repair.get("proposal_complete_nonpenetration") is not False:
@@ -136,6 +142,7 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require("current_v18_full_annotations_drop_mano_vertices" in mano_blockers, f"{case}: missing MANO blocker for dropped vertices", failures)
     require("current_v18_full_annotations_drop_mano_parameters" in mano_blockers, f"{case}: missing MANO blocker for dropped parameters", failures)
     require("recovered_wilor_mano_not_full_two_hand_timeline" in mano_blockers, f"{case}: missing MANO blocker for incomplete WiLoR timeline", failures)
+    require("recovered_wilor_virtual_camera_not_metric_world_aligned" in mano_blockers, f"{case}: missing MANO blocker for WiLoR virtual-camera metric-world misalignment", failures)
     require(ann.get("geometry_coverage_audit_stable_pose_source") == "recomputed_from_source_annotations_factor_graph_object_se3_with_same_stable_prior_as_corrective_annotation_builder", f"{case}: geometry coverage stable-pose source is stale or missing", failures)
     geometry_summaries = ann.get("geometry_coverage_audit_object_summaries", {}) if isinstance(ann.get("geometry_coverage_audit_object_summaries"), dict) else {}
     bad_geometry_completion_flags = 0
@@ -155,14 +162,16 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(occlusion_audit_bad_semantics == 0, f"{case}: occlusion acceptance audit rows with assignment/pose-fill semantics: {occlusion_audit_bad_semantics}", failures)
     require(occlusion_audit_strict_or_accepted == 0, f"{case}: occlusion audit rows unexpectedly strict-promotable or accepted: {occlusion_audit_strict_or_accepted}", failures)
     require(contact_audit_bad_semantics == 0, f"{case}: contact acceptance audit rows with assignment/complete-nonpenetration semantics: {contact_audit_bad_semantics}", failures)
+    require(stale_accepted_contact_semantics == 0, f"{case}: stale accepted-contact pre-veto fields remain: {stale_accepted_contact_semantics}", failures)
     require(contact_audit_strict == 0, f"{case}: contact audit rows unexpectedly strict-promotable: {contact_audit_strict}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
-        require(int(counts.get("mano_foundation_recovered_wilor_world_rows", 0)) == 1617, f"{case}: expected 1617 recovered WiLoR MANO raw candidate rows", failures)
-        require(int(counts.get("mano_foundation_recovered_wilor_unique_frame_side_rows", 0)) == 1601, f"{case}: expected 1601 recovered WiLoR MANO unique frame-side rows", failures)
+        require(int(counts.get("mano_foundation_wilor_virtual_candidate_rows", 0)) == 1617, f"{case}: expected 1617 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
+        require(int(counts.get("mano_foundation_wilor_virtual_unique_frame_side_rows", 0)) == 1601, f"{case}: expected 1601 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
         require(int(counts.get("mano_foundation_hawor_world_rows", 0)) == 182, f"{case}: expected 182 HaWoR MANO world rows", failures)
-        require(int(ann.get("mano_foundation_recovered_wilor_world_rows") or 0) == 1617, f"{case}: annotation metadata expected 1617 recovered WiLoR MANO raw candidate rows", failures)
-        require(int(ann.get("mano_foundation_recovered_wilor_unique_frame_side_rows") or 0) == 1601, f"{case}: annotation metadata expected 1601 recovered WiLoR MANO unique frame-side rows", failures)
+        require(int(ann.get("mano_foundation_wilor_virtual_candidate_rows") or 0) == 1617, f"{case}: annotation metadata expected 1617 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
+        require(int(ann.get("mano_foundation_wilor_virtual_unique_frame_side_rows") or 0) == 1601, f"{case}: annotation metadata expected 1601 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
+        require(ann.get("mano_foundation_wilor_metric_world_alignment_valid") is False, f"{case}: WiLoR virtual-camera MANO should not be marked metric-world aligned", failures)
         require(int(ann.get("mano_foundation_hawor_world_rows") or 0) == 182, f"{case}: annotation metadata expected 182 HaWoR MANO world rows", failures)
         require(int(counts.get("geometry_coverage_audit_objects", 0)) == 1, f"{case}: expected 1 geometry coverage audit object", failures)
         require(int(counts.get("geometry_coverage::broad_visible_coverage_but_hidden_geometry_still_unresolved", 0)) == 1, f"{case}: expected pink lid broad-visible unresolved coverage status", failures)
@@ -181,13 +190,13 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(ann.get("occlusion_owner_selected_rows") == 64, f"{case}: selected owner row metadata should be 64", failures)
         require(ann.get("contact_graph_selected_rows") == 371, f"{case}: expected 371 selected contact rows", failures)
         require(int(counts.get("contact_acceptance_audit_rows", 0)) == 371, f"{case}: expected 371 contact acceptance audit rows", failures)
-        require(int(counts.get("contact_acceptance::graph_accepted_local_penetration_veto", 0)) == 293, f"{case}: expected 293 contact audit penetration veto rows", failures)
-        require(int(counts.get("contact_acceptance::graph_accepted_local_no_penetration_open_mesh_not_strict", 0)) == 2, f"{case}: expected 2 contact audit local-no-penetration open-mesh rows", failures)
+        require(int(counts.get("contact_acceptance::source_graph_candidate_local_penetration_veto", 0)) == 293, f"{case}: expected 293 contact audit penetration veto rows", failures)
+        require(int(counts.get("contact_acceptance::source_graph_candidate_local_no_penetration_open_mesh_not_strict", 0)) == 2, f"{case}: expected 2 contact audit local-no-penetration open-mesh rows", failures)
         require(int(counts.get("contact_acceptance::graph_selected_not_contact_accepted", 0)) == 76, f"{case}: expected 76 contact audit graph-selected-not-accepted rows", failures)
         require(ann.get("contact_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable contact audit rows", failures)
         require(int(counts.get("contact_nonpenetration_states", 0)) == 371, f"{case}: expected 371 contact/nonpenetration states", failures)
-        require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 293, f"{case}: expected 293 local penetration contact veto states", failures)
-        require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 2, f"{case}: expected 2 graph-accepted contact states without local penetration flag", failures)
+        require(int(counts.get("contact_nonpenetration::source_graph_candidate_but_local_penetration_veto", 0)) == 293, f"{case}: expected 293 local penetration contact veto states", failures)
+        require(int(counts.get("contact_nonpenetration::source_graph_candidate_no_local_penetration_flag", 0)) == 2, f"{case}: expected 2 source graph contact-candidate states without local penetration flag", failures)
         require(int(counts.get("nonpenetration_repair_proposal_states", 0)) == 293, f"{case}: expected 293 nonpenetration repair proposal states", failures)
         require(int(counts.get("nonpenetration_repair::large_local_translation_required", 0)) == 235, f"{case}: expected 235 large local translation states", failures)
         require(int(counts.get("nonpenetration_repair::translation_candidate_unreliable_incoherent_normals", 0)) == 54, f"{case}: expected 54 incoherent-normal translation candidates", failures)
@@ -205,11 +214,12 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("occlusion_owner_acceptance::not_selected_no_direct_depth_support", 0)) == 1, f"{case}: expected 1 not-selected/no-direct-depth audit row", failures)
         require(ann.get("occlusion_owner_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable occlusion audit rows", failures)
         require(int(counts.get("hawor_provisioning_failed_hand_states", 0)) == 1920, f"{case}: expected 1920 HaWoR provisioning-failure hand states", failures)
-        require(int(counts.get("mano_foundation_recovered_wilor_world_rows", 0)) == 1744, f"{case}: expected 1744 recovered WiLoR MANO raw candidate rows", failures)
-        require(int(counts.get("mano_foundation_recovered_wilor_unique_frame_side_rows", 0)) == 1733, f"{case}: expected 1733 recovered WiLoR MANO unique frame-side rows", failures)
+        require(int(counts.get("mano_foundation_wilor_virtual_candidate_rows", 0)) == 1744, f"{case}: expected 1744 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
+        require(int(counts.get("mano_foundation_wilor_virtual_unique_frame_side_rows", 0)) == 1733, f"{case}: expected 1733 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
         require(int(counts.get("mano_foundation_hawor_world_rows", 0)) == 0, f"{case}: expected 0 HaWoR MANO world rows", failures)
-        require(int(ann.get("mano_foundation_recovered_wilor_world_rows") or 0) == 1744, f"{case}: annotation metadata expected 1744 recovered WiLoR MANO raw candidate rows", failures)
-        require(int(ann.get("mano_foundation_recovered_wilor_unique_frame_side_rows") or 0) == 1733, f"{case}: annotation metadata expected 1733 recovered WiLoR MANO unique frame-side rows", failures)
+        require(int(ann.get("mano_foundation_wilor_virtual_candidate_rows") or 0) == 1744, f"{case}: annotation metadata expected 1744 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
+        require(int(ann.get("mano_foundation_wilor_virtual_unique_frame_side_rows") or 0) == 1733, f"{case}: annotation metadata expected 1733 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
+        require(ann.get("mano_foundation_wilor_metric_world_alignment_valid") is False, f"{case}: WiLoR virtual-camera MANO should not be marked metric-world aligned", failures)
         require(int(ann.get("mano_foundation_hawor_world_rows") or 0) == 0, f"{case}: annotation metadata expected 0 HaWoR MANO world rows", failures)
         require("hawor_missing_for_case" in mano_blockers, f"{case}: missing task5 HaWoR MANO blocker", failures)
         require(int(counts.get("geometry_coverage_audit_objects", 0)) == 2, f"{case}: expected 2 geometry coverage audit objects", failures)
@@ -219,13 +229,13 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)
         require(ann.get("contact_graph_selected_rows") == 808, f"{case}: expected 808 selected contact rows", failures)
         require(int(counts.get("contact_acceptance_audit_rows", 0)) == 808, f"{case}: expected 808 contact acceptance audit rows", failures)
-        require(int(counts.get("contact_acceptance::graph_accepted_local_penetration_veto", 0)) == 705, f"{case}: expected 705 contact audit penetration veto rows", failures)
-        require(int(counts.get("contact_acceptance::graph_accepted_local_no_penetration_open_mesh_not_strict", 0)) == 16, f"{case}: expected 16 contact audit local-no-penetration open-mesh rows", failures)
+        require(int(counts.get("contact_acceptance::source_graph_candidate_local_penetration_veto", 0)) == 705, f"{case}: expected 705 contact audit penetration veto rows", failures)
+        require(int(counts.get("contact_acceptance::source_graph_candidate_local_no_penetration_open_mesh_not_strict", 0)) == 16, f"{case}: expected 16 contact audit local-no-penetration open-mesh rows", failures)
         require(int(counts.get("contact_acceptance::graph_selected_not_contact_accepted", 0)) == 87, f"{case}: expected 87 contact audit graph-selected-not-accepted rows", failures)
         require(ann.get("contact_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable contact audit rows", failures)
         require(int(counts.get("contact_nonpenetration_states", 0)) == 808, f"{case}: expected 808 contact/nonpenetration states", failures)
-        require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 705, f"{case}: expected 705 local penetration contact veto states", failures)
-        require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 16, f"{case}: expected 16 graph-accepted contact states without local penetration flag", failures)
+        require(int(counts.get("contact_nonpenetration::source_graph_candidate_but_local_penetration_veto", 0)) == 705, f"{case}: expected 705 local penetration contact veto states", failures)
+        require(int(counts.get("contact_nonpenetration::source_graph_candidate_no_local_penetration_flag", 0)) == 16, f"{case}: expected 16 source graph contact-candidate states without local penetration flag", failures)
         require(int(counts.get("nonpenetration_repair_proposal_states", 0)) == 703, f"{case}: expected 703 nonpenetration repair proposal states", failures)
         require(int(counts.get("nonpenetration_repair::large_local_translation_required", 0)) == 335, f"{case}: expected 335 large local translation states", failures)
         require(int(counts.get("nonpenetration_repair::translation_candidate_unreliable_incoherent_normals", 0)) == 336, f"{case}: expected 336 incoherent-normal translation candidates", failures)

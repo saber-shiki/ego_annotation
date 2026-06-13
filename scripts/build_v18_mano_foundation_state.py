@@ -172,11 +172,11 @@ def extract_wilor_case(case: str, full_ann: dict[str, Any], args: argparse.Names
         "source_exists": bool(raw_path and raw_path.exists()),
         "rows_total": 0,
         "complete_surface_param_rows": 0,
-        "complete_world_rows": 0,
+        "complete_virtual_camera_candidate_rows": 0,
         "rows_by_side": {},
         "frames_by_side": {},
-        "projection_residual_px_median": None,
-        "projection_residual_px_p95": None,
+        "wilor_internal_projection_residual_px_median": None,
+        "wilor_internal_projection_residual_px_p95": None,
         "npz_path": None,
         "blocking_reason_if_not_foundational": [],
     }
@@ -195,6 +195,7 @@ def extract_wilor_case(case: str, full_ann: dict[str, Any], args: argparse.Names
     bboxes: list[list[float]] = []
     cam_ts: list[np.ndarray] = []
     intrinsics: list[list[float]] = []
+    camera_transforms: list[np.ndarray] = []
     joints_world: list[np.ndarray] = []
     vertices_world: list[np.ndarray] = []
     global_orients: list[np.ndarray] = []
@@ -250,6 +251,7 @@ def extract_wilor_case(case: str, full_ann: dict[str, Any], args: argparse.Names
             bboxes.append(bbox)
             cam_ts.append(cam_t.astype(np.float32))
             intrinsics.append(intr)
+            camera_transforms.append(T.astype(np.float32))
             joints_world.append(transform_points(T, joints, cam_t))
             vertices_world.append(transform_points(T, vertices, cam_t))
             global_orients.append(orient.astype(np.float32).reshape(-1))
@@ -261,15 +263,21 @@ def extract_wilor_case(case: str, full_ann: dict[str, Any], args: argparse.Names
             status_counts["world_surface_param_candidate"] += 1
 
     unique_frame_side_rows = sum(len(v) for v in frames_by_side.values())
-    result["complete_world_rows"] = len(frame_idxs)
-    result["unique_complete_world_frame_side_rows"] = unique_frame_side_rows
-    result["duplicate_candidate_rows"] = len(frame_idxs) - unique_frame_side_rows
+    result["complete_virtual_camera_candidate_rows"] = len(frame_idxs)
+    result["unique_virtual_camera_frame_side_rows"] = unique_frame_side_rows
+    result["duplicate_virtual_camera_candidate_rows"] = len(frame_idxs) - unique_frame_side_rows
     result["rows_by_side"] = dict(by_side)
     result["frames_by_side"] = {k: {"count": len(v), "min": min(v) if v else None, "max": max(v) if v else None} for k, v in sorted(frames_by_side.items())}
     result["status_counts"] = dict(status_counts)
-    result["projection_residual_px_median"] = percentile(residuals, 50.0)
-    result["projection_residual_px_p95"] = percentile(residuals, 95.0)
+    result["wilor_internal_projection_residual_px_median"] = percentile(residuals, 50.0)
+    result["wilor_internal_projection_residual_px_p95"] = percentile(residuals, 95.0)
     result["source_sha256"] = sha256(raw_path) if args.hash_sources else None
+    result["coordinate_status"] = "wilor_virtual_camera_surface_transformed_by_v18_camera_pose_not_metric_depth_aligned"
+    result["metric_world_alignment_valid"] = False
+    result["metric_world_alignment_blocker"] = "WiLoR cam_t/focal_length are virtual-camera scale; projection self-consistency does not prove metric depth or contact-scale world alignment"
+    cam_t_z = [float(v[2]) for v in cam_ts]
+    result["wilor_virtual_camera_cam_t_z_median"] = percentile(cam_t_z, 50.0)
+    result["wilor_virtual_camera_cam_t_z_p95"] = percentile(cam_t_z, 95.0)
     if frame_idxs:
         # Pad pose arrays only if fixed; otherwise object arrays would make downstream use ambiguous.
         orient_lens = {len(x) for x in global_orients}
@@ -279,17 +287,21 @@ def extract_wilor_case(case: str, full_ann: dict[str, Any], args: argparse.Names
             raise RuntimeError(f"{case}: variable MANO orient/pose/beta lengths not supported: {orient_lens} {pose_lens} {beta_lens}")
         case_dir = args.output_root / case
         case_dir.mkdir(parents=True, exist_ok=True)
-        npz_path = case_dir / "wilor_mano_world_candidates.npz"
+        legacy_npz = case_dir / "wilor_mano_world_candidates.npz"
+        if legacy_npz.exists():
+            legacy_npz.unlink()
+        npz_path = case_dir / "wilor_mano_virtual_camera_candidates.npz"
         np.savez_compressed(
             npz_path,
             frame_idx=np.asarray(frame_idxs, dtype=np.int32),
             hand_side_code=np.asarray(side_codes, dtype=np.int8),
             detector_score=np.asarray(detector_scores, dtype=np.float32),
             bbox_xyxy=np.asarray(bboxes, dtype=np.float32),
-            source_intrinsics=np.asarray(intrinsics, dtype=np.float32),
+            wilor_virtual_camera_intrinsics=np.asarray(intrinsics, dtype=np.float32),
+            T_world_camera_metric=np.stack(camera_transforms, axis=0).astype(np.float32),
             cam_t=np.stack(cam_ts, axis=0).astype(np.float32),
-            joints_world_m=np.stack(joints_world, axis=0).astype(np.float32),
-            vertices_world_m=np.stack(vertices_world, axis=0).astype(np.float32),
+            joints_v18_pose_transformed_from_wilor_virtual_camera=np.stack(joints_world, axis=0).astype(np.float32),
+            vertices_v18_pose_transformed_from_wilor_virtual_camera=np.stack(vertices_world, axis=0).astype(np.float32),
             mano_global_orient=np.stack(global_orients, axis=0).astype(np.float32),
             mano_hand_pose=np.stack(hand_poses, axis=0).astype(np.float32),
             mano_betas=np.stack(betas, axis=0).astype(np.float32),
@@ -298,21 +310,25 @@ def extract_wilor_case(case: str, full_ann: dict[str, Any], args: argparse.Names
         result["npz_arrays"] = {
             "frame_idx": [len(frame_idxs)],
             "hand_side_code": [len(frame_idxs)],
-            "joints_world_m": [len(frame_idxs), EXPECTED_JOINTS, 3],
-            "vertices_world_m": [len(frame_idxs), EXPECTED_VERTICES, 3],
+            "wilor_virtual_camera_intrinsics": [len(frame_idxs), 4],
+            "T_world_camera_metric": [len(frame_idxs), 4, 4],
+            "joints_v18_pose_transformed_from_wilor_virtual_camera": [len(frame_idxs), EXPECTED_JOINTS, 3],
+            "vertices_v18_pose_transformed_from_wilor_virtual_camera": [len(frame_idxs), EXPECTED_VERTICES, 3],
             "mano_global_orient": [len(frame_idxs), int(next(iter(orient_lens)))],
             "mano_hand_pose": [len(frame_idxs), int(next(iter(pose_lens)))],
             "mano_betas": [len(frame_idxs), int(next(iter(beta_lens)))],
         }
     expected_rows = frame_count * 2
     result["timeline_expected_two_hand_rows"] = expected_rows
-    result["complete_world_candidate_row_fraction_of_two_hand_timeline"] = result["complete_world_rows"] / expected_rows if expected_rows else 0.0
-    result["unique_complete_world_frame_side_fraction_of_two_hand_timeline"] = result["unique_complete_world_frame_side_rows"] / expected_rows if expected_rows else 0.0
-    if result["unique_complete_world_frame_side_rows"] < expected_rows:
+    result["virtual_camera_candidate_row_fraction_of_two_hand_timeline"] = result["complete_virtual_camera_candidate_rows"] / expected_rows if expected_rows else 0.0
+    result["unique_virtual_camera_frame_side_fraction_of_two_hand_timeline"] = result["unique_virtual_camera_frame_side_rows"] / expected_rows if expected_rows else 0.0
+    if result["unique_virtual_camera_frame_side_rows"] < expected_rows:
         result["blocking_reason_if_not_foundational"].append("wilor_missing_some_frame_side_rows_not_full_timeline")
-    if result["projection_residual_px_median"] is None:
+    if result.get("metric_world_alignment_valid") is not True:
+        result["blocking_reason_if_not_foundational"].append("wilor_virtual_camera_not_metric_world_aligned")
+    if result["wilor_internal_projection_residual_px_median"] is None:
         result["blocking_reason_if_not_foundational"].append("wilor_projection_residual_unmeasured")
-    elif result["projection_residual_px_median"] > args.accept_projection_median_px:
+    elif result["wilor_internal_projection_residual_px_median"] > args.accept_projection_median_px:
         result["blocking_reason_if_not_foundational"].append("wilor_projection_residual_above_foundation_threshold")
     result["elapsed_s"] = time.perf_counter() - t0
     return result
@@ -412,15 +428,17 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         blockers.append("current_v18_full_annotations_drop_mano_vertices")
     if current_v18_rows.get("mano_params_stored_in_v18_full", 0) == 0:
         blockers.append("current_v18_full_annotations_drop_mano_parameters")
-    if wilor.get("unique_complete_world_frame_side_rows", 0) < expected_two_hand_rows:
+    if wilor.get("unique_virtual_camera_frame_side_rows", 0) < expected_two_hand_rows:
         blockers.append("recovered_wilor_mano_not_full_two_hand_timeline")
+    if wilor.get("metric_world_alignment_valid") is not True:
+        blockers.append("recovered_wilor_virtual_camera_not_metric_world_aligned")
     if hawor.get("complete_world_surface_param_rows", 0) < expected_two_hand_rows:
         blockers.append("hawor_complete_world_surface_not_full_two_hand_timeline")
     if hawor.get("source_exists_count", 0) == 0:
         blockers.append("hawor_missing_for_case")
-    if wilor.get("projection_residual_px_median") is not None and float(wilor["projection_residual_px_median"]) > args.accept_projection_median_px:
+    if wilor.get("wilor_internal_projection_residual_px_median") is not None and float(wilor["wilor_internal_projection_residual_px_median"]) > args.accept_projection_median_px:
         blockers.append("recovered_wilor_projection_residual_above_foundation_threshold")
-    foundational_valid = not blockers and wilor.get("complete_world_rows", 0) == expected_two_hand_rows
+    foundational_valid = not blockers and wilor.get("unique_virtual_camera_frame_side_rows", 0) == expected_two_hand_rows and wilor.get("metric_world_alignment_valid") is True
     report = {
         "method": "build_v18_mano_foundation_state",
         "case": case,
@@ -433,7 +451,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "sources": dict(current_v18_sources),
             "interpretation": "V18 full stores many camera-space joint candidates but not the full MANO surface/parameter state required as the physical hand foundation.",
         },
-        "recovered_wilor_world_mano_candidates": wilor,
+        "recovered_wilor_virtual_camera_mano_candidates": wilor,
         "hawor_world_mano_candidates": hawor,
         "foundational_mano_state_valid": foundational_valid,
         "v18_physical_pipeline_valid_without_further_hand_work": False,
@@ -456,7 +474,7 @@ def write_markdown(root: Path, reports: list[dict[str, Any]]) -> None:
     ]
     for r in reports:
         case = r["case"]
-        wilor = r["recovered_wilor_world_mano_candidates"]
+        wilor = r["recovered_wilor_virtual_camera_mano_candidates"]
         hawor = r["hawor_world_mano_candidates"]
         current = r["current_v18_full_mano_storage"]
         lines += [
@@ -464,8 +482,8 @@ def write_markdown(root: Path, reports: list[dict[str, Any]]) -> None:
             "",
             f"- Foundational MANO valid: `{r['foundational_mano_state_valid']}`.",
             f"- Current V18 full hand rows: `{current['counts'].get('hand_rows', 0)}`; camera joint candidates: `{current['counts'].get('camera_joint_candidates', 0)}`; stored MANO surfaces: `{current['counts'].get('surface_candidates_stored_in_v18_full', 0)}`; stored MANO params: `{current['counts'].get('mano_params_stored_in_v18_full', 0)}`.",
-            f"- Recovered WiLoR full world MANO candidates: `{wilor.get('complete_world_rows', 0)}` raw rows, `{wilor.get('unique_complete_world_frame_side_rows', 0)}/{r['expected_two_hand_rows']}` unique frame-side rows; side frames: `{wilor.get('frames_by_side')}`; median projection residual px: `{wilor.get('projection_residual_px_median')}`; NPZ: `{wilor.get('npz_path')}`.",
-            f"- HaWoR complete world MANO rows: `{hawor.get('complete_world_surface_param_rows', 0)}/{r['expected_two_hand_rows']}`; measurement rows: `{hawor.get('measurement_available_complete_rows', 0)}`; motion-infill rows: `{hawor.get('motion_infill_complete_rows', 0)}`; side frames: `{hawor.get('frames_by_side')}`.",
+            f"- Recovered WiLoR full virtual-camera MANO candidates: `{wilor.get('complete_virtual_camera_candidate_rows', 0)}` raw rows, `{wilor.get('unique_virtual_camera_frame_side_rows', 0)}/{r['expected_two_hand_rows']}` unique frame-side rows; side frames: `{wilor.get('frames_by_side')}`; internal projection residual px: `{wilor.get('wilor_internal_projection_residual_px_median')}`; metric-world alignment valid: `{wilor.get('metric_world_alignment_valid')}`; NPZ: `{wilor.get('npz_path')}`.",
+            f"- HaWoR complete virtual-camera MANO rows: `{hawor.get('complete_world_surface_param_rows', 0)}/{r['expected_two_hand_rows']}`; measurement rows: `{hawor.get('measurement_available_complete_rows', 0)}`; motion-infill rows: `{hawor.get('motion_infill_complete_rows', 0)}`; side frames: `{hawor.get('frames_by_side')}`.",
             f"- Blocking reasons: `{r['blocking_reasons']}`.",
             "",
         ]

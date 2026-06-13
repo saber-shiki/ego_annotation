@@ -41,8 +41,8 @@ def finite(value: Any) -> bool:
 
 
 def validate_npz(case: str, report: dict[str, Any], failures: list[str]) -> None:
-    wilor = report.get("recovered_wilor_world_mano_candidates", {}) if isinstance(report.get("recovered_wilor_world_mano_candidates"), dict) else {}
-    rows = int(wilor.get("complete_world_rows", 0))
+    wilor = report.get("recovered_wilor_virtual_camera_mano_candidates", {}) if isinstance(report.get("recovered_wilor_virtual_camera_mano_candidates"), dict) else {}
+    rows = int(wilor.get("complete_virtual_camera_candidate_rows", 0))
     npz_path_raw = wilor.get("npz_path")
     require(isinstance(npz_path_raw, str) and bool(npz_path_raw), f"{case}: missing WiLoR MANO NPZ path", failures)
     if not isinstance(npz_path_raw, str):
@@ -57,10 +57,11 @@ def validate_npz(case: str, report: dict[str, Any], failures: list[str]) -> None
         "hand_side_code": (rows,),
         "detector_score": (rows,),
         "bbox_xyxy": (rows, 4),
-        "source_intrinsics": (rows, 4),
+        "wilor_virtual_camera_intrinsics": (rows, 4),
+        "T_world_camera_metric": (rows, 4, 4),
         "cam_t": (rows, 3),
-        "joints_world_m": (rows, 21, 3),
-        "vertices_world_m": (rows, 778, 3),
+        "joints_v18_pose_transformed_from_wilor_virtual_camera": (rows, 21, 3),
+        "vertices_v18_pose_transformed_from_wilor_virtual_camera": (rows, 778, 3),
         "mano_global_orient": (rows, 9),
         "mano_hand_pose": (rows, 135),
         "mano_betas": (rows, 10),
@@ -86,16 +87,21 @@ def validate_case(root: Path, case: str, failures: list[str]) -> dict[str, Any] 
     current = report.get("current_v18_full_mano_storage", {}).get("counts", {}) if isinstance(report.get("current_v18_full_mano_storage"), dict) else {}
     require(int(current.get("surface_candidates_stored_in_v18_full", 0)) == 0, f"{case}: V18 full unexpectedly stores MANO surfaces", failures)
     require(int(current.get("mano_params_stored_in_v18_full", 0)) == 0, f"{case}: V18 full unexpectedly stores MANO params", failures)
-    wilor = report.get("recovered_wilor_world_mano_candidates", {}) if isinstance(report.get("recovered_wilor_world_mano_candidates"), dict) else {}
+    wilor = report.get("recovered_wilor_virtual_camera_mano_candidates", {}) if isinstance(report.get("recovered_wilor_virtual_camera_mano_candidates"), dict) else {}
     hawor = report.get("hawor_world_mano_candidates", {}) if isinstance(report.get("hawor_world_mano_candidates"), dict) else {}
-    require(int(wilor.get("complete_world_rows", -1)) == exp["wilor_rows"], f"{case}: recovered WiLoR raw world candidate rows mismatch", failures)
-    require(int(wilor.get("unique_complete_world_frame_side_rows", -1)) == exp["wilor_unique_frame_side_rows"], f"{case}: recovered WiLoR unique frame-side coverage mismatch", failures)
+    require(int(wilor.get("complete_virtual_camera_candidate_rows", -1)) == exp["wilor_rows"], f"{case}: recovered WiLoR raw virtual-camera candidate rows mismatch", failures)
+    require(int(wilor.get("unique_virtual_camera_frame_side_rows", -1)) == exp["wilor_unique_frame_side_rows"], f"{case}: recovered WiLoR unique frame-side coverage mismatch", failures)
     require(int(hawor.get("complete_world_surface_param_rows", -1)) == exp["hawor_rows"], f"{case}: HaWoR world rows mismatch", failures)
-    require(finite(wilor.get("projection_residual_px_median")) and float(wilor["projection_residual_px_median"]) < 0.01, f"{case}: WiLoR projection residual does not validate camera interpretation", failures)
+    require(finite(wilor.get("wilor_internal_projection_residual_px_median")) and float(wilor["wilor_internal_projection_residual_px_median"]) < 0.01, f"{case}: WiLoR internal projection residual does not validate raw virtual-camera consistency", failures)
+    require(wilor.get("metric_world_alignment_valid") is False, f"{case}: WiLoR virtual-camera candidates should not be marked metric-world aligned", failures)
+    require(wilor.get("coordinate_status") == "wilor_virtual_camera_surface_transformed_by_v18_camera_pose_not_metric_depth_aligned", f"{case}: missing virtual-camera coordinate status", failures)
+    require(isinstance(wilor.get("source_sha256"), str) and len(wilor.get("source_sha256")) == 64, f"{case}: missing hashed WiLoR source provenance", failures)
+    require(finite(wilor.get("wilor_virtual_camera_cam_t_z_median")) and float(wilor["wilor_virtual_camera_cam_t_z_median"]) > 5.0, f"{case}: virtual camera depth sanity check did not expose non-metric scale", failures)
     blockers = report.get("blocking_reasons") if isinstance(report.get("blocking_reasons"), list) else []
     require("current_v18_full_annotations_drop_mano_vertices" in blockers, f"{case}: missing blocker for dropped MANO vertices", failures)
     require("current_v18_full_annotations_drop_mano_parameters" in blockers, f"{case}: missing blocker for dropped MANO params", failures)
     require("recovered_wilor_mano_not_full_two_hand_timeline" in blockers, f"{case}: missing blocker for incomplete WiLoR timeline", failures)
+    require("recovered_wilor_virtual_camera_not_metric_world_aligned" in blockers, f"{case}: missing blocker for WiLoR virtual-camera metric-world misalignment", failures)
     if case == "task5_tomato_960":
         require("hawor_missing_for_case" in blockers, f"{case}: missing task5 HaWoR blocker", failures)
     validate_npz(case, report, failures)

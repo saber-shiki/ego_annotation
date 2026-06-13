@@ -148,12 +148,12 @@ def classify_contact(row: dict[str, Any], signed: dict[str, Any] | None, triangl
     if not accepted:
         return "graph_selected_not_contact_accepted", False
     if signed_pen or tri_pen:
-        return "graph_accepted_local_penetration_veto", False
+        return "source_graph_candidate_local_penetration_veto", False
     if not signed_available or not triangle_available:
-        return "graph_accepted_missing_local_nonpenetration_evidence", False
+        return "source_graph_candidate_missing_local_nonpenetration_evidence", False
     if not watertight or not signed_complete or not triangle_complete:
-        return "graph_accepted_local_no_penetration_open_mesh_not_strict", False
-    return "graph_accepted_unclassified_not_strict", False
+        return "source_graph_candidate_local_no_penetration_open_mesh_not_strict", False
+    return "source_graph_candidate_unclassified_not_strict", False
 
 
 def audit_rows(contact_report: dict[str, Any], signed_rows: dict[tuple[int, str, str], dict[str, Any]], triangle_rows: dict[tuple[int, str, str], dict[str, Any]]) -> list[dict[str, Any]]:
@@ -173,7 +173,7 @@ def audit_rows(contact_report: dict[str, Any], signed_rows: dict[tuple[int, str,
             "category": category,
             "strict_promotable_contact": strict,
             "selected_by_contact_graph": True,
-            "accepted_contact_owner_before_physical_veto": bool(row.get("accepted_contact_owner")),
+            "source_graph_contact_candidate_before_physical_veto": bool(row.get("accepted_contact_owner")),
             "source_graph_contact_candidate_before_physical_veto": bool(row.get("accepted_contact_owner")),
             "contact_owner_claim": row.get("contact_owner_claim"),
             "contact_owner_claim_context": "source_contact_graph_claim_before_local_nonpenetration_and_completeness_veto_not_final_contact_acceptance",
@@ -199,13 +199,13 @@ def audit_rows(contact_report: dict[str, Any], signed_rows: dict[tuple[int, str,
 def color_for_category(category: str) -> tuple[int, int, int]:
     if category == "strict_promotable_contact":
         return (80, 255, 120)
-    if category == "graph_accepted_local_no_penetration_open_mesh_not_strict":
+    if category == "source_graph_candidate_local_no_penetration_open_mesh_not_strict":
         return (80, 210, 255)
-    if category == "graph_accepted_local_penetration_veto":
+    if category == "source_graph_candidate_local_penetration_veto":
         return (255, 70, 70)
     if category == "graph_selected_not_contact_accepted":
         return (255, 190, 70)
-    if category == "graph_accepted_missing_local_nonpenetration_evidence":
+    if category == "source_graph_candidate_missing_local_nonpenetration_evidence":
         return (190, 120, 255)
     return (180, 180, 180)
 
@@ -213,10 +213,10 @@ def color_for_category(category: str) -> tuple[int, int, int]:
 def row_priority(category: str) -> int:
     order = {
         "strict_promotable_contact": 0,
-        "graph_accepted_local_no_penetration_open_mesh_not_strict": 1,
-        "graph_accepted_local_penetration_veto": 2,
+        "source_graph_candidate_local_no_penetration_open_mesh_not_strict": 1,
+        "source_graph_candidate_local_penetration_veto": 2,
         "graph_selected_not_contact_accepted": 3,
-        "graph_accepted_missing_local_nonpenetration_evidence": 4,
+        "source_graph_candidate_missing_local_nonpenetration_evidence": 4,
     }
     return order.get(category, 9)
 
@@ -309,7 +309,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "fps": fps,
         "selected_contact_rows": len(rows),
         "strict_promotable_contact_rows": sum(1 for row in rows if row.get("strict_promotable_contact") is True),
-        "graph_accepted_contact_rows_before_physical_veto": sum(1 for row in rows if row.get("accepted_contact_owner_before_physical_veto") is True),
+        "source_graph_contact_candidate_rows_before_physical_veto": sum(1 for row in rows if row.get("source_graph_contact_candidate_before_physical_veto") is True),
         "category_counts": dict(sorted(category_counts.items())),
         "rows": rows,
         "outputs": {"video": str(video_path)},
