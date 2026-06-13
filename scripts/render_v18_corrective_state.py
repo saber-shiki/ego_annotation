@@ -22,6 +22,14 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+HAND_EDGES = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (0, 9), (9, 10), (10, 11), (11, 12),
+    (0, 13), (13, 14), (14, 15), (15, 16),
+    (0, 17), (17, 18), (18, 19), (19, 20),
+]
+
 
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
@@ -112,6 +120,32 @@ def mask_overlay(base: Image.Image, mask_path: str, rgb: tuple[int, int, int], a
     alpha = mask.point([alpha_value if p > 0 else 0 for p in range(256)])
     overlay = Image.new("RGB", base.size, rgb)
     return Image.composite(overlay, base, alpha)
+
+
+def project_mano_joints(mano: dict[str, Any], source_w: float, source_h: float, image_w: float, image_h: float) -> list[tuple[float, float]]:
+    joints = mano.get("joints3d_camera")
+    cam_t = mano.get("cam_t")
+    intr = mano.get("source_intrinsics") or [2304.0, 2304.0, source_w / 2.0, source_h / 2.0]
+    if not (isinstance(joints, list) and isinstance(cam_t, list) and len(cam_t) == 3 and isinstance(intr, list) and len(intr) == 4):
+        return []
+    fx, fy, cx, cy = [finite_float(v) for v in intr]
+    sx = image_w / source_w if source_w > 0 else 1.0
+    sy = image_h / source_h if source_h > 0 else 1.0
+    pts: list[tuple[float, float]] = []
+    for raw in joints:
+        if not (isinstance(raw, list) and len(raw) == 3):
+            return []
+        x = finite_float(raw[0]) + finite_float(cam_t[0])
+        y = finite_float(raw[1]) + finite_float(cam_t[1])
+        z = finite_float(raw[2]) + finite_float(cam_t[2])
+        if z <= 1e-6:
+            return []
+        u = (fx * x / z + cx) * sx
+        v = (fy * y / z + cy) * sy
+        if not (math.isfinite(u) and math.isfinite(v)):
+            return []
+        pts.append((u, v))
+    return pts
 
 
 def encode_video(frame_dir: Path, output_path: Path, fps: float) -> None:
@@ -289,7 +323,17 @@ def render_case(case: str, ann: dict[str, Any], output_root: Path, max_frames: i
                 color = (60, 255, 120) if side == "left" else (255, 210, 60)
                 draw.rectangle(graph_box, outline=color, width=4)
                 if center:
+                    dx = (est_center[0] - center[0]) * sx
+                    dy = (est_center[1] - center[1]) * sy
                     draw.line((int(center[0] * sx), int(center[1] * sy), int(est_center[0] * sx), int(est_center[1] * sy)), fill=(255, 80, 255), width=2)
+                    pts = project_mano_joints(hand.get("mano_candidate", {}) if isinstance(hand.get("mano_candidate"), dict) else {}, source_w, source_h, image.size[0], image.size[1])
+                    if len(pts) >= 21:
+                        shifted_pts = [(int(round(px + dx)), int(round(py + dy))) for px, py in pts]
+                        for a, b in HAND_EDGES:
+                            draw.line((shifted_pts[a][0], shifted_pts[a][1], shifted_pts[b][0], shifted_pts[b][1]), fill=color, width=3)
+                        for px, py in shifted_pts:
+                            draw.ellipse((px - 3, py - 3, px + 3, py + 3), fill=color)
+                        counts["graph_shifted_mano_skeletons"] += 1
                 draw_label(draw, (graph_box[0], max(48, graph_box[1] - 21)), f"V18 graph-smoothed {side} hand", small, color)
                 counts["graph_driven_hand_boxes"] += 1
             else:
