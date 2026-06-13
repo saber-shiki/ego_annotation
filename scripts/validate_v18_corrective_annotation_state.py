@@ -63,12 +63,30 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     contact_audit_bad_semantics = 0
     contact_audit_strict = 0
     stale_accepted_contact_semantics = 0
+    bridge_quality_bad_semantics = 0
+    bridge_quality_promoted_best_current = 0
+    bridge_quality_rows_seen = 0
     for frame in frames if isinstance(frames, list) else []:
         if not isinstance(frame, dict):
             continue
         for hand in frame.get("hands", []):
             if not isinstance(hand, dict):
                 continue
+            bridge_quality = hand.get("hawor_bridge_quality_candidate", {}) if isinstance(hand.get("hawor_bridge_quality_candidate"), dict) else {}
+            if bridge_quality:
+                bridge_quality_rows_seen += 1
+                if bridge_quality.get("accepted_v18_hawor_foundation") is not False:
+                    bridge_quality_bad_semantics += 1
+                if bridge_quality.get("accepted_metric_hand_state") is not False:
+                    bridge_quality_bad_semantics += 1
+                if bridge_quality.get("accepted_contact_or_occlusion_input") is not False:
+                    bridge_quality_bad_semantics += 1
+                if bridge_quality.get("state_role") != "HaWoR_bridge_candidate_quality_evidence_not_foundation_acceptance_not_downstream_physics":
+                    bridge_quality_bad_semantics += 1
+                if "accepted" in str(bridge_quality.get("status", "")):
+                    bridge_quality_bad_semantics += 1
+                if str(hand.get("best_current_state", "")).startswith("hawor_bridge"):
+                    bridge_quality_promoted_best_current += 1
             smoothed = hand.get("temporal_smoothed_mano2d_state", {}) if isinstance(hand.get("temporal_smoothed_mano2d_state"), dict) else {}
             if smoothed:
                 if smoothed.get("accepted_3d_mano_pose") is not False:
@@ -175,11 +193,22 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(contact_audit_bad_semantics == 0, f"{case}: contact acceptance audit rows with assignment/complete-nonpenetration semantics: {contact_audit_bad_semantics}", failures)
     require(stale_accepted_contact_semantics == 0, f"{case}: stale accepted-contact pre-veto fields remain: {stale_accepted_contact_semantics}", failures)
     require(contact_audit_strict == 0, f"{case}: contact audit rows unexpectedly strict-promotable: {contact_audit_strict}", failures)
+    require(bridge_quality_bad_semantics == 0, f"{case}: HaWoR bridge quality rows with acceptance/downstream semantics: {bridge_quality_bad_semantics}", failures)
+    require(bridge_quality_promoted_best_current == 0, f"{case}: HaWoR bridge quality rows promoted to best_current_state: {bridge_quality_promoted_best_current}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
         require(int(counts.get("mano_foundation_wilor_virtual_candidate_rows", 0)) == 1617, f"{case}: expected 1617 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
         require(int(counts.get("mano_foundation_wilor_virtual_unique_frame_side_rows", 0)) == 1601, f"{case}: expected 1601 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
         require(int(counts.get("mano_foundation_hawor_world_rows", 0)) == 182, f"{case}: expected 182 HaWoR MANO world rows", failures)
+        require(int(counts.get("hawor_bridge_quality_candidate_rows", 0)) == 2098, f"{case}: expected 2098 HaWoR bridge quality candidate rows", failures)
+        require(int(counts.get("hawor_bridge_projection_supported_candidate_rows", 0)) == 1372, f"{case}: expected 1372 HaWoR bridge projection-supported candidate rows", failures)
+        require(int(counts.get("hawor_bridge_quality::projection_supported_visible_hawor_bridge_candidate", 0)) == 1365, f"{case}: expected 1365 visible projection-supported bridge candidates", failures)
+        require(int(counts.get("hawor_bridge_quality::projection_supported_nonvisible_hawor_bridge_candidate", 0)) == 7, f"{case}: expected 7 nonvisible projection-supported bridge candidates", failures)
+        require(int(counts.get("hawor_bridge_quality::residual_tail_hawor_out_of_frame_or_visibility_conflict", 0)) == 59, f"{case}: expected 59 residual-tail bridge candidates", failures)
+        require(bridge_quality_rows_seen == 2098, f"{case}: expected 2098 bridge quality rows seen, got {bridge_quality_rows_seen}", failures)
+        require(ann.get("hawor_bridge_quality_status") == "hawor_bridge_quality_candidate_state_built_not_accepted", f"{case}: unexpected bridge quality status metadata", failures)
+        require(ann.get("hawor_bridge_quality_accepted_v18_hawor_foundation") is False, f"{case}: bridge quality foundation should not be accepted", failures)
+        require(ann.get("hawor_bridge_quality_v18_physical_hand_state_valid") is False, f"{case}: bridge quality physical hand state should be false", failures)
         require(int(ann.get("mano_foundation_wilor_virtual_candidate_rows") or 0) == 1617, f"{case}: annotation metadata expected 1617 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
         require(int(ann.get("mano_foundation_wilor_virtual_unique_frame_side_rows") or 0) == 1601, f"{case}: annotation metadata expected 1601 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
         require(ann.get("mano_foundation_wilor_metric_world_alignment_valid") is False, f"{case}: WiLoR virtual-camera MANO should not be marked metric-world aligned", failures)
@@ -228,6 +257,11 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("mano_foundation_wilor_virtual_candidate_rows", 0)) == 1744, f"{case}: expected 1744 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
         require(int(counts.get("mano_foundation_wilor_virtual_unique_frame_side_rows", 0)) == 1733, f"{case}: expected 1733 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
         require(int(counts.get("mano_foundation_hawor_world_rows", 0)) == 0, f"{case}: expected 0 HaWoR MANO world rows", failures)
+        require(int(counts.get("hawor_bridge_quality_candidate_rows", 0)) == 0, f"{case}: expected 0 HaWoR bridge quality candidate rows", failures)
+        require(bridge_quality_rows_seen == 0, f"{case}: expected 0 bridge quality rows seen, got {bridge_quality_rows_seen}", failures)
+        require(ann.get("hawor_bridge_quality_status") == "blocked_no_hawor_bridge_candidates_for_case", f"{case}: unexpected bridge quality status metadata", failures)
+        require(ann.get("hawor_bridge_quality_accepted_v18_hawor_foundation") is False, f"{case}: bridge quality foundation should not be accepted", failures)
+        require(ann.get("hawor_bridge_quality_v18_physical_hand_state_valid") is False, f"{case}: bridge quality physical hand state should be false", failures)
         require(int(ann.get("mano_foundation_wilor_virtual_candidate_rows") or 0) == 1744, f"{case}: annotation metadata expected 1744 recovered WiLoR MANO virtual-camera raw candidate rows", failures)
         require(int(ann.get("mano_foundation_wilor_virtual_unique_frame_side_rows") or 0) == 1733, f"{case}: annotation metadata expected 1733 recovered WiLoR MANO virtual-camera unique frame-side rows", failures)
         require(ann.get("mano_foundation_wilor_metric_world_alignment_valid") is False, f"{case}: WiLoR virtual-camera MANO should not be marked metric-world aligned", failures)

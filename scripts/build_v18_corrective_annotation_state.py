@@ -197,6 +197,22 @@ def load_hawor_source_hands(paths: list[Path]) -> dict[tuple[int, str], dict[str
     return out
 
 
+def hawor_bridge_quality_index(path: Path) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    if not path.exists():
+        return {}, {}
+    report = load_json(path)
+    rows = report.get("quality_rows", []) if isinstance(report.get("quality_rows"), list) else []
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        side = str(row.get("side"))
+        if side not in {"left", "right"}:
+            continue
+        out[(int(row.get("frame_idx", -1)), side)] = row
+    return out, report
+
+
 def rigid_candidates_from_report(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -371,6 +387,7 @@ def hand_corrective_state(
     triangle_nonpenetration_row: dict[str, Any] | None,
     nonpenetration_repair_row: dict[str, Any] | None,
     temporal_smoothed_hand_row: dict[str, Any] | None,
+    hawor_bridge_quality_row: dict[str, Any] | None,
     source_w: float,
     source_h: float,
 ) -> dict[str, Any]:
@@ -414,6 +431,30 @@ def hand_corrective_state(
         out["best_current_state"] = "graph_shifted_mano_if_available_else_graph_shifted_bbox"
     else:
         out["uncertainty"].append("missing_factor_graph_hand_state")
+
+    if hawor_bridge_quality_row is not None:
+        quality_state = str(hawor_bridge_quality_row.get("quality_state"))
+        out["hawor_bridge_quality_candidate"] = {
+            "status": quality_state,
+            "candidate_source": "HaWoR_current_V18_camera_local_bridge",
+            "projection_residual_px_median": hawor_bridge_quality_row.get("projection_residual_px_median"),
+            "projection_residual_px_p95": hawor_bridge_quality_row.get("projection_residual_px_p95"),
+            "current_visibility_state": hawor_bridge_quality_row.get("current_visibility_state"),
+            "hawor_projected_inside_image_fraction": hawor_bridge_quality_row.get("hawor_projected_inside_image_fraction"),
+            "reference_projected_inside_image_fraction": hawor_bridge_quality_row.get("reference_projected_inside_image_fraction"),
+            "hawor_projected_inside_current_bbox_fraction": hawor_bridge_quality_row.get("hawor_projected_inside_current_bbox_fraction"),
+            "reference_projection_source_family": hawor_bridge_quality_row.get("reference_projection_source_family"),
+            "reference_projection_source_backend": hawor_bridge_quality_row.get("reference_projection_source_backend"),
+            "quality_blockers": hawor_bridge_quality_row.get("quality_blockers") if isinstance(hawor_bridge_quality_row.get("quality_blockers"), list) else [],
+            "accepted_v18_hawor_foundation": False,
+            "accepted_metric_hand_state": False,
+            "accepted_contact_or_occlusion_input": False,
+            "state_role": "HaWoR_bridge_candidate_quality_evidence_not_foundation_acceptance_not_downstream_physics",
+        }
+        if quality_state.startswith("projection_supported"):
+            out["uncertainty"].append("hawor_bridge_projection_supported_candidate_not_foundation_accepted")
+        else:
+            out["uncertainty"].append("hawor_bridge_candidate_not_projection_supported_for_physical_use")
 
     if temporal_smoothed_hand_row is not None:
         out["temporal_smoothed_mano2d_state"] = {
@@ -699,6 +740,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     residual_rows, residual_report = rigid_residual_row_index(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
     repair_rows, repair_report = nonpenetration_repair_row_index(args.corrective_root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json")
     smoothed_hand_rows, smoothed_hand_report = temporal_smoothed_hand_row_index(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json")
+    hawor_bridge_quality_rows, hawor_bridge_quality_report = hawor_bridge_quality_index(args.corrective_root / "hawor_bridge_state" / case / "v18_hawor_bridge_quality_state.json")
     geometry_coverage = geometry_coverage_report(args.corrective_root / case / "geometry_coverage_audit" / "v18_geometry_coverage_audit_report.json")
     geometry_summaries = geometry_coverage.get("object_summaries", {}) if isinstance(geometry_coverage.get("object_summaries"), dict) else {}
     mano_foundation_path = args.corrective_root / "mano_foundation_audit" / case / "v18_mano_foundation_state_report.json"
@@ -742,6 +784,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 triangle_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 repair_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 smoothed_hand_rows.get((frame_idx, side)),
+                hawor_bridge_quality_rows.get((frame_idx, side)),
                 source_w,
                 source_h,
             )
@@ -749,6 +792,12 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 counts["graph_hand_states"] += 1
                 if state["graph_hand_state"].get("shifted_mano_joints2d_source_px") is not None:
                     counts["graph_shifted_mano_states"] += 1
+            bridge_quality_state = state.get("hawor_bridge_quality_candidate", {}).get("status") if isinstance(state.get("hawor_bridge_quality_candidate"), dict) else None
+            if isinstance(bridge_quality_state, str):
+                counts["hawor_bridge_quality_candidate_rows"] += 1
+                counts[f"hawor_bridge_quality::{bridge_quality_state}"] += 1
+                if bridge_quality_state.startswith("projection_supported"):
+                    counts["hawor_bridge_projection_supported_candidate_rows"] += 1
             prior_status = state.get("hawor_temporal_prior", {}).get("status") if isinstance(state.get("hawor_temporal_prior"), dict) else None
             if prior_status == "available_uncertain_prior":
                 counts["hawor_prior_states"] += 1
@@ -851,6 +900,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "temporal_hand_pose_smoothing_report": str(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json"),
             "mano_foundation_report": str(mano_foundation_path),
             "mano_foundation_wilor_virtual_camera_npz": wilor_foundation.get("npz_path") if isinstance(wilor_foundation, dict) else None,
+            "hawor_bridge_quality_state_report": str(args.corrective_root / "hawor_bridge_state" / case / "v18_hawor_bridge_quality_state.json"),
+            "hawor_bridge_quality_overlay_report": str(args.corrective_root / "hawor_bridge_state" / case / "v18_hawor_bridge_quality_overlay_report.json"),
         },
         "occlusion_owner_selected_rows": len(occlusion_owner_rows),
         "occlusion_owner_strict_accepted_rows": 0,
@@ -873,6 +924,10 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "mano_foundation_wilor_internal_projection_residual_px_median": wilor_foundation.get("wilor_internal_projection_residual_px_median") if isinstance(wilor_foundation, dict) else None,
         "mano_foundation_wilor_metric_world_alignment_valid": wilor_foundation.get("metric_world_alignment_valid") if isinstance(wilor_foundation, dict) else None,
         "mano_foundation_hawor_world_rows": hawor_foundation.get("complete_world_surface_param_rows") if isinstance(hawor_foundation, dict) else None,
+        "hawor_bridge_quality_status": hawor_bridge_quality_report.get("status") if isinstance(hawor_bridge_quality_report, dict) else None,
+        "hawor_bridge_quality_counts": hawor_bridge_quality_report.get("quality_counts") if isinstance(hawor_bridge_quality_report, dict) else None,
+        "hawor_bridge_quality_accepted_v18_hawor_foundation": hawor_bridge_quality_report.get("accepted_v18_hawor_foundation") if isinstance(hawor_bridge_quality_report, dict) else None,
+        "hawor_bridge_quality_v18_physical_hand_state_valid": hawor_bridge_quality_report.get("v18_physical_hand_state_valid_from_quality") if isinstance(hawor_bridge_quality_report, dict) else None,
         "nonpenetration_repair_proposal_status_counts": repair_report.get("proposal_status_counts") if isinstance(repair_report, dict) else None,
         "temporal_hand_pose_smoothing_draw_counts": smoothed_hand_report.get("draw_counts") if isinstance(smoothed_hand_report, dict) else None,
         "temporal_hand_pose_smoothing_jitter_probe": smoothed_hand_report.get("jitter_probe") if isinstance(smoothed_hand_report, dict) else None,
