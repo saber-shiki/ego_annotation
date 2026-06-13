@@ -6,6 +6,12 @@ Do not satisfy a requirement with an obviously false simplification. Difficulty 
 
 Object pose in this project means reconstructed object geometry when the object is manipulated. A centroid, sphere, bounding box, category-specific primitive, or visual patch is not an acceptable replacement for object mesh reconstruction.
 
+Do not claim deadline success, version closure, or meaningful progress from validators, clean git state, full-frame bookkeeping, or a finer unresolved/accepted ledger. Those are evidence-preservation tools only. A checkpoint is progress only when it changes the delivered annotation/render in the direction of the named requirement, or when a real attempted mechanism fails and the failure mechanism is preserved with commands, artifacts, visual evidence, and the next causal implication.
+
+When the user points out non-progress, stop the current loop immediately. Do not answer by adding more gates, readiness flags, blockers, manifests, or status overlays. Re-ground the task in the final artifact, choose the smallest integrated mechanism that could improve it, run it, render it, and report either the visible improvement or the concrete mechanism failure.
+
+For time-boxed recovery work, maintain an hour-by-hour budget that separates code-edit time, GPU/model runtime, full-pipeline/render runtime, visual review time, and iteration count. If the time box cannot close the full requirement, say so before implementation and commit only to artifact-changing attempts or failure analyses that can complete inside the time box.
+
 ## Methodology
 
 Do not encode visual case variation with hand-written if/else logic or object-family state machines. Python branches for categories such as color, object class, material, or action phrase are a failed perception strategy.
