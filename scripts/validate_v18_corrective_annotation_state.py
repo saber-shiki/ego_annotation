@@ -54,6 +54,7 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(stable_without_residual == 0, f"{case}: stable rigid rows without residual check: {stable_without_residual}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
+        require(int(counts.get("pose_fill_best_effort_states", 0)) == 50, f"{case}: expected 50 HaWoR motion-infill pose-fill best-effort states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 232, f"{case}: expected 232 visible surface states for the rigid lid", failures)
         require(int(counts.get("occlusion_owner_best_effort_states", 0)) == 64, f"{case}: expected 64 tentative occlusion owner rows", failures)
         require(ann.get("occlusion_owner_selected_rows") == 64, f"{case}: selected owner row metadata should be 64", failures)
@@ -67,6 +68,7 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require("object:pink_lid_trash_can_second" in ann.get("rigid_candidate_ids", []), f"{case}: missing pink lid rigid candidate", failures)
     if case == "task5_tomato_960":
         require(ann.get("hawor_measurement_rows") == 0, f"{case}: expected zero HaWoR measurement rows", failures)
+        require(int(counts.get("pose_fill_best_effort_states", 0)) == 0, f"{case}: expected zero pose-fill best-effort rows without HaWoR", failures)
         require(ann.get("occlusion_owner_selected_rows") == 0, f"{case}: expected zero selected tentative occlusion owner rows", failures)
         require(int(counts.get("hawor_provisioning_failed_hand_states", 0)) == 1920, f"{case}: expected 1920 HaWoR provisioning-failure hand states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)

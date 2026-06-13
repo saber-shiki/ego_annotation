@@ -375,6 +375,18 @@ def hand_corrective_state(
         if hawor_hand is not None and isinstance(hawor_hand.get("joints2d"), list):
             prior["joints2d_source_px"] = rounded(hawor_hand.get("joints2d")[:21], 2)
         out["hawor_temporal_prior"] = prior
+        if "infill" in str(hawor_row.get("evidence_role")):
+            out["pose_fill_best_effort"] = {
+                "status": "hawor_motion_infill_candidate_not_accepted_pose_fill",
+                "source": "HaWoR",
+                "measurement_id": hawor_row.get("measurement_id"),
+                "evidence_role": hawor_row.get("evidence_role"),
+                "accepted_pose_fill": False,
+                "uncertainty": "temporal_motion_prior_without_accepted_occlusion_owner_or_depth_order",
+                "state_role": "no_gating_uncertain_pose_fill_evidence_not_solution",
+            }
+            if hawor_hand is not None and isinstance(hawor_hand.get("joints2d"), list):
+                out["pose_fill_best_effort"]["joints2d_source_px"] = rounded(hawor_hand.get("joints2d")[:21], 2)
     elif not hawor_available_for_case:
         out["hawor_temporal_prior"] = {"status": "provisioning_failed_no_case_measurements", "state_role": "required_baseline_missing_execution_not_silent_absence"}
         out["uncertainty"].append("hawor_not_executed_or_not_provisioned_for_case")
@@ -573,6 +585,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 counts["hawor_prior_states"] += 1
             if prior_status == "provisioning_failed_no_case_measurements":
                 counts["hawor_provisioning_failed_hand_states"] += 1
+            if "pose_fill_best_effort" in state:
+                counts["pose_fill_best_effort_states"] += 1
             if "occlusion_owner_best_effort" in state:
                 counts["occlusion_owner_best_effort_states"] += 1
             if "contact_nonpenetration_state" in state:
