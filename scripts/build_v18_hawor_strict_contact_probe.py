@@ -64,13 +64,15 @@ def strict_policy_keys(policy_report: dict[str, Any]) -> set[tuple[int, str]]:
     return keys
 
 
-def bridge_vertices_by_key(bridge_npz: Path) -> dict[tuple[int, str], np.ndarray]:
+def bridge_vertices_by_key(bridge_npz: Path) -> dict[tuple[int, str], dict[str, np.ndarray]]:
     z = np.load(bridge_npz)
     frames = np.asarray(z["frame_idx"], dtype=np.int32)
     sides = np.asarray(z["side"], dtype=np.int8)
-    verts = np.asarray(z["vertices_current_v18_world_from_hawor_camera_local_m"], dtype=np.float32)
+    world = np.asarray(z["vertices_current_v18_world_from_hawor_camera_local_m"], dtype=np.float32)
+    camera = np.asarray(z["vertices_hawor_camera_m"], dtype=np.float32)
+    transforms = np.asarray(z["T_world_camera_metric_current_v18"], dtype=np.float32)
     side_name = {0: "left", 1: "right"}
-    return {(int(f), side_name[int(s)]): verts[i] for i, (f, s) in enumerate(zip(frames, sides)) if int(s) in side_name}
+    return {(int(f), side_name[int(s)]): {"world": world[i], "camera": camera[i], "T_world_camera": transforms[i]} for i, (f, s) in enumerate(zip(frames, sides)) if int(s) in side_name}
 
 
 def visible_surface_index(report_path: Path) -> tuple[dict[tuple[int, str], tuple[int, int]], np.ndarray]:
@@ -90,6 +92,14 @@ def visible_surface_index(report_path: Path) -> tuple[dict[tuple[int, str], tupl
 def contact_rows(path: Path) -> list[dict[str, Any]]:
     report = load_json(path)
     return [row for row in report.get("rows", []) if isinstance(row, dict)] if isinstance(report.get("rows"), list) else []
+
+
+def world_to_camera(vertices_world: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
+    T = np.asarray(T_world_camera, dtype=np.float64)
+    inv = np.linalg.inv(T)
+    verts = np.asarray(vertices_world, dtype=np.float64)
+    homog = np.c_[verts, np.ones(len(verts), dtype=np.float64)]
+    return (inv @ homog.T).T[:, :3]
 
 
 def min_distance(hand_vertices: np.ndarray, object_vertices: np.ndarray, chunk: int = 96) -> float:
@@ -124,6 +134,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     counts: Counter[str] = Counter()
     distances: list[float] = []
     deltas: list[float] = []
+    depth_gaps: list[float] = []
+    hawor_depths: list[float] = []
+    object_depths: list[float] = []
     by_object: dict[str, list[float]] = defaultdict(list)
     by_original_category: Counter[str] = Counter()
     missing_surface = 0
@@ -135,11 +148,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if key not in strict_keys:
             continue
         oid = str(row.get("object_id"))
-        hverts = bridge_vertices.get(key)
+        bridge_entry = bridge_vertices.get(key)
         surf_slice = surface_idx.get((frame_idx, oid))
-        if hverts is None:
+        if bridge_entry is None:
             missing_hand += 1
             continue
+        hverts = bridge_entry["world"]
+        hverts_camera = bridge_entry["camera"]
+        T_world_camera = bridge_entry["T_world_camera"]
+        hawor_depth = float(np.median(hverts_camera[:, 2]))
+        object_depth = None
+        depth_gap = None
         if surf_slice is None:
             missing_surface += 1
             probe_status = "strict_policy_contact_row_missing_visible_object_surface"
@@ -149,6 +168,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             lo, hi = surf_slice
             obj_vertices = surface_vertices[lo:hi]
             vertex_count = int(len(obj_vertices))
+            obj_camera = world_to_camera(obj_vertices, T_world_camera) if vertex_count else np.empty((0, 3), dtype=np.float64)
+            object_depth = float(np.median(obj_camera[:, 2])) if vertex_count else None
+            depth_gap = float(hawor_depth - object_depth) if object_depth is not None and math.isfinite(object_depth) else None
+            if object_depth is not None:
+                hawor_depths.append(hawor_depth)
+                object_depths.append(object_depth)
+            if depth_gap is not None:
+                depth_gaps.append(depth_gap)
             dist_value = min_distance(hverts, obj_vertices) if vertex_count else float("nan")
             dist = dist_value if math.isfinite(dist_value) else None
             if dist is None:
@@ -183,6 +210,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "source_graph_min_hand_surface_to_object_mesh_m": source_min,
             "distance_delta_hawor_minus_source_m": delta,
             "visible_surface_vertex_count": vertex_count,
+            "hawor_hand_camera_median_depth_m": hawor_depth,
+            "object_visible_surface_camera_median_depth_m": object_depth,
+            "camera_depth_gap_hawor_minus_object_m": depth_gap,
             "object_geometry_scope": "depth_backed_visible_surface_only_open_mesh_not_complete_geometry",
             "contact_acceptance_from_probe": False,
             "nonpenetration_acceptance_from_probe": False,
@@ -205,6 +235,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "distance_threshold_counts": dict(sorted(counts.items())),
         "hawor_hand_to_visible_object_surface_min_m": summarize(distances),
         "distance_delta_hawor_minus_source_m": summarize(deltas),
+        "hawor_hand_camera_median_depth_m": summarize(hawor_depths),
+        "object_visible_surface_camera_median_depth_m": summarize(object_depths),
+        "camera_depth_gap_hawor_minus_object_m": summarize(depth_gaps),
         "per_object_distance_m": {oid: summarize(vals) for oid, vals in sorted(by_object.items())},
         "contact_acceptance_from_probe": False,
         "nonpenetration_acceptance_from_probe": False,
@@ -237,6 +270,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         f"Status: `{summary['status']}`\n"
         f"Strict contact rows evaluated: `{report['strict_contact_rows_evaluated']}`\n"
         f"Distance summary: `{report['hawor_hand_to_visible_object_surface_min_m']}`\n"
+        f"Camera depth gap HaWoR minus object: `{report['camera_depth_gap_hawor_minus_object_m']}`\n"
         f"Threshold counts: `{report['distance_threshold_counts']}`\n"
         f"Contact acceptance from probe: `{report['contact_acceptance_from_probe']}`\n"
         f"Nonpenetration acceptance from probe: `{report['nonpenetration_acceptance_from_probe']}`\n",

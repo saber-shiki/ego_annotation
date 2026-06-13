@@ -857,9 +857,9 @@ Current status remains blocked because that NPZ is absent and the local HaWoR re
 
 A candidate-only strict contact proximity probe now evaluates existing trash contact rows whose hand side passes the strict HaWoR bridge subset policy. It uses HaWoR bridge hand vertices in current V18 world coordinates and depth-backed visible object surface vertices only.
 
-Current evidence: `223` strict trash contact rows evaluated, visible-surface minimum distance median `0.436 m`, p05 `0.051 m`, p95 `0.701 m`; only `19/223` rows are within `10 cm`, `12/223` within `5 cm`, and `4/223` within `1 cm`. The median delta relative to the source graph hand/object distance is `+0.433 m`.
+Current evidence: `223` strict trash contact rows evaluated, visible-surface minimum distance median `0.436 m`, p05 `0.051 m`, p95 `0.701 m`; only `19/223` rows are within `10 cm`, `12/223` within `5 cm`, and `4/223` within `1 cm`. The median delta relative to the source graph hand/object distance is `+0.433 m`. In current camera coordinates, HaWoR hand median depth is behind the visible object surface by median `0.571 m` (p05 `0.184 m`).
 
-This is negative mechanism evidence: strict image-space bridge support does not imply 3D contact support. Possible mechanisms are HaWoR bridge depth/scale mismatch, coordinate-frame mismatch with the visible-surface archive, or a source-contact graph using a different hand/object geometry basis. The probe uses open visible object surfaces, so it cannot prove non-contact or nonpenetration; it only blocks immediate contact recomputation/acceptance from the trash bridge. Contact, nonpenetration, occlusion ownership, and V18 closure remain unaccepted.
+This is negative mechanism evidence: strict image-space bridge support does not imply 3D contact support. The leading mechanism is HaWoR bridge depth/scale mismatch; coordinate-frame mismatch with the visible-surface archive or a source-contact graph using a different hand/object geometry basis remain possible. The probe uses open visible object surfaces, so it cannot prove non-contact or nonpenetration; it only blocks immediate contact recomputation/acceptance from the trash bridge. Contact, nonpenetration, occlusion ownership, and V18 closure remain unaccepted.
 
 ## Pipeline DAG and Parallelism
 

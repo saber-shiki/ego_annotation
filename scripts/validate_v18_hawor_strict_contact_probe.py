@@ -55,6 +55,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     delta = case.get("distance_delta_hawor_minus_source_m") if isinstance(case.get("distance_delta_hawor_minus_source_m"), dict) else {}
     require(delta.get("count") == 223, f"delta count expected 223 got {delta.get('count')}", failures)
     require(float(delta.get("median", 0.0)) > 0.40, f"delta median should preserve mismatch vs source graph distance: {delta}", failures)
+    depth_gap = case.get("camera_depth_gap_hawor_minus_object_m") if isinstance(case.get("camera_depth_gap_hawor_minus_object_m"), dict) else {}
+    require(depth_gap.get("count") == 223, f"depth gap count expected 223 got {depth_gap.get('count')}", failures)
+    require(float(depth_gap.get("median", 0.0)) > 0.50, f"depth gap median should preserve HaWoR-behind-object anomaly: {depth_gap}", failures)
+    require(float(depth_gap.get("p05", 0.0)) > 0.15, f"depth gap p05 should preserve broad mismatch: {depth_gap}", failures)
     blockers = case.get("blocking_reasons") if isinstance(case.get("blocking_reasons"), list) else []
     for blocker in [
         "probe_uses_visible_open_object_surfaces_only_not_complete_mesh_or_sdf",
