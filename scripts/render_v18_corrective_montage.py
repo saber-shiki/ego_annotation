@@ -89,6 +89,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         ("contact + local nonpenetration", args.output_root / case / "contact_nonpenetration_state" / "frames"),
         ("generic rigid fused-canonical SE3", args.output_root / case / "rigid_se3_attempt" / "world_frames"),
         ("frame-local visible surface", args.output_root / case / "visible_surface_state" / "world_frames"),
+        ("rigid SE3 residual check", args.output_root / case / "rigid_se3_residual_check" / "world_frames"),
     ]
     rows = 4
     for raw_frame in frames:

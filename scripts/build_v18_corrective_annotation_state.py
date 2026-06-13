@@ -265,6 +265,17 @@ def nonpenetration_row_index(report_path: Path) -> dict[tuple[int, str, str], di
     return out
 
 
+def rigid_residual_row_index(report_path: Path) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    if not report_path.exists():
+        return {}, {}
+    report = load_json(report_path)
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in report.get("residual_rows", []) if isinstance(report.get("residual_rows"), list) else []:
+        if isinstance(row, dict):
+            out[(int(row.get("frame_idx", -1)), str(row.get("object_id")))] = row
+    return out, report
+
+
 def stable_rigid_pose_index(frames: list[Any], candidate_ids: set[str], radius: int) -> dict[tuple[int, str], list[float]]:
     raw: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     for raw_frame in frames:
@@ -420,7 +431,7 @@ def hand_corrective_state(
     return out
 
 
-def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dict[str, Any] | None, rigid_candidate: dict[str, Any] | None, stable_pose: list[float] | None, visible_surface_row: dict[str, Any] | None) -> dict[str, Any]:
+def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dict[str, Any] | None, rigid_candidate: dict[str, Any] | None, stable_pose: list[float] | None, visible_surface_row: dict[str, Any] | None, residual_row: dict[str, Any] | None) -> dict[str, Any]:
     oid = str(obj.get("object_id"))
     out: dict[str, Any] = {
         "object_id": oid,
@@ -468,13 +479,36 @@ def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dic
             "stable_rigid_prior_method": "componentwise_median_rotation_vector_plus_local_mean_translation_no_object_name_branch",
             "state_role": "generic_rigid_se3_render_driver_attempt",
         }
+        out["uncertainty"].append("rigid_candidate_geometry_not_complete")
+        if str(rigid_candidate.get("model_physical_state_type")) != "rigid":
+            out["uncertainty"].append("rigid_candidate_selected_by_motion_metadata_not_model_rigid_state")
         if stable_pose is not None:
             attempt["stable_pose6_world_from_object"] = rounded(stable_pose, 6)
             attempt["status"] = "stable_pose_available_uncertain_render_driver"
-            out["best_current_state"] = "generic_rigid_se3_stable_prior_plus_frame_local_visible_surface_when_available"
+            out["best_current_state"] = "uncertain_rigid_prior_with_frame_local_visible_surface_when_available"
         else:
             attempt["status"] = "selected_but_no_graph_pose_this_frame"
             out["uncertainty"].append("rigid_candidate_without_pose_this_frame")
+        if residual_row is not None:
+            residual_status = str(residual_row.get("status"))
+            attempt["residual_check"] = {
+                "status": residual_status,
+                "visible_to_fused_median_m": residual_row.get("visible_to_fused_median_m"),
+                "visible_to_fused_p95_m": residual_row.get("visible_to_fused_p95_m"),
+                "fused_to_visible_p95_m": residual_row.get("fused_to_visible_p95_m"),
+                "thresholds_m": residual_row.get("thresholds_m"),
+                "state_role": "bidirectional_residual_check_not_pose_acceptance",
+            }
+            if residual_status == "visible_supported_but_fused_overspread":
+                out["best_current_state"] = "frame_local_visible_surface_preferred_fused_geometry_overspread"
+                out["uncertainty"].append("fused_canonical_geometry_overspread_relative_to_visible_surface")
+            elif residual_status == "visible_surface_not_explained_by_fused_pose":
+                out["best_current_state"] = "frame_local_visible_surface_preferred_rigid_pose_residual_rejected"
+                out["uncertainty"].append("rigid_pose_residual_rejected_by_visible_surface")
+            elif residual_status == "bidirectional_residual_supported_uncertain":
+                out["uncertainty"].append("rigid_residual_supported_but_pose_not_accepted")
+        else:
+            out["uncertainty"].append("rigid_residual_check_missing_for_frame")
         out["generic_rigid_se3_attempt"] = attempt
     return out
 
@@ -502,6 +536,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     contact_rows, contact_report = selected_contact_index(args.contact_graph_root / case / "v18_contact_ownership_graph_report.json")
     signed_rows = nonpenetration_row_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
     triangle_rows = nonpenetration_row_index(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json")
+    residual_rows, residual_report = rigid_residual_row_index(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
     out_frames: list[dict[str, Any]] = []
@@ -551,13 +586,19 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             if not isinstance(obj, dict):
                 continue
             oid = str(obj.get("object_id"))
-            state = object_corrective_state(frame_idx, obj, graph_objects.get(oid), rigid_candidates.get(oid), stable_pose.get((frame_idx, oid)), visible_rows.get((frame_idx, oid)))
+            state = object_corrective_state(frame_idx, obj, graph_objects.get(oid), rigid_candidates.get(oid), stable_pose.get((frame_idx, oid)), visible_rows.get((frame_idx, oid)), residual_rows.get((frame_idx, oid)))
             if "graph_object_se3" in state:
                 counts["graph_object_se3_states"] += 1
             if "frame_local_visible_surface_state" in state:
                 counts["frame_local_visible_surface_states"] += 1
-            if state.get("generic_rigid_se3_attempt", {}).get("stable_pose6_world_from_object") is not None:
+            rigid_attempt = state.get("generic_rigid_se3_attempt", {}) if isinstance(state.get("generic_rigid_se3_attempt"), dict) else {}
+            if rigid_attempt.get("stable_pose6_world_from_object") is not None:
                 counts["generic_rigid_stable_pose_states"] += 1
+            residual_check = rigid_attempt.get("residual_check", {}) if isinstance(rigid_attempt.get("residual_check"), dict) else {}
+            residual_status = residual_check.get("status")
+            if isinstance(residual_status, str):
+                counts["rigid_residual_checked_states"] += 1
+                counts[f"rigid_residual::{residual_status}"] += 1
             object_states.append(state)
         out_frames.append({
             "frame_idx": frame_idx,
@@ -595,12 +636,14 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "signed_nonpenetration_report": str(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json"),
             "triangle_nonpenetration_report": str(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json"),
             "contact_nonpenetration_state_report": str(args.corrective_root / case / "contact_nonpenetration_state" / "v18_contact_nonpenetration_state_report.json"),
+            "rigid_se3_residual_check_report": str(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json"),
         },
         "occlusion_owner_selected_rows": len(occlusion_owner_rows),
         "occlusion_owner_strict_accepted_rows": 0,
         "occlusion_owner_acceptance_blocker_counts": occlusion_owner_report.get("acceptance_blocker_counts") if isinstance(occlusion_owner_report, dict) else None,
         "contact_graph_selected_rows": len(contact_rows),
         "contact_graph_accepted_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows") if isinstance(contact_report, dict) else None,
+        "rigid_residual_candidate_objects": residual_report.get("candidate_objects") if isinstance(residual_report, dict) else None,
         "counts": dict(sorted(counts.items())),
         "rigid_candidate_ids": sorted(rigid_candidates),
         "hawor_measurement_rows": len(hawor_index),

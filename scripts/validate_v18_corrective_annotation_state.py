@@ -36,6 +36,22 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(int(counts.get("graph_hand_states", 0)) == int(counts.get("graph_shifted_mano_states", -1)), f"{case}: graph hand count != shifted MANO count", failures)
     require(int(counts.get("graph_object_se3_states", 0)) > 0, f"{case}: no graph object SE3 states", failures)
     require(int(counts.get("frame_local_visible_surface_states", 0)) > 0, f"{case}: no frame-local visible surface states", failures)
+    stable_without_uncertainty = 0
+    stable_without_residual = 0
+    for frame in frames if isinstance(frames, list) else []:
+        if not isinstance(frame, dict):
+            continue
+        for obj in frame.get("objects", []):
+            if not isinstance(obj, dict):
+                continue
+            attempt = obj.get("generic_rigid_se3_attempt", {}) if isinstance(obj.get("generic_rigid_se3_attempt"), dict) else {}
+            if attempt.get("stable_pose6_world_from_object") is not None:
+                if not obj.get("uncertainty"):
+                    stable_without_uncertainty += 1
+                if not isinstance(attempt.get("residual_check"), dict):
+                    stable_without_residual += 1
+    require(stable_without_uncertainty == 0, f"{case}: stable rigid rows without uncertainty: {stable_without_uncertainty}", failures)
+    require(stable_without_residual == 0, f"{case}: stable rigid rows without residual check: {stable_without_residual}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 232, f"{case}: expected 232 visible surface states for the rigid lid", failures)
@@ -45,6 +61,9 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("contact_nonpenetration_states", 0)) == 371, f"{case}: expected 371 contact/nonpenetration states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 293, f"{case}: expected 293 local penetration contact veto states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 2, f"{case}: expected 2 graph-accepted contact states without local penetration flag", failures)
+        require(int(counts.get("rigid_residual_checked_states", 0)) == 232, f"{case}: expected 232 rigid residual checked states", failures)
+        require(int(counts.get("rigid_residual::bidirectional_residual_supported_uncertain", 0)) == 150, f"{case}: expected 150 bidirectional residual supported states", failures)
+        require(int(counts.get("rigid_residual::visible_supported_but_fused_overspread", 0)) == 82, f"{case}: expected 82 fused-overspread residual states", failures)
         require("object:pink_lid_trash_can_second" in ann.get("rigid_candidate_ids", []), f"{case}: missing pink lid rigid candidate", failures)
     if case == "task5_tomato_960":
         require(ann.get("hawor_measurement_rows") == 0, f"{case}: expected zero HaWoR measurement rows", failures)
@@ -55,6 +74,10 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("contact_nonpenetration_states", 0)) == 808, f"{case}: expected 808 contact/nonpenetration states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 705, f"{case}: expected 705 local penetration contact veto states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 16, f"{case}: expected 16 graph-accepted contact states without local penetration flag", failures)
+        require(int(counts.get("rigid_residual_checked_states", 0)) == 449, f"{case}: expected 449 rigid residual checked states", failures)
+        require(int(counts.get("rigid_residual::bidirectional_residual_supported_uncertain", 0)) == 22, f"{case}: expected 22 bidirectional residual supported states", failures)
+        require(int(counts.get("rigid_residual::visible_supported_but_fused_overspread", 0)) == 425, f"{case}: expected 425 fused-overspread residual states", failures)
+        require(int(counts.get("rigid_residual::visible_surface_not_explained_by_fused_pose", 0)) == 2, f"{case}: expected 2 residual rejected states", failures)
         require("object:obj_tomato" in ann.get("rigid_candidate_ids", []), f"{case}: missing tomato generic rigid candidate", failures)
         tomato_pose_rows = 0
         tomato_surface_rows = 0
