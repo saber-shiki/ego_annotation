@@ -51,13 +51,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("corrective_bundle_manifest", [py, "scripts/build_v18_corrective_bundle_manifest.py", "--output-root", str(args.output_root)]),
     ]
     results = []
+    partial_path = args.output_root / "v18_corrective_1600_pipeline_report.partial.json"
     for name, cmd in stages:
         result = run_stage(name, cmd, args.repo_root)
         results.append(result)
-        write_json(args.output_root / "v18_corrective_1600_pipeline_report.partial.json", {
+        write_json(partial_path, {
             "method": "run_v18_corrective_1600_pipeline",
             "status": "running" if result["returncode"] == 0 else "failed",
             "completed_stage_count": len(results),
+            "stage_count": len(stages),
             "stages": results,
         })
         if result["returncode"] != 0:
@@ -73,6 +75,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "stages": results,
     }
     write_json(args.output_root / "v18_corrective_1600_pipeline_report.json", report)
+    if partial_path.exists():
+        partial_path.unlink()
     return report
 
 

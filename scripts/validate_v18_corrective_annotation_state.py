@@ -43,6 +43,10 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     nonrigid_graph_pose_best_current = 0
     smoothed_marked_accepted_3d = 0
     smoothed_without_uncertainty = 0
+    smoothed_promoted_best_current = 0
+    smoothed_applied_gate_violation = 0
+    repair_bad_semantics = 0
+    repair_postcheck_mismatch = 0
     for frame in frames if isinstance(frames, list) else []:
         if not isinstance(frame, dict):
             continue
@@ -54,8 +58,33 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
                 if smoothed.get("accepted_3d_mano_pose") is not False:
                     smoothed_marked_accepted_3d += 1
                 uncertainty = hand.get("uncertainty") if isinstance(hand.get("uncertainty"), list) else []
-                if "temporal_smoothed_mano2d_is_not_3d_mano_optimization_or_physical_pose" not in uncertainty:
+                if "temporal_smoothed_mano2d_is_not_3d_mano_optimization_or_physical_pose_or_best_current_state" not in uncertainty:
                     smoothed_without_uncertainty += 1
+                if str(hand.get("best_current_state", "")).startswith("temporal_smoothed"):
+                    smoothed_promoted_best_current += 1
+                if smoothed.get("temporal_filter_applied") is True:
+                    if float(smoothed.get("max_joint_shift_from_graph_shifted_input_px") or 0.0) > 120.0:
+                        smoothed_applied_gate_violation += 1
+                    if float(smoothed.get("centroid_shift_from_graph_shifted_input_px") or 0.0) > 80.0:
+                        smoothed_applied_gate_violation += 1
+                    if float(smoothed.get("root_shift_from_graph_shifted_input_px") or 0.0) > 120.0:
+                        smoothed_applied_gate_violation += 1
+                    if int(smoothed.get("output_out_of_source_frame_joint_count") or 0) != 0:
+                        smoothed_applied_gate_violation += 1
+            repair = hand.get("nonpenetration_repair_proposal", {}) if isinstance(hand.get("nonpenetration_repair_proposal"), dict) else {}
+            if repair:
+                if repair.get("applied_to_annotation") is not False or repair.get("proposal_complete_nonpenetration") is not False:
+                    repair_bad_semantics += 1
+                if repair.get("state_role") != "diagnostic_v16_local_translation_candidate_not_applied_not_complete_sdf_not_current_v18_hand_state":
+                    repair_bad_semantics += 1
+                if "v16" not in str(repair.get("diagnostic_geometry_basis")):
+                    repair_bad_semantics += 1
+                status = str(repair.get("status"))
+                post_passed = repair.get("post_translation_local_metric_passed")
+                if status.endswith("postcheck_pass") and post_passed is not True:
+                    repair_postcheck_mismatch += 1
+                if status.endswith("postcheck_failed") and post_passed is not False:
+                    repair_postcheck_mismatch += 1
         for obj in frame.get("objects", []):
             if not isinstance(obj, dict):
                 continue
@@ -81,6 +110,10 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(stable_without_residual == 0, f"{case}: stable rigid rows without residual check: {stable_without_residual}", failures)
     require(smoothed_marked_accepted_3d == 0, f"{case}: temporal smoothed MANO2D rows marked accepted 3D: {smoothed_marked_accepted_3d}", failures)
     require(smoothed_without_uncertainty == 0, f"{case}: temporal smoothed MANO2D rows without scope uncertainty: {smoothed_without_uncertainty}", failures)
+    require(smoothed_promoted_best_current == 0, f"{case}: temporal smoothed MANO2D rows promoted to best_current_state: {smoothed_promoted_best_current}", failures)
+    require(smoothed_applied_gate_violation == 0, f"{case}: applied temporal smoothing rows violating anchor/bounds gates: {smoothed_applied_gate_violation}", failures)
+    require(repair_bad_semantics == 0, f"{case}: repair candidate rows with applied/complete/missing-V16 semantics: {repair_bad_semantics}", failures)
+    require(repair_postcheck_mismatch == 0, f"{case}: repair candidate postcheck status mismatch: {repair_postcheck_mismatch}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
         require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1901, f"{case}: expected 1901 temporal smoothed MANO2D states", failures)
@@ -93,9 +126,10 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 293, f"{case}: expected 293 local penetration contact veto states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 2, f"{case}: expected 2 graph-accepted contact states without local penetration flag", failures)
         require(int(counts.get("nonpenetration_repair_proposal_states", 0)) == 293, f"{case}: expected 293 nonpenetration repair proposal states", failures)
-        require(int(counts.get("nonpenetration_repair::large_local_translation_required", 0)) == 235, f"{case}: expected 235 large local repair states", failures)
-        require(int(counts.get("nonpenetration_repair::repair_unreliable_incoherent_normals", 0)) == 54, f"{case}: expected 54 incoherent-normal repair states", failures)
-        require(int(counts.get("nonpenetration_repair::small_coherent_local_translation_proposal", 0)) == 4, f"{case}: expected 4 small coherent repair states", failures)
+        require(int(counts.get("nonpenetration_repair::large_local_translation_required", 0)) == 235, f"{case}: expected 235 large local translation states", failures)
+        require(int(counts.get("nonpenetration_repair::translation_candidate_unreliable_incoherent_normals", 0)) == 54, f"{case}: expected 54 incoherent-normal translation candidates", failures)
+        require(int(counts.get("nonpenetration_repair::small_coherent_translation_candidate_local_postcheck_pass", 0)) == 2, f"{case}: expected 2 small coherent candidates passing local postcheck", failures)
+        require(int(counts.get("nonpenetration_repair::small_coherent_translation_candidate_local_postcheck_failed", 0)) == 2, f"{case}: expected 2 small coherent candidates failing local postcheck", failures)
         require(int(counts.get("rigid_residual_checked_states", 0)) == 232, f"{case}: expected 232 rigid residual checked states", failures)
         require(int(counts.get("rigid_residual::bidirectional_residual_supported_uncertain", 0)) == 150, f"{case}: expected 150 bidirectional residual supported states", failures)
         require(int(counts.get("rigid_residual::visible_supported_but_fused_overspread", 0)) == 82, f"{case}: expected 82 fused-overspread residual states", failures)
@@ -112,9 +146,10 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 705, f"{case}: expected 705 local penetration contact veto states", failures)
         require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 16, f"{case}: expected 16 graph-accepted contact states without local penetration flag", failures)
         require(int(counts.get("nonpenetration_repair_proposal_states", 0)) == 703, f"{case}: expected 703 nonpenetration repair proposal states", failures)
-        require(int(counts.get("nonpenetration_repair::large_local_translation_required", 0)) == 335, f"{case}: expected 335 large local repair states", failures)
-        require(int(counts.get("nonpenetration_repair::repair_unreliable_incoherent_normals", 0)) == 336, f"{case}: expected 336 incoherent-normal repair states", failures)
-        require(int(counts.get("nonpenetration_repair::small_coherent_local_translation_proposal", 0)) == 32, f"{case}: expected 32 small coherent repair states", failures)
+        require(int(counts.get("nonpenetration_repair::large_local_translation_required", 0)) == 335, f"{case}: expected 335 large local translation states", failures)
+        require(int(counts.get("nonpenetration_repair::translation_candidate_unreliable_incoherent_normals", 0)) == 336, f"{case}: expected 336 incoherent-normal translation candidates", failures)
+        require(int(counts.get("nonpenetration_repair::small_coherent_translation_candidate_local_postcheck_pass", 0)) == 21, f"{case}: expected 21 small coherent candidates passing local postcheck", failures)
+        require(int(counts.get("nonpenetration_repair::small_coherent_translation_candidate_local_postcheck_failed", 0)) == 11, f"{case}: expected 11 small coherent candidates failing local postcheck", failures)
         require(int(counts.get("rigid_residual_checked_states", 0)) == 449, f"{case}: expected 449 rigid residual checked states", failures)
         require(int(counts.get("rigid_residual::bidirectional_residual_supported_uncertain", 0)) == 22, f"{case}: expected 22 bidirectional residual supported states", failures)
         require(int(counts.get("rigid_residual::visible_supported_but_fused_overspread", 0)) == 425, f"{case}: expected 425 fused-overspread residual states", failures)

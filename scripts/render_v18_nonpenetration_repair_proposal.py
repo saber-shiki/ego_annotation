@@ -101,13 +101,10 @@ def accepted_contact_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def repair_from_geometry(points: np.ndarray, vertices: np.ndarray, faces: np.ndarray, args: argparse.Namespace) -> dict[str, Any]:
-    if len(points) > args.max_query_hand_points:
-        step = max(1, int(math.ceil(len(points) / args.max_query_hand_points)))
-        points = points[::step]
+def local_triangle_signed_distances(points: np.ndarray, vertices: np.ndarray, faces: np.ndarray, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, str | None]:
     tri, centroids, normals, _face_ids = face_geometry(vertices, faces)
     if len(tri) == 0:
-        return {"status": "blocked", "blocker": "invalid_triangle_normals"}
+        return np.asarray([], dtype=np.float64), np.zeros((0, 3), dtype=np.float64), "invalid_triangle_normals"
     k = min(args.nearest_triangle_candidates, len(tri))
     tree = cKDTree(centroids)
     _, raw_indices = tree.query(points, k=k)
@@ -127,8 +124,31 @@ def repair_from_geometry(points: np.ndarray, vertices: np.ndarray, faces: np.nda
         normal = normals[best_idx]
         signed.append(float(np.dot(vec[best_local], normal)))
         chosen_normals.append(normal)
-    signed_arr = np.asarray(signed, dtype=np.float64)
-    normals_arr = np.asarray(chosen_normals, dtype=np.float64)
+    return np.asarray(signed, dtype=np.float64), np.asarray(chosen_normals, dtype=np.float64), None
+
+
+def post_translation_metrics(points: np.ndarray, vertices: np.ndarray, faces: np.ndarray, translation: np.ndarray, args: argparse.Namespace) -> dict[str, Any]:
+    signed_arr, _normals_arr, blocker = local_triangle_signed_distances(points + translation[None, :], vertices, faces, args)
+    if blocker is not None or len(signed_arr) == 0:
+        return {"post_translation_local_check_status": "blocked", "post_translation_blocker": blocker or "empty_signed_distance_result"}
+    penetrated = signed_arr < -args.penetration_tolerance_m
+    return {
+        "post_translation_local_check_status": "local_triangle_tolerance_pass" if not np.any(penetrated) else "local_triangle_tolerance_failed",
+        "post_translation_min_signed_m": float(np.min(signed_arr)),
+        "post_translation_median_signed_m": float(np.median(signed_arr)),
+        "post_translation_penetrated_point_count": int(np.sum(penetrated)),
+        "post_translation_penetrated_point_fraction": float(np.mean(penetrated)),
+        "post_translation_local_metric_passed": bool(not np.any(penetrated)),
+    }
+
+
+def repair_from_geometry(points: np.ndarray, vertices: np.ndarray, faces: np.ndarray, args: argparse.Namespace) -> dict[str, Any]:
+    if len(points) > args.max_query_hand_points:
+        step = max(1, int(math.ceil(len(points) / args.max_query_hand_points)))
+        points = points[::step]
+    signed_arr, normals_arr, blocker = local_triangle_signed_distances(points, vertices, faces, args)
+    if blocker is not None or len(signed_arr) == 0:
+        return {"status": "blocked", "blocker": blocker or "empty_signed_distance_result"}
     penetrated = signed_arr < -args.penetration_tolerance_m
     if not np.any(penetrated):
         return {
@@ -154,10 +174,12 @@ def repair_from_geometry(points: np.ndarray, vertices: np.ndarray, faces: np.nda
     alignment = float(np.linalg.norm(np.mean(pen_normals, axis=0)))
     required = float(np.max(depths) + args.penetration_tolerance_m)
     translation = direction * required
+    post = post_translation_metrics(points, vertices, faces, translation, args)
+    post_passed = post.get("post_translation_local_metric_passed") is True
     if required <= args.small_repair_threshold_m and alignment >= args.normal_alignment_threshold:
-        status = "small_coherent_local_translation_proposal"
+        status = "small_coherent_translation_candidate_local_postcheck_pass" if post_passed else "small_coherent_translation_candidate_local_postcheck_failed"
     elif alignment < args.normal_alignment_threshold:
-        status = "repair_unreliable_incoherent_normals"
+        status = "translation_candidate_unreliable_incoherent_normals"
     else:
         status = "large_local_translation_required"
     return {
@@ -171,17 +193,21 @@ def repair_from_geometry(points: np.ndarray, vertices: np.ndarray, faces: np.nda
         "proposed_translation_world_m": translation.tolist(),
         "proposed_translation_norm_m": required,
         "penetration_normal_alignment": alignment,
+        **post,
         "proposal_complete_nonpenetration": False,
-        "semantics": "single_local_normal_translation_proposal_from_open_mesh_triangle_normals_not_applied_not_sdf",
+        "candidate_applied_to_annotation": False,
+        "semantics": "single_local_normal_translation_candidate_from_v16_visible_hand_points_and_v16_open_object_mesh_triangle_normals_not_applied_not_sdf_not_current_v18_graph_shifted_hand_state",
     }
 
 
 def color_for_status(status: str) -> tuple[int, int, int]:
-    if status == "small_coherent_local_translation_proposal":
+    if status == "small_coherent_translation_candidate_local_postcheck_pass":
         return (80, 255, 140)
+    if status == "small_coherent_translation_candidate_local_postcheck_failed":
+        return (255, 120, 80)
     if status == "large_local_translation_required":
         return (255, 190, 60)
-    if status == "repair_unreliable_incoherent_normals":
+    if status == "translation_candidate_unreliable_incoherent_normals":
         return (255, 80, 80)
     return (180, 180, 180)
 
@@ -217,10 +243,13 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "hand_side": side,
             "object_id": oid,
             "source_contact_owner_claim": row.get("contact_owner_claim"),
+            "source_contact_owner_claim_context": "contact_graph_claim_before_local_nonpenetration_veto_not_final_contact_acceptance",
+            "accepted_before_nonpenetration_veto": row.get("accepted_contact_owner"),
             "source_min_unsigned_distance_m": row.get("min_hand_surface_to_v16_object_mesh_m"),
             "source_triangle_min_signed_m": tri.get("min_local_triangle_signed_distance_m"),
             "source_triangle_negative_fraction": tri.get("negative_triangle_signed_distance_fraction"),
             "hand_geometry_source": hand_source,
+            "diagnostic_geometry_basis": "v16_visible_hand_points_and_v16_object_mesh_not_current_v18_graph_shifted_or_temporal_smoothed_hand_state",
         }
         if mesh_blocker or hand_blocker or vertices is None or faces is None or points is None:
             proposal.update({"status": "blocked", "blocker": mesh_blocker or hand_blocker or "missing_geometry"})
@@ -244,7 +273,10 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         z_min -= 1.0; z_max += 1.0
 
     case_dir = args.output_root / case / "nonpenetration_repair_proposal"
-    frame_dir = case_dir / "world_frames"
+    stale_world_dir = case_dir / "world_frames"
+    if stale_world_dir.exists():
+        shutil.rmtree(stale_world_dir)
+    frame_dir = case_dir / "diagnostic_xz_frames"
     if frame_dir.exists():
         shutil.rmtree(frame_dir)
     frame_dir.mkdir(parents=True, exist_ok=True)
@@ -261,7 +293,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         image = Image.new("RGB", (canvas_w, canvas_h), (16, 18, 24))
         draw = ImageDraw.Draw(image)
         draw.rectangle((0, 0, canvas_w, 48), fill=(0, 0, 0))
-        draw.text((12, 12), f"V18 local nonpenetration repair proposal {case} frame {frame_idx+1}/{len(frames)}", fill=(255, 255, 255), font=big)
+        draw.text((12, 12), f"V18 local nonpenetration translation candidates {case} frame {frame_idx+1}/{len(frames)}", fill=(255, 255, 255), font=big)
         draw.rectangle((plot_left, plot_top, plot_right, plot_bottom), outline=(90, 90, 100), width=1)
         y = 54
         for prop in frame_to_props.get(frame_idx, []):
@@ -283,11 +315,11 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 ey = int(plot_bottom - (end[2] - z_min) / (z_max - z_min) * (plot_bottom - plot_top))
                 draw.line((cx, cy, ex, ey), fill=color, width=5)
                 draw.ellipse((ex - 4, ey - 4, ex + 4, ey + 4), outline=color, width=2)
-            draw_label(draw, (12, y), f"{side}->{str(prop.get('object_id')).replace('object:', '')} {status} move={prop.get('proposed_translation_norm_m', None)}", small, color, (0, 0, 0))
+            draw_label(draw, (12, y), f"{side}->{str(prop.get('object_id')).replace('object:', '')} {status} move={prop.get('proposed_translation_norm_m', None)} post={prop.get('post_translation_local_check_status')}", small, color, (0, 0, 0))
             y += 20
         if not frame_to_props.get(frame_idx):
             counts["frames_without_repair_proposal"] += 1
-        draw_label(draw, (12, canvas_h - 42), "Diagnostic local normal translation proposal only; not applied; open-mesh, not complete SDF/nonpenetration.", small, (255, 255, 255), (0, 0, 0))
+        draw_label(draw, (12, canvas_h - 42), "Abstract X-Z diagnostic from V16 local geometry; not a metric 3D repair render; not applied; not complete SDF/nonpenetration.", small, (255, 255, 255), (0, 0, 0))
         image.save(frame_dir / f"{frame_idx:06d}.jpg", quality=90)
     video_path = case_dir / "v18_nonpenetration_repair_proposal.mp4"
     encode_video(frame_dir, video_path, fps)
@@ -295,7 +327,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     report = {
         "method": "render_v18_nonpenetration_repair_proposal",
         "case": case,
-        "claim_scope": "diagnostic_local_translation_proposals_for_triangle_penetration_rows_not_applied_not_complete_nonpenetration",
+        "claim_scope": "diagnostic_local_translation_candidates_for_v16_triangle_penetration_rows_with_post_translation_local_check_not_applied_not_complete_nonpenetration",
         "frame_count": len(frames),
         "fps": fps,
         "proposal_rows": len(proposal_rows),
@@ -306,8 +338,8 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "normal_alignment_threshold": args.normal_alignment_threshold,
         },
         "rows": proposal_rows,
-        "outputs": {"world_video": str(video_path)},
-        "frame_counts": {"world": ffprobe_frame_count(video_path)},
+        "outputs": {"diagnostic_xz_video": str(video_path)},
+        "frame_counts": {"diagnostic_xz": ffprobe_frame_count(video_path)},
         "draw_counts": dict(sorted(counts.items())),
         "elapsed_s": time.perf_counter() - start,
     }
@@ -322,7 +354,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "method": "render_v18_nonpenetration_repair_proposal",
         "status": "nonpenetration_repair_proposal_not_applied_not_complete_sdf",
         "cases": reports,
-        "all_world_frame_counts_match": all(r["frame_counts"].get("world") == r["frame_count"] for r in reports),
+        "all_diagnostic_xz_frame_counts_match": all(r["frame_counts"].get("diagnostic_xz") == r["frame_count"] for r in reports),
         "elapsed_s": time.perf_counter() - start,
     }
     write_json(args.output_root / "v18_nonpenetration_repair_proposal_summary.json", summary)

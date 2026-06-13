@@ -5,8 +5,10 @@ This converts the corrective V18 mechanisms from visual-only attempts into a
 machine-readable annotation artifact. It does not duplicate the full V18 source
 annotation and does not claim full V18 closure. It records only states actually
 changed or attempted by the corrective work: factor-graph-driven hand state,
-graph-shifted MANO projections, generic rigid SE(3) object priors, and HaWoR
-prior/provisioning status.
+graph-shifted MANO projections, gated temporal MANO2D filtering, generic rigid
+SE(3) object priors, visible-surface/residual diagnostics, HaWoR prior/provisioning
+status, tentative occlusion ownership, contact/nonpenetration evidence, and V16-local
+nonpenetration translation candidates.
 """
 
 from __future__ import annotations
@@ -386,12 +388,18 @@ def hand_corrective_state(
         out["temporal_smoothed_mano2d_state"] = {
             "status": temporal_smoothed_hand_row.get("status"),
             "joints2d_source_px": temporal_smoothed_hand_row.get("joints2d_source_px"),
+            "temporal_filter_applied": temporal_smoothed_hand_row.get("temporal_filter_applied"),
+            "reject_reasons": temporal_smoothed_hand_row.get("reject_reasons"),
+            "max_joint_shift_from_graph_shifted_input_px": temporal_smoothed_hand_row.get("max_joint_shift_from_graph_shifted_input_px"),
+            "centroid_shift_from_graph_shifted_input_px": temporal_smoothed_hand_row.get("centroid_shift_from_graph_shifted_input_px"),
+            "root_shift_from_graph_shifted_input_px": temporal_smoothed_hand_row.get("root_shift_from_graph_shifted_input_px"),
+            "candidate_out_of_source_frame_joint_count": temporal_smoothed_hand_row.get("candidate_out_of_source_frame_joint_count"),
+            "raw_out_of_source_frame_joint_count": temporal_smoothed_hand_row.get("raw_out_of_source_frame_joint_count"),
+            "output_out_of_source_frame_joint_count": temporal_smoothed_hand_row.get("output_out_of_source_frame_joint_count"),
             "accepted_3d_mano_pose": False,
-            "state_role": temporal_smoothed_hand_row.get("state_role") or "image_space_temporal_smoothing_not_3d_mano_optimization",
+            "state_role": temporal_smoothed_hand_row.get("state_role") or "image_space_temporal_filter_with_anchor_and_bounds_gate_not_3d_mano_optimization",
         }
-        if out["best_current_state"] == "graph_shifted_mano_if_available_else_graph_shifted_bbox":
-            out["best_current_state"] = "temporal_smoothed_graph_shifted_mano2d_if_available_else_graph_shifted_bbox"
-        out["uncertainty"].append("temporal_smoothed_mano2d_is_not_3d_mano_optimization_or_physical_pose")
+        out["uncertainty"].append("temporal_smoothed_mano2d_is_not_3d_mano_optimization_or_physical_pose_or_best_current_state")
 
     if hawor_row is not None:
         prior: dict[str, Any] = {
@@ -482,10 +490,16 @@ def hand_corrective_state(
                 "proposed_translation_norm_m": nonpenetration_repair_row.get("proposed_translation_norm_m"),
                 "penetrated_point_fraction": nonpenetration_repair_row.get("penetrated_point_fraction"),
                 "penetration_normal_alignment": nonpenetration_repair_row.get("penetration_normal_alignment"),
+                "post_translation_local_check_status": nonpenetration_repair_row.get("post_translation_local_check_status"),
+                "post_translation_min_signed_m": nonpenetration_repair_row.get("post_translation_min_signed_m"),
+                "post_translation_penetrated_point_count": nonpenetration_repair_row.get("post_translation_penetrated_point_count"),
+                "post_translation_local_metric_passed": nonpenetration_repair_row.get("post_translation_local_metric_passed"),
                 "proposal_complete_nonpenetration": False,
                 "applied_to_annotation": False,
+                "diagnostic_geometry_basis": nonpenetration_repair_row.get("diagnostic_geometry_basis"),
+                "source_contact_owner_claim_context": nonpenetration_repair_row.get("source_contact_owner_claim_context"),
                 "semantics": nonpenetration_repair_row.get("semantics"),
-                "state_role": "diagnostic_local_repair_proposal_not_applied_not_complete_sdf",
+                "state_role": "diagnostic_v16_local_translation_candidate_not_applied_not_complete_sdf_not_current_v18_hand_state",
             }
     return out
 
@@ -703,7 +717,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "fps": ann.get("fps"),
         "duration_s": ann.get("duration_s"),
         "source_dimensions": {"width": source_w, "height": source_h},
-        "claim_scope": "best_current_annotation_state_for_corrective_graph_hand_rigid_object_and_hawor_prior_attempts; does_not_claim_solved_occlusion_contact_or_complete_geometry",
+        "claim_scope": "corrective_annotation_delta_for_graph_hand_state_gated_temporal_mano2d_filter_rigid_object_visible_surface_residuals_hawor_occlusion_contact_and_v16_local_nonpenetration_candidates; does_not_claim_solved_occlusion_contact_complete_geometry_3d_mano_or_nonpenetration",
         "corrective_sources": {
             "graph_render_report": str(args.corrective_root / case / "v18_corrective_state_report.json"),
             "rigid_se3_report": str(rigid_report_path),

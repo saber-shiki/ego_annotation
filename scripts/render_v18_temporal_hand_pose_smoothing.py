@@ -161,6 +161,63 @@ def smooth_tracks(tracks: dict[str, dict[int, np.ndarray]], radius: int) -> dict
     return out
 
 
+def out_of_bounds_count(pts: np.ndarray, source_w: float, source_h: float) -> int:
+    out = (pts[:, 0] < 0.0) | (pts[:, 0] > source_w) | (pts[:, 1] < 0.0) | (pts[:, 1] > source_h)
+    return int(np.sum(out))
+
+
+def constrain_smoothed_tracks(
+    tracks: dict[str, dict[int, np.ndarray]],
+    candidates: dict[str, dict[int, np.ndarray]],
+    source_w: float,
+    source_h: float,
+    args: argparse.Namespace,
+) -> tuple[dict[str, dict[int, np.ndarray]], dict[tuple[int, str], dict[str, Any]]]:
+    out: dict[str, dict[int, np.ndarray]] = {"left": {}, "right": {}}
+    meta: dict[tuple[int, str], dict[str, Any]] = {}
+    for side, rows in tracks.items():
+        for frame_idx, raw_pts in rows.items():
+            cand = candidates.get(side, {}).get(frame_idx)
+            if cand is None:
+                continue
+            shifts = np.linalg.norm(cand - raw_pts, axis=1)
+            centroid_shift = float(np.linalg.norm(np.mean(cand, axis=0) - np.mean(raw_pts, axis=0)))
+            root_shift = float(np.linalg.norm(cand[0] - raw_pts[0]))
+            max_shift = float(np.max(shifts))
+            raw_oob = out_of_bounds_count(raw_pts, source_w, source_h)
+            cand_oob = out_of_bounds_count(cand, source_w, source_h)
+            reject_reasons: list[str] = []
+            if max_shift > args.max_smoothing_joint_shift_px:
+                reject_reasons.append("candidate_exceeds_joint_shift_gate")
+            if centroid_shift > args.max_smoothing_centroid_shift_px:
+                reject_reasons.append("candidate_exceeds_centroid_shift_gate")
+            if root_shift > args.max_smoothing_root_shift_px:
+                reject_reasons.append("candidate_exceeds_root_shift_gate")
+            if cand_oob > 0:
+                reject_reasons.append("candidate_has_out_of_source_frame_joints")
+            if reject_reasons:
+                status = "temporal_smoothing_rejected_raw_graph_shifted_mano2d_retained"
+                pts = raw_pts
+                applied = False
+            else:
+                status = "temporal_smoothed_graph_shifted_mano2d"
+                pts = cand
+                applied = True
+            out[side][frame_idx] = pts
+            meta[(frame_idx, side)] = {
+                "status": status,
+                "temporal_filter_applied": applied,
+                "reject_reasons": reject_reasons,
+                "max_joint_shift_from_graph_shifted_input_px": max_shift,
+                "centroid_shift_from_graph_shifted_input_px": centroid_shift,
+                "root_shift_from_graph_shifted_input_px": root_shift,
+                "candidate_out_of_source_frame_joint_count": cand_oob,
+                "raw_out_of_source_frame_joint_count": raw_oob,
+                "output_out_of_source_frame_joint_count": out_of_bounds_count(pts, source_w, source_h),
+            }
+    return out, meta
+
+
 def accel_stats(rows: dict[int, np.ndarray]) -> dict[str, Any]:
     vals_raw: list[float] = []
     ids = sorted(rows)
@@ -214,7 +271,8 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     source_h = finite_float(raw_video.get("height"), 1080.0)
     fps = finite_float(ann.get("fps"), 30.0)
     tracks = collect_tracks(frames, source_w, source_h)
-    smoothed = smooth_tracks(tracks, args.smoothing_radius_frames)
+    candidates = smooth_tracks(tracks, args.smoothing_radius_frames)
+    smoothed, smoothing_meta = constrain_smoothed_tracks(tracks, candidates, source_w, source_h, args)
     case_dir = args.output_root / case / "temporal_hand_pose_smoothing"
     frame_dir = case_dir / "frames"
     if frame_dir.exists():
@@ -241,9 +299,12 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 draw_hand(draw, raw_pts * scale, (150, 150, 150), 2)
                 counts[f"raw_graph_shifted::{side}"] += 1
             if smooth_pts is not None:
-                draw_hand(draw, smooth_pts * scale, color, 4)
-                counts[f"temporal_smoothed::{side}"] += 1
-                draw_label(draw, (12, 54 if side == "left" else 74), f"{side}: colored=temporal median smoothed 2D MANO, gray=graph-shifted input", small, color, (0, 0, 0))
+                meta = smoothing_meta.get((idx, side), {})
+                applied = meta.get("temporal_filter_applied") is True
+                out_color = color if applied else (255, 110, 80)
+                draw_hand(draw, smooth_pts * scale, out_color, 4)
+                counts[f"temporal_filter::{meta.get('status', 'missing_status')}"] += 1
+                draw_label(draw, (12, 54 if side == "left" else 74), f"{side}: colored=accepted temporal filter, red=input retained by anchor/bounds gate; gray=graph-shifted input", small, out_color, (0, 0, 0))
         image.save(frame_dir / f"{idx:06d}.jpg", quality=90)
     video_path = case_dir / "v18_temporal_hand_pose_smoothing.mp4"
     encode_video(frame_dir, video_path, fps)
@@ -258,13 +319,22 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     smoothed_rows = []
     for side in ["left", "right"]:
         for frame_idx, pts in sorted(smoothed[side].items()):
+            meta = smoothing_meta.get((frame_idx, side), {})
             smoothed_rows.append({
                 "frame_idx": frame_idx,
                 "hand_side": side,
                 "joints2d_source_px": np.round(pts, 3).tolist(),
-                "status": "temporal_smoothed_graph_shifted_mano2d",
+                "status": meta.get("status", "missing_temporal_filter_status"),
+                "temporal_filter_applied": meta.get("temporal_filter_applied"),
+                "reject_reasons": meta.get("reject_reasons", []),
+                "max_joint_shift_from_graph_shifted_input_px": meta.get("max_joint_shift_from_graph_shifted_input_px"),
+                "centroid_shift_from_graph_shifted_input_px": meta.get("centroid_shift_from_graph_shifted_input_px"),
+                "root_shift_from_graph_shifted_input_px": meta.get("root_shift_from_graph_shifted_input_px"),
+                "candidate_out_of_source_frame_joint_count": meta.get("candidate_out_of_source_frame_joint_count"),
+                "raw_out_of_source_frame_joint_count": meta.get("raw_out_of_source_frame_joint_count"),
+                "output_out_of_source_frame_joint_count": meta.get("output_out_of_source_frame_joint_count"),
                 "accepted_3d_mano_pose": False,
-                "state_role": "image_space_temporal_smoothing_not_3d_mano_optimization",
+                "state_role": "image_space_temporal_filter_with_anchor_and_bounds_gate_not_3d_mano_optimization",
             })
     report = {
         "method": "render_v18_temporal_hand_pose_smoothing",
@@ -272,7 +342,12 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "claim_scope": "image_space_temporal_smoothing_of_graph_shifted_mano2d_joints_not_3d_mano_optimization_or_physical_pose_acceptance",
         "frame_count": len(frames),
         "fps": fps,
-        "parameters": {"smoothing_radius_frames": args.smoothing_radius_frames},
+        "parameters": {
+            "smoothing_radius_frames": args.smoothing_radius_frames,
+            "max_smoothing_joint_shift_px": args.max_smoothing_joint_shift_px,
+            "max_smoothing_centroid_shift_px": args.max_smoothing_centroid_shift_px,
+            "max_smoothing_root_shift_px": args.max_smoothing_root_shift_px,
+        },
         "draw_counts": dict(sorted(counts.items())),
         "smoothed_rows": smoothed_rows,
         "jitter_probe": jitter,
@@ -303,6 +378,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_full_pipeline"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600"))
     parser.add_argument("--smoothing-radius-frames", type=int, default=3)
+    parser.add_argument("--max-smoothing-joint-shift-px", type=float, default=120.0)
+    parser.add_argument("--max-smoothing-centroid-shift-px", type=float, default=80.0)
+    parser.add_argument("--max-smoothing-root-shift-px", type=float, default=120.0)
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
 
