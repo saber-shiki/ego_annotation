@@ -60,6 +60,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
     owner = load_json(root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json")
     contact = load_json(root / case / "contact_nonpenetration_state" / "v18_contact_nonpenetration_state_report.json")
     residual = load_json(root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
+    repair = load_json(root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json")
     montage = load_json(root / case / "corrective_montage" / "v18_corrective_montage_report.json")
     ann_path = root / case / "annotations_v18_corrective_state.json"
     ann = load_json(ann_path)
@@ -72,6 +73,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
         "tentative_occlusion_owner": owner,
         "contact_nonpenetration": contact,
         "rigid_se3_residual_check": residual,
+        "nonpenetration_repair_proposal": repair,
         "corrective_montage": montage,
     }
     videos: list[dict[str, Any]] = []
@@ -90,6 +92,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
             "tentative_occlusion_owner": {"selected_tentative_owner_rows": owner.get("selected_tentative_owner_rows"), "strict_accepted_owner_rows": owner.get("strict_accepted_owner_rows"), "owner_object_counts": owner.get("owner_object_counts"), "acceptance_blocker_counts": owner.get("acceptance_blocker_counts"), "claim_scope": owner.get("claim_scope")},
             "contact_nonpenetration": {"contact_graph_selected_rows": contact.get("contact_graph_selected_rows"), "contact_graph_accepted_rows_before_nonpenetration_veto": contact.get("contact_graph_accepted_rows_before_nonpenetration_veto"), "signed_local_penetration_rows": contact.get("signed_local_penetration_rows"), "triangle_local_penetration_rows": contact.get("triangle_local_penetration_rows"), "mesh_watertight_rows": contact.get("mesh_watertight_rows"), "claim_scope": contact.get("claim_scope")},
             "rigid_se3_residual_check": {"candidate_objects": residual.get("candidate_objects"), "claim_scope": residual.get("claim_scope")},
+            "nonpenetration_repair_proposal": {"proposal_rows": repair.get("proposal_rows"), "proposal_status_counts": repair.get("proposal_status_counts"), "claim_scope": repair.get("claim_scope")},
             "corrective_montage": {"panels": montage.get("panels"), "claim_scope": montage.get("claim_scope")},
         },
         "videos": videos,
@@ -118,6 +121,7 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         lines += [
             f"Tentative owner rows: `{owner.get('selected_tentative_owner_rows')}`; strict accepted: `{owner.get('strict_accepted_owner_rows')}`",
             f"Contact rows selected: `{contact.get('contact_graph_selected_rows')}`; graph-accepted before local veto: `{contact.get('contact_graph_accepted_rows_before_nonpenetration_veto')}`; signed/triangle penetration rows: `{contact.get('signed_local_penetration_rows')}` / `{contact.get('triangle_local_penetration_rows')}`",
+            f"Repair proposal rows: `{case['mechanisms']['nonpenetration_repair_proposal'].get('proposal_rows')}`; statuses: `{case['mechanisms']['nonpenetration_repair_proposal'].get('proposal_status_counts')}`",
             f"HaWoR measurement rows: `{hawor.get('measurement_rows')}`",
             "",
             "Videos:",
