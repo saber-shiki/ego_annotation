@@ -219,6 +219,23 @@ def visible_surface_row_index(report_path: Path, candidate_ids: set[str]) -> tup
     return out, str(archive_npz) if isinstance(archive_npz, str) else None
 
 
+def selected_occlusion_owner_index(report_path: Path) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    if not report_path.exists():
+        return {}, {}
+    report = load_json(report_path)
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for hand_graph in report.get("hand_graphs", []) if isinstance(report.get("hand_graphs"), list) else []:
+        if not isinstance(hand_graph, dict):
+            continue
+        for row in hand_graph.get("assignments", []):
+            if not isinstance(row, dict):
+                continue
+            owner = row.get("chosen_owner_object_id")
+            if isinstance(owner, str) and owner.startswith("object:"):
+                out[(int(row.get("frame_idx", -1)), str(row.get("hand_side")))] = row
+    return out, report
+
+
 def stable_rigid_pose_index(frames: list[Any], candidate_ids: set[str], radius: int) -> dict[tuple[int, str], list[float]]:
     raw: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     for raw_frame in frames:
@@ -253,6 +270,7 @@ def hand_corrective_state(
     hawor_row: dict[str, Any] | None,
     hawor_hand: dict[str, Any] | None,
     hawor_available_for_case: bool,
+    occlusion_owner_row: dict[str, Any] | None,
     source_w: float,
     source_h: float,
 ) -> dict[str, Any]:
@@ -319,6 +337,20 @@ def hand_corrective_state(
         out["uncertainty"].append("hawor_not_executed_or_not_provisioned_for_case")
     else:
         out["hawor_temporal_prior"] = {"status": "not_in_hawor_measurement_window"}
+    if occlusion_owner_row is not None:
+        source_row = occlusion_owner_row.get("source_row", {}) if isinstance(occlusion_owner_row.get("source_row"), dict) else {}
+        out["occlusion_owner_best_effort"] = {
+            "status": "temporal_graph_selected_not_strictly_accepted",
+            "chosen_owner_object_id": occlusion_owner_row.get("chosen_owner_object_id"),
+            "chosen_unary_energy": occlusion_owner_row.get("chosen_unary_energy"),
+            "next_best_unary_energy": occlusion_owner_row.get("next_best_unary_energy"),
+            "unary_energy_margin": occlusion_owner_row.get("unary_energy_margin"),
+            "accepted_occlusion_owner": False,
+            "acceptance_blockers": occlusion_owner_row.get("acceptance_blockers"),
+            "depth_pair_evidence_state": occlusion_owner_row.get("depth_pair_evidence_state"),
+            "mesh_temporal_support": source_row.get("mesh_contact_temporal_support"),
+            "state_role": "best_current_tentative_owner_with_blockers_not_pose_fill_acceptance",
+        }
     return out
 
 
@@ -400,6 +432,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     rigid_report_path = args.corrective_root / case / "rigid_se3_attempt" / "v18_rigid_se3_attempt_report.json"
     rigid_candidates = rigid_candidates_from_report(rigid_report_path)
     visible_rows, visible_archive_npz = visible_surface_row_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json", set(rigid_candidates))
+    occlusion_owner_rows, occlusion_owner_report = selected_occlusion_owner_index(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json")
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
     out_frames: list[dict[str, Any]] = []
@@ -420,6 +453,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 hawor_index.get((frame_idx, side)),
                 hawor_hands.get((frame_idx, side)),
                 bool(hawor_index),
+                occlusion_owner_rows.get((frame_idx, side)),
                 source_w,
                 source_h,
             )
@@ -432,6 +466,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 counts["hawor_prior_states"] += 1
             if prior_status == "provisioning_failed_no_case_measurements":
                 counts["hawor_provisioning_failed_hand_states"] += 1
+            if "occlusion_owner_best_effort" in state:
+                counts["occlusion_owner_best_effort_states"] += 1
             hand_states.append(state)
         object_states = []
         for obj in frame.get("objects", []):
@@ -476,7 +512,12 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             },
             "visible_surface_archive_npz": visible_archive_npz,
             "visible_surface_state_report": str(args.corrective_root / case / "visible_surface_state" / "v18_visible_surface_state_report.json"),
+            "occlusion_owner_graph_report": str(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json"),
+            "occlusion_owner_best_effort_report": str(args.corrective_root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json"),
         },
+        "occlusion_owner_selected_rows": len(occlusion_owner_rows),
+        "occlusion_owner_strict_accepted_rows": 0,
+        "occlusion_owner_acceptance_blocker_counts": occlusion_owner_report.get("acceptance_blocker_counts") if isinstance(occlusion_owner_report, dict) else None,
         "counts": dict(sorted(counts.items())),
         "rigid_candidate_ids": sorted(rigid_candidates),
         "hawor_measurement_rows": len(hawor_index),
@@ -518,6 +559,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measurement-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_measurement_store"))
     parser.add_argument("--corrective-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
+    parser.add_argument("--occlusion-owner-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_graph"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600"))
     parser.add_argument("--translation-smoothing-radius", type=int, default=3)
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
