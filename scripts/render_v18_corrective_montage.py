@@ -86,14 +86,16 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         ("graph-driven hand/object state", args.output_root / case / "corrective_overlay_frames"),
         ("HaWoR prior / provisioning failure", args.output_root / case / "hawor_ghost_attempt" / "frames"),
         ("tentative occlusion owner", args.output_root / case / "occlusion_owner_best_effort" / "frames"),
+        ("contact + local nonpenetration", args.output_root / case / "contact_nonpenetration_state" / "frames"),
         ("generic rigid fused-canonical SE3", args.output_root / case / "rigid_se3_attempt" / "world_frames"),
         ("frame-local visible surface", args.output_root / case / "visible_surface_state" / "world_frames"),
     ]
+    rows = 4
     for raw_frame in frames:
         frame = raw_frame if isinstance(raw_frame, dict) else {}
         idx = int(frame.get("frame_idx", 0))
         name = f"{idx:06d}.jpg"
-        sheet = Image.new("RGB", (panel_size[0] * 2, panel_size[1] * 3 + 34), (8, 8, 10))
+        sheet = Image.new("RGB", (panel_size[0] * 2, panel_size[1] * rows + 34), (8, 8, 10))
         d = ImageDraw.Draw(sheet)
         d.rectangle((0, 0, sheet.size[0], 34), fill=(0, 0, 0))
         d.text((10, 8), f"V18 corrective montage {case} frame {idx+1}/{len(frames)} — changed mechanisms, not full closure", fill=(255, 255, 255), font=font(16))

@@ -41,12 +41,20 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 232, f"{case}: expected 232 visible surface states for the rigid lid", failures)
         require(int(counts.get("occlusion_owner_best_effort_states", 0)) == 64, f"{case}: expected 64 tentative occlusion owner rows", failures)
         require(ann.get("occlusion_owner_selected_rows") == 64, f"{case}: selected owner row metadata should be 64", failures)
+        require(ann.get("contact_graph_selected_rows") == 371, f"{case}: expected 371 selected contact rows", failures)
+        require(int(counts.get("contact_nonpenetration_states", 0)) == 371, f"{case}: expected 371 contact/nonpenetration states", failures)
+        require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 293, f"{case}: expected 293 local penetration contact veto states", failures)
+        require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 2, f"{case}: expected 2 graph-accepted contact states without local penetration flag", failures)
         require("object:pink_lid_trash_can_second" in ann.get("rigid_candidate_ids", []), f"{case}: missing pink lid rigid candidate", failures)
     if case == "task5_tomato_960":
         require(ann.get("hawor_measurement_rows") == 0, f"{case}: expected zero HaWoR measurement rows", failures)
         require(ann.get("occlusion_owner_selected_rows") == 0, f"{case}: expected zero selected tentative occlusion owner rows", failures)
         require(int(counts.get("hawor_provisioning_failed_hand_states", 0)) == 1920, f"{case}: expected 1920 HaWoR provisioning-failure hand states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)
+        require(ann.get("contact_graph_selected_rows") == 808, f"{case}: expected 808 selected contact rows", failures)
+        require(int(counts.get("contact_nonpenetration_states", 0)) == 808, f"{case}: expected 808 contact/nonpenetration states", failures)
+        require(int(counts.get("contact_nonpenetration::graph_accepted_but_local_penetration_veto", 0)) == 705, f"{case}: expected 705 local penetration contact veto states", failures)
+        require(int(counts.get("contact_nonpenetration::graph_accepted_no_local_penetration_flag", 0)) == 16, f"{case}: expected 16 graph-accepted contact states without local penetration flag", failures)
         require("object:obj_tomato" in ann.get("rigid_candidate_ids", []), f"{case}: missing tomato generic rigid candidate", failures)
         tomato_pose_rows = 0
         tomato_surface_rows = 0

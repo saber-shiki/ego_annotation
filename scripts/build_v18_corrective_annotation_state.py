@@ -236,6 +236,35 @@ def selected_occlusion_owner_index(report_path: Path) -> tuple[dict[tuple[int, s
     return out, report
 
 
+def selected_contact_index(report_path: Path) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    if not report_path.exists():
+        return {}, {}
+    report = load_json(report_path)
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for hand_graph in report.get("hand_graphs", []) if isinstance(report.get("hand_graphs"), list) else []:
+        if not isinstance(hand_graph, dict):
+            continue
+        for row in hand_graph.get("assignments", []):
+            if not isinstance(row, dict):
+                continue
+            owner = row.get("chosen_owner_object_id")
+            if isinstance(owner, str) and owner.startswith("object:"):
+                out[(int(row.get("frame_idx", -1)), str(row.get("hand_side")))] = row
+    return out, report
+
+
+def nonpenetration_row_index(report_path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
+    if not report_path.exists():
+        return {}
+    report = load_json(report_path)
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for row in report.get("rows", []) if isinstance(report.get("rows"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        out[(int(row.get("frame_idx", -1)), str(row.get("hand_side")), str(row.get("object_id")))] = row
+    return out
+
+
 def stable_rigid_pose_index(frames: list[Any], candidate_ids: set[str], radius: int) -> dict[tuple[int, str], list[float]]:
     raw: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     for raw_frame in frames:
@@ -271,6 +300,9 @@ def hand_corrective_state(
     hawor_hand: dict[str, Any] | None,
     hawor_available_for_case: bool,
     occlusion_owner_row: dict[str, Any] | None,
+    contact_row: dict[str, Any] | None,
+    signed_nonpenetration_row: dict[str, Any] | None,
+    triangle_nonpenetration_row: dict[str, Any] | None,
     source_w: float,
     source_h: float,
 ) -> dict[str, Any]:
@@ -350,6 +382,40 @@ def hand_corrective_state(
             "depth_pair_evidence_state": occlusion_owner_row.get("depth_pair_evidence_state"),
             "mesh_temporal_support": source_row.get("mesh_contact_temporal_support"),
             "state_role": "best_current_tentative_owner_with_blockers_not_pose_fill_acceptance",
+        }
+    if contact_row is not None:
+        oid = str(contact_row.get("chosen_owner_object_id"))
+        signed_pen = bool(signed_nonpenetration_row and signed_nonpenetration_row.get("local_penetration_detected"))
+        tri_pen = bool(triangle_nonpenetration_row and triangle_nonpenetration_row.get("local_triangle_penetration_detected"))
+        if not contact_row.get("accepted_contact_owner"):
+            status = "graph_selected_not_accepted"
+        elif signed_pen or tri_pen:
+            status = "graph_accepted_but_local_penetration_veto"
+        else:
+            status = "graph_accepted_no_local_penetration_flag"
+        out["contact_nonpenetration_state"] = {
+            "status": status,
+            "chosen_contact_object_id": oid,
+            "accepted_contact_owner_before_nonpenetration_veto": contact_row.get("accepted_contact_owner"),
+            "min_hand_surface_to_object_mesh_m": contact_row.get("min_hand_surface_to_object_mesh_m"),
+            "unary_energy_margin": contact_row.get("unary_energy_margin"),
+            "source_row_blockers": contact_row.get("source_row_blockers"),
+            "signed_nonpenetration": {
+                "available": signed_nonpenetration_row is not None,
+                "complete": False,
+                "local_penetration_detected": signed_nonpenetration_row.get("local_penetration_detected") if signed_nonpenetration_row else None,
+                "min_local_signed_distance_m": signed_nonpenetration_row.get("min_local_signed_distance_m") if signed_nonpenetration_row else None,
+                "semantics": signed_nonpenetration_row.get("local_signed_distance_semantics") if signed_nonpenetration_row else None,
+            },
+            "triangle_nonpenetration": {
+                "available": triangle_nonpenetration_row is not None,
+                "complete": False,
+                "mesh_watertight_by_edges": triangle_nonpenetration_row.get("mesh_watertight_by_edges") if triangle_nonpenetration_row else None,
+                "local_triangle_penetration_detected": triangle_nonpenetration_row.get("local_triangle_penetration_detected") if triangle_nonpenetration_row else None,
+                "min_local_triangle_signed_distance_m": triangle_nonpenetration_row.get("min_local_triangle_signed_distance_m") if triangle_nonpenetration_row else None,
+                "semantics": triangle_nonpenetration_row.get("local_triangle_signed_distance_semantics") if triangle_nonpenetration_row else None,
+            },
+            "state_role": "contact_graph_selection_with_local_nonpenetration_evidence_not_complete_sdf_solution",
         }
     return out
 
@@ -433,6 +499,9 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     rigid_candidates = rigid_candidates_from_report(rigid_report_path)
     visible_rows, visible_archive_npz = visible_surface_row_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json", set(rigid_candidates))
     occlusion_owner_rows, occlusion_owner_report = selected_occlusion_owner_index(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json")
+    contact_rows, contact_report = selected_contact_index(args.contact_graph_root / case / "v18_contact_ownership_graph_report.json")
+    signed_rows = nonpenetration_row_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
+    triangle_rows = nonpenetration_row_index(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json")
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
     out_frames: list[dict[str, Any]] = []
@@ -454,6 +523,9 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 hawor_hands.get((frame_idx, side)),
                 bool(hawor_index),
                 occlusion_owner_rows.get((frame_idx, side)),
+                contact_rows.get((frame_idx, side)),
+                signed_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
+                triangle_rows.get((frame_idx, side, str(contact_rows.get((frame_idx, side), {}).get("chosen_owner_object_id")))) if contact_rows.get((frame_idx, side)) else None,
                 source_w,
                 source_h,
             )
@@ -468,6 +540,11 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 counts["hawor_provisioning_failed_hand_states"] += 1
             if "occlusion_owner_best_effort" in state:
                 counts["occlusion_owner_best_effort_states"] += 1
+            if "contact_nonpenetration_state" in state:
+                counts["contact_nonpenetration_states"] += 1
+                contact_status = state["contact_nonpenetration_state"].get("status")
+                if isinstance(contact_status, str):
+                    counts[f"contact_nonpenetration::{contact_status}"] += 1
             hand_states.append(state)
         object_states = []
         for obj in frame.get("objects", []):
@@ -514,10 +591,16 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "visible_surface_state_report": str(args.corrective_root / case / "visible_surface_state" / "v18_visible_surface_state_report.json"),
             "occlusion_owner_graph_report": str(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json"),
             "occlusion_owner_best_effort_report": str(args.corrective_root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json"),
+            "contact_ownership_graph_report": str(args.contact_graph_root / case / "v18_contact_ownership_graph_report.json"),
+            "signed_nonpenetration_report": str(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json"),
+            "triangle_nonpenetration_report": str(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json"),
+            "contact_nonpenetration_state_report": str(args.corrective_root / case / "contact_nonpenetration_state" / "v18_contact_nonpenetration_state_report.json"),
         },
         "occlusion_owner_selected_rows": len(occlusion_owner_rows),
         "occlusion_owner_strict_accepted_rows": 0,
         "occlusion_owner_acceptance_blocker_counts": occlusion_owner_report.get("acceptance_blocker_counts") if isinstance(occlusion_owner_report, dict) else None,
+        "contact_graph_selected_rows": len(contact_rows),
+        "contact_graph_accepted_rows_before_nonpenetration_veto": contact_report.get("contact_ownership_accepted_rows") if isinstance(contact_report, dict) else None,
         "counts": dict(sorted(counts.items())),
         "rigid_candidate_ids": sorted(rigid_candidates),
         "hawor_measurement_rows": len(hawor_index),
@@ -560,6 +643,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corrective-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--occlusion-owner-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_graph"))
+    parser.add_argument("--contact-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))
+    parser.add_argument("--signed-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_signed_nonpenetration_evidence"))
+    parser.add_argument("--triangle-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_triangle_nonpenetration_evidence"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600"))
     parser.add_argument("--translation-smoothing-radius", type=int, default=3)
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
