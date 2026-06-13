@@ -58,6 +58,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
     visible = load_json(root / case / "visible_surface_state" / "v18_visible_surface_state_report.json")
     hawor = load_json(root / case / "hawor_ghost_attempt" / "v18_hawor_ghost_attempt_report.json")
     owner = load_json(root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json")
+    montage = load_json(root / case / "corrective_montage" / "v18_corrective_montage_report.json")
     ann_path = root / case / "annotations_v18_corrective_state.json"
     ann = load_json(ann_path)
     review_sheets = sorted((root / "review_sheets").glob(f"{case}_*_corrective_review.jpg"))
@@ -67,6 +68,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
         "frame_local_visible_surface": visible,
         "hawor_ghost_or_failure": hawor,
         "tentative_occlusion_owner": owner,
+        "corrective_montage": montage,
     }
     videos: list[dict[str, Any]] = []
     for name, report in reports.items():
@@ -82,6 +84,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
             "frame_local_visible_surface": {"candidate_objects": visible.get("candidate_objects"), "claim_scope": visible.get("claim_scope")},
             "hawor_ghost_or_failure": {"measurement_rows": hawor.get("measurement_rows"), "draw_counts": hawor.get("draw_counts"), "execution_failure_logs": hawor.get("execution_failure_logs"), "claim_scope": hawor.get("claim_scope")},
             "tentative_occlusion_owner": {"selected_tentative_owner_rows": owner.get("selected_tentative_owner_rows"), "strict_accepted_owner_rows": owner.get("strict_accepted_owner_rows"), "owner_object_counts": owner.get("owner_object_counts"), "acceptance_blocker_counts": owner.get("acceptance_blocker_counts"), "claim_scope": owner.get("claim_scope")},
+            "corrective_montage": {"panels": montage.get("panels"), "claim_scope": montage.get("claim_scope")},
         },
         "videos": videos,
         "review_sheets": [file_info(p) for p in review_sheets],
