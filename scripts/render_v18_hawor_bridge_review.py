@@ -90,6 +90,15 @@ def draw_label(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, fnt: I
     draw.text((x, y), text, font=fnt, fill=fill)
 
 
+def scale_points_to_image(points: np.ndarray, image_size: tuple[int, int], source_size: tuple[float, float] = (1920.0, 1080.0)) -> np.ndarray:
+    sx = image_size[0] / source_size[0]
+    sy = image_size[1] / source_size[1]
+    out = np.asarray(points, dtype=np.float64).copy()
+    out[:, 0] *= sx
+    out[:, 1] *= sy
+    return out
+
+
 def draw_skeleton(draw: ImageDraw.ImageDraw, pts: np.ndarray, color: tuple[int, int, int], width: int) -> None:
     if pts.shape != (21, 2):
         return
@@ -100,13 +109,19 @@ def draw_skeleton(draw: ImageDraw.ImageDraw, pts: np.ndarray, color: tuple[int, 
         draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=color)
 
 
-def draw_bbox(draw: ImageDraw.ImageDraw, bbox: Any, color: tuple[int, int, int]) -> None:
+def draw_bbox(draw: ImageDraw.ImageDraw, bbox: Any, color: tuple[int, int, int], image_size: tuple[int, int]) -> None:
     if not (isinstance(bbox, list) and len(bbox) == 4):
         return
     vals = [finite_float(v) for v in bbox]
     if not all(math.isfinite(v) for v in vals):
         return
-    draw.rectangle(tuple(int(round(v)) for v in vals), outline=color, width=3)
+    sx = image_size[0] / 1920.0
+    sy = image_size[1] / 1080.0
+    x0, y0, x1, y1 = vals
+    left, right = sorted((x0 * sx, x1 * sx))
+    top, bottom = sorted((y0 * sy, y1 * sy))
+    if right > left and bottom > top:
+        draw.rectangle((int(round(left)), int(round(top)), int(round(right)), int(round(bottom))), outline=color, width=3)
 
 
 def collect_rows(ann: dict[str, Any], z: np.lib.npyio.NpzFile, img_focal: float) -> list[dict[str, Any]]:
@@ -147,11 +162,11 @@ def render_tile(ann: dict[str, Any], z: np.lib.npyio.NpzFile, row: dict[str, Any
     hands = current_hands_by_side(frame)
     ref, ref_source = reference_projection(hands.get(side, {})) if side in hands else (None, None)
     if side in hands:
-        draw_bbox(draw, hands[side].get("bbox_xyxy"), (255, 190, 40))
+        draw_bbox(draw, hands[side].get("bbox_xyxy"), (255, 190, 40), image.size)
     if ref is not None:
-        draw_skeleton(draw, ref, (255, 170, 30), 3)
+        draw_skeleton(draw, scale_points_to_image(ref, image.size), (255, 170, 30), 3)
     if hawor_proj is not None:
-        draw_skeleton(draw, hawor_proj, (60, 230, 255), 4)
+        draw_skeleton(draw, scale_points_to_image(hawor_proj, image.size), (60, 230, 255), 4)
     color = (255, 80, 80) if float(row["residual_median_px"]) > 200.0 else (80, 255, 120)
     draw.rectangle((0, 0, image.size[0], 84), fill=(0, 0, 0))
     draw.text((12, 10), f"{title}: frame {row['frame_idx']} {side} median {row['residual_median_px']:.1f}px p95 {row['residual_p95_px']:.1f}px", fill=color, font=font(30))
