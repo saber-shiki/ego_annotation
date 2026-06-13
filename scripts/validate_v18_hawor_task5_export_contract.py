@@ -41,6 +41,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require(metadata.get("frame_count") == 960 and metadata.get("width") == 1920 and metadata.get("height") == 1080 and metadata.get("fps") == 30.0, f"expected video metadata unexpected: {metadata}", failures)
     expected_npz = contract.get("expected_local_output_npz") if isinstance(contract.get("expected_local_output_npz"), dict) else {}
     require(expected_npz.get("path") == "/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz", f"expected task5 NPZ path unexpected {expected_npz}", failures)
+    layout = contract.get("post_copy_expected_local_layout") if isinstance(contract.get("post_copy_expected_local_layout"), dict) else {}
+    require(layout.get("expected_qc_video_sha256") == expected_sha256, f"post-copy expected qc sha unexpected: {layout}", failures)
     flags = contract.get("acceptance_flags") if isinstance(contract.get("acceptance_flags"), dict) else {}
     require(flags.get("accepted_v18_hawor_requirement_met") is False, f"contract must not accept HaWoR requirement: {flags}", failures)
     require(flags.get("accepted_metric_hand_state_from_hawor") is False, f"contract must not accept metric hand state: {flags}", failures)

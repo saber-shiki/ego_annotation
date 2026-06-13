@@ -26,6 +26,10 @@ DEFAULT_HAWOR_OUTPUTS = {
     "trash_1050": Path("/data2/ego_annotation_outputs/representative_trash/v3_hawor_world/hawor_world_hands.npz"),
     "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz"),
 }
+EXPECTED_SOURCE_CLIP_SHA256 = {
+    # Source identity for the task5 clip named in the HaWoR export contract.
+    "task5_tomato_960": "66791eaa646aac2e8cb24bb00fe30b2801436302327b1c46fea650446c41c4ac",
+}
 
 
 def load_json(path: Path) -> Any:
@@ -251,6 +255,11 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
     # Even when a HaWoR NPZ exists, current V18 cannot accept it blindly. A bridge report can reduce
     # uncertainty about the coordinate path, but it is still candidate-only until residual tails are explained
     # and downstream contact/occlusion/nonpenetration are recomputed from the HaWoR state.
+    expected_clip_sha256 = EXPECTED_SOURCE_CLIP_SHA256.get(case)
+    qc_video_sha256 = qc.get("video_sha256") if isinstance(qc, dict) else None
+    qc_video_sha256_matches_expected = bool(expected_clip_sha256 and qc_video_sha256 == expected_clip_sha256)
+    if expected_clip_sha256 and not qc_video_sha256_matches_expected:
+        blockers.append("hawor_qc_video_sha256_missing_or_mismatch_for_expected_case_clip")
     if isinstance(bridge, dict) and bridge.get("bridge_candidate_rows"):
         blockers.append("HaWoR_current_V18_bridge_candidate_built_not_foundation_accepted")
         bridge_blockers = bridge.get("blocking_reasons") if isinstance(bridge.get("blocking_reasons"), list) else []
@@ -266,6 +275,9 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         "qc_report": file_info(qc_path, hash_file=bool(args.hash_sources)),
         "qc_status": qc.get("status") if isinstance(qc, dict) else None,
         "qc_valid_hand_frames": qc.get("valid_hand_frames") if isinstance(qc, dict) else None,
+        "expected_source_clip_sha256": expected_clip_sha256,
+        "qc_video_sha256": qc_video_sha256,
+        "qc_video_sha256_matches_expected": qc_video_sha256_matches_expected if expected_clip_sha256 else None,
         "npz_validation": npz_report,
         "available_hawor_frame_side_rows": available_rows,
         "full_timeline_hawor_npz_shape_valid": full_shape_valid,

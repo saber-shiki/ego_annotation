@@ -121,7 +121,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "post_copy_expected_local_layout": {
             "npz": str(expected_npz),
             "qc_json": str(expected_qc),
-            "copy_note": "Copy hawor_world_hands.npz and qc_hawor_world_hands.json from the remote output directory into this local directory before rebuilding V18 HaWoR requirement state.",
+            "expected_qc_video_sha256": EXPECTED_LOCAL_CLIP_SHA256,
+            "copy_note": "Copy hawor_world_hands.npz and qc_hawor_world_hands.json from the remote output directory into this local directory before rebuilding V18 HaWoR requirement state; qc_hawor_world_hands.json should record the same video_sha256 as this contract.",
         },
         "post_ingest_validation_commands": [
             f".venv/bin/python scripts/build_v18_hawor_requirement_state.py --output-root {args.output_root} --hash-sources",

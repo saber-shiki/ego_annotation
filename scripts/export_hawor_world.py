@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -19,8 +20,23 @@ def as_numpy(value: torch.Tensor | np.ndarray) -> np.ndarray:
     return np.asarray(value)
 
 
+def sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def run(args: argparse.Namespace) -> dict:
     hawor_root = args.hawor_root.resolve()
+    video_path_obj = Path(args.video_path).expanduser()
+    if not video_path_obj.is_absolute():
+        video_path_obj = (Path.cwd() / video_path_obj).resolve()
+    args.video_path = str(video_path_obj)
     sys.path.insert(0, str(hawor_root))
     os.chdir(hawor_root)
 
@@ -32,6 +48,7 @@ def run(args: argparse.Namespace) -> dict:
     from scripts.scripts_test_video.hawor_video import hawor_motion_estimation  # type: ignore
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    video_sha256 = sha256(video_path_obj) if video_path_obj.exists() and video_path_obj.is_file() else None
     start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
     frame_chunks_all, img_focal = hawor_motion_estimation(args, start_idx, end_idx, seq_folder)
     slam_path = Path(seq_folder) / "SLAM" / f"hawor_slam_w_scale_{start_idx}_{end_idx}.npz"
@@ -93,12 +110,14 @@ def run(args: argparse.Namespace) -> dict:
         right_faces=hands["right"]["faces"],
         img_focal=np.asarray([float(img_focal)], dtype=np.float32),
         video_path=np.asarray([str(args.video_path)]),
+        video_sha256=np.asarray([video_sha256 or ""]),
         seq_folder=np.asarray([str(seq_folder)]),
     )
     valid_counts = {side: int(np.count_nonzero(hands[side]["valid"])) for side in hands}
     qc = {
         "status": "ok",
         "video_path": str(args.video_path),
+        "video_sha256": video_sha256,
         "seq_folder": str(seq_folder),
         "output_npz": str(out_npz),
         "frames": int(len(frame_idx)),
