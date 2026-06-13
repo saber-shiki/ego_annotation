@@ -142,6 +142,8 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(contact_audit_strict == 0, f"{case}: contact audit rows unexpectedly strict-promotable: {contact_audit_strict}", failures)
     if case == "trash_1050":
         require(int(counts.get("hawor_prior_states", 0)) == 182, f"{case}: expected 182 HaWoR prior states", failures)
+        require(int(counts.get("geometry_coverage_audit_objects", 0)) == 1, f"{case}: expected 1 geometry coverage audit object", failures)
+        require(int(counts.get("geometry_coverage::broad_visible_coverage_but_hidden_geometry_still_unresolved", 0)) == 1, f"{case}: expected pink lid broad-visible unresolved coverage status", failures)
         require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1901, f"{case}: expected 1901 temporal smoothed MANO2D states", failures)
         require(int(counts.get("pose_fill_best_effort_states", 0)) == 50, f"{case}: expected 50 HaWoR motion-infill pose-fill best-effort states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 232, f"{case}: expected 232 visible surface states for the rigid lid", failures)
@@ -181,6 +183,9 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
         require(int(counts.get("occlusion_owner_acceptance::not_selected_no_direct_depth_support", 0)) == 1, f"{case}: expected 1 not-selected/no-direct-depth audit row", failures)
         require(ann.get("occlusion_owner_acceptance_audit_strict_promotable_rows") == 0, f"{case}: expected zero strict-promotable occlusion audit rows", failures)
         require(int(counts.get("hawor_provisioning_failed_hand_states", 0)) == 1920, f"{case}: expected 1920 HaWoR provisioning-failure hand states", failures)
+        require(int(counts.get("geometry_coverage_audit_objects", 0)) == 2, f"{case}: expected 2 geometry coverage audit objects", failures)
+        require(int(counts.get("geometry_coverage::coverage_confounded_by_pose_alignment_overspread", 0)) == 1, f"{case}: expected tomato coverage-confounded status", failures)
+        require(int(counts.get("geometry_coverage::insufficient_view_count_for_geometry_completion_claim", 0)) == 1, f"{case}: expected plastic container insufficient-view status", failures)
         require(int(counts.get("temporal_smoothed_mano2d_states", 0)) == 1859, f"{case}: expected 1859 temporal smoothed MANO2D states", failures)
         require(int(counts.get("frame_local_visible_surface_states", 0)) == 449, f"{case}: expected 449 visible surface states for rigid candidates", failures)
         require(ann.get("contact_graph_selected_rows") == 808, f"{case}: expected 808 selected contact rows", failures)

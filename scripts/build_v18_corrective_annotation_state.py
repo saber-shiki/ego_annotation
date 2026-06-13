@@ -322,6 +322,13 @@ def temporal_smoothed_hand_row_index(report_path: Path) -> tuple[dict[tuple[int,
     return out, report
 
 
+def geometry_coverage_report(report_path: Path) -> dict[str, Any]:
+    if not report_path.exists():
+        return {}
+    report = load_json(report_path)
+    return report if isinstance(report, dict) else {}
+
+
 def stable_rigid_pose_index(frames: list[Any], candidate_ids: set[str], radius: int) -> dict[tuple[int, str], list[float]]:
     raw: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     for raw_frame in frames:
@@ -692,8 +699,16 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     residual_rows, residual_report = rigid_residual_row_index(args.corrective_root / case / "rigid_se3_residual_check" / "v18_rigid_se3_residual_check_report.json")
     repair_rows, repair_report = nonpenetration_repair_row_index(args.corrective_root / case / "nonpenetration_repair_proposal" / "v18_nonpenetration_repair_proposal_report.json")
     smoothed_hand_rows, smoothed_hand_report = temporal_smoothed_hand_row_index(args.corrective_root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json")
+    geometry_coverage = geometry_coverage_report(args.corrective_root / case / "geometry_coverage_audit" / "v18_geometry_coverage_audit_report.json")
+    geometry_summaries = geometry_coverage.get("object_summaries", {}) if isinstance(geometry_coverage.get("object_summaries"), dict) else {}
     stable_pose = stable_rigid_pose_index(frames, set(rigid_candidates), args.translation_smoothing_radius)
     counts: Counter[str] = Counter()
+    for summary in geometry_summaries.values():
+        if isinstance(summary, dict):
+            counts["geometry_coverage_audit_objects"] += 1
+            status = summary.get("status")
+            if isinstance(status, str):
+                counts[f"geometry_coverage::{status}"] += 1
     out_frames: list[dict[str, Any]] = []
     for raw_frame in frames:
         frame = raw_frame if isinstance(raw_frame, dict) else {}
@@ -803,7 +818,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "fps": ann.get("fps"),
         "duration_s": ann.get("duration_s"),
         "source_dimensions": {"width": source_w, "height": source_h},
-        "claim_scope": "corrective_annotation_delta_for_graph_hand_state_gated_temporal_mano2d_filter_rigid_object_visible_surface_residuals_hawor_occlusion_contact_and_v16_local_nonpenetration_candidates; does_not_claim_solved_occlusion_contact_complete_geometry_3d_mano_or_nonpenetration",
+        "claim_scope": "corrective_annotation_delta_for_graph_hand_state_gated_temporal_mano2d_filter_rigid_object_visible_surface_geometry_coverage_residuals_hawor_occlusion_contact_and_v16_local_nonpenetration_candidates; does_not_claim_solved_occlusion_contact_complete_geometry_3d_mano_or_nonpenetration",
         "corrective_sources": {
             "graph_render_report": str(args.corrective_root / case / "v18_corrective_state_report.json"),
             "rigid_se3_report": str(rigid_report_path),
@@ -815,6 +830,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             },
             "visible_surface_archive_npz": visible_archive_npz,
             "visible_surface_state_report": str(args.corrective_root / case / "visible_surface_state" / "v18_visible_surface_state_report.json"),
+            "geometry_coverage_audit_report": str(args.corrective_root / case / "geometry_coverage_audit" / "v18_geometry_coverage_audit_report.json"),
             "occlusion_owner_graph_report": str(args.occlusion_owner_graph_root / case / "v18_occlusion_owner_graph_report.json"),
             "occlusion_owner_best_effort_report": str(args.corrective_root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json"),
             "occlusion_owner_acceptance_audit_report": str(args.corrective_root / case / "occlusion_owner_acceptance_audit" / "v18_occlusion_owner_acceptance_audit_report.json"),
@@ -837,6 +853,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "contact_acceptance_audit_category_counts": contact_audit_report.get("category_counts") if isinstance(contact_audit_report, dict) else None,
         "contact_acceptance_audit_strict_promotable_rows": contact_audit_report.get("strict_promotable_contact_rows") if isinstance(contact_audit_report, dict) else None,
         "rigid_residual_candidate_objects": residual_report.get("candidate_objects") if isinstance(residual_report, dict) else None,
+        "geometry_coverage_audit_status_counts": geometry_coverage.get("status_counts") if isinstance(geometry_coverage, dict) else None,
+        "geometry_coverage_audit_object_summaries": geometry_summaries,
         "nonpenetration_repair_proposal_status_counts": repair_report.get("proposal_status_counts") if isinstance(repair_report, dict) else None,
         "temporal_hand_pose_smoothing_draw_counts": smoothed_hand_report.get("draw_counts") if isinstance(smoothed_hand_report, dict) else None,
         "temporal_hand_pose_smoothing_jitter_probe": smoothed_hand_report.get("jitter_probe") if isinstance(smoothed_hand_report, dict) else None,

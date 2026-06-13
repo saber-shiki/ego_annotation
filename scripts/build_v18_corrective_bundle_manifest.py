@@ -56,6 +56,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
     graph = load_json(root / case / "v18_corrective_state_report.json")
     rigid = load_json(root / case / "rigid_se3_attempt" / "v18_rigid_se3_attempt_report.json")
     visible = load_json(root / case / "visible_surface_state" / "v18_visible_surface_state_report.json")
+    geometry_coverage = load_json(root / case / "geometry_coverage_audit" / "v18_geometry_coverage_audit_report.json")
     hawor = load_json(root / case / "hawor_ghost_attempt" / "v18_hawor_ghost_attempt_report.json")
     hand_smoothing = load_json(root / case / "temporal_hand_pose_smoothing" / "v18_temporal_hand_pose_smoothing_report.json")
     owner = load_json(root / case / "occlusion_owner_best_effort" / "v18_occlusion_owner_best_effort_report.json")
@@ -72,6 +73,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
         "graph_corrective_render": graph,
         "generic_rigid_se3_attempt": rigid,
         "frame_local_visible_surface": visible,
+        "geometry_coverage_audit": geometry_coverage,
         "hawor_ghost_or_failure": hawor,
         "temporal_hand_pose_smoothing": hand_smoothing,
         "tentative_occlusion_owner": owner,
@@ -94,6 +96,7 @@ def case_bundle(case: str, root: Path) -> dict[str, Any]:
             "graph_corrective_render": {"draw_counts": graph.get("draw_counts"), "jitter_probe": graph.get("jitter_probe"), "claim_scope": graph.get("claim_scope")},
             "generic_rigid_se3_attempt": {"candidate_objects": rigid.get("candidate_objects"), "claim_scope": rigid.get("claim_scope")},
             "frame_local_visible_surface": {"candidate_objects": visible.get("candidate_objects"), "claim_scope": visible.get("claim_scope")},
+            "geometry_coverage_audit": {"object_count": geometry_coverage.get("object_count"), "status_counts": geometry_coverage.get("status_counts"), "object_summaries": geometry_coverage.get("object_summaries"), "claim_scope": geometry_coverage.get("claim_scope")},
             "hawor_ghost_or_failure": {"measurement_rows": hawor.get("measurement_rows"), "draw_counts": hawor.get("draw_counts"), "execution_failure_logs": hawor.get("execution_failure_logs"), "claim_scope": hawor.get("claim_scope")},
             "temporal_hand_pose_smoothing": {"draw_counts": hand_smoothing.get("draw_counts"), "jitter_probe": hand_smoothing.get("jitter_probe"), "claim_scope": hand_smoothing.get("claim_scope")},
             "tentative_occlusion_owner": {"selected_tentative_owner_rows": owner.get("selected_tentative_owner_rows"), "strict_accepted_owner_rows": owner.get("strict_accepted_owner_rows"), "owner_object_counts": owner.get("owner_object_counts"), "acceptance_blocker_counts": owner.get("acceptance_blocker_counts"), "claim_scope": owner.get("claim_scope")},
@@ -143,6 +146,7 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
             f"Contact acceptance audit rows: `{contact_audit.get('selected_contact_rows')}`; strict promotable: `{contact_audit.get('strict_promotable_contact_rows')}`; categories: `{contact_audit.get('category_counts')}`",
             f"Repair proposal rows: `{case['mechanisms']['nonpenetration_repair_proposal'].get('proposal_rows')}`; statuses: `{case['mechanisms']['nonpenetration_repair_proposal'].get('proposal_status_counts')}`",
             f"Temporal smoothed MANO2D draw counts: `{hand_smoothing.get('draw_counts')}`",
+            f"Geometry coverage audit statuses: `{case['mechanisms']['geometry_coverage_audit'].get('status_counts')}`",
             f"HaWoR measurement rows: `{hawor.get('measurement_rows')}`",
             "",
             "Videos:",
