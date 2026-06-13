@@ -455,14 +455,24 @@ def object_corrective_state(frame_idx: int, obj: dict[str, Any], graph_pose: dic
         "uncertainty": [],
     }
     if graph_pose is not None:
+        graph_source = str(graph_pose.get("source"))
         out["graph_object_se3"] = {
             "variable_id": graph_pose.get("variable_id"),
             "pose6_world_from_object": rounded(graph_pose.get("pose6_world_from_object"), 6),
             "source": graph_pose.get("source"),
             "observation_residual_norm": graph_pose.get("observation_residual_norm"),
-            "state_role": "factor_graph_object_pose_observation",
+            "accepted_physical_object_pose": False,
+            "state_role": "factor_graph_object_pose_observation_not_accepted_physical_pose",
         }
-        out["best_current_state"] = "graph_object_se3_observation"
+        out["uncertainty"].append("graph_object_se3_is_visible_surface_observation_not_accepted_pose")
+        if obj.get("physical_state_candidate") != "rigid":
+            out["uncertainty"].append("non_rigid_or_unknown_object_state_not_validated_for_rigid_se3_pose")
+            out["best_current_state"] = "approximate_visible_surface_pose_observation_not_physical_pose"
+        elif "centroid" in graph_source or "pca" in graph_source:
+            out["uncertainty"].append("object_se3_source_is_centroid_pca_proxy")
+            out["best_current_state"] = "approximate_visible_surface_pose_observation_not_accepted_pose"
+        else:
+            out["best_current_state"] = "graph_object_se3_observation_uncertain_not_accepted_pose"
     else:
         out["uncertainty"].append("missing_factor_graph_object_se3_for_frame")
     if visible_surface_row is not None:

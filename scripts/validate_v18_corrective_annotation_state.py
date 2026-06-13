@@ -38,18 +38,33 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(int(counts.get("frame_local_visible_surface_states", 0)) > 0, f"{case}: no frame-local visible surface states", failures)
     stable_without_uncertainty = 0
     stable_without_residual = 0
+    graph_pose_without_uncertainty = 0
+    graph_pose_marked_accepted = 0
+    nonrigid_graph_pose_best_current = 0
     for frame in frames if isinstance(frames, list) else []:
         if not isinstance(frame, dict):
             continue
         for obj in frame.get("objects", []):
             if not isinstance(obj, dict):
                 continue
+            uncertainty = obj.get("uncertainty") if isinstance(obj.get("uncertainty"), list) else []
+            graph_pose = obj.get("graph_object_se3", {}) if isinstance(obj.get("graph_object_se3"), dict) else {}
+            if graph_pose:
+                if not uncertainty:
+                    graph_pose_without_uncertainty += 1
+                if graph_pose.get("accepted_physical_object_pose") is not False:
+                    graph_pose_marked_accepted += 1
+                if obj.get("physical_state_candidate") != "rigid" and obj.get("best_current_state") == "graph_object_se3_observation":
+                    nonrigid_graph_pose_best_current += 1
             attempt = obj.get("generic_rigid_se3_attempt", {}) if isinstance(obj.get("generic_rigid_se3_attempt"), dict) else {}
             if attempt.get("stable_pose6_world_from_object") is not None:
-                if not obj.get("uncertainty"):
+                if not uncertainty:
                     stable_without_uncertainty += 1
                 if not isinstance(attempt.get("residual_check"), dict):
                     stable_without_residual += 1
+    require(graph_pose_without_uncertainty == 0, f"{case}: graph object SE3 rows without uncertainty: {graph_pose_without_uncertainty}", failures)
+    require(graph_pose_marked_accepted == 0, f"{case}: graph object SE3 rows missing accepted_physical_object_pose=false: {graph_pose_marked_accepted}", failures)
+    require(nonrigid_graph_pose_best_current == 0, f"{case}: non-rigid graph SE3 rows still marked best-current graph_object_se3_observation: {nonrigid_graph_pose_best_current}", failures)
     require(stable_without_uncertainty == 0, f"{case}: stable rigid rows without uncertainty: {stable_without_uncertainty}", failures)
     require(stable_without_residual == 0, f"{case}: stable rigid rows without residual check: {stable_without_residual}", failures)
     if case == "trash_1050":
