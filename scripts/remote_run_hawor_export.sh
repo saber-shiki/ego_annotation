@@ -70,5 +70,6 @@ python repo/scripts/export_hawor_world.py \
   --video_path "$CLIP" \
   --checkpoint "$CHECKPOINT" \
   --infiller_weight "$INFILLER" \
+  --model_config "$CONFIG" \
   --img_focal "$IMG_FOCAL" \
   --output-dir "$OUTPUT_DIR"

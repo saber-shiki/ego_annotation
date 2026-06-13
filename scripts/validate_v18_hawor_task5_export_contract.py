@@ -43,6 +43,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     require(expected_npz.get("path") == "/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz", f"expected task5 NPZ path unexpected {expected_npz}", failures)
     layout = contract.get("post_copy_expected_local_layout") if isinstance(contract.get("post_copy_expected_local_layout"), dict) else {}
     require(layout.get("expected_qc_video_sha256") == expected_sha256, f"post-copy expected qc sha unexpected: {layout}", failures)
+    provenance_fields = layout.get("expected_qc_export_provenance_hash_fields") if isinstance(layout.get("expected_qc_export_provenance_hash_fields"), list) else []
+    for field in ["checkpoint", "infiller_weight", "model_config"]:
+        require(field in provenance_fields, f"post-copy expected provenance hash field missing {field}: {layout}", failures)
     flags = contract.get("acceptance_flags") if isinstance(contract.get("acceptance_flags"), dict) else {}
     require(flags.get("accepted_v18_hawor_requirement_met") is False, f"contract must not accept HaWoR requirement: {flags}", failures)
     require(flags.get("accepted_metric_hand_state_from_hawor") is False, f"contract must not accept metric hand state: {flags}", failures)

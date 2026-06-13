@@ -260,6 +260,14 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
     qc_video_sha256_matches_expected = bool(expected_clip_sha256 and qc_video_sha256 == expected_clip_sha256)
     if expected_clip_sha256 and not qc_video_sha256_matches_expected:
         blockers.append("hawor_qc_video_sha256_missing_or_mismatch_for_expected_case_clip")
+    qc_export_provenance = qc.get("export_provenance") if isinstance(qc, dict) and isinstance(qc.get("export_provenance"), dict) else {}
+    required_export_assets = ("checkpoint", "infiller_weight", "model_config")
+    qc_export_asset_hashes_present = all(
+        isinstance(qc_export_provenance.get(name), dict) and isinstance(qc_export_provenance[name].get("sha256"), str) and len(qc_export_provenance[name].get("sha256", "")) == 64
+        for name in required_export_assets
+    )
+    if expected_clip_sha256 and not qc_export_asset_hashes_present:
+        blockers.append("hawor_qc_export_asset_hashes_missing_for_expected_case")
     if isinstance(bridge, dict) and bridge.get("bridge_candidate_rows"):
         blockers.append("HaWoR_current_V18_bridge_candidate_built_not_foundation_accepted")
         bridge_blockers = bridge.get("blocking_reasons") if isinstance(bridge.get("blocking_reasons"), list) else []
@@ -278,6 +286,8 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         "expected_source_clip_sha256": expected_clip_sha256,
         "qc_video_sha256": qc_video_sha256,
         "qc_video_sha256_matches_expected": qc_video_sha256_matches_expected if expected_clip_sha256 else None,
+        "qc_export_asset_hashes_present": qc_export_asset_hashes_present if expected_clip_sha256 else None,
+        "qc_export_provenance": qc_export_provenance if expected_clip_sha256 else None,
         "npz_validation": npz_report,
         "available_hawor_frame_side_rows": available_rows,
         "full_timeline_hawor_npz_shape_valid": full_shape_valid,

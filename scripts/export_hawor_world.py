@@ -31,12 +31,32 @@ def sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
+def resolve_path(path: str | Path, *, base: Path) -> Path:
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        return p
+    return (base / p).resolve()
+
+
+def file_info(path: Path, *, hash_file: bool = False) -> dict:
+    info = {"path": str(path), "exists": path.exists(), "is_file": path.is_file() if path.exists() else False, "bytes": path.stat().st_size if path.exists() and path.is_file() else None}
+    if hash_file and path.exists() and path.is_file():
+        info["sha256"] = sha256(path)
+    return info
+
+
 def run(args: argparse.Namespace) -> dict:
     hawor_root = args.hawor_root.resolve()
     video_path_obj = Path(args.video_path).expanduser()
     if not video_path_obj.is_absolute():
         video_path_obj = (Path.cwd() / video_path_obj).resolve()
+    checkpoint_path = resolve_path(args.checkpoint, base=hawor_root)
+    infiller_path = resolve_path(args.infiller_weight, base=hawor_root)
+    model_config_path = resolve_path(args.model_config, base=hawor_root)
     args.video_path = str(video_path_obj)
+    args.checkpoint = str(checkpoint_path)
+    args.infiller_weight = str(infiller_path)
+    args.model_config = str(model_config_path)
     sys.path.insert(0, str(hawor_root))
     os.chdir(hawor_root)
 
@@ -49,6 +69,13 @@ def run(args: argparse.Namespace) -> dict:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     video_sha256 = sha256(video_path_obj) if video_path_obj.exists() and video_path_obj.is_file() else None
+    export_provenance = {
+        "hawor_root": str(hawor_root),
+        "video": file_info(video_path_obj, hash_file=True),
+        "checkpoint": file_info(checkpoint_path, hash_file=True),
+        "infiller_weight": file_info(infiller_path, hash_file=True),
+        "model_config": file_info(model_config_path, hash_file=True),
+    }
     start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
     frame_chunks_all, img_focal = hawor_motion_estimation(args, start_idx, end_idx, seq_folder)
     slam_path = Path(seq_folder) / "SLAM" / f"hawor_slam_w_scale_{start_idx}_{end_idx}.npz"
@@ -111,6 +138,9 @@ def run(args: argparse.Namespace) -> dict:
         img_focal=np.asarray([float(img_focal)], dtype=np.float32),
         video_path=np.asarray([str(args.video_path)]),
         video_sha256=np.asarray([video_sha256 or ""]),
+        checkpoint_sha256=np.asarray([export_provenance["checkpoint"].get("sha256") or ""]),
+        infiller_weight_sha256=np.asarray([export_provenance["infiller_weight"].get("sha256") or ""]),
+        model_config_sha256=np.asarray([export_provenance["model_config"].get("sha256") or ""]),
         seq_folder=np.asarray([str(seq_folder)]),
     )
     valid_counts = {side: int(np.count_nonzero(hands[side]["valid"])) for side in hands}
@@ -118,6 +148,7 @@ def run(args: argparse.Namespace) -> dict:
         "status": "ok",
         "video_path": str(args.video_path),
         "video_sha256": video_sha256,
+        "export_provenance": export_provenance,
         "seq_folder": str(seq_folder),
         "output_npz": str(out_npz),
         "frames": int(len(frame_idx)),
@@ -137,6 +168,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input_type", type=str, default="file")
     parser.add_argument("--checkpoint", type=str, default="./weights/hawor/checkpoints/hawor.ckpt")
     parser.add_argument("--infiller_weight", type=str, default="./weights/hawor/checkpoints/infiller.pt")
+    parser.add_argument("--model_config", type=str, default="./weights/hawor/model_config.yaml")
     parser.add_argument("--img_focal", type=float)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
