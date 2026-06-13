@@ -183,6 +183,9 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         f"HaWoR bridge subset policy: status `{manifest.get('hawor_bridge_subset_policy', {}).get('status')}`; all cases policy foundation accepted `{manifest.get('hawor_bridge_subset_policy', {}).get('all_cases_policy_foundation_accepted')}`; downstream accepted from policy `{manifest.get('hawor_bridge_subset_policy', {}).get('all_cases_downstream_accepted_from_policy')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_subset_policy_summary', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('hawor_bridge_subset_policy_markdown', {}).get('path')}`",
+        f"HaWoR strict contact probe: status `{manifest.get('hawor_strict_contact_probe', {}).get('status')}`; contact accepted `{manifest.get('hawor_strict_contact_probe', {}).get('contact_acceptance_from_probe')}`; nonpenetration accepted `{manifest.get('hawor_strict_contact_probe', {}).get('nonpenetration_acceptance_from_probe')}`; distance median `{manifest.get('hawor_strict_contact_probe', {}).get('distance_summary', {}).get('median')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_strict_contact_probe_summary', {}).get('path')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_strict_contact_probe_markdown', {}).get('path')}`",
         f"Post-bridge targeted validation: status `{manifest.get('post_bridge_targeted_validation', {}).get('status')}`; long pipeline rerun after bridge changes `{manifest.get('post_bridge_targeted_validation', {}).get('long_pipeline_rerun_after_bridge_changes')}`; active partial exists `{manifest.get('post_bridge_targeted_validation', {}).get('active_partial_pipeline_report', {}).get('exists')}`",
         f"- `{manifest.get('global_artifacts', {}).get('post_bridge_targeted_validation_report', {}).get('path')}`",
         f"- `{manifest.get('global_artifacts', {}).get('pipeline_report_scope_note', {}).get('path')}`",
@@ -256,6 +259,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     hawor_bridge_downstream_coverage = load_json(hawor_bridge_downstream_coverage_path) if hawor_bridge_downstream_coverage_path.exists() else None
     hawor_bridge_subset_policy_path = args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_subset_policy_summary.json"
     hawor_bridge_subset_policy = load_json(hawor_bridge_subset_policy_path) if hawor_bridge_subset_policy_path.exists() else None
+    hawor_strict_contact_probe_path = args.output_root / "hawor_bridge_state" / "v18_hawor_strict_contact_probe_summary.json"
+    hawor_strict_contact_probe = load_json(hawor_strict_contact_probe_path) if hawor_strict_contact_probe_path.exists() else None
     post_bridge_validation_path = args.output_root / "v18_post_bridge_targeted_validation_report.json"
     post_bridge_validation = load_json(post_bridge_validation_path) if post_bridge_validation_path.exists() else None
     manifest = {
@@ -279,6 +284,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "hawor_bridge_downstream_coverage_markdown": file_info(args.output_root / "hawor_bridge_state" / "V18_HAWOR_BRIDGE_DOWNSTREAM_COVERAGE.md"),
             "hawor_bridge_subset_policy_summary": file_info(hawor_bridge_subset_policy_path),
             "hawor_bridge_subset_policy_markdown": file_info(args.output_root / "hawor_bridge_state" / "V18_HAWOR_BRIDGE_SUBSET_POLICY.md"),
+            "hawor_strict_contact_probe_summary": file_info(hawor_strict_contact_probe_path),
+            "hawor_strict_contact_probe_markdown": file_info(args.output_root / "hawor_bridge_state" / "V18_HAWOR_STRICT_CONTACT_PROBE.md"),
             "post_bridge_targeted_validation_report": file_info(post_bridge_validation_path),
             "pipeline_report_scope_note": file_info(args.output_root / "V18_PIPELINE_REPORT_SCOPE_NOTE.md"),
         },
@@ -332,6 +339,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "all_cases_metric_hand_state_accepted_from_policy": hawor_bridge_subset_policy.get("all_cases_metric_hand_state_accepted_from_policy") if isinstance(hawor_bridge_subset_policy, dict) else None,
             "all_cases_downstream_accepted_from_policy": hawor_bridge_subset_policy.get("all_cases_downstream_accepted_from_policy") if isinstance(hawor_bridge_subset_policy, dict) else None,
             "claim_scope": hawor_bridge_subset_policy.get("claim_scope") if isinstance(hawor_bridge_subset_policy, dict) else None,
+        },
+        "hawor_strict_contact_probe": {
+            "status": hawor_strict_contact_probe.get("status") if isinstance(hawor_strict_contact_probe, dict) else None,
+            "contact_acceptance_from_probe": hawor_strict_contact_probe.get("contact_acceptance_from_probe") if isinstance(hawor_strict_contact_probe, dict) else None,
+            "nonpenetration_acceptance_from_probe": hawor_strict_contact_probe.get("nonpenetration_acceptance_from_probe") if isinstance(hawor_strict_contact_probe, dict) else None,
+            "claim_scope": hawor_strict_contact_probe.get("claim_scope") if isinstance(hawor_strict_contact_probe, dict) else None,
+            "distance_summary": (hawor_strict_contact_probe.get("cases") or [{}])[0].get("hawor_hand_to_visible_object_surface_min_m") if isinstance(hawor_strict_contact_probe, dict) and isinstance(hawor_strict_contact_probe.get("cases"), list) and hawor_strict_contact_probe.get("cases") else None,
         },
         "post_bridge_targeted_validation": {
             "status": post_bridge_validation.get("status") if isinstance(post_bridge_validation, dict) else None,

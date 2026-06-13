@@ -42,6 +42,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         [py, "scripts/validate_v18_hawor_bridge_quality_state.py", "--root", str(args.output_root)],
         [py, "scripts/validate_v18_hawor_bridge_downstream_coverage.py", "--root", str(args.output_root)],
         [py, "scripts/validate_v18_hawor_bridge_subset_policy.py", "--root", str(args.output_root)],
+        [py, "scripts/validate_v18_hawor_strict_contact_probe.py", "--root", str(args.output_root)],
         [py, "scripts/validate_v18_hawor_requirement_state.py", "--root", str(args.output_root)],
         [py, "scripts/validate_v18_hawor_task5_export_contract.py", "--root", str(args.output_root)],
         [py, "scripts/validate_v18_corrective_annotation_state.py", "--root", str(args.output_root)],
@@ -78,6 +79,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             str(args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_quality_state_summary.json"),
             str(args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_downstream_coverage_summary.json"),
             str(args.output_root / "hawor_bridge_state" / "v18_hawor_bridge_subset_policy_summary.json"),
+            str(args.output_root / "hawor_bridge_state" / "v18_hawor_strict_contact_probe_summary.json"),
             str(args.output_root / "hawor_requirement_state" / "v18_hawor_requirement_state.json"),
             str(args.output_root / "hawor_task5_export_contract" / "v18_hawor_task5_export_contract.json"),
             str(args.output_root / "trash_1050" / "annotations_v18_corrective_state.json"),
@@ -90,7 +92,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     status_md.write_text(
         "# V18 pipeline report scope note\n\n"
         "`v18_corrective_1600_pipeline_report.json` is the pre-HaWoR-bridge synchronized corrective pipeline report. "
-        "It records the earlier 21-stage diagnostic corrective bundle and was not rerun after HaWoR bridge, bridge-quality, task5-export-contract, annotation integration, downstream-coverage, and subset-policy stages were added.\n\n"
+        "It records the earlier 21-stage diagnostic corrective bundle and was not rerun after HaWoR bridge, bridge-quality, task5-export-contract, annotation integration, downstream-coverage, subset-policy, and strict-contact-probe stages were added.\n\n"
         "Current post-bridge evidence is the targeted validation report:\n\n"
         f"- `{args.output_root / 'v18_post_bridge_targeted_validation_report.json'}`\n\n"
         f"Active partial report exists: `{active_partial.exists()}`. "

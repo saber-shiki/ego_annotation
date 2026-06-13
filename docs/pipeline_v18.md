@@ -853,6 +853,14 @@ The contract names the task5 raw clip, the expected local HaWoR output path, the
 
 Current status remains blocked because that NPZ is absent and the local HaWoR repo/checkpoints/config/`MANO_LEFT.pkl` are still missing. The contract is not execution evidence and does not accept the HaWoR requirement, metric hand state, contact, occlusion, nonpenetration, or V18 closure.
 
+## Implementation Checkpoint 58: Strict HaWoR Contact Probe Rejects Immediate Contact Recompute
+
+A candidate-only strict contact proximity probe now evaluates existing trash contact rows whose hand side passes the strict HaWoR bridge subset policy. It uses HaWoR bridge hand vertices in current V18 world coordinates and depth-backed visible object surface vertices only.
+
+Current evidence: `223` strict trash contact rows evaluated, visible-surface minimum distance median `0.436 m`, p05 `0.051 m`, p95 `0.701 m`; only `19/223` rows are within `10 cm`, `12/223` within `5 cm`, and `4/223` within `1 cm`. The median delta relative to the source graph hand/object distance is `+0.433 m`.
+
+This is negative mechanism evidence: strict image-space bridge support does not imply 3D contact support. Possible mechanisms are HaWoR bridge depth/scale mismatch, coordinate-frame mismatch with the visible-surface archive, or a source-contact graph using a different hand/object geometry basis. The probe uses open visible object surfaces, so it cannot prove non-contact or nonpenetration; it only blocks immediate contact recomputation/acceptance from the trash bridge. Contact, nonpenetration, occlusion ownership, and V18 closure remain unaccepted.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
@@ -920,7 +928,7 @@ Every summary JSON must include runtime, frame-count equality, readiness flags, 
 
 1. Provision and run real HaWoR/metric MANO for task5 using the task5 HaWoR export contract; without task5 HaWoR, V18 physical hand/contact/occlusion claims remain invalid. Trash bridge rows remain candidate-only until accepted by explicit bridge/foundation criteria.
 2. After copying a real task5 `hawor_world_hands.npz` into the contract path, rebuild/validate HaWoR requirement and bridge state before any downstream claim.
-3. If doing local pre-provisioning work, use the HaWoR bridge subset policy only as a candidate queue: trash contact rows have a strict subset, occlusion ownership currently has none. Do not treat the policy as accepted hand state.
+3. If doing local pre-provisioning work, use the HaWoR bridge subset policy only as a candidate queue. The strict contact probe currently argues against immediate contact recomputation/acceptance from that queue because image-supported rows are usually not 3D contact-aligned.
 4. Continue the object/part path from the accepted OWLv2→SAM2 tracks: part visible surfaces -> part-model candidate residuals -> rigid/articulated/deformable decision.
 5. Implement depth-fused rigid/part reconstruction only where the residual acceptance tests can be evaluated.
 6. Implement the bounded factor graph over camera/depth correction, hand state, object/part SE(3), articulation, contact switch, and occlusion owner.
