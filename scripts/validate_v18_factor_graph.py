@@ -34,7 +34,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(isinstance(variable_counts, dict) and isinstance(factor_counts, dict), f"{case}: counts missing")
     for key in ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "contact_switch", "occlusion_owner"]:
         require(int(variable_counts.get(key, 0)) > 0, f"{case}: missing {key} variables")
-    for key in ["camera_depth_correction_observation", "hand_state_observation", "object_se3_observation", "part_se3_observation", "contact_switch_discrete", "contact_switch_temporal", "occlusion_owner_discrete"]:
+    for key in ["camera_depth_correction_observation", "hand_state_observation", "object_se3_observation", "part_se3_observation", "contact_switch_discrete", "contact_switch_temporal", "contact_local_nonpenetration", "occlusion_owner_discrete"]:
         require(int(factor_counts.get(key, 0)) > 0, f"{case}: missing {key} factors")
     implemented_status = fg.get("implemented_variable_status")
     spec_gaps = fg.get("spec_factor_gaps_remaining")
@@ -46,6 +46,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(any("visible_surface_PCA" in str(gap) for gap in spec_gaps), f"{case}: visible-surface part SE3 limitation not explicit")
     implemented_families = fg.get("implemented_factor_families")
     require(isinstance(implemented_families, list) and any("contact_switch_temporal" in str(item) for item in implemented_families), f"{case}: contact temporal factor family missing")
+    require(isinstance(implemented_families, list) and any("contact_local_nonpenetration" in str(item) for item in implemented_families), f"{case}: contact local nonpenetration factor family missing")
     inference = fg.get("inference")
     require(isinstance(inference, dict), f"{case}: inference missing")
     require("SciPy" in str(inference.get("continuous_method")), f"{case}: continuous solve is not SciPy-backed")
@@ -66,6 +67,8 @@ def validate_case(path: Path) -> dict[str, Any]:
     temporal_contact_active_conflicts = 0
     temporal_contact_bad_gaps = 0
     local_temporal_factor_count_sum = 0
+    local_nonpenetration_factor_count_sum = 0
+    contact_nonpenetration_factor_rows = 0
     occlusion_owner_rows = 0
     occlusion_owner_with_temporal_or_mesh = 0
     accepted_occlusion_owner_rows = 0
@@ -77,6 +80,7 @@ def validate_case(path: Path) -> dict[str, Any]:
             factors_raw = g.get("factors")
             factors: dict[str, Any] = factors_raw if isinstance(factors_raw, dict) else {}
             local_temporal_factor_count_sum += int(factors.get("contact_switch_temporal", 0))
+            local_nonpenetration_factor_count_sum += int(factors.get("contact_local_nonpenetration", 0))
             local_occlusion_factor_count_sum += int(factors.get("occlusion_owner_discrete", 0))
             variables_raw = g.get("variables")
             variables: dict[str, Any] = variables_raw if isinstance(variables_raw, dict) else {}
@@ -120,6 +124,11 @@ def validate_case(path: Path) -> dict[str, Any]:
                     triangle_conflict = row.get("triangle_nonpenetration_conflict") is True
                     union_conflict = row.get("nonpenetration_conflict") is True
                     require(union_conflict == bool(signed_conflict or triangle_conflict), f"{case}: contact nonpenetration union inconsistent")
+                    if row.get("local_nonpenetration_factor_present") is True:
+                        contact_nonpenetration_factor_rows += 1
+                        require(row.get("local_nonpenetration_factor_complete") is False, f"{case}: local nonpenetration factor overclaims completeness")
+                        require("not_watertight_sdf" in str(row.get("local_nonpenetration_factor_scope")), f"{case}: local nonpenetration factor scope missing")
+                        require(row.get("signed_local_nonpenetration_factor_present") is True or row.get("triangle_local_nonpenetration_factor_present") is True, f"{case}: local nonpenetration factor lacks evidence source")
                     if row.get("estimate") is True and union_conflict:
                         temporal_contact_active_conflicts += 1
                     gap = row.get("temporal_contact_previous_frame_gap")
@@ -137,6 +146,8 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(occlusion_owner_with_temporal_or_mesh > 0, f"{case}: occlusion owner variables missing temporal/mesh evidence")
     require(temporal_contact_rows == int(variable_counts.get("contact_switch", -1)), f"{case}: contact switch variable count mismatch")
     require(temporal_contact_factor_rows == int(factor_counts.get("contact_switch_temporal", -1)), f"{case}: temporal contact factor count mismatch")
+    require(contact_nonpenetration_factor_rows == int(factor_counts.get("contact_local_nonpenetration", -1)), f"{case}: contact local nonpenetration factor count mismatch")
+    require(local_nonpenetration_factor_count_sum == contact_nonpenetration_factor_rows, f"{case}: local nonpenetration factor sum mismatch")
     require(local_temporal_factor_count_sum == temporal_contact_factor_rows, f"{case}: local temporal contact factor sum mismatch")
     require(temporal_contact_active_conflicts == 0, f"{case}: active temporal contact has nonpenetration conflict")
     require(temporal_contact_bad_gaps == 0, f"{case}: missing temporal contact factor for valid adjacent gap")
@@ -152,6 +163,7 @@ def validate_case(path: Path) -> dict[str, Any]:
         "part_6d_series_count": part_6d_count,
         "contact_switch_temporal_factors": int(factor_counts.get("contact_switch_temporal", 0)),
         "contact_switch_temporal_rows": temporal_contact_rows,
+        "contact_local_nonpenetration_factors": int(factor_counts.get("contact_local_nonpenetration", 0)),
         "occlusion_owner_rows": occlusion_owner_rows,
         "frame_with_graph_count": frame_with_graph,
     }

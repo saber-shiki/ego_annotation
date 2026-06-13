@@ -1141,6 +1141,12 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
     signed_only_conflict = bool(isinstance(signed_raw, dict) and signed_raw.get("local_penetration_detected") is True)
     triangle_conflict = bool(isinstance(triangle_raw, dict) and triangle_raw.get("local_triangle_penetration_detected") is True)
     nonpenetration_conflict = bool(signed_only_conflict or triangle_conflict)
+    signed_factor_present = signed_raw is not None
+    triangle_factor_present = triangle_raw is not None
+    local_np_factor_present = signed_factor_present or triangle_factor_present
+    signed_np_energy = 1.0 if signed_only_conflict else 0.0
+    triangle_np_energy = 1.0 if triangle_conflict else 0.0
+    local_np_energy_on = signed_np_energy + triangle_np_energy
     accepted_contact_owner = bool(owner_raw.get("accepted_contact_owner") is True and not nonpenetration_conflict)
     selected_contact_owner = bool(owner_raw.get("selected_by_contact_graph") is True)
     image_support = max(iou, coverage, mesh_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
@@ -1187,6 +1193,16 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "signed_nonpenetration_conflict": signed_only_conflict,
         "triangle_nonpenetration_conflict": triangle_conflict,
         "nonpenetration_conflict": nonpenetration_conflict,
+        "local_nonpenetration_factor_present": local_np_factor_present,
+        "signed_local_nonpenetration_factor_present": signed_factor_present,
+        "triangle_local_nonpenetration_factor_present": triangle_factor_present,
+        "local_nonpenetration_factor_complete": False,
+        "local_nonpenetration_factor_scope": "signed_normal_and_nearest_triangle_local_evidence_not_watertight_sdf",
+        "local_nonpenetration_factor_energy_if_active": float(local_np_energy_on),
+        "signed_local_nonpenetration_energy_if_active": float(signed_np_energy),
+        "triangle_local_nonpenetration_energy_if_active": float(triangle_np_energy),
+        "signed_min_local_distance_m": signed_raw.get("min_local_signed_distance_m") if isinstance(signed_raw, dict) else None,
+        "triangle_min_local_distance_m": triangle_raw.get("min_local_triangle_signed_distance_m") if isinstance(triangle_raw, dict) else None,
         "evidence": hyp.get("evidence"),
     }
 
@@ -1463,6 +1479,9 @@ def solve_v18_factor_graph(
             contact_switch_series[str(switch.get("variable_id"))].append((frame_idx, switch))
             terms["factor_counts"]["contact_switch_discrete"] += 1
             factor_counts["contact_switch_discrete"] += 1
+            if switch.get("local_nonpenetration_factor_present") is True:
+                terms["factor_counts"]["contact_local_nonpenetration"] += 1
+                factor_counts["contact_local_nonpenetration"] += 1
             variable_counts["contact_switch"] += 1
             if hyp.get("confidence") in {"unknown", "very_low_depth_contradiction"}:
                 unresolved_contact_count += 1
@@ -1544,12 +1563,17 @@ def solve_v18_factor_graph(
             switch["temporal_inference_method"] = "gap_aware_binary_viterbi_contact_switch"
             terms["factor_energy_initial"]["contact_switch_discrete"] += finite_float(switch.get("off_energy"), 0.0)
             terms["factor_energy_after"]["contact_switch_discrete"] += finite_float(switch.get("chosen_energy"), 0.0)
+            if switch.get("local_nonpenetration_factor_present") is True:
+                local_np_energy_after = finite_float(switch.get("local_nonpenetration_factor_energy_if_active"), 0.0) if switch.get("estimate") is True else 0.0
+                switch["local_nonpenetration_factor_energy_after"] = local_np_energy_after
+                terms["factor_energy_initial"]["contact_local_nonpenetration"] += 0.0
+                terms["factor_energy_after"]["contact_local_nonpenetration"] += local_np_energy_after
             if transition_applied:
                 terms["factor_counts"]["contact_switch_temporal"] += 1
                 terms["factor_energy_after"]["contact_switch_temporal"] += temporal_energy
                 factor_counts["contact_switch_temporal"] += 1
             energy_initial_total += finite_float(switch.get("off_energy"), 0.0)
-            energy_after_total += finite_float(switch.get("chosen_energy"), 0.0) + temporal_energy
+            energy_after_total += finite_float(switch.get("chosen_energy"), 0.0) + temporal_energy + finite_float(switch.get("local_nonpenetration_factor_energy_after"), 0.0)
             contact_temporal_energy_after_total += temporal_energy
             if switch.get("estimate") is True:
                 active_contact_count += 1
@@ -1604,7 +1628,7 @@ def solve_v18_factor_graph(
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
-            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_and_contact_owner_graph_evidence",
+            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_and_explicit_local_nonpenetration_evidence",
             "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence_without_new_depth_order_acceptance",
         },
         "implemented_factor_families": [
@@ -1614,7 +1638,8 @@ def solve_v18_factor_graph(
             "visible_part_surface_pose_observation_residual",
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
-            "contact_overlap_depth_mesh_distance_owner_graph_and_local_nonpenetration_energy",
+            "contact_overlap_depth_mesh_distance_owner_graph_energy",
+            "contact_local_nonpenetration_factor_from_signed_normal_and_nearest_triangle_evidence",
             "contact_switch_temporal_continuity_factor",
             "occlusion_owner_box_mesh_depth_temporal_candidate_energy",
         ],

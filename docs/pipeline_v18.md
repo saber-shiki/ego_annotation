@@ -812,6 +812,12 @@ The current representative evidence still supports zero accepted owners. Trash h
 
 For the strongest current rejected owner candidate (trash frame 850, right hand, `object:white_trash_bag`), the final pose-fill gate now exposes the owner blockers `source_depth_order_not_resolved`, `source_occluder_owner_not_accepted`, `temporal_graph_margin_below_acceptance_threshold`, and `temporal_graph_not_selected`. Pose fill-through remains accepted 0 for both representative videos.
 
+## Implementation Checkpoint 55: Explicit Local Nonpenetration Factor Family
+
+`run_v18_full_pipeline.py` now represents signed-normal and nearest-triangle local nonpenetration evidence as an explicit `contact_local_nonpenetration` factor family in the V18 factor graph. This separates local nonpenetration evidence from the contact-switch unary factor while preserving the existing hard veto: no active contact switch may carry signed or triangle local-penetration conflict.
+
+Representative final factor counts are trash `contact_local_nonpenetration=295` and task5 `contact_local_nonpenetration=721`, matching the available signed/triangle evidence rows. Each factor is explicitly scoped as `signed_normal_and_nearest_triangle_local_evidence_not_watertight_sdf` and `local_nonpenetration_factor_complete=false`. This advances the physical graph evidence ledger without claiming complete nonpenetration or a watertight SDF.
+
 ## Pipeline DAG and Parallelism
 
 V18 is parallel by construction:
