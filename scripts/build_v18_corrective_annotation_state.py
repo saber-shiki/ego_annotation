@@ -854,6 +854,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "contact_acceptance_audit_strict_promotable_rows": contact_audit_report.get("strict_promotable_contact_rows") if isinstance(contact_audit_report, dict) else None,
         "rigid_residual_candidate_objects": residual_report.get("candidate_objects") if isinstance(residual_report, dict) else None,
         "geometry_coverage_audit_status_counts": geometry_coverage.get("status_counts") if isinstance(geometry_coverage, dict) else None,
+        "geometry_coverage_audit_stable_pose_source": geometry_coverage.get("stable_pose_source") if isinstance(geometry_coverage, dict) else None,
         "geometry_coverage_audit_object_summaries": geometry_summaries,
         "nonpenetration_repair_proposal_status_counts": repair_report.get("proposal_status_counts") if isinstance(repair_report, dict) else None,
         "temporal_hand_pose_smoothing_draw_counts": smoothed_hand_report.get("draw_counts") if isinstance(smoothed_hand_report, dict) else None,

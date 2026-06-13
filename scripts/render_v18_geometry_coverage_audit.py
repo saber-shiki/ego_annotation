@@ -108,20 +108,48 @@ def ffprobe_frame_count(path: Path) -> int | None:
         return None
 
 
-def stable_pose_index(corrective_ann: dict[str, Any]) -> dict[tuple[int, str], list[float]]:
-    out: dict[tuple[int, str], list[float]] = {}
-    for frame in corrective_ann.get("frames", []) if isinstance(corrective_ann.get("frames"), list) else []:
-        if not isinstance(frame, dict):
+def graph_object_poses(frame: dict[str, Any]) -> dict[str, list[float]]:
+    out: dict[str, list[float]] = {}
+    rows = frame.get("factor_graph_solution", {}).get("variables", {}).get("object_se3", [])
+    if not isinstance(rows, list):
+        return out
+    for row in rows:
+        if not isinstance(row, dict):
             continue
-        frame_idx = int(frame.get("frame_idx", -1))
-        for obj in frame.get("objects", []):
-            if not isinstance(obj, dict):
-                continue
-            attempt = obj.get("generic_rigid_se3_attempt", {}) if isinstance(obj.get("generic_rigid_se3_attempt"), dict) else {}
-            pose = attempt.get("stable_pose6_world_from_object")
-            if isinstance(pose, list) and len(pose) >= 6:
-                out[(frame_idx, str(obj.get("object_id")))] = [finite_float(v) for v in pose[:6]]
+        vid = str(row.get("variable_id", ""))
+        if not vid.startswith("object_se3::"):
+            continue
+        est = row.get("estimate")
+        if isinstance(est, list) and len(est) >= 6:
+            out[vid.split("::", 1)[1]] = [finite_float(v) for v in est[:6]]
     return out
+
+
+def stable_pose_index_from_source(frames: list[Any], candidate_ids: set[str], radius: int) -> dict[tuple[int, str], list[float]]:
+    raw: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
+    for raw_frame in frames:
+        frame = raw_frame if isinstance(raw_frame, dict) else {}
+        frame_idx = int(frame.get("frame_idx", 0))
+        poses = graph_object_poses(frame)
+        for oid in candidate_ids:
+            pose = poses.get(oid)
+            if pose is not None:
+                raw[oid].append((frame_idx, np.asarray(pose, dtype=np.float64)))
+    stable: dict[tuple[int, str], list[float]] = {}
+    for oid, rows in raw.items():
+        ordered = sorted(rows, key=lambda x: x[0])
+        if not ordered:
+            continue
+        translations = [pose[:3] for _frame_idx, pose in ordered]
+        median_rot = np.median(np.stack([pose[3:6] for _frame_idx, pose in ordered], axis=0), axis=0)
+        for i, (frame_idx, pose6) in enumerate(ordered):
+            lo = max(0, i - radius)
+            hi = min(len(ordered), i + radius + 1)
+            stable_pose = pose6.copy()
+            stable_pose[:3] = np.mean(np.stack(translations[lo:hi], axis=0), axis=0)
+            stable_pose[3:6] = median_rot
+            stable[(frame_idx, oid)] = stable_pose.tolist()
+    return stable
 
 
 def candidate_ids(report: dict[str, Any]) -> list[str]:
@@ -177,12 +205,11 @@ def classify(row_count: int, max_extent_ratio: float, coverage_fraction: float, 
     return "sparse_visible_coverage_hidden_geometry_unresolved"
 
 
-def analyze_case(case: str, args: argparse.Namespace) -> tuple[dict[str, dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+def analyze_case(case: str, frames: list[Any], args: argparse.Namespace) -> tuple[dict[str, dict[str, Any]], dict[int, list[dict[str, Any]]]]:
     archive_report = load_json(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     visible_state = load_json(args.output_root / case / "visible_surface_state" / "v18_visible_surface_state_report.json")
-    corrective_ann = load_json(args.output_root / case / "annotations_v18_corrective_state.json")
-    poses = stable_pose_index(corrective_ann)
     ids = candidate_ids(visible_state)
+    poses = stable_pose_index_from_source(frames, set(ids), args.translation_smoothing_radius)
     npz = np.load(archive_report["archive_npz"])
     vertices = npz["vertices"]
     object_ids = npz["object_id"]
@@ -239,7 +266,7 @@ def analyze_case(case: str, args: argparse.Namespace) -> tuple[dict[str, dict[st
                 "spherical_coverage": rounded(cov, 6),
                 "object_geometry_complete": False,
                 "accepted_complete_geometry": False,
-                "alignment_pose_scope": "uses_uncertain_stable_rigid_prior_for_diagnostic_alignment_not_accepted_pose",
+                "alignment_pose_scope": "uses_uncertain_stable_rigid_prior_recomputed_from_source_factor_graph_for_diagnostic_alignment_not_accepted_pose",
                 "state_role": "visible_surface_coverage_audit_not_geometry_completion",
             }
         else:
@@ -250,7 +277,7 @@ def analyze_case(case: str, args: argparse.Namespace) -> tuple[dict[str, dict[st
                 "missing_pose_rows": missing_pose_rows,
                 "object_geometry_complete": False,
                 "accepted_complete_geometry": False,
-                "alignment_pose_scope": "uses_uncertain_stable_rigid_prior_for_diagnostic_alignment_not_accepted_pose",
+                "alignment_pose_scope": "uses_uncertain_stable_rigid_prior_recomputed_from_source_factor_graph_for_diagnostic_alignment_not_accepted_pose",
                 "state_role": "visible_surface_coverage_audit_not_geometry_completion",
             }
         summaries[oid] = summary
@@ -280,7 +307,7 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     source_w = finite_float(raw_video.get("width"), 1920.0)
     source_h = finite_float(raw_video.get("height"), 1080.0)
     fps = finite_float(ann.get("fps"), 30.0)
-    summaries, frame_rows = analyze_case(case, args)
+    summaries, frame_rows = analyze_case(case, frames, args)
     case_dir = args.output_root / case / "geometry_coverage_audit"
     frame_dir = case_dir / "frames"
     if frame_dir.exists():
@@ -338,7 +365,9 @@ def render_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "min_rows_for_coverage_claim": args.min_rows_for_coverage_claim,
             "max_extent_ratio_for_alignment_stable": args.max_extent_ratio_for_alignment_stable,
             "coverage_fraction_broad_threshold": args.coverage_fraction_broad_threshold,
+            "translation_smoothing_radius": args.translation_smoothing_radius,
         },
+        "stable_pose_source": "recomputed_from_source_annotations_factor_graph_object_se3_with_same_stable_prior_as_corrective_annotation_builder",
         "outputs": {"video": str(video_path)},
         "frame_counts": {"video": ffprobe_frame_count(video_path)},
         "draw_counts": dict(sorted(counts.items())),
@@ -372,6 +401,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-rows-for-coverage-claim", type=int, default=20)
     parser.add_argument("--max-extent-ratio-for-alignment-stable", type=float, default=3.0)
     parser.add_argument("--coverage-fraction-broad-threshold", type=float, default=0.75)
+    parser.add_argument("--translation-smoothing-radius", type=int, default=3)
     parser.add_argument("--max-points-per-surface", type=int, default=200)
     parser.add_argument("--max-rows-per-frame", type=int, default=4)
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])

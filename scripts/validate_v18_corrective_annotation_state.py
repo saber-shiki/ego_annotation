@@ -130,6 +130,16 @@ def validate_case(case: str, root: Path, expected_root: Path, failures: list[str
     require(nonrigid_graph_pose_best_current == 0, f"{case}: non-rigid graph SE3 rows still marked best-current graph_object_se3_observation: {nonrigid_graph_pose_best_current}", failures)
     require(stable_without_uncertainty == 0, f"{case}: stable rigid rows without uncertainty: {stable_without_uncertainty}", failures)
     require(stable_without_residual == 0, f"{case}: stable rigid rows without residual check: {stable_without_residual}", failures)
+    require(ann.get("geometry_coverage_audit_stable_pose_source") == "recomputed_from_source_annotations_factor_graph_object_se3_with_same_stable_prior_as_corrective_annotation_builder", f"{case}: geometry coverage stable-pose source is stale or missing", failures)
+    geometry_summaries = ann.get("geometry_coverage_audit_object_summaries", {}) if isinstance(ann.get("geometry_coverage_audit_object_summaries"), dict) else {}
+    bad_geometry_completion_flags = 0
+    for summary in geometry_summaries.values():
+        if isinstance(summary, dict):
+            if summary.get("accepted_complete_geometry") is not False or summary.get("object_geometry_complete") is not False:
+                bad_geometry_completion_flags += 1
+            if summary.get("alignment_pose_scope") != "uses_uncertain_stable_rigid_prior_recomputed_from_source_factor_graph_for_diagnostic_alignment_not_accepted_pose":
+                bad_geometry_completion_flags += 1
+    require(bad_geometry_completion_flags == 0, f"{case}: geometry coverage summaries with accepted/completion or stale-pose semantics: {bad_geometry_completion_flags}", failures)
     require(smoothed_marked_accepted_3d == 0, f"{case}: temporal smoothed MANO2D rows marked accepted 3D: {smoothed_marked_accepted_3d}", failures)
     require(smoothed_without_uncertainty == 0, f"{case}: temporal smoothed MANO2D rows without scope uncertainty: {smoothed_without_uncertainty}", failures)
     require(smoothed_promoted_best_current == 0, f"{case}: temporal smoothed MANO2D rows promoted to best_current_state: {smoothed_promoted_best_current}", failures)
