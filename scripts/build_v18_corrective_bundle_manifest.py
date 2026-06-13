@@ -116,6 +116,12 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
         f"Root: `{manifest['output_root']}`",
         f"All listed video frame counts match: `{manifest['all_listed_video_frame_counts_match']}`",
         "",
+        "## Global artifacts",
+        "",
+        f"HaWoR provisioning audit: status `{manifest.get('hawor_provisioning_audit', {}).get('status')}`; missing `{manifest.get('hawor_provisioning_audit', {}).get('missing_required')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_provisioning_audit_report', {}).get('path')}`",
+        f"- `{manifest.get('global_artifacts', {}).get('hawor_provisioning_audit_markdown', {}).get('path')}`",
+        "",
     ]
     for case in manifest["cases"]:
         lines += [f"## {case['case']}", ""]
@@ -147,10 +153,21 @@ def write_markdown(path: Path, manifest: dict[str, Any]) -> None:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     cases = [case_bundle(case, args.output_root) for case in args.cases]
+    hawor_audit_path = args.output_root / "hawor_provisioning_audit" / "v18_hawor_provisioning_audit_report.json"
+    hawor_audit = load_json(hawor_audit_path) if hawor_audit_path.exists() else None
     manifest = {
         "method": "build_v18_corrective_bundle_manifest",
         "status": "corrective_bundle_index_not_full_v18_closure",
         "output_root": str(args.output_root),
+        "global_artifacts": {
+            "hawor_provisioning_audit_report": file_info(hawor_audit_path),
+            "hawor_provisioning_audit_markdown": file_info(args.output_root / "hawor_provisioning_audit" / "V18_HAWOR_PROVISIONING_AUDIT.md"),
+        },
+        "hawor_provisioning_audit": {
+            "status": hawor_audit.get("status") if isinstance(hawor_audit, dict) else None,
+            "missing_required": hawor_audit.get("missing_required") if isinstance(hawor_audit, dict) else None,
+            "claim_scope": hawor_audit.get("claim_scope") if isinstance(hawor_audit, dict) else None,
+        },
         "cases": cases,
         "all_listed_video_frame_counts_match": all(case["all_listed_video_frame_counts_match"] for case in cases),
         "claim_scope": "indexes actual changed corrective V18 artifacts and failure evidence; not a readiness ledger or version-closure claim",

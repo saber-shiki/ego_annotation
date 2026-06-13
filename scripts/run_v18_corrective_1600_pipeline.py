@@ -39,6 +39,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ("temporal_hand_pose_smoothing", [py, "scripts/render_v18_temporal_hand_pose_smoothing.py", "--output-root", str(args.output_root)]),
         ("generic_rigid_se3_attempt", [py, "scripts/render_v18_rigid_se3_attempt.py", "--output-root", str(args.output_root), "--max-points-per-object", "900"]),
         ("hawor_ghost_or_failure", [py, "scripts/render_v18_hawor_ghost_attempt.py", "--output-root", str(args.output_root)]),
+        ("hawor_provisioning_audit", [py, "scripts/audit_v18_hawor_provisioning.py", "--output-root", str(args.output_root)]),
         ("visible_surface_state", [py, "scripts/render_v18_visible_surface_state.py", "--output-root", str(args.output_root)]),
         ("tentative_occlusion_owner", [py, "scripts/render_v18_occlusion_owner_best_effort.py", "--output-root", str(args.output_root)]),
         ("occlusion_owner_acceptance_audit", [py, "scripts/render_v18_occlusion_owner_acceptance_audit.py", "--output-root", str(args.output_root)]),
