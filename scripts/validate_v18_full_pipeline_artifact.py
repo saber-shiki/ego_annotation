@@ -53,9 +53,28 @@ def ffprobe_frame_count(path: Path) -> tuple[int, str, float]:
     return int(stream["nb_read_frames"]), str(stream.get("r_frame_rate")), float(stream.get("duration", 0.0))
 
 
+def _semantic_strings(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        out: list[str] = []
+        for child in value.values():
+            out.extend(_semantic_strings(child))
+        return out
+    if isinstance(value, list):
+        out: list[str] = []
+        for child in value:
+            out.extend(_semantic_strings(child))
+        return out
+    if isinstance(value, str):
+        if "/" in value or value.startswith("."):
+            return []
+        return [value.lower()]
+    return []
+
+
 def serialized_contains_forbidden(report_text: str, ann_text: str) -> list[str]:
-    combined = f"{report_text}\n{ann_text}".lower()
-    return [term for term in FORBIDDEN_FINAL_STRINGS if term.lower() in combined]
+    report_semantic_lines = [line.lower() for line in report_text.splitlines() if "/" not in line]
+    semantic_text = "\n".join(report_semantic_lines + _semantic_strings(json.loads(ann_text)))
+    return [term for term in FORBIDDEN_FINAL_STRINGS if term.lower() in semantic_text]
 
 
 def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, Any]:
@@ -280,6 +299,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             counts["object_states"] += 1
             if isinstance(obj.get("physical_state_decision"), dict) and obj.get("physical_state_decision", {}).get("decision"):
                 counts["object_physical_state_rows"] += 1
+            if obj.get("mask_path"):
+                require(Path(str(obj.get("mask_path"))).exists(), f"{case}: object mask path does not exist")
             if isinstance(obj.get("object_se3_observation"), dict):
                 counts["object_se3_rows"] += 1
             geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
@@ -313,6 +334,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 if not isinstance(part, dict):
                     continue
                 counts["part_rows"] += 1
+                if part.get("part_mask_path"):
+                    require(Path(str(part.get("part_mask_path"))).exists(), f"{case}: part mask path does not exist")
                 validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else None
                 if isinstance(validation, dict):
                     counts["part_silhouette_depth_pose_validation_rows"] += 1

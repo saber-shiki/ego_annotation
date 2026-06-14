@@ -72,10 +72,12 @@ def sanitize_for_final_artifact(value: Any) -> Any:
         "candidate_only": "diagnostic",
     }
     if isinstance(value, dict):
-        return {sanitize_for_final_artifact(k): sanitize_for_final_artifact(v) for k, v in value.items()}
+        return {k: sanitize_for_final_artifact(v) for k, v in value.items()}
     if isinstance(value, list):
         return [sanitize_for_final_artifact(v) for v in value]
     if isinstance(value, str):
+        if "/" in value or value.startswith("."):
+            return value
         out = value
         for old, new in replacements.items():
             out = out.replace(old, new)
