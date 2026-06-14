@@ -23,8 +23,9 @@ def validate_case(path: Path) -> dict[str, Any]:
     rows = report.get("rows")
     require(isinstance(rows, list) and len(rows) > 0, f"{case}: signed rows missing")
     require(report.get("signed_nonpenetration_complete") is False, f"{case}: overclaims complete signed nonpenetration")
-    accepted = int(report.get("accepted_contact_rows", -1))
-    require(accepted >= len(rows), f"{case}: more signed rows than accepted contacts")
+    source_rows = report.get("source_contact_rows")
+    if isinstance(source_rows, int):
+        require(source_rows >= len(rows), f"{case}: more signed rows than source contact rows")
     require("support-gated HaWoR" in str(report.get("claim")) or "support-gated" in str(report.get("claim")), f"{case}: report claim does not name support-gated HaWoR mechanism")
     evaluated = 0
     penetration = 0

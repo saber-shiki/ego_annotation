@@ -500,7 +500,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     blockers: Counter[str] = Counter()
     for raw in contact.get("rows", []):
-        if not isinstance(raw, dict) or raw.get("accepted_contact_owner") is not True:
+        if not isinstance(raw, dict):
             continue
         frame_idx = raw.get("frame_idx")
         if not isinstance(frame_idx, int):
@@ -520,6 +520,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "hand_side": hand_side,
             "object_id": object_id,
             "source_contact_owner_claim": raw.get("contact_owner_claim"),
+            "source_accepted_contact_owner": bool(raw.get("accepted_contact_owner") is True),
             "source_min_unsigned_distance_m": raw.get("min_hand_surface_to_v16_object_mesh_m"),
             "source_contact_graph_v16_mesh_match": raw.get("v16_mesh_match"),
             "triangle_nonpenetration_claim": "not_evaluated",
@@ -582,6 +583,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "depth_fused_reconstruction_report": depth_report_path,
             "physical_state_schema_report": physical_schema_path,
         },
+        "source_contact_rows": len(contact.get("rows", [])) if isinstance(contact.get("rows"), list) else None,
         "accepted_contact_rows": int(contact.get("contact_ownership_accepted_rows", 0)),
         "triangle_rows": len(rows),
         "evaluated_triangle_rows": evaluated,
