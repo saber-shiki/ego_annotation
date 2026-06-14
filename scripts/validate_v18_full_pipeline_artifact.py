@@ -205,6 +205,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     for frame in frames:
         require(isinstance(frame, dict), f"{case}: non-dict frame row")
         hands = frame.get("hands") if isinstance(frame.get("hands"), list) else []
+        objects = frame.get("objects") if isinstance(frame.get("objects"), list) else []
+        object_by_id = {str(o.get("object_id")): o for o in objects if isinstance(o, dict)}
         hand_support_by_side = {str(h.get("hand_side")): str(h.get("hawor_support_state", "")) for h in hands if isinstance(h, dict)}
         fg_raw = frame.get("factor_graph_solution")
         fg: dict[str, Any] = fg_raw if isinstance(fg_raw, dict) else {}
@@ -230,6 +232,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 counts["raw_contact_switches_gated_by_physical_support"] += 1
             if row.get("estimate") is True:
                 counts["active_contact_switch_vars"] += 1
+                require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks physical support flag")
+                support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True]
+                require(any(support_paths), f"{case}: active contact lacks rigid/part/surface-changing support path")
+                if row.get("surface_changing_pose_contact_claim_supported") is True:
+                    obj = object_by_id.get(str(row.get("object_id")), {})
+                    validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
+                    require(validation.get("surface_changing_compact_visible_pose_supported") is True, f"{case}: active surface-changing contact lacks final object pose validation support")
+                    require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.12, f"{case}: active surface-changing contact is not near MANO/object geometry")
                 if row_support_state != "observed_same_frame_detection":
                     counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
         occlusion_vars = vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else []

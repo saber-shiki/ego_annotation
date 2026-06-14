@@ -628,6 +628,18 @@ def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str]
     object_ids = data["object_id"]
     vertex_offsets = data["vertex_offsets"]
     vertices = data["vertices"]
+    source_surface_rows: dict[tuple[int, str, str], dict[str, Any]] = {}
+    sources = report.get("sources") if isinstance(report.get("sources"), dict) else {}
+    source_report_raw = sources.get("v17_visible_surface_report")
+    source_report_path = Path(str(source_report_raw)) if source_report_raw else None
+    if source_report_path is not None and source_report_path.exists():
+        source_report = require_dict(load_json(source_report_path), "source visible surface report")
+        for raw_source in source_report.get("surface_rows", []) if isinstance(source_report.get("surface_rows"), list) else []:
+            if not isinstance(raw_source, dict):
+                continue
+            key = (int(finite_float(raw_source.get("frame_idx"), -1.0)), str(raw_source.get("object_id")), str(raw_source.get("mask_path")))
+            source_surface_rows[key] = raw_source
+    report_rows = report.get("surface_archive_rows") if isinstance(report.get("surface_archive_rows"), list) else []
     index: dict[tuple[int, str], dict[str, Any]] = {}
     by_object_vertices: dict[str, list[np.ndarray]] = defaultdict(list)
     for row_idx in range(len(frame_idx)):
@@ -644,11 +656,22 @@ def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str]
         center = pts.mean(axis=0)
         pca_pose = pca_pose_observation(pts)
         pts_sample = sampled_points(pts, GEOMETRY_SAMPLE_COUNT)
-        index[(int(frame_idx[row_idx]), obj)] = {
+        frame_i = int(frame_idx[row_idx])
+        report_row = report_rows[row_idx] if row_idx < len(report_rows) and isinstance(report_rows[row_idx], dict) else {}
+        mask_path = str(report_row.get("mask_path")) if report_row.get("mask_path") else ""
+        source_row = source_surface_rows.get((frame_i, obj, mask_path), {})
+        source_intrinsics = source_row.get("depth_intrinsics_fx_fy_cx_cy") if isinstance(source_row.get("depth_intrinsics_fx_fy_cx_cy"), list) else None
+        index[(frame_i, obj)] = {
             "archive_npz": str(archive_path),
             "archive_row_index": row_idx,
             "vertex_count": int(pts.shape[0]),
             "world_vertices_sample_m": [[float(x) for x in row] for row in pts_sample.tolist()],
+            "source_mask_path": mask_path or None,
+            "source_depth_intrinsics_fx_fy_cx_cy": [float(v) for v in source_intrinsics] if source_intrinsics is not None and len(source_intrinsics) == 4 else None,
+            "source_depth_pixel_shape_hw": source_row.get("depth_pixel_shape_hw") if isinstance(source_row.get("depth_pixel_shape_hw"), list) else None,
+            "source_original_mask_shape_hw": source_row.get("original_mask_shape_hw") if isinstance(source_row.get("original_mask_shape_hw"), list) else None,
+            "source_bbox_xyxy": source_row.get("bbox_xyxy") if isinstance(source_row.get("bbox_xyxy"), list) else report_row.get("bbox_xyxy"),
+            "source_mask_area_px": source_row.get("mask_area_px"),
             "world_bbox_min_m": [float(v) for v in mn.tolist()],
             "world_bbox_max_m": [float(v) for v in mx.tolist()],
             "world_centroid_m": [float(v) for v in center.tolist()],
@@ -1435,6 +1458,34 @@ def rigid_pose_support_from_schema(obj: dict[str, Any], completion: dict[str, An
     return supported, "rigid_depth_fused_multiframe_pose_supported" if supported else "rigid_pose_support_blocked", blockers
 
 
+def surface_changing_compact_pose_support_from_schema(obj: dict[str, Any], completion: dict[str, Any], graph_var: dict[str, Any] | None) -> tuple[bool, str, list[str]]:
+    """Support visible pose for compact objects whose surface appearance changes.
+
+    This is not rigid completion: it only says the current visible body pose can be
+    used as an uncertain compact-object pose when source geometry and graph pose exist.
+    """
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    blockers: list[str] = []
+    if schema.get("surface_change_without_pose_state") is not True:
+        blockers.append("no_surface_change_compact_pose_schema")
+    if schema.get("requires_part_or_relative_motion_model") is True:
+        blockers.append("requires_part_or_relative_motion_model")
+    if schema.get("secondary_deformable_or_surface_component") is True or physical == "deformable":
+        blockers.append("deformable_or_secondary_surface_component_not_compact_pose")
+    completion_frames = int(finite_float(completion.get("source_frame_count"), 0.0)) if completion else 0
+    if completion_frames < 20:
+        blockers.append("too_few_depth_fused_source_frames_for_surface_changing_pose")
+    if not isinstance(obj.get("visible_geometry_candidate"), dict):
+        blockers.append("missing_same_frame_visible_surface_geometry")
+    if not isinstance(graph_var, dict):
+        blockers.append("missing_factor_graph_object_se3_pose")
+    elif int(finite_float(graph_var.get("dimension"), 0.0)) < 6:
+        blockers.append("object_se3_pose_missing_rotation")
+    supported = not blockers
+    return supported, "surface_changing_compact_visible_pose_supported" if supported else "surface_changing_compact_pose_blocked", blockers
+
+
 def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str, Any] | None) -> dict[str, Any]:
     completion = obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}
     mesh_path = completion.get("convex_hull_mesh_path") or completion.get("poisson_mesh_path")
@@ -1474,6 +1525,7 @@ def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str,
     center = corners_world.mean(axis=0)
     extent = mx - mn
     rigid_supported, rigid_support_state, rigid_support_blockers = rigid_pose_support_from_schema(obj, completion, graph_var)
+    surface_supported, surface_support_state, surface_support_blockers = surface_changing_compact_pose_support_from_schema(obj, completion, graph_var)
     return {
         "state": "depth_fused_mesh_posed_by_factor_graph",
         "renderable_pose_geometry": True,
@@ -1500,6 +1552,9 @@ def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str,
         "rigid_pose_supported_visible_mesh": rigid_supported,
         "rigid_pose_support_state": rigid_support_state,
         "rigid_pose_support_blockers": rigid_support_blockers,
+        "surface_changing_compact_pose_supported_visible_mesh": surface_supported,
+        "surface_changing_compact_pose_support_state": surface_support_state,
+        "surface_changing_compact_pose_support_blockers": surface_support_blockers,
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
         "scope": "renderable_depth_fused_visible_completion_mesh_with_explicit_hidden_surface_uncertainty",
@@ -1824,6 +1879,23 @@ def rigid_contact_pose_allowed(obj: dict[str, Any]) -> tuple[bool, list[str]]:
     return not blockers, blockers
 
 
+def surface_changing_contact_pose_allowed(obj: dict[str, Any]) -> tuple[bool, list[str]]:
+    completion = obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}
+    # Graph pose is checked later; this pre-graph gate checks only object semantics and same-frame surface evidence.
+    supported, _, blockers = surface_changing_compact_pose_support_from_schema(obj, completion, {"dimension": 6})
+    return supported, blockers
+
+
+def object_contact_pose_mode(obj: dict[str, Any]) -> tuple[str | None, list[str]]:
+    rigid_allowed, rigid_blockers = rigid_contact_pose_allowed(obj)
+    if rigid_allowed:
+        return "rigid", []
+    surface_allowed, surface_blockers = surface_changing_contact_pose_allowed(obj)
+    if surface_allowed:
+        return "surface_changing_compact", []
+    return None, sorted(set(rigid_blockers + surface_blockers))
+
+
 def nearest_point_pair(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, float] | None:
     aa = sampled_points(a, 192)
     bb = sampled_points(b, 192)
@@ -1935,9 +2007,11 @@ def posed_object_mesh_sample_world(recon: dict[str, Any]) -> np.ndarray:
     return vertices @ rotation + t[None, :]
 
 
-def project_world_points_to_mask(points_world: np.ndarray, frame: dict[str, Any], mask_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray] | None:
+def project_world_points_to_mask(points_world: np.ndarray, frame: dict[str, Any], mask_shape: tuple[int, int], intrinsics_override: list[Any] | None = None) -> tuple[np.ndarray, np.ndarray] | None:
     intrinsics: list[float] | None = None
-    for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
+    if isinstance(intrinsics_override, list) and len(intrinsics_override) == 4:
+        intrinsics = [finite_float(v, float("nan")) for v in intrinsics_override]
+    for hand in frame.get("hands", []) if intrinsics is None and isinstance(frame.get("hands"), list) else []:
         if not isinstance(hand, dict):
             continue
         mano = hand.get("mano_candidate") if isinstance(hand.get("mano_candidate"), dict) else {}
@@ -1966,10 +2040,10 @@ def project_world_points_to_mask(points_world: np.ndarray, frame: dict[str, Any]
     return np.stack([u, v], axis=1), z
 
 
-def projected_mask_inside_fraction(points_world: np.ndarray, frame: dict[str, Any], mask: np.ndarray) -> dict[str, Any]:
+def projected_mask_inside_fraction(points_world: np.ndarray, frame: dict[str, Any], mask: np.ndarray, intrinsics_override: list[Any] | None = None) -> dict[str, Any]:
     if mask.ndim != 2 or mask.size == 0:
         return {"projected_count": 0, "valid_projected_count": 0, "inside_mask_fraction": 0.0}
-    projected = project_world_points_to_mask(points_world, frame, mask.shape)
+    projected = project_world_points_to_mask(points_world, frame, mask.shape, intrinsics_override=intrinsics_override)
     if projected is None:
         count = int(np.asarray(points_world).shape[0]) if np.asarray(points_world).ndim == 2 else 0
         return {"projected_count": count, "valid_projected_count": 0, "inside_mask_fraction": 0.0}
@@ -2001,35 +2075,54 @@ def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str
         return None
     observed_to_predicted = distance_distribution_summary(observed, predicted, 128, 256)
     predicted_to_observed = distance_distribution_summary(predicted, observed, 256, 128)
-    predicted_projection = projected_mask_inside_fraction(predicted, frame, mask)
-    observed_projection = projected_mask_inside_fraction(observed, frame, mask)
+    projection_intrinsics = geom.get("source_depth_intrinsics_fx_fy_cx_cy") if isinstance(geom.get("source_depth_intrinsics_fx_fy_cx_cy"), list) else None
+    predicted_projection = projected_mask_inside_fraction(predicted, frame, mask, intrinsics_override=projection_intrinsics)
+    observed_projection = projected_mask_inside_fraction(observed, frame, mask, intrinsics_override=projection_intrinsics)
     observed_p95 = finite_float(observed_to_predicted.get("p95"), float("inf"))
     predicted_inside = finite_float(predicted_projection.get("inside_mask_fraction"), 0.0)
     observed_inside = finite_float(observed_projection.get("inside_mask_fraction"), 0.0)
     rigid_visible_mesh = bool(recon.get("rigid_pose_supported_visible_mesh") is True)
-    blockers: list[str] = []
-    if not rigid_visible_mesh:
-        blockers.append("not_rigid_supported_visible_mesh")
+    surface_visible_mesh = bool(recon.get("surface_changing_compact_pose_supported_visible_mesh") is True)
+    measurement_blockers: list[str] = []
     if observed_p95 > 0.16:
-        blockers.append("observed_visible_surface_to_mesh_p95_over_16cm")
+        measurement_blockers.append("observed_visible_surface_to_mesh_p95_over_16cm")
     if observed_inside < 0.02:
-        blockers.append("observed_visible_surface_projection_not_supported_by_mask")
+        measurement_blockers.append("observed_visible_surface_projection_not_supported_by_mask")
     if predicted_inside < 0.02:
-        blockers.append("projected_mesh_vertices_have_weak_mask_support")
+        measurement_blockers.append("projected_mesh_vertices_have_weak_mask_support")
     if int(predicted_projection.get("valid_projected_count", 0) or 0) < 5:
-        blockers.append("too_few_projected_mesh_vertices")
-    supported = not blockers
+        measurement_blockers.append("too_few_projected_mesh_vertices")
+    rigid_blockers = ([] if rigid_visible_mesh else ["not_rigid_supported_visible_mesh"]) + measurement_blockers
+    surface_measurement_blockers: list[str] = []
+    if observed_p95 > 0.16:
+        surface_measurement_blockers.append("observed_visible_surface_to_mesh_p95_over_16cm")
+    if observed_inside < 0.50:
+        surface_measurement_blockers.append("observed_visible_surface_projection_weak_for_surface_changing_pose")
+    if predicted_inside < 0.02:
+        surface_measurement_blockers.append("projected_mesh_vertices_have_weak_mask_support")
+    if int(predicted_projection.get("valid_projected_count", 0) or 0) < 5:
+        surface_measurement_blockers.append("too_few_projected_mesh_vertices")
+    surface_blockers = ([] if surface_visible_mesh else list(recon.get("surface_changing_compact_pose_support_blockers", []))) + surface_measurement_blockers
+    rigid_supported = rigid_visible_mesh and not measurement_blockers
+    surface_supported = surface_visible_mesh and not surface_measurement_blockers
+    supported = bool(rigid_supported or surface_supported)
+    support_mode = "rigid_visible_mesh" if rigid_supported else "surface_changing_compact_visible_pose" if surface_supported else None
+    blockers = [] if supported else sorted(set(rigid_blockers + surface_blockers))
     return {
         "method": "posed_depth_fused_object_mesh_against_visible_surface_depth_and_sam2_mask_projection",
         "object_id": obj.get("object_id"),
         "object_pose_validation_state": "object_visible_depth_silhouette_pose_supported_completion_limited" if supported else "object_visible_depth_silhouette_pose_rejected_or_blocked",
         "visible_depth_silhouette_pose_supported": bool(supported),
+        "object_pose_support_mode": support_mode,
+        "rigid_visible_mesh_pose_supported": bool(rigid_supported),
+        "surface_changing_compact_visible_pose_supported": bool(surface_supported),
         "validation_blockers": blockers,
         "observed_to_predicted_distance_m": observed_to_predicted,
         "predicted_to_observed_distance_m": predicted_to_observed,
         "predicted_projection_mask_support": predicted_projection,
         "observed_projection_mask_support": observed_projection,
         "rigid_pose_supported_visible_mesh": rigid_visible_mesh,
+        "surface_changing_compact_pose_supported_visible_mesh": surface_visible_mesh,
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
         "scope": "visible_depth_and_mask_projection_support_for_posed_depth_fused_mesh_only_not_hidden_geometry_completion",
@@ -2040,8 +2133,8 @@ def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str
 def contact_object_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None) -> dict[str, Any] | None:
     if hand is None or obj is None:
         return None
-    allowed, blockers = rigid_contact_pose_allowed(obj)
-    if not allowed:
+    pose_mode, blockers = object_contact_pose_mode(obj)
+    if pose_mode is None:
         return None
     if str(hand.get("hawor_support_state")) != "observed_same_frame_detection":
         return None
@@ -2090,8 +2183,8 @@ def contact_object_pose_observation(hyp: dict[str, Any], switch: dict[str, Any],
         else:
             magnitude = min(max_correction_m, desired_gap_m - distance)
             correction = -unit * magnitude
-        family = "contact_object_pose_anchor"
-        source = "contact_surface_anchor_from_observed_hawor_mano_to_rigid_object_geometry"
+        family = "contact_surface_changing_object_pose_anchor" if pose_mode == "surface_changing_compact" else "contact_object_pose_anchor"
+        source = "contact_surface_anchor_from_observed_hawor_mano_to_surface_changing_compact_object_geometry" if pose_mode == "surface_changing_compact" else "contact_surface_anchor_from_observed_hawor_mano_to_rigid_object_geometry"
     target_trans = trans + correction
     rotvec = numeric_vector(pose.get("rotation_world_from_object_rotvec"), 3)
     if rotvec is not None:
@@ -2130,8 +2223,10 @@ def contact_object_pose_observation(hyp: dict[str, Any], switch: dict[str, Any],
             "raw_contact_switch_active": raw_contact,
             "contact_proposal_used": proposal_contact,
             "nonpenetration_conflict": nonpenetration_conflict,
-            "rigid_contact_pose_allowed": True,
-            "rigid_contact_pose_blockers": blockers,
+            "object_contact_pose_mode": pose_mode,
+            "rigid_contact_pose_allowed": pose_mode == "rigid",
+            "surface_changing_compact_contact_pose_allowed": pose_mode == "surface_changing_compact",
+            "object_contact_pose_blockers": blockers,
         },
     }
 
@@ -2392,15 +2487,18 @@ def contact_switch_energy(
     missing_geometry_contact_penalty = 2.5 if not geometry_contact_evidence_available else 0.0
     rigid_pose_claim_supported = False
     part_pose_claim_supported = False
+    surface_changing_pose_claim_supported = False
     if isinstance(obj, dict):
         rigid_pose_claim_supported, _, _ = rigid_pose_support_from_schema(obj, obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}, object_graph_var)
+        surface_allowed, _ = surface_changing_contact_pose_allowed(obj)
+        surface_changing_pose_claim_supported = bool(surface_allowed and isinstance(object_graph_var, dict) and math.isfinite(effective_metric_contact_distance_m) and effective_metric_contact_distance_m <= 0.12)
         if coupled_part_label is not None and math.isfinite(coupled_part_distance_m) and coupled_part_distance_m <= 0.12:
             for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
                 if isinstance(part, dict) and str(part.get("part_track_label")) == str(coupled_part_label):
                     validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
                     part_pose_claim_supported = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
                     break
-    physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported)
+    physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported or surface_changing_pose_claim_supported)
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
     support_gate_allows_active_contact = hand_support_state == "observed_same_frame_detection"
@@ -2454,9 +2552,10 @@ def contact_switch_energy(
         "raw_estimate_before_physical_contact_gate": bool(raw_switch_on_before_physical_gate),
         "raw_estimate_before_hawor_support_gate": bool(raw_switch_on),
         "physical_contact_claim_supported": bool(physical_contact_claim_supported),
-        "physical_contact_support_state": "supported_by_rigid_object_or_validated_part_pose" if physical_contact_claim_supported else "blocked_no_supported_rigid_or_validated_part_pose",
+        "physical_contact_support_state": "supported_by_rigid_object_or_validated_part_or_surface_changing_pose" if physical_contact_claim_supported else "blocked_no_supported_rigid_or_validated_part_pose",
         "rigid_pose_contact_claim_supported": bool(rigid_pose_claim_supported),
         "validated_part_pose_contact_claim_supported": bool(part_pose_claim_supported),
+        "surface_changing_pose_contact_claim_supported": bool(surface_changing_pose_claim_supported),
         "support_gate_allows_active_contact": bool(support_gate_allows_active_contact),
         "support_gate_reason": "observed_same_frame_hawor_required_for_active_contact" if not support_gate_allows_active_contact else "observed_same_frame_hawor_support",
         "on_energy": float(on_energy),

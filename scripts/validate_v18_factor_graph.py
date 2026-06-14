@@ -126,7 +126,7 @@ def validate_case(path: Path) -> dict[str, Any]:
                     if isinstance(components, list) and components:
                         contact_object_component_rows += len(components)
                         for comp in components:
-                            require(isinstance(comp, dict) and comp.get("factor_family") in {"contact_object_pose_anchor", "contact_object_nonpenetration_repel"}, f"{case}: object contact component missing factor family")
+                            require(isinstance(comp, dict) and comp.get("factor_family") in {"contact_object_pose_anchor", "contact_surface_changing_object_pose_anchor", "contact_object_nonpenetration_repel"}, f"{case}: object contact component missing factor family")
                             coupling = comp.get("coupling") if isinstance(comp.get("coupling"), dict) else {}
                             distance = coupling.get("pre_coupling_surface_distance_m")
                             is_repel = comp.get("factor_family") == "contact_object_nonpenetration_repel"
@@ -181,7 +181,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(temporal_contact_rows == int(variable_counts.get("contact_switch", -1)), f"{case}: contact switch variable count mismatch")
     require(temporal_contact_factor_rows == int(factor_counts.get("contact_switch_temporal", -1)), f"{case}: temporal contact factor count mismatch")
     require(contact_nonpenetration_factor_rows == int(factor_counts.get("contact_local_nonpenetration", -1)), f"{case}: contact local nonpenetration factor count mismatch")
-    require(contact_object_component_rows == int(factor_counts.get("contact_object_pose_anchor", 0)) + int(factor_counts.get("contact_object_nonpenetration_repel", 0)), f"{case}: contact-object component count mismatch")
+    require(contact_object_component_rows == int(factor_counts.get("contact_object_pose_anchor", 0)) + int(factor_counts.get("contact_surface_changing_object_pose_anchor", 0)) + int(factor_counts.get("contact_object_nonpenetration_repel", 0)), f"{case}: contact-object component count mismatch")
     require(contact_part_component_rows == int(factor_counts.get("contact_part_pose_anchor", -1)), f"{case}: contact-part component count mismatch")
     require(local_nonpenetration_factor_count_sum == contact_nonpenetration_factor_rows, f"{case}: local nonpenetration factor sum mismatch")
     require(local_temporal_factor_count_sum == temporal_contact_factor_rows, f"{case}: local temporal contact factor sum mismatch")
