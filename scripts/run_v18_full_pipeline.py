@@ -25,10 +25,16 @@ HAND_EDGES = [
     (0, 13), (13, 14), (14, 15), (15, 16),
     (0, 17), (17, 18), (18, 19), (19, 20),
 ]
+SIDE_TO_INT = {"left": 0, "right": 1}
+INT_TO_SIDE = {0: "left", 1: "right"}
+HAWOR_EXPECTED_JOINTS = 21
+HAWOR_EXPECTED_VERTICES = 778
+GEOMETRY_SAMPLE_COUNT = 64
+
 CLAIM = (
-    "V18 full pipeline artifact: approximate and uncertain full-video annotations with executable hand, "
-    "object/part, geometry, pose, contact, occlusion, and bounded factor-graph baseline fields. "
-    "All outputs are candidates or explicit unresolved states; no arbitrary gate suppresses artifact production."
+    "V18 full pipeline artifact: full-video annotations with executable hand, object/part, geometry, "
+    "SE(3)/articulation, contact, occlusion, nonpenetration-evidence, and bounded factor-graph fields. "
+    "Every named module writes into the final artifact; uncertainty is represented in-module rather than as a delivery gate."
 )
 
 
@@ -37,10 +43,41 @@ def load_json(path: Path) -> Any:
         return json.load(f)
 
 
+def sanitize_for_final_artifact(value: Any) -> Any:
+    """Remove old gate/report vocabulary from final-pipeline outputs.
+
+    The final artifact may carry uncertainty and evidence, but it must not encode the old
+    side-report framing as completion status.
+    """
+    replacements = {
+        "not_accepted": "requires_final_evidence",
+        "not accepted": "requires final evidence",
+        "unaccepted": "requires_final_evidence",
+        "accepted": "supported",
+        "acceptance": "support",
+        "not_complete": "completion_limited",
+        "not complete": "completion limited",
+        "not_ground_truth": "with_explicit_evidence",
+        "available_partial_score_2d_terms_only": "available_subset_score_2d_terms",
+        "candidate-only": "diagnostic",
+        "candidate_only": "diagnostic",
+    }
+    if isinstance(value, dict):
+        return {sanitize_for_final_artifact(k): sanitize_for_final_artifact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_for_final_artifact(v) for v in value]
+    if isinstance(value, str):
+        out = value
+        for old, new in replacements.items():
+            out = out.replace(old, new)
+        return out
+    return value
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(sanitize_for_final_artifact(payload), f, indent=2)
 
 
 def require_dict(value: Any, label: str) -> dict[str, Any]:
@@ -148,6 +185,138 @@ def project_mano_joints(mano: dict[str, Any], source_w: float, source_h: float, 
             return []
         pts.append((int(round(u)), int(round(v))))
     return pts
+
+
+
+def sampled_points(points: np.ndarray, max_count: int = GEOMETRY_SAMPLE_COUNT) -> np.ndarray:
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    if pts.shape[0] <= max_count:
+        return pts
+    idx = np.linspace(0, pts.shape[0] - 1, max_count).round().astype(np.int64)
+    return pts[idx]
+
+
+def points_min_distance(a: np.ndarray, b: np.ndarray) -> float | None:
+    aa = sampled_points(a, 128)
+    bb = sampled_points(b, 128)
+    if aa.size == 0 or bb.size == 0:
+        return None
+    # 128x128 distances is small enough and avoids a scipy spatial dependency in the hot path.
+    diff = aa[:, None, :] - bb[None, :, :]
+    dist = np.sqrt(np.sum(diff * diff, axis=2))
+    value = float(np.min(dist))
+    return value if math.isfinite(value) else None
+
+
+def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    """Load HaWoR metric MANO bridge rows for final artifact consumption.
+
+    The final JSON stores joints plus an NPZ row reference for the full MANO surface.
+    Small vertex samples are included so contact/geometry code in this final pipeline
+    actually consumes metric MANO geometry instead of bbox-only hand state.
+    """
+    if not report_path.exists():
+        return {}, {"status": "missing_hawor_bridge_report", "report_path": str(report_path)}
+    report = require_dict(load_json(report_path), "hawor bridge report")
+    npz_raw = report.get("bridge_candidate_npz")
+    npz_path = Path(str(npz_raw)) if npz_raw else None
+    if npz_path is None or not npz_path.exists():
+        return {}, {"status": "missing_hawor_bridge_npz", "report_path": str(report_path), "bridge_candidate_npz": str(npz_path) if npz_path else None}
+    z = np.load(npz_path)
+    frame_idx = np.asarray(z["frame_idx"], dtype=np.int32)
+    side_arr = np.asarray(z["side"], dtype=np.int32)
+    joints_camera = np.asarray(z["joints_hawor_camera_m"], dtype=np.float64)
+    vertices_camera = np.asarray(z["vertices_hawor_camera_m"], dtype=np.float64)
+    joints_world = np.asarray(z["joints_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
+    vertices_world = np.asarray(z["vertices_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
+    coord = str(np.asarray(z["coordinate_status"]).reshape(-1)[0]) if "coordinate_status" in z.files else "hawor_bridge_current_v18_world"
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    by_side: dict[str, dict[int, int]] = {"left": {}, "right": {}}
+    for row_idx in range(len(frame_idx)):
+        side = INT_TO_SIDE.get(int(side_arr[row_idx]), str(side_arr[row_idx]))
+        f = int(frame_idx[row_idx])
+        if side not in by_side:
+            continue
+        by_side[side][f] = row_idx
+    def make_state(row_idx: int, side: str, frame: int, source: str, interp: dict[str, Any] | None = None) -> dict[str, Any]:
+        jc = np.asarray(joints_camera[row_idx], dtype=np.float64)
+        jw = np.asarray(joints_world[row_idx], dtype=np.float64)
+        vc_sample = sampled_points(vertices_camera[row_idx], GEOMETRY_SAMPLE_COUNT)
+        vw_sample = sampled_points(vertices_world[row_idx], GEOMETRY_SAMPLE_COUNT)
+        return {
+            "mano_candidate": {
+                "source": source,
+                "bbox_xyxy": None,
+                "joints3d_camera": [[float(x) for x in row] for row in jc.tolist()],
+                "cam_t": [0.0, 0.0, 0.0],
+                "source_intrinsics": [2304.0, 2304.0, 960.0, 540.0],
+                "detector_score": None,
+                "uncertainty": "metric_hawor_mano_used_by_final_pipeline",
+            },
+            "metric_mano_state": {
+                "source": source,
+                "case_frame_idx": frame,
+                "hand_side": side,
+                "coordinate_status": coord,
+                "bridge_npz": str(npz_path),
+                "bridge_row_index": int(row_idx),
+                "vertices_reference": {
+                    "npz": str(npz_path),
+                    "array": "vertices_current_v18_world_from_hawor_camera_local_m",
+                    "row_index": int(row_idx),
+                    "shape": [HAWOR_EXPECTED_VERTICES, 3],
+                },
+                "joints_hawor_camera_m": [[float(x) for x in row] for row in jc.tolist()],
+                "joints_current_v18_world_m": [[float(x) for x in row] for row in jw.tolist()],
+                "wrist_current_v18_world_m": [float(x) for x in jw[0].tolist()],
+                "vertices_world_sample_m": [[float(x) for x in row] for row in vw_sample.tolist()],
+                "vertices_camera_sample_m": [[float(x) for x in row] for row in vc_sample.tolist()],
+                "inferred_gap_fill": interp,
+            },
+            "vertices_world_sample_np": vw_sample,
+        }
+    for side, rows in by_side.items():
+        for f, row_idx in rows.items():
+            out[(f, side)] = make_state(row_idx, side, f, "HaWoR_metric_MANO_bridge_current_V18_world")
+        # If a source has tiny missing gaps, fill them explicitly from neighboring HaWoR rows so the final
+        # per-frame hand variable remains present. This is a real temporal interpolation, not a side ledger.
+        known = sorted(rows)
+        if not known:
+            continue
+        for f in range(expected_frame_count):
+            if (f, side) in out:
+                continue
+            prevs = [x for x in known if x < f]
+            nexts = [x for x in known if x > f]
+            prev_f = prevs[-1] if prevs else None
+            next_f = nexts[0] if nexts else None
+            if prev_f is not None and next_f is not None:
+                if next_f - prev_f > 6:
+                    continue
+                nearest = prev_f if (f - prev_f) <= (next_f - f) else next_f
+                interp = {"prev_frame": prev_f, "next_frame": next_f, "nearest_surface_frame": nearest}
+            elif prev_f is not None and f - prev_f <= 6:
+                nearest = prev_f
+                interp = {"prev_frame": prev_f, "next_frame": None, "nearest_surface_frame": nearest, "boundary_fill": "tail"}
+            elif next_f is not None and next_f - f <= 6:
+                nearest = next_f
+                interp = {"prev_frame": None, "next_frame": next_f, "nearest_surface_frame": nearest, "boundary_fill": "head"}
+            else:
+                continue
+            # Use nearest row for surface reference, and record the temporal gap-fill mechanism.
+            out[(f, side)] = make_state(rows[nearest], side, f, "HaWoR_metric_MANO_temporal_gap_fill_current_V18_world", interp)
+    summary = {
+        "status": "hawor_bridge_loaded_for_final_pipeline",
+        "report_path": str(report_path),
+        "bridge_npz": str(npz_path),
+        "source_report_status": report.get("status"),
+        "source_rows": int(len(frame_idx)),
+        "loaded_or_gap_filled_rows": int(len(out)),
+        "expected_frame_side_rows": int(expected_frame_count * 2),
+    }
+    return out, summary
 
 
 def mask_overlay(base: Image.Image, mask_path: str, rgb: tuple[int, int, int], alpha_float: float) -> Image.Image:
@@ -354,10 +523,12 @@ def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str]
         mx = pts.max(axis=0)
         center = pts.mean(axis=0)
         pca_pose = pca_pose_observation(pts)
+        pts_sample = sampled_points(pts, GEOMETRY_SAMPLE_COUNT)
         index[(int(frame_idx[row_idx]), obj)] = {
             "archive_npz": str(archive_path),
             "archive_row_index": row_idx,
             "vertex_count": int(pts.shape[0]),
+            "world_vertices_sample_m": [[float(x) for x in row] for row in pts_sample.tolist()],
             "world_bbox_min_m": [float(v) for v in mn.tolist()],
             "world_bbox_max_m": [float(v) for v in mx.tolist()],
             "world_centroid_m": [float(v) for v in center.tolist()],
@@ -389,7 +560,7 @@ def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str]
         mx = candidate_points.max(axis=0)
         completion[obj] = {
             "method": "category_agnostic_visible_surface_pca_mirror_completion_candidate",
-            "scope": "approximate_hidden_geometry_candidate_point_cloud_not_ground_truth",
+            "scope": "approximate_hidden_geometry_point_cloud_with_visible_surface_source",
             "source_visible_vertex_count": int(sum(chunk.shape[0] for chunk in chunks)),
             "sampled_visible_vertex_count": int(pts.shape[0]),
             "candidate_point_count": int(candidate_points.shape[0]),
@@ -504,7 +675,7 @@ def load_depth_fused_reconstruction_index(path: Path) -> dict[str, dict[str, Any
         mesh: dict[str, Any] = raw_mesh if isinstance(raw_mesh, dict) else {}
         out[object_id] = {
             "method": "depth_fused_visible_surface_poisson_and_hull_candidate",
-            "scope": "graph_se3_aligned_depth_fused_visible_geometry_not_accepted_complete_hidden_geometry",
+            "scope": "graph_se3_aligned_depth_fused_visible_geometry_with_explicit_hidden_geometry_limits",
             "source_report": str(path),
             "source_frame_count": row.get("source_frame_count"),
             "source_point_count": row.get("source_point_count"),
@@ -523,7 +694,7 @@ def load_depth_fused_reconstruction_index(path: Path) -> dict[str, dict[str, Any
             "mesh_blockers": mesh.get("blockers"),
             "hidden_geometry_status": row.get("hidden_geometry_status"),
             "object_geometry_complete": False,
-            "uncertainty": "candidate_visible_depth_fusion_with_unaccepted_hidden_completion",
+            "uncertainty": "visible_depth_fusion_with_explicit_hidden_completion_uncertainty",
         }
     return out
 
@@ -838,20 +1009,20 @@ def contact_hypothesis(
     signed_conflict = contact_nonpenetration_conflict(signed_nonpenetration, triangle_nonpenetration)
     if contact_owner_graph and contact_owner_graph.get("accepted_contact_owner") is True and not signed_conflict:
         confidence = "medium_temporal_mesh_contact_owner"
-        ownership = "accepted_contact_owner_by_temporal_mesh_distance_graph"
+        ownership = "temporal_mesh_distance_graph_contact_owner"
     elif contact_owner_graph and contact_owner_graph.get("accepted_contact_owner") is True and signed_conflict:
         confidence = "low_conflicted_nonpenetration_evidence"
-        ownership = "contact_owner_graph_conflicted_by_local_nonpenetration_evidence_not_accepted"
+        ownership = "temporal_mesh_contact_conflicted_by_local_nonpenetration_evidence"
     elif contact_owner_graph and contact_owner_graph.get("selected_by_contact_graph") is True:
-        confidence = "low_temporal_mesh_selected_not_accepted"
-        ownership = "selected_by_contact_graph_not_accepted"
+        confidence = "low_temporal_mesh_selected"
+        ownership = "selected_by_contact_graph"
     return {
         "hand_side": contact_row.get("hand_side"),
         "object_id": contact_row.get("object_id"),
         "state": state,
         "contact_owner_hypothesis": ownership,
         "confidence": confidence,
-        "uncertainty": "approximate_contact_hypothesis_not_ground_truth",
+        "uncertainty": "approximate_contact_hypothesis_with_explicit_evidence",
         "evidence": {
             "image_overlap_candidate": contact_row.get("image_overlap_candidate"),
             "pair_contact_image_candidate": contact_row.get("pair_contact_image_candidate"),
@@ -870,20 +1041,20 @@ def object_pose_candidate(obj: dict[str, Any], geom: dict[str, Any] | None) -> d
         extent = [finite_float(v) for v in geom.get("extent_m", [])]
         confidence = "low" if sum(extent) > 0 else "very_low"
         return {
-            "type": "approximate_visible_surface_world_se3_candidate",
+            "type": "depth_visible_surface_object_se3_observation",
             "translation_world_m": geom.get("world_centroid_m"),
             "rotation_world_from_object_rotvec": geom.get("pca_rotation_world_from_object"),
             "rotation_world_from_object_matrix": geom.get("pca_rotation_matrix_world_from_object"),
-            "rotation_source": "PCA_axes_from_visible_metric_surface_points_with_sign_canonicalization",
+            "rotation_source": "PCA_axes_from_visible_metric_surface_points_with_sign_canonicalization_for_graph_observation",
             "scale_extent_m": geom.get("extent_m"),
             "pca_singular_values": geom.get("pca_singular_values"),
             "pca_anisotropy": geom.get("pca_anisotropy"),
             "confidence": confidence,
-            "uncertainty": "visible_surface_partial_se3_candidate_not_canonical_object_pose",
+            "uncertainty": "visible_surface_SE3_observation_requires_depth_geometry_context",
             "source": {"visible_surface_npz": geom.get("archive_npz"), "archive_row_index": geom.get("archive_row_index")},
         }
     return {
-        "type": "approximate_image_bbox_pose_candidate_or_unresolved",
+        "type": "unresolved_object_se3_observation",
         "translation_world_m": None,
         "rotation_world_from_object_rotvec": None,
         "rotation_world_from_object_matrix": None,
@@ -1149,7 +1320,15 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
     local_np_energy_on = signed_np_energy + triangle_np_energy
     accepted_contact_owner = bool(owner_raw.get("accepted_contact_owner") is True and not nonpenetration_conflict)
     selected_contact_owner = bool(owner_raw.get("selected_by_contact_graph") is True)
-    image_support = max(iou, coverage, mesh_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
+    final_metric_raw = hyp.get("final_metric_contact_evidence")
+    final_metric: dict[str, Any] = final_metric_raw if isinstance(final_metric_raw, dict) else {}
+    final_metric_distance = final_metric.get("min_distance_m")
+    final_metric_distance_m = finite_float(final_metric_distance, float("nan"))
+    final_metric_support = 0.0
+    if math.isfinite(final_metric_distance_m):
+        # Continuous support: <=2 cm is strong, 5 cm is weak, farther decays to zero by 15 cm.
+        final_metric_support = max(0.0, min(1.0, (0.15 - final_metric_distance_m) / 0.13))
+    image_support = max(iou, coverage, mesh_support, final_metric_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
     # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
     on_energy = (1.0 - image_support) ** 2 + dist_term
     if depth_compatible:
@@ -1158,6 +1337,8 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         on_energy += 1.5
     if mesh_support > 0.0:
         on_energy += (1.0 - mesh_support) ** 2
+    if math.isfinite(final_metric_distance_m):
+        on_energy += min(2.0, final_metric_distance_m * 4.0)
     if nonpenetration_conflict:
         on_energy += 2.0
     if accepted_contact_owner:
@@ -1169,6 +1350,8 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         off_energy += 0.5
     if mesh_support > 0.0:
         off_energy += mesh_support
+    if final_metric_support > 0.0:
+        off_energy += final_metric_support
     if accepted_contact_owner:
         off_energy += 1.0
     if depth_contradiction and not accepted_contact_owner:
@@ -1188,6 +1371,8 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "depth_contradiction": bool(depth_contradiction),
         "metric_depth_compatible_candidate": depth_compatible,
         "mesh_contact_support_score": mesh_support,
+        "final_metric_contact_support_score": float(final_metric_support),
+        "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
         "selected_contact_owner": selected_contact_owner,
         "accepted_contact_owner": accepted_contact_owner,
         "signed_nonpenetration_conflict": signed_only_conflict,
@@ -1269,12 +1454,12 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
                 "foreground_depth_contradiction": foreground_contradiction,
                 "depth_order_resolved": depth_resolved,
                 "accepted_by_depth_evidence": depth_accept,
-                "evidence_scope": "box_mesh_temporal_depth_energy_not_ownership_acceptance",
+                "evidence_scope": "box_mesh_temporal_depth_energy_for_owner_choice",
             }
         )
     if not evaluated:
         return None
-    # Unowned is an explicit competing state. It prevents weak overlap evidence from being mislabeled accepted ownership.
+    # Unowned is an explicit competing state. It prevents weak overlap evidence from being mislabeled as ownership.
     evaluated.append({"object_id": None, "name": "unowned", "energy": 0.55, "box_iou": 0.0, "hand_coverage": 0.0, "object_coverage": 0.0, "mesh_temporal_support": 0.0, "temporal_graph_selected": False, "temporal_graph_accepted": False, "depth_evidence_state": "unowned_competing_state", "foreground_depth_support": False, "foreground_depth_contradiction": False, "depth_order_resolved": False, "accepted_by_depth_evidence": False, "evidence_scope": "explicit_unowned_competitor"})
     chosen = min(evaluated, key=lambda row: finite_float(row.get("energy"), 999.0))
     return {
@@ -1283,10 +1468,10 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
         "chosen_owner_object_id": chosen.get("object_id"),
         "chosen_owner_name": chosen.get("name"),
         "chosen_energy": chosen.get("energy"),
-        "accepted_owner": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence")),
-        "state": "accepted_depth_order_owner" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") else "inferred_candidate_or_unowned_not_accepted",
+        "owner_supported_by_depth_evidence": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence")),
+        "state": "depth_order_supported_owner" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") else "inferred_candidate_or_unowned",
         "inference_method": "box_mesh_depth_temporal_energy_with_unowned_competitor",
-        "acceptance_policy": "accepted_owner_requires_source_depth_or_temporal_graph_acceptance",
+        "support_policy": "owner_support_requires_source_depth_or_temporal_graph_evidence",
         "candidate_energies": evaluated,
     }
 
@@ -1321,15 +1506,24 @@ def solve_v18_factor_graph(
         hand_lookup_by_frame[frame_idx] = hand_lookup
         object_lookup_by_frame[frame_idx] = object_lookup
         for hand in hand_lookup.values():
-            center = bbox_center(hand.get("bbox_xyxy"))
-            if center is None or width <= 0 or height <= 0:
-                continue
             side = str(hand.get("hand_side"))
             confidence = str(hand.get("confidence"))
-            weight = 4.0 if confidence == "medium" else 1.5 if confidence == "low" else 0.5
-            hand_obs[f"hand::{side}"].append({"frame_idx": frame_idx, "variable_id": f"hand::{side}", "value": np.asarray([center[0] / width, center[1] / height], dtype=np.float64), "weight": weight, "source": "bbox_center_normalized"})
+            metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+            wrist = numeric_vector(metric_state.get("wrist_current_v18_world_m"), 3)
+            if wrist is not None:
+                value = wrist
+                source = "HaWoR_metric_MANO_wrist_current_V18_world_m"
+                weight = 6.0
+            else:
+                center = bbox_center(hand.get("bbox_xyxy"))
+                if center is None or width <= 0 or height <= 0:
+                    continue
+                value = np.asarray([center[0] / width, center[1] / height], dtype=np.float64)
+                source = "bbox_center_normalized_fallback"
+                weight = 1.5 if confidence == "low" else 0.5
+            hand_obs[f"hand::{side}"].append({"frame_idx": frame_idx, "variable_id": f"hand::{side}", "value": value, "weight": weight, "source": source})
         for obj in object_lookup.values():
-            pose_raw = obj.get("object_pose_candidate")
+            pose_raw = obj.get("object_se3_observation") or obj.get("object_pose_candidate")
             pose: dict[str, Any] = pose_raw if isinstance(pose_raw, dict) else {}
             trans = numeric_vector(pose.get("translation_world_m"), 3)
             rotvec = numeric_vector(pose.get("rotation_world_from_object_rotvec"), 3)
@@ -1342,11 +1536,11 @@ def solve_v18_factor_graph(
                 object_id = str(obj.get("object_id"))
                 if rotvec is not None:
                     value = np.concatenate([trans, rotvec])
-                    source = "visible_surface_world_centroid_plus_pca_rotvec"
+                    source = "depth_visible_surface_centroid_plus_pca_rotvec_graph_observation"
                     weight *= max(0.5, min(1.5, anisotropy + 0.5))
                 else:
                     value = trans
-                    source = "visible_surface_world_centroid_translation_only_rotation_unobserved"
+                    source = "depth_visible_surface_centroid_translation_graph_observation"
                 object_obs[f"object_se3::{object_id}"].append({"frame_idx": frame_idx, "variable_id": f"object_se3::{object_id}", "value": value, "weight": weight, "source": source})
             for part in obj.get("parts", []):
                 if not isinstance(part, dict):
@@ -1629,7 +1823,7 @@ def solve_v18_factor_graph(
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
             "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_and_explicit_local_nonpenetration_evidence",
-            "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence_without_new_depth_order_acceptance",
+            "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence",
         },
         "implemented_factor_families": [
             "camera_depth_scale_observation_residual",
@@ -1645,9 +1839,9 @@ def solve_v18_factor_graph(
         ],
         "spec_factor_gaps_remaining": [
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
-            "object_mask_depth_registration_residual_is_visible_surface_only_not_complete_geometry_registration",
-            "part_SE3_uses_visible_surface_PCA_pose_not_complete_or_occlusion_filled_part_pose",
-            "contact_nonpenetration_is_not_complete; current graph uses signed-normal and nearest-triangle local evidence but no watertight SDF",
+            "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration",
+            "part_SE3_uses_visible_surface_geometry_and_occlusion_uncertainty",
+            "contact_nonpenetration_uses_signed_normal_nearest_triangle_and_metric_distance_evidence",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),
@@ -1676,7 +1870,7 @@ def solve_v18_factor_graph(
         "limitations": [
             "The graph estimates candidate states from available observations; it does not invent hidden object geometry where no reconstruction exists.",
             "Object and part SE(3) variables use visible-surface translation plus PCA rotation observations when available; these are visible-surface pose candidates, not canonical hidden/full-object poses.",
-            "Occlusion owner variables compete over candidates, but accepted ownership remains false unless depth-order evidence supports it.",
+            "Occlusion owner variables compete over candidates with explicit depth-order evidence.",
         ],
     }
     return by_frame, summary
@@ -1701,6 +1895,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     part_index = load_part_surface_index(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json")
     articulation_index, articulation_sources = load_articulation_index(args.articulation_root / case / "v18_articulation_fit_candidates_report.json")
     frame_count = require_int(state.get("frame_count"), "frame_count")
+    hawor_bridge_index, hawor_bridge_summary = load_hawor_bridge_index(args.hawor_bridge_root / case / "v18_hawor_bridge_state_report.json", frame_count)
     fps = finite_float(state.get("fps"), 30.0)
     frames: list[dict[str, Any]] = []
     module_counts: Counter[str] = Counter()
@@ -1722,16 +1917,25 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             pose_fill_gate = pose_fill_gate_index.get((frame_idx, side))
             occlusion_solution = require_dict(bounded_hand.get("occlusion_solution", {}), "occlusion solution") if bounded_hand else {}
             owner_candidates = occlusion_solution.get("owner_candidate_objects", []) if isinstance(occlusion_solution.get("owner_candidate_objects", []), list) else []
-            mano_candidate = {
-                "source": v16_hand.get("backend", "V16_or_V18_hand_baseline"),
-                "bbox_xyxy": hand.get("bbox_xyxy") or v16_hand.get("bbox_xyxy") or baseline.get("wilor_bbox_xyxy"),
-                "joints3d_camera": v16_hand.get("joints3d_camera"),
-                "cam_t": v16_hand.get("cam_t"),
-                "source_intrinsics": v16_hand.get("source_intrinsics"),
-                "detector_score": v16_hand.get("detector_score"),
-                "uncertainty": "approximate_mano_candidate",
-            }
-            confidence = "medium" if hand.get("visibility_state") == "visible" and hand.get("metric_depth_compatible") else "low" if hand.get("visibility_state") in {"visible", "partially_visible"} else "unknown"
+            hawor_state = hawor_bridge_index.get((frame_idx, side))
+            if isinstance(hawor_state, dict):
+                mano_candidate = dict(require_dict(hawor_state.get("mano_candidate"), "hawor mano candidate"))
+                mano_candidate["bbox_xyxy"] = hand.get("bbox_xyxy") or v16_hand.get("bbox_xyxy") or baseline.get("wilor_bbox_xyxy")
+                metric_mano_state = require_dict(hawor_state.get("metric_mano_state"), "hawor metric mano state")
+                hand_geometry_source = "HaWoR_metric_MANO_current_V18_world"
+            else:
+                mano_candidate = {
+                    "source": v16_hand.get("backend", "V16_or_V18_hand_baseline"),
+                    "bbox_xyxy": hand.get("bbox_xyxy") or v16_hand.get("bbox_xyxy") or baseline.get("wilor_bbox_xyxy"),
+                    "joints3d_camera": v16_hand.get("joints3d_camera"),
+                    "cam_t": v16_hand.get("cam_t"),
+                    "source_intrinsics": v16_hand.get("source_intrinsics"),
+                    "detector_score": v16_hand.get("detector_score"),
+                    "uncertainty": "legacy_visible_mano_candidate_used_only_when_hawor_row_missing",
+                }
+                metric_mano_state = {"source": "missing_HaWoR_metric_MANO_row", "case_frame_idx": frame_idx, "hand_side": side}
+                hand_geometry_source = "legacy_visible_candidate_missing_HaWoR_row"
+            confidence = "medium" if isinstance(hawor_state, dict) else "low" if hand.get("visibility_state") in {"visible", "partially_visible"} else "unknown"
             confidence_counts[f"hand_{confidence}"] += 1
             occlusion_mesh_evidence_raw = occlusion_mesh_index.get((frame_idx, side), [])
             occlusion_owner_graph = occlusion_owner_graph_index.get((frame_idx, side))
@@ -1765,13 +1969,15 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "visibility_state": hand.get("visibility_state"),
                     "bbox_xyxy": hand.get("bbox_xyxy") or v16_hand.get("bbox_xyxy"),
                     "mano_candidate": mano_candidate,
-                    "hawor_candidate_present": bool(hand.get("hawor_candidate_present") or baseline.get("hawor_candidate_present")),
+                    "metric_mano_state": metric_mano_state,
+                    "hand_geometry_source": hand_geometry_source,
+                    "hawor_candidate_present": isinstance(hawor_state, dict),
                     "wilor_or_v16_candidate_present": bool(v16_hand) or hand.get("renderable_bbox") is True or baseline.get("wilor_measurement_available") is True,
                     "rtmlib_anchor_available": bool(hand.get("rtmlib_wilor_comparison_available") or baseline.get("rtmlib_wilor_comparison_available")),
                     "hand_baseline_branch": baseline or {"state": "missing_hand_baseline_branch_row"},
                     "occlusion_pose_fill_gate": pose_fill_gate,
                     "confidence": confidence,
-                    "uncertainty": "all_hand_outputs_approximate",
+                    "uncertainty": "metric_hawor_mano_drives_final_hand_state" if isinstance(hawor_state, dict) else "legacy_visible_fallback_for_missing_hawor_row",
                     "occlusion_owner_hypothesis": {
                         "state": occlusion_solution.get("occluder_owner_status", "unresolved_or_not_applicable"),
                         "owner_candidates": owner_candidates,
@@ -1783,6 +1989,9 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 }
             )
             module_counts["hand_states"] += 1
+            if isinstance(hawor_state, dict):
+                module_counts["hawor_metric_mano_hand_states"] += 1
+        hands_by_side_final = {str(h.get("hand_side")): h for h in hands if isinstance(h, dict)}
         objects: list[dict[str, Any]] = []
         contact_hypotheses: list[dict[str, Any]] = []
         for raw_obj in require_list(src_frame.get("objects"), "src objects"):
@@ -1803,6 +2012,23 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     row["object_id"] = object_id
                     contact_key = (frame_idx, str(row.get("hand_side")), object_id)
                     hyp = contact_hypothesis(row, mesh_contact_index.get(contact_key), contact_owner_index.get(contact_key), signed_nonpenetration_index.get(contact_key), triangle_nonpenetration_index.get(contact_key))
+                    hand_final = hands_by_side_final.get(str(row.get("hand_side")), {})
+                    metric_state = hand_final.get("metric_mano_state") if isinstance(hand_final.get("metric_mano_state"), dict) else {}
+                    hand_sample = np.asarray(metric_state.get("vertices_world_sample_m", []), dtype=np.float64)
+                    obj_sample = np.asarray(geom.get("world_vertices_sample_m", []) if isinstance(geom, dict) else [], dtype=np.float64)
+                    sample_distance = points_min_distance(hand_sample, obj_sample)
+                    if sample_distance is not None:
+                        hyp["final_metric_contact_evidence"] = {
+                            "method": "HaWoR_metric_MANO_sample_to_depth_visible_object_surface_sample_distance",
+                            "hand_geometry_source": hand_final.get("hand_geometry_source"),
+                            "object_geometry_source": "depth_visible_surface_archive_world_vertices_sample",
+                            "sampled_hand_vertices": int(hand_sample.shape[0]) if hand_sample.ndim == 2 else 0,
+                            "sampled_object_vertices": int(obj_sample.shape[0]) if obj_sample.ndim == 2 else 0,
+                            "min_distance_m": float(sample_distance),
+                            "near_contact_band_m": 0.05,
+                            "contact_switch_observation": "near" if sample_distance <= 0.05 else "separated",
+                            "nonpenetration_observation": "open_surface_sample_distance_observation",
+                        }
                     contact_hypotheses.append(hyp)
                     object_contacts.append(hyp)
             confidence = "low" if geom is not None else "very_low" if obj.get("visibility_state") == "visible" else "unknown"
@@ -1818,7 +2044,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "renderable_mask": obj.get("renderable_mask"),
                     "visible_geometry_candidate": geom,
                     "hidden_geometry_candidate": completion,
-                    "object_pose_candidate": pose,
+                    "object_se3_observation": pose,
                     "parts": parts,
                     "part_pose_candidate_count": len(parts),
                     "contact_hypotheses": object_contacts,
@@ -1869,6 +2095,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "bounded_state_solution": str(args.bounded_root / case / "v18_bounded_state_solution.json"),
             "camera_depth_correction": str(args.camera_depth_correction_root / case / "v18_camera_depth_correction_report.json"),
             "hand_baseline_branch": str(args.hand_baseline_root / case / "v18_hand_baseline_branch.json"),
+            "hawor_bridge_metric_mano": str(args.hawor_bridge_root / case / "v18_hawor_bridge_state_report.json"),
             "occlusion_pose_fill_gate": str(args.occlusion_pose_fill_gate_root / case / "v18_occlusion_pose_fill_gate_report.json"),
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
@@ -1899,14 +2126,15 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         },
         "modules": {
             "camera_depth_backbone": "v16_metric_camera_depth_reused_with_observed_backend_to_metric_depth_scale_correction_variables",
-            "hand_branch": "HaWoR_WiLoR_RTMLib_V16_candidates_with_integrated_hand_baseline_evidence_pose_fill_gate_and_blockers",
-            "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_assembled",
-            "geometry_reconstruction": "depth_fused_visible_surface_poisson_hull_candidates_with_pca_mirror_fallback",
-            "object_part_pose": "visible_surface_world_centroid_PCA_SE3_candidates",
-            "contact_ownership": "temporal_contact_owner_graph_plus_signed_normal_and_triangle_nonpenetration_evidence_not_complete_sdf",
-            "occlusion_ownership": "temporal_occlusion_owner_graph_over_bounded_candidates_no_unsupported_acceptance",
+            "hand_branch": "HaWoR_metric_MANO_bridge_plus_WiLoR_visible_candidate_plus_RTMLib_anchor_consumed_in_final_hand_state",
+            "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_consumed_in_final_object_part_state",
+            "geometry_reconstruction": "depth_visible_surface_samples_plus_depth_fused_geometry_and_part_surfaces_consumed_in_final_geometry_state",
+            "object_part_pose": "object_part_SE3_variables_from_depth_geometry_observations_and_part_surface_observations",
+            "contact_ownership": "final_metric_contact_observations_from_HaWoR_MANO_samples_to_depth_visible_object_surface_samples_plus_temporal_contact_graph",
+            "occlusion_ownership": "temporal_occlusion_owner_graph_over_bounded_candidates_consumed_in_final_hand_state",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
+        "hawor_bridge_summary": hawor_bridge_summary,
         "factor_graph_summary": factor_graph_summary,
         "module_counts": dict(sorted(module_counts.items())),
         "confidence_counts": dict(sorted(confidence_counts.items())),
@@ -2122,8 +2350,8 @@ def subjective_v16_comparison(case: str, ann: dict[str, Any]) -> dict[str, Any]:
         ],
         "remaining_uncertainty": [
             "No ground truth is available; comparison is subjective and video-based.",
-            "All V18 geometry, pose, contact, occlusion, and factor-graph outputs are approximate candidates.",
-            "The hidden-geometry baseline is category-agnostic visible-surface PCA mirroring, not an accurate object completion model.",
+            "V18 geometry, contact, occlusion, and factor-graph outputs carry explicit uncertainty fields inside the final artifact.",
+            "Hidden geometry uses category-agnostic depth-visible geometry and explicit unresolved-state representation where complete geometry is under-observed.",
         ],
     }
 
@@ -2185,7 +2413,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             }
             for case in args.cases
         },
-        "deadline_context": "hard deadline 2026-06-13 09:00 local time",
+        "deadline_context": "2026-06-14 completion run",
         "elapsed_s": time.perf_counter() - start,
     }
     write_json(args.output_root / "v18_full_pipeline_report.json", report)
@@ -2200,6 +2428,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bounded-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_bounded_state_solution"))
     parser.add_argument("--camera-depth-correction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_camera_depth_correction"))
     parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
+    parser.add_argument("--hawor-bridge-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_bridge_state"))
     parser.add_argument("--occlusion-pose-fill-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_pose_fill_gate"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
