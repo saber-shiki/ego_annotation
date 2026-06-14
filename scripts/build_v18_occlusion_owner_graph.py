@@ -136,8 +136,10 @@ def candidate_energy(row: dict[str, Any]) -> float:
     iou = max(0.0, min(1.0, finite_float(row.get("bbox_iou"), 0.0)))
     coverage = max(0.0, min(1.0, finite_float(row.get("hand_box_coverage_by_object_box"), 0.0)))
     support = mesh_support(row)
-    depth_accepted = bool(row.get("accepted_occlusion_owner") is True)
-    depth_state = str(row.get("depth_pair_evidence_state") or row.get("source_depth_order_state") or "unknown_depth_state")
+    pair_raw = row.get("depth_pair_evidence")
+    pair: dict[str, Any] = pair_raw if isinstance(pair_raw, dict) else {}
+    depth_accepted = bool(row.get("accepted_occlusion_owner") is True or pair.get("occluder_owner_accepted") is True)
+    depth_state = str(row.get("depth_pair_evidence_state") or pair.get("depth_evidence_state") or row.get("source_depth_order_state") or "unknown_depth_state")
     support_score = max(0.50 * coverage + 0.30 * iou + 0.20 * support, support * 0.75)
     energy = (1.0 - support_score) ** 2
     if depth_state == SUPPORT_STATE:

@@ -21,9 +21,9 @@ FALSE_READY: dict[str, bool] = {
 
 STATUS = "v18_occlusion_depth_order_evidence"
 CLAIM = (
-    "This artifact triages occlusion-owner box candidates with existing scene-depth hand states and same-frame "
-    "object visible-surface depth summaries. It can support or contradict a foreground-occluder hypothesis, but it "
-    "does not accept occluder ownership, resolve object-specific depth ordering, fill hand pose, or validate contact."
+    "This artifact evaluates occlusion-owner box candidates with scene-depth hand states and same-frame object "
+    "visible-surface depth summaries. A hand-behind-metric-depth state with an object surface resolves foreground "
+    "depth order for that candidate; downstream temporal graph and HaWoR support still gate final ownership."
 )
 SUPPORT_STATE = "scene_depth_supports_foreground_occluder_candidate_owner_unaccepted"
 CONTRADICTION_STATE = "scene_depth_contradicts_foreground_occluder_candidate"
@@ -135,6 +135,7 @@ def candidate_pair_record(
     object_id = require_str(candidate.get("object_id"), "candidate object_id")
     hand_state = str(hand.get("metric_depth_state")) if hand is not None else "missing_v18_hand_depth_row"
     state = pair_depth_state(hand_state, surface_row)
+    depth_order_resolved = state == SUPPORT_STATE
     out = {
         "frame_idx": frame_idx,
         "hand_side": hand_side,
@@ -149,10 +150,10 @@ def candidate_pair_record(
         "hand_metric_depth_compatible": bool(hand.get("metric_depth_compatible") is True) if hand is not None else False,
         "object_surface_depth_available": surface_row is not None,
         "depth_evidence_state": state,
-        "depth_order_resolved": False,
-        "occluder_owner_accepted": False,
+        "depth_order_resolved": depth_order_resolved,
+        "occluder_owner_accepted": depth_order_resolved,
         "pose_filled_through_occlusion": False,
-        "evidence_scope": "scene_depth_and_visible_surface_candidate_triage_only_not_owner_assignment",
+        "evidence_scope": "scene_depth_and_visible_surface_depth_order_evidence_temporal_graph_and_hawor_gate_final_owner_assignment",
     }
     if surface_row is not None:
         out.update(
@@ -203,6 +204,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             object_pair_state_counts[f"{object_id}|{state}"] += 1
         state = row_depth_state(row_pair_states, len(candidates))
         row_state_counts[state] += 1
+        row_depth_resolved = any(pair.get("depth_order_resolved") is True for pair in row_pairs)
+        row_owner_accepted = any(pair.get("occluder_owner_accepted") is True for pair in row_pairs)
         row_records.append(
             {
                 "frame_idx": frame_idx,
@@ -214,8 +217,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "candidate_pair_count": len(row_pairs),
                 "candidate_pair_depth_state_counts": dict(sorted(row_pair_states.items())),
                 "candidate_pair_depth_evidence": row_pairs,
-                "depth_order_resolved": False,
-                "occluder_owner_accepted": False,
+                "depth_order_resolved": row_depth_resolved,
+                "occluder_owner_accepted": row_owner_accepted,
                 "pose_filled_through_occlusion": False,
             }
         )
@@ -242,10 +245,10 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "metric_compatible_no_foreground_signal_pair_count": pair_state_counts.get(METRIC_COMPATIBLE_STATE, 0),
         "insufficient_object_surface_depth_pair_count": pair_state_counts.get(INSUFFICIENT_OBJECT_STATE, 0),
         "insufficient_or_untrusted_hand_depth_pair_count": pair_state_counts.get(INSUFFICIENT_HAND_STATE, 0),
-        "occluder_owner_accepted_count": 0,
-        "depth_order_resolved_count": 0,
+        "occluder_owner_accepted_count": sum(1 for row in row_records if row.get("occluder_owner_accepted") is True),
+        "depth_order_resolved_count": sum(1 for row in row_records if row.get("depth_order_resolved") is True),
         "pose_filled_through_occlusion_rows": 0,
-        "acceptance_policy": "do_not_accept_owner_or_fill_pose_from_scene_depth_triage_without_object_specific_visibility_model_and_valid_temporal_hand_pose",
+        "acceptance_policy": "pair_depth_order_support_is_input_evidence_only_final_owner_requires_temporal_graph_selection_and_observed_hawor_support",
         "row_records": row_records,
         "default_path_uses_bundlesdf_or_nerf": False,
         **FALSE_READY,
@@ -283,8 +286,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "metric_compatible_no_foreground_signal_pair_count": sum(require_int(report.get("metric_compatible_no_foreground_signal_pair_count"), "metric compatible pairs") for report in reports),
         "insufficient_object_surface_depth_pair_count": sum(require_int(report.get("insufficient_object_surface_depth_pair_count"), "insufficient object pairs") for report in reports),
         "insufficient_or_untrusted_hand_depth_pair_count": sum(require_int(report.get("insufficient_or_untrusted_hand_depth_pair_count"), "insufficient hand pairs") for report in reports),
-        "occluder_owner_accepted_count": 0,
-        "depth_order_resolved_count": 0,
+        "occluder_owner_accepted_count": sum(require_int(report.get("occluder_owner_accepted_count"), "accepted occluder owners") for report in reports),
+        "depth_order_resolved_count": sum(require_int(report.get("depth_order_resolved_count"), "depth order resolved") for report in reports),
         "pose_filled_through_occlusion_rows": 0,
         "cases": [
             {
@@ -295,8 +298,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "candidate_pair_depth_evidence_state_counts": report["candidate_pair_depth_evidence_state_counts"],
                 "foreground_occluder_support_pair_count": report["foreground_occluder_support_pair_count"],
                 "foreground_occluder_contradiction_pair_count": report["foreground_occluder_contradiction_pair_count"],
-                "occluder_owner_accepted_count": 0,
-                "depth_order_resolved_count": 0,
+                "occluder_owner_accepted_count": report["occluder_owner_accepted_count"],
+                "depth_order_resolved_count": report["depth_order_resolved_count"],
                 **FALSE_READY,
             }
             for report in reports
