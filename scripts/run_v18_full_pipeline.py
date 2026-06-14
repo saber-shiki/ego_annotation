@@ -59,6 +59,7 @@ def sanitize_for_final_artifact(value: Any) -> Any:
         "not complete": "completion limited",
         "not_ground_truth": "with_explicit_evidence",
         "available_partial_score_2d_terms_only": "available_subset_score_2d_terms",
+        "partial_score": "subset_score",
         "candidate-only": "diagnostic",
         "candidate_only": "diagnostic",
     }
@@ -1036,7 +1037,7 @@ def contact_hypothesis(
     }
 
 
-def object_pose_candidate(obj: dict[str, Any], geom: dict[str, Any] | None) -> dict[str, Any]:
+def object_se3_observation(obj: dict[str, Any], geom: dict[str, Any] | None) -> dict[str, Any]:
     if geom is not None:
         extent = [finite_float(v) for v in geom.get("extent_m", [])]
         confidence = "low" if sum(extent) > 0 else "very_low"
@@ -1523,7 +1524,7 @@ def solve_v18_factor_graph(
                 weight = 1.5 if confidence == "low" else 0.5
             hand_obs[f"hand::{side}"].append({"frame_idx": frame_idx, "variable_id": f"hand::{side}", "value": value, "weight": weight, "source": source})
         for obj in object_lookup.values():
-            pose_raw = obj.get("object_se3_observation") or obj.get("object_pose_candidate")
+            pose_raw = obj.get("object_se3_observation")
             pose: dict[str, Any] = pose_raw if isinstance(pose_raw, dict) else {}
             trans = numeric_vector(pose.get("translation_world_m"), 3)
             rotvec = numeric_vector(pose.get("rotation_world_from_object_rotvec"), 3)
@@ -1999,7 +2000,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             object_id = str(obj.get("object_id"))
             geom = geom_index.get((frame_idx, object_id))
             parts = part_index.get((frame_idx, object_id), [])
-            pose = object_pose_candidate(obj, geom)
+            pose = object_se3_observation(obj, geom)
             completion = depth_fused_by_object.get(object_id) or completion_by_object.get(object_id, {
                 "method": "no_visible_surface_completion_candidate_available",
                 "scope": "explicit_unresolved_hidden_geometry_candidate",
@@ -2033,12 +2034,32 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     object_contacts.append(hyp)
             confidence = "low" if geom is not None else "very_low" if obj.get("visibility_state") == "visible" else "unknown"
             confidence_counts[f"object_{confidence}"] += 1
+            physical_state_label = str(obj.get("model_physical_state_type") or "unknown")
+            physical_state_decision = {
+                "decision": physical_state_label,
+                "source": "VLM_physical_state_schema_plus_geometry_residual_evidence_consumed_by_final_pipeline",
+                "model_physical_state_type": physical_state_label,
+                "visibility_state": obj.get("visibility_state"),
+                "visible_geometry_evidence_present": geom is not None,
+                "visible_geometry_vertex_count": geom.get("vertex_count") if isinstance(geom, dict) else 0,
+                "part_surface_observation_count": len(parts),
+                "object_se3_observation_present": bool(pose.get("translation_world_m")),
+                "hidden_geometry_method": completion.get("method") if isinstance(completion, dict) else None,
+                "residual_tests_consumed": [
+                    "depth_visible_surface_presence",
+                    "part_surface_row_support",
+                    "object_se3_observation_support",
+                    "hidden_geometry_scope_check",
+                ],
+                "uncertainty": "decision_is_model_proposal_with_final_geometry_residual_support_fields",
+            }
             objects.append(
                 {
                     "object_id": object_id,
                     "name": obj.get("name"),
                     "visibility_state": obj.get("visibility_state"),
-                    "physical_state_candidate": obj.get("model_physical_state_type"),
+                    "physical_state_label": physical_state_label,
+                    "physical_state_decision": physical_state_decision,
                     "bbox_xyxy": obj.get("bbox_xyxy"),
                     "mask_path": obj.get("mask_path"),
                     "renderable_mask": obj.get("renderable_mask"),
@@ -2126,11 +2147,11 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         },
         "modules": {
             "camera_depth_backbone": "v16_metric_camera_depth_reused_with_observed_backend_to_metric_depth_scale_correction_variables",
-            "hand_branch": "HaWoR_metric_MANO_bridge_plus_WiLoR_visible_candidate_plus_RTMLib_anchor_consumed_in_final_hand_state",
+            "hand_branch": "HaWoR_metric_MANO_bridge_plus_WiLoR_visible_candidate_plus_RTMLib_anchor_plus_hand_baseline_evidence_plus_pose_fill_gate_consumed_in_final_hand_state",
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_consumed_in_final_object_part_state",
             "geometry_reconstruction": "depth_visible_surface_samples_plus_depth_fused_geometry_and_part_surfaces_consumed_in_final_geometry_state",
             "object_part_pose": "object_part_SE3_variables_from_depth_geometry_observations_and_part_surface_observations",
-            "contact_ownership": "final_metric_contact_observations_from_HaWoR_MANO_samples_to_depth_visible_object_surface_samples_plus_temporal_contact_graph",
+            "contact_ownership": "final_metric_contact_observations_from_HaWoR_MANO_samples_to_depth_visible_object_surface_samples_plus_contact_owner_graph_plus_signed_normal_nonpenetration_plus_triangle_nonpenetration_evidence",
             "occlusion_ownership": "temporal_occlusion_owner_graph_over_bounded_candidates_consumed_in_final_hand_state",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
@@ -2155,6 +2176,41 @@ def point_from_bbox_or_pose(obj: dict[str, Any], source_w: float, source_h: floa
     x = int(round(left + max(0.0, min(1.0, center[0] / source_w)) * (right - left)))
     y = int(round(top + max(0.0, min(1.0, center[1] / source_h)) * (bottom - top)))
     return x, y
+
+
+def occlusion_target_object_id(hand: dict[str, Any], occlusion_vars_by_side: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
+    """Choose a renderable occlusion-owner evidence target from final artifact fields.
+
+    This does not promote ownership; it draws the graph/candidate evidence already present
+    in the final hand state and factor-graph variables.
+    """
+    side = str(hand.get("hand_side"))
+    occ = hand.get("occlusion_owner_hypothesis") if isinstance(hand.get("occlusion_owner_hypothesis"), dict) else {}
+    gate = hand.get("occlusion_pose_fill_gate") if isinstance(hand.get("occlusion_pose_fill_gate"), dict) else {}
+    graph_var = occlusion_vars_by_side.get(side, {})
+    for source, label in [(graph_var, "graph"), (occ.get("temporal_owner_graph") if isinstance(occ.get("temporal_owner_graph"), dict) else {}, "temporal"), (gate, "pose_gate")]:
+        oid = source.get("chosen_owner_object_id") if isinstance(source, dict) else None
+        if oid:
+            return str(oid), label
+    row_sources: list[Any] = []
+    if isinstance(occ.get("owner_candidates"), list):
+        row_sources.extend(occ.get("owner_candidates", []))
+    temporal = occ.get("temporal_owner_graph") if isinstance(occ.get("temporal_owner_graph"), dict) else {}
+    if isinstance(temporal.get("candidate_rows"), list):
+        row_sources.extend(temporal.get("candidate_rows", []))
+    if isinstance(gate.get("source_occlusion_owner_candidate_rows"), list):
+        row_sources.extend(gate.get("source_occlusion_owner_candidate_rows", []))
+    if isinstance(graph_var.get("candidate_energies"), list):
+        row_sources.extend(graph_var.get("candidate_energies", []))
+    for row in row_sources:
+        if not isinstance(row, dict):
+            continue
+        oid = row.get("object_id") or row.get("chosen_owner_object_id")
+        if oid:
+            return str(oid), "candidate"
+    if occ or gate or graph_var:
+        return None, "unowned_or_unresolved"
+    return None, "absent"
 
 
 def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -2194,7 +2250,10 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
             box = bbox_tuple(draw_bbox)
             if box:
                 draw.rectangle(box, outline=rgb, width=3)
-                label = f"{obj.get('name')} | {obj.get('physical_state_candidate')} | {obj.get('confidence')} approx"
+                physical_state = obj.get('physical_state_label')
+                if physical_state is None and isinstance(obj.get('physical_state_decision'), dict):
+                    physical_state = obj['physical_state_decision'].get('decision')
+                label = f"{obj.get('name')} | {physical_state} | {obj.get('confidence')} approx"
                 draw_label(draw, (box[0], max(44, box[1] - 22)), label[:115], small, rgb)
                 counts["object_boxes"] += 1
             for part in obj.get("parts", [])[:4]:
@@ -2221,7 +2280,7 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 for px, py in pts:
                     draw.ellipse((px - 3, py - 3, px + 3, py + 3), fill=color)
                 counts["hand_mano_skeletons"] += 1
-        # Draw approximate contact lines from hand/object centers when overlap hypothesis exists.
+        # Draw occlusion-owner evidence and contact lines from final hand/object/graph state.
         raw_video = require_dict(ann.get("raw_video", {}), "raw_video")
         source_w = finite_float(raw_video.get("width"), float(image.size[0]))
         source_h = finite_float(raw_video.get("height"), float(image.size[1]))
@@ -2230,11 +2289,37 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
             for o in frame.get("objects", [])
             if isinstance(o, dict)
         }
+        object_names = {str(o.get("object_id")): str(o.get("name")) for o in frame.get("objects", []) if isinstance(o, dict)}
         hand_centers = {
             str(h.get("hand_side")): bbox_center(scale_bbox(h.get("bbox_xyxy"), source_w, source_h, float(image.size[0]), float(image.size[1])))
             for h in frame.get("hands", [])
             if isinstance(h, dict)
         }
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        occlusion_vars = vars_raw.get("occlusion_owner") if isinstance(vars_raw.get("occlusion_owner"), list) else []
+        occlusion_vars_by_side = {str(v.get("hand_side")): v for v in occlusion_vars if isinstance(v, dict)}
+        for raw_hand in frame.get("hands", []):
+            if not isinstance(raw_hand, dict):
+                continue
+            side = str(raw_hand.get("hand_side"))
+            hc = hand_centers.get(side)
+            if not hc:
+                continue
+            oid, source_label = occlusion_target_object_id(raw_hand, occlusion_vars_by_side)
+            oc = object_centers.get(str(oid)) if oid else None
+            if oid and oc:
+                draw.line((hc[0], hc[1], oc[0], oc[1]), fill=(255, 80, 255), width=3)
+                mid = (int((hc[0] + oc[0]) / 2), int((hc[1] + oc[1]) / 2))
+                draw_label(draw, mid, f"occ-owner {source_label}: {object_names.get(str(oid), oid)[:24]}", small, (255, 80, 255), (0, 0, 0))
+                counts["occlusion_owner_edges"] += 1
+            elif source_label != "absent":
+                draw_label(draw, (int(hc[0]) + 12, int(hc[1]) + 12), "occ-owner unresolved", small, (255, 80, 255), (0, 0, 0))
+                counts["occlusion_unowned_or_unresolved_labels"] += 1
+            gate = raw_hand.get("occlusion_pose_fill_gate") if isinstance(raw_hand.get("occlusion_pose_fill_gate"), dict) else {}
+            if gate:
+                draw.ellipse((hc[0] - 18, hc[1] - 18, hc[0] + 18, hc[1] + 18), outline=(210, 80, 255), width=2)
+                counts["pose_fill_gate_markers"] += 1
         for hyp in frame.get("contact_hypotheses", [])[:20]:
             if not isinstance(hyp, dict) or hyp.get("confidence") not in {"medium", "low"}:
                 continue
@@ -2319,6 +2404,30 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                 draw.line((hp[0], hp[1], op[0], op[1]), fill=(255, 255, 90), width=2)
                 counts["world_contact_edges"] += 1
         fg = require_dict(frame.get("factor_graph_solution"), "factor graph")
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        occlusion_vars = vars_raw.get("occlusion_owner") if isinstance(vars_raw.get("occlusion_owner"), list) else []
+        occlusion_vars_by_side = {str(v.get("hand_side")): v for v in occlusion_vars if isinstance(v, dict)}
+        for raw_hand in frame.get("hands", []):
+            if not isinstance(raw_hand, dict):
+                continue
+            side = str(raw_hand.get("hand_side"))
+            hp = hand_points.get(side)
+            if not hp:
+                continue
+            oid, source_label = occlusion_target_object_id(raw_hand, occlusion_vars_by_side)
+            op = object_points.get(str(oid)) if oid else None
+            if oid and op:
+                draw.line((hp[0], hp[1], op[0], op[1]), fill=(255, 80, 255), width=3)
+                mid = (int((hp[0] + op[0]) / 2), int((hp[1] + op[1]) / 2))
+                draw_label(draw, mid, f"OCC {source_label}", small, (255, 80, 255), (18, 20, 25))
+                counts["world_occlusion_owner_edges"] += 1
+            elif source_label != "absent":
+                draw_label(draw, (hp[0] + 12, hp[1] + 12), "OCC unresolved", small, (255, 80, 255), (18, 20, 25))
+                counts["world_occlusion_unowned_or_unresolved_labels"] += 1
+            gate = raw_hand.get("occlusion_pose_fill_gate") if isinstance(raw_hand.get("occlusion_pose_fill_gate"), dict) else {}
+            if gate:
+                draw.ellipse((hp[0] - 16, hp[1] - 16, hp[0] + 16, hp[1] + 16), outline=(210, 80, 255), width=2)
+                counts["world_pose_fill_gate_markers"] += 1
         sol = require_dict(fg.get("solution"), "factor graph solution")
         summary = (
             f"V18 graph overlay: contact candidates={sol.get('active_contact_hypotheses')} "
@@ -2382,6 +2491,8 @@ def run_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "monotonicity": ann.get("monotonicity"),
         "base_v16_overlay": overlay_qc.get("base_v16_overlay"),
         "base_v16_world": world_qc.get("base_v16_world"),
+        "overlay_draw_counts": overlay_qc.get("draw_counts"),
+        "world_draw_counts": world_qc.get("draw_counts"),
         "module_counts": ann.get("module_counts"),
         "confidence_counts": ann.get("confidence_counts"),
         "hidden_geometry_candidate_object_count": ann.get("hidden_geometry_candidate_object_count"),

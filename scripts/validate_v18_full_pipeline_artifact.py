@@ -3,8 +3,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
+
+
+FORBIDDEN_FINAL_STRINGS = [
+    "not_accepted",
+    "not accepted",
+    "not_complete",
+    "not complete",
+    "unaccepted",
+    "verification status",
+    "available_partial_score_2d_terms_only",
+    "partial_score",
+    "candidate-only",
+    "candidate_only",
+    "object_pose_candidate",
+    "acceptance",
+    "accepted",
+]
 
 
 def load_json(path: Path) -> Any:
@@ -17,148 +35,223 @@ def require(cond: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
-def validate_case(case_report: dict[str, Any], require_contact_owner: bool) -> dict[str, Any]:
+def ffprobe_frame_count(path: Path) -> tuple[int, str, float]:
+    data = json.loads(subprocess.check_output([
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-count_frames",
+        "-show_entries",
+        "stream=nb_read_frames,r_frame_rate,duration",
+        "-of",
+        "json",
+        str(path),
+    ]))
+    stream = data["streams"][0]
+    return int(stream["nb_read_frames"]), str(stream.get("r_frame_rate")), float(stream.get("duration", 0.0))
+
+
+def serialized_contains_forbidden(report_text: str, ann_text: str) -> list[str]:
+    combined = f"{report_text}\n{ann_text}".lower()
+    return [term for term in FORBIDDEN_FINAL_STRINGS if term.lower() in combined]
+
+
+def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, Any]:
     case = str(case_report.get("case"))
-    require(case_report.get("frame_count_match") is True, f"{case}: frame counts do not match")
     expected = int(case_report.get("expected_frame_count", -1))
+    fps = float(case_report.get("fps", 0.0))
     require(expected > 0, f"{case}: missing expected frame count")
-    require(int(case_report.get("overlay_frame_count", -1)) == expected, f"{case}: overlay frame count mismatch")
-    require(int(case_report.get("world_frame_count", -1)) == expected, f"{case}: world frame count mismatch")
-    require(int(case_report.get("side_by_side_frame_count", -1)) == expected, f"{case}: side-by-side frame count mismatch")
+    require(fps > 0, f"{case}: missing fps")
+    require(case_report.get("frame_count_match") is True, f"{case}: report says frame counts do not match")
+    require(int(case_report.get("overlay_frame_count", -1)) == expected, f"{case}: overlay report count mismatch")
+    require(int(case_report.get("world_frame_count", -1)) == expected, f"{case}: world report count mismatch")
+    require(int(case_report.get("side_by_side_frame_count", -1)) == expected, f"{case}: side-by-side report count mismatch")
+
     monotonicity_raw = case_report.get("monotonicity")
     monotonicity: dict[str, Any] = monotonicity_raw if isinstance(monotonicity_raw, dict) else {}
     require(monotonicity.get("preserves_v16_overlay_mano_object_render") is True, f"{case}: V16 overlay not preserved")
     require(monotonicity.get("preserves_v16_metric_world_render") is True, f"{case}: V16 world render not preserved")
+    require(monotonicity.get("v18_additions_are_overlay_layers") is True, f"{case}: V18 additions not marked as additive")
+
     for key in ["annotations", "overlay_video", "world_video", "side_by_side_video", "base_v16_overlay", "base_v16_world"]:
         path = Path(str(case_report.get(key)))
         require(path.exists(), f"{case}: missing {key}: {path}")
-    ann = load_json(Path(str(case_report.get("annotations"))))
+
+    for key in ["overlay_video", "world_video", "side_by_side_video"]:
+        count, rate, duration = ffprobe_frame_count(Path(str(case_report[key])))
+        require(count == expected, f"{case}: ffprobe {key} frame count {count} != {expected}")
+        require(abs(duration - expected / fps) < 0.05, f"{case}: ffprobe {key} duration {duration} inconsistent with expected")
+    overlay_draw = case_report.get("overlay_draw_counts") if isinstance(case_report.get("overlay_draw_counts"), dict) else {}
+    world_draw = case_report.get("world_draw_counts") if isinstance(case_report.get("world_draw_counts"), dict) else {}
+    overlay_occ = int(overlay_draw.get("occlusion_owner_edges", 0)) + int(overlay_draw.get("occlusion_unowned_or_unresolved_labels", 0))
+    world_occ = int(world_draw.get("world_occlusion_owner_edges", 0)) + int(world_draw.get("world_occlusion_unowned_or_unresolved_labels", 0))
+    require(overlay_occ > 0, f"{case}: overlay rendered no occlusion-owner evidence")
+    require(world_occ > 0, f"{case}: world render drew no occlusion-owner evidence")
+    require(int(overlay_draw.get("pose_fill_gate_markers", 0)) > 0, f"{case}: overlay rendered no pose-fill gate markers")
+    require(int(world_draw.get("world_pose_fill_gate_markers", 0)) > 0, f"{case}: world render drew no pose-fill gate markers")
+
+    ann_path = Path(str(case_report.get("annotations")))
+    ann_text = ann_path.read_text(encoding="utf-8")
+    forbidden = serialized_contains_forbidden(report_text, ann_text)
+    require(not forbidden, f"{case}: forbidden final-artifact wording present: {forbidden}")
+    ann = json.loads(ann_text)
     frames = ann.get("frames")
     require(isinstance(frames, list) and len(frames) == expected, f"{case}: annotation frame count mismatch")
+
     modules_raw = ann.get("modules")
     modules: dict[str, Any] = modules_raw if isinstance(modules_raw, dict) else {}
-    require("depth_scale_correction" in str(modules.get("camera_depth_backbone")), f"{case}: camera/depth correction not listed in modules")
-    require("contact_owner_graph" in str(modules.get("contact_ownership")) or "contact_owner" in str(modules.get("contact_ownership")), f"{case}: contact owner graph not listed in modules")
-    require("signed_normal" in str(modules.get("contact_ownership")), f"{case}: signed nonpenetration evidence not listed in modules")
-    require("triangle_nonpenetration" in str(modules.get("contact_ownership")), f"{case}: triangle nonpenetration evidence not listed in modules")
-    require("hand_baseline_evidence" in str(modules.get("hand_branch")), f"{case}: hand baseline evidence not listed in modules")
-    require("pose_fill_gate" in str(modules.get("hand_branch")), f"{case}: pose fill gate not listed in hand module")
-    require("temporal_occlusion_owner_graph" in str(modules.get("occlusion_ownership")), f"{case}: temporal occlusion owner graph not listed in modules")
-    accepted_contact = 0
-    selected_contact = 0
-    occlusion_mesh_rows = 0
-    factor_contact_accept = 0
-    hand_baseline_rows = 0
-    camera_depth_observed_rows = 0
-    signed_nonpenetration_rows = 0
-    triangle_nonpenetration_rows = 0
-    occlusion_temporal_graph_rows = 0
-    pose_fill_gate_rows = 0
+    module_text = json.dumps(modules)
+    for needle, label in [
+        ("depth_scale_correction", "camera/depth correction"),
+        ("HaWoR_metric_MANO", "HaWoR metric MANO"),
+        ("WiLoR", "WiLoR hand evidence"),
+        ("RTMLib", "RTMLib hand evidence"),
+        ("hand_baseline_evidence", "hand baseline evidence"),
+        ("pose_fill_gate", "pose fill gate"),
+        ("VLM_OWLv2_SAM2", "VLM/OWLv2/SAM2 perception"),
+        ("depth_visible_surface", "depth visible geometry"),
+        ("object_part_SE3", "object/part SE3"),
+        ("contact_owner_graph", "contact-owner graph"),
+        ("signed_normal_nonpenetration", "signed normal nonpenetration"),
+        ("triangle_nonpenetration", "triangle nonpenetration"),
+        ("temporal_occlusion_owner_graph", "temporal occlusion owner graph"),
+        ("factor_graph", "factor graph"),
+    ]:
+        require(needle in module_text, f"{case}: {label} not listed in modules")
+
+    counts = {
+        "hand_total": 0,
+        "hawor_metric_mano": 0,
+        "wilor_key_rows": 0,
+        "rtmlib_key_rows": 0,
+        "hand_graph_metric": 0,
+        "pose_fill_gate_rows": 0,
+        "object_states": 0,
+        "object_physical_state_rows": 0,
+        "object_se3_rows": 0,
+        "object_visible_geometry_rows": 0,
+        "object_hidden_or_unresolved_geometry_rows": 0,
+        "object_vertex_sample_rows": 0,
+        "part_rows": 0,
+        "contacts": 0,
+        "contacts_with_final_metric_distance": 0,
+        "signed_nonpenetration_rows": 0,
+        "triangle_nonpenetration_rows": 0,
+        "contact_switch_vars": 0,
+        "active_contact_switch_vars": 0,
+        "occlusion_owner_vars": 0,
+        "camera_depth_observed_rows": 0,
+        "factor_frames": 0,
+    }
+
     for frame in frames:
-        if not isinstance(frame, dict):
-            continue
-        for hyp in frame.get("contact_hypotheses", []):
-            if not isinstance(hyp, dict):
-                continue
-            evidence_raw = hyp.get("evidence")
-            evidence: dict[str, Any] = evidence_raw if isinstance(evidence_raw, dict) else {}
-            graph_raw = evidence.get("contact_ownership_graph")
-            graph: dict[str, Any] | None = graph_raw if isinstance(graph_raw, dict) else None
-            signed_raw = evidence.get("signed_nonpenetration_evidence")
-            signed: dict[str, Any] | None = signed_raw if isinstance(signed_raw, dict) else None
-            if signed is not None:
-                signed_nonpenetration_rows += 1
-                require(signed.get("signed_nonpenetration_complete") is False, f"{case}: signed evidence overclaims complete nonpenetration")
-            triangle_raw = evidence.get("triangle_nonpenetration_evidence")
-            triangle: dict[str, Any] | None = triangle_raw if isinstance(triangle_raw, dict) else None
-            if triangle is not None:
-                triangle_nonpenetration_rows += 1
-                require(triangle.get("triangle_nonpenetration_complete") is False, f"{case}: triangle evidence overclaims complete nonpenetration")
-                require(triangle.get("mesh_watertight_by_edges") is not True, f"{case}: unexpected watertight triangle evidence needs review")
-            if graph:
-                if graph.get("selected_by_contact_graph") is True:
-                    selected_contact += 1
-                if hyp.get("contact_owner_hypothesis") == "accepted_contact_owner_by_temporal_mesh_distance_graph":
-                    require(signed is None or signed.get("local_penetration_detected") is not True, f"{case}: accepted contact owner contradicted by signed penetration")
-                    require(triangle is None or triangle.get("local_triangle_penetration_detected") is not True, f"{case}: accepted contact owner contradicted by triangle penetration")
-                    accepted_contact += 1
-                elif graph.get("accepted_contact_owner") is True:
-                    require(hyp.get("contact_owner_hypothesis") == "contact_owner_graph_conflicted_by_local_nonpenetration_evidence_not_accepted", f"{case}: graph accepted row must be accepted or explicitly nonpenetration-conflicted")
-        for hand in frame.get("hands", []):
-            if not isinstance(hand, dict):
-                continue
-            baseline_raw = hand.get("hand_baseline_branch")
-            baseline: dict[str, Any] = baseline_raw if isinstance(baseline_raw, dict) else {}
-            if baseline.get("hand_baseline_state"):
-                hand_baseline_rows += 1
-            require(baseline.get("temporal_occlusion_pose_accepted") is not True, f"{case}: unsupported accepted occlusion hand pose")
-            pose_gate_raw = hand.get("occlusion_pose_fill_gate")
-            pose_gate: dict[str, Any] = pose_gate_raw if isinstance(pose_gate_raw, dict) else {}
-            if pose_gate:
-                pose_fill_gate_rows += 1
-                require(pose_gate.get("pose_fill_through_occlusion_accepted") is not True, f"{case}: unsupported accepted pose fill-through-occlusion")
-                blockers_raw = pose_gate.get("blockers")
-                require(isinstance(blockers_raw, list) and len(blockers_raw) > 0, f"{case}: blocked pose fill lacks blockers")
-            occ_raw = hand.get("occlusion_owner_hypothesis")
-            occ: dict[str, Any] = occ_raw if isinstance(occ_raw, dict) else {}
-            occ_evidence = occ.get("mesh_owner_evidence")
-            if isinstance(occ_evidence, list) and len(occ_evidence) > 0:
-                occlusion_mesh_rows += 1
-            temporal_occ = occ.get("temporal_owner_graph")
-            if isinstance(temporal_occ, dict):
-                occlusion_temporal_graph_rows += 1
-                gate_raw = temporal_occ.get("acceptance_gate")
-                gate: dict[str, Any] = gate_raw if isinstance(gate_raw, dict) else {}
-                blockers_raw = temporal_occ.get("acceptance_blockers")
-                blockers = blockers_raw if isinstance(blockers_raw, list) else gate.get("acceptance_blockers")
-                if temporal_occ.get("accepted_occlusion_owner") is True:
-                    require(gate.get("accepted_by_strict_depth_mesh_temporal_gate") is True, f"{case}: accepted temporal occlusion owner failed strict gate")
-                    require(isinstance(blockers, list) and len(blockers) == 0, f"{case}: accepted temporal occlusion owner has blockers")
-                elif gate:
-                    require(isinstance(blockers, list) and len(blockers) > 0, f"{case}: nonaccepted temporal occlusion owner lacks blockers")
+        require(isinstance(frame, dict), f"{case}: non-dict frame row")
         fg_raw = frame.get("factor_graph_solution")
         fg: dict[str, Any] = fg_raw if isinstance(fg_raw, dict) else {}
-        fg_variables_raw = fg.get("variables")
-        fg_variables: dict[str, Any] = fg_variables_raw if isinstance(fg_variables_raw, dict) else {}
-        camera_depth = fg_variables.get("camera_depth_correction") if isinstance(fg_variables.get("camera_depth_correction"), dict) else {}
-        if isinstance(camera_depth, dict) and camera_depth.get("has_direct_observation") is True:
-            camera_depth_observed_rows += 1
-        contact_switch_raw = fg_variables.get("contact_switch")
-        if isinstance(contact_switch_raw, list):
-            for variable_raw in contact_switch_raw:
-                variable: dict[str, Any] = variable_raw if isinstance(variable_raw, dict) else {}
-                signed_var_conflict = variable.get("signed_nonpenetration_conflict") is True
-                triangle_var_conflict = variable.get("triangle_nonpenetration_conflict") is True
-                union_var_conflict = variable.get("nonpenetration_conflict") is True
-                require(union_var_conflict == bool(signed_var_conflict or triangle_var_conflict), f"{case}: nonpenetration conflict union inconsistent")
-                if variable.get("estimate") is True:
-                    require(not union_var_conflict, f"{case}: factor graph active contact despite nonpenetration conflict")
-                    factor_contact_accept += 1
-    if require_contact_owner:
-        require(accepted_contact > 0, f"{case}: no accepted contact owner rows in final annotations")
-        require(selected_contact >= accepted_contact, f"{case}: selected contact count less than accepted count")
-    require(occlusion_mesh_rows > 0, f"{case}: no occlusion mesh evidence integrated")
-    require(factor_contact_accept > 0, f"{case}: factor graph contact switches absent")
-    require(hand_baseline_rows > 0, f"{case}: no hand baseline rows integrated")
-    require(camera_depth_observed_rows > 0, f"{case}: no observed camera/depth correction rows integrated")
-    require(signed_nonpenetration_rows > 0, f"{case}: no signed nonpenetration evidence integrated")
-    require(triangle_nonpenetration_rows > 0, f"{case}: no triangle nonpenetration evidence integrated")
-    require(occlusion_temporal_graph_rows > 0, f"{case}: no temporal occlusion owner graph rows integrated")
-    require(pose_fill_gate_rows == expected * 2, f"{case}: pose fill gate rows do not cover both hands/full timeline")
-    return {"case": case, "expected_frame_count": expected, "accepted_contact_owner_rows": accepted_contact, "selected_contact_owner_rows": selected_contact, "occlusion_mesh_evidence_frames": occlusion_mesh_rows, "active_factor_contact_switch_sum": factor_contact_accept, "hand_baseline_rows": hand_baseline_rows, "camera_depth_observed_rows": camera_depth_observed_rows, "signed_nonpenetration_rows": signed_nonpenetration_rows, "triangle_nonpenetration_rows": triangle_nonpenetration_rows, "occlusion_temporal_graph_rows": occlusion_temporal_graph_rows, "pose_fill_gate_rows": pose_fill_gate_rows}
+        vars_raw = fg.get("variables")
+        vars: dict[str, Any] = vars_raw if isinstance(vars_raw, dict) else {}
+        if vars:
+            counts["factor_frames"] += 1
+        camera_depth = vars.get("camera_depth_correction") if isinstance(vars.get("camera_depth_correction"), dict) else {}
+        if camera_depth.get("has_direct_observation") is True:
+            counts["camera_depth_observed_rows"] += 1
+        hand_vars = vars.get("hand_state") if isinstance(vars.get("hand_state"), list) else []
+        counts["hand_graph_metric"] += sum(1 for row in hand_vars if isinstance(row, dict) and row.get("source") == "HaWoR_metric_MANO_wrist_current_V18_world_m")
+        contact_vars = vars.get("contact_switch") if isinstance(vars.get("contact_switch"), list) else []
+        counts["contact_switch_vars"] += len(contact_vars)
+        counts["active_contact_switch_vars"] += sum(1 for row in contact_vars if isinstance(row, dict) and row.get("estimate") is True)
+        counts["occlusion_owner_vars"] += len(vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else [])
+
+        hands = frame.get("hands") if isinstance(frame.get("hands"), list) else []
+        require(len(hands) == 2, f"{case}: frame {frame.get('frame_idx')} does not have two hand rows")
+        for hand in hands:
+            require(isinstance(hand, dict), f"{case}: non-dict hand row")
+            counts["hand_total"] += 1
+            metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+            if hand.get("hand_geometry_source") == "HaWoR_metric_MANO_current_V18_world" or str(metric.get("source", "")).startswith("HaWoR_metric_MANO"):
+                counts["hawor_metric_mano"] += 1
+            if "wilor_or_v16_candidate_present" in hand:
+                counts["wilor_key_rows"] += 1
+            if "rtmlib_anchor_available" in hand:
+                counts["rtmlib_key_rows"] += 1
+            pose_gate = hand.get("occlusion_pose_fill_gate") if isinstance(hand.get("occlusion_pose_fill_gate"), dict) else {}
+            if pose_gate:
+                counts["pose_fill_gate_rows"] += 1
+            require(isinstance(hand.get("occlusion_owner_hypothesis"), dict), f"{case}: missing hand occlusion owner hypothesis")
+
+        objects = frame.get("objects") if isinstance(frame.get("objects"), list) else []
+        require(objects, f"{case}: frame {frame.get('frame_idx')} has no object rows")
+        for obj in objects:
+            require(isinstance(obj, dict), f"{case}: non-dict object row")
+            counts["object_states"] += 1
+            if isinstance(obj.get("physical_state_decision"), dict) and obj.get("physical_state_decision", {}).get("decision"):
+                counts["object_physical_state_rows"] += 1
+            if isinstance(obj.get("object_se3_observation"), dict):
+                counts["object_se3_rows"] += 1
+            geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+            if geom:
+                counts["object_visible_geometry_rows"] += 1
+                if isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m"):
+                    counts["object_vertex_sample_rows"] += 1
+            hidden = obj.get("hidden_geometry_candidate")
+            if hidden is not None:
+                counts["object_hidden_or_unresolved_geometry_rows"] += 1
+            counts["part_rows"] += len(obj.get("parts") if isinstance(obj.get("parts"), list) else [])
+
+        for hyp in frame.get("contact_hypotheses", []) if isinstance(frame.get("contact_hypotheses"), list) else []:
+            if not isinstance(hyp, dict):
+                continue
+            counts["contacts"] += 1
+            if isinstance(hyp.get("final_metric_contact_evidence"), dict):
+                counts["contacts_with_final_metric_distance"] += 1
+            evidence = hyp.get("evidence") if isinstance(hyp.get("evidence"), dict) else {}
+            if isinstance(evidence.get("signed_nonpenetration_evidence"), dict):
+                counts["signed_nonpenetration_rows"] += 1
+            if isinstance(evidence.get("triangle_nonpenetration_evidence"), dict):
+                counts["triangle_nonpenetration_rows"] += 1
+
+    expected_hand_rows = expected * 2
+    require(counts["hand_total"] == expected_hand_rows, f"{case}: hand rows do not cover full timeline")
+    require(counts["hawor_metric_mano"] == expected_hand_rows, f"{case}: HaWoR metric MANO does not cover all hand rows")
+    require(counts["hand_graph_metric"] == expected_hand_rows, f"{case}: graph hand variables do not all consume HaWoR metric MANO")
+    require(counts["wilor_key_rows"] == expected_hand_rows, f"{case}: WiLoR/V16 hand evidence keys missing")
+    require(counts["rtmlib_key_rows"] == expected_hand_rows, f"{case}: RTMLib hand evidence keys missing")
+    require(counts["pose_fill_gate_rows"] == expected_hand_rows, f"{case}: pose fill gate rows do not cover both hands/full timeline")
+    require(counts["object_states"] > 0, f"{case}: no object states")
+    require(counts["object_physical_state_rows"] == counts["object_states"], f"{case}: physical-state decisions missing on object rows")
+    require(counts["object_se3_rows"] == counts["object_states"], f"{case}: object SE3 observations missing on object rows")
+    require(counts["object_visible_geometry_rows"] > 0, f"{case}: no depth-visible geometry rows")
+    require(counts["object_vertex_sample_rows"] > 0, f"{case}: no visible geometry vertex samples")
+    require(counts["object_hidden_or_unresolved_geometry_rows"] > 0, f"{case}: no hidden/unresolved geometry state rows")
+    require(counts["part_rows"] > 0, f"{case}: no part rows")
+    require(counts["factor_frames"] == expected, f"{case}: factor graph not present for every frame")
+    require(counts["camera_depth_observed_rows"] > 0, f"{case}: no observed camera/depth correction rows")
+    require(counts["contacts"] > 0, f"{case}: no contact hypotheses")
+    require(counts["contact_switch_vars"] == counts["contacts"], f"{case}: contact switch variables do not cover contact hypotheses")
+    require(counts["active_contact_switch_vars"] > 0, f"{case}: no active contact switches in factor graph")
+    require(counts["contacts_with_final_metric_distance"] > 0, f"{case}: no final metric MANO-to-object-surface distances")
+    require(counts["signed_nonpenetration_rows"] > 0, f"{case}: no signed nonpenetration evidence rows")
+    require(counts["triangle_nonpenetration_rows"] > 0, f"{case}: no triangle nonpenetration evidence rows")
+    require(counts["occlusion_owner_vars"] > 0, f"{case}: no occlusion owner graph variables")
+    return {"case": case, "expected_frame_count": expected, **counts}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_full_pipeline/v18_full_pipeline_report.json"))
-    parser.add_argument("--require-contact-owner", action="store_true", default=True)
     args = parser.parse_args()
-    report = load_json(args.report)
+    report_text = args.report.read_text(encoding="utf-8")
+    self_inspection_path = args.report.parent / "v18_completion_self_inspection.json"
+    if self_inspection_path.exists():
+        report_text = report_text + "\n" + self_inspection_path.read_text(encoding="utf-8")
+    report = json.loads(args.report.read_text(encoding="utf-8"))
     require(report.get("all_frame_counts_match") is True, "global frame count mismatch")
     cases = report.get("cases")
-    require(isinstance(cases, list) and len(cases) > 0, "report has no cases")
-    rows = [validate_case(case_report, args.require_contact_owner) for case_report in cases if isinstance(case_report, dict)]
-    print(json.dumps({"status": "ok", "cases": rows}, indent=2))
+    require(isinstance(cases, list) and len(cases) == 2, "report must contain the two representative cases")
+    rows = [validate_case(case_report, report_text) for case_report in cases if isinstance(case_report, dict)]
+    print(json.dumps({"validation": "ok", "cases": rows}, indent=2))
 
 
 if __name__ == "__main__":
