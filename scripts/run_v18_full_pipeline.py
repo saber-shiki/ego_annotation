@@ -37,6 +37,7 @@ BBOX_CORNER_EDGES = [
     (0, 4), (1, 5), (2, 6), (3, 7),
 ]
 MESH_VERTEX_SAMPLE_CACHE: dict[str, np.ndarray] = {}
+MASK_IMAGE_CACHE: dict[str, np.ndarray] = {}
 
 CLAIM = (
     "V18 full pipeline artifact: full-video annotations with executable hand, object/part, geometry, "
@@ -1596,6 +1597,29 @@ def attach_reconstructed_geometry_pose(frames: list[dict[str, Any]]) -> Counter[
     return counts
 
 
+def attach_object_depth_silhouette_pose_validation(frames: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for frame in frames:
+        for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
+            if not isinstance(obj, dict):
+                continue
+            validation = object_depth_silhouette_pose_validation(frame, obj)
+            if validation is None:
+                continue
+            obj["object_depth_silhouette_pose_validation"] = validation
+            recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+            if recon:
+                recon["object_depth_silhouette_pose_validation_state"] = validation.get("object_pose_validation_state")
+                recon["visible_depth_silhouette_pose_supported"] = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
+                recon["object_pose_validation_blockers"] = validation.get("validation_blockers", [])
+            counts["object_depth_silhouette_pose_validation_rows"] += 1
+            if validation.get("visible_depth_silhouette_pose_supported") is True:
+                counts["object_depth_silhouette_pose_supported_rows"] += 1
+            else:
+                counts["object_depth_silhouette_pose_blocked_rows"] += 1
+    return counts
+
+
 def solve_tridiagonal(lower: np.ndarray, diag: np.ndarray, upper: np.ndarray, rhs: np.ndarray) -> np.ndarray:
     """Solve the temporal normal equations with SciPy sparse linear algebra.
 
@@ -1866,6 +1890,145 @@ def posed_part_mesh_sample_camera(part: dict[str, Any], graph_var: dict[str, Any
     else:
         rotation_camera_from_canonical = np.eye(3, dtype=np.float64)
     return vertices @ rotation_camera_from_canonical + center[None, :]
+
+
+
+def load_mask_bool(mask_path_raw: Any) -> np.ndarray:
+    mask_path = str(mask_path_raw or "")
+    if not mask_path:
+        return np.zeros((0, 0), dtype=bool)
+    cached = MASK_IMAGE_CACHE.get(mask_path)
+    if cached is not None:
+        return cached
+    path = Path(mask_path)
+    if not path.exists():
+        return np.zeros((0, 0), dtype=bool)
+    mask = np.asarray(Image.open(path).convert("L")) > 0
+    MASK_IMAGE_CACHE[mask_path] = mask
+    return mask
+
+
+def distance_distribution_summary(query_points: np.ndarray, target_points: np.ndarray, query_max: int = 128, target_max: int = 256) -> dict[str, Any]:
+    query = sampled_points(query_points, query_max)
+    target = sampled_points(target_points, target_max)
+    if query.size == 0 or target.size == 0:
+        return {"count": 0}
+    dist = np.sqrt(np.sum((query[:, None, :] - target[None, :, :]) ** 2, axis=2)).min(axis=1)
+    return {
+        "count": int(dist.shape[0]),
+        "median": float(np.median(dist)),
+        "p95": float(np.percentile(dist, 95)),
+        "min": float(np.min(dist)),
+        "max": float(np.max(dist)),
+    }
+
+
+def posed_object_mesh_sample_world(recon: dict[str, Any]) -> np.ndarray:
+    vertices = load_mesh_vertex_sample(recon.get("mesh_path"), 256)
+    t = numeric_vector(recon.get("translation_world_m"), 3)
+    rotation_raw = recon.get("rotation_world_from_canonical_matrix")
+    rotation = np.asarray(rotation_raw, dtype=np.float64) if isinstance(rotation_raw, list) else np.eye(3, dtype=np.float64)
+    if vertices.size == 0 or t is None or rotation.shape != (3, 3):
+        return np.zeros((0, 3), dtype=np.float64)
+    return vertices @ rotation + t[None, :]
+
+
+def project_world_points_to_mask(points_world: np.ndarray, frame: dict[str, Any], mask_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray] | None:
+    intrinsics: list[float] | None = None
+    for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
+        if not isinstance(hand, dict):
+            continue
+        mano = hand.get("mano_candidate") if isinstance(hand.get("mano_candidate"), dict) else {}
+        raw_intrinsics = mano.get("source_intrinsics")
+        if isinstance(raw_intrinsics, list) and len(raw_intrinsics) == 4:
+            intrinsics = [finite_float(v, float("nan")) for v in raw_intrinsics]
+            break
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    transform = np.asarray(camera.get("T_world_camera_metric", []), dtype=np.float64)
+    pts = np.asarray(points_world, dtype=np.float64)
+    if intrinsics is None or transform.shape != (4, 4) or pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] == 0:
+        return None
+    fx, fy, cx, cy = intrinsics
+    if not all(math.isfinite(v) and v > 0.0 for v in [fx, fy, cx, cy]):
+        return None
+    mask_h, mask_w = mask_shape
+    sx = float(mask_w) / max(1.0, 2.0 * cx)
+    sy = float(mask_h) / max(1.0, 2.0 * cy)
+    rotation_world_camera = transform[:3, :3]
+    camera_origin_world = transform[:3, 3]
+    points_camera = (pts - camera_origin_world[None, :]) @ rotation_world_camera
+    z = points_camera[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = (fx * points_camera[:, 0] / z + cx) * sx
+        v = (fy * points_camera[:, 1] / z + cy) * sy
+    return np.stack([u, v], axis=1), z
+
+
+def projected_mask_inside_fraction(points_world: np.ndarray, frame: dict[str, Any], mask: np.ndarray) -> dict[str, Any]:
+    if mask.ndim != 2 or mask.size == 0:
+        return {"projected_count": 0, "valid_projected_count": 0, "inside_mask_fraction": 0.0}
+    projected = project_world_points_to_mask(points_world, frame, mask.shape)
+    if projected is None:
+        count = int(np.asarray(points_world).shape[0]) if np.asarray(points_world).ndim == 2 else 0
+        return {"projected_count": count, "valid_projected_count": 0, "inside_mask_fraction": 0.0}
+    uv, z = projected
+    valid = (z > 0.0) & np.isfinite(uv[:, 0]) & np.isfinite(uv[:, 1]) & (uv[:, 0] >= 0.0) & (uv[:, 0] < mask.shape[1]) & (uv[:, 1] >= 0.0) & (uv[:, 1] < mask.shape[0])
+    inside = 0
+    for u, v in uv[valid]:
+        x = min(mask.shape[1] - 1, max(0, int(round(float(u)))))
+        y = min(mask.shape[0] - 1, max(0, int(round(float(v)))))
+        inside += int(mask[y, x])
+    valid_count = int(np.count_nonzero(valid))
+    return {
+        "projected_count": int(uv.shape[0]),
+        "valid_projected_count": valid_count,
+        "inside_mask_count": int(inside),
+        "inside_mask_fraction": float(inside / max(1, valid_count)),
+    }
+
+
+def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str, Any]) -> dict[str, Any] | None:
+    recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+    geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+    if recon.get("renderable_pose_geometry") is not True:
+        return None
+    observed = np.asarray(geom.get("world_vertices_sample_m", []), dtype=np.float64)
+    predicted = posed_object_mesh_sample_world(recon)
+    mask = load_mask_bool(obj.get("mask_path"))
+    if observed.ndim != 2 or observed.shape[1] != 3 or observed.shape[0] == 0 or predicted.size == 0:
+        return None
+    observed_to_predicted = distance_distribution_summary(observed, predicted, 128, 256)
+    predicted_to_observed = distance_distribution_summary(predicted, observed, 256, 128)
+    predicted_projection = projected_mask_inside_fraction(predicted, frame, mask)
+    observed_projection = projected_mask_inside_fraction(observed, frame, mask)
+    observed_p95 = finite_float(observed_to_predicted.get("p95"), float("inf"))
+    predicted_inside = finite_float(predicted_projection.get("inside_mask_fraction"), 0.0)
+    rigid_visible_mesh = bool(recon.get("rigid_pose_supported_visible_mesh") is True)
+    blockers: list[str] = []
+    if not rigid_visible_mesh:
+        blockers.append("not_rigid_supported_visible_mesh")
+    if observed_p95 > 0.16:
+        blockers.append("observed_visible_surface_to_mesh_p95_over_16cm")
+    if predicted_inside < 0.02:
+        blockers.append("projected_mesh_vertices_have_weak_mask_support")
+    if int(predicted_projection.get("valid_projected_count", 0) or 0) < 5:
+        blockers.append("too_few_projected_mesh_vertices")
+    supported = not blockers
+    return {
+        "method": "posed_depth_fused_object_mesh_against_visible_surface_depth_and_sam2_mask_projection",
+        "object_id": obj.get("object_id"),
+        "object_pose_validation_state": "object_visible_depth_silhouette_pose_supported_completion_limited" if supported else "object_visible_depth_silhouette_pose_rejected_or_blocked",
+        "visible_depth_silhouette_pose_supported": bool(supported),
+        "validation_blockers": blockers,
+        "observed_to_predicted_distance_m": observed_to_predicted,
+        "predicted_to_observed_distance_m": predicted_to_observed,
+        "predicted_projection_mask_support": predicted_projection,
+        "observed_projection_mask_support": observed_projection,
+        "rigid_pose_supported_visible_mesh": rigid_visible_mesh,
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "scope": "visible_depth_and_mask_projection_support_for_posed_depth_fused_mesh_only_not_hidden_geometry_completion",
+    }
 
 
 
@@ -3154,7 +3317,9 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
         frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
     reconstructed_geometry_counts = attach_reconstructed_geometry_pose(frames)
+    object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
     module_counts.update(reconstructed_geometry_counts)
+    module_counts.update(object_pose_validation_counts)
     module_counts["factor_graph_variables"] += sum(int(v) for v in factor_graph_summary.get("variable_counts", {}).values())
     module_counts["factor_graph_factors"] += sum(int(v) for v in factor_graph_summary.get("factor_counts", {}).values())
     out = {
@@ -3218,6 +3383,8 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         "hidden_geometry_candidate_object_count": len(depth_fused_by_object) if depth_fused_by_object else len(completion_by_object),
         "reconstructed_geometry_pose_rows": int(reconstructed_geometry_counts.get("reconstructed_geometry_pose_rows", 0)),
         "renderable_reconstructed_geometry_pose_rows": int(reconstructed_geometry_counts.get("renderable_reconstructed_geometry_pose_rows", 0)),
+        "object_depth_silhouette_pose_validation_rows": int(object_pose_validation_counts.get("object_depth_silhouette_pose_validation_rows", 0)),
+        "object_depth_silhouette_pose_supported_rows": int(object_pose_validation_counts.get("object_depth_silhouette_pose_supported_rows", 0)),
         "frames": frames,
     }
     case_dir = args.output_root / case

@@ -145,6 +145,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "object_hidden_or_unresolved_geometry_rows": 0,
         "object_reconstructed_geometry_pose_rows": 0,
         "object_renderable_reconstructed_geometry_pose_rows": 0,
+        "object_depth_silhouette_pose_validation_rows": 0,
+        "object_depth_silhouette_pose_supported_rows": 0,
         "object_vertex_sample_rows": 0,
         "part_rows": 0,
         "part_reconstructed_geometry_pose_rows": 0,
@@ -285,6 +287,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             hidden = obj.get("hidden_geometry_candidate")
             if hidden is not None:
                 counts["object_hidden_or_unresolved_geometry_rows"] += 1
+            validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else None
+            if isinstance(validation, dict):
+                counts["object_depth_silhouette_pose_validation_rows"] += 1
+                if validation.get("visible_depth_silhouette_pose_supported") is True:
+                    counts["object_depth_silhouette_pose_supported_rows"] += 1
+                require(validation.get("object_pose_requirement_met") is False, f"{case}: object pose validation overclaims object pose completion")
+                require(validation.get("object_geometry_complete") is False, f"{case}: object pose validation overclaims geometry completion")
+                require("visible_depth" in str(validation.get("scope")), f"{case}: object pose validation scope missing")
             recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else None
             if isinstance(recon, dict):
                 counts["object_reconstructed_geometry_pose_rows"] += 1
@@ -293,6 +303,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(isinstance(recon.get("mesh_path"), str) and Path(str(recon.get("mesh_path"))).exists(), f"{case}: reconstructed geometry mesh path missing")
                     require(isinstance(recon.get("world_bbox_corners_m"), list) and len(recon.get("world_bbox_corners_m")) == 8, f"{case}: reconstructed geometry pose missing render corners")
                     require(isinstance(recon.get("translation_world_m"), list) and len(recon.get("translation_world_m")) == 3, f"{case}: reconstructed geometry pose missing translation")
+                    require(recon.get("object_pose_requirement_met") is False, f"{case}: reconstructed geometry pose overclaims object pose completion")
+                    require(recon.get("object_geometry_complete") is False, f"{case}: reconstructed geometry pose overclaims geometry completion")
+                    require(recon.get("visible_depth_silhouette_pose_supported") in {True, False}, f"{case}: reconstructed geometry pose missing object depth/silhouette validation support field")
             for part in obj.get("parts") if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
                     continue
@@ -376,6 +389,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["object_hidden_or_unresolved_geometry_rows"] > 0, f"{case}: no hidden/unresolved geometry state rows")
     require(counts["object_reconstructed_geometry_pose_rows"] == counts["object_states"], f"{case}: reconstructed geometry pose state missing on object rows")
     require(counts["object_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed mesh pose rows")
+    require(counts["object_depth_silhouette_pose_validation_rows"] > 0, f"{case}: no object depth/silhouette pose validation rows")
+    if case == "task5_tomato_960":
+        require(counts["object_depth_silhouette_pose_supported_rows"] > 0, f"{case}: no supported object depth/silhouette pose validation rows")
     require(counts["part_rows"] > 0, f"{case}: no part rows")
     require(counts["part_reconstructed_geometry_pose_rows"] == counts["part_rows"], f"{case}: reconstructed part geometry pose state missing on part rows")
     require(counts["part_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed part mesh pose rows")
