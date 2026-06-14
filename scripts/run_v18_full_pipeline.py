@@ -136,6 +136,21 @@ def draw_label(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font: 
     draw.text((x, y), text, font=font, fill=fill)
 
 
+def draw_segmented_line(draw: ImageDraw.ImageDraw, p0: tuple[float, float] | list[float], p1: tuple[float, float] | list[float], fill: tuple[int, int, int], width: int = 2, dash_px: int = 12, gap_px: int = 8) -> None:
+    x0, y0 = float(p0[0]), float(p0[1])
+    x1, y1 = float(p1[0]), float(p1[1])
+    dx, dy = x1 - x0, y1 - y0
+    length = math.hypot(dx, dy)
+    if not math.isfinite(length) or length <= 1e-6:
+        return
+    ux, uy = dx / length, dy / length
+    t = 0.0
+    while t < length:
+        t1 = min(length, t + float(dash_px))
+        draw.line((x0 + ux * t, y0 + uy * t, x0 + ux * t1, y0 + uy * t1), fill=fill, width=width)
+        t += float(dash_px + gap_px)
+
+
 def bbox_tuple(value: Any) -> tuple[int, int, int, int] | None:
     if not (isinstance(value, list) and len(value) == 4):
         return None
@@ -1800,6 +1815,111 @@ def attach_object_depth_silhouette_pose_validation(frames: list[dict[str, Any]])
                 counts["object_depth_silhouette_pose_supported_rows"] += 1
             else:
                 counts["object_depth_silhouette_pose_blocked_rows"] += 1
+    return counts
+
+
+def camera_to_world_point(frame: dict[str, Any], point_camera: np.ndarray) -> list[float] | None:
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    transform = np.asarray(camera.get("T_world_camera_metric", []), dtype=np.float64)
+    point = np.asarray(point_camera, dtype=np.float64)
+    if transform.shape != (4, 4) or point.shape != (3,) or not np.isfinite(point).all():
+        return None
+    hom = np.concatenate([point, np.ones(1, dtype=np.float64)])
+    world = transform @ hom
+    if not np.isfinite(world[:3]).all():
+        return None
+    return [float(v) for v in world[:3].tolist()]
+
+
+def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, Any], switch: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
+    recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+    if switch.get("rigid_pose_contact_claim_supported") is True and (validation.get("rigid_pose_supported_visible_mesh") is True or recon.get("rigid_pose_supported_visible_mesh") is True):
+        paths.append("rigid_visible_depth_silhouette_pose")
+    if switch.get("surface_changing_pose_contact_claim_supported") is True and (validation.get("surface_changing_compact_visible_pose_supported") is True or recon.get("surface_changing_compact_pose_supported_visible_mesh") is True):
+        paths.append("surface_changing_visible_depth_silhouette_pose")
+    if switch.get("deformable_visible_surface_contact_claim_supported") is True:
+        schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+        physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+        geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+        final_distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
+        if (physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True) and isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m") and math.isfinite(final_distance) and final_distance <= 0.05:
+            paths.append("deformable_same_frame_visible_surface")
+    if switch.get("validated_part_pose_contact_claim_supported") is True:
+        label = str(switch.get("validated_part_track_label"))
+        part = next((p for p in obj.get("parts", []) if isinstance(p, dict) and str(p.get("part_track_label")) == label), None) if isinstance(obj.get("parts"), list) else None
+        validation_part = part.get("part_silhouette_depth_pose_validation") if isinstance(part, dict) and isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+        part_distance = finite_float(switch.get("validated_part_metric_contact_distance_m"), float("nan"))
+        if validation_part.get("visible_depth_silhouette_pose_supported") is True and math.isfinite(part_distance) and part_distance <= 0.12:
+            paths.append("validated_part_visible_depth_silhouette_pose")
+            hand = next((h for h in frame.get("hands", []) if isinstance(h, dict) and str(h.get("hand_side")) == str(switch.get("hand_side"))), None) if isinstance(frame.get("hands"), list) else None
+            part_graph_vars = part_se3_variable_by_key(frame)
+            graph_var = part_graph_vars.get((str(obj.get("object_id")), label))
+            metric_state = hand.get("metric_mano_state") if isinstance(hand, dict) and isinstance(hand.get("metric_mano_state"), dict) else {}
+            hand_camera = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
+            if isinstance(part, dict) and hand_camera.ndim == 2 and hand_camera.shape[1] == 3:
+                part_points = posed_part_mesh_sample_camera(part, graph_var)
+                pair = nearest_point_pair(hand_camera, part_points)
+                if pair is not None:
+                    hand_pt, part_pt, _ = pair
+                    hand_world = camera_to_world_point(frame, hand_pt)
+                    part_world = camera_to_world_point(frame, part_pt)
+                    if hand_world is not None and part_world is not None:
+                        switch["validated_part_nearest_hand_point_world_m"] = hand_world
+                        switch["validated_part_nearest_part_point_world_m"] = part_world
+    return paths
+
+
+def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for frame in frames:
+        objects_by_id = {str(o.get("object_id")): o for o in frame.get("objects", []) if isinstance(o, dict)} if isinstance(frame.get("objects"), list) else {}
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        contact_switches = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
+        for switch in contact_switches:
+            if not isinstance(switch, dict):
+                continue
+            obj = objects_by_id.get(str(switch.get("object_id")), {})
+            support_paths = final_contact_support_paths_for_mode(frame, obj, switch) if isinstance(obj, dict) else []
+            distance_candidates = [finite_float(switch.get(key), float("nan")) for key in ["effective_metric_contact_distance_m", "final_metric_contact_distance_m", "validated_part_metric_contact_distance_m"]]
+            near_distance = min((v for v in distance_candidates if math.isfinite(v)), default=float("nan"))
+            near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
+            active = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True and switch.get("support_gate_allows_active_contact") is True)
+            if active:
+                mode = "active_physical_contact"
+                reason = "temporal_contact_switch_on_with_supported_physical_path_and_no_depth_conflict"
+                renderable = True
+            elif near_supported and switch.get("depth_conflict_blocks_active_contact") is True and switch.get("raw_estimate_before_physical_contact_gate") is True:
+                mode = "depth_occluded_contact_possible"
+                reason = "near_supported_geometry_and_raw_contact_energy_but_depth_order_blocks_active_contact"
+                renderable = True
+            elif switch.get("depth_conflict_blocks_active_contact") is True:
+                mode = "depth_contradicted_noncontact"
+                reason = "depth_order_contradicts_active_contact_without_enough_validated_near_contact_support"
+                renderable = False
+            elif near_supported:
+                mode = "supported_near_noncontact"
+                reason = "validated_physical_support_and_near_geometry_but_contact_switch_off"
+                renderable = True
+            elif switch.get("raw_estimate_before_physical_contact_gate") is True and not support_paths:
+                mode = "raw_contact_proposal_without_final_validated_physical_support"
+                reason = "raw_contact_energy_prefers_on_but_final_object_or_part_pose_support_is_missing_or_invalid"
+                renderable = False
+            else:
+                mode = "separated_or_unresolved_noncontact"
+                reason = "no_active_or_renderable_supported_near_contact_state"
+                renderable = False
+            switch["physical_contact_mode"] = mode
+            switch["physical_contact_mode_reason"] = reason
+            switch["physical_contact_mode_support_paths"] = support_paths
+            switch["physical_contact_mode_nearest_distance_m"] = float(near_distance) if math.isfinite(near_distance) else None
+            switch["physical_contact_mode_renderable"] = bool(renderable)
+            switch["physical_contact_mode_scope"] = "active_contact_claim" if mode == "active_physical_contact" else "nonactive_uncertain_state_not_a_contact_claim" if renderable else "nonrendered_noncontact_or_unsupported_proposal"
+            counts[f"contact_physical_mode_{mode}"] += 1
+            if renderable and mode != "active_physical_contact":
+                counts[f"renderable_nonactive_contact_mode_{mode}"] += 1
     return counts
 
 
@@ -3626,8 +3746,11 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
     reconstructed_geometry_counts = attach_reconstructed_geometry_pose(frames)
     object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
+    contact_physical_mode_counts = attach_contact_physical_modes(frames)
+    factor_graph_summary["contact_physical_mode_counts"] = dict(sorted(contact_physical_mode_counts.items()))
     module_counts.update(reconstructed_geometry_counts)
     module_counts.update(object_pose_validation_counts)
+    module_counts.update(contact_physical_mode_counts)
     module_counts["factor_graph_variables"] += sum(int(v) for v in factor_graph_summary.get("variable_counts", {}).values())
     module_counts["factor_graph_factors"] += sum(int(v) for v in factor_graph_summary.get("factor_counts", {}).values())
     out = {
@@ -3869,6 +3992,17 @@ def hand_render_style(hand: dict[str, Any]) -> tuple[tuple[int, int, int], str, 
     return ((170, 170, 170), state, 2)
 
 
+def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], str, int, bool, str] | None:
+    mode = str(switch.get("physical_contact_mode") or "")
+    if mode == "active_physical_contact":
+        return (255, 255, 80), "active physical contact", 2, False, "contact_lines"
+    if mode == "depth_occluded_contact_possible" and switch.get("physical_contact_mode_renderable") is True:
+        return (80, 220, 255), "depth-occluded contact possible", 2, True, "contact_depth_occluded_possible_lines"
+    if mode == "supported_near_noncontact" and switch.get("physical_contact_mode_renderable") is True:
+        return (255, 170, 80), "supported near non-contact", 2, True, "contact_supported_near_noncontact_lines"
+    return None
+
+
 def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     case_dir = args.output_root / case
     frame_dir = case_dir / "overlay_frames"
@@ -3995,15 +4129,22 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 counts["pose_fill_gate_markers"] += 1
         contact_vars = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
         for switch in contact_vars:
-            if not isinstance(switch, dict) or switch.get("estimate") is not True or switch.get("physical_contact_claim_supported") is not True:
+            if not isinstance(switch, dict):
                 continue
+            style = contact_render_style(switch)
+            if style is None:
+                continue
+            color, label, width, dashed, count_key = style
             hc = hand_centers.get(str(switch.get("hand_side")))
             oc = object_centers.get(str(switch.get("object_id")))
             if hc and oc:
-                draw.line((hc[0], hc[1], oc[0], oc[1]), fill=(255, 255, 80), width=2)
+                if dashed:
+                    draw_segmented_line(draw, hc, oc, fill=color, width=width)
+                else:
+                    draw.line((hc[0], hc[1], oc[0], oc[1]), fill=color, width=width)
                 mid = (int((hc[0] + oc[0]) / 2), int((hc[1] + oc[1]) / 2))
-                draw_label(draw, mid, "active physical contact", small, (255, 255, 80), (0, 0, 0))
-                counts["contact_lines"] += 1
+                draw_label(draw, mid, label, small, color, (0, 0, 0))
+                counts[count_key] += 1
         draw.rectangle((0, 0, image.size[0], 44), fill=(0, 0, 0))
         draw.text((12, 11), f"V18 over V16 base frame {frame_idx+1}/{len(frames)} — V16 MANO/object render preserved + V18 layers", font=font, fill=(255, 255, 255))
         draw_label(draw, (12, image.size[1] - 34), "Base: V16 overlay_mano_object. Additions: V18 masks/parts/contact/occlusion/uncertainty.", small, (255, 255, 255))
@@ -4103,28 +4244,49 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
         vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
         contact_vars = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
         for switch in contact_vars:
-            if not isinstance(switch, dict) or switch.get("estimate") is not True or switch.get("physical_contact_claim_supported") is not True:
+            if not isinstance(switch, dict):
                 continue
+            style = contact_render_style(switch)
+            if style is None:
+                continue
+            color, _label, width, dashed, count_key = style
+            mode = str(switch.get("physical_contact_mode") or "")
             hp = None
             op = None
             raw_h = switch.get("raw_metric_nearest_hand_point_world_m")
             raw_o = switch.get("raw_metric_nearest_object_point_world_m")
+            part_h = switch.get("validated_part_nearest_hand_point_world_m")
+            part_o = switch.get("validated_part_nearest_part_point_world_m")
             coupled_h = switch.get("coupled_object_nearest_hand_point_world_m")
             coupled_o = switch.get("coupled_object_nearest_object_point_world_m")
             if raw_h is not None and raw_o is not None:
                 hp = point_from_metric_anchor(raw_h, metric_bounds, canvas_w, canvas_h)
                 op = point_from_metric_anchor(raw_o, metric_bounds, canvas_w, canvas_h)
+            if (hp is None or op is None) and part_h is not None and part_o is not None:
+                hp = point_from_metric_anchor(part_h, metric_bounds, canvas_w, canvas_h)
+                op = point_from_metric_anchor(part_o, metric_bounds, canvas_w, canvas_h)
             if (hp is None or op is None) and coupled_h is not None and coupled_o is not None:
                 hp = point_from_metric_anchor(coupled_h, metric_bounds, canvas_w, canvas_h)
                 op = point_from_metric_anchor(coupled_o, metric_bounds, canvas_w, canvas_h)
-            if hp is None:
-                hp = hand_points.get(str(switch.get("hand_side")))
-            if op is None:
-                op = object_points.get(str(switch.get("object_id")))
+            if mode == "active_physical_contact":
+                if hp is None:
+                    hp = hand_points.get(str(switch.get("hand_side")))
+                if op is None:
+                    op = object_points.get(str(switch.get("object_id")))
+            elif hp is None or op is None:
+                counts["world_nonactive_contact_mode_missing_metric_endpoints"] += 1
+                continue
             if hp and op:
-                draw.line((hp[0], hp[1], op[0], op[1]), fill=(255, 255, 90), width=2)
-                counts["world_contact_edges"] += 1
-                counts["world_metric_contact_edges"] += 1
+                if dashed:
+                    draw_segmented_line(draw, hp, op, fill=color, width=width)
+                else:
+                    draw.line((hp[0], hp[1], op[0], op[1]), fill=color, width=width)
+                if mode == "active_physical_contact":
+                    counts["world_contact_edges"] += 1
+                    counts["world_metric_contact_edges"] += 1
+                else:
+                    counts[f"world_{count_key}"] += 1
+                    counts["world_nonactive_contact_mode_metric_edges"] += 1
         occlusion_vars = vars_raw.get("occlusion_owner") if isinstance(vars_raw.get("occlusion_owner"), list) else []
         occlusion_vars_by_side = {str(v.get("hand_side")): v for v in occlusion_vars if isinstance(v, dict)}
         for raw_hand in frame.get("hands", []):

@@ -189,6 +189,10 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "contact_switch_vars": 0,
         "active_contact_switch_vars": 0,
         "active_contact_switch_vars_with_nonobserved_hawor_hand": 0,
+        "contact_physical_mode_active": 0,
+        "contact_physical_mode_depth_occluded_possible": 0,
+        "contact_physical_mode_supported_near_noncontact": 0,
+        "renderable_nonactive_contact_modes": 0,
         "raw_contact_switches_gated_by_hawor_support": 0,
         "raw_contact_switches_gated_by_physical_support": 0,
         "hand_occlusion_owner_accepted_rows": 0,
@@ -229,6 +233,31 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 continue
             side = str(row.get("hand_side"))
             row_support_state = str(row.get("hand_support_state") or hand_support_by_side.get(side, ""))
+            mode = str(row.get("physical_contact_mode") or "")
+            require(mode in {"active_physical_contact", "depth_occluded_contact_possible", "supported_near_noncontact", "raw_contact_proposal_without_final_validated_physical_support", "depth_contradicted_noncontact", "separated_or_unresolved_noncontact"}, f"{case}: contact switch missing/invalid physical_contact_mode {mode!r}")
+            renderable_mode = row.get("physical_contact_mode_renderable") is True
+            if mode == "active_physical_contact":
+                counts["contact_physical_mode_active"] += 1
+                require(row.get("estimate") is True, f"{case}: active physical_contact_mode without active estimate")
+            elif mode == "depth_occluded_contact_possible":
+                counts["contact_physical_mode_depth_occluded_possible"] += 1
+                counts["renderable_nonactive_contact_modes"] += int(renderable_mode)
+                require(row.get("estimate") is not True, f"{case}: depth-occluded possible mode is active")
+                require(renderable_mode, f"{case}: depth-occluded possible mode is not renderable")
+                require(row.get("depth_conflict_blocks_active_contact") is True, f"{case}: depth-occluded possible mode lacks depth conflict blocker")
+                require(row.get("raw_estimate_before_physical_contact_gate") is True, f"{case}: depth-occluded possible mode lacks raw contact-energy support")
+                require(isinstance(row.get("physical_contact_mode_support_paths"), list) and len(row.get("physical_contact_mode_support_paths")) > 0, f"{case}: depth-occluded possible mode lacks final support path")
+                require(row.get("physical_contact_mode_nearest_distance_m") is not None and float(row.get("physical_contact_mode_nearest_distance_m")) <= 0.12, f"{case}: depth-occluded possible mode is not near geometry")
+            elif mode == "supported_near_noncontact":
+                counts["contact_physical_mode_supported_near_noncontact"] += 1
+                counts["renderable_nonactive_contact_modes"] += int(renderable_mode)
+                require(row.get("estimate") is not True, f"{case}: supported near noncontact mode is active")
+                require(renderable_mode, f"{case}: supported near noncontact mode is not renderable")
+                require(row.get("depth_conflict_blocks_active_contact") is not True, f"{case}: supported near noncontact mode has depth conflict")
+                require(isinstance(row.get("physical_contact_mode_support_paths"), list) and len(row.get("physical_contact_mode_support_paths")) > 0, f"{case}: supported near noncontact mode lacks final support path")
+                require(row.get("physical_contact_mode_nearest_distance_m") is not None and float(row.get("physical_contact_mode_nearest_distance_m")) <= 0.12, f"{case}: supported near noncontact mode is not near geometry")
+            elif renderable_mode:
+                raise AssertionError(f"{case}: unsupported physical_contact_mode is renderable: {mode}")
             if row.get("raw_estimate_before_hawor_support_gate") is True and row.get("estimate") is False and row_support_state != "observed_same_frame_detection":
                 counts["raw_contact_switches_gated_by_hawor_support"] += 1
             if row.get("raw_estimate_before_physical_contact_gate") is True and row.get("physical_contact_claim_supported") is not True:
@@ -473,8 +502,13 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["triangle_nonpenetration_watertight_rows"] > 0 or counts["triangle_nonpenetration_physical_ineligible_rows"] > 0, f"{case}: triangle nonpenetration has neither watertight evaluation nor physical-eligibility blockers")
     require(counts["triangle_nonpenetration_evaluated_nonobserved_hawor_rows"] == 0, f"{case}: evaluated triangle nonpenetration rows are not support-gated to observed HaWoR hands")
     require(counts["occlusion_owner_vars"] > 0, f"{case}: no occlusion owner graph variables")
+    require(counts["contact_physical_mode_active"] == counts["active_contact_switch_vars"], f"{case}: active contact mode count does not match active contact switches")
     require(int(overlay_draw.get("contact_lines", 0)) <= counts["active_contact_switch_vars"], f"{case}: overlay draws more contact lines than active physical contacts")
     require(int(world_draw.get("world_contact_edges", 0)) <= counts["active_contact_switch_vars"], f"{case}: world render draws more contact edges than active physical contacts")
+    require(int(overlay_draw.get("contact_depth_occluded_possible_lines", 0)) <= counts["contact_physical_mode_depth_occluded_possible"], f"{case}: overlay draws more depth-occluded possible contact lines than solved modes")
+    require(int(overlay_draw.get("contact_supported_near_noncontact_lines", 0)) <= counts["contact_physical_mode_supported_near_noncontact"], f"{case}: overlay draws more supported-near lines than solved modes")
+    require(int(world_draw.get("world_contact_depth_occluded_possible_lines", 0)) <= counts["contact_physical_mode_depth_occluded_possible"], f"{case}: world render draws more depth-occluded possible contact edges than solved modes")
+    require(int(world_draw.get("world_contact_supported_near_noncontact_lines", 0)) <= counts["contact_physical_mode_supported_near_noncontact"], f"{case}: world render draws more supported-near edges than solved modes")
     require(int(overlay_draw.get("occlusion_owner_edges", 0)) <= counts["occlusion_owner_supported_vars"], f"{case}: overlay draws unsupported occlusion owner edges")
     require(int(world_draw.get("world_occlusion_owner_edges", 0)) <= counts["occlusion_owner_supported_vars"], f"{case}: world render draws unsupported occlusion owner edges")
     require(counts["hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce accepted hand occlusion-owner claims")
