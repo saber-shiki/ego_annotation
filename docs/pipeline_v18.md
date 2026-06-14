@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. The V18 contract is artifact-first: every run must produce a full-video annotation artifact and full-duration videos. All object, hand, pose, contact, occlusion, and geometry outputs are approximate and uncertain by default. Residuals, audits, and thresholds may score, explain, or debug the artifact, but they may not prevent artifact production or replace the artifact. A module that cannot produce a confident estimate must still emit a typed candidate or an explicit unresolved/unknown state in the final schema.
+V18 is open as a redesign after formal V17 failure. The V18 contract is artifact-first but not schema-first: every run must produce full-video annotated videos, and those annotations must be driven by the named mechanisms. All object, hand, pose, contact, occlusion, and geometry estimates may be approximate and uncertain by default. Residuals, audits, and thresholds may score, explain, or debug the artifact, but they may not prevent artifact production or replace the artifact. A module that cannot produce a confident estimate must still emit a typed candidate or an explicit unresolved/unknown state in the final schema, but that emission is **not completion** of the named requirement; strict completion requires the real mechanism to run, be sanity-checked on video/geometric evidence, affect downstream reasoning where applicable, and be rendered in the final videos.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -21,7 +21,7 @@ This section is the V18 contract. Cached artifacts may be used as memoized stage
 **Execution rule.** V18 implements every named module as an executable stage and writes its result into the final annotation artifact. There are no arbitrary acceptance gates that stop the pipeline. Numeric residuals, thresholds, and audits are diagnostic evidence and confidence features only. The pipeline distinguishes implementation mistakes from quality limitations:
 
 - Implementation mistakes must be fixed before delivery: missing artifact writer, missing full-video output, frame/FPS mismatch, broken schema, failed model execution, invalid coordinate/depth/frame transform, or disconnected module output.
-- Quality limitations do not block delivery: weak masks, partial geometry, approximate poses, uncertain contact, unresolved occlusion owner, noisy hand estimates, or low confidence. These must be represented honestly in the artifact and render, not hidden in diagnostics.
+- Quality limitations do not block artifact production: weak masks, incomplete geometry, approximate poses, uncertain contact, unresolved occlusion owner, noisy hand estimates, or low confidence. These must be represented honestly in the artifact and render, not hidden in diagnostics. They also must not be counted as strict requirement completion unless the named mechanism itself is implemented and driving the annotation.
 
 All outputs are approximate and uncertain. The user-facing judgment is whether the delivered V18 videos and explanations are plausibly no worse than V16 and show concrete improvements, not whether an arbitrary internal gate declares a field ready.
 
@@ -665,7 +665,7 @@ The manifest reports `part_se3_pair_count=2`, `part_se3_pair_rejected_count=1`, 
 
 ## Implementation Checkpoint 34: Artifact-First Reset
 
-V18 no longer treats arbitrary acceptance gates as delivery blockers. Every named stage must write a best-effort candidate or explicit unresolved state into the final annotation schema. Residuals remain useful for explanation and subjective judgment, but all outputs are approximate and uncertain by default.
+V18 no longer treats arbitrary gates as artifact-production blockers. Every named stage may write a best-effort candidate or explicit unresolved state into the final annotation schema so the full video remains inspectable. That is an honesty mechanism, not completion. A stage is strict-checklist DONE only when the actual named mechanism runs, is sanity-checked on video/geometric evidence, drives downstream state where applicable, and is rendered in the final videos. Residuals remain useful for explanation and subjective judgment, but approximate outputs do not permit approximate implementation of the spec.
 
 The next required implementation artifact is:
 
@@ -692,7 +692,7 @@ scripts/run_v18_full_pipeline.py
 /data2/ego_annotation_outputs/v18_full_pipeline/v18_full_pipeline_report.json
 ```
 
-This is the artifact-first V18 baseline. It assembles the existing V16 camera/depth backbone, V18 hand evidence, generated OWLv2→SAM2 object/part masks, visible geometry archives, part surfaces, bounded occlusion candidates, approximate contact hypotheses, approximate hidden-geometry candidates, approximate object/part pose candidates, and a single-pass bounded factor-graph baseline into one full-video JSON schema. Every output is approximate and uncertain by design. No arbitrary threshold suppresses artifact production.
+This is the artifact-first V18 baseline, not strict V18 physical closure. It assembles the existing V16 camera/depth backbone, V18 hand evidence, generated OWLv2→SAM2 object/part masks, visible geometry archives, part surfaces, bounded occlusion candidates, approximate contact hypotheses, approximate hidden-geometry candidates, approximate object/part pose candidates, and a single-pass bounded factor-graph baseline into one full-video JSON schema and render. Every output is approximate and uncertain by design. No arbitrary threshold suppresses artifact production, but schema presence, labels, or unresolved/candidate rows are not evidence that the substantive mechanisms are implemented.
 
 The delivered run completed both representative cases in about 108 seconds total after rendering. Frame counts match raw videos: `trash_1050` has 1050 frames and `task5_tomato_960` has 960 frames in the annotation JSON, overlay video, world video, and side-by-side video. The JSON contains all named module families: camera/depth backbone, hand branch, object/part perception, geometry reconstruction, object/part pose candidates, contact ownership hypotheses, occlusion ownership hypotheses, and factor-graph baseline fields.
 
