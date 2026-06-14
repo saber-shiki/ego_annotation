@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import trimesh  # type: ignore[reportMissingTypeStubs]
 from PIL import Image, ImageDraw, ImageFont
 from scipy.sparse import diags  # type: ignore[reportMissingTypeStubs]
 from scipy.sparse.linalg import spsolve  # type: ignore[reportMissingTypeStubs]
@@ -35,6 +36,7 @@ BBOX_CORNER_EDGES = [
     (4, 5), (5, 7), (7, 6), (6, 4),
     (0, 4), (1, 5), (2, 6), (3, 7),
 ]
+MESH_VERTEX_SAMPLE_CACHE: dict[str, np.ndarray] = {}
 
 CLAIM = (
     "V18 full pipeline artifact: full-video annotations with executable hand, object/part, geometry, "
@@ -1672,6 +1674,7 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
         total_observation_factor_count += component_count
         summary_family_counts.update(family_counts)
         contact_object_components: list[dict[str, Any]] = []
+        contact_part_components: list[dict[str, Any]] = []
         for comp in obs.get("components", []):
             if isinstance(comp, dict) and isinstance(comp.get("contact_object_coupling"), dict):
                 contact_object_components.append(
@@ -1680,6 +1683,15 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
                         "weight": float(comp.get("weight", 0.0)),
                         "source": comp.get("source"),
                         "coupling": comp.get("contact_object_coupling"),
+                    }
+                )
+            if isinstance(comp, dict) and isinstance(comp.get("contact_part_coupling"), dict):
+                contact_part_components.append(
+                    {
+                        "factor_family": comp.get("factor_family"),
+                        "weight": float(comp.get("weight", 0.0)),
+                        "source": comp.get("source"),
+                        "coupling": comp.get("contact_part_coupling"),
                     }
                 )
         estimates[frame_idx] = {
@@ -1694,6 +1706,7 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
             "factor_family_energy_initial": component_energy_by_family(initial[i], obs),
             "factor_family_energy_after": component_energy_by_family(estimate[i], obs),
             "contact_object_coupling_components": contact_object_components,
+            "contact_part_coupling_components": contact_part_components,
             "local_temporal_energy_initial": temporal_before / 2.0,
             "local_temporal_energy_after": temporal_after / 2.0,
             "unit": unit,
@@ -1746,6 +1759,62 @@ def nearest_point_pair(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.nda
     if not math.isfinite(dist):
         return None
     return aa[ai], bb[bi], dist
+
+
+def load_mesh_vertex_sample(mesh_path_raw: Any, max_count: int = 192) -> np.ndarray:
+    mesh_path = str(mesh_path_raw or "")
+    if not mesh_path:
+        return np.zeros((0, 3), dtype=np.float64)
+    cached = MESH_VERTEX_SAMPLE_CACHE.get(mesh_path)
+    if cached is not None:
+        return cached
+    path = Path(mesh_path)
+    if not path.exists():
+        return np.zeros((0, 3), dtype=np.float64)
+    loaded = trimesh.load(path, force="scene", process=False)
+    if isinstance(loaded, trimesh.Scene):
+        meshes = [geom for geom in loaded.geometry.values() if isinstance(geom, trimesh.Trimesh) and len(geom.vertices) > 0]
+        if not meshes:
+            return np.zeros((0, 3), dtype=np.float64)
+        mesh = trimesh.util.concatenate(meshes)
+    elif isinstance(loaded, trimesh.Trimesh):
+        mesh = loaded
+    else:
+        return np.zeros((0, 3), dtype=np.float64)
+    vertices = sampled_points(np.asarray(mesh.vertices, dtype=np.float64), max_count)
+    MESH_VERTEX_SAMPLE_CACHE[mesh_path] = vertices
+    return vertices
+
+
+def part_pose_value_from_graph_or_candidate(part: dict[str, Any], graph_var: dict[str, Any] | None = None) -> tuple[np.ndarray | None, np.ndarray | None]:
+    estimate = graph_var.get("estimate") if isinstance(graph_var, dict) else None
+    if isinstance(estimate, list):
+        center = numeric_vector(estimate[:3], 3)
+        rotvec = numeric_vector(estimate[3:6], 3) if len(estimate) >= 6 else None
+        if center is not None:
+            return center, rotvec
+    pose_candidate = part.get("pose_candidate") if isinstance(part.get("pose_candidate"), dict) else {}
+    center = numeric_vector(pose_candidate.get("translation_camera_m"), 3)
+    if center is None:
+        center = numeric_vector(part.get("center_camera_m"), 3)
+    rotvec = numeric_vector(pose_candidate.get("rotation_camera_from_part_rotvec"), 3)
+    return center, rotvec
+
+
+def posed_part_mesh_sample_camera(part: dict[str, Any], graph_var: dict[str, Any] | None = None) -> np.ndarray:
+    candidate = part.get("reconstructed_part_geometry_candidate") if isinstance(part.get("reconstructed_part_geometry_candidate"), dict) else {}
+    recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
+    mesh_path = candidate.get("convex_hull_mesh_path") or candidate.get("poisson_mesh_path") or recon.get("mesh_path")
+    vertices = load_mesh_vertex_sample(mesh_path, 192)
+    center, rotvec = part_pose_value_from_graph_or_candidate(part, graph_var)
+    if vertices.size == 0 or center is None:
+        return np.zeros((0, 3), dtype=np.float64)
+    if rotvec is not None:
+        rotation_camera_from_canonical = Rotation.from_rotvec(rotvec).as_matrix().T
+    else:
+        rotation_camera_from_canonical = np.eye(3, dtype=np.float64)
+    return vertices @ rotation_camera_from_canonical + center[None, :]
+
 
 
 def contact_object_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1852,6 +1921,103 @@ def contact_object_pose_observation(hyp: dict[str, Any], switch: dict[str, Any],
         },
     }
 
+
+def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    if hand is None or obj is None:
+        return None
+    if str(hand.get("hawor_support_state")) != "observed_same_frame_detection":
+        return None
+    metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    hand_points = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
+    if hand_points.ndim != 2 or hand_points.shape[1] != 3 or hand_points.shape[0] == 0:
+        return None
+    active_contact = bool(switch.get("estimate") is True)
+    raw_contact = bool(switch.get("raw_estimate_before_hawor_support_gate") is True)
+    image_support = max(
+        finite_float(switch.get("image_iou"), 0.0),
+        finite_float(switch.get("min_box_coverage"), 0.0),
+        finite_float(switch.get("mesh_contact_support_score"), 0.0),
+        finite_float(switch.get("final_metric_contact_support_score"), 0.0),
+    )
+    proposal_contact = bool(
+        active_contact
+        or raw_contact
+        or hyp.get("confidence") in {"low", "medium"}
+        or image_support > 0.08
+    )
+    best: tuple[dict[str, Any], np.ndarray, np.ndarray, float] | None = None
+    for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
+        if not isinstance(part, dict):
+            continue
+        candidate = part.get("reconstructed_part_geometry_candidate") if isinstance(part.get("reconstructed_part_geometry_candidate"), dict) else {}
+        if not candidate:
+            continue
+        part_points = posed_part_mesh_sample_camera(part)
+        pair = nearest_point_pair(hand_points, part_points)
+        if pair is None:
+            continue
+        hand_pt, part_pt, distance = pair
+        if best is None or distance < best[3]:
+            best = (part, hand_pt, part_pt, distance)
+    if best is None:
+        return None
+    part, hand_pt, part_pt, distance = best
+    near_part_geometry = distance <= 0.12
+    if not proposal_contact and not near_part_geometry:
+        return None
+    if not near_part_geometry:
+        return None
+    center, rotvec = part_pose_value_from_graph_or_candidate(part)
+    if center is None:
+        return None
+    delta = hand_pt - part_pt
+    norm = float(np.linalg.norm(delta))
+    if norm <= 1e-9 or not math.isfinite(norm):
+        return None
+    unit = delta / norm
+    desired_gap_m = 0.018
+    max_correction_m = 0.06
+    if distance > desired_gap_m:
+        correction = unit * min(max_correction_m, distance - desired_gap_m)
+    else:
+        correction = -unit * min(max_correction_m, desired_gap_m - distance)
+    target_center = center + correction
+    if rotvec is not None:
+        value = np.concatenate([target_center, rotvec])
+        variable_id = f"part_se3::{obj.get('object_id')}::{part.get('part_track_label')}"
+    else:
+        value = target_center
+        variable_id = f"part_se3::{obj.get('object_id')}::{part.get('part_track_label')}::translation_only"
+    distance_support = max(0.0, min(1.0, (0.12 - distance) / 0.10))
+    weight = max(0.20, min(2.25, (0.35 + 1.35 * image_support + 1.25 * distance_support)))
+    if not active_contact and not raw_contact:
+        weight *= 0.65
+    return {
+        "frame_idx": hyp.get("frame_idx"),
+        "variable_id": variable_id,
+        "value": value,
+        "weight": weight,
+        "source": "contact_surface_anchor_from_observed_hawor_mano_to_part_depth_fused_mesh",
+        "factor_family": "contact_part_pose_anchor",
+        "contact_part_coupling": {
+            "hand_side": hyp.get("hand_side"),
+            "object_id": obj.get("object_id"),
+            "part_track_label": part.get("part_track_label"),
+            "nearest_hand_point_camera_m": [float(v) for v in hand_pt.tolist()],
+            "nearest_part_point_camera_m": [float(v) for v in part_pt.tolist()],
+            "pre_coupling_surface_distance_m": float(distance),
+            "desired_contact_gap_m": desired_gap_m,
+            "translation_correction_camera_m": [float(v) for v in correction.tolist()],
+            "translation_correction_norm_m": float(np.linalg.norm(correction)),
+            "contact_switch_active": active_contact,
+            "raw_contact_switch_active": raw_contact,
+            "contact_proposal_used": proposal_contact,
+            "part_geometry_source": "depth_fused_reconstructed_part_mesh_candidate",
+            "scope": "part_contact_anchor_for_articulated_or_part_required_object_without_complete_object_pose_claim",
+        },
+    }
+
+
 def load_articulation_index(path: Path) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
     if not path.exists():
         return {}, []
@@ -1906,7 +2072,15 @@ def load_articulation_index(path: Path) -> tuple[dict[int, list[dict[str, Any]]]
     return per_frame, sources
 
 
-def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None, width: float, height: float, object_graph_var: dict[str, Any] | None = None) -> dict[str, Any]:
+def contact_switch_energy(
+    hyp: dict[str, Any],
+    hand: dict[str, Any] | None,
+    obj: dict[str, Any] | None,
+    width: float,
+    height: float,
+    object_graph_var: dict[str, Any] | None = None,
+    part_graph_vars: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     hand_box = hand.get("bbox_xyxy") if hand else None
     obj_box = obj.get("bbox_xyxy") if obj else None
     iou = bbox_iou_value(hand_box, obj_box)
@@ -1966,7 +2140,36 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
                 coupled_object_delta_m = [float(v) for v in delta.tolist()]
                 coupled_support = max(0.0, min(1.0, (0.15 - coupled_object_distance_m) / 0.13))
                 final_metric_raw_support = max(final_metric_raw_support, coupled_support)
-    effective_metric_distance_candidates = [v for v in [final_metric_distance_m, coupled_object_distance_m] if math.isfinite(v)]
+    coupled_part_distance_m = float("nan")
+    coupled_part_delta_m = None
+    coupled_part_label = None
+    if isinstance(part_graph_vars, dict) and isinstance(hand, dict) and isinstance(obj, dict):
+        metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+        hand_sample_camera = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
+        if hand_sample_camera.ndim == 2 and hand_sample_camera.shape[1] == 3:
+            for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
+                if not isinstance(part, dict):
+                    continue
+                label = str(part.get("part_track_label"))
+                graph_var = part_graph_vars.get(label)
+                if graph_var is None:
+                    continue
+                part_points = posed_part_mesh_sample_camera(part, graph_var)
+                pair = nearest_point_pair(hand_sample_camera, part_points)
+                if pair is None:
+                    continue
+                _, _, distance = pair
+                if distance < coupled_part_distance_m or not math.isfinite(coupled_part_distance_m):
+                    coupled_part_distance_m = float(distance)
+                    coupled_part_label = label
+                    center_base, _ = part_pose_value_from_graph_or_candidate(part)
+                    estimate = graph_var.get("estimate")
+                    center_est = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+                    if center_base is not None and center_est is not None:
+                        coupled_part_delta_m = [float(v) for v in (center_est - center_base).tolist()]
+                    part_support = max(0.0, min(1.0, (0.15 - coupled_part_distance_m) / 0.13))
+                    final_metric_raw_support = max(final_metric_raw_support, part_support)
+    effective_metric_distance_candidates = [v for v in [final_metric_distance_m, coupled_object_distance_m, coupled_part_distance_m] if math.isfinite(v)]
     effective_metric_contact_distance_m = min(effective_metric_distance_candidates) if effective_metric_distance_candidates else float("nan")
     if math.isfinite(effective_metric_contact_distance_m):
         final_metric_raw_support = max(final_metric_raw_support, max(0.0, min(1.0, (0.15 - effective_metric_contact_distance_m) / 0.13)))
@@ -2042,6 +2245,9 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "hand_support_weight": float(hand_support_weight),
         "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
         "coupled_object_metric_contact_distance_m": float(coupled_object_distance_m) if math.isfinite(coupled_object_distance_m) else None,
+        "coupled_part_metric_contact_distance_m": float(coupled_part_distance_m) if math.isfinite(coupled_part_distance_m) else None,
+        "coupled_part_track_label": coupled_part_label,
+        "coupled_part_translation_delta_camera_m": coupled_part_delta_m,
         "effective_metric_contact_distance_m": float(effective_metric_contact_distance_m) if math.isfinite(effective_metric_contact_distance_m) else None,
         "geometry_contact_evidence_available": bool(geometry_contact_evidence_available),
         "missing_geometry_contact_penalty": float(missing_geometry_contact_penalty),
@@ -2269,9 +2475,11 @@ def solve_v18_factor_graph(
             obj = object_lookup.get(str(hyp.get("object_id")))
             switch_probe = contact_switch_energy(hyp, hand, obj, width, height)
             contact_obs = contact_object_pose_observation(hyp_with_frame, switch_probe, hand, obj)
-            if contact_obs is None:
-                continue
-            object_obs[str(contact_obs.get("variable_id"))].append(contact_obs)
+            if contact_obs is not None:
+                object_obs[str(contact_obs.get("variable_id"))].append(contact_obs)
+            part_contact_obs = contact_part_pose_observation(hyp_with_frame, switch_probe, hand, obj)
+            if part_contact_obs is not None:
+                part_obs[str(part_contact_obs.get("variable_id"))].append(part_contact_obs)
 
         for art in articulation_index.get(frame_idx, []):
             object_id = str(art.get("object_id"))
@@ -2382,10 +2590,30 @@ def solve_v18_factor_graph(
             for var in terms["variables"].get("object_se3", [])
             if isinstance(var, dict) and str(var.get("variable_id", "")).startswith("object_se3::")
         }
+        part_graph_vars_by_object: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        for var in terms["variables"].get("part_se3", []):
+            if not isinstance(var, dict):
+                continue
+            variable_id = str(var.get("variable_id", ""))
+            if not variable_id.startswith("part_se3::"):
+                continue
+            fields = variable_id[len("part_se3::"):].split("::")
+            if len(fields) < 2:
+                continue
+            part_graph_vars_by_object[fields[0]][fields[1]] = var
         for hyp in frame.get("contact_hypotheses", []):
             if not isinstance(hyp, dict):
                 continue
-            switch = contact_switch_energy(hyp, hands.get(str(hyp.get("hand_side"))), objects.get(str(hyp.get("object_id"))), width, height, object_graph_vars.get(str(hyp.get("object_id"))))
+            object_id = str(hyp.get("object_id"))
+            switch = contact_switch_energy(
+                hyp,
+                hands.get(str(hyp.get("hand_side"))),
+                objects.get(object_id),
+                width,
+                height,
+                object_graph_vars.get(object_id),
+                part_graph_vars_by_object.get(object_id),
+            )
             switch["independent_estimate"] = switch.get("estimate")
             switch["independent_chosen_energy"] = switch.get("chosen_energy")
             switch["temporal_contact_switch_penalty"] = contact_temporal_switch_penalty
@@ -2543,9 +2771,9 @@ def solve_v18_factor_graph(
             "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
             "hand_state": "normalized_bbox_center_track_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_contact_object_pose_coupling_when_rigid_and_supported",
-            "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available",
+            "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_contact_part_pose_coupling_when_part_mesh_and_observed_mano_are_near",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
-            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_and_coupled_object_pose_evidence",
+            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_coupled_object_pose_and_coupled_part_pose_evidence",
             "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence",
         },
         "implemented_factor_families": [
@@ -2558,6 +2786,7 @@ def solve_v18_factor_graph(
             "contact_overlap_depth_mesh_distance_owner_graph_energy",
             "contact_object_pose_anchor_factor_for_rigid_supported_mano_object_surface_proposals",
             "contact_object_nonpenetration_repel_factor_for_rigid_supported_local_conflicts",
+            "contact_part_pose_anchor_factor_for_observed_mano_to_depth_fused_part_mesh_proposals",
             "contact_local_nonpenetration_factor_from_signed_normal_and_nearest_triangle_evidence",
             "contact_switch_temporal_continuity_factor",
             "occlusion_owner_box_mesh_depth_temporal_candidate_energy",
@@ -2565,8 +2794,8 @@ def solve_v18_factor_graph(
         "spec_factor_gaps_remaining": [
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
             "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration_and_contact_object_coupling_for_eligible_rigid_contacts",
-            "part_SE3_uses_visible_surface_PCA_geometry_and_occlusion_uncertainty",
-            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_and_coupled_object_pose_evidence",
+            "part_SE3_uses_visible_surface_PCA_geometry_contact_part_pose_coupling_and_occlusion_uncertainty",
+            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_and_coupled_object_or_part_pose_evidence",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),
