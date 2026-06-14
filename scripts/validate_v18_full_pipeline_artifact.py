@@ -240,6 +240,15 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
                     require(validation.get("surface_changing_compact_visible_pose_supported") is True, f"{case}: active surface-changing contact lacks final object pose validation support")
                     require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.12, f"{case}: active surface-changing contact is not near MANO/object geometry")
+                if row.get("validated_part_pose_contact_claim_supported") is True:
+                    obj = object_by_id.get(str(row.get("object_id")), {})
+                    parts = obj.get("parts") if isinstance(obj, dict) and isinstance(obj.get("parts"), list) else []
+                    label = str(row.get("validated_part_track_label"))
+                    part = next((p for p in parts if isinstance(p, dict) and str(p.get("part_track_label")) == label), None)
+                    require(isinstance(part, dict), f"{case}: active validated-part contact missing part row")
+                    validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+                    require(validation.get("visible_depth_silhouette_pose_supported") is True, f"{case}: active validated-part contact lacks supported part validation")
+                    require(row.get("validated_part_metric_contact_distance_m") is not None and float(row.get("validated_part_metric_contact_distance_m")) <= 0.12, f"{case}: active validated-part contact is not near supported part geometry")
                 if row_support_state != "observed_same_frame_detection":
                     counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
         occlusion_vars = vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else []

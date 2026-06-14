@@ -2374,6 +2374,7 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
         or image_support > 0.08
     )
     best: tuple[dict[str, Any], np.ndarray, np.ndarray, float] | None = None
+    best_validated: tuple[dict[str, Any], np.ndarray, np.ndarray, float] | None = None
     for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
         if not isinstance(part, dict):
             continue
@@ -2387,8 +2388,13 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
         hand_pt, part_pt, distance = pair
         if best is None or distance < best[3]:
             best = (part, hand_pt, part_pt, distance)
+        validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+        if validation.get("visible_depth_silhouette_pose_supported") is True and (best_validated is None or distance < best_validated[3]):
+            best_validated = (part, hand_pt, part_pt, distance)
     if best is None:
         return None
+    if best_validated is not None and best_validated[3] <= 0.12:
+        best = best_validated
     part, hand_pt, part_pt, distance = best
     near_part_geometry = distance <= 0.12
     if not proposal_contact and not near_part_geometry:
@@ -2441,6 +2447,7 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
             "raw_contact_switch_active": raw_contact,
             "contact_proposal_used": proposal_contact,
             "part_geometry_source": "depth_fused_reconstructed_part_mesh_candidate",
+            "part_pose_validation_supported": (part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}).get("visible_depth_silhouette_pose_supported") is True,
             "scope": "part_contact_anchor_for_articulated_or_part_required_object_without_complete_object_pose_claim",
         },
     }
@@ -2571,6 +2578,9 @@ def contact_switch_energy(
     coupled_part_distance_m = float("nan")
     coupled_part_delta_m = None
     coupled_part_label = None
+    validated_part_distance_m = float("nan")
+    validated_part_delta_m = None
+    validated_part_label = None
     if isinstance(part_graph_vars, dict) and isinstance(hand, dict) and isinstance(obj, dict):
         metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
         hand_sample_camera = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
@@ -2597,6 +2607,15 @@ def contact_switch_energy(
                         coupled_part_delta_m = [float(v) for v in (center_est - center_base).tolist()]
                     part_support = max(0.0, min(1.0, (0.15 - coupled_part_distance_m) / 0.13))
                     final_metric_raw_support = max(final_metric_raw_support, part_support)
+                validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+                if validation.get("visible_depth_silhouette_pose_supported") is True and (distance < validated_part_distance_m or not math.isfinite(validated_part_distance_m)):
+                    validated_part_distance_m = float(distance)
+                    validated_part_label = label
+                    center_base, _ = part_pose_value_from_graph_or_candidate(part)
+                    estimate = graph_var.get("estimate")
+                    center_est = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+                    if center_base is not None and center_est is not None:
+                        validated_part_delta_m = [float(v) for v in (center_est - center_base).tolist()]
     effective_metric_distance_candidates = [v for v in [final_metric_distance_m, coupled_object_distance_m, coupled_part_distance_m] if math.isfinite(v)]
     effective_metric_contact_distance_m = min(effective_metric_distance_candidates) if effective_metric_distance_candidates else float("nan")
     if math.isfinite(effective_metric_contact_distance_m):
@@ -2611,12 +2630,7 @@ def contact_switch_energy(
         rigid_pose_claim_supported, _, _ = rigid_pose_support_from_schema(obj, obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}, object_graph_var)
         surface_allowed, _ = surface_changing_contact_pose_allowed(obj)
         surface_changing_pose_claim_supported = bool(surface_allowed and isinstance(object_graph_var, dict) and math.isfinite(effective_metric_contact_distance_m) and effective_metric_contact_distance_m <= 0.12)
-        if coupled_part_label is not None and math.isfinite(coupled_part_distance_m) and coupled_part_distance_m <= 0.12:
-            for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
-                if isinstance(part, dict) and str(part.get("part_track_label")) == str(coupled_part_label):
-                    validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
-                    part_pose_claim_supported = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
-                    break
+        part_pose_claim_supported = bool(validated_part_label is not None and math.isfinite(validated_part_distance_m) and validated_part_distance_m <= 0.12)
     physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported or surface_changing_pose_claim_supported)
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
@@ -2697,6 +2711,9 @@ def contact_switch_energy(
         "coupled_part_metric_contact_distance_m": float(coupled_part_distance_m) if math.isfinite(coupled_part_distance_m) else None,
         "coupled_part_track_label": coupled_part_label,
         "coupled_part_translation_delta_camera_m": coupled_part_delta_m,
+        "validated_part_metric_contact_distance_m": float(validated_part_distance_m) if math.isfinite(validated_part_distance_m) else None,
+        "validated_part_track_label": validated_part_label,
+        "validated_part_translation_delta_camera_m": validated_part_delta_m,
         "effective_metric_contact_distance_m": float(effective_metric_contact_distance_m) if math.isfinite(effective_metric_contact_distance_m) else None,
         "geometry_contact_evidence_available": bool(geometry_contact_evidence_available),
         "missing_geometry_contact_penalty": float(missing_geometry_contact_penalty),
