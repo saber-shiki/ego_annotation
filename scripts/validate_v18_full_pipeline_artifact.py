@@ -233,8 +233,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             if row.get("estimate") is True:
                 counts["active_contact_switch_vars"] += 1
                 require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks physical support flag")
-                support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True]
-                require(any(support_paths), f"{case}: active contact lacks rigid/part/surface-changing support path")
+                support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True, row.get("deformable_visible_surface_contact_claim_supported") is True]
+                require(any(support_paths), f"{case}: active contact lacks rigid/part/surface-changing/deformable-surface support path")
                 if row.get("surface_changing_pose_contact_claim_supported") is True:
                     obj = object_by_id.get(str(row.get("object_id")), {})
                     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
@@ -249,6 +249,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
                     require(validation.get("visible_depth_silhouette_pose_supported") is True, f"{case}: active validated-part contact lacks supported part validation")
                     require(row.get("validated_part_metric_contact_distance_m") is not None and float(row.get("validated_part_metric_contact_distance_m")) <= 0.12, f"{case}: active validated-part contact is not near supported part geometry")
+                if row.get("deformable_visible_surface_contact_claim_supported") is True:
+                    obj = object_by_id.get(str(row.get("object_id")), {})
+                    schema = obj.get("physical_state_schema") if isinstance(obj, dict) and isinstance(obj.get("physical_state_schema"), dict) else {}
+                    geom = obj.get("visible_geometry_candidate") if isinstance(obj, dict) and isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+                    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown") if isinstance(obj, dict) else "unknown"
+                    require(physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True, f"{case}: active deformable contact is not on deformable object")
+                    require(isinstance(geom.get("world_vertices_sample_m"), list) and len(geom.get("world_vertices_sample_m")) > 0, f"{case}: active deformable contact lacks visible depth surface")
+                    require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.05, f"{case}: active deformable contact is not within 5cm visible surface band")
                 if row_support_state != "observed_same_frame_detection":
                     counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
         occlusion_vars = vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else []

@@ -2015,6 +2015,18 @@ def object_contact_pose_mode(obj: dict[str, Any]) -> tuple[str | None, list[str]
     return None, sorted(set(rigid_blockers + surface_blockers))
 
 
+def deformable_visible_surface_contact_allowed(obj: dict[str, Any]) -> tuple[bool, list[str]]:
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+    blockers: list[str] = []
+    if physical != "deformable" and schema.get("secondary_deformable_or_surface_component") is not True:
+        blockers.append("object_not_deformable_visible_surface_contact_type")
+    if not geom or not isinstance(geom.get("world_vertices_sample_m"), list) or not geom.get("world_vertices_sample_m"):
+        blockers.append("missing_same_frame_visible_depth_surface_for_deformable_contact")
+    return not blockers, blockers
+
+
 def nearest_point_pair(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, float] | None:
     aa = sampled_points(a, 192)
     bb = sampled_points(b, 192)
@@ -2626,12 +2638,15 @@ def contact_switch_energy(
     rigid_pose_claim_supported = False
     part_pose_claim_supported = False
     surface_changing_pose_claim_supported = False
+    deformable_visible_surface_contact_supported = False
     if isinstance(obj, dict):
         rigid_pose_claim_supported, _, _ = rigid_pose_support_from_schema(obj, obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}, object_graph_var)
         surface_allowed, _ = surface_changing_contact_pose_allowed(obj)
         surface_changing_pose_claim_supported = bool(surface_allowed and isinstance(object_graph_var, dict) and math.isfinite(effective_metric_contact_distance_m) and effective_metric_contact_distance_m <= 0.12)
+        deformable_allowed, _ = deformable_visible_surface_contact_allowed(obj)
+        deformable_visible_surface_contact_supported = bool(deformable_allowed and math.isfinite(effective_metric_contact_distance_m) and effective_metric_contact_distance_m <= 0.05 and (mesh_support > 0.5 or final_metric_raw_support > 0.70))
         part_pose_claim_supported = bool(validated_part_label is not None and math.isfinite(validated_part_distance_m) and validated_part_distance_m <= 0.12)
-    physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported or surface_changing_pose_claim_supported)
+    physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported or surface_changing_pose_claim_supported or deformable_visible_surface_contact_supported)
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
     support_gate_allows_active_contact = hand_support_state == "observed_same_frame_detection"
@@ -2685,10 +2700,11 @@ def contact_switch_energy(
         "raw_estimate_before_physical_contact_gate": bool(raw_switch_on_before_physical_gate),
         "raw_estimate_before_hawor_support_gate": bool(raw_switch_on),
         "physical_contact_claim_supported": bool(physical_contact_claim_supported),
-        "physical_contact_support_state": "supported_by_rigid_object_or_validated_part_or_surface_changing_pose" if physical_contact_claim_supported else "blocked_no_supported_rigid_or_validated_part_pose",
+        "physical_contact_support_state": "supported_by_rigid_object_validated_part_surface_changing_or_deformable_visible_surface" if physical_contact_claim_supported else "blocked_no_supported_rigid_validated_part_surface_or_deformable_surface",
         "rigid_pose_contact_claim_supported": bool(rigid_pose_claim_supported),
         "validated_part_pose_contact_claim_supported": bool(part_pose_claim_supported),
         "surface_changing_pose_contact_claim_supported": bool(surface_changing_pose_claim_supported),
+        "deformable_visible_surface_contact_claim_supported": bool(deformable_visible_surface_contact_supported),
         "support_gate_allows_active_contact": bool(support_gate_allows_active_contact),
         "support_gate_reason": "observed_same_frame_hawor_required_for_active_contact" if not support_gate_allows_active_contact else "observed_same_frame_hawor_support",
         "on_energy": float(on_energy),
