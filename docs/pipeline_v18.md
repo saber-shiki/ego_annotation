@@ -2,7 +2,7 @@
 
 ## Status
 
-V18 is open as a redesign after formal V17 failure. The V18 contract is artifact-first but not schema-first: every run must produce full-video annotated videos, and those annotations must be driven by the named mechanisms. All object, hand, pose, contact, occlusion, and geometry estimates may be approximate and uncertain by default. Residuals, audits, and thresholds may score, explain, or debug the artifact, but they may not prevent artifact production or replace the artifact. A module that cannot produce a confident estimate must still emit a typed candidate or an explicit unresolved/unknown state in the final schema, but that emission is **not completion** of the named requirement; strict completion requires the real mechanism to run, be sanity-checked on video/geometric evidence, affect downstream reasoning where applicable, and be rendered in the final videos.
+V18 is open as a redesign after formal V17 failure. The V18 contract is artifact-first but not schema-first: every run must produce full-video renderable annotations, and those annotations must be driven by the named mechanisms. The artifact is the rendered video annotation set—overlay, world, and side-by-side videos—plus backing data only insofar as it reproduces or explains those rendered annotations. All object, hand, pose, contact, occlusion, and geometry estimates may be approximate and uncertain by default. Residuals, audits, and thresholds may score, explain, or debug the artifact, but they may not prevent artifact production or replace the artifact. A module that cannot produce a confident estimate may emit a typed candidate or an explicit unresolved/unknown state in the backing data to keep the videos honest, but that emission is **not completion** of the named requirement; strict completion requires the real mechanism to run, be sanity-checked on video/geometric evidence, affect downstream reasoning where applicable, and be rendered in the final videos.
 
 V17 failed as a pipeline design, not merely as an unfinished run:
 
@@ -18,9 +18,9 @@ All V17 readiness flags remain false: `v3_solver_complete=false`, `annotation_re
 
 This section is the V18 contract. Cached artifacts may be used as memoized stage outputs, but the logical pipeline is self-contained from raw video and named model/config inputs. A component named here cannot be silently replaced; replacement requires an evidence-backed design amendment.
 
-**Execution rule.** V18 implements every named module as an executable stage and writes its result into the final annotation artifact. There are no arbitrary acceptance gates that stop the pipeline. Numeric residuals, thresholds, and audits are diagnostic evidence and confidence features only. The pipeline distinguishes implementation mistakes from quality limitations:
+**Execution rule.** V18 implements every named module as an executable stage that drives the final rendered annotation videos, with backing JSON only where needed to reproduce or explain those rendered marks. There are no arbitrary acceptance gates that stop the pipeline. Numeric residuals, thresholds, and audits are diagnostic evidence and confidence features only. The pipeline distinguishes implementation mistakes from quality limitations:
 
-- Implementation mistakes must be fixed before delivery: missing artifact writer, missing full-video output, frame/FPS mismatch, broken schema, failed model execution, invalid coordinate/depth/frame transform, or disconnected module output.
+- Implementation mistakes must be fixed before delivery: missing rendered-annotation writer, missing full-video output, frame/FPS mismatch, broken backing schema needed to reproduce the videos, failed model execution, invalid coordinate/depth/frame transform, or disconnected module output that does not affect the rendered annotations.
 - Quality limitations do not block artifact production: weak masks, incomplete geometry, approximate poses, uncertain contact, unresolved occlusion owner, noisy hand estimates, or low confidence. These must be represented honestly in the artifact and render, not hidden in diagnostics. They also must not be counted as strict requirement completion unless the named mechanism itself is implemented and driving the annotation.
 
 All outputs are approximate and uncertain. The user-facing judgment is whether the delivered V18 videos and explanations are plausibly no worse than V16 and show concrete improvements, not whether an arbitrary internal gate declares a field ready.
@@ -31,7 +31,7 @@ All outputs are approximate and uncertain. The user-facing judgment is whether t
 4. **Physical-state decision.** VLM labels are hypotheses, not branch logic. Rigid, articulated, deformable, and unresolved states are accepted by residual tests over masks, depth, and temporal geometry; not by object name, category, color, material, or action phrase.
 5. **Geometry/reconstruction.** Accepted masks plus metric depth produce visible point clouds/surfaces. Rigid objects or rigid parts use multi-frame depth fusion with SE(3) registration and report residuals, silhouette agreement, and uncertainty. Articulated objects reconstruct parts separately and compare relative-transform, hinge/circle, single-rigid, and unresolved models by residuals and visual plausibility. Deformable or under-observed objects still emit visible-surface/deformable candidates. Weak reconstruction lowers confidence; it does not delete the module output.
 6. **Factor graph.** Variables are bounded camera/depth correction, hand state, object/part SE(3), articulation parameter, contact switch, and occlusion owner. Factors are hand observation residuals, object mask/depth/registration residuals, temporal/rigid/articulation consistency, occlusion depth ordering, and contact/nonpenetration. Contact factors are always represented as approximate hypotheses with confidence/uncertainty. Geometry, depth ordering, nonpenetration, and temporal cues affect confidence and ownership; weak evidence yields uncertain contact rather than omitted contact.
-7. **Outputs.** The deliverable remains full-duration raw overlay, metric/world render, side-by-side video, runtime report, and validation artifacts. Status videos and audits validate implementation; they do not replace the pipeline. The primary artifacts are `annotations_v18_full.json`, full-duration overlay video, full-duration world video, full-duration side-by-side video, and a short explanation comparing V18 to V16.
+7. **Outputs.** The deliverable is the full-duration renderable annotation set: raw-video overlay, metric/world render, and side-by-side video. Runtime reports, validation artifacts, and `annotations_v18_full.json` are backing evidence/reproducibility data only; they are not the artifact the user needs and cannot satisfy requirements by themselves. Status videos and audits validate implementation; they do not replace the rendered annotation pipeline. A short explanation may accompany the videos, but completion is judged from the rendered annotations and the mechanisms that drive them.
 
 Current implementation debt: the final artifact-producing path is not yet implemented. Existing V18 code has hand/model evidence, OWLv2→SAM2 object/part masks, visible surfaces, motion/residual evidence, and status renders, but those must now be assembled into full-video annotations with approximate geometry, pose, contact, occlusion, and factor-graph outputs. Missing implementation is the agent's obligation to build, not an external blocker.
 
@@ -665,23 +665,28 @@ The manifest reports `part_se3_pair_count=2`, `part_se3_pair_rejected_count=1`, 
 
 ## Implementation Checkpoint 34: Artifact-First Reset
 
-V18 no longer treats arbitrary gates as artifact-production blockers. Every named stage may write a best-effort candidate or explicit unresolved state into the final annotation schema so the full video remains inspectable. That is an honesty mechanism, not completion. A stage is strict-checklist DONE only when the actual named mechanism runs, is sanity-checked on video/geometric evidence, drives downstream state where applicable, and is rendered in the final videos. Residuals remain useful for explanation and subjective judgment, but approximate outputs do not permit approximate implementation of the spec.
+V18 no longer treats arbitrary gates as artifact-production blockers. Every named stage may write a best-effort candidate or explicit unresolved state into the backing annotation data so the full video remains inspectable. That is an honesty mechanism, not completion, and it matters only if it is visible in, or needed to reproduce, the rendered annotations. A stage is strict-checklist DONE only when the actual named mechanism runs, is sanity-checked on video/geometric evidence, drives downstream state where applicable, and is rendered in the final videos. Residuals remain useful for explanation and subjective judgment, but approximate outputs do not permit approximate implementation of the spec.
 
-The next required implementation artifact is:
+The next required implementation artifact is the rendered video annotation set:
 
 ```text
-/data2/ego_annotation_outputs/v18_full_pipeline/<case>/annotations_v18_full.json
 /data2/ego_annotation_outputs/v18_full_pipeline/<case>/v18_overlay.mp4
 /data2/ego_annotation_outputs/v18_full_pipeline/<case>/v18_world.mp4
 /data2/ego_annotation_outputs/v18_full_pipeline/<case>/v18_side_by_side.mp4
+```
+
+Backing data and evidence live beside those videos:
+
+```text
+/data2/ego_annotation_outputs/v18_full_pipeline/<case>/annotations_v18_full.json
 /data2/ego_annotation_outputs/v18_full_pipeline/v18_full_pipeline_report.json
 ```
 
-The report must compare delivered V18 videos against V16 by subjective judgment: what is no worse, what visibly improves, what remains approximate/uncertain, and what implementation mistakes were fixed. Diagnostics are allowed only when they directly repair this artifact path or explain the delivered artifact.
+The report must compare delivered V18 videos against V16 by subjective judgment: what is no worse, what visibly improves, what remains approximate/uncertain, and what implementation mistakes were fixed. Diagnostics are allowed only when they directly repair the rendered annotation path or explain the delivered videos.
 
 ## Implementation Checkpoint 35: Full Approximate Pipeline Artifact
 
-V18 now has an executable full-pipeline artifact writer:
+V18 now has an executable full-pipeline rendered-annotation writer:
 
 ```text
 scripts/run_v18_full_pipeline.py
@@ -692,9 +697,9 @@ scripts/run_v18_full_pipeline.py
 /data2/ego_annotation_outputs/v18_full_pipeline/v18_full_pipeline_report.json
 ```
 
-This is the artifact-first V18 baseline, not strict V18 physical closure. It assembles the existing V16 camera/depth backbone, V18 hand evidence, generated OWLv2→SAM2 object/part masks, visible geometry archives, part surfaces, bounded occlusion candidates, approximate contact hypotheses, approximate hidden-geometry candidates, approximate object/part pose candidates, and a single-pass bounded factor-graph baseline into one full-video JSON schema and render. Every output is approximate and uncertain by design. No arbitrary threshold suppresses artifact production, but schema presence, labels, or unresolved/candidate rows are not evidence that the substantive mechanisms are implemented.
+This is the artifact-first V18 baseline, not strict V18 physical closure. It assembles the existing V16 camera/depth backbone, V18 hand evidence, generated OWLv2→SAM2 object/part masks, visible geometry archives, part surfaces, bounded occlusion candidates, approximate contact hypotheses, approximate hidden-geometry candidates, approximate object/part pose candidates, and a single-pass bounded factor-graph baseline into full-video rendered annotations with backing JSON. Every output is approximate and uncertain by design. No arbitrary threshold suppresses artifact production, but JSON presence, labels, or unresolved/candidate rows are not evidence that the substantive mechanisms are implemented.
 
-The delivered run completed both representative cases in about 108 seconds total after rendering. Frame counts match raw videos: `trash_1050` has 1050 frames and `task5_tomato_960` has 960 frames in the annotation JSON, overlay video, world video, and side-by-side video. The JSON contains all named module families: camera/depth backbone, hand branch, object/part perception, geometry reconstruction, object/part pose candidates, contact ownership hypotheses, occlusion ownership hypotheses, and factor-graph baseline fields.
+The delivered run completed both representative cases in about 108 seconds total after rendering. Frame counts match raw videos: `trash_1050` has 1050 frames and `task5_tomato_960` has 960 frames in the overlay video, world video, side-by-side video, and backing JSON. The backing JSON contains named module families, but those fields are not the artifact and do not prove the modules are substantively implemented; the rendered annotations and their causal mechanisms are what matter.
 
 Visual inspection against V16 side-by-side frames shows the current tradeoff. V16 still has denser mesh-style hand/object rendering for selected manipulation objects. V18 is now plausibly no worse for frame coverage and 2D localization, and it adds explicit multi-object state, part candidates, uncertainty labels, contact/occlusion hypotheses, hidden-geometry candidates, and factor-graph state in the delivered JSON/video instead of hiding them in diagnostics. The next improvement should be render fidelity and solver quality, not another readiness gate: use the delivered videos to decide which approximate modules are visibly wrong, then patch those modules.
 

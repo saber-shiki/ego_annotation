@@ -45,6 +45,73 @@ def file_info(path: Path, *, hash_file: bool = False) -> dict:
     return info
 
 
+def load_track_support(seq_folder: Path, start_idx: int, end_idx: int, frame_count: int) -> tuple[dict[str, dict[str, np.ndarray]], dict]:
+    """Return same-frame HaWoR detection support by side.
+
+    HaWoR's infiller can produce MANO rows where there is no same-frame detector
+    box. The exported metric MANO arrays are still useful evidence, but V18 must
+    not conflate infilled rows with detector-supported rows. This function keeps
+    that provenance in the NPZ/QC contract.
+    """
+    tracks_path = seq_folder / f"tracks_{start_idx}_{end_idx}" / "model_tracks.npy"
+    support: dict[str, dict[str, np.ndarray]] = {}
+    for side in ("left", "right"):
+        support[side] = {
+            "detected_same_frame": np.zeros(frame_count, dtype=np.uint8),
+            "det_box_xyxyscore": np.full((frame_count, 5), np.nan, dtype=np.float32),
+            "track_id": np.full(frame_count, "", dtype="<U64"),
+        }
+    report = {
+        "tracks_path": str(tracks_path),
+        "tracks_file_exists": tracks_path.exists(),
+        "side_handedness_mapping": {"left": 0, "right": 1},
+        "records_read": 0,
+        "records_used": 0,
+    }
+    if not tracks_path.exists():
+        report["status"] = "tracks_file_missing_detection_support_unavailable"
+        return support, report
+    try:
+        tracks_obj = np.load(tracks_path, allow_pickle=True)
+        tracks = tracks_obj.item() if getattr(tracks_obj, "shape", None) == () else tracks_obj
+    except Exception as exc:  # pragma: no cover - defensive runtime provenance
+        report["status"] = "tracks_file_load_failed_detection_support_unavailable"
+        report["error"] = repr(exc)
+        return support, report
+    if not isinstance(tracks, dict):
+        report["status"] = "tracks_file_not_dict_detection_support_unavailable"
+        report["tracks_object_type"] = str(type(tracks))
+        return support, report
+    for track_id, records in tracks.items():
+        for rec in records:
+            report["records_read"] += 1
+            try:
+                f = int(rec.get("frame", -1))
+                if f < 0 or f >= frame_count:
+                    continue
+                handed_arr = np.asarray(rec.get("det_handedness"), dtype=np.float32).reshape(-1)
+                if handed_arr.size == 0:
+                    continue
+                handed = int(round(float(handed_arr[0])))
+                side = "left" if handed == 0 else "right" if handed == 1 else None
+                if side is None:
+                    continue
+                box_arr = np.asarray(rec.get("det_box"), dtype=np.float32).reshape(-1)
+                if box_arr.size < 5 or not np.isfinite(box_arr[:5]).all():
+                    continue
+                current = support[side]["det_box_xyxyscore"][f]
+                if support[side]["detected_same_frame"][f] == 0 or float(box_arr[4]) > float(current[4]):
+                    support[side]["detected_same_frame"][f] = 1
+                    support[side]["det_box_xyxyscore"][f] = box_arr[:5]
+                    support[side]["track_id"][f] = str(track_id)
+                    report["records_used"] += 1
+            except Exception:
+                continue
+    report["status"] = "ok"
+    report["detected_same_frame_counts"] = {side: int(np.count_nonzero(support[side]["detected_same_frame"])) for side in support}
+    return support, report
+
+
 def run(args: argparse.Namespace) -> dict:
     hawor_root = args.hawor_root.resolve()
     video_path_obj = Path(args.video_path).expanduser()
@@ -113,6 +180,7 @@ def run(args: argparse.Namespace) -> dict:
         }
 
     frame_idx = np.arange(len(imgfiles), dtype=np.int32)
+    track_support, track_support_report = load_track_support(Path(seq_folder), int(start_idx), int(end_idx), len(frame_idx))
     out_npz = args.output_dir / "hawor_world_hands.npz"
     np.savez_compressed(
         out_npz,
@@ -126,6 +194,9 @@ def run(args: argparse.Namespace) -> dict:
         left_hand_pose_axis_angle=hands["left"]["hand_pose_axis_angle"],
         left_betas=hands["left"]["betas"],
         left_valid=hands["left"]["valid"],
+        left_detected_same_frame=track_support["left"]["detected_same_frame"],
+        left_det_box_xyxyscore=track_support["left"]["det_box_xyxyscore"],
+        left_track_id=track_support["left"]["track_id"],
         left_faces=hands["left"]["faces"],
         right_vertices_world_m=hands["right"]["vertices_world_m"],
         right_joints_world_m=hands["right"]["joints_world_m"],
@@ -134,6 +205,9 @@ def run(args: argparse.Namespace) -> dict:
         right_hand_pose_axis_angle=hands["right"]["hand_pose_axis_angle"],
         right_betas=hands["right"]["betas"],
         right_valid=hands["right"]["valid"],
+        right_detected_same_frame=track_support["right"]["detected_same_frame"],
+        right_det_box_xyxyscore=track_support["right"]["det_box_xyxyscore"],
+        right_track_id=track_support["right"]["track_id"],
         right_faces=hands["right"]["faces"],
         img_focal=np.asarray([float(img_focal)], dtype=np.float32),
         video_path=np.asarray([str(args.video_path)]),
@@ -142,8 +216,11 @@ def run(args: argparse.Namespace) -> dict:
         infiller_weight_sha256=np.asarray([export_provenance["infiller_weight"].get("sha256") or ""]),
         model_config_sha256=np.asarray([export_provenance["model_config"].get("sha256") or ""]),
         seq_folder=np.asarray([str(seq_folder)]),
+        track_support_status=np.asarray([track_support_report.get("status", "unknown")]),
+        track_support_path=np.asarray([track_support_report.get("tracks_path", "")]),
     )
     valid_counts = {side: int(np.count_nonzero(hands[side]["valid"])) for side in hands}
+    detected_counts = {side: int(np.count_nonzero(track_support[side]["detected_same_frame"])) for side in hands}
     qc = {
         "status": "ok",
         "video_path": str(args.video_path),
@@ -154,6 +231,8 @@ def run(args: argparse.Namespace) -> dict:
         "frames": int(len(frame_idx)),
         "img_focal": float(img_focal),
         "valid_hand_frames": valid_counts,
+        "detected_same_frame_hand_frames": detected_counts,
+        "track_support": track_support_report,
         "slam_path": str(slam_path),
     }
     (args.output_dir / "qc_hawor_world_hands.json").write_text(json.dumps(qc, indent=2), encoding="utf-8")
