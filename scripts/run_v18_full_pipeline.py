@@ -16,6 +16,8 @@ import trimesh  # type: ignore[reportMissingTypeStubs]
 from PIL import Image, ImageDraw, ImageFont
 from scipy.sparse import diags  # type: ignore[reportMissingTypeStubs]
 from scipy.sparse.linalg import spsolve  # type: ignore[reportMissingTypeStubs]
+from scipy.ndimage import binary_dilation  # type: ignore[reportMissingTypeStubs]
+from scipy.spatial import cKDTree  # type: ignore[reportMissingTypeStubs]
 from scipy.spatial.transform import Rotation  # type: ignore[reportMissingTypeStubs]
 
 STATUS = "v18_full_pipeline"
@@ -37,6 +39,8 @@ BBOX_CORNER_EDGES = [
     (0, 4), (1, 5), (2, 6), (3, 7),
 ]
 MESH_VERTEX_SAMPLE_CACHE: dict[str, np.ndarray] = {}
+DENSE_VERTEX_SAMPLE_CACHE: dict[tuple[str, int], np.ndarray] = {}
+PART_VISIBLE_SURFACE_POINT_CACHE: dict[tuple[str, int], np.ndarray] = {}
 MASK_IMAGE_CACHE: dict[str, np.ndarray] = {}
 
 CLAIM = (
@@ -870,6 +874,7 @@ def load_part_surface_index(path: Path) -> dict[tuple[int, str], list[dict[str, 
             pts = np.asarray(vertices_all[start_i:end_i], dtype=np.float64)
             if pts.ndim != 2 or pts.shape[1] != 3 or not np.isfinite(pts).all():
                 continue
+            PART_VISIBLE_SURFACE_POINT_CACHE[(str(archive_path), int(row_idx))] = pts
             pose = pca_pose_observation(pts)
             if pose is None:
                 continue
@@ -927,6 +932,7 @@ def load_part_surface_index(path: Path) -> dict[tuple[int, str], list[dict[str, 
                 "faces": row.get("faces"),
                 "archive_pose": archive_pose,
                 "depth_median_m": row.get("depth_median_m"),
+                "depth_intrinsics_fx_fy_cx_cy": row.get("depth_intrinsics_fx_fy_cx_cy"),
                 "part_containment_in_object": row.get("part_containment_in_object"),
                 "bbox_camera_min_m": mn,
                 "bbox_camera_max_m": mx,
@@ -1066,6 +1072,7 @@ def load_part_pose_validation_index(path: Path) -> tuple[dict[tuple[str, str], d
         "visible_depth_silhouette_pose_supported_count": report.get("visible_depth_silhouette_pose_supported_count"),
         "part_pose_ready_count": report.get("part_pose_ready_count"),
         "object_pose_requirement_met_count": report.get("object_pose_requirement_met_count"),
+        "parameters": report.get("parameters") if isinstance(report.get("parameters"), dict) else {},
     }
     return out, summary
 
@@ -1818,6 +1825,156 @@ def attach_object_depth_silhouette_pose_validation(frames: list[dict[str, Any]])
     return counts
 
 
+def part_validation_supports_current_frame(validation: dict[str, Any]) -> bool:
+    if "frame_visible_depth_silhouette_pose_supported" in validation:
+        return validation.get("frame_visible_depth_silhouette_pose_supported") is True
+    return validation.get("visible_depth_silhouette_pose_supported") is True
+
+
+def project_camera_points_to_mask(points_camera: np.ndarray, intrinsics_raw: Any, mask_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray] | None:
+    intrinsics = numeric_vector(intrinsics_raw, 4)
+    pts = np.asarray(points_camera, dtype=np.float64)
+    if intrinsics is None or pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] == 0:
+        return None
+    fx, fy, cx, cy = [float(v) for v in intrinsics.tolist()]
+    if not all(math.isfinite(v) and v > 0.0 for v in [fx, fy, cx, cy]):
+        return None
+    mask_h, mask_w = mask_shape
+    z = pts[:, 2]
+    valid = z > 1e-6
+    uv = np.zeros((pts.shape[0], 2), dtype=np.float64)
+    uv[:, 0] = fx * pts[:, 0] / np.maximum(z, 1e-9) + cx
+    uv[:, 1] = fy * pts[:, 1] / np.maximum(z, 1e-9) + cy
+    sx = float(mask_w) / max(1.0, 2.0 * cx)
+    sy = float(mask_h) / max(1.0, 2.0 * cy)
+    uv[:, 0] *= sx
+    uv[:, 1] *= sy
+    valid &= (uv[:, 0] >= 0.0) & (uv[:, 0] < float(mask_w)) & (uv[:, 1] >= 0.0) & (uv[:, 1] < float(mask_h))
+    return uv, valid
+
+
+def mask_values_at_pixels(mask: np.ndarray, uv: np.ndarray) -> np.ndarray:
+    if mask.ndim != 2 or uv.ndim != 2 or uv.shape[1] != 2 or uv.shape[0] == 0:
+        return np.zeros((0,), dtype=bool)
+    h, w = mask.shape
+    xs = np.clip(np.rint(uv[:, 0]).astype(np.int64), 0, max(0, w - 1))
+    ys = np.clip(np.rint(uv[:, 1]).astype(np.int64), 0, max(0, h - 1))
+    return mask[ys, xs].astype(bool)
+
+
+def frame_local_part_pose_validation(part: dict[str, Any], graph_var: dict[str, Any] | None, parameters: dict[str, Any]) -> dict[str, Any] | None:
+    archive_pose = part.get("archive_pose") if isinstance(part.get("archive_pose"), dict) else {}
+    archive_npz = str(archive_pose.get("archive_npz") or "")
+    archive_row_index_raw = archive_pose.get("archive_row_index")
+    observed = PART_VISIBLE_SURFACE_POINT_CACHE.get((archive_npz, int(archive_row_index_raw))) if archive_npz and isinstance(archive_row_index_raw, int) else None
+    if observed is None:
+        observed = np.asarray(part.get("vertices", []), dtype=np.float64)
+    else:
+        observed = np.asarray(observed, dtype=np.float64)
+    if observed.ndim != 2 or observed.shape[1] != 3 or observed.shape[0] == 0:
+        return None
+    candidate = part.get("reconstructed_part_geometry_candidate") if isinstance(part.get("reconstructed_part_geometry_candidate"), dict) else {}
+    mesh_path = candidate.get("fused_point_cloud_path") or candidate.get("poisson_mesh_path") or candidate.get("convex_hull_mesh_path")
+    canonical = load_dense_vertex_sample(mesh_path, int(finite_float(parameters.get("max_predicted_points_per_frame"), 8000.0)))
+    center, rotvec = part_pose_value_from_graph_or_candidate(part, graph_var)
+    if canonical.size == 0 or center is None:
+        return None
+    if rotvec is not None:
+        rotation_camera_from_canonical = Rotation.from_rotvec(rotvec).as_matrix().T
+    else:
+        rotation_camera_from_canonical = np.eye(3, dtype=np.float64)
+    predicted = canonical @ rotation_camera_from_canonical + center[None, :]
+    observed_sample = sampled_points(observed, int(finite_float(parameters.get("max_observed_points"), 4000.0)))
+    if observed_sample.size == 0 or predicted.size == 0:
+        return None
+    tree = cKDTree(predicted)
+    distances, _ = tree.query(observed_sample, k=1)
+    observed_to_predicted_median_m = float(np.median(distances))
+    observed_to_predicted_p95_m = float(np.percentile(distances, 95))
+    mask = load_mask_bool(part.get("part_mask_path"))
+    predicted_inside_fraction = None
+    observed_projection_coverage_fraction = None
+    if mask.size > 0:
+        predicted_projection = project_camera_points_to_mask(predicted, part.get("depth_intrinsics_fx_fy_cx_cy"), mask.shape)
+        observed_projection = project_camera_points_to_mask(observed_sample, part.get("depth_intrinsics_fx_fy_cx_cy"), mask.shape)
+        if predicted_projection is not None:
+            pred_uv, pred_valid = predicted_projection
+            valid_pred_uv = pred_uv[pred_valid]
+            if valid_pred_uv.shape[0] > 0:
+                predicted_inside_fraction = float(np.mean(mask_values_at_pixels(mask, valid_pred_uv)))
+        if predicted_projection is not None and observed_projection is not None:
+            pred_uv, pred_valid = predicted_projection
+            obs_uv, obs_valid = observed_projection
+            valid_pred_uv = pred_uv[pred_valid]
+            valid_obs_uv = obs_uv[obs_valid]
+            if valid_pred_uv.shape[0] > 0 and valid_obs_uv.shape[0] > 0:
+                pred_mask = np.zeros(mask.shape, dtype=bool)
+                h, w = mask.shape
+                xs = np.clip(np.rint(valid_pred_uv[:, 0]).astype(np.int64), 0, max(0, w - 1))
+                ys = np.clip(np.rint(valid_pred_uv[:, 1]).astype(np.int64), 0, max(0, h - 1))
+                pred_mask[ys, xs] = True
+                dilation_px = int(finite_float(parameters.get("silhouette_dilation_px"), 5.0))
+                dilated = binary_dilation(pred_mask, structure=np.ones((2 * dilation_px + 1, 2 * dilation_px + 1), dtype=bool)) if dilation_px > 0 else pred_mask
+                observed_projection_coverage_fraction = float(np.mean(mask_values_at_pixels(dilated, valid_obs_uv)))
+    max_median = finite_float(parameters.get("max_observed_to_predicted_median_m"), 0.025)
+    max_p95 = finite_float(parameters.get("max_observed_to_predicted_p95_m"), 0.075)
+    min_predicted_inside = finite_float(parameters.get("min_predicted_projection_inside_mask_fraction"), 0.45)
+    min_observed_coverage = finite_float(parameters.get("min_observed_surface_projection_coverage_fraction"), 0.35)
+    blockers: list[str] = []
+    if not (observed_to_predicted_median_m <= max_median):
+        blockers.append("frame_observed_to_predicted_median_residual_high")
+    if not (observed_to_predicted_p95_m <= max_p95):
+        blockers.append("frame_observed_to_predicted_p95_residual_high")
+    if predicted_inside_fraction is None or predicted_inside_fraction < min_predicted_inside:
+        blockers.append("frame_predicted_projection_inside_mask_fraction_low")
+    if observed_projection_coverage_fraction is None or observed_projection_coverage_fraction < min_observed_coverage:
+        blockers.append("frame_observed_projection_coverage_fraction_low")
+    supported = not blockers
+    return {
+        "method": "final_pipeline_frame_local_part_depth_silhouette_validation",
+        "frame_visible_depth_silhouette_pose_supported": bool(supported),
+        "frame_part_pose_validation_state": "frame_part_visible_depth_silhouette_pose_supported" if supported else "frame_part_visible_depth_silhouette_pose_rejected",
+        "frame_part_pose_validation_blockers": blockers,
+        "frame_observed_to_predicted_median_m": observed_to_predicted_median_m,
+        "frame_observed_to_predicted_p95_m": observed_to_predicted_p95_m,
+        "frame_predicted_projection_inside_mask_fraction": predicted_inside_fraction,
+        "frame_observed_projection_coverage_fraction": observed_projection_coverage_fraction,
+        "frame_observed_vertex_count": int(observed.shape[0]),
+        "frame_predicted_vertex_count": int(predicted.shape[0]),
+        "frame_local_validation_scope": "same_frame_visible_depth_and_part_mask_pose_support_only_not_hidden_part_completion",
+    }
+
+
+def attach_frame_local_part_pose_validation(frames: list[dict[str, Any]], part_pose_validation_summary: dict[str, Any], use_graph_estimate: bool) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    parameters = part_pose_validation_summary.get("parameters") if isinstance(part_pose_validation_summary.get("parameters"), dict) else {}
+    phase = "graph" if use_graph_estimate else "observation"
+    for frame in frames:
+        part_graph_vars = part_se3_variable_by_key(frame) if use_graph_estimate else {}
+        for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
+            if not isinstance(obj, dict):
+                continue
+            object_id = str(obj.get("object_id"))
+            for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
+                if not isinstance(part, dict):
+                    continue
+                label = str(part.get("part_track_label"))
+                graph_var = part_graph_vars.get((object_id, label)) if use_graph_estimate else None
+                frame_validation = frame_local_part_pose_validation(part, graph_var, parameters)
+                if frame_validation is None:
+                    continue
+                validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+                validation.update(frame_validation)
+                validation["frame_local_validation_phase"] = phase
+                part["part_silhouette_depth_pose_validation"] = validation
+                counts[f"frame_local_part_pose_validation_{phase}_rows"] += 1
+                if frame_validation.get("frame_visible_depth_silhouette_pose_supported") is True:
+                    counts[f"frame_local_part_pose_validation_{phase}_supported_rows"] += 1
+                else:
+                    counts[f"frame_local_part_pose_validation_{phase}_rejected_rows"] += 1
+    return counts
+
+
 def camera_to_world_point(frame: dict[str, Any], point_camera: np.ndarray) -> list[float] | None:
     camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
     transform = np.asarray(camera.get("T_world_camera_metric", []), dtype=np.float64)
@@ -1846,28 +2003,41 @@ def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, A
         final_distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
         if (physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True) and isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m") and math.isfinite(final_distance) and final_distance <= 0.05:
             paths.append("deformable_same_frame_visible_surface")
-    if switch.get("validated_part_pose_contact_claim_supported") is True:
-        label = str(switch.get("validated_part_track_label"))
-        part = next((p for p in obj.get("parts", []) if isinstance(p, dict) and str(p.get("part_track_label")) == label), None) if isinstance(obj.get("parts"), list) else None
-        validation_part = part.get("part_silhouette_depth_pose_validation") if isinstance(part, dict) and isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
-        part_distance = finite_float(switch.get("validated_part_metric_contact_distance_m"), float("nan"))
-        if validation_part.get("visible_depth_silhouette_pose_supported") is True and math.isfinite(part_distance) and part_distance <= 0.12:
-            paths.append("validated_part_visible_depth_silhouette_pose")
-            hand = next((h for h in frame.get("hands", []) if isinstance(h, dict) and str(h.get("hand_side")) == str(switch.get("hand_side"))), None) if isinstance(frame.get("hands"), list) else None
-            part_graph_vars = part_se3_variable_by_key(frame)
+    hand = next((h for h in frame.get("hands", []) if isinstance(h, dict) and str(h.get("hand_side")) == str(switch.get("hand_side"))), None) if isinstance(frame.get("hands"), list) else None
+    metric_state = hand.get("metric_mano_state") if isinstance(hand, dict) and isinstance(hand.get("metric_mano_state"), dict) else {}
+    hand_camera = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
+    part_graph_vars = part_se3_variable_by_key(frame)
+    best_part: tuple[str, np.ndarray, np.ndarray, float] | None = None
+    if hand_camera.ndim == 2 and hand_camera.shape[1] == 3:
+        for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
+            if not isinstance(part, dict):
+                continue
+            validation_part = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+            if not part_validation_supports_current_frame(validation_part):
+                continue
+            label = str(part.get("part_track_label"))
             graph_var = part_graph_vars.get((str(obj.get("object_id")), label))
-            metric_state = hand.get("metric_mano_state") if isinstance(hand, dict) and isinstance(hand.get("metric_mano_state"), dict) else {}
-            hand_camera = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
-            if isinstance(part, dict) and hand_camera.ndim == 2 and hand_camera.shape[1] == 3:
-                part_points = posed_part_mesh_sample_camera(part, graph_var)
-                pair = nearest_point_pair(hand_camera, part_points)
-                if pair is not None:
-                    hand_pt, part_pt, _ = pair
-                    hand_world = camera_to_world_point(frame, hand_pt)
-                    part_world = camera_to_world_point(frame, part_pt)
-                    if hand_world is not None and part_world is not None:
-                        switch["validated_part_nearest_hand_point_world_m"] = hand_world
-                        switch["validated_part_nearest_part_point_world_m"] = part_world
+            part_points = posed_part_mesh_sample_camera(part, graph_var)
+            pair = nearest_point_pair(hand_camera, part_points)
+            if pair is None:
+                continue
+            hand_pt, part_pt, distance = pair
+            if distance <= 0.12 and (best_part is None or distance < best_part[3]):
+                best_part = (label, hand_pt, part_pt, float(distance))
+    if best_part is not None:
+        label, hand_pt, part_pt, part_distance = best_part
+        paths.append("validated_part_visible_depth_silhouette_pose")
+        switch["final_validated_part_track_label"] = label
+        switch["final_validated_part_metric_contact_distance_m"] = float(part_distance)
+        if switch.get("validated_part_track_label") is None:
+            switch["validated_part_track_label"] = label
+        if switch.get("validated_part_metric_contact_distance_m") is None:
+            switch["validated_part_metric_contact_distance_m"] = float(part_distance)
+        hand_world = camera_to_world_point(frame, hand_pt)
+        part_world = camera_to_world_point(frame, part_pt)
+        if hand_world is not None and part_world is not None:
+            switch["validated_part_nearest_hand_point_world_m"] = hand_world
+            switch["validated_part_nearest_part_point_world_m"] = part_world
     return paths
 
 
@@ -1883,7 +2053,7 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
                 continue
             obj = objects_by_id.get(str(switch.get("object_id")), {})
             support_paths = final_contact_support_paths_for_mode(frame, obj, switch) if isinstance(obj, dict) else []
-            distance_candidates = [finite_float(switch.get(key), float("nan")) for key in ["effective_metric_contact_distance_m", "final_metric_contact_distance_m", "validated_part_metric_contact_distance_m"]]
+            distance_candidates = [finite_float(switch.get(key), float("nan")) for key in ["effective_metric_contact_distance_m", "final_metric_contact_distance_m", "validated_part_metric_contact_distance_m", "final_validated_part_metric_contact_distance_m"]]
             near_distance = min((v for v in distance_candidates if math.isfinite(v)), default=float("nan"))
             near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
             active = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True and switch.get("support_gate_allows_active_contact") is True)
@@ -2191,6 +2361,32 @@ def load_mesh_vertex_sample(mesh_path_raw: Any, max_count: int = 192) -> np.ndar
         return np.zeros((0, 3), dtype=np.float64)
     vertices = sampled_points(np.asarray(mesh.vertices, dtype=np.float64), max_count)
     MESH_VERTEX_SAMPLE_CACHE[mesh_path] = vertices
+    return vertices
+
+
+def load_dense_vertex_sample(mesh_path_raw: Any, max_count: int = 8000) -> np.ndarray:
+    mesh_path = str(mesh_path_raw or "")
+    if not mesh_path:
+        return np.zeros((0, 3), dtype=np.float64)
+    key = (mesh_path, int(max_count))
+    cached = DENSE_VERTEX_SAMPLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    path = Path(mesh_path)
+    if not path.exists():
+        return np.zeros((0, 3), dtype=np.float64)
+    loaded = trimesh.load(path, force="scene", process=False)
+    if isinstance(loaded, trimesh.Scene):
+        arrays = [np.asarray(geom.vertices, dtype=np.float64) for geom in loaded.geometry.values() if hasattr(geom, "vertices") and len(geom.vertices) > 0]
+        if not arrays:
+            return np.zeros((0, 3), dtype=np.float64)
+        vertices_all = np.vstack(arrays)
+    elif hasattr(loaded, "vertices"):
+        vertices_all = np.asarray(loaded.vertices, dtype=np.float64)
+    else:
+        return np.zeros((0, 3), dtype=np.float64)
+    vertices = sampled_points(vertices_all, max_count)
+    DENSE_VERTEX_SAMPLE_CACHE[key] = vertices
     return vertices
 
 
@@ -2528,7 +2724,7 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
         if best is None or distance < best[3]:
             best = (part, hand_pt, part_pt, distance)
         validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
-        if validation.get("visible_depth_silhouette_pose_supported") is True and (best_validated is None or distance < best_validated[3]):
+        if part_validation_supports_current_frame(validation) and (best_validated is None or distance < best_validated[3]):
             best_validated = (part, hand_pt, part_pt, distance)
     if best is None:
         return None
@@ -2586,7 +2782,7 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
             "raw_contact_switch_active": raw_contact,
             "contact_proposal_used": proposal_contact,
             "part_geometry_source": "depth_fused_reconstructed_part_mesh_candidate",
-            "part_pose_validation_supported": (part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}).get("visible_depth_silhouette_pose_supported") is True,
+            "part_pose_validation_supported": part_validation_supports_current_frame(part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}),
             "scope": "part_contact_anchor_for_articulated_or_part_required_object_without_complete_object_pose_claim",
         },
     }
@@ -2761,7 +2957,7 @@ def contact_switch_energy(
                     part_support = max(0.0, min(1.0, (0.15 - coupled_part_distance_m) / 0.13))
                     final_metric_raw_support = max(final_metric_raw_support, part_support)
                 validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
-                if validation.get("visible_depth_silhouette_pose_supported") is True and (distance < validated_part_distance_m or not math.isfinite(validated_part_distance_m)):
+                if part_validation_supports_current_frame(validation) and (distance < validated_part_distance_m or not math.isfinite(validated_part_distance_m)):
                     validated_part_distance_m = float(distance)
                     validated_part_label = label
                     center_base, _ = part_pose_value_from_graph_or_candidate(part)
@@ -3626,7 +3822,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     part["reconstructed_part_geometry_candidate"] = candidate
                 pose_validation = part_pose_validation_by_key.get((object_id, label))
                 if pose_validation is not None:
-                    part["part_silhouette_depth_pose_validation"] = pose_validation
+                    part["part_silhouette_depth_pose_validation"] = dict(pose_validation)
                     module_counts["part_silhouette_depth_pose_validation_rows"] += 1
                     if pose_validation.get("visible_depth_silhouette_pose_supported") is True:
                         module_counts["part_silhouette_depth_pose_supported_rows"] += 1
@@ -3740,15 +3936,20 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 },
             }
         )
+    frame_local_part_pose_observation_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=False)
     factor_graph_by_frame, factor_graph_summary = solve_v18_factor_graph(frames, require_dict(state.get("raw_video", {}), "raw_video"), articulation_index, articulation_sources, camera_depth_correction_index, camera_depth_correction_summary)
+    factor_graph_summary["frame_local_part_pose_observation_counts"] = dict(sorted(frame_local_part_pose_observation_counts.items()))
     for frame in frames:
         frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
         frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
     reconstructed_geometry_counts = attach_reconstructed_geometry_pose(frames)
+    frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
     object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
     contact_physical_mode_counts = attach_contact_physical_modes(frames)
+    factor_graph_summary["frame_local_part_pose_graph_counts"] = dict(sorted(frame_local_part_pose_graph_counts.items()))
     factor_graph_summary["contact_physical_mode_counts"] = dict(sorted(contact_physical_mode_counts.items()))
     module_counts.update(reconstructed_geometry_counts)
+    module_counts.update(frame_local_part_pose_graph_counts)
     module_counts.update(object_pose_validation_counts)
     module_counts.update(contact_physical_mode_counts)
     module_counts["factor_graph_variables"] += sum(int(v) for v in factor_graph_summary.get("variable_counts", {}).values())

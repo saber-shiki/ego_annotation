@@ -172,6 +172,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "part_renderable_reconstructed_geometry_pose_rows": 0,
         "part_silhouette_depth_pose_validation_rows": 0,
         "part_silhouette_depth_pose_supported_rows": 0,
+        "frame_local_part_pose_validation_rows": 0,
+        "frame_local_part_pose_validation_supported_rows": 0,
+        "frame_local_part_pose_validation_rejected_rows": 0,
         "contacts": 0,
         "contacts_with_final_metric_distance": 0,
         "contacts_with_hawor_support_weight": 0,
@@ -408,6 +411,16 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(validation.get("part_pose_ready") is False, f"{case}: part validation overclaims part_pose_ready")
                     require(validation.get("object_pose_requirement_met") is False, f"{case}: part validation overclaims object pose")
                     require("visible_same_frame_depth" in str(validation.get("scope")), f"{case}: part validation scope missing")
+                    if "frame_visible_depth_silhouette_pose_supported" in validation:
+                        counts["frame_local_part_pose_validation_rows"] += 1
+                        if validation.get("frame_visible_depth_silhouette_pose_supported") is True:
+                            counts["frame_local_part_pose_validation_supported_rows"] += 1
+                        else:
+                            counts["frame_local_part_pose_validation_rejected_rows"] += 1
+                        require(validation.get("frame_local_validation_phase") == "graph", f"{case}: final part frame-local validation is not graph-phase")
+                        require("same_frame_visible_depth" in str(validation.get("frame_local_validation_scope")), f"{case}: frame-local part validation scope missing")
+                        require(isinstance(validation.get("frame_observed_to_predicted_median_m"), (int, float)), f"{case}: frame-local part validation missing median residual")
+                        require(isinstance(validation.get("frame_observed_to_predicted_p95_m"), (int, float)), f"{case}: frame-local part validation missing p95 residual")
                 part_recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else None
                 if isinstance(part_recon, dict):
                     counts["part_reconstructed_geometry_pose_rows"] += 1
@@ -486,6 +499,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["part_reconstructed_geometry_pose_rows"] == counts["part_rows"], f"{case}: reconstructed part geometry pose state missing on part rows")
     require(counts["part_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed part mesh pose rows")
     require(counts["part_silhouette_depth_pose_validation_rows"] > 0, f"{case}: no part silhouette/depth pose validation rows")
+    require(counts["frame_local_part_pose_validation_rows"] == counts["part_silhouette_depth_pose_validation_rows"], f"{case}: frame-local part validation rows do not cover final part validation rows")
     require(counts["part_silhouette_depth_pose_supported_rows"] > 0, f"{case}: no supported part silhouette/depth pose validation rows")
     require(counts["factor_frames"] == expected, f"{case}: factor graph not present for every frame")
     require(counts["camera_depth_observed_rows"] > 0, f"{case}: no observed camera/depth correction rows")
