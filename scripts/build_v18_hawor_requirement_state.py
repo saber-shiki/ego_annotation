@@ -23,7 +23,7 @@ EXPECTED_VERTICES = 778
 EXPECTED_JOINTS = 21
 EXPECTED_CASES = ("trash_1050", "task5_tomato_960")
 DEFAULT_HAWOR_OUTPUTS = {
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050/hawor_world_hands_with_track_support.npz"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050/hawor_world_hands_with_track_support_boundary_filled.npz"),
     "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands_with_track_support.npz"),
 }
 EXPECTED_SOURCE_CLIP_SHA256 = {
@@ -179,6 +179,8 @@ def validate_hawor_npz(path: Path, expected_frame_count: int) -> tuple[dict[str,
         detected = np.asarray(z[detected_key]).astype(bool) if detected_key in z.files else None
         det_box = np.asarray(z[det_box_key]) if det_box_key in z.files else None
         track_id = np.asarray(z[track_id_key]) if track_id_key in z.files else None
+        boundary_fill_key = f"{side}_temporal_boundary_filled"
+        boundary_fill = np.asarray(z[boundary_fill_key]).astype(bool) if boundary_fill_key in z.files else np.zeros(expected_frame_count, dtype=bool)
         if vertices.shape != (expected_frame_count, EXPECTED_VERTICES, 3):
             failures.append(f"{side}_vertices_shape_mismatch")
         if joints.shape != (expected_frame_count, EXPECTED_JOINTS, 3):
@@ -209,12 +211,14 @@ def validate_hawor_npz(path: Path, expected_frame_count: int) -> tuple[dict[str,
             spans = np.linalg.norm(joints[valid, 12] - joints[valid, 0], axis=1).astype(float).tolist()
         detected_valid = detected if isinstance(detected, np.ndarray) and detected.shape == (expected_frame_count,) else np.zeros(expected_frame_count, dtype=bool)
         valid_without_detection = valid & ~detected_valid if valid.shape == (expected_frame_count,) else np.zeros(expected_frame_count, dtype=bool)
+        boundary_fill_valid = valid & boundary_fill if valid.shape == (expected_frame_count,) and boundary_fill.shape == (expected_frame_count,) else np.zeros(expected_frame_count, dtype=bool)
         side_reports[side] = {
             "valid_frames": int(np.count_nonzero(valid)) if valid.shape == (expected_frame_count,) else 0,
             "missing_or_invalid_frames": int(expected_frame_count - np.count_nonzero(valid)) if valid.shape == (expected_frame_count,) else expected_frame_count,
             "same_frame_detection_frames": int(np.count_nonzero(detected_valid)),
             "valid_frames_without_same_frame_detection": int(np.count_nonzero(valid_without_detection)),
             "longest_valid_run_without_same_frame_detection": longest_true_run(valid_without_detection),
+            "temporal_boundary_filled_valid_frames": int(np.count_nonzero(boundary_fill_valid)),
             "vertex_shape": list(vertices.shape),
             "joint_shape": list(joints.shape),
             "mano_pose_shape": list(pose.shape),
@@ -282,6 +286,7 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
     available_rows = sum(int(side_valid.get(side, {}).get("valid_frames", 0)) for side in SIDES)
     same_frame_detection_rows = sum(int(side_valid.get(side, {}).get("same_frame_detection_frames", 0)) for side in SIDES)
     valid_without_same_frame_detection_rows = sum(int(side_valid.get(side, {}).get("valid_frames_without_same_frame_detection", 0)) for side in SIDES)
+    temporal_boundary_filled_rows = sum(int(side_valid.get(side, {}).get("temporal_boundary_filled_valid_frames", 0)) for side in SIDES)
     full_shape_valid = npz_report.get("status") == "hawor_full_timeline_npz_shape_valid"
     full_valid_rows = available_rows == expected_frames * 2
     blockers: list[str] = []
@@ -291,6 +296,8 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         blockers.append("hawor_valid_rows_do_not_cover_all_frame_sides")
     if valid_without_same_frame_detection_rows:
         blockers.append("hawor_valid_rows_include_inferred_without_same_frame_detection_support")
+    if temporal_boundary_filled_rows:
+        blockers.append("hawor_timeline_contains_explicit_temporal_boundary_fill_rows")
     # Even when a HaWoR NPZ exists, current V18 cannot accept it blindly. A bridge report can reduce
     # uncertainty about the coordinate path, but it is still candidate-only until residual tails are explained
     # and downstream contact/occlusion/nonpenetration are recomputed from the HaWoR state.
@@ -354,6 +361,7 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         "available_hawor_frame_side_rows": available_rows,
         "same_frame_detection_frame_side_rows": same_frame_detection_rows,
         "valid_without_same_frame_detection_frame_side_rows": valid_without_same_frame_detection_rows,
+        "temporal_boundary_filled_frame_side_rows": temporal_boundary_filled_rows,
         "full_timeline_hawor_npz_shape_valid": full_shape_valid,
         "full_timeline_hawor_valid_rows": full_valid_rows,
         "recorded_remote_video_path": npz_report.get("video_path_recorded_in_npz"),
@@ -386,7 +394,7 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
             f"Status: `{case['status']}`",
             f"HaWoR output: `{case['hawor_output'].get('path')}` exists=`{case['hawor_output'].get('exists')}`",
             f"Available HaWoR frame-side rows: `{case.get('available_hawor_frame_side_rows')}/{case.get('expected_frame_side_rows')}`",
-            f"Same-frame detection frame-side rows: `{case.get('same_frame_detection_frame_side_rows')}`; inferred/unsupported valid rows: `{case.get('valid_without_same_frame_detection_frame_side_rows')}`",
+            f"Same-frame detection frame-side rows: `{case.get('same_frame_detection_frame_side_rows')}`; inferred/unsupported valid rows: `{case.get('valid_without_same_frame_detection_frame_side_rows')}`; temporal boundary-filled rows: `{case.get('temporal_boundary_filled_frame_side_rows')}`",
             f"Full-timeline NPZ shape valid: `{case.get('full_timeline_hawor_npz_shape_valid')}`",
             f"Accepted V18 HaWoR requirement met: `{case.get('accepted_v18_hawor_requirement_met')}`",
             f"Blocking reasons: `{case.get('blocking_reasons')}`",

@@ -24,7 +24,7 @@ INT_TO_SIDE = {0: "left", 1: "right"}
 EXPECTED_VERTICES = 778
 EXPECTED_JOINTS = 21
 DEFAULT_HAWOR_OUTPUTS = {
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050/hawor_world_hands_with_track_support.npz"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050/hawor_world_hands_with_track_support_boundary_filled.npz"),
     "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands_with_track_support.npz"),
 }
 
