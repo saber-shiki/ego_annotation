@@ -2005,12 +2005,15 @@ def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str
     observed_projection = projected_mask_inside_fraction(observed, frame, mask)
     observed_p95 = finite_float(observed_to_predicted.get("p95"), float("inf"))
     predicted_inside = finite_float(predicted_projection.get("inside_mask_fraction"), 0.0)
+    observed_inside = finite_float(observed_projection.get("inside_mask_fraction"), 0.0)
     rigid_visible_mesh = bool(recon.get("rigid_pose_supported_visible_mesh") is True)
     blockers: list[str] = []
     if not rigid_visible_mesh:
         blockers.append("not_rigid_supported_visible_mesh")
     if observed_p95 > 0.16:
         blockers.append("observed_visible_surface_to_mesh_p95_over_16cm")
+    if observed_inside < 0.02:
+        blockers.append("observed_visible_surface_projection_not_supported_by_mask")
     if predicted_inside < 0.02:
         blockers.append("projected_mesh_vertices_have_weak_mask_support")
     if int(predicted_projection.get("valid_projected_count", 0) or 0) < 5:
