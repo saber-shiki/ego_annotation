@@ -133,6 +133,12 @@ def validate_case(path: Path) -> dict[str, Any]:
                         require(row.get("signed_local_nonpenetration_factor_present") is True or row.get("triangle_local_nonpenetration_factor_present") is True, f"{case}: local nonpenetration factor lacks evidence source")
                     if row.get("estimate") is True and union_conflict:
                         temporal_contact_active_conflicts += 1
+                    if row.get("estimate") is True:
+                        require(row.get("geometry_contact_evidence_available") is True, f"{case}: active contact lacks geometry evidence")
+                        effective_distance = row.get("effective_metric_contact_distance_m")
+                        mesh_support = float(row.get("mesh_contact_support_score", 0.0) or 0.0)
+                        near_effective = isinstance(effective_distance, (int, float)) and float(effective_distance) <= 0.20
+                        require(near_effective or mesh_support > 0.5, f"{case}: active contact lacks near metric distance or strong mesh support")
                     gap = row.get("temporal_contact_previous_frame_gap")
                     has_factor = row.get("temporal_contact_has_factor") is True
                     applied = row.get("temporal_contact_transition_applied") is True

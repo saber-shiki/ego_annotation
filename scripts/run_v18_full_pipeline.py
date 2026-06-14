@@ -1966,6 +1966,13 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
                 coupled_object_delta_m = [float(v) for v in delta.tolist()]
                 coupled_support = max(0.0, min(1.0, (0.15 - coupled_object_distance_m) / 0.13))
                 final_metric_raw_support = max(final_metric_raw_support, coupled_support)
+    effective_metric_distance_candidates = [v for v in [final_metric_distance_m, coupled_object_distance_m] if math.isfinite(v)]
+    effective_metric_contact_distance_m = min(effective_metric_distance_candidates) if effective_metric_distance_candidates else float("nan")
+    if math.isfinite(effective_metric_contact_distance_m):
+        final_metric_raw_support = max(final_metric_raw_support, max(0.0, min(1.0, (0.15 - effective_metric_contact_distance_m) / 0.13)))
+    geometry_far_contact_penalty = min(4.0, max(0.0, effective_metric_contact_distance_m - 0.05) * 6.0) if math.isfinite(effective_metric_contact_distance_m) else 0.0
+    geometry_contact_evidence_available = bool(math.isfinite(effective_metric_contact_distance_m) or mesh_support > 0.5)
+    missing_geometry_contact_penalty = 2.5 if not geometry_contact_evidence_available else 0.0
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
     support_gate_allows_active_contact = hand_support_state == "observed_same_frame_detection"
@@ -1979,13 +1986,16 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         on_energy += 1.5
     if mesh_support > 0.0:
         on_energy += (1.0 - mesh_support) ** 2
-    if math.isfinite(final_metric_distance_m):
-        on_energy += min(2.0, final_metric_distance_m * 4.0)
+    if math.isfinite(effective_metric_contact_distance_m):
+        on_energy += min(2.0, effective_metric_contact_distance_m * 4.0)
+        on_energy += geometry_far_contact_penalty
     if nonpenetration_conflict:
         on_energy += 2.0
-    if accepted_contact_owner:
+    if missing_geometry_contact_penalty > 0.0:
+        on_energy += missing_geometry_contact_penalty
+    if accepted_contact_owner and geometry_far_contact_penalty < 0.5:
         on_energy *= 0.35
-    elif selected_contact_owner:
+    elif selected_contact_owner and geometry_far_contact_penalty < 0.5:
         on_energy *= 0.75
     off_energy = image_support ** 2
     if depth_compatible:
@@ -1994,9 +2004,16 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         off_energy += mesh_support
     if final_metric_support > 0.0:
         off_energy += final_metric_support
-    if accepted_contact_owner:
+    if accepted_contact_owner and geometry_far_contact_penalty < 0.5:
         off_energy += 1.0
     if depth_contradiction and not accepted_contact_owner:
+        off_energy *= 0.5
+    if geometry_far_contact_penalty > 0.0:
+        far_geometry_discount = max(0.15, 1.0 - min(0.85, geometry_far_contact_penalty / 4.0))
+        off_energy *= far_geometry_discount
+    else:
+        far_geometry_discount = 1.0
+    if missing_geometry_contact_penalty > 0.0:
         off_energy *= 0.5
     raw_switch_on = (on_energy < off_energy) and not nonpenetration_conflict
     switch_on = raw_switch_on and support_gate_allows_active_contact
@@ -2025,6 +2042,11 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "hand_support_weight": float(hand_support_weight),
         "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
         "coupled_object_metric_contact_distance_m": float(coupled_object_distance_m) if math.isfinite(coupled_object_distance_m) else None,
+        "effective_metric_contact_distance_m": float(effective_metric_contact_distance_m) if math.isfinite(effective_metric_contact_distance_m) else None,
+        "geometry_contact_evidence_available": bool(geometry_contact_evidence_available),
+        "missing_geometry_contact_penalty": float(missing_geometry_contact_penalty),
+        "geometry_far_contact_penalty": float(geometry_far_contact_penalty),
+        "far_geometry_off_evidence_discount": float(far_geometry_discount),
         "coupled_object_translation_delta_world_m": coupled_object_delta_m,
         "selected_contact_owner": selected_contact_owner,
         "accepted_contact_owner": accepted_contact_owner,
