@@ -717,6 +717,122 @@ def load_visible_geometry_index(report_path: Path) -> tuple[dict[tuple[int, str]
     return index, completion, archive_path
 
 
+def load_weak_visible_depth_source(report_path: Path) -> dict[str, Any]:
+    if not report_path.exists():
+        return {}
+    report = require_dict(load_json(report_path), "visible geometry report")
+    sources = report.get("sources") if isinstance(report.get("sources"), dict) else {}
+    source_report_raw = sources.get("v17_visible_surface_report")
+    source_report_path = Path(str(source_report_raw)) if source_report_raw else None
+    if source_report_path is None or not source_report_path.exists():
+        return {}
+    source_report = require_dict(load_json(source_report_path), "source visible surface report")
+    depth_path_raw = source_report.get("metric_depth_npz")
+    depth_path = Path(str(depth_path_raw)) if depth_path_raw else None
+    if depth_path is None or not depth_path.exists():
+        return {}
+    depth_data = np.load(depth_path, mmap_mode="r", allow_pickle=True)
+    frame_to_i = {int(v): i for i, v in enumerate(depth_data["frame_idx"])}
+    rejected_by_key: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for raw in source_report.get("rejected_rows", []) if isinstance(source_report.get("rejected_rows"), list) else []:
+        if not isinstance(raw, dict):
+            continue
+        key = (int(finite_float(raw.get("frame_idx"), -1.0)), str(raw.get("object_id")), str(raw.get("mask_path")))
+        rejected_by_key[key] = raw
+    return {
+        "source_report": str(source_report_path),
+        "depth_npz": str(depth_path),
+        "depth": depth_data["depth"],
+        "intrinsics": depth_data["intrinsics_fx_fy_cx_cy"],
+        "frame_to_i": frame_to_i,
+        "rejected_by_key": rejected_by_key,
+    }
+
+
+def weak_visible_geometry_from_mask_depth(frame_idx: int, object_id: str, obj: dict[str, Any], frame: dict[str, Any], source: dict[str, Any]) -> dict[str, Any] | None:
+    if not source:
+        return None
+    mask_path = str(obj.get("mask_path") or "")
+    if not mask_path:
+        return None
+    row = source.get("rejected_by_key", {}).get((frame_idx, object_id, mask_path))
+    if not isinstance(row, dict):
+        return None
+    reason = str(row.get("reason") or "")
+    if reason not in {"too_few_sampled_vertices", "too_few_vertices_or_faces_after_surface_connectivity", "too_few_valid_masked_depth_pixels"}:
+        return None
+    frame_to_i = source.get("frame_to_i") if isinstance(source.get("frame_to_i"), dict) else {}
+    depth_i = frame_to_i.get(frame_idx)
+    if depth_i is None:
+        return None
+    mask = load_mask_bool(mask_path)
+    depth = np.asarray(source["depth"][int(depth_i)], dtype=np.float64)
+    if mask.ndim != 2 or depth.ndim != 2 or depth.size == 0:
+        return None
+    if mask.shape != depth.shape:
+        mask_img = Image.fromarray((mask.astype(np.uint8) * 255))
+        mask = np.asarray(mask_img.resize((depth.shape[1], depth.shape[0]), resample=Image.Resampling.NEAREST)) > 0
+    valid = mask & np.isfinite(depth) & (depth > 0.05) & (depth < 10.0)
+    values = depth[valid]
+    if values.size < 8:
+        return None
+    lo = float(np.quantile(values, 0.10))
+    hi = float(np.quantile(values, 0.90))
+    keep = valid & (depth >= lo) & (depth <= hi)
+    ys, xs = np.where(keep)
+    if xs.size < 8:
+        return None
+    if xs.size > 768:
+        take = np.linspace(0, xs.size - 1, 768).astype(np.int64)
+        xs = xs[take]
+        ys = ys[take]
+    intr = np.asarray(source["intrinsics"][int(depth_i)], dtype=np.float64)
+    if intr.shape != (4,) or not np.isfinite(intr).all():
+        return None
+    fx, fy, cx, cy = [float(v) for v in intr.tolist()]
+    z = depth[ys, xs].astype(np.float64)
+    camera_points = np.column_stack(((xs.astype(np.float64) - cx) * z / fx, (ys.astype(np.float64) - cy) * z / fy, z))
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    transform = np.asarray(camera.get("T_world_camera_metric", []), dtype=np.float64)
+    if transform.shape != (4, 4) or not np.isfinite(transform).all():
+        return None
+    hom = np.concatenate([camera_points, np.ones((camera_points.shape[0], 1), dtype=np.float64)], axis=1)
+    pts = (hom @ transform.T)[:, :3]
+    if pts.ndim != 2 or pts.shape[1] != 3 or not np.isfinite(pts).all():
+        return None
+    mn = pts.min(axis=0)
+    mx = pts.max(axis=0)
+    center = pts.mean(axis=0)
+    pca_pose = pca_pose_observation(pts)
+    pts_sample = sampled_points(pts, GEOMETRY_SAMPLE_COUNT)
+    return {
+        "archive_npz": None,
+        "archive_row_index": None,
+        "vertex_count": int(pts_sample.shape[0]),
+        "weak_visible_depth_pose_candidate": True,
+        "weak_visible_depth_source": "mask_depth_point_cloud_from_rejected_visible_surface_row",
+        "source_rejection_reason": reason,
+        "source_valid_masked_depth_pixels": int(values.size),
+        "source_kept_depth_pixels": int(xs.size),
+        "source_mask_path": mask_path,
+        "source_depth_intrinsics_fx_fy_cx_cy": [float(v) for v in intr.tolist()],
+        "source_depth_pixel_shape_hw": [int(depth.shape[0]), int(depth.shape[1])],
+        "source_original_mask_shape_hw": [int(mask.shape[0]), int(mask.shape[1])],
+        "source_depth_quantile_range_m": [lo, hi],
+        "world_vertices_sample_m": [[float(x) for x in row_pts] for row_pts in pts_sample.tolist()],
+        "world_bbox_min_m": [float(v) for v in mn.tolist()],
+        "world_bbox_max_m": [float(v) for v in mx.tolist()],
+        "world_centroid_m": [float(v) for v in center.tolist()],
+        "extent_m": [float(v) for v in (mx - mn).tolist()],
+        "pca_rotation_world_from_object": [float(v) for v in pca_pose["rotation_vector"].tolist()] if pca_pose else None,
+        "pca_rotation_matrix_world_from_object": [[float(x) for x in pca_pose_row] for pca_pose_row in pca_pose["rotation_matrix"].tolist()] if pca_pose else None,
+        "pca_singular_values": [float(v) for v in pca_pose["singular_values"].tolist()] if pca_pose else None,
+        "pca_anisotropy": float(pca_pose["anisotropy"]) if pca_pose else None,
+        "geometry_strength": "weak_sparse_mask_depth_point_cloud_no_surface_mesh_faces",
+        "scope": "same_frame_sparse_mask_depth_pose_measurement_from_rejected_surface_row_not_complete_geometry",
+    }
+
+
 def load_part_surface_index(path: Path) -> dict[tuple[int, str], list[dict[str, Any]]]:
     if not path.exists():
         return {}
@@ -1447,6 +1563,9 @@ def rigid_pose_support_from_schema(obj: dict[str, Any], completion: dict[str, An
         blockers.append("secondary_deformable_or_surface_component")
     if schema.get("surface_change_without_pose_state") is True:
         blockers.append("surface_change_without_pose_model")
+    geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+    if geom.get("weak_visible_depth_pose_candidate") is True:
+        blockers.append("weak_visible_depth_pose_not_strict_rigid_support")
     source_frames = int(finite_float(completion.get("source_frame_count"), 0.0)) if completion else 0
     if source_frames < 20:
         blockers.append("too_few_depth_fused_source_frames_for_supported_rigid_pose")
@@ -2761,14 +2880,17 @@ def solve_v18_factor_graph(
                 vertices = max(1.0, finite_float(geom.get("vertex_count"), 1.0))
                 anisotropy = max(0.0, finite_float(geom.get("pca_anisotropy"), 0.0))
                 weight = min(8.0, 1.0 + math.log1p(vertices) / 2.0)
+                weak_visible_depth = bool(geom.get("weak_visible_depth_pose_candidate") is True)
+                if weak_visible_depth:
+                    weight *= 0.35
                 object_id = str(obj.get("object_id"))
                 if rotvec is not None:
                     value = np.concatenate([trans, rotvec])
-                    source = "depth_visible_surface_centroid_plus_pca_rotvec_graph_observation"
+                    source = "weak_mask_depth_point_cloud_centroid_plus_pca_rotvec_graph_observation" if weak_visible_depth else "depth_visible_surface_centroid_plus_pca_rotvec_graph_observation"
                     weight *= max(0.5, min(1.5, anisotropy + 0.5))
                 else:
                     value = trans
-                    source = "depth_visible_surface_centroid_translation_graph_observation"
+                    source = "weak_mask_depth_point_cloud_centroid_translation_graph_observation" if weak_visible_depth else "depth_visible_surface_centroid_translation_graph_observation"
                 object_obs[f"object_se3::{object_id}"].append({"frame_idx": frame_idx, "variable_id": f"object_se3::{object_id}", "value": value, "weight": weight, "source": source})
             for part in obj.get("parts", []):
                 if not isinstance(part, dict):
@@ -3170,7 +3292,9 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     camera_depth_correction_index, camera_depth_correction_summary = load_camera_depth_correction_index(args.camera_depth_correction_root / case / "v18_camera_depth_correction_report.json")
     hand_baseline_index = load_hand_baseline_index(args.hand_baseline_root / case / "v18_hand_baseline_branch.json")
     pose_fill_gate_index = load_occlusion_pose_fill_gate_index(args.occlusion_pose_fill_gate_root / case / "v18_occlusion_pose_fill_gate_report.json")
-    geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
+    visible_geometry_report_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
+    geom_index, completion_by_object, visible_archive = load_visible_geometry_index(visible_geometry_report_path)
+    weak_visible_depth_source = load_weak_visible_depth_source(visible_geometry_report_path)
     physical_schema_by_object = load_physical_state_schema_index(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     part_depth_fused_by_key = load_part_depth_fused_reconstruction_index(args.part_depth_fused_reconstruction_root / case / "v18_part_depth_fused_reconstruction_report.json")
@@ -3305,6 +3429,10 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             obj = require_dict(raw_obj, "object")
             object_id = str(obj.get("object_id"))
             geom = geom_index.get((frame_idx, object_id))
+            if geom is None:
+                geom = weak_visible_geometry_from_mask_depth(frame_idx, object_id, obj, v16_frame, weak_visible_depth_source)
+                if geom is not None:
+                    module_counts["weak_visible_depth_pose_candidate_rows"] += 1
             parts_raw = part_index.get((frame_idx, object_id), [])
             parts: list[dict[str, Any]] = []
             for raw_part in parts_raw:

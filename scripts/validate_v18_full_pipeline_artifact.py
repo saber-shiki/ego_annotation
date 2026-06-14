@@ -318,6 +318,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 counts["object_visible_geometry_rows"] += 1
                 if isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m"):
                     counts["object_vertex_sample_rows"] += 1
+                if geom.get("weak_visible_depth_pose_candidate") is True:
+                    require("weak" in str(geom.get("geometry_strength")), f"{case}: weak visible-depth row missing explicit weak geometry strength")
             hidden = obj.get("hidden_geometry_candidate")
             if hidden is not None:
                 counts["object_hidden_or_unresolved_geometry_rows"] += 1
@@ -340,6 +342,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(recon.get("object_pose_requirement_met") is False, f"{case}: reconstructed geometry pose overclaims object pose completion")
                     require(recon.get("object_geometry_complete") is False, f"{case}: reconstructed geometry pose overclaims geometry completion")
                     require(recon.get("visible_depth_silhouette_pose_supported") in {True, False}, f"{case}: reconstructed geometry pose missing object depth/silhouette validation support field")
+                    if geom.get("weak_visible_depth_pose_candidate") is True:
+                        require(recon.get("rigid_pose_supported_visible_mesh") is not True, f"{case}: weak visible-depth row must not support strict rigid pose")
             for part in obj.get("parts") if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
                     continue
