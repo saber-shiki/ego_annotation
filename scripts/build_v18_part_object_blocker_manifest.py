@@ -76,6 +76,7 @@ def blocker_state(
     qc_row: dict[str, Any] | None,
     articulation_row: dict[str, Any] | None,
     part_se3_row: dict[str, Any] | None,
+    part_depth_rows: list[dict[str, Any]],
 ) -> tuple[str, list[str], list[str]]:
     blockers = set(list_str(part_row.get("blockers")))
     next_evidence = set(list_str(part_row.get("required_next_evidence")))
@@ -100,6 +101,11 @@ def blocker_state(
                         next_evidence.update({"repair part surface SE(3) residual outliers before part pose", "do not promote center-fit articulation without surface SE(3) support"})
                         return "blocked_part_se3_surface_residual_rejected", sorted(blockers), sorted(next_evidence)
                     if se3_state == "part_se3_surface_residual_supported_visible_only_not_pose":
+                        part_mesh_count = sum(1 for item in part_depth_rows if item.get("hidden_part_geometry_reconstructed") is True)
+                        if part_mesh_count > 0:
+                            blockers.update({"part_se3_surface_supported_visible_only_not_pose", "part_depth_fused_geometry_candidate_visible_only_not_complete", "silhouette_residual_not_evaluated", "contact_ownership_not_validated"})
+                            next_evidence.update({"validate silhouette/depth residuals for articulated parts", "validate hidden/occluded part geometry before contact or object-pose promotion"})
+                            return "blocked_part_depth_fused_geometry_no_silhouette_depth_pose", sorted(blockers), sorted(next_evidence)
                         blockers.update({"part_se3_surface_supported_visible_only_not_pose", "silhouette_residual_not_evaluated", "hidden_geometry_not_completed"})
                         next_evidence.update({"validate silhouette/depth residuals for articulated parts", "complete hidden part geometry before contact or object-pose promotion"})
                         return "blocked_part_se3_supported_no_silhouette_depth_pose", sorted(blockers), sorted(next_evidence)
@@ -150,6 +156,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     articulation_path = args.articulation_fit_root / case / "v18_articulation_fit_candidates_report.json"
     part_se3_path = args.part_se3_root / case / "v18_part_se3_surface_residuals_report.json"
     subset_path = args.visible_part_subset_root / case / "v18_visible_part_subset_archive_report.json"
+    part_depth_path = args.part_depth_fused_root / case / "v18_part_depth_fused_reconstruction_report.json"
     part_split = require_dict(load_json(part_split_path), f"{case} part split")
     completion = require_dict(load_json(completion_path), f"{case} completion gate")
     qc = require_dict(load_json(qc_path), f"{case} part motion qc")
@@ -157,6 +164,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     articulation = require_dict(load_json(articulation_path), f"{case} articulation fit candidates")
     part_se3 = require_dict(load_json(part_se3_path), f"{case} part SE3 surface residuals")
     subset = require_dict(load_json(subset_path), f"{case} visible part subset")
+    part_depth = require_dict(load_json(part_depth_path), f"{case} part depth fused reconstruction") if part_depth_path.exists() else {"part_rows": []}
     completion_by_object = rows_by_object(require_list(completion.get("object_rows"), "completion rows"))
     qc_by_object = rows_by_object(require_list(qc.get("object_rows"), "qc rows"))
     candidate_by_object = rows_by_object(require_list(candidates.get("object_rows"), "candidate object rows"))
@@ -166,6 +174,10 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     for raw_record in require_list(subset.get("candidate_records"), "subset candidate records"):
         record = require_dict(raw_record, "subset candidate record")
         subset_records_by_object.setdefault(str(record.get("object_id")), []).append(record)
+    part_depth_by_object: dict[str, list[dict[str, Any]]] = {}
+    for raw_record in require_list(part_depth.get("part_rows"), "part depth fused rows"):
+        record = require_dict(raw_record, "part depth fused row")
+        part_depth_by_object.setdefault(str(record.get("object_id")), []).append(record)
     object_rows: list[dict[str, Any]] = []
     state_counts: Counter[str] = Counter()
     for raw_part_row in require_list(part_split.get("object_rows"), "part split object rows"):
@@ -177,7 +189,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         articulation_row = articulation_by_object.get(object_id)
         part_se3_row = part_se3_by_object.get(object_id)
         subset_records = subset_records_by_object.get(object_id, [])
-        state, blockers, next_evidence = blocker_state(part_row, candidate_row, subset_records, qc_row, articulation_row, part_se3_row)
+        part_depth_rows = part_depth_by_object.get(object_id, [])
+        state, blockers, next_evidence = blocker_state(part_row, candidate_row, subset_records, qc_row, articulation_row, part_se3_row, part_depth_rows)
         state_counts[state] += 1
         object_rows.append(
             {
@@ -203,10 +216,12 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "visible_subset_rows": sum(require_int(record.get("archive_row_count"), "archive row count") for record in subset_records),
                 "visible_subset_vertices": sum(require_int(record.get("vertex_count"), "vertex count") for record in subset_records),
                 "visible_subset_faces": sum(require_int(record.get("face_count"), "face count") for record in subset_records),
+                "part_depth_fused_mesh_candidate_count": sum(1 for record in part_depth_rows if record.get("hidden_part_geometry_reconstructed") is True),
+                "part_depth_fused_source_frame_count": sum(require_int(record.get("source_frame_count"), "part depth source frame count") for record in part_depth_rows),
                 "part_motion_qc_state": qc_row.get("part_motion_qc_state") if qc_row else None,
                 "blockers": blockers,
                 "required_next_evidence": next_evidence,
-                "hidden_geometry_reconstructed": False,
+                "hidden_geometry_reconstructed": bool(any(record.get("hidden_part_geometry_reconstructed") is True for record in part_depth_rows)),
                 "articulation_model_ready": False,
                 "part_pose_ready": False,
                 "contact_ownership_ready": False,
@@ -226,6 +241,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "articulation_fit_candidates": str(articulation_path),
             "part_se3_surface_residuals": str(part_se3_path),
             "visible_part_subset_archive": str(subset_path),
+            "part_depth_fused_reconstruction": str(part_depth_path),
         },
         "required_part_object_count": len(object_rows),
         "part_object_blocker_state_counts": dict(sorted(state_counts.items())),
@@ -236,7 +252,8 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "articulation_hypothesis_pair_count": sum(require_int(row.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for row in object_rows),
         "articulation_fit_state_counts": dict(sorted(Counter(str(row.get("articulation_fit_state")) for row in object_rows if row.get("articulation_fit_state") is not None).items())),
         "part_se3_pair_state_counts": dict(sorted(Counter(str(row.get("part_se3_pair_state")) for row in object_rows if row.get("part_se3_pair_state") is not None).items())),
-        "hidden_geometry_reconstructed_count": 0,
+        "part_depth_fused_mesh_candidate_count": sum(require_int(row.get("part_depth_fused_mesh_candidate_count"), "part depth candidate count") for row in object_rows),
+        "hidden_geometry_reconstructed_count": sum(1 for row in object_rows if row.get("hidden_geometry_reconstructed") is True),
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
         "contact_ownership_ready_count": 0,
@@ -269,7 +286,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "articulation_hypothesis_pair_count": sum(require_int(report.get("articulation_hypothesis_pair_count"), "articulation hypothesis pair count") for report in reports),
         "articulation_fit_state_counts": dict(sorted(sum((Counter(require_dict(report.get("articulation_fit_state_counts"), "articulation fit state counts")) for report in reports), Counter()).items())),
         "part_se3_pair_state_counts": dict(sorted(sum((Counter(require_dict(report.get("part_se3_pair_state_counts"), "part se3 pair state counts")) for report in reports), Counter()).items())),
-        "hidden_geometry_reconstructed_count": 0,
+        "part_depth_fused_mesh_candidate_count": sum(require_int(report.get("part_depth_fused_mesh_candidate_count"), "part depth candidate count") for report in reports),
+        "hidden_geometry_reconstructed_count": sum(require_int(report.get("hidden_geometry_reconstructed_count"), "hidden geometry reconstructed count") for report in reports),
         "articulation_model_ready_count": 0,
         "part_pose_ready_count": 0,
         "contact_ownership_ready_count": 0,
@@ -287,6 +305,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "articulation_hypothesis_pair_count": report.get("articulation_hypothesis_pair_count"),
                 "articulation_fit_state_counts": report.get("articulation_fit_state_counts"),
                 "part_se3_pair_state_counts": report.get("part_se3_pair_state_counts"),
+                "part_depth_fused_mesh_candidate_count": report.get("part_depth_fused_mesh_candidate_count"),
+                "hidden_geometry_reconstructed_count": report.get("hidden_geometry_reconstructed_count"),
                 **FALSE_READY,
             }
             for report in reports
@@ -306,6 +326,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--articulation-fit-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--part-se3-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_se3_surface_residuals"))
     parser.add_argument("--visible-part-subset-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_part_subset_archive"))
+    parser.add_argument("--part-depth-fused-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_depth_fused_reconstruction"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
