@@ -1396,7 +1396,9 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
     if math.isfinite(final_metric_distance_m):
         # Continuous support: <=2 cm is strong, 5 cm is weak, farther decays to zero by 15 cm.
         final_metric_raw_support = max(0.0, min(1.0, (0.15 - final_metric_distance_m) / 0.13))
-    hand_support_weight = max(0.0, min(1.0, finite_float(final_metric.get("hand_physical_factor_weight"), 0.0)))
+    hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
+    hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
+    support_gate_allows_active_contact = hand_support_state == "observed_same_frame_detection"
     final_metric_support = final_metric_raw_support * hand_support_weight
     image_support = max(iou, coverage, mesh_support, final_metric_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
     # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
@@ -1426,12 +1428,16 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         off_energy += 1.0
     if depth_contradiction and not accepted_contact_owner:
         off_energy *= 0.5
-    switch_on = (on_energy < off_energy) and not nonpenetration_conflict
+    raw_switch_on = (on_energy < off_energy) and not nonpenetration_conflict
+    switch_on = raw_switch_on and support_gate_allows_active_contact
     return {
         "hand_side": hyp.get("hand_side"),
         "object_id": hyp.get("object_id"),
         "variable_id": f"contact::{hyp.get('hand_side')}::{hyp.get('object_id')}",
         "estimate": bool(switch_on),
+        "raw_estimate_before_hawor_support_gate": bool(raw_switch_on),
+        "support_gate_allows_active_contact": bool(support_gate_allows_active_contact),
+        "support_gate_reason": "observed_same_frame_hawor_required_for_active_contact" if not support_gate_allows_active_contact else "observed_same_frame_hawor_support",
         "on_energy": float(on_energy),
         "off_energy": float(off_energy),
         "chosen_energy": float(on_energy if switch_on else off_energy),
@@ -1445,6 +1451,8 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "final_metric_contact_raw_distance_support_score": float(final_metric_raw_support),
         "final_metric_contact_hand_support_weight": float(hand_support_weight),
         "final_metric_contact_hand_support_state": final_metric.get("hand_support_state"),
+        "hand_support_state": hand_support_state,
+        "hand_support_weight": float(hand_support_weight),
         "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
         "selected_contact_owner": selected_contact_owner,
         "accepted_contact_owner": accepted_contact_owner,
@@ -1782,6 +1790,8 @@ def solve_v18_factor_graph(
             on_energy = finite_float(switch.get("on_energy"), 0.0)
             if switch.get("nonpenetration_conflict") is True:
                 on_energy += 1e6
+            if switch.get("support_gate_allows_active_contact") is not True:
+                on_energy += 1e6
             on_costs.append(on_energy)
         dp_off = [off_costs[0]]
         dp_on = [on_costs[0]]
@@ -1822,7 +1832,7 @@ def solve_v18_factor_graph(
                 temporal_energy = contact_temporal_switch_penalty / float(max(1, frame_gap))
                 contact_temporal_switch_count += 1
             chosen_energy = finite_float(switch.get("on_energy" if state else "off_energy"), 0.0)
-            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True)
+            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True)
             switch["chosen_energy"] = chosen_energy if switch["estimate"] else finite_float(switch.get("off_energy"), 0.0)
             switch["temporal_contact_variable_id"] = variable_id
             switch["temporal_contact_previous_frame_gap"] = frame_gap

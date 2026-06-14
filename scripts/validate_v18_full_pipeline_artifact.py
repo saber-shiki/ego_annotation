@@ -149,6 +149,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "triangle_nonpenetration_rows": 0,
         "contact_switch_vars": 0,
         "active_contact_switch_vars": 0,
+        "active_contact_switch_vars_with_nonobserved_hawor_hand": 0,
+        "raw_contact_switches_gated_by_hawor_support": 0,
         "occlusion_owner_vars": 0,
         "camera_depth_observed_rows": 0,
         "factor_frames": 0,
@@ -156,6 +158,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
 
     for frame in frames:
         require(isinstance(frame, dict), f"{case}: non-dict frame row")
+        hands = frame.get("hands") if isinstance(frame.get("hands"), list) else []
+        hand_support_by_side = {str(h.get("hand_side")): str(h.get("hawor_support_state", "")) for h in hands if isinstance(h, dict)}
         fg_raw = frame.get("factor_graph_solution")
         fg: dict[str, Any] = fg_raw if isinstance(fg_raw, dict) else {}
         vars_raw = fg.get("variables")
@@ -169,10 +173,19 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         counts["hand_graph_metric"] += sum(1 for row in hand_vars if isinstance(row, dict) and str(row.get("source", "")).startswith("HaWoR_metric_MANO_wrist_current_V18_world_m"))
         contact_vars = vars.get("contact_switch") if isinstance(vars.get("contact_switch"), list) else []
         counts["contact_switch_vars"] += len(contact_vars)
-        counts["active_contact_switch_vars"] += sum(1 for row in contact_vars if isinstance(row, dict) and row.get("estimate") is True)
+        for row in contact_vars:
+            if not isinstance(row, dict):
+                continue
+            side = str(row.get("hand_side"))
+            row_support_state = str(row.get("hand_support_state") or hand_support_by_side.get(side, ""))
+            if row.get("raw_estimate_before_hawor_support_gate") is True and row.get("estimate") is False and row_support_state != "observed_same_frame_detection":
+                counts["raw_contact_switches_gated_by_hawor_support"] += 1
+            if row.get("estimate") is True:
+                counts["active_contact_switch_vars"] += 1
+                if row_support_state != "observed_same_frame_detection":
+                    counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
         counts["occlusion_owner_vars"] += len(vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else [])
 
-        hands = frame.get("hands") if isinstance(frame.get("hands"), list) else []
         require(len(hands) == 2, f"{case}: frame {frame.get('frame_idx')} does not have two hand rows")
         for hand in hands:
             require(isinstance(hand, dict), f"{case}: non-dict hand row")
@@ -266,6 +279,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["contacts"] > 0, f"{case}: no contact hypotheses")
     require(counts["contact_switch_vars"] == counts["contacts"], f"{case}: contact switch variables do not cover contact hypotheses")
     require(counts["active_contact_switch_vars"] > 0, f"{case}: no active contact switches in factor graph")
+    require(counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce active contact switches")
     require(counts["contacts_with_final_metric_distance"] > 0, f"{case}: no final metric MANO-to-object-surface distances")
     require(counts["contacts_with_hawor_support_weight"] == counts["contacts_with_final_metric_distance"], f"{case}: final metric contact distances missing HaWoR support weights")
     require(counts["signed_nonpenetration_rows"] > 0, f"{case}: no signed nonpenetration evidence rows")
