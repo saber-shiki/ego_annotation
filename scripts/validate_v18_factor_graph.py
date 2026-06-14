@@ -49,8 +49,6 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(isinstance(implemented_families, list) and any("contact_local_nonpenetration" in str(item) for item in implemented_families), f"{case}: contact local nonpenetration factor family missing")
     require(isinstance(implemented_families, list) and any("contact_part_pose_anchor" in str(item) for item in implemented_families), f"{case}: contact-part pose anchor factor family missing")
     require(int(factor_counts.get("contact_part_pose_anchor", 0)) > 0, f"{case}: contact-part pose anchor factors missing")
-    if case == "task5_tomato_960":
-        require(int(factor_counts.get("contact_object_pose_anchor", 0)) > 0, f"{case}: contact-object pose anchor factors missing")
     inference = fg.get("inference")
     require(isinstance(inference, dict), f"{case}: inference missing")
     require("SciPy" in str(inference.get("continuous_method")), f"{case}: continuous solve is not SciPy-backed")
@@ -73,6 +71,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     local_temporal_factor_count_sum = 0
     local_nonpenetration_factor_count_sum = 0
     contact_nonpenetration_factor_rows = 0
+    contact_object_component_rows = 0
     contact_part_component_rows = 0
     occlusion_owner_rows = 0
     occlusion_owner_with_temporal_or_mesh = 0
@@ -119,6 +118,21 @@ def validate_case(path: Path) -> dict[str, Any]:
                         chosen = occ.get("chosen_owner_object_id")
                         chosen_candidates = [cand for cand in candidates if isinstance(cand, dict) and cand.get("object_id") == chosen]
                         require(any(cand.get("accepted_by_depth_evidence") is True or cand.get("temporal_graph_accepted") is True for cand in chosen_candidates), f"{case}: accepted occlusion owner lacks source support")
+            object_raw = variables.get("object_se3")
+            if isinstance(object_raw, list):
+                for object_var_raw in object_raw:
+                    object_var: dict[str, Any] = object_var_raw if isinstance(object_var_raw, dict) else {}
+                    components = object_var.get("contact_object_coupling_components")
+                    if isinstance(components, list) and components:
+                        contact_object_component_rows += len(components)
+                        for comp in components:
+                            require(isinstance(comp, dict) and comp.get("factor_family") in {"contact_object_pose_anchor", "contact_object_nonpenetration_repel"}, f"{case}: object contact component missing factor family")
+                            coupling = comp.get("coupling") if isinstance(comp.get("coupling"), dict) else {}
+                            distance = coupling.get("pre_coupling_surface_distance_m")
+                            is_repel = comp.get("factor_family") == "contact_object_nonpenetration_repel"
+                            raw_or_active = coupling.get("contact_switch_active") is True or coupling.get("raw_contact_switch_active") is True
+                            near = isinstance(distance, (int, float)) and float(distance) <= 0.12
+                            require(is_repel or (raw_or_active and near), f"{case}: object contact anchor is not active/raw-supported and near")
             part_raw = variables.get("part_se3")
             if isinstance(part_raw, list):
                 for part_var_raw in part_raw:
@@ -167,6 +181,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(temporal_contact_rows == int(variable_counts.get("contact_switch", -1)), f"{case}: contact switch variable count mismatch")
     require(temporal_contact_factor_rows == int(factor_counts.get("contact_switch_temporal", -1)), f"{case}: temporal contact factor count mismatch")
     require(contact_nonpenetration_factor_rows == int(factor_counts.get("contact_local_nonpenetration", -1)), f"{case}: contact local nonpenetration factor count mismatch")
+    require(contact_object_component_rows == int(factor_counts.get("contact_object_pose_anchor", 0)) + int(factor_counts.get("contact_object_nonpenetration_repel", 0)), f"{case}: contact-object component count mismatch")
     require(contact_part_component_rows == int(factor_counts.get("contact_part_pose_anchor", -1)), f"{case}: contact-part component count mismatch")
     require(local_nonpenetration_factor_count_sum == contact_nonpenetration_factor_rows, f"{case}: local nonpenetration factor sum mismatch")
     require(local_temporal_factor_count_sum == temporal_contact_factor_rows, f"{case}: local temporal contact factor sum mismatch")

@@ -2067,17 +2067,11 @@ def contact_object_pose_observation(hyp: dict[str, Any], switch: dict[str, Any],
     unit = delta / norm
     nonpenetration_conflict = bool(switch.get("nonpenetration_conflict") is True)
     active_contact = bool(switch.get("estimate") is True)
-    raw_contact = bool(switch.get("raw_estimate_before_hawor_support_gate") is True)
-    proposal_contact = bool(
-        active_contact
-        or raw_contact
-        or hyp.get("confidence") in {"low", "medium"}
-        or finite_float(switch.get("image_iou"), 0.0) > 0.02
-        or finite_float(switch.get("min_box_coverage"), 0.0) > 0.20
-        or finite_float(switch.get("mesh_contact_support_score"), 0.0) > 0.0
-        or finite_float(switch.get("final_metric_contact_support_score"), 0.0) > 0.0
-    )
+    raw_contact = bool(switch.get("raw_estimate_before_hawor_support_gate") is True or switch.get("raw_estimate_before_physical_contact_gate") is True)
+    proposal_contact = bool(active_contact or raw_contact)
     if not proposal_contact and not nonpenetration_conflict:
+        return None
+    if not nonpenetration_conflict and distance > 0.12:
         return None
     desired_gap_m = 0.018
     max_correction_m = 0.08
@@ -3525,35 +3519,20 @@ def draw_anchored_part_mesh_glyph(draw: ImageDraw.ImageDraw, recon: dict[str, An
 
 
 def occlusion_target_object_id(hand: dict[str, Any], occlusion_vars_by_side: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
-    """Choose a renderable occlusion-owner evidence target from final artifact fields.
+    """Choose a renderable supported occlusion-owner target.
 
-    This does not promote ownership; it draws the graph/candidate evidence already present
-    in the final hand state and factor-graph variables.
+    Candidate rows are not rendered as owner edges.  A line is drawn only when the
+    solved graph variable carries supported/accepted owner evidence; otherwise the
+    hand is labeled unresolved so the video does not visually promote candidates.
     """
     side = str(hand.get("hand_side"))
     occ = hand.get("occlusion_owner_hypothesis") if isinstance(hand.get("occlusion_owner_hypothesis"), dict) else {}
     gate = hand.get("occlusion_pose_fill_gate") if isinstance(hand.get("occlusion_pose_fill_gate"), dict) else {}
     graph_var = occlusion_vars_by_side.get(side, {})
-    for source, label in [(graph_var, "graph"), (occ.get("temporal_owner_graph") if isinstance(occ.get("temporal_owner_graph"), dict) else {}, "temporal"), (gate, "pose_gate")]:
-        oid = source.get("chosen_owner_object_id") if isinstance(source, dict) else None
+    if isinstance(graph_var, dict) and (graph_var.get("owner_supported_by_depth_evidence") is True or graph_var.get("accepted_owner") is True):
+        oid = graph_var.get("chosen_owner_object_id")
         if oid:
-            return str(oid), label
-    row_sources: list[Any] = []
-    if isinstance(occ.get("owner_candidates"), list):
-        row_sources.extend(occ.get("owner_candidates", []))
-    temporal = occ.get("temporal_owner_graph") if isinstance(occ.get("temporal_owner_graph"), dict) else {}
-    if isinstance(temporal.get("candidate_rows"), list):
-        row_sources.extend(temporal.get("candidate_rows", []))
-    if isinstance(gate.get("source_occlusion_owner_candidate_rows"), list):
-        row_sources.extend(gate.get("source_occlusion_owner_candidate_rows", []))
-    if isinstance(graph_var.get("candidate_energies"), list):
-        row_sources.extend(graph_var.get("candidate_energies", []))
-    for row in row_sources:
-        if not isinstance(row, dict):
-            continue
-        oid = row.get("object_id") or row.get("chosen_owner_object_id")
-        if oid:
-            return str(oid), "candidate"
+            return str(oid), "supported graph"
     if occ or gate or graph_var:
         return None, "unowned_or_unresolved"
     return None, "absent"
@@ -3691,13 +3670,16 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
             if gate:
                 draw.ellipse((hc[0] - 18, hc[1] - 18, hc[0] + 18, hc[1] + 18), outline=(210, 80, 255), width=2)
                 counts["pose_fill_gate_markers"] += 1
-        for hyp in frame.get("contact_hypotheses", [])[:20]:
-            if not isinstance(hyp, dict) or hyp.get("confidence") not in {"medium", "low"}:
+        contact_vars = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
+        for switch in contact_vars:
+            if not isinstance(switch, dict) or switch.get("estimate") is not True or switch.get("physical_contact_claim_supported") is not True:
                 continue
-            hc = hand_centers.get(str(hyp.get("hand_side")))
-            oc = object_centers.get(str(hyp.get("object_id")))
+            hc = hand_centers.get(str(switch.get("hand_side")))
+            oc = object_centers.get(str(switch.get("object_id")))
             if hc and oc:
                 draw.line((hc[0], hc[1], oc[0], oc[1]), fill=(255, 255, 80), width=2)
+                mid = (int((hc[0] + oc[0]) / 2), int((hc[1] + oc[1]) / 2))
+                draw_label(draw, mid, "active physical contact", small, (255, 255, 80), (0, 0, 0))
                 counts["contact_lines"] += 1
         draw.rectangle((0, 0, image.size[0], 44), fill=(0, 0, 0))
         draw.text((12, 11), f"V18 over V16 base frame {frame_idx+1}/{len(frames)} — V16 MANO/object render preserved + V18 layers", font=font, fill=(255, 255, 255))
@@ -3789,16 +3771,17 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             draw.rectangle((x-radius, y-radius, x+radius, y+radius), fill=color)
             draw_label(draw, (x+10, y-10), f"{side} {support_label}", small, color, (18, 20, 25))
             counts[f"world_hands_{support_label}"] += 1
-        for hyp in frame.get("contact_hypotheses", []):
-            if not isinstance(hyp, dict) or hyp.get("confidence") not in {"medium", "low"}:
+        fg = require_dict(frame.get("factor_graph_solution"), "factor graph")
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        contact_vars = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
+        for switch in contact_vars:
+            if not isinstance(switch, dict) or switch.get("estimate") is not True or switch.get("physical_contact_claim_supported") is not True:
                 continue
-            hp = hand_points.get(str(hyp.get("hand_side")))
-            op = object_points.get(str(hyp.get("object_id")))
+            hp = hand_points.get(str(switch.get("hand_side")))
+            op = object_points.get(str(switch.get("object_id")))
             if hp and op:
                 draw.line((hp[0], hp[1], op[0], op[1]), fill=(255, 255, 90), width=2)
                 counts["world_contact_edges"] += 1
-        fg = require_dict(frame.get("factor_graph_solution"), "factor graph")
-        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
         occlusion_vars = vars_raw.get("occlusion_owner") if isinstance(vars_raw.get("occlusion_owner"), list) else []
         occlusion_vars_by_side = {str(v.get("hand_side")): v for v in occlusion_vars if isinstance(v, dict)}
         for raw_hand in frame.get("hands", []):
@@ -3922,6 +3905,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_s": time.perf_counter() - start,
     }
     write_json(args.output_root / "v18_full_pipeline_report.json", report)
+    self_inspection = {
+        "method": "run_v18_full_pipeline_self_inspection",
+        "source_report": str(args.output_root / "v18_full_pipeline_report.json"),
+        "all_frame_counts_match": report.get("all_frame_counts_match"),
+        "case_count": len(qcs),
+        "cases": {
+            str(qc.get("case")): {
+                "frame_count": qc.get("expected_frame_count"),
+                "overlay_frame_count": qc.get("overlay_frame_count"),
+                "world_frame_count": qc.get("world_frame_count"),
+                "side_by_side_frame_count": qc.get("side_by_side_frame_count"),
+                "overlay_draw_counts": qc.get("overlay_draw_counts"),
+                "world_draw_counts": qc.get("world_draw_counts"),
+                "module_counts": qc.get("module_counts"),
+            }
+            for qc in qcs
+        },
+        "elapsed_s": report.get("elapsed_s"),
+    }
+    write_json(args.output_root / "v18_completion_self_inspection.json", self_inspection)
     return report
 
 

@@ -438,6 +438,10 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["triangle_nonpenetration_watertight_rows"] > 0 or counts["triangle_nonpenetration_physical_ineligible_rows"] > 0, f"{case}: triangle nonpenetration has neither watertight evaluation nor physical-eligibility blockers")
     require(counts["triangle_nonpenetration_evaluated_nonobserved_hawor_rows"] == 0, f"{case}: evaluated triangle nonpenetration rows are not support-gated to observed HaWoR hands")
     require(counts["occlusion_owner_vars"] > 0, f"{case}: no occlusion owner graph variables")
+    require(int(overlay_draw.get("contact_lines", 0)) <= counts["active_contact_switch_vars"], f"{case}: overlay draws more contact lines than active physical contacts")
+    require(int(world_draw.get("world_contact_edges", 0)) <= counts["active_contact_switch_vars"], f"{case}: world render draws more contact edges than active physical contacts")
+    require(int(overlay_draw.get("occlusion_owner_edges", 0)) <= counts["occlusion_owner_supported_vars"], f"{case}: overlay draws unsupported occlusion owner edges")
+    require(int(world_draw.get("world_occlusion_owner_edges", 0)) <= counts["occlusion_owner_supported_vars"], f"{case}: world render draws unsupported occlusion owner edges")
     require(counts["hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce accepted hand occlusion-owner claims")
     require(counts["occlusion_owner_supported_vars_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce supported occlusion-owner factor claims")
     return {"case": case, "expected_frame_count": expected, **counts}
