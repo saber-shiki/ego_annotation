@@ -869,6 +869,50 @@ def load_part_depth_fused_reconstruction_index(path: Path) -> dict[tuple[str, st
     return out
 
 
+def load_part_pose_validation_index(path: Path) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, Any]]:
+    if not path.exists():
+        return {}, {"status": "missing_part_silhouette_depth_pose_validation", "source_report": str(path)}
+    report = require_dict(load_json(path), "part silhouette depth pose validation report")
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("part_rows"), "part silhouette depth pose validation rows"):
+        row = require_dict(raw, "part pose validation row")
+        object_id = str(row.get("object_id"))
+        label = str(row.get("part_track_label"))
+        out[(object_id, label)] = {
+            "method": "visible_depth_and_part_mask_pose_validation_against_depth_fused_part_mesh",
+            "source_report": str(path),
+            "object_id": object_id,
+            "part_track_label": label,
+            "part_pose_validation_state": row.get("part_pose_validation_state"),
+            "part_pose_validation_blockers": row.get("part_pose_validation_blockers", []),
+            "visible_depth_silhouette_pose_supported": bool(row.get("visible_depth_silhouette_pose_supported") is True),
+            "visible_surface_rows_evaluated": row.get("visible_surface_rows_evaluated"),
+            "supported_frame_count": row.get("supported_frame_count"),
+            "rejected_frame_count": row.get("rejected_frame_count"),
+            "supported_frame_fraction": row.get("supported_frame_fraction"),
+            "supported_observed_to_predicted_median_m": row.get("supported_observed_to_predicted_median_m"),
+            "supported_observed_to_predicted_p95_m": row.get("supported_observed_to_predicted_p95_m"),
+            "supported_predicted_inside_mask_fraction": row.get("supported_predicted_inside_mask_fraction"),
+            "supported_observed_projection_coverage_fraction": row.get("supported_observed_projection_coverage_fraction"),
+            "part_pose_ready": False,
+            "contact_ownership_ready": False,
+            "object_pose_requirement_met": False,
+            "scope": "visible_same_frame_depth_and_part_mask_pose_support_only_not_hidden_part_completion",
+        }
+    summary = {
+        "status": report.get("status"),
+        "source_report": str(path),
+        "part_count": report.get("part_count"),
+        "part_pose_validation_state_counts": report.get("part_pose_validation_state_counts"),
+        "frame_pose_validation_state_counts": report.get("frame_pose_validation_state_counts"),
+        "frame_rows_evaluated": report.get("frame_rows_evaluated"),
+        "visible_depth_silhouette_pose_supported_count": report.get("visible_depth_silhouette_pose_supported_count"),
+        "part_pose_ready_count": report.get("part_pose_ready_count"),
+        "object_pose_requirement_met_count": report.get("object_pose_requirement_met_count"),
+    }
+    return out, summary
+
+
 def index_bounded_frames(path: Path) -> dict[int, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1487,6 +1531,8 @@ def posed_reconstructed_part_geometry_state(part: dict[str, Any], candidate: dic
     mx = corners_camera.max(axis=0)
     center = corners_camera.mean(axis=0)
     extent = mx - mn
+    validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+    visible_depth_silhouette_pose_supported = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
     return {
         "state": "part_depth_fused_mesh_posed_by_factor_graph",
         "renderable_part_pose_geometry": True,
@@ -1510,10 +1556,16 @@ def posed_reconstructed_part_geometry_state(part: dict[str, Any], candidate: dic
         "part_bbox_max_camera_m": [float(v) for v in mx.tolist()],
         "part_bbox_center_camera_m": [float(v) for v in center.tolist()],
         "part_extent_camera_m": [float(v) for v in extent.tolist()],
+        "part_silhouette_depth_pose_validation_state": validation.get("part_pose_validation_state"),
+        "visible_depth_silhouette_pose_supported": visible_depth_silhouette_pose_supported,
+        "part_pose_validation_supported_frame_count": validation.get("supported_frame_count"),
+        "part_pose_validation_rejected_frame_count": validation.get("rejected_frame_count"),
+        "part_pose_validation_supported_frame_fraction": validation.get("supported_frame_fraction"),
+        "part_pose_validation_blockers": validation.get("part_pose_validation_blockers", []),
         "part_geometry_complete": False,
         "part_pose_ready": False,
         "object_pose_requirement_met": False,
-        "scope": "renderable_part_depth_fused_visible_completion_mesh_with_explicit_hidden_surface_uncertainty",
+        "scope": "renderable_part_depth_fused_visible_completion_mesh_with_visible_depth_silhouette_validation_and_explicit_hidden_surface_uncertainty",
     }
 
 
@@ -2842,6 +2894,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     physical_schema_by_object = load_physical_state_schema_index(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     part_depth_fused_by_key = load_part_depth_fused_reconstruction_index(args.part_depth_fused_reconstruction_root / case / "v18_part_depth_fused_reconstruction_report.json")
+    part_pose_validation_by_key, part_pose_validation_summary = load_part_pose_validation_index(args.part_silhouette_depth_pose_validation_root / case / "v18_part_silhouette_depth_pose_validation_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
     contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
     signed_nonpenetration_index = load_signed_nonpenetration_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
@@ -2980,6 +3033,14 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 candidate = part_depth_fused_by_key.get((object_id, label))
                 if candidate is not None:
                     part["reconstructed_part_geometry_candidate"] = candidate
+                pose_validation = part_pose_validation_by_key.get((object_id, label))
+                if pose_validation is not None:
+                    part["part_silhouette_depth_pose_validation"] = pose_validation
+                    module_counts["part_silhouette_depth_pose_validation_rows"] += 1
+                    if pose_validation.get("visible_depth_silhouette_pose_supported") is True:
+                        module_counts["part_silhouette_depth_pose_supported_rows"] += 1
+                    else:
+                        module_counts["part_silhouette_depth_pose_rejected_rows"] += 1
                 parts.append(part)
             pose = object_se3_observation(obj, geom)
             completion = depth_fused_by_object.get(object_id) or completion_by_object.get(object_id, {
@@ -3113,6 +3174,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "physical_state_schema": str(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "part_depth_fused_reconstruction": str(args.part_depth_fused_reconstruction_root / case / "v18_part_depth_fused_reconstruction_report.json"),
+            "part_silhouette_depth_pose_validation": str(args.part_silhouette_depth_pose_validation_root / case / "v18_part_silhouette_depth_pose_validation_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
             "contact_ownership_graph": str(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json"),
@@ -3143,12 +3205,13 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "hand_branch": "HaWoR_metric_MANO_bridge_plus_WiLoR_visible_candidate_plus_RTMLib_anchor_plus_hand_baseline_evidence_plus_pose_fill_gate_consumed_in_final_hand_state",
             "object_part_perception": "VLM_OWLv2_SAM2_masks_and_part_tracks_consumed_in_final_object_part_state",
             "geometry_reconstruction": "depth_visible_surface_samples_plus_depth_fused_geometry_and_part_surfaces_consumed_in_final_geometry_state",
-            "object_part_pose": "object_part_SE3_variables_from_depth_geometry_observations_and_part_surface_observations",
+            "object_part_pose": "object_part_SE3_variables_from_depth_geometry_observations_part_surface_observations_contact_part_anchors_and_visible_depth_silhouette_pose_validation",
             "contact_ownership": "final_metric_contact_observations_from_HaWoR_MANO_samples_to_depth_visible_object_surface_samples_plus_contact_owner_graph_plus_signed_normal_nonpenetration_plus_triangle_nonpenetration_evidence",
             "occlusion_ownership": "temporal_occlusion_owner_graph_over_bounded_candidates_consumed_in_final_hand_state",
             "factor_graph": "numerical_temporal_factor_graph_with_explicit_variables_factors_objective_inference",
         },
         "hawor_bridge_summary": hawor_bridge_summary,
+        "part_silhouette_depth_pose_validation_summary": part_pose_validation_summary,
         "factor_graph_summary": factor_graph_summary,
         "module_counts": dict(sorted(module_counts.items())),
         "confidence_counts": dict(sorted(confidence_counts.items())),
@@ -3685,6 +3748,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--part-depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_depth_fused_reconstruction"))
+    parser.add_argument("--part-silhouette-depth-pose-validation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_silhouette_depth_pose_validation"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
     parser.add_argument("--contact-ownership-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))

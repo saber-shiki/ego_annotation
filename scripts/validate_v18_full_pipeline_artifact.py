@@ -149,6 +149,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "part_rows": 0,
         "part_reconstructed_geometry_pose_rows": 0,
         "part_renderable_reconstructed_geometry_pose_rows": 0,
+        "part_silhouette_depth_pose_validation_rows": 0,
+        "part_silhouette_depth_pose_supported_rows": 0,
         "contacts": 0,
         "contacts_with_final_metric_distance": 0,
         "contacts_with_hawor_support_weight": 0,
@@ -295,6 +297,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 if not isinstance(part, dict):
                     continue
                 counts["part_rows"] += 1
+                validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else None
+                if isinstance(validation, dict):
+                    counts["part_silhouette_depth_pose_validation_rows"] += 1
+                    if validation.get("visible_depth_silhouette_pose_supported") is True:
+                        counts["part_silhouette_depth_pose_supported_rows"] += 1
+                    require(validation.get("part_pose_ready") is False, f"{case}: part validation overclaims part_pose_ready")
+                    require(validation.get("object_pose_requirement_met") is False, f"{case}: part validation overclaims object pose")
+                    require("visible_same_frame_depth" in str(validation.get("scope")), f"{case}: part validation scope missing")
                 part_recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else None
                 if isinstance(part_recon, dict):
                     counts["part_reconstructed_geometry_pose_rows"] += 1
@@ -303,6 +313,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                         require(isinstance(part_recon.get("mesh_path"), str) and Path(str(part_recon.get("mesh_path"))).exists(), f"{case}: reconstructed part geometry mesh path missing")
                         require(isinstance(part_recon.get("part_bbox_corners_camera_m"), list) and len(part_recon.get("part_bbox_corners_camera_m")) == 8, f"{case}: reconstructed part geometry pose missing render corners")
                         require(isinstance(part_recon.get("translation_camera_m"), list) and len(part_recon.get("translation_camera_m")) == 3, f"{case}: reconstructed part geometry pose missing translation")
+                        require(part_recon.get("part_pose_ready") is False, f"{case}: reconstructed part geometry overclaims part_pose_ready")
+                        require(part_recon.get("object_pose_requirement_met") is False, f"{case}: reconstructed part geometry overclaims object pose")
+                        require(part_recon.get("visible_depth_silhouette_pose_supported") in {True, False}, f"{case}: reconstructed part geometry missing silhouette/depth pose support field")
 
         for hyp in frame.get("contact_hypotheses", []) if isinstance(frame.get("contact_hypotheses"), list) else []:
             if not isinstance(hyp, dict):
@@ -366,6 +379,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["part_rows"] > 0, f"{case}: no part rows")
     require(counts["part_reconstructed_geometry_pose_rows"] == counts["part_rows"], f"{case}: reconstructed part geometry pose state missing on part rows")
     require(counts["part_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed part mesh pose rows")
+    require(counts["part_silhouette_depth_pose_validation_rows"] > 0, f"{case}: no part silhouette/depth pose validation rows")
+    require(counts["part_silhouette_depth_pose_supported_rows"] > 0, f"{case}: no supported part silhouette/depth pose validation rows")
     require(counts["factor_frames"] == expected, f"{case}: factor graph not present for every frame")
     require(counts["camera_depth_observed_rows"] > 0, f"{case}: no observed camera/depth correction rows")
     require(counts["contacts"] > 0, f"{case}: no contact hypotheses")
