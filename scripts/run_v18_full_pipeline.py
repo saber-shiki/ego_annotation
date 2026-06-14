@@ -1565,14 +1565,45 @@ def solve_tridiagonal(lower: np.ndarray, diag: np.ndarray, upper: np.ndarray, rh
 
 
 def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: float, default_obs_weight: float, unit: str) -> dict[str, Any]:
-    clean: list[dict[str, Any]] = []
+    raw_clean: list[dict[str, Any]] = []
     for obs in observations:
         value = obs.get("value")
         if isinstance(value, np.ndarray) and value.ndim == 1 and np.isfinite(value).all():
-            clean.append(obs)
-    clean.sort(key=lambda item: (require_int(item.get("frame_idx"), "series frame_idx"), str(item.get("variable_id"))))
-    if not clean:
-        return {"estimates": {}, "summary": {"variable_count": 0, "factor_count": 0, "energy_initial": 0.0, "energy_after": 0.0, "unit": unit, "dimension": 0}}
+            frame_idx = require_int(obs.get("frame_idx"), "series frame_idx")
+            weight = max(1e-6, finite_float(obs.get("weight"), default_obs_weight))
+            raw_clean.append({**obs, "frame_idx": frame_idx, "value": value.astype(np.float64), "weight": weight})
+    raw_clean.sort(key=lambda item: (require_int(item.get("frame_idx"), "series frame_idx"), str(item.get("variable_id")), str(item.get("source"))))
+    if not raw_clean:
+        return {"estimates": {}, "summary": {"variable_count": 0, "factor_count": 0, "observation_factor_count": 0, "temporal_factor_count": 0, "energy_initial": 0.0, "energy_after": 0.0, "unit": unit, "dimension": 0}}
+
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for obs in raw_clean:
+        grouped[require_int(obs.get("frame_idx"), "series frame_idx")].append(obs)
+
+    clean: list[dict[str, Any]] = []
+    for frame_idx in sorted(grouped):
+        components = grouped[frame_idx]
+        dims = {int(comp["value"].shape[0]) for comp in components}
+        if len(dims) != 1:
+            raise RuntimeError(f"mixed observation dimensions for {components[0].get('variable_id')} frame {frame_idx}: {sorted(dims)}")
+        weights = np.asarray([float(comp["weight"]) for comp in components], dtype=np.float64)
+        values = np.vstack([comp["value"] for comp in components]).astype(np.float64)
+        weight_sum = float(np.sum(weights))
+        value = np.sum(values * weights[:, None], axis=0) / max(1e-9, weight_sum)
+        family_counts: Counter[str] = Counter(str(comp.get("factor_family") or "observation") for comp in components)
+        sources = sorted(set(str(comp.get("source")) for comp in components if comp.get("source") is not None))
+        clean.append(
+            {
+                "frame_idx": frame_idx,
+                "variable_id": components[0].get("variable_id"),
+                "value": value,
+                "weight": weight_sum,
+                "components": components,
+                "factor_family_counts": family_counts,
+                "source": "+".join(sources[:4]) + ("+..." if len(sources) > 4 else ""),
+            }
+        )
+
     n = len(clean)
     dim = int(clean[0]["value"].shape[0])
     diag = np.zeros(n, dtype=np.float64)
@@ -1580,7 +1611,7 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
     upper = np.zeros(max(0, n - 1), dtype=np.float64)
     rhs = np.zeros((n, dim), dtype=np.float64)
     y = np.vstack([obs["value"] for obs in clean]).astype(np.float64)
-    obs_weights = np.asarray([max(1e-6, finite_float(obs.get("weight"), default_obs_weight)) for obs in clean], dtype=np.float64)
+    obs_weights = np.asarray([float(obs["weight"]) for obs in clean], dtype=np.float64)
     for i, w in enumerate(obs_weights):
         diag[i] += w
         rhs[i] += w * y[i]
@@ -1599,8 +1630,21 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
     for d in range(dim):
         estimate[:, d] = solve_tridiagonal(lower, diag, upper, rhs[:, d])
 
+    def component_energy_by_family(xi: np.ndarray, item: dict[str, Any]) -> dict[str, float]:
+        out: dict[str, float] = defaultdict(float)
+        for comp in item.get("components", []):
+            if not isinstance(comp, dict):
+                continue
+            family = str(comp.get("factor_family") or "observation")
+            value = comp.get("value")
+            if isinstance(value, np.ndarray):
+                out[family] += float(comp.get("weight", 1.0)) * float(np.sum((xi - value) ** 2))
+        return dict(sorted(out.items()))
+
     def total_energy(x: np.ndarray) -> float:
-        obs_e = float(np.sum(obs_weights[:, None] * (x - y) ** 2))
+        obs_e = 0.0
+        for i, item in enumerate(clean):
+            obs_e += float(sum(component_energy_by_family(x[i], item).values()))
         tmp_e = 0.0
         for j, ew in enumerate(edge_weights, start=1):
             tmp_e += float(ew * np.sum((x[j] - x[j - 1]) ** 2))
@@ -1610,6 +1654,8 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
     energy_initial = total_energy(initial)
     energy_after = total_energy(estimate)
     estimates: dict[int, dict[str, Any]] = {}
+    total_observation_factor_count = 0
+    summary_family_counts: Counter[str] = Counter()
     for i, obs in enumerate(clean):
         frame_idx = require_int(obs.get("frame_idx"), "series frame_idx")
         obs_residual = float(np.linalg.norm(estimate[i] - y[i]))
@@ -1621,6 +1667,21 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
         if i < n - 1:
             temporal_before += float(edge_weights[i] * np.sum((initial[i + 1] - initial[i]) ** 2))
             temporal_after += float(edge_weights[i] * np.sum((estimate[i + 1] - estimate[i]) ** 2))
+        family_counts = Counter(obs.get("factor_family_counts", {}))
+        component_count = int(sum(family_counts.values()))
+        total_observation_factor_count += component_count
+        summary_family_counts.update(family_counts)
+        contact_object_components: list[dict[str, Any]] = []
+        for comp in obs.get("components", []):
+            if isinstance(comp, dict) and isinstance(comp.get("contact_object_coupling"), dict):
+                contact_object_components.append(
+                    {
+                        "factor_family": comp.get("factor_family"),
+                        "weight": float(comp.get("weight", 0.0)),
+                        "source": comp.get("source"),
+                        "coupling": comp.get("contact_object_coupling"),
+                    }
+                )
         estimates[frame_idx] = {
             "variable_id": obs.get("variable_id"),
             "source": obs.get("source"),
@@ -1628,6 +1689,11 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
             "estimate": [float(v) for v in estimate[i].tolist()],
             "observation_weight": float(obs_weights[i]),
             "observation_residual_norm": obs_residual,
+            "component_observation_count": component_count,
+            "factor_family_counts": dict(sorted(family_counts.items())),
+            "factor_family_energy_initial": component_energy_by_family(initial[i], obs),
+            "factor_family_energy_after": component_energy_by_family(estimate[i], obs),
+            "contact_object_coupling_components": contact_object_components,
             "local_temporal_energy_initial": temporal_before / 2.0,
             "local_temporal_energy_after": temporal_after / 2.0,
             "unit": unit,
@@ -1638,9 +1704,10 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
         "estimates": estimates,
         "summary": {
             "variable_count": n,
-            "factor_count": n + len(edge_weights),
-            "observation_factor_count": n,
+            "factor_count": total_observation_factor_count + len(edge_weights),
+            "observation_factor_count": total_observation_factor_count,
             "temporal_factor_count": len(edge_weights),
+            "factor_family_counts": dict(sorted(summary_family_counts.items())),
             "energy_initial": energy_initial,
             "energy_after": energy_after,
             "energy_delta": energy_initial - energy_after,
@@ -1650,6 +1717,140 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
         },
     }
 
+
+def rigid_contact_pose_allowed(obj: dict[str, Any]) -> tuple[bool, list[str]]:
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    blockers: list[str] = []
+    if physical != "rigid":
+        blockers.append(f"physical_state_{physical}_not_rigid")
+    if schema.get("requires_part_or_relative_motion_model") is True:
+        blockers.append("requires_part_or_relative_motion_model")
+    if schema.get("secondary_deformable_or_surface_component") is True:
+        blockers.append("secondary_deformable_or_surface_component")
+    if schema.get("surface_change_without_pose_state") is True:
+        blockers.append("surface_change_without_pose_state")
+    return not blockers, blockers
+
+
+def nearest_point_pair(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, float] | None:
+    aa = sampled_points(a, 192)
+    bb = sampled_points(b, 192)
+    if aa.size == 0 or bb.size == 0:
+        return None
+    diff = aa[:, None, :] - bb[None, :, :]
+    dist2 = np.sum(diff * diff, axis=2)
+    flat = int(np.argmin(dist2))
+    ai, bi = np.unravel_index(flat, dist2.shape)
+    dist = float(math.sqrt(float(dist2[ai, bi])))
+    if not math.isfinite(dist):
+        return None
+    return aa[ai], bb[bi], dist
+
+
+def contact_object_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    if hand is None or obj is None:
+        return None
+    allowed, blockers = rigid_contact_pose_allowed(obj)
+    if not allowed:
+        return None
+    if str(hand.get("hawor_support_state")) != "observed_same_frame_detection":
+        return None
+    pose_raw = obj.get("object_se3_observation")
+    pose: dict[str, Any] = pose_raw if isinstance(pose_raw, dict) else {}
+    trans = numeric_vector(pose.get("translation_world_m"), 3)
+    if trans is None:
+        return None
+    metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    hand_points = np.asarray(metric_state.get("vertices_world_sample_m", []), dtype=np.float64)
+    geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+    object_points = np.asarray(geom.get("world_vertices_sample_m", []), dtype=np.float64)
+    if hand_points.ndim != 2 or hand_points.shape[1] != 3 or object_points.ndim != 2 or object_points.shape[1] != 3:
+        return None
+    pair = nearest_point_pair(hand_points, object_points)
+    if pair is None:
+        return None
+    hand_pt, object_pt, distance = pair
+    delta = hand_pt - object_pt
+    norm = float(np.linalg.norm(delta))
+    if norm <= 1e-9 or not math.isfinite(norm):
+        return None
+    unit = delta / norm
+    nonpenetration_conflict = bool(switch.get("nonpenetration_conflict") is True)
+    active_contact = bool(switch.get("estimate") is True)
+    raw_contact = bool(switch.get("raw_estimate_before_hawor_support_gate") is True)
+    proposal_contact = bool(
+        active_contact
+        or raw_contact
+        or hyp.get("confidence") in {"low", "medium"}
+        or finite_float(switch.get("image_iou"), 0.0) > 0.02
+        or finite_float(switch.get("min_box_coverage"), 0.0) > 0.20
+        or finite_float(switch.get("mesh_contact_support_score"), 0.0) > 0.0
+        or finite_float(switch.get("final_metric_contact_support_score"), 0.0) > 0.0
+    )
+    if not proposal_contact and not nonpenetration_conflict:
+        return None
+    desired_gap_m = 0.018
+    max_correction_m = 0.08
+    if nonpenetration_conflict:
+        signed_min = finite_float(switch.get("signed_min_local_distance_m"), float("nan"))
+        triangle_min = finite_float(switch.get("triangle_min_local_distance_m"), float("nan"))
+        penetration_depth = max(0.0, -min(v for v in [signed_min, triangle_min, 0.0] if math.isfinite(v)))
+        magnitude = min(max_correction_m, max(desired_gap_m, penetration_depth + desired_gap_m))
+        correction = -unit * magnitude
+        family = "contact_object_nonpenetration_repel"
+        source = "contact_nonpenetration_repel_from_mano_object_surface_pair"
+    else:
+        if distance > desired_gap_m:
+            magnitude = min(max_correction_m, distance - desired_gap_m)
+            correction = unit * magnitude
+        else:
+            magnitude = min(max_correction_m, desired_gap_m - distance)
+            correction = -unit * magnitude
+        family = "contact_object_pose_anchor"
+        source = "contact_surface_anchor_from_observed_hawor_mano_to_rigid_object_geometry"
+    target_trans = trans + correction
+    rotvec = numeric_vector(pose.get("rotation_world_from_object_rotvec"), 3)
+    if rotvec is not None:
+        value = np.concatenate([target_trans, rotvec])
+    else:
+        value = target_trans
+    image_support = max(
+        finite_float(switch.get("image_iou"), 0.0),
+        finite_float(switch.get("min_box_coverage"), 0.0),
+        finite_float(switch.get("mesh_contact_support_score"), 0.0),
+        finite_float(switch.get("final_metric_contact_support_score"), 0.0),
+    )
+    distance_weight = 1.0 / (1.0 + max(0.0, distance - desired_gap_m) / 0.20)
+    weight = max(0.25, min(3.0, (0.75 + 2.25 * image_support) * distance_weight))
+    if nonpenetration_conflict:
+        weight = max(weight, 2.5)
+    elif not active_contact and not raw_contact:
+        weight *= 0.35
+    return {
+        "frame_idx": hyp.get("frame_idx"),
+        "variable_id": f"object_se3::{obj.get('object_id')}",
+        "value": value,
+        "weight": weight,
+        "source": source,
+        "factor_family": family,
+        "contact_object_coupling": {
+            "hand_side": hyp.get("hand_side"),
+            "object_id": obj.get("object_id"),
+            "nearest_hand_point_world_m": [float(v) for v in hand_pt.tolist()],
+            "nearest_object_point_world_m": [float(v) for v in object_pt.tolist()],
+            "pre_coupling_surface_distance_m": float(distance),
+            "desired_contact_gap_m": desired_gap_m,
+            "translation_correction_world_m": [float(v) for v in correction.tolist()],
+            "translation_correction_norm_m": float(np.linalg.norm(correction)),
+            "contact_switch_active": active_contact,
+            "raw_contact_switch_active": raw_contact,
+            "contact_proposal_used": proposal_contact,
+            "nonpenetration_conflict": nonpenetration_conflict,
+            "rigid_contact_pose_allowed": True,
+            "rigid_contact_pose_blockers": blockers,
+        },
+    }
 
 def load_articulation_index(path: Path) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
     if not path.exists():
@@ -1705,7 +1906,7 @@ def load_articulation_index(path: Path) -> tuple[dict[int, list[dict[str, Any]]]
     return per_frame, sources
 
 
-def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None, width: float, height: float) -> dict[str, Any]:
+def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj: dict[str, Any] | None, width: float, height: float, object_graph_var: dict[str, Any] | None = None) -> dict[str, Any]:
     hand_box = hand.get("bbox_xyxy") if hand else None
     obj_box = obj.get("bbox_xyxy") if obj else None
     iou = bbox_iou_value(hand_box, obj_box)
@@ -1747,6 +1948,24 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
     if math.isfinite(final_metric_distance_m):
         # Continuous support: <=2 cm is strong, 5 cm is weak, farther decays to zero by 15 cm.
         final_metric_raw_support = max(0.0, min(1.0, (0.15 - final_metric_distance_m) / 0.13))
+    coupled_object_distance_m = float("nan")
+    coupled_object_delta_m = None
+    if isinstance(object_graph_var, dict) and isinstance(hand, dict) and isinstance(obj, dict):
+        metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+        hand_sample = np.asarray(metric_state.get("vertices_world_sample_m", []), dtype=np.float64)
+        geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+        obj_sample = np.asarray(geom.get("world_vertices_sample_m", []), dtype=np.float64)
+        estimate = object_graph_var.get("estimate")
+        base_trans = numeric_vector((obj.get("object_se3_observation") if isinstance(obj.get("object_se3_observation"), dict) else {}).get("translation_world_m"), 3)
+        est_trans = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+        if base_trans is not None and est_trans is not None and hand_sample.ndim == 2 and hand_sample.shape[1] == 3 and obj_sample.ndim == 2 and obj_sample.shape[1] == 3:
+            delta = est_trans - base_trans
+            shifted_distance = points_min_distance(hand_sample, obj_sample + delta[None, :])
+            if shifted_distance is not None:
+                coupled_object_distance_m = float(shifted_distance)
+                coupled_object_delta_m = [float(v) for v in delta.tolist()]
+                coupled_support = max(0.0, min(1.0, (0.15 - coupled_object_distance_m) / 0.13))
+                final_metric_raw_support = max(final_metric_raw_support, coupled_support)
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
     support_gate_allows_active_contact = hand_support_state == "observed_same_frame_detection"
@@ -1805,6 +2024,8 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "hand_support_state": hand_support_state,
         "hand_support_weight": float(hand_support_weight),
         "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
+        "coupled_object_metric_contact_distance_m": float(coupled_object_distance_m) if math.isfinite(coupled_object_distance_m) else None,
+        "coupled_object_translation_delta_world_m": coupled_object_delta_m,
         "selected_contact_owner": selected_contact_owner,
         "accepted_contact_owner": accepted_contact_owner,
         "signed_nonpenetration_conflict": signed_only_conflict,
@@ -2017,6 +2238,19 @@ def solve_v18_factor_graph(
                     source = "part_visible_surface_center_camera_rotation_unresolved"
                     key = f"part_se3::{object_id}::{label}::translation_only"
                 part_obs[key].append({"frame_idx": frame_idx, "variable_id": key, "value": value, "weight": weight, "source": source})
+        for hyp in frame.get("contact_hypotheses", []):
+            if not isinstance(hyp, dict):
+                continue
+            hyp_with_frame = dict(hyp)
+            hyp_with_frame["frame_idx"] = frame_idx
+            hand = hand_lookup.get(str(hyp.get("hand_side")))
+            obj = object_lookup.get(str(hyp.get("object_id")))
+            switch_probe = contact_switch_energy(hyp, hand, obj, width, height)
+            contact_obs = contact_object_pose_observation(hyp_with_frame, switch_probe, hand, obj)
+            if contact_obs is None:
+                continue
+            object_obs[str(contact_obs.get("variable_id"))].append(contact_obs)
+
         for art in articulation_index.get(frame_idx, []):
             object_id = str(art.get("object_id"))
             source_id = str(art.get("source_candidate_id"))
@@ -2040,6 +2274,9 @@ def solve_v18_factor_graph(
             variable_counts[kind] += int(summary.get("variable_count", 0))
             factor_counts[f"{kind}_observation"] += int(summary.get("observation_factor_count", 0))
             factor_counts[f"{kind}_temporal"] += int(summary.get("temporal_factor_count", 0))
+            family_counts_summary = summary.get("factor_family_counts") if isinstance(summary.get("factor_family_counts"), dict) else {}
+            for family_name, family_count in family_counts_summary.items():
+                factor_counts[str(family_name)] += int(family_count)
             energy_initial_total += finite_float(summary.get("energy_initial"), 0.0)
             energy_after_total += finite_float(summary.get("energy_after"), 0.0)
             for frame_idx, est in solved["estimates"].items():
@@ -2052,12 +2289,20 @@ def solve_v18_factor_graph(
                     terms["variables"]["part_se3"].append(est)
                 elif kind == "articulation_parameter":
                     terms["variables"]["articulation_parameter"].append(est)
-                obs_energy = est["observation_weight"] * (est["observation_residual_norm"] ** 2)
-                terms["factor_energy_after"][f"{kind}_observation"] += obs_energy
+                family_energy_after = est.get("factor_family_energy_after") if isinstance(est.get("factor_family_energy_after"), dict) else {}
+                family_energy_initial = est.get("factor_family_energy_initial") if isinstance(est.get("factor_family_energy_initial"), dict) else {}
+                obs_energy_after = float(sum(finite_float(v, 0.0) for v in family_energy_after.values()))
+                obs_energy_initial = float(sum(finite_float(v, 0.0) for v in family_energy_initial.values()))
+                component_count = int(est.get("component_observation_count", 1))
+                terms["factor_energy_initial"][f"{kind}_observation"] += obs_energy_initial
+                terms["factor_energy_after"][f"{kind}_observation"] += obs_energy_after
                 terms["factor_energy_after"][f"{kind}_temporal"] += finite_float(est.get("local_temporal_energy_after"), 0.0)
                 terms["factor_energy_initial"][f"{kind}_temporal"] += finite_float(est.get("local_temporal_energy_initial"), 0.0)
-                terms["factor_counts"][f"{kind}_observation"] += 1
+                terms["factor_counts"][f"{kind}_observation"] += component_count
                 terms["factor_counts"][f"{kind}_temporal"] += 1
+                family_counts_local = est.get("factor_family_counts") if isinstance(est.get("factor_family_counts"), dict) else {}
+                for family_name, family_count in family_counts_local.items():
+                    terms["factor_counts"][str(family_name)] += int(family_count)
 
     absorb_series("hand_state", hand_obs, temporal_weight=0.8, default_weight=1.0, unit="normalized_image_xy")
     absorb_series("object_se3", object_obs, temporal_weight=2.0, default_weight=1.0, unit="world_m_translation_plus_optional_pca_rotvec_rad")
@@ -2110,10 +2355,15 @@ def solve_v18_factor_graph(
         hands = hand_lookup_by_frame.get(frame_idx, {})
         objects = object_lookup_by_frame.get(frame_idx, {})
         terms = per_frame_terms[frame_idx]
+        object_graph_vars = {
+            str(var.get("variable_id"))[len("object_se3::"):]: var
+            for var in terms["variables"].get("object_se3", [])
+            if isinstance(var, dict) and str(var.get("variable_id", "")).startswith("object_se3::")
+        }
         for hyp in frame.get("contact_hypotheses", []):
             if not isinstance(hyp, dict):
                 continue
-            switch = contact_switch_energy(hyp, hands.get(str(hyp.get("hand_side"))), objects.get(str(hyp.get("object_id"))), width, height)
+            switch = contact_switch_energy(hyp, hands.get(str(hyp.get("hand_side"))), objects.get(str(hyp.get("object_id"))), width, height, object_graph_vars.get(str(hyp.get("object_id"))))
             switch["independent_estimate"] = switch.get("estimate")
             switch["independent_chosen_energy"] = switch.get("chosen_energy")
             switch["temporal_contact_switch_penalty"] = contact_temporal_switch_penalty
@@ -2270,10 +2520,10 @@ def solve_v18_factor_graph(
         "implemented_variable_status": {
             "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
             "hand_state": "normalized_bbox_center_track_observation",
-            "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available",
+            "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_contact_object_pose_coupling_when_rigid_and_supported",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
-            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_and_explicit_local_nonpenetration_evidence",
+            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_and_coupled_object_pose_evidence",
             "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence",
         },
         "implemented_factor_families": [
@@ -2284,15 +2534,17 @@ def solve_v18_factor_graph(
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
             "contact_overlap_depth_mesh_distance_owner_graph_energy",
+            "contact_object_pose_anchor_factor_for_rigid_supported_mano_object_surface_proposals",
+            "contact_object_nonpenetration_repel_factor_for_rigid_supported_local_conflicts",
             "contact_local_nonpenetration_factor_from_signed_normal_and_nearest_triangle_evidence",
             "contact_switch_temporal_continuity_factor",
             "occlusion_owner_box_mesh_depth_temporal_candidate_energy",
         ],
         "spec_factor_gaps_remaining": [
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
-            "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration",
-            "part_SE3_uses_visible_surface_geometry_and_occlusion_uncertainty",
-            "contact_nonpenetration_uses_signed_normal_nearest_triangle_and_metric_distance_evidence",
+            "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration_and_contact_object_coupling_for_eligible_rigid_contacts",
+            "part_SE3_uses_visible_surface_PCA_geometry_and_occlusion_uncertainty",
+            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_and_coupled_object_pose_evidence",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),

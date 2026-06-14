@@ -47,6 +47,8 @@ def validate_case(path: Path) -> dict[str, Any]:
     implemented_families = fg.get("implemented_factor_families")
     require(isinstance(implemented_families, list) and any("contact_switch_temporal" in str(item) for item in implemented_families), f"{case}: contact temporal factor family missing")
     require(isinstance(implemented_families, list) and any("contact_local_nonpenetration" in str(item) for item in implemented_families), f"{case}: contact local nonpenetration factor family missing")
+    if case == "task5_tomato_960":
+        require(int(factor_counts.get("contact_object_pose_anchor", 0)) > 0, f"{case}: contact-object pose anchor factors missing")
     inference = fg.get("inference")
     require(isinstance(inference, dict), f"{case}: inference missing")
     require("SciPy" in str(inference.get("continuous_method")), f"{case}: continuous solve is not SciPy-backed")
@@ -89,7 +91,7 @@ def validate_case(path: Path) -> dict[str, Any]:
                 for occ_raw in occlusion_raw:
                     occ: dict[str, Any] = occ_raw if isinstance(occ_raw, dict) else {}
                     occlusion_owner_rows += 1
-                    require(occ.get("inference_method") == "box_mesh_depth_temporal_energy_with_unowned_competitor", f"{case}: occlusion owner lacks integrated inference method")
+                    require(str(occ.get("inference_method")) in {"box_mesh_depth_temporal_energy_with_unowned_competitor", "box_mesh_depth_temporal_energy_with_unowned_competitor_support_gated_by_hawor_observation"}, f"{case}: occlusion owner lacks integrated inference method")
                     if occ.get("accepted_owner") is True:
                         accepted_occlusion_owner_rows += 1
                     candidates_raw = occ.get("candidate_energies")
