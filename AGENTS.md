@@ -70,6 +70,17 @@ Maintain ledgers and audits at full standard, but they should be thin records of
 
 Thresholds, residual checks, and audits are diagnostic instruments. They may guide confidence labels, prioritization, and debugging, but they must not become arbitrary acceptance gates that prevent the pipeline from producing approximate uncertain outputs. Use subjective judgment from rendered videos, overlays, meshes, trajectories, and timelines to decide whether a module output is sane enough to continue.
 
+## Anti-Avoidance Invariant
+
+Before every substantive action, name the strict blocker or mechanism uncertainty that the action will reduce. If the action cannot be tied to a named blocker, do not do it. When several blockers are open, choose the hardest essential root blocker whose resolution would unlock downstream physical claims; do not choose an easier support task merely because it is locally verifiable.
+
+The following are support actions, not primary progress: validators, audits, reports, ledgers, manifests, schema fields, render styling, status overlays, provenance-only patches, refactors, documentation updates, subagent reviews, and commits. They are allowed only when they verify a just-implemented mechanism, expose a concrete failure mechanism that determines the next intervention, or are strictly necessary to keep an artifact reproducible after a mechanism change. They must not be used as a substitute for hand/MANO foundation, object geometry/pose, contact, occlusion, nonpenetration, or runtime mechanisms.
+
+Do not close a task, declare a checklist improved, or summarize success immediately after a support action. First show what physical annotation mechanism changed, what rendered or geometric evidence changed because of that mechanism, and which strict blocker was actually reduced. If no strict blocker was reduced, say the action was support-only and continue to mechanism work.
+
+When the user identifies avoidance or false progress, freeze new feature work. Inspect and revert any unvalidated partial edits unless they directly implement a named blocker and have already passed mechanism-level validation. Restore contaminated generated artifacts from committed code when necessary. Then resume from one explicit strict blocker; do not answer with more readiness framing.
+
+
 ## Runtime And Occlusion Discipline
 
 Starting at v18, runtime is a design invariant. The default pipeline for a raw video must run in the same order of magnitude as the input duration. A method that takes hours for a roughly one-minute clip is a failed default design, even if its intermediate evidence is interesting. Per-instance neural reconstruction or training loops such as BundleSDF/NeRF-style optimization may be used only as offline research branches, never as the default path or as a way to discover obvious physical state types.
