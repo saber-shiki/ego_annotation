@@ -1497,9 +1497,14 @@ def bbox_center_distance_norm(a: Any, b: Any, width: float, height: float) -> fl
 
 
 def numeric_vector(value: Any, dim: int) -> np.ndarray | None:
-    if not (isinstance(value, list) and len(value) == dim):
+    if isinstance(value, np.ndarray):
+        if value.shape != (dim,):
+            return None
+        vals = [finite_float(v, float("nan")) for v in value.tolist()]
+    elif isinstance(value, (list, tuple)) and len(value) == dim:
+        vals = [finite_float(v, float("nan")) for v in value]
+    else:
         return None
-    vals = [finite_float(v, float("nan")) for v in value]
     if not all(math.isfinite(v) for v in vals):
         return None
     return np.asarray(vals, dtype=np.float64)
@@ -1787,6 +1792,8 @@ def attach_object_depth_silhouette_pose_validation(frames: list[dict[str, Any]])
             if recon:
                 recon["object_depth_silhouette_pose_validation_state"] = validation.get("object_pose_validation_state")
                 recon["visible_depth_silhouette_pose_supported"] = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
+                recon["rigid_pose_supported_visible_mesh"] = bool(validation.get("rigid_pose_supported_visible_mesh") is True)
+                recon["surface_changing_compact_pose_supported_visible_mesh"] = bool(validation.get("surface_changing_compact_pose_supported_visible_mesh") is True)
                 recon["object_pose_validation_blockers"] = validation.get("validation_blockers", [])
             counts["object_depth_silhouette_pose_validation_rows"] += 1
             if validation.get("visible_depth_silhouette_pose_supported") is True:
@@ -2219,7 +2226,7 @@ def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str
         measurement_blockers.append("observed_visible_surface_to_mesh_p95_over_16cm")
     if observed_inside < 0.02:
         measurement_blockers.append("observed_visible_surface_projection_not_supported_by_mask")
-    if predicted_inside < 0.02:
+    if predicted_inside < 0.10:
         measurement_blockers.append("projected_mesh_vertices_have_weak_mask_support")
     if int(predicted_projection.get("valid_projected_count", 0) or 0) < 5:
         measurement_blockers.append("too_few_projected_mesh_vertices")
@@ -2229,7 +2236,7 @@ def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str
         surface_measurement_blockers.append("observed_visible_surface_to_mesh_p95_over_16cm")
     if observed_inside < 0.50:
         surface_measurement_blockers.append("observed_visible_surface_projection_weak_for_surface_changing_pose")
-    if predicted_inside < 0.02:
+    if predicted_inside < 0.10:
         surface_measurement_blockers.append("projected_mesh_vertices_have_weak_mask_support")
     if int(predicted_projection.get("valid_projected_count", 0) or 0) < 5:
         surface_measurement_blockers.append("too_few_projected_mesh_vertices")
@@ -2252,8 +2259,8 @@ def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str
         "predicted_to_observed_distance_m": predicted_to_observed,
         "predicted_projection_mask_support": predicted_projection,
         "observed_projection_mask_support": observed_projection,
-        "rigid_pose_supported_visible_mesh": rigid_visible_mesh,
-        "surface_changing_compact_pose_supported_visible_mesh": surface_visible_mesh,
+        "rigid_pose_supported_visible_mesh": bool(rigid_supported),
+        "surface_changing_compact_pose_supported_visible_mesh": bool(surface_supported),
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
         "scope": "visible_depth_and_mask_projection_support_for_posed_depth_fused_mesh_only_not_hidden_geometry_completion",
@@ -2569,6 +2576,11 @@ def contact_switch_energy(
     if math.isfinite(final_metric_distance_m):
         # Continuous support: <=2 cm is strong, 5 cm is weak, farther decays to zero by 15 cm.
         final_metric_raw_support = max(0.0, min(1.0, (0.15 - final_metric_distance_m) / 0.13))
+    final_metric_raw_support_from_same_frame = float(final_metric_raw_support)
+    raw_metric_nearest_hand_point_world_m = None
+    raw_metric_nearest_object_point_world_m = None
+    coupled_object_nearest_hand_point_world_m = None
+    coupled_object_nearest_object_point_world_m = None
     coupled_object_distance_m = float("nan")
     coupled_object_delta_m = None
     if isinstance(object_graph_var, dict) and isinstance(hand, dict) and isinstance(obj, dict):
@@ -2580,11 +2592,20 @@ def contact_switch_energy(
         base_trans = numeric_vector((obj.get("object_se3_observation") if isinstance(obj.get("object_se3_observation"), dict) else {}).get("translation_world_m"), 3)
         est_trans = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
         if base_trans is not None and est_trans is not None and hand_sample.ndim == 2 and hand_sample.shape[1] == 3 and obj_sample.ndim == 2 and obj_sample.shape[1] == 3:
+            raw_pair = nearest_point_pair(hand_sample, obj_sample)
+            if raw_pair is not None:
+                raw_h, raw_o, _ = raw_pair
+                raw_metric_nearest_hand_point_world_m = [float(v) for v in raw_h.tolist()]
+                raw_metric_nearest_object_point_world_m = [float(v) for v in raw_o.tolist()]
             delta = est_trans - base_trans
-            shifted_distance = points_min_distance(hand_sample, obj_sample + delta[None, :])
-            if shifted_distance is not None:
+            shifted_object = obj_sample + delta[None, :]
+            shifted_pair = nearest_point_pair(hand_sample, shifted_object)
+            if shifted_pair is not None:
+                shifted_h, shifted_o, shifted_distance = shifted_pair
                 coupled_object_distance_m = float(shifted_distance)
                 coupled_object_delta_m = [float(v) for v in delta.tolist()]
+                coupled_object_nearest_hand_point_world_m = [float(v) for v in shifted_h.tolist()]
+                coupled_object_nearest_object_point_world_m = [float(v) for v in shifted_o.tolist()]
                 coupled_support = max(0.0, min(1.0, (0.15 - coupled_object_distance_m) / 0.13))
                 final_metric_raw_support = max(final_metric_raw_support, coupled_support)
     coupled_part_distance_m = float("nan")
@@ -2644,7 +2665,7 @@ def contact_switch_energy(
         surface_allowed, _ = surface_changing_contact_pose_allowed(obj)
         surface_changing_pose_claim_supported = bool(surface_allowed and isinstance(object_graph_var, dict) and math.isfinite(effective_metric_contact_distance_m) and effective_metric_contact_distance_m <= 0.12)
         deformable_allowed, _ = deformable_visible_surface_contact_allowed(obj)
-        deformable_visible_surface_contact_supported = bool(deformable_allowed and math.isfinite(effective_metric_contact_distance_m) and effective_metric_contact_distance_m <= 0.05 and (mesh_support > 0.5 or final_metric_raw_support > 0.70))
+        deformable_visible_surface_contact_supported = bool(deformable_allowed and math.isfinite(final_metric_distance_m) and final_metric_distance_m <= 0.05 and (mesh_support > 0.5 or final_metric_raw_support_from_same_frame > 0.70))
         part_pose_claim_supported = bool(validated_part_label is not None and math.isfinite(validated_part_distance_m) and validated_part_distance_m <= 0.12)
     physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported or surface_changing_pose_claim_supported or deformable_visible_surface_contact_supported)
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
@@ -2690,7 +2711,8 @@ def contact_switch_energy(
     if missing_geometry_contact_penalty > 0.0:
         off_energy *= 0.5
     raw_switch_on_before_physical_gate = (on_energy < off_energy) and not nonpenetration_conflict
-    raw_switch_on = raw_switch_on_before_physical_gate and physical_contact_claim_supported
+    depth_conflict_blocks_active_contact = bool(depth_contradiction)
+    raw_switch_on = raw_switch_on_before_physical_gate and physical_contact_claim_supported and not depth_conflict_blocks_active_contact
     switch_on = raw_switch_on and support_gate_allows_active_contact
     return {
         "hand_side": hyp.get("hand_side"),
@@ -2714,16 +2736,22 @@ def contact_switch_energy(
         "min_box_coverage": float(coverage),
         "center_distance_norm": float(dist) if dist is not None else None,
         "depth_contradiction": bool(depth_contradiction),
+        "depth_conflict_blocks_active_contact": bool(depth_conflict_blocks_active_contact),
         "metric_depth_compatible_candidate": depth_compatible,
         "mesh_contact_support_score": mesh_support,
         "final_metric_contact_support_score": float(final_metric_support),
         "final_metric_contact_raw_distance_support_score": float(final_metric_raw_support),
+        "final_metric_contact_same_frame_raw_support_score": float(final_metric_raw_support_from_same_frame),
         "final_metric_contact_hand_support_weight": float(hand_support_weight),
         "final_metric_contact_hand_support_state": final_metric.get("hand_support_state"),
         "hand_support_state": hand_support_state,
         "hand_support_weight": float(hand_support_weight),
         "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
+        "raw_metric_nearest_hand_point_world_m": raw_metric_nearest_hand_point_world_m,
+        "raw_metric_nearest_object_point_world_m": raw_metric_nearest_object_point_world_m,
         "coupled_object_metric_contact_distance_m": float(coupled_object_distance_m) if math.isfinite(coupled_object_distance_m) else None,
+        "coupled_object_nearest_hand_point_world_m": coupled_object_nearest_hand_point_world_m,
+        "coupled_object_nearest_object_point_world_m": coupled_object_nearest_object_point_world_m,
         "coupled_part_metric_contact_distance_m": float(coupled_part_distance_m) if math.isfinite(coupled_part_distance_m) else None,
         "coupled_part_track_label": coupled_part_label,
         "coupled_part_translation_delta_camera_m": coupled_part_delta_m,
@@ -3019,7 +3047,7 @@ def solve_v18_factor_graph(
                 for family_name, family_count in family_counts_local.items():
                     terms["factor_counts"][str(family_name)] += int(family_count)
 
-    absorb_series("hand_state", hand_obs, temporal_weight=0.8, default_weight=1.0, unit="normalized_image_xy")
+    absorb_series("hand_state", hand_obs, temporal_weight=0.8, default_weight=1.0, unit="world_m_wrist_xyz")
     absorb_series("object_se3", object_obs, temporal_weight=2.0, default_weight=1.0, unit="world_m_translation_plus_optional_pca_rotvec_rad")
     absorb_series("part_se3", part_obs, temporal_weight=1.0, default_weight=1.0, unit="camera_m_translation_plus_optional_pca_rotvec_rad")
     absorb_series("articulation_parameter", articulation_obs, temporal_weight=1.0, default_weight=0.5, unit="relative_part_center_distance_m")
@@ -3127,7 +3155,7 @@ def solve_v18_factor_graph(
             energy_after_total += chosen_energy
             terms["factor_energy_initial"]["occlusion_owner_discrete"] += initial_energy
             terms["factor_energy_after"]["occlusion_owner_discrete"] += chosen_energy
-            if owner.get("accepted_owner") is True:
+            if owner.get("owner_supported_by_depth_evidence") is True or owner.get("accepted_owner") is True:
                 accepted_owner_count += 1
 
     for variable_id, sequence in contact_switch_series.items():
@@ -3144,6 +3172,8 @@ def solve_v18_factor_graph(
             if switch.get("support_gate_allows_active_contact") is not True:
                 on_energy += 1e6
             if switch.get("physical_contact_claim_supported") is not True:
+                on_energy += 1e6
+            if switch.get("depth_conflict_blocks_active_contact") is True:
                 on_energy += 1e6
             on_costs.append(on_energy)
         dp_off = [off_costs[0]]
@@ -3185,7 +3215,7 @@ def solve_v18_factor_graph(
                 temporal_energy = contact_temporal_switch_penalty / float(max(1, frame_gap))
                 contact_temporal_switch_count += 1
             chosen_energy = finite_float(switch.get("on_energy" if state else "off_energy"), 0.0)
-            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True and switch.get("physical_contact_claim_supported") is True)
+            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True)
             switch["chosen_energy"] = chosen_energy if switch["estimate"] else finite_float(switch.get("off_energy"), 0.0)
             switch["temporal_contact_variable_id"] = variable_id
             switch["temporal_contact_previous_frame_gap"] = frame_gap
@@ -3247,7 +3277,7 @@ def solve_v18_factor_graph(
                 "state": "numerical_factor_graph_candidate_solution",
                 "active_contact_hypotheses": sum(1 for row in contact_switches if row.get("estimate") is True),
                 "unresolved_or_contradicted_contact_hypotheses": sum(1 for row in contact_switches if row.get("depth_contradiction") or row.get("metric_depth_compatible_candidate") is False),
-                "accepted_occlusion_owner_count": sum(1 for row in occlusion_owners if row.get("accepted_owner") is True),
+                "accepted_occlusion_owner_count": sum(1 for row in occlusion_owners if row.get("owner_supported_by_depth_evidence") is True or row.get("accepted_owner") is True),
                 "all_outputs_approximate_uncertain": True,
             },
         }
@@ -3256,7 +3286,7 @@ def solve_v18_factor_graph(
         "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "articulation_parameter", "contact_switch", "occlusion_owner"],
         "implemented_variable_status": {
             "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
-            "hand_state": "normalized_bbox_center_track_observation",
+            "hand_state": "HaWoR_metric_MANO_wrist_world_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_contact_object_pose_coupling_when_rigid_and_supported",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_contact_part_pose_coupling_when_part_mesh_and_observed_mano_are_near",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
@@ -3670,15 +3700,33 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     return out
 
 
-def point_from_bbox_or_pose(obj: dict[str, Any], source_w: float, source_h: float, canvas_w: int, canvas_h: int) -> tuple[int, int] | None:
-    center = bbox_center(obj.get("bbox_xyxy"))
-    if center is None:
-        return None
-    left, right = 70, canvas_w - 330
-    top, bottom = 96, canvas_h - 90
-    x = int(round(left + max(0.0, min(1.0, center[0] / source_w)) * (right - left)))
-    y = int(round(top + max(0.0, min(1.0, center[1] / source_h)) * (bottom - top)))
-    return x, y
+def object_metric_anchor_world(obj: dict[str, Any]) -> np.ndarray | None:
+    recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+    for key in ["world_bbox_center_m", "translation_world_m"]:
+        v = numeric_vector(recon.get(key), 3)
+        if v is not None:
+            return v
+    geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+    v = numeric_vector(geom.get("world_centroid_m"), 3)
+    if v is not None:
+        return v
+    pose = obj.get("object_se3_observation") if isinstance(obj.get("object_se3_observation"), dict) else {}
+    return numeric_vector(pose.get("translation_world_m"), 3)
+
+
+def hand_metric_anchor_world(hand: dict[str, Any]) -> np.ndarray | None:
+    metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    wrist = numeric_vector(metric_state.get("wrist_current_v18_world_m"), 3)
+    if wrist is not None:
+        return wrist
+    vertices = np.asarray(metric_state.get("vertices_world_sample_m", []), dtype=np.float64)
+    if vertices.ndim == 2 and vertices.shape[1] == 3 and vertices.shape[0] > 0 and np.isfinite(vertices).all():
+        return vertices.mean(axis=0)
+    return None
+
+
+def point_from_metric_anchor(raw: Any, bounds: tuple[np.ndarray, np.ndarray] | None, canvas_w: int, canvas_h: int) -> tuple[int, int] | None:
+    return metric_xz_to_canvas(raw, bounds, canvas_w, canvas_h)
 
 
 def metric_render_bounds(frames: list[Any]) -> tuple[np.ndarray, np.ndarray] | None:
@@ -3689,12 +3737,21 @@ def metric_render_bounds(frames: list[Any]) -> tuple[np.ndarray, np.ndarray] | N
         for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
             if not isinstance(obj, dict):
                 continue
+            anchor = object_metric_anchor_world(obj)
+            if anchor is not None:
+                pts.append(anchor[[0, 2]])
             recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
             corners = recon.get("world_bbox_corners_m") if isinstance(recon.get("world_bbox_corners_m"), list) else []
             for raw in corners:
                 v = numeric_vector(raw, 3)
                 if v is not None:
                     pts.append(v[[0, 2]])
+        for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
+            if not isinstance(hand, dict):
+                continue
+            anchor = hand_metric_anchor_world(hand)
+            if anchor is not None:
+                pts.append(anchor[[0, 2]])
     if not pts:
         return None
     arr = np.vstack(pts)
@@ -3856,7 +3913,13 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 draw_label(draw, (box[0], max(44, box[1] - 22)), label[:115], small, rgb)
                 recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
                 if recon.get("renderable_pose_geometry") is True:
-                    draw_label(draw, (box[0], min(image.size[1] - 58, box[3] + 6)), "depth-fused mesh pose", small, (120, 255, 255), (0, 0, 0))
+                    if recon.get("rigid_pose_supported_visible_mesh") is True:
+                        mesh_text = "supported rigid mesh pose"
+                    elif recon.get("surface_changing_compact_pose_supported_visible_mesh") is True:
+                        mesh_text = "surface-changing visible pose"
+                    else:
+                        mesh_text = "depth-fused mesh candidate"
+                    draw_label(draw, (box[0], min(image.size[1] - 58, box[3] + 6)), mesh_text, small, (120, 255, 255), (0, 0, 0))
                     counts["reconstructed_geometry_pose_labels"] += 1
                 counts["object_boxes"] += 1
             for part_idx, part in enumerate(obj.get("parts", [])[:4]):
@@ -3978,14 +4041,12 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
         top, bottom = 96, canvas_h - 90
         draw.rectangle((0, 0, canvas_w, 48), fill=(0, 0, 0))
         draw.text((14, 13), f"V18 over V16 metric world frame {frame_idx+1}/{len(frames)} — V16 reconstruction preserved + V18 graph layer", font=font, fill=(255, 255, 255))
-        raw_video = require_dict(ann.get("raw_video", {}), "raw_video")
-        source_w = finite_float(raw_video.get("width"), 1920.0)
-        source_h = finite_float(raw_video.get("height"), 1080.0)
         object_points: dict[str, tuple[int, int]] = {}
         for obj in frame.get("objects", []):
             if not isinstance(obj, dict):
                 continue
-            pt = point_from_bbox_or_pose(obj, source_w, source_h, canvas_w, canvas_h)
+            anchor_world = object_metric_anchor_world(obj)
+            pt = point_from_metric_anchor(anchor_world, metric_bounds, canvas_w, canvas_h)
             if pt is None:
                 continue
             object_points[str(obj.get("object_id"))] = pt
@@ -3994,9 +4055,16 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             draw.ellipse((pt[0]-radius, pt[1]-radius, pt[0]+radius, pt[1]+radius), fill=color)
             recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
             if recon.get("renderable_pose_geometry") is True:
-                mesh_color = (80, 255, 130) if recon.get("rigid_pose_supported_visible_mesh") is True else (120, 255, 255)
-                mesh_label = "rigid-pose" if recon.get("rigid_pose_supported_visible_mesh") is True else "mesh-pose"
-                if draw_anchored_mesh_glyph(draw, recon, pt, mesh_color):
+                if recon.get("rigid_pose_supported_visible_mesh") is True:
+                    mesh_color = (80, 255, 130)
+                    mesh_label = "rigid-pose"
+                elif recon.get("surface_changing_compact_pose_supported_visible_mesh") is True:
+                    mesh_color = (120, 255, 255)
+                    mesh_label = "surface-pose"
+                else:
+                    mesh_color = (120, 210, 255)
+                    mesh_label = "mesh-candidate"
+                if draw_metric_mesh_footprint(draw, recon, metric_bounds, canvas_w, canvas_h, mesh_color):
                     draw_label(draw, (pt[0] + 10, pt[1] + 12), mesh_label, small, mesh_color, (18, 20, 25))
                     counts["world_reconstructed_mesh_footprints"] += 1
                     if recon.get("rigid_pose_supported_visible_mesh") is True:
@@ -4019,11 +4087,11 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
         for hand in frame.get("hands", []):
             if not isinstance(hand, dict):
                 continue
-            center = bbox_center(hand.get("bbox_xyxy"))
-            if center is None:
+            hand_anchor = hand_metric_anchor_world(hand)
+            hp = point_from_metric_anchor(hand_anchor, metric_bounds, canvas_w, canvas_h)
+            if hp is None:
                 continue
-            x = int(round(left + max(0, min(1, center[0] / source_w)) * (right - left)))
-            y = int(round(top + max(0, min(1, center[1] / source_h)) * (bottom - top)))
+            x, y = hp
             side = str(hand.get("hand_side"))
             hand_points[side] = (x, y)
             color, support_label, line_width = hand_render_style(hand)
@@ -4037,11 +4105,26 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
         for switch in contact_vars:
             if not isinstance(switch, dict) or switch.get("estimate") is not True or switch.get("physical_contact_claim_supported") is not True:
                 continue
-            hp = hand_points.get(str(switch.get("hand_side")))
-            op = object_points.get(str(switch.get("object_id")))
+            hp = None
+            op = None
+            raw_h = switch.get("raw_metric_nearest_hand_point_world_m")
+            raw_o = switch.get("raw_metric_nearest_object_point_world_m")
+            coupled_h = switch.get("coupled_object_nearest_hand_point_world_m")
+            coupled_o = switch.get("coupled_object_nearest_object_point_world_m")
+            if raw_h is not None and raw_o is not None:
+                hp = point_from_metric_anchor(raw_h, metric_bounds, canvas_w, canvas_h)
+                op = point_from_metric_anchor(raw_o, metric_bounds, canvas_w, canvas_h)
+            if (hp is None or op is None) and coupled_h is not None and coupled_o is not None:
+                hp = point_from_metric_anchor(coupled_h, metric_bounds, canvas_w, canvas_h)
+                op = point_from_metric_anchor(coupled_o, metric_bounds, canvas_w, canvas_h)
+            if hp is None:
+                hp = hand_points.get(str(switch.get("hand_side")))
+            if op is None:
+                op = object_points.get(str(switch.get("object_id")))
             if hp and op:
                 draw.line((hp[0], hp[1], op[0], op[1]), fill=(255, 255, 90), width=2)
                 counts["world_contact_edges"] += 1
+                counts["world_metric_contact_edges"] += 1
         occlusion_vars = vars_raw.get("occlusion_owner") if isinstance(vars_raw.get("occlusion_owner"), list) else []
         occlusion_vars_by_side = {str(v.get("hand_side")): v for v in occlusion_vars if isinstance(v, dict)}
         for raw_hand in frame.get("hands", []):

@@ -219,6 +219,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             counts["camera_depth_observed_rows"] += 1
         hand_vars = vars.get("hand_state") if isinstance(vars.get("hand_state"), list) else []
         counts["hand_graph_metric"] += sum(1 for row in hand_vars if isinstance(row, dict) and str(row.get("source", "")).startswith("HaWoR_metric_MANO_wrist_current_V18_world_m"))
+        for row in hand_vars:
+            if isinstance(row, dict) and str(row.get("source", "")).startswith("HaWoR_metric_MANO_wrist_current_V18_world_m"):
+                require(row.get("unit") == "world_m_wrist_xyz", f"{case}: metric hand graph variable has wrong unit")
         contact_vars = vars.get("contact_switch") if isinstance(vars.get("contact_switch"), list) else []
         counts["contact_switch_vars"] += len(contact_vars)
         for row in contact_vars:
@@ -256,7 +259,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown") if isinstance(obj, dict) else "unknown"
                     require(physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True, f"{case}: active deformable contact is not on deformable object")
                     require(isinstance(geom.get("world_vertices_sample_m"), list) and len(geom.get("world_vertices_sample_m")) > 0, f"{case}: active deformable contact lacks visible depth surface")
-                    require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.05, f"{case}: active deformable contact is not within 5cm visible surface band")
+                    require(row.get("final_metric_contact_distance_m") is not None and float(row.get("final_metric_contact_distance_m")) <= 0.05, f"{case}: active deformable contact is not within 5cm same-frame visible surface band")
+                require(row.get("depth_contradiction") is not True, f"{case}: active contact has depth contradiction")
                 if row_support_state != "observed_same_frame_detection":
                     counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
         occlusion_vars = vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else []

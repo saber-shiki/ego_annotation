@@ -94,7 +94,7 @@ def validate_case(path: Path) -> dict[str, Any]:
                     occ: dict[str, Any] = occ_raw if isinstance(occ_raw, dict) else {}
                     occlusion_owner_rows += 1
                     require(str(occ.get("inference_method")) in {"box_mesh_depth_temporal_energy_with_unowned_competitor", "box_mesh_depth_temporal_energy_with_unowned_competitor_support_gated_by_hawor_observation"}, f"{case}: occlusion owner lacks integrated inference method")
-                    if occ.get("accepted_owner") is True:
+                    if occ.get("owner_supported_by_depth_evidence") is True or occ.get("accepted_owner") is True:
                         accepted_occlusion_owner_rows += 1
                     candidates_raw = occ.get("candidate_energies")
                     candidates: list[Any] = candidates_raw if isinstance(candidates_raw, list) else []
@@ -114,7 +114,7 @@ def validate_case(path: Path) -> dict[str, Any]:
                             if cand.get("temporal_graph_selected") is True or float(cand.get("mesh_temporal_support", 0.0)) > 0.0:
                                 occlusion_owner_with_temporal_or_mesh += 1
                     require(unowned_count == 1, f"{case}: occlusion owner missing exactly one unowned competitor")
-                    if occ.get("accepted_owner") is True:
+                    if occ.get("owner_supported_by_depth_evidence") is True or occ.get("accepted_owner") is True:
                         chosen = occ.get("chosen_owner_object_id")
                         chosen_candidates = [cand for cand in candidates if isinstance(cand, dict) and cand.get("object_id") == chosen]
                         require(any(cand.get("accepted_by_depth_evidence") is True or cand.get("temporal_graph_accepted") is True for cand in chosen_candidates), f"{case}: accepted occlusion owner lacks source support")
@@ -161,6 +161,10 @@ def validate_case(path: Path) -> dict[str, Any]:
                     if row.get("estimate") is True:
                         require(row.get("geometry_contact_evidence_available") is True, f"{case}: active contact lacks geometry evidence")
                         require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks supported rigid object or validated part pose")
+                        require(row.get("depth_contradiction") is not True, f"{case}: active contact has depth contradiction")
+                        if row.get("deformable_visible_surface_contact_claim_supported") is True:
+                            raw_distance = row.get("final_metric_contact_distance_m")
+                            require(isinstance(raw_distance, (int, float)) and float(raw_distance) <= 0.05, f"{case}: deformable active contact uses non-same-frame/proxy distance")
                         effective_distance = row.get("effective_metric_contact_distance_m")
                         mesh_support = float(row.get("mesh_contact_support_score", 0.0) or 0.0)
                         near_effective = isinstance(effective_distance, (int, float)) and float(effective_distance) <= 0.20
