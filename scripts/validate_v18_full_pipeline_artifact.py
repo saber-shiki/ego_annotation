@@ -127,6 +127,10 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "wilor_key_rows": 0,
         "rtmlib_key_rows": 0,
         "hand_graph_metric": 0,
+        "hand_support_state_rows": 0,
+        "hand_support_observed_rows": 0,
+        "hand_support_inferred_rows": 0,
+        "hand_support_boundary_fill_rows": 0,
         "pose_fill_gate_rows": 0,
         "object_states": 0,
         "object_physical_state_rows": 0,
@@ -137,6 +141,10 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "part_rows": 0,
         "contacts": 0,
         "contacts_with_final_metric_distance": 0,
+        "contacts_with_hawor_support_weight": 0,
+        "contact_metric_observed_rows": 0,
+        "contact_metric_inferred_rows": 0,
+        "contact_metric_boundary_fill_rows": 0,
         "signed_nonpenetration_rows": 0,
         "triangle_nonpenetration_rows": 0,
         "contact_switch_vars": 0,
@@ -158,7 +166,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         if camera_depth.get("has_direct_observation") is True:
             counts["camera_depth_observed_rows"] += 1
         hand_vars = vars.get("hand_state") if isinstance(vars.get("hand_state"), list) else []
-        counts["hand_graph_metric"] += sum(1 for row in hand_vars if isinstance(row, dict) and row.get("source") == "HaWoR_metric_MANO_wrist_current_V18_world_m")
+        counts["hand_graph_metric"] += sum(1 for row in hand_vars if isinstance(row, dict) and str(row.get("source", "")).startswith("HaWoR_metric_MANO_wrist_current_V18_world_m"))
         contact_vars = vars.get("contact_switch") if isinstance(vars.get("contact_switch"), list) else []
         counts["contact_switch_vars"] += len(contact_vars)
         counts["active_contact_switch_vars"] += sum(1 for row in contact_vars if isinstance(row, dict) and row.get("estimate") is True)
@@ -172,6 +180,19 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
             if hand.get("hand_geometry_source") == "HaWoR_metric_MANO_current_V18_world" or str(metric.get("source", "")).startswith("HaWoR_metric_MANO"):
                 counts["hawor_metric_mano"] += 1
+            support_state = str(hand.get("hawor_support_state", ""))
+            support_weight = hand.get("hawor_physical_factor_weight")
+            require(support_state in {"observed_same_frame_detection", "inferred_no_same_frame_detection", "temporal_boundary_fill", "pipeline_gap_fill", "missing_hawor_row"}, f"{case}: invalid/missing hand HaWoR support state {support_state!r}")
+            require(isinstance(support_weight, (int, float)) and 0.0 <= float(support_weight) <= 1.0, f"{case}: invalid hand HaWoR support weight")
+            counts["hand_support_state_rows"] += 1
+            if support_state == "observed_same_frame_detection":
+                counts["hand_support_observed_rows"] += 1
+                require(hand.get("hawor_same_frame_detection") is True, f"{case}: observed support row missing same-frame detector flag")
+            elif support_state == "inferred_no_same_frame_detection":
+                counts["hand_support_inferred_rows"] += 1
+            elif support_state == "temporal_boundary_fill":
+                counts["hand_support_boundary_fill_rows"] += 1
+                require(hand.get("hawor_temporal_boundary_filled") is True, f"{case}: boundary-fill support row missing boundary flag")
             if "wilor_or_v16_candidate_present" in hand:
                 counts["wilor_key_rows"] += 1
             if "rtmlib_anchor_available" in hand:
@@ -204,8 +225,20 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             if not isinstance(hyp, dict):
                 continue
             counts["contacts"] += 1
-            if isinstance(hyp.get("final_metric_contact_evidence"), dict):
+            metric_contact = hyp.get("final_metric_contact_evidence") if isinstance(hyp.get("final_metric_contact_evidence"), dict) else None
+            if isinstance(metric_contact, dict):
                 counts["contacts_with_final_metric_distance"] += 1
+                support_state = str(metric_contact.get("hand_support_state", ""))
+                support_weight = metric_contact.get("hand_physical_factor_weight")
+                require(support_state in {"observed_same_frame_detection", "inferred_no_same_frame_detection", "temporal_boundary_fill", "pipeline_gap_fill"}, f"{case}: final metric contact missing HaWoR support state")
+                require(isinstance(support_weight, (int, float)) and 0.0 <= float(support_weight) <= 1.0, f"{case}: final metric contact has invalid HaWoR support weight")
+                counts["contacts_with_hawor_support_weight"] += 1
+                if support_state == "observed_same_frame_detection":
+                    counts["contact_metric_observed_rows"] += 1
+                elif support_state == "inferred_no_same_frame_detection":
+                    counts["contact_metric_inferred_rows"] += 1
+                elif support_state == "temporal_boundary_fill":
+                    counts["contact_metric_boundary_fill_rows"] += 1
             evidence = hyp.get("evidence") if isinstance(hyp.get("evidence"), dict) else {}
             if isinstance(evidence.get("signed_nonpenetration_evidence"), dict):
                 counts["signed_nonpenetration_rows"] += 1
@@ -216,6 +249,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["hand_total"] == expected_hand_rows, f"{case}: hand rows do not cover full timeline")
     require(counts["hawor_metric_mano"] == expected_hand_rows, f"{case}: HaWoR metric MANO does not cover all hand rows")
     require(counts["hand_graph_metric"] == expected_hand_rows, f"{case}: graph hand variables do not all consume HaWoR metric MANO")
+    require(counts["hand_support_state_rows"] == expected_hand_rows, f"{case}: HaWoR support state does not cover all hand rows")
+    require(counts["hand_support_observed_rows"] > 0, f"{case}: no observed same-frame HaWoR rows")
     require(counts["wilor_key_rows"] == expected_hand_rows, f"{case}: WiLoR/V16 hand evidence keys missing")
     require(counts["rtmlib_key_rows"] == expected_hand_rows, f"{case}: RTMLib hand evidence keys missing")
     require(counts["pose_fill_gate_rows"] == expected_hand_rows, f"{case}: pose fill gate rows do not cover both hands/full timeline")
@@ -232,6 +267,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["contact_switch_vars"] == counts["contacts"], f"{case}: contact switch variables do not cover contact hypotheses")
     require(counts["active_contact_switch_vars"] > 0, f"{case}: no active contact switches in factor graph")
     require(counts["contacts_with_final_metric_distance"] > 0, f"{case}: no final metric MANO-to-object-surface distances")
+    require(counts["contacts_with_hawor_support_weight"] == counts["contacts_with_final_metric_distance"], f"{case}: final metric contact distances missing HaWoR support weights")
     require(counts["signed_nonpenetration_rows"] > 0, f"{case}: no signed nonpenetration evidence rows")
     require(counts["triangle_nonpenetration_rows"] > 0, f"{case}: no triangle nonpenetration evidence rows")
     require(counts["occlusion_owner_vars"] > 0, f"{case}: no occlusion owner graph variables")

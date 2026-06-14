@@ -226,6 +226,8 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
     if npz_path is None or not npz_path.exists():
         return {}, {"status": "missing_hawor_bridge_npz", "report_path": str(report_path), "bridge_candidate_npz": str(npz_path) if npz_path else None}
     z = np.load(npz_path)
+    source_hawor_npz = Path(str(np.asarray(z["source_hawor_npz"]).reshape(-1)[0])) if "source_hawor_npz" in z.files else None
+    support_z = np.load(source_hawor_npz, allow_pickle=True) if source_hawor_npz is not None and source_hawor_npz.exists() else None
     frame_idx = np.asarray(z["frame_idx"], dtype=np.int32)
     side_arr = np.asarray(z["side"], dtype=np.int32)
     joints_camera = np.asarray(z["joints_hawor_camera_m"], dtype=np.float64)
@@ -233,6 +235,61 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
     joints_world = np.asarray(z["joints_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
     vertices_world = np.asarray(z["vertices_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
     coord = str(np.asarray(z["coordinate_status"]).reshape(-1)[0]) if "coordinate_status" in z.files else "hawor_bridge_current_v18_world"
+    def support_for(side: str, frame: int, source: str) -> dict[str, Any]:
+        if source.startswith("HaWoR_metric_MANO_temporal_gap_fill"):
+            return {
+                "state": "pipeline_gap_fill",
+                "same_frame_detection": False,
+                "temporal_boundary_filled": False,
+                "physical_factor_weight": 0.25,
+                "physical_factor_role": "temporal_continuity_hand_estimate_not_observed_contact_measurement",
+                "source_hawor_npz": str(source_hawor_npz) if source_hawor_npz is not None else None,
+            }
+        if support_z is None:
+            return {
+                "state": "support_unknown",
+                "same_frame_detection": False,
+                "temporal_boundary_filled": False,
+                "physical_factor_weight": 0.35,
+                "physical_factor_role": "support_unknown_hand_estimate",
+                "source_hawor_npz": str(source_hawor_npz) if source_hawor_npz is not None else None,
+            }
+        detected_key = f"{side}_detected_same_frame"
+        boundary_key = f"{side}_temporal_boundary_filled"
+        track_key = f"{side}_track_id"
+        box_key = f"{side}_det_box_xyxyscore"
+        state_source_key = f"{side}_state_source"
+        detected = bool(np.asarray(support_z[detected_key])[frame]) if detected_key in support_z.files else False
+        boundary = bool(np.asarray(support_z[boundary_key])[frame]) if boundary_key in support_z.files else False
+        if boundary:
+            state = "temporal_boundary_fill"
+            weight = 0.20
+            role = "explicit_boundary_fill_temporal_continuity_not_observed_contact_measurement"
+        elif detected:
+            state = "observed_same_frame_detection"
+            weight = 1.0
+            role = "observed_hand_geometry_measurement"
+        else:
+            state = "inferred_no_same_frame_detection"
+            weight = 0.35
+            role = "inferred_hand_continuity_low_confidence_physical_measurement"
+        det_box = None
+        if box_key in support_z.files:
+            raw_box = np.asarray(support_z[box_key])[frame].astype(float).reshape(-1)
+            if raw_box.size >= 5 and np.isfinite(raw_box[:5]).all():
+                det_box = [float(x) for x in raw_box[:5].tolist()]
+        return {
+            "state": state,
+            "same_frame_detection": detected,
+            "temporal_boundary_filled": boundary,
+            "physical_factor_weight": weight,
+            "physical_factor_role": role,
+            "det_box_xyxyscore": det_box,
+            "track_id": str(np.asarray(support_z[track_key])[frame]) if track_key in support_z.files else None,
+            "state_source": str(np.asarray(support_z[state_source_key])[frame]) if state_source_key in support_z.files else "hawor_export",
+            "source_hawor_npz": str(source_hawor_npz) if source_hawor_npz is not None else None,
+        }
+
     out: dict[tuple[int, str], dict[str, Any]] = {}
     by_side: dict[str, dict[int, int]] = {"left": {}, "right": {}}
     for row_idx in range(len(frame_idx)):
@@ -246,6 +303,7 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
         jw = np.asarray(joints_world[row_idx], dtype=np.float64)
         vc_sample = sampled_points(vertices_camera[row_idx], GEOMETRY_SAMPLE_COUNT)
         vw_sample = sampled_points(vertices_world[row_idx], GEOMETRY_SAMPLE_COUNT)
+        support = support_for(side, frame, source)
         return {
             "mano_candidate": {
                 "source": source,
@@ -254,7 +312,8 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
                 "cam_t": [0.0, 0.0, 0.0],
                 "source_intrinsics": [2304.0, 2304.0, 960.0, 540.0],
                 "detector_score": None,
-                "uncertainty": "metric_hawor_mano_used_by_final_pipeline",
+                "hawor_support": support,
+                "uncertainty": "metric_hawor_mano_used_by_final_pipeline_with_support_state",
             },
             "metric_mano_state": {
                 "source": source,
@@ -274,6 +333,12 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
                 "wrist_current_v18_world_m": [float(x) for x in jw[0].tolist()],
                 "vertices_world_sample_m": [[float(x) for x in row] for row in vw_sample.tolist()],
                 "vertices_camera_sample_m": [[float(x) for x in row] for row in vc_sample.tolist()],
+                "hawor_support": support,
+                "support_state": support.get("state"),
+                "same_frame_detection": support.get("same_frame_detection"),
+                "temporal_boundary_filled": support.get("temporal_boundary_filled"),
+                "physical_factor_weight": support.get("physical_factor_weight"),
+                "physical_factor_role": support.get("physical_factor_role"),
                 "inferred_gap_fill": interp,
             },
             "vertices_world_sample_np": vw_sample,
@@ -312,6 +377,8 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
         "status": "hawor_bridge_loaded_for_final_pipeline",
         "report_path": str(report_path),
         "bridge_npz": str(npz_path),
+        "source_hawor_npz": str(source_hawor_npz) if source_hawor_npz is not None else None,
+        "support_npz_loaded": bool(support_z is not None),
         "source_report_status": report.get("status"),
         "source_rows": int(len(frame_idx)),
         "loaded_or_gap_filled_rows": int(len(out)),
@@ -1325,10 +1392,12 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
     final_metric: dict[str, Any] = final_metric_raw if isinstance(final_metric_raw, dict) else {}
     final_metric_distance = final_metric.get("min_distance_m")
     final_metric_distance_m = finite_float(final_metric_distance, float("nan"))
-    final_metric_support = 0.0
+    final_metric_raw_support = 0.0
     if math.isfinite(final_metric_distance_m):
         # Continuous support: <=2 cm is strong, 5 cm is weak, farther decays to zero by 15 cm.
-        final_metric_support = max(0.0, min(1.0, (0.15 - final_metric_distance_m) / 0.13))
+        final_metric_raw_support = max(0.0, min(1.0, (0.15 - final_metric_distance_m) / 0.13))
+    hand_support_weight = max(0.0, min(1.0, finite_float(final_metric.get("hand_physical_factor_weight"), 0.0)))
+    final_metric_support = final_metric_raw_support * hand_support_weight
     image_support = max(iou, coverage, mesh_support, final_metric_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
     # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
     on_energy = (1.0 - image_support) ** 2 + dist_term
@@ -1373,6 +1442,9 @@ def contact_switch_energy(hyp: dict[str, Any], hand: dict[str, Any] | None, obj:
         "metric_depth_compatible_candidate": depth_compatible,
         "mesh_contact_support_score": mesh_support,
         "final_metric_contact_support_score": float(final_metric_support),
+        "final_metric_contact_raw_distance_support_score": float(final_metric_raw_support),
+        "final_metric_contact_hand_support_weight": float(hand_support_weight),
+        "final_metric_contact_hand_support_state": final_metric.get("hand_support_state"),
         "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
         "selected_contact_owner": selected_contact_owner,
         "accepted_contact_owner": accepted_contact_owner,
@@ -1513,8 +1585,10 @@ def solve_v18_factor_graph(
             wrist = numeric_vector(metric_state.get("wrist_current_v18_world_m"), 3)
             if wrist is not None:
                 value = wrist
-                source = "HaWoR_metric_MANO_wrist_current_V18_world_m"
-                weight = 6.0
+                support_weight = max(0.0, min(1.0, finite_float(metric_state.get("physical_factor_weight"), finite_float(hand.get("hawor_physical_factor_weight"), 0.0))))
+                support_state = str(metric_state.get("support_state") or hand.get("hawor_support_state") or "support_unknown")
+                source = f"HaWoR_metric_MANO_wrist_current_V18_world_m_support_{support_state}"
+                weight = 6.0 * max(0.2, support_weight)
             else:
                 center = bbox_center(hand.get("bbox_xyxy"))
                 if center is None or width <= 0 or height <= 0:
@@ -1934,9 +2008,18 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "detector_score": v16_hand.get("detector_score"),
                     "uncertainty": "legacy_visible_mano_candidate_used_only_when_hawor_row_missing",
                 }
-                metric_mano_state = {"source": "missing_HaWoR_metric_MANO_row", "case_frame_idx": frame_idx, "hand_side": side}
+                metric_mano_state = {"source": "missing_HaWoR_metric_MANO_row", "case_frame_idx": frame_idx, "hand_side": side, "support_state": "missing_hawor_row", "physical_factor_weight": 0.0, "physical_factor_role": "no_hawor_geometry"}
                 hand_geometry_source = "legacy_visible_candidate_missing_HaWoR_row"
-            confidence = "medium" if isinstance(hawor_state, dict) else "low" if hand.get("visibility_state") in {"visible", "partially_visible"} else "unknown"
+            hawor_support = metric_mano_state.get("hawor_support") if isinstance(metric_mano_state.get("hawor_support"), dict) else {}
+            support_state = str(metric_mano_state.get("support_state") or hawor_support.get("state") or "missing_hawor_row")
+            if support_state == "observed_same_frame_detection":
+                confidence = "medium"
+            elif support_state in {"inferred_no_same_frame_detection", "pipeline_gap_fill"}:
+                confidence = "low"
+            elif support_state == "temporal_boundary_fill":
+                confidence = "very_low"
+            else:
+                confidence = "low" if hand.get("visibility_state") in {"visible", "partially_visible"} else "unknown"
             confidence_counts[f"hand_{confidence}"] += 1
             occlusion_mesh_evidence_raw = occlusion_mesh_index.get((frame_idx, side), [])
             occlusion_owner_graph = occlusion_owner_graph_index.get((frame_idx, side))
@@ -1972,13 +2055,18 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "mano_candidate": mano_candidate,
                     "metric_mano_state": metric_mano_state,
                     "hand_geometry_source": hand_geometry_source,
+                    "hawor_support_state": support_state,
+                    "hawor_same_frame_detection": bool(metric_mano_state.get("same_frame_detection") is True),
+                    "hawor_temporal_boundary_filled": bool(metric_mano_state.get("temporal_boundary_filled") is True),
+                    "hawor_physical_factor_weight": finite_float(metric_mano_state.get("physical_factor_weight"), 0.0),
+                    "hawor_physical_factor_role": metric_mano_state.get("physical_factor_role"),
                     "hawor_candidate_present": isinstance(hawor_state, dict),
                     "wilor_or_v16_candidate_present": bool(v16_hand) or hand.get("renderable_bbox") is True or baseline.get("wilor_measurement_available") is True,
                     "rtmlib_anchor_available": bool(hand.get("rtmlib_wilor_comparison_available") or baseline.get("rtmlib_wilor_comparison_available")),
                     "hand_baseline_branch": baseline or {"state": "missing_hand_baseline_branch_row"},
                     "occlusion_pose_fill_gate": pose_fill_gate,
                     "confidence": confidence,
-                    "uncertainty": "metric_hawor_mano_drives_final_hand_state" if isinstance(hawor_state, dict) else "legacy_visible_fallback_for_missing_hawor_row",
+                    "uncertainty": f"metric_hawor_mano_support_state_{support_state}" if isinstance(hawor_state, dict) else "legacy_visible_fallback_for_missing_hawor_row",
                     "occlusion_owner_hypothesis": {
                         "state": occlusion_solution.get("occluder_owner_status", "unresolved_or_not_applicable"),
                         "owner_candidates": owner_candidates,
@@ -1992,6 +2080,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             module_counts["hand_states"] += 1
             if isinstance(hawor_state, dict):
                 module_counts["hawor_metric_mano_hand_states"] += 1
+                module_counts[f"hawor_support_{support_state}"] += 1
         hands_by_side_final = {str(h.get("hand_side")): h for h in hands if isinstance(h, dict)}
         objects: list[dict[str, Any]] = []
         contact_hypotheses: list[dict[str, Any]] = []
@@ -2018,10 +2107,17 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     hand_sample = np.asarray(metric_state.get("vertices_world_sample_m", []), dtype=np.float64)
                     obj_sample = np.asarray(geom.get("world_vertices_sample_m", []) if isinstance(geom, dict) else [], dtype=np.float64)
                     sample_distance = points_min_distance(hand_sample, obj_sample)
+                    support_state = str(hand_final.get("hawor_support_state") or metric_state.get("support_state") or "missing_hawor_row")
+                    support_weight = max(0.0, min(1.0, finite_float(hand_final.get("hawor_physical_factor_weight"), finite_float(metric_state.get("physical_factor_weight"), 0.0))))
                     if sample_distance is not None:
                         hyp["final_metric_contact_evidence"] = {
                             "method": "HaWoR_metric_MANO_sample_to_depth_visible_object_surface_sample_distance",
                             "hand_geometry_source": hand_final.get("hand_geometry_source"),
+                            "hand_support_state": support_state,
+                            "hand_physical_factor_weight": support_weight,
+                            "hand_physical_factor_role": hand_final.get("hawor_physical_factor_role") or metric_state.get("physical_factor_role"),
+                            "same_frame_detection": bool(hand_final.get("hawor_same_frame_detection") is True),
+                            "temporal_boundary_filled": bool(hand_final.get("hawor_temporal_boundary_filled") is True),
                             "object_geometry_source": "depth_visible_surface_archive_world_vertices_sample",
                             "sampled_hand_vertices": int(hand_sample.shape[0]) if hand_sample.ndim == 2 else 0,
                             "sampled_object_vertices": int(obj_sample.shape[0]) if obj_sample.ndim == 2 else 0,
@@ -2213,6 +2309,20 @@ def occlusion_target_object_id(hand: dict[str, Any], occlusion_vars_by_side: dic
     return None, "absent"
 
 
+def hand_render_style(hand: dict[str, Any]) -> tuple[tuple[int, int, int], str, int]:
+    state = str(hand.get("hawor_support_state") or "support_unknown")
+    side = str(hand.get("hand_side"))
+    if state == "observed_same_frame_detection":
+        return ((80, 240, 90) if side == "left" else (255, 170, 40), "observed", 4)
+    if state == "temporal_boundary_fill":
+        return ((255, 0, 255), "boundary-fill", 2)
+    if state == "inferred_no_same_frame_detection":
+        return ((90, 130, 90) if side == "left" else (120, 100, 70), "inferred", 2)
+    if state == "pipeline_gap_fill":
+        return ((200, 120, 255), "gap-fill", 2)
+    return ((170, 170, 170), state, 2)
+
+
 def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     case_dir = args.output_root / case
     frame_dir = case_dir / "overlay_frames"
@@ -2268,18 +2378,20 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
             source_h = finite_float(raw_video.get("height"), float(image.size[1]))
             draw_bbox = scale_bbox(hand.get("bbox_xyxy"), source_w, source_h, float(image.size[0]), float(image.size[1]))
             box = bbox_tuple(draw_bbox)
-            color = (80, 230, 100) if hand.get("confidence") == "medium" else (255, 205, 60) if hand.get("confidence") == "low" else (170, 170, 170)
+            color, support_label, line_width = hand_render_style(hand)
+            support_weight = finite_float(hand.get("hawor_physical_factor_weight"), 0.0)
             if box:
-                draw.rectangle(box, outline=color, width=4)
-                draw_label(draw, (box[0], max(44, box[1] - 22)), f"{hand.get('hand_side')} hand | {hand.get('confidence')} approx", small, color)
-                counts["hand_boxes"] += 1
+                draw.rectangle(box, outline=color, width=max(2, line_width))
+                draw_label(draw, (box[0], max(44, box[1] - 22)), f"{hand.get('hand_side')} HaWoR {support_label} w={support_weight:.2f}", small, color)
+                counts[f"hand_boxes_{support_label}"] += 1
             pts = project_mano_joints(require_dict(hand.get("mano_candidate", {}), "mano candidate"), source_w, source_h, float(image.size[0]), float(image.size[1]))
             if len(pts) >= 21:
                 for a, b in HAND_EDGES:
-                    draw.line((pts[a][0], pts[a][1], pts[b][0], pts[b][1]), fill=color, width=3)
+                    draw.line((pts[a][0], pts[a][1], pts[b][0], pts[b][1]), fill=color, width=line_width)
+                radius = 3 if support_label == "observed" else 2
                 for px, py in pts:
-                    draw.ellipse((px - 3, py - 3, px + 3, py + 3), fill=color)
-                counts["hand_mano_skeletons"] += 1
+                    draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=color)
+                counts[f"hand_mano_skeletons_{support_label}"] += 1
         # Draw occlusion-owner evidence and contact lines from final hand/object/graph state.
         raw_video = require_dict(ann.get("raw_video", {}), "raw_video")
         source_w = finite_float(raw_video.get("width"), float(image.size[0]))
@@ -2391,10 +2503,11 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             y = int(round(top + max(0, min(1, center[1] / source_h)) * (bottom - top)))
             side = str(hand.get("hand_side"))
             hand_points[side] = (x, y)
-            color = (80, 230, 100) if hand.get("confidence") == "medium" else (255, 205, 60)
-            draw.rectangle((x-8, y-8, x+8, y+8), fill=color)
-            draw_label(draw, (x+10, y-10), f"{side} hand", small, color, (18, 20, 25))
-            counts["world_hands"] += 1
+            color, support_label, line_width = hand_render_style(hand)
+            radius = 9 if support_label == "observed" else 7
+            draw.rectangle((x-radius, y-radius, x+radius, y+radius), fill=color)
+            draw_label(draw, (x+10, y-10), f"{side} {support_label}", small, color, (18, 20, 25))
+            counts[f"world_hands_{support_label}"] += 1
         for hyp in frame.get("contact_hypotheses", []):
             if not isinstance(hyp, dict) or hyp.get("confidence") not in {"medium", "low"}:
                 continue
