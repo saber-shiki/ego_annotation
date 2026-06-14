@@ -947,3 +947,17 @@ Every summary JSON must include runtime, frame-count equality, readiness flags, 
 6. Implement the bounded factor graph over camera/depth correction, hand state, object/part SE(3), articulation, contact switch, and occlusion owner.
 7. Render full-duration outputs with uncertainty/occlusion status and run runtime/manifest/audit checks only as validation of these implementation artifacts.
 8. Evaluate on `trash_1050` and `task5_tomato_960`; if runtime, HaWoR validation, SAM2 tracking, reconstruction, or graph optimization fails, preserve the concrete failed residuals and causal evidence.
+
+## Checkpoint 2026-06-15 — final-pipeline contact support modes
+
+`run_v18_full_pipeline.py` now distinguishes contact support modes instead of treating every active contact as a rigid-object pose claim.
+
+- Rigid visible-mesh support remains strict-rigid only. Weak mask-depth point clouds and surface-changing/deformable objects are explicitly blocked from `rigid_pose_supported_visible_mesh`.
+- Compact surface-changing support is a separate mode for objects whose schema has `surface_change_without_pose_state` without part/deformable blockers. It can support visible pose/contact for the main tomato when source depth intrinsics, mask projection, visible mesh distance, HaWoR MANO, and near MANO/object geometry agree. It keeps `object_geometry_complete=false` and `object_pose_requirement_met=false`.
+- Weak visible-depth pose rows are recovered from rejected visible-surface rows using the source metric-depth NPZ, SAM2 mask, source intrinsics, and `T_world_camera_metric`. They are downweighted graph observations and must remain explicitly weak; they may not support strict rigid pose.
+- Validated-part contact support now records the nearest validated part separately from the nearest part, so a rejected closer part cannot hide a supported farther part. Active validated-part contact still requires the supported part to be within the near-geometry band.
+- Deformable visible-surface contact is a local contact mode for deformable/secondary-deformable objects. It requires same-frame visible depth surface, observed HaWoR hand support, effective MANO-surface distance no greater than 5 cm, and strong mesh/metric support. It does not claim object pose, hidden geometry, nonpenetration, or rigid SE(3).
+- Rendered contact edges in overlay/world videos are drawn only from active physical contact switches. Unsupported contact proposals stay in JSON as raw/gated evidence and must not be drawn as solved contact.
+
+Latest validated full run at this checkpoint: `/data2/ego_annotation_outputs/v18_full_pipeline/final_run_20260615_deformable_surface_contact.log`.
+Current scoped effect: trash has 12 active deformable visible-surface contacts; task5 has 2 active tomato surface-changing contacts. `object_geometry_complete` and `object_pose_requirement_met` remain false across both cases.
