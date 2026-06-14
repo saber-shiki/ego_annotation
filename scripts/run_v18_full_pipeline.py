@@ -778,6 +778,19 @@ def load_part_surface_index(path: Path) -> dict[tuple[int, str], list[dict[str, 
     return out
 
 
+def load_physical_state_schema_index(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "physical state schema report")
+    out: dict[str, dict[str, Any]] = {}
+    for raw in require_list(report.get("object_rows"), "physical schema object rows"):
+        row = require_dict(raw, "physical schema object row")
+        object_id = row.get("object_id")
+        if isinstance(object_id, str):
+            out[object_id] = row
+    return out
+
+
 def load_depth_fused_reconstruction_index(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1291,6 +1304,29 @@ def object_se3_variable_by_id(frame: dict[str, Any]) -> dict[str, dict[str, Any]
     return out
 
 
+def rigid_pose_support_from_schema(obj: dict[str, Any], completion: dict[str, Any], graph_var: dict[str, Any] | None) -> tuple[bool, str, list[str]]:
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    blockers: list[str] = []
+    if physical != "rigid":
+        blockers.append(f"physical_state_{physical}_not_single_rigid")
+    if schema.get("requires_part_or_relative_motion_model") is True:
+        blockers.append("requires_part_or_relative_motion_model")
+    if schema.get("secondary_deformable_or_surface_component") is True:
+        blockers.append("secondary_deformable_or_surface_component")
+    if schema.get("surface_change_without_pose_state") is True:
+        blockers.append("surface_change_without_pose_model")
+    source_frames = int(finite_float(completion.get("source_frame_count"), 0.0)) if completion else 0
+    if source_frames < 20:
+        blockers.append("too_few_depth_fused_source_frames_for_supported_rigid_pose")
+    if not isinstance(graph_var, dict):
+        blockers.append("missing_factor_graph_object_se3_pose")
+    elif int(finite_float(graph_var.get("dimension"), 0.0)) < 6:
+        blockers.append("object_se3_pose_missing_rotation")
+    supported = not blockers
+    return supported, "rigid_depth_fused_multiframe_pose_supported" if supported else "rigid_pose_support_blocked", blockers
+
+
 def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str, Any] | None) -> dict[str, Any]:
     completion = obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}
     mesh_path = completion.get("convex_hull_mesh_path") or completion.get("poisson_mesh_path")
@@ -1329,6 +1365,7 @@ def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str,
     mx = corners_world.max(axis=0)
     center = corners_world.mean(axis=0)
     extent = mx - mn
+    rigid_supported, rigid_support_state, rigid_support_blockers = rigid_pose_support_from_schema(obj, completion, graph_var)
     return {
         "state": "depth_fused_mesh_posed_by_factor_graph",
         "renderable_pose_geometry": True,
@@ -1352,6 +1389,9 @@ def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str,
         "world_bbox_max_m": [float(v) for v in mx.tolist()],
         "world_bbox_center_m": [float(v) for v in center.tolist()],
         "world_extent_m": [float(v) for v in extent.tolist()],
+        "rigid_pose_supported_visible_mesh": rigid_supported,
+        "rigid_pose_support_state": rigid_support_state,
+        "rigid_pose_support_blockers": rigid_support_blockers,
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
         "scope": "renderable_depth_fused_visible_completion_mesh_with_explicit_hidden_surface_uncertainty",
@@ -2168,6 +2208,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     hand_baseline_index = load_hand_baseline_index(args.hand_baseline_root / case / "v18_hand_baseline_branch.json")
     pose_fill_gate_index = load_occlusion_pose_fill_gate_index(args.occlusion_pose_fill_gate_root / case / "v18_occlusion_pose_fill_gate_report.json")
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
+    physical_schema_by_object = load_physical_state_schema_index(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
     contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
@@ -2367,6 +2408,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "visibility_state": obj.get("visibility_state"),
                     "physical_state_label": physical_state_label,
                     "physical_state_decision": physical_state_decision,
+                    "physical_state_schema": physical_schema_by_object.get(object_id),
                     "bbox_xyxy": obj.get("bbox_xyxy"),
                     "mask_path": obj.get("mask_path"),
                     "renderable_mask": obj.get("renderable_mask"),
@@ -2428,6 +2470,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "hawor_bridge_metric_mano": str(args.hawor_bridge_root / case / "v18_hawor_bridge_state_report.json"),
             "occlusion_pose_fill_gate": str(args.occlusion_pose_fill_gate_root / case / "v18_occlusion_pose_fill_gate_report.json"),
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
+            "physical_state_schema": str(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
@@ -2786,9 +2829,14 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             radius = 8 if obj.get("visible_geometry_candidate") else 5
             draw.ellipse((pt[0]-radius, pt[1]-radius, pt[0]+radius, pt[1]+radius), fill=color)
             recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
-            if recon.get("renderable_pose_geometry") is True and draw_anchored_mesh_glyph(draw, recon, pt, (120, 255, 255)):
-                draw_label(draw, (pt[0] + 10, pt[1] + 12), "mesh-pose", small, (120, 255, 255), (18, 20, 25))
-                counts["world_reconstructed_mesh_footprints"] += 1
+            if recon.get("renderable_pose_geometry") is True:
+                mesh_color = (80, 255, 130) if recon.get("rigid_pose_supported_visible_mesh") is True else (120, 255, 255)
+                mesh_label = "rigid-pose" if recon.get("rigid_pose_supported_visible_mesh") is True else "mesh-pose"
+                if draw_anchored_mesh_glyph(draw, recon, pt, mesh_color):
+                    draw_label(draw, (pt[0] + 10, pt[1] + 12), mesh_label, small, mesh_color, (18, 20, 25))
+                    counts["world_reconstructed_mesh_footprints"] += 1
+                    if recon.get("rigid_pose_supported_visible_mesh") is True:
+                        counts["world_supported_rigid_mesh_poses"] += 1
             draw_label(draw, (pt[0]+10, pt[1]-10), str(obj.get("name"))[:36], small, color, (18, 20, 25))
             counts["world_objects"] += 1
         hand_points: dict[str, tuple[int, int]] = {}
@@ -2954,6 +3002,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hawor-bridge-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_bridge_state"))
     parser.add_argument("--occlusion-pose-fill-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_pose_fill_gate"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
+    parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))

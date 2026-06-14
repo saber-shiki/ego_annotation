@@ -267,6 +267,77 @@ def articulation_residual_rows(shared: list[int], first: dict[int, dict[str, Any
     }
 
 
+def robust_inlier_refit(
+    shared: list[int],
+    relative_vectors: np.ndarray,
+    first: dict[int, dict[str, Any]],
+    second: dict[int, dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    min_frames = int(args.min_shared_frames)
+    min_ratio = float(args.min_robust_inlier_ratio)
+    if relative_vectors.shape[0] < min_frames:
+        return {"robust_inlier_refit_applied": False, "robust_inlier_refit_state": "too_few_frames_for_robust_refit"}
+    mask = np.ones(relative_vectors.shape[0], dtype=bool)
+    history: list[dict[str, Any]] = []
+    final_fit: dict[str, Any] | None = None
+    final_state = "robust_refit_not_run"
+    final_blockers: list[str] = []
+    for iteration in range(int(args.robust_refit_iterations)):
+        inlier_count = int(mask.sum())
+        if inlier_count < min_frames:
+            final_state = "robust_refit_underconstrained_after_trimming"
+            final_blockers = ["too_few_robust_inlier_frames"]
+            break
+        fit = fit_circle_3d(relative_vectors[mask])
+        state, blockers = classify_fit(fit, inlier_count, args)
+        radial = np.asarray(fit.get("radial_residual_values_m", []), dtype=np.float64)
+        plane = np.asarray(fit.get("plane_residual_values_m", []), dtype=np.float64)
+        keep_local = (radial <= float(args.max_radial_p95_residual_m)) & (plane <= float(args.max_plane_p95_residual_m))
+        next_mask = np.zeros_like(mask)
+        next_mask[np.where(mask)[0][keep_local]] = True
+        history.append({"iteration": iteration, "input_frame_count": inlier_count, "kept_frame_count": int(next_mask.sum()), "state": state, "blockers": blockers})
+        final_fit = fit
+        final_state = state
+        final_blockers = blockers
+        if np.array_equal(next_mask, mask):
+            break
+        mask = next_mask
+    inlier_count = int(mask.sum())
+    inlier_ratio = inlier_count / float(relative_vectors.shape[0]) if relative_vectors.shape[0] else 0.0
+    excluded_frames = [int(shared[index]) for index in np.where(~mask)[0]]
+    if final_fit is None or inlier_count < min_frames:
+        return {
+            "robust_inlier_refit_applied": False,
+            "robust_inlier_refit_state": final_state,
+            "robust_inlier_refit_blockers": sorted(set(final_blockers + ["too_few_robust_inlier_frames"])),
+            "robust_inlier_frame_count": inlier_count,
+            "robust_excluded_frame_count": len(excluded_frames),
+            "robust_excluded_frames": excluded_frames,
+            "robust_refit_history": history,
+        }
+    final_fit = fit_circle_3d(relative_vectors[mask])
+    robust_state, robust_blockers = classify_fit(final_fit, inlier_count, args)
+    if inlier_ratio < min_ratio:
+        robust_blockers = sorted(set(robust_blockers + ["robust_inlier_ratio_below_threshold"]))
+        robust_state = "articulation_fit_residual_rejected"
+    inlier_shared = [int(shared[index]) for index in np.where(mask)[0]]
+    robust_report = articulation_residual_rows(inlier_shared, first, second, final_fit, args)
+    return {
+        "robust_inlier_refit_applied": robust_state == "articulation_fit_residual_supported_visible_center_only_not_pose",
+        "robust_inlier_refit_state": robust_state,
+        "robust_inlier_refit_blockers": robust_blockers,
+        "robust_inlier_frame_count": inlier_count,
+        "robust_inlier_ratio": inlier_ratio,
+        "robust_excluded_frame_count": len(excluded_frames),
+        "robust_excluded_frames": excluded_frames,
+        "robust_excluded_frame_components": contiguous_components(excluded_frames),
+        "robust_refit_history": history,
+        "robust_fit": final_fit,
+        "robust_residual_report": robust_report,
+    }
+
+
 def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict[str, Any]]]], args: argparse.Namespace) -> dict[str, Any]:
     object_id = str(probe.get("object_id"))
     labels = [str(item) for item in require_list(probe.get("part_track_labels"), "part labels")]
@@ -307,12 +378,24 @@ def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict
             "worst_residual_frames": [],
         }
         state, blockers = "articulation_fit_underconstrained", ["too_few_shared_part_frames_for_articulation_fit"]
+    initial_fit = fit
+    initial_residual_report = residual_report
+    initial_state = state
+    initial_blockers = list(blockers)
+    robust_report: dict[str, Any] = {"robust_inlier_refit_applied": False, "robust_inlier_refit_state": "not_needed_or_not_applicable"}
+    if state == "articulation_fit_residual_rejected" and relative_vectors.shape[0] >= int(args.min_shared_frames):
+        robust_report = robust_inlier_refit(shared, relative_vectors, first, second, args)
+        if robust_report.get("robust_inlier_refit_applied") is True:
+            fit = require_dict(robust_report.get("robust_fit"), "robust fit")
+            residual_report = require_dict(robust_report.get("robust_residual_report"), "robust residual report")
+            state = "articulation_fit_residual_supported_visible_center_only_not_pose"
+            blockers = []
     return {
         "object_id": object_id,
         "source_candidate_id": probe.get("candidate_id"),
         "part_track_labels": labels,
         "fit_type": "world_frame_relative_part_center_circle_fit",
-        "fit_scope": "visible_part_surface_centers_only_not_part_pose",
+        "fit_scope": "visible_part_surface_centers_only_not_part_pose" if robust_report.get("robust_inlier_refit_applied") is not True else "robust_inlier_visible_part_surface_centers_only_not_part_pose_outliers_preserved",
         "coordinate_frame": "V16 T_world_camera_metric world frame",
         "shared_frame_count": len(shared),
         "frame_min": min(shared) if shared else None,
@@ -321,6 +404,11 @@ def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict
         "adjacent_relative_vector_step_m": stats(adjacent_step),
         **fit,
         **residual_report,
+        "initial_full_frame_articulation_fit_state": initial_state,
+        "initial_full_frame_fit_blockers": initial_blockers,
+        "initial_full_frame_fit": initial_fit,
+        "initial_full_frame_residual_report": initial_residual_report,
+        "robust_inlier_refit": {k: v for k, v in robust_report.items() if k not in {"robust_fit", "robust_residual_report"}},
         "articulation_fit_state": state,
         "fit_blockers": blockers,
         "acceptance_thresholds": {
@@ -330,6 +418,8 @@ def fit_probe(probe: dict[str, Any], centers: dict[str, dict[str, dict[int, dict
             "max_radial_median_residual_m": float(args.max_radial_median_residual_m),
             "max_radial_p95_residual_m": float(args.max_radial_p95_residual_m),
             "max_plane_p95_residual_m": float(args.max_plane_p95_residual_m),
+            "robust_refit_iterations": int(args.robust_refit_iterations),
+            "min_robust_inlier_ratio": float(args.min_robust_inlier_ratio),
         },
         "articulation_model_ready": False,
         "part_pose_ready": False,
@@ -440,6 +530,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-radial-median-residual-m", type=float, default=0.02)
     parser.add_argument("--max-radial-p95-residual-m", type=float, default=0.06)
     parser.add_argument("--max-plane-p95-residual-m", type=float, default=0.03)
+    parser.add_argument("--robust-refit-iterations", type=int, default=5)
+    parser.add_argument("--min-robust-inlier-ratio", type=float, default=0.5)
     parser.add_argument("--max-reported-outlier-frames", type=int, default=12)
     return parser.parse_args()
 

@@ -244,6 +244,69 @@ def classify_part(part_row: dict[str, Any], args: argparse.Namespace) -> tuple[s
     return "part_surface_se3_residual_supported_visible_only_not_pose", blockers
 
 
+def robust_surface_inlier_refit(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    frame_results = [require_dict(raw, "frame result") for raw in require_list(payload.get("frame_results"), "frame results")]
+    if not frame_results:
+        return {"robust_surface_inlier_refit_applied": False, "robust_surface_inlier_state": "no_successful_icp_frames"}
+    inliers: list[dict[str, Any]] = []
+    outliers: list[dict[str, Any]] = []
+    for result in frame_results:
+        residual = require_dict(result.get("residual_m"), "frame residual")
+        median = finite_float_or_none(residual.get("median"))
+        p95 = finite_float_or_none(residual.get("p95"))
+        keep = (
+            median is not None
+            and p95 is not None
+            and median <= float(args.max_median_residual_m)
+            and p95 <= float(args.max_p95_of_p95_residual_m)
+        )
+        if keep:
+            inliers.append(result)
+        else:
+            outliers.append(result)
+    inlier_ratio = len(inliers) / float(len(frame_results)) if frame_results else 0.0
+    robust_payload = dict(payload)
+    medians = [float(result["residual_m"]["median"]) for result in inliers if result.get("residual_m", {}).get("median") is not None]
+    p95s = [float(result["residual_m"]["p95"]) for result in inliers if result.get("residual_m", {}).get("p95") is not None]
+    rotations = [float(result["icp_rotation_angle_deg"]) for result in inliers]
+    translations = [float(result["icp_translation_norm_m"]) for result in inliers]
+    robust_payload.update(
+        {
+            "successful_icp_frame_count": len(inliers),
+            "selected_frame_count": len(inliers),
+            "per_frame_median_residual_m": stats(medians),
+            "per_frame_p95_residual_m": stats(p95s),
+            "icp_rotation_angle_deg": stats(rotations),
+            "icp_translation_norm_m": stats(translations),
+            "p95_residual_outlier_frame_count": 0,
+            "p95_residual_outlier_frames": [],
+            "p95_residual_outlier_frame_components": [],
+            "worst_p95_residual_frames": [],
+        }
+    )
+    state, blockers = classify_part(robust_payload, args)
+    if inlier_ratio < float(args.min_robust_surface_inlier_ratio):
+        state = "part_surface_se3_residual_rejected"
+        blockers = sorted(set(blockers + ["robust_surface_inlier_ratio_below_threshold"]))
+    return {
+        "robust_surface_inlier_refit_applied": state == "part_surface_se3_residual_supported_visible_only_not_pose",
+        "robust_surface_inlier_state": state,
+        "robust_surface_inlier_blockers": blockers,
+        "robust_surface_inlier_frame_count": len(inliers),
+        "robust_surface_inlier_ratio": inlier_ratio,
+        "robust_surface_excluded_frame_count": len(outliers),
+        "robust_surface_excluded_frames": [require_int(row.get("frame_idx"), "outlier frame_idx") for row in outliers],
+        "robust_surface_excluded_frame_components": contiguous_components([require_int(row.get("frame_idx"), "outlier frame_idx") for row in outliers]),
+        "robust_surface_inlier_stats": {
+            "per_frame_median_residual_m": robust_payload["per_frame_median_residual_m"],
+            "per_frame_p95_residual_m": robust_payload["per_frame_p95_residual_m"],
+            "icp_rotation_angle_deg": robust_payload["icp_rotation_angle_deg"],
+            "icp_translation_norm_m": robust_payload["icp_translation_norm_m"],
+        },
+        "robust_payload_fields": {k: robust_payload[k] for k in ["successful_icp_frame_count", "selected_frame_count", "per_frame_median_residual_m", "per_frame_p95_residual_m", "icp_rotation_angle_deg", "icp_translation_norm_m", "p95_residual_outlier_frame_count", "p95_residual_outlier_frames", "p95_residual_outlier_frame_components", "worst_p95_residual_frames"]},
+    }
+
+
 def part_se3_probe(object_id: str, label: str, rows: list[dict[str, Any]], args: argparse.Namespace, allowed_frames: set[int] | None = None) -> dict[str, Any]:
     if not rows:
         raise RuntimeError(f"{object_id} {label}: no world surface rows")
@@ -335,6 +398,27 @@ def part_se3_probe(object_id: str, label: str, rows: list[dict[str, Any]], args:
         "object_pose_requirement_met": False,
     }
     state, blockers = classify_part(payload, args)
+    payload["initial_full_frame_part_surface_se3_state"] = state
+    payload["initial_full_frame_part_surface_se3_blockers"] = list(blockers)
+    payload["initial_full_frame_residual_stats"] = {
+        "successful_icp_frame_count": payload["successful_icp_frame_count"],
+        "per_frame_median_residual_m": payload["per_frame_median_residual_m"],
+        "per_frame_p95_residual_m": payload["per_frame_p95_residual_m"],
+        "icp_rotation_angle_deg": payload["icp_rotation_angle_deg"],
+        "icp_translation_norm_m": payload["icp_translation_norm_m"],
+        "p95_residual_outlier_frame_count": payload["p95_residual_outlier_frame_count"],
+        "p95_residual_outlier_frames": payload["p95_residual_outlier_frames"],
+        "worst_p95_residual_frames": payload["worst_p95_residual_frames"],
+    }
+    robust_report: dict[str, Any] = {"robust_surface_inlier_refit_applied": False, "robust_surface_inlier_state": "not_needed_or_not_applicable"}
+    if state == "part_surface_se3_residual_rejected":
+        robust_report = robust_surface_inlier_refit(payload, args)
+        if robust_report.get("robust_surface_inlier_refit_applied") is True:
+            for key, value in require_dict(robust_report.get("robust_payload_fields"), "robust payload fields").items():
+                payload[key] = value
+            state = "part_surface_se3_residual_supported_visible_only_not_pose"
+            blockers = []
+    payload["robust_surface_inlier_refit"] = {k: v for k, v in robust_report.items() if k != "robust_payload_fields"}
     payload["part_surface_se3_state"] = state
     payload["part_surface_se3_blockers"] = blockers
     return payload
@@ -471,6 +555,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-successful-frames", type=int, default=8)
     parser.add_argument("--max-median-residual-m", type=float, default=0.02)
     parser.add_argument("--max-p95-of-p95-residual-m", type=float, default=0.06)
+    parser.add_argument("--min-robust-surface-inlier-ratio", type=float, default=0.5)
     parser.add_argument("--max-reported-outlier-frames", type=int, default=8)
     return parser.parse_args()
 
