@@ -171,6 +171,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "active_contact_switch_vars": 0,
         "active_contact_switch_vars_with_nonobserved_hawor_hand": 0,
         "raw_contact_switches_gated_by_hawor_support": 0,
+        "raw_contact_switches_gated_by_physical_support": 0,
         "hand_occlusion_owner_accepted_rows": 0,
         "hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand": 0,
         "hand_raw_occlusion_owner_rows_gated_by_hawor_support": 0,
@@ -206,6 +207,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             row_support_state = str(row.get("hand_support_state") or hand_support_by_side.get(side, ""))
             if row.get("raw_estimate_before_hawor_support_gate") is True and row.get("estimate") is False and row_support_state != "observed_same_frame_detection":
                 counts["raw_contact_switches_gated_by_hawor_support"] += 1
+            if row.get("raw_estimate_before_physical_contact_gate") is True and row.get("physical_contact_claim_supported") is not True:
+                counts["raw_contact_switches_gated_by_physical_support"] += 1
             if row.get("estimate") is True:
                 counts["active_contact_switch_vars"] += 1
                 if row_support_state != "observed_same_frame_detection":
@@ -401,7 +404,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["camera_depth_observed_rows"] > 0, f"{case}: no observed camera/depth correction rows")
     require(counts["contacts"] > 0, f"{case}: no contact hypotheses")
     require(counts["contact_switch_vars"] == counts["contacts"], f"{case}: contact switch variables do not cover contact hypotheses")
-    require(counts["active_contact_switch_vars"] > 0, f"{case}: no active contact switches in factor graph")
+    require(counts["active_contact_switch_vars"] > 0 or counts["raw_contact_switches_gated_by_physical_support"] > 0, f"{case}: neither active physical contacts nor physically gated raw contact evidence exists")
     require(counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce active contact switches")
     require(counts["contacts_with_final_metric_distance"] > 0, f"{case}: no final metric MANO-to-object-surface distances")
     require(counts["contacts_with_hawor_support_weight"] == counts["contacts_with_final_metric_distance"], f"{case}: final metric contact distances missing HaWoR support weights")

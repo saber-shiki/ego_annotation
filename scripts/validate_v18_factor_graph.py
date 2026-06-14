@@ -146,6 +146,7 @@ def validate_case(path: Path) -> dict[str, Any]:
                         temporal_contact_active_conflicts += 1
                     if row.get("estimate") is True:
                         require(row.get("geometry_contact_evidence_available") is True, f"{case}: active contact lacks geometry evidence")
+                        require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks supported rigid object or validated part pose")
                         effective_distance = row.get("effective_metric_contact_distance_m")
                         mesh_support = float(row.get("mesh_contact_support_score", 0.0) or 0.0)
                         near_effective = isinstance(effective_distance, (int, float)) and float(effective_distance) <= 0.20

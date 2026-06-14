@@ -2391,6 +2391,17 @@ def contact_switch_energy(
     geometry_far_contact_penalty = min(4.0, max(0.0, effective_metric_contact_distance_m - 0.05) * 6.0) if math.isfinite(effective_metric_contact_distance_m) else 0.0
     geometry_contact_evidence_available = bool(math.isfinite(effective_metric_contact_distance_m) or mesh_support > 0.5)
     missing_geometry_contact_penalty = 2.5 if not geometry_contact_evidence_available else 0.0
+    rigid_pose_claim_supported = False
+    part_pose_claim_supported = False
+    if isinstance(obj, dict):
+        rigid_pose_claim_supported, _, _ = rigid_pose_support_from_schema(obj, obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}, object_graph_var)
+        if coupled_part_label is not None and math.isfinite(coupled_part_distance_m) and coupled_part_distance_m <= 0.12:
+            for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
+                if isinstance(part, dict) and str(part.get("part_track_label")) == str(coupled_part_label):
+                    validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+                    part_pose_claim_supported = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
+                    break
+    physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported)
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
     support_gate_allows_active_contact = hand_support_state == "observed_same_frame_detection"
@@ -2433,14 +2444,20 @@ def contact_switch_energy(
         far_geometry_discount = 1.0
     if missing_geometry_contact_penalty > 0.0:
         off_energy *= 0.5
-    raw_switch_on = (on_energy < off_energy) and not nonpenetration_conflict
+    raw_switch_on_before_physical_gate = (on_energy < off_energy) and not nonpenetration_conflict
+    raw_switch_on = raw_switch_on_before_physical_gate and physical_contact_claim_supported
     switch_on = raw_switch_on and support_gate_allows_active_contact
     return {
         "hand_side": hyp.get("hand_side"),
         "object_id": hyp.get("object_id"),
         "variable_id": f"contact::{hyp.get('hand_side')}::{hyp.get('object_id')}",
         "estimate": bool(switch_on),
+        "raw_estimate_before_physical_contact_gate": bool(raw_switch_on_before_physical_gate),
         "raw_estimate_before_hawor_support_gate": bool(raw_switch_on),
+        "physical_contact_claim_supported": bool(physical_contact_claim_supported),
+        "physical_contact_support_state": "supported_by_rigid_object_or_validated_part_pose" if physical_contact_claim_supported else "blocked_no_supported_rigid_or_validated_part_pose",
+        "rigid_pose_contact_claim_supported": bool(rigid_pose_claim_supported),
+        "validated_part_pose_contact_claim_supported": bool(part_pose_claim_supported),
         "support_gate_allows_active_contact": bool(support_gate_allows_active_contact),
         "support_gate_reason": "observed_same_frame_hawor_required_for_active_contact" if not support_gate_allows_active_contact else "observed_same_frame_hawor_support",
         "on_energy": float(on_energy),
@@ -2873,6 +2890,8 @@ def solve_v18_factor_graph(
                 on_energy += 1e6
             if switch.get("support_gate_allows_active_contact") is not True:
                 on_energy += 1e6
+            if switch.get("physical_contact_claim_supported") is not True:
+                on_energy += 1e6
             on_costs.append(on_energy)
         dp_off = [off_costs[0]]
         dp_on = [on_costs[0]]
@@ -2913,7 +2932,7 @@ def solve_v18_factor_graph(
                 temporal_energy = contact_temporal_switch_penalty / float(max(1, frame_gap))
                 contact_temporal_switch_count += 1
             chosen_energy = finite_float(switch.get("on_energy" if state else "off_energy"), 0.0)
-            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True)
+            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True and switch.get("physical_contact_claim_supported") is True)
             switch["chosen_energy"] = chosen_energy if switch["estimate"] else finite_float(switch.get("off_energy"), 0.0)
             switch["temporal_contact_variable_id"] = variable_id
             switch["temporal_contact_previous_frame_gap"] = frame_gap
@@ -2988,7 +3007,7 @@ def solve_v18_factor_graph(
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_contact_object_pose_coupling_when_rigid_and_supported",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_contact_part_pose_coupling_when_part_mesh_and_observed_mano_are_near",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
-            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_coupled_object_pose_and_coupled_part_pose_evidence",
+            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_coupled_object_pose_coupled_part_pose_and_physical_contact_claim_support_gate",
             "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence",
         },
         "implemented_factor_families": [
@@ -2998,7 +3017,7 @@ def solve_v18_factor_graph(
             "visible_part_surface_pose_observation_residual",
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
-            "contact_overlap_depth_mesh_distance_owner_graph_energy",
+            "contact_overlap_depth_mesh_distance_owner_graph_energy_with_physical_contact_claim_support_gate",
             "contact_object_pose_anchor_factor_for_rigid_supported_mano_object_surface_proposals",
             "contact_object_nonpenetration_repel_factor_for_rigid_supported_local_conflicts",
             "contact_part_pose_anchor_factor_for_observed_mano_to_depth_fused_part_mesh_proposals",
@@ -3010,7 +3029,7 @@ def solve_v18_factor_graph(
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
             "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration_and_contact_object_coupling_for_eligible_rigid_contacts",
             "part_SE3_uses_visible_surface_PCA_geometry_contact_part_pose_coupling_and_occlusion_uncertainty",
-            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_and_coupled_object_or_part_pose_evidence",
+            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_coupled_object_or_part_pose_evidence_and_blocks_active_claims_without_supported_object_or_part_pose",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),
