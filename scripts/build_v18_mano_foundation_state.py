@@ -399,6 +399,56 @@ def max_gap(frames_by_side: dict[str, dict[str, Any]], frame_count: int) -> int 
     return frame_count - min(counts)
 
 
+def valid_surface_reference(ref: Any) -> bool:
+    if not isinstance(ref, dict):
+        return False
+    npz_raw = ref.get("bridge_npz") or ref.get("npz")
+    array = ref.get("bridge_vertices_world_array") or ref.get("array")
+    row = ref.get("bridge_row_index") if "bridge_row_index" in ref else ref.get("row_index")
+    if not (isinstance(npz_raw, str) and isinstance(array, str) and isinstance(row, int)):
+        return False
+    npz_path = Path(npz_raw)
+    if not npz_path.exists():
+        return False
+    try:
+        z = np.load(npz_path)
+        if array not in z.files:
+            return False
+        shape = tuple(z[array].shape)
+    except Exception:
+        return False
+    return len(shape) == 3 and 0 <= int(row) < shape[0] and shape[1:] == (EXPECTED_VERTICES, 3)
+
+
+def valid_mano_param_contract(params: Any) -> bool:
+    if not isinstance(params, dict):
+        return False
+    if arr(params.get("root_orient_axis_angle"), (3,)) is not None and arr(params.get("hand_pose_axis_angle"), (45,)) is not None and arr(params.get("betas"), (10,)) is not None and arr(params.get("trans_world_m"), (3,)) is not None:
+        return True
+    source_npz = params.get("source_hawor_npz")
+    source_frame = params.get("source_frame_index")
+    side = params.get("side")
+    if not (isinstance(source_npz, str) and isinstance(source_frame, int) and side in HAND_SIDES and Path(source_npz).exists()):
+        return False
+    try:
+        z = np.load(Path(source_npz), allow_pickle=True)
+        required = {
+            f"{side}_root_orient_axis_angle": (3,),
+            f"{side}_hand_pose_axis_angle": (45,),
+            f"{side}_betas": (10,),
+            f"{side}_trans_world_m": (3,),
+        }
+        for name, trailing in required.items():
+            if name not in z.files:
+                return False
+            shape = tuple(z[name].shape)
+            if len(shape) != 2 or shape[1:] != trailing or not (0 <= source_frame < shape[0]):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     t0 = time.perf_counter()
     ann_path = args.v18_full_root / case / "annotations_v18_full.json"
@@ -409,6 +459,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     hawor = extract_hawor_case(case, args, frame_count)
     current_v18_rows = Counter()
     current_v18_sources = Counter()
+    current_hawor_support_states = Counter()
     for frame in full_ann.get("frames", []) if isinstance(full_ann.get("frames"), list) else []:
         for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
             if not isinstance(hand, dict):
@@ -417,28 +468,49 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             mano = hand.get("mano_candidate") if isinstance(hand.get("mano_candidate"), dict) else {}
             source = str(mano.get("source"))
             current_v18_sources[source] += 1
+            support_state = hand.get("hawor_support_state")
+            if isinstance(support_state, str):
+                current_hawor_support_states[support_state] += 1
             if arr(mano.get("joints3d_camera"), (EXPECTED_JOINTS, 3)) is not None and arr(mano.get("cam_t"), (3,)) is not None:
                 current_v18_rows["camera_joint_candidates"] += 1
+            metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
             if arr(mano.get("vertices_camera"), (EXPECTED_VERTICES, 3)) is not None or arr(mano.get("vertices_world_m"), (EXPECTED_VERTICES, 3)) is not None:
                 current_v18_rows["surface_candidates_stored_in_v18_full"] += 1
+            if valid_surface_reference(mano.get("surface_reference")) or valid_surface_reference(metric.get("vertices_reference")):
+                current_v18_rows["surface_reference_rows_stored_in_v18_full"] += 1
             if isinstance(mano.get("mano_params"), dict):
                 current_v18_rows["mano_params_stored_in_v18_full"] += 1
+            surface_ok = valid_surface_reference(mano.get("surface_reference")) or valid_surface_reference(metric.get("vertices_reference"))
+            params_ok = valid_mano_param_contract(mano.get("mano_params")) or valid_mano_param_contract(metric.get("mano_params"))
+            if params_ok:
+                current_v18_rows["reproducible_mano_param_rows_stored_in_v18_full"] += 1
+            if str(source).startswith("HaWoR_metric_MANO") and surface_ok and params_ok:
+                current_v18_rows["current_v18_hawor_surface_param_contract_rows"] += 1
     blockers: list[str] = []
-    if current_v18_rows.get("surface_candidates_stored_in_v18_full", 0) == 0:
+    support_limitations: list[str] = []
+    current_surface_rows = max(current_v18_rows.get("surface_candidates_stored_in_v18_full", 0), current_v18_rows.get("surface_reference_rows_stored_in_v18_full", 0))
+    current_param_rows = max(current_v18_rows.get("mano_params_stored_in_v18_full", 0), current_v18_rows.get("reproducible_mano_param_rows_stored_in_v18_full", 0))
+    if current_surface_rows < expected_two_hand_rows:
         blockers.append("current_v18_full_annotations_drop_mano_vertices")
-    if current_v18_rows.get("mano_params_stored_in_v18_full", 0) == 0:
+    if current_param_rows < expected_two_hand_rows:
         blockers.append("current_v18_full_annotations_drop_mano_parameters")
-    if wilor.get("unique_virtual_camera_frame_side_rows", 0) < expected_two_hand_rows:
-        blockers.append("recovered_wilor_mano_not_full_two_hand_timeline")
-    if wilor.get("metric_world_alignment_valid") is not True:
-        blockers.append("recovered_wilor_virtual_camera_not_metric_world_aligned")
-    if hawor.get("complete_world_surface_param_rows", 0) < expected_two_hand_rows:
+    current_hawor_contract_rows = int(current_v18_rows.get("current_v18_hawor_surface_param_contract_rows", 0))
+    hawor["current_v18_hawor_surface_param_contract_rows"] = current_hawor_contract_rows
+    hawor["current_v18_hawor_support_state_counts"] = dict(current_hawor_support_states)
+    hawor["current_v18_same_frame_detection_rows"] = int(current_hawor_support_states.get("observed_same_frame_detection", 0))
+    hawor["current_v18_inferred_or_gap_rows"] = int(sum(v for k, v in current_hawor_support_states.items() if k != "observed_same_frame_detection"))
+    hawor["current_v18_temporal_boundary_fill_rows"] = int(current_hawor_support_states.get("temporal_boundary_fill", 0))
+    if current_hawor_contract_rows < expected_two_hand_rows and hawor.get("complete_world_surface_param_rows", 0) < expected_two_hand_rows:
         blockers.append("hawor_complete_world_surface_not_full_two_hand_timeline")
-    if hawor.get("source_exists_count", 0) == 0:
+    if hawor.get("current_v18_inferred_or_gap_rows", 0) > 0:
+        support_limitations.append("hawor_valid_rows_include_inferred_without_same_frame_detection_support")
+    if hawor.get("current_v18_temporal_boundary_fill_rows", 0) > 0:
+        support_limitations.append("hawor_timeline_contains_explicit_temporal_boundary_fill_rows")
+    if hawor.get("source_exists_count", 0) == 0 and current_hawor_contract_rows == 0:
         blockers.append("hawor_missing_for_case")
     if wilor.get("wilor_internal_projection_residual_px_median") is not None and float(wilor["wilor_internal_projection_residual_px_median"]) > args.accept_projection_median_px:
         blockers.append("recovered_wilor_projection_residual_above_foundation_threshold")
-    foundational_valid = not blockers and wilor.get("unique_virtual_camera_frame_side_rows", 0) == expected_two_hand_rows and wilor.get("metric_world_alignment_valid") is True
+    foundational_valid = not blockers and current_hawor_contract_rows == expected_two_hand_rows
     report = {
         "method": "build_v18_mano_foundation_state",
         "case": case,
@@ -449,7 +521,7 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "current_v18_full_mano_storage": {
             "counts": dict(current_v18_rows),
             "sources": dict(current_v18_sources),
-            "interpretation": "V18 full stores many camera-space joint candidates but not the full MANO surface/parameter state required as the physical hand foundation.",
+            "interpretation": "V18 full must preserve either full MANO surfaces or reproducible full-surface references plus MANO parameters for every hand row; this storage contract is necessary but not sufficient for foundation acceptance.",
         },
         "recovered_wilor_virtual_camera_mano_candidates": wilor,
         "hawor_world_mano_candidates": hawor,
@@ -457,6 +529,10 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "v18_physical_pipeline_valid_without_further_hand_work": False,
         "physical_downstream_claim_scope": "diagnostic_only_until_foundational_mano_state_valid_true_and_consumed_by_contact_occlusion_nonpenetration",
         "blocking_reasons": blockers,
+        "support_limitations": support_limitations,
+        "support_qualified_mano_foundation_valid": foundational_valid,
+        "observed_same_frame_physical_support_complete": bool(hawor.get("current_v18_same_frame_detection_rows", 0) == expected_two_hand_rows),
+        "physical_claim_policy": "observed contact occlusion and nonpenetration claims require observed_same_frame_detection hand support; inferred and boundary-filled rows are renderable continuity only",
         "elapsed_s": time.perf_counter() - t0,
     }
     case_dir = args.output_root / case
@@ -481,16 +557,18 @@ def write_markdown(root: Path, reports: list[dict[str, Any]]) -> None:
             f"## {case}",
             "",
             f"- Foundational MANO valid: `{r['foundational_mano_state_valid']}`.",
-            f"- Current V18 full hand rows: `{current['counts'].get('hand_rows', 0)}`; camera joint candidates: `{current['counts'].get('camera_joint_candidates', 0)}`; stored MANO surfaces: `{current['counts'].get('surface_candidates_stored_in_v18_full', 0)}`; stored MANO params: `{current['counts'].get('mano_params_stored_in_v18_full', 0)}`.",
+            f"- Current V18 full hand rows: `{current['counts'].get('hand_rows', 0)}`; camera joint candidates: `{current['counts'].get('camera_joint_candidates', 0)}`; inline MANO surfaces: `{current['counts'].get('surface_candidates_stored_in_v18_full', 0)}`; surface references: `{current['counts'].get('surface_reference_rows_stored_in_v18_full', 0)}`; inline MANO params: `{current['counts'].get('mano_params_stored_in_v18_full', 0)}`; reproducible MANO param rows: `{current['counts'].get('reproducible_mano_param_rows_stored_in_v18_full', 0)}`.",
+            f"- Current V18 HaWoR surface/parameter contract rows: `{hawor.get('current_v18_hawor_surface_param_contract_rows', 0)}/{r['expected_two_hand_rows']}`; support states: `{hawor.get('current_v18_hawor_support_state_counts', {})}`.",
             f"- Recovered WiLoR full virtual-camera MANO candidates: `{wilor.get('complete_virtual_camera_candidate_rows', 0)}` raw rows, `{wilor.get('unique_virtual_camera_frame_side_rows', 0)}/{r['expected_two_hand_rows']}` unique frame-side rows; side frames: `{wilor.get('frames_by_side')}`; internal projection residual px: `{wilor.get('wilor_internal_projection_residual_px_median')}`; metric-world alignment valid: `{wilor.get('metric_world_alignment_valid')}`; NPZ: `{wilor.get('npz_path')}`.",
-            f"- HaWoR complete world MANO rows: `{hawor.get('complete_world_surface_param_rows', 0)}/{r['expected_two_hand_rows']}`; measurement rows: `{hawor.get('measurement_available_complete_rows')}`; motion-infill rows: `{hawor.get('motion_infill_complete_rows')}`; side frames: `{hawor.get('frames_by_side')}`.",
+            f"- Legacy HaWoR complete world MANO rows: `{hawor.get('complete_world_surface_param_rows', 0)}/{r['expected_two_hand_rows']}`; measurement rows: `{hawor.get('measurement_available_complete_rows')}`; motion-infill rows: `{hawor.get('motion_infill_complete_rows')}`; side frames: `{hawor.get('frames_by_side')}`.",
+            f"- Support limitations: `{r.get('support_limitations', [])}`.",
             f"- Blocking reasons: `{r['blocking_reasons']}`.",
             "",
         ]
     lines += [
         "## Current commitment",
         "",
-        "Recovered WiLoR virtual-camera surfaces are real MANO candidate evidence, but V18 is still not physically valid: they are not metric-world aligned, coverage is not full two-hand timeline, current V18 annotations had dropped surfaces/params, HaWoR is missing or window-limited, and no downstream physical solver consumes a metric-aligned foundation yet.",
+        "Recovered WiLoR virtual-camera surfaces and current HaWoR-backed final MANO contracts are real MANO evidence, but V18 is still not physically valid unless the HaWoR contract covers the full two-hand timeline with acceptable support/alignment semantics and downstream physical solvers consume that qualified foundation.",
     ]
     (root / "V18_MANO_FOUNDATION_AUDIT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

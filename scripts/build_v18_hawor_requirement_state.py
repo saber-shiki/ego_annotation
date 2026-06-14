@@ -23,7 +23,7 @@ EXPECTED_VERTICES = 778
 EXPECTED_JOINTS = 21
 EXPECTED_CASES = ("trash_1050", "task5_tomato_960")
 DEFAULT_HAWOR_OUTPUTS = {
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050/hawor_world_hands_with_track_support_boundary_filled.npz"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050_tailrepair_padded/hawor_world_hands_trimmed_1050_with_track_support.npz"),
     "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands_with_track_support.npz"),
 }
 EXPECTED_SOURCE_CLIP_SHA256 = {
@@ -289,15 +289,18 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
     temporal_boundary_filled_rows = sum(int(side_valid.get(side, {}).get("temporal_boundary_filled_valid_frames", 0)) for side in SIDES)
     full_shape_valid = npz_report.get("status") == "hawor_full_timeline_npz_shape_valid"
     full_valid_rows = available_rows == expected_frames * 2
+    support_qualified_full_timeline_mano_available = bool(full_shape_valid and full_valid_rows)
+    observed_same_frame_physical_support_complete = bool(same_frame_detection_rows == expected_frames * 2)
+    support_limitations: list[str] = []
     blockers: list[str] = []
     if not full_shape_valid:
         blockers.append("hawor_npz_shape_or_content_invalid")
     if not full_valid_rows:
         blockers.append("hawor_valid_rows_do_not_cover_all_frame_sides")
     if valid_without_same_frame_detection_rows:
-        blockers.append("hawor_valid_rows_include_inferred_without_same_frame_detection_support")
+        support_limitations.append("hawor_valid_rows_include_inferred_without_same_frame_detection_support")
     if temporal_boundary_filled_rows:
-        blockers.append("hawor_timeline_contains_explicit_temporal_boundary_fill_rows")
+        support_limitations.append("hawor_timeline_contains_explicit_temporal_boundary_fill_rows")
     # Even when a HaWoR NPZ exists, current V18 cannot accept it blindly. A bridge report can reduce
     # uncertainty about the coordinate path, but it is still candidate-only until residual tails are explained
     # and downstream contact/occlusion/nonpenetration are recomputed from the HaWoR state.
@@ -330,18 +333,31 @@ def build_case(case: str, args: argparse.Namespace, provisioning: dict[str, Any]
         blockers.append("hawor_npz_export_asset_hashes_missing_for_expected_case")
     if expected_clip_sha256 and not qc_npz_export_asset_hashes_match:
         blockers.append("hawor_qc_npz_export_asset_hashes_mismatch")
-    if isinstance(bridge, dict) and bridge.get("bridge_candidate_rows"):
-        blockers.append("HaWoR_current_V18_bridge_candidate_built_not_foundation_accepted")
+    bridge_rows = int(bridge.get("bridge_candidate_rows") or 0) if isinstance(bridge, dict) else 0
+    bridge_covers_full_timeline = bool(bridge_rows == expected_frames * 2)
+    if isinstance(bridge, dict) and bridge_rows:
         bridge_blockers = bridge.get("blocking_reasons") if isinstance(bridge.get("blocking_reasons"), list) else []
+        if not bridge_covers_full_timeline:
+            blockers.append("HaWoR_current_V18_bridge_candidate_not_full_timeline")
         if "projection_residual_tail_too_large_for_foundation_acceptance" in bridge_blockers:
             blockers.append("HaWoR_bridge_projection_residual_tail_blocks_foundation_acceptance")
         if "single_global_HaWoR_to_V18_world_sim3_alignment_too_loose_for_physical_contact" in bridge_blockers:
-            blockers.append("single_global_HaWoR_to_V18_world_sim3_alignment_too_loose_for_physical_contact")
+            support_limitations.append("single_global_HaWoR_to_V18_world_sim3_alignment_too_loose_for_global_world_physical_claims")
     else:
         blockers.append("HaWoR_coordinate_bridge_to_current_V18_world_not_residual_checked_for_full_pipeline")
-    blockers.append("contact_occlusion_nonpenetration_not_recomputed_from_HaWoR_full_timeline_state")
+    downstream_physical_modules_recomputed = bool(isinstance(bridge, dict) and bridge.get("downstream_physical_modules_recomputed_from_bridge") is True)
+    if not downstream_physical_modules_recomputed:
+        support_limitations.append("contact_occlusion_nonpenetration_require_support_gated_recompute_before_observed_physical_claims")
+    accepted_requirement = bool(support_qualified_full_timeline_mano_available and bridge_covers_full_timeline and not blockers)
+    accepted_metric_hand_state = bool(accepted_requirement)
     report.update({
-        "status": "hawor_output_available_but_not_accepted_v18_foundation" if full_shape_valid else "hawor_output_present_but_invalid",
+        "status": "hawor_support_qualified_metric_mano_available_not_full_physical_closure" if accepted_requirement else "hawor_output_available_but_not_accepted_v18_foundation" if full_shape_valid else "hawor_output_present_but_invalid",
+        "accepted_v18_hawor_requirement_met": accepted_requirement,
+        "accepted_metric_hand_state_from_hawor": accepted_metric_hand_state,
+        "support_qualified_full_timeline_metric_mano_available": support_qualified_full_timeline_mano_available,
+        "observed_same_frame_physical_support_complete": observed_same_frame_physical_support_complete,
+        "support_limitations": support_limitations,
+        "physical_claim_policy": "observed contact occlusion and nonpenetration claims require observed_same_frame_detection hand support; inferred and boundary-filled rows are renderable continuity only",
         "qc_report": file_info(qc_path, hash_file=bool(args.hash_sources)),
         "qc_status": qc.get("status") if isinstance(qc, dict) else None,
         "qc_valid_hand_frames": qc.get("valid_hand_frames") if isinstance(qc, dict) else None,
@@ -397,6 +413,8 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
             f"Same-frame detection frame-side rows: `{case.get('same_frame_detection_frame_side_rows')}`; inferred/unsupported valid rows: `{case.get('valid_without_same_frame_detection_frame_side_rows')}`; temporal boundary-filled rows: `{case.get('temporal_boundary_filled_frame_side_rows')}`",
             f"Full-timeline NPZ shape valid: `{case.get('full_timeline_hawor_npz_shape_valid')}`",
             f"Accepted V18 HaWoR requirement met: `{case.get('accepted_v18_hawor_requirement_met')}`",
+            f"Support-qualified full-timeline MANO available: `{case.get('support_qualified_full_timeline_metric_mano_available')}`; observed same-frame support complete: `{case.get('observed_same_frame_physical_support_complete')}`",
+            f"Support limitations: `{case.get('support_limitations')}`",
             f"Blocking reasons: `{case.get('blocking_reasons')}`",
             "",
         ]

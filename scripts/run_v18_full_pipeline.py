@@ -30,6 +30,11 @@ INT_TO_SIDE = {0: "left", 1: "right"}
 HAWOR_EXPECTED_JOINTS = 21
 HAWOR_EXPECTED_VERTICES = 778
 GEOMETRY_SAMPLE_COUNT = 64
+BBOX_CORNER_EDGES = [
+    (0, 1), (1, 3), (3, 2), (2, 0),
+    (4, 5), (5, 7), (7, 6), (6, 4),
+    (0, 4), (1, 5), (2, 6), (3, 7),
+]
 
 CLAIM = (
     "V18 full pipeline artifact: full-video annotations with executable hand, object/part, geometry, "
@@ -304,6 +309,50 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
         vc_sample = sampled_points(vertices_camera[row_idx], GEOMETRY_SAMPLE_COUNT)
         vw_sample = sampled_points(vertices_world[row_idx], GEOMETRY_SAMPLE_COUNT)
         support = support_for(side, frame, source)
+        source_frame = int(frame)
+        if interp and isinstance(interp.get("nearest_surface_frame"), int):
+            source_frame = int(interp["nearest_surface_frame"])
+        surface_reference = {
+            "bridge_npz": str(npz_path),
+            "bridge_vertices_world_array": "vertices_current_v18_world_from_hawor_camera_local_m",
+            "bridge_vertices_camera_array": "vertices_hawor_camera_m",
+            "bridge_row_index": int(row_idx),
+            "source_hawor_npz": str(source_hawor_npz) if source_hawor_npz is not None else None,
+            "source_vertices_world_array": f"{side}_vertices_world_m",
+            "source_joints_world_array": f"{side}_joints_world_m",
+            "source_frame_index": int(source_frame),
+            "shape_vertices": [HAWOR_EXPECTED_VERTICES, 3],
+            "shape_joints": [HAWOR_EXPECTED_JOINTS, 3],
+        }
+        mano_params: dict[str, Any] = {
+            "parameterization": "HaWoR_MANO_axis_angle_betas_world_translation",
+            "source_hawor_npz": str(source_hawor_npz) if source_hawor_npz is not None else None,
+            "source_frame_index": int(source_frame),
+            "side": side,
+            "arrays": {
+                "root_orient_axis_angle": f"{side}_root_orient_axis_angle",
+                "hand_pose_axis_angle": f"{side}_hand_pose_axis_angle",
+                "betas": f"{side}_betas",
+                "trans_world_m": f"{side}_trans_world_m",
+                "faces": f"{side}_faces",
+            },
+        }
+        if support_z is not None:
+            source_frame_in_bounds = True
+            if "frame_idx" in support_z.files:
+                source_frame_in_bounds = 0 <= source_frame < int(np.asarray(support_z["frame_idx"]).shape[0])
+            if source_frame_in_bounds:
+                for key, arr_name in [
+                    ("root_orient_axis_angle", f"{side}_root_orient_axis_angle"),
+                    ("hand_pose_axis_angle", f"{side}_hand_pose_axis_angle"),
+                    ("betas", f"{side}_betas"),
+                    ("trans_world_m", f"{side}_trans_world_m"),
+                ]:
+                    if arr_name in support_z.files:
+                        mano_params[key] = [float(x) for x in np.asarray(support_z[arr_name])[source_frame].reshape(-1).astype(float).tolist()]
+                faces_key = f"{side}_faces"
+                if faces_key in support_z.files:
+                    mano_params["faces_reference"] = {"npz": str(source_hawor_npz), "array": faces_key, "shape": [int(np.asarray(support_z[faces_key]).shape[0]), 3]}
         return {
             "mano_candidate": {
                 "source": source,
@@ -313,7 +362,9 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
                 "source_intrinsics": [2304.0, 2304.0, 960.0, 540.0],
                 "detector_score": None,
                 "hawor_support": support,
-                "uncertainty": "metric_hawor_mano_used_by_final_pipeline_with_support_state",
+                "surface_reference": surface_reference,
+                "mano_params": mano_params,
+                "uncertainty": "metric_hawor_mano_used_by_final_pipeline_with_support_state_and_reproducible_surface_param_contract",
             },
             "metric_mano_state": {
                 "source": source,
@@ -322,12 +373,8 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
                 "coordinate_status": coord,
                 "bridge_npz": str(npz_path),
                 "bridge_row_index": int(row_idx),
-                "vertices_reference": {
-                    "npz": str(npz_path),
-                    "array": "vertices_current_v18_world_from_hawor_camera_local_m",
-                    "row_index": int(row_idx),
-                    "shape": [HAWOR_EXPECTED_VERTICES, 3],
-                },
+                "vertices_reference": surface_reference,
+                "mano_params": mano_params,
                 "joints_hawor_camera_m": [[float(x) for x in row] for row in jc.tolist()],
                 "joints_current_v18_world_m": [[float(x) for x in row] for row in jw.tolist()],
                 "wrist_current_v18_world_m": [float(x) for x in jw[0].tolist()],
@@ -984,6 +1031,18 @@ def load_triangle_nonpenetration_index(path: Path) -> dict[tuple[int, str, str],
             "local_triangle_signed_distance_semantics": row.get("local_triangle_signed_distance_semantics"),
             "nearest_triangle_candidate_count": row.get("nearest_triangle_candidate_count"),
             "penetration_tolerance_m": row.get("penetration_tolerance_m"),
+            "hand_support_state": row.get("hand_support_state"),
+            "require_observed_hawor_support": row.get("require_observed_hawor_support"),
+            "hand_geometry_source": row.get("hand_geometry_source"),
+            "object_mesh_backend": row.get("object_mesh_backend"),
+            "object_mesh_path": row.get("object_mesh_path"),
+            "object_physical_state_type": row.get("object_physical_state_type"),
+            "object_requires_part_or_relative_motion_model": row.get("object_requires_part_or_relative_motion_model"),
+            "object_secondary_deformable_or_surface_component": row.get("object_secondary_deformable_or_surface_component"),
+            "strict_nonpenetration_eligibility": row.get("strict_nonpenetration_eligibility"),
+            "strict_nonpenetration_eligibility_blockers": row.get("strict_nonpenetration_eligibility_blockers"),
+            "triangle_nonpenetration_scope": row.get("triangle_nonpenetration_scope"),
+            "watertight_candidate_mesh_available": row.get("watertight_candidate_mesh_available"),
             "blocker": row.get("blocker"),
         }
     return out
@@ -1009,6 +1068,20 @@ def load_signed_nonpenetration_index(path: Path) -> dict[tuple[int, str, str], d
             "negative_signed_distance_fraction": row.get("negative_signed_distance_fraction"),
             "local_signed_distance_semantics": row.get("local_signed_distance_semantics"),
             "penetration_tolerance_m": row.get("penetration_tolerance_m"),
+            "mesh_watertight_by_edges": row.get("mesh_watertight_by_edges"),
+            "boundary_edge_count": row.get("boundary_edge_count"),
+            "nonmanifold_edge_count": row.get("nonmanifold_edge_count"),
+            "hand_support_state": row.get("hand_support_state"),
+            "require_observed_hawor_support": row.get("require_observed_hawor_support"),
+            "hand_geometry_source": row.get("hand_geometry_source"),
+            "object_mesh_backend": row.get("object_mesh_backend"),
+            "object_mesh_path": row.get("object_mesh_path"),
+            "object_physical_state_type": row.get("object_physical_state_type"),
+            "object_requires_part_or_relative_motion_model": row.get("object_requires_part_or_relative_motion_model"),
+            "object_secondary_deformable_or_surface_component": row.get("object_secondary_deformable_or_surface_component"),
+            "strict_nonpenetration_eligibility": row.get("strict_nonpenetration_eligibility"),
+            "strict_nonpenetration_eligibility_blockers": row.get("strict_nonpenetration_eligibility_blockers"),
+            "signed_nonpenetration_scope": row.get("signed_nonpenetration_scope"),
             "blocker": row.get("blocker"),
         }
     return out
@@ -1189,6 +1262,116 @@ def numeric_vector(value: Any, dim: int) -> np.ndarray | None:
     if not all(math.isfinite(v) for v in vals):
         return None
     return np.asarray(vals, dtype=np.float64)
+
+
+def bbox_corners_from_min_max(min_raw: Any, max_raw: Any) -> np.ndarray | None:
+    mn = numeric_vector(min_raw, 3)
+    mx = numeric_vector(max_raw, 3)
+    if mn is None or mx is None or np.any(mx <= mn):
+        return None
+    corners = []
+    for x in [mn[0], mx[0]]:
+        for y in [mn[1], mx[1]]:
+            for z in [mn[2], mx[2]]:
+                corners.append([x, y, z])
+    return np.asarray(corners, dtype=np.float64)
+
+
+def object_se3_variable_by_id(frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    graph = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+    variables = graph.get("variables") if isinstance(graph.get("variables"), dict) else {}
+    out: dict[str, dict[str, Any]] = {}
+    rows = variables.get("object_se3") if isinstance(variables.get("object_se3"), list) else []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        variable_id = str(raw.get("variable_id"))
+        if variable_id.startswith("object_se3::"):
+            out[variable_id[len("object_se3::"):]] = raw
+    return out
+
+
+def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str, Any] | None) -> dict[str, Any]:
+    completion = obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}
+    mesh_path = completion.get("convex_hull_mesh_path") or completion.get("poisson_mesh_path")
+    corners = bbox_corners_from_min_max(completion.get("canonical_bbox_min_m"), completion.get("canonical_bbox_max_m"))
+    if not mesh_path or corners is None:
+        return {
+            "state": "no_depth_fused_mesh_pose_for_frame",
+            "renderable_pose_geometry": False,
+            "mesh_path": mesh_path,
+            "scope": "visible_depth_surface_or_pose_missing",
+        }
+    estimate = graph_var.get("estimate") if isinstance(graph_var, dict) else None
+    t = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+    if t is None:
+        return {
+            "state": "depth_fused_mesh_without_factor_graph_pose",
+            "renderable_pose_geometry": False,
+            "mesh_path": mesh_path,
+            "mesh_source": completion.get("method"),
+            "canonical_bbox_min_m": completion.get("canonical_bbox_min_m"),
+            "canonical_bbox_max_m": completion.get("canonical_bbox_max_m"),
+            "scope": "mesh_reconstruction_available_but_frame_pose_missing",
+        }
+    rotvec = numeric_vector(estimate[3:6] if isinstance(estimate, list) and len(estimate) >= 6 else None, 3)
+    if rotvec is not None:
+        rotation_object_from_world = Rotation.from_rotvec(rotvec).as_matrix()
+        rotation_world_from_canonical = rotation_object_from_world.T
+        pose_kind = "translation_plus_rotvec"
+    else:
+        rotation_world_from_canonical = np.eye(3, dtype=np.float64)
+        pose_kind = "translation_only"
+    # Depth-fused reconstruction canonicalized points with (world - t) @ R.  The posed render path inverts that
+    # row-vector transform: canonical @ R.T + t.  This makes the final video consume the same graph SE(3) used for fusion.
+    corners_world = corners @ rotation_world_from_canonical + t[None, :]
+    mn = corners_world.min(axis=0)
+    mx = corners_world.max(axis=0)
+    center = corners_world.mean(axis=0)
+    extent = mx - mn
+    return {
+        "state": "depth_fused_mesh_posed_by_factor_graph",
+        "renderable_pose_geometry": True,
+        "mesh_path": mesh_path,
+        "mesh_kind": "convex_hull_preferred_watertight" if completion.get("convex_hull_mesh_path") else "poisson_visible_surface",
+        "mesh_source": completion.get("method"),
+        "mesh_scope": completion.get("scope"),
+        "source_frame_count": completion.get("source_frame_count"),
+        "sampled_point_count": completion.get("sampled_point_count"),
+        "canonical_bbox_min_m": completion.get("canonical_bbox_min_m"),
+        "canonical_bbox_max_m": completion.get("canonical_bbox_max_m"),
+        "pose_kind": pose_kind,
+        "pose_source": graph_var.get("source") if isinstance(graph_var, dict) else None,
+        "pose_variable_id": graph_var.get("variable_id") if isinstance(graph_var, dict) else None,
+        "pose_observation_residual_norm": graph_var.get("observation_residual_norm") if isinstance(graph_var, dict) else None,
+        "translation_world_m": [float(v) for v in t.tolist()],
+        "rotation_world_from_canonical_matrix": [[float(x) for x in row] for row in rotation_world_from_canonical.tolist()],
+        "rotation_world_from_canonical_rotvec": [float(v) for v in Rotation.from_matrix(rotation_world_from_canonical).as_rotvec().tolist()],
+        "world_bbox_corners_m": [[float(x) for x in row] for row in corners_world.tolist()],
+        "world_bbox_min_m": [float(v) for v in mn.tolist()],
+        "world_bbox_max_m": [float(v) for v in mx.tolist()],
+        "world_bbox_center_m": [float(v) for v in center.tolist()],
+        "world_extent_m": [float(v) for v in extent.tolist()],
+        "object_geometry_complete": False,
+        "object_pose_requirement_met": False,
+        "scope": "renderable_depth_fused_visible_completion_mesh_with_explicit_hidden_surface_uncertainty",
+    }
+
+
+def attach_reconstructed_geometry_pose(frames: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for frame in frames:
+        graph_vars = object_se3_variable_by_id(frame)
+        for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
+            if not isinstance(obj, dict):
+                continue
+            object_id = str(obj.get("object_id"))
+            state = posed_reconstructed_geometry_state(obj, graph_vars.get(object_id))
+            obj["reconstructed_geometry_pose"] = state
+            counts["reconstructed_geometry_pose_rows"] += 1
+            if state.get("renderable_pose_geometry") is True:
+                counts["renderable_reconstructed_geometry_pose_rows"] += 1
+    return counts
 
 
 def solve_tridiagonal(lower: np.ndarray, diag: np.ndarray, upper: np.ndarray, rhs: np.ndarray) -> np.ndarray:
@@ -1477,6 +1660,9 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
     occlusion = hand.get("occlusion_owner_hypothesis")
     if not isinstance(occlusion, dict):
         return None
+    hand_support_state = str(hand.get("hawor_support_state") or "missing_hawor_support")
+    hand_support_weight = max(0.0, min(1.0, finite_float(hand.get("hawor_physical_factor_weight"), 0.0)))
+    support_gate_allows_owner_claim = hand_support_state == "observed_same_frame_detection"
     candidates = occlusion.get("owner_candidates")
     if not isinstance(candidates, list) or not candidates:
         return None
@@ -1503,7 +1689,8 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
         object_cov = finite_float(cand.get("object_box_coverage_by_hand_box"), 0.0)
         depth_state = str(mesh_row.get("depth_pair_evidence_state") or mesh_row.get("source_depth_order_state") or cand.get("depth_order_state") or cand.get("source_depth_order_state") or "unknown_depth_order_state")
         depth_resolved = bool(cand.get("depth_order_resolved") or cand.get("occluder_owner_accepted") or mesh_row.get("depth_order_resolved"))
-        depth_accept = bool(cand.get("occluder_owner_accepted") is True or mesh_row.get("accepted_occlusion_owner") is True or (temporal_graph.get("accepted_occlusion_owner") is True and temporal_chosen == object_id))
+        raw_depth_accept = bool(cand.get("occluder_owner_accepted") is True or mesh_row.get("accepted_occlusion_owner") is True or (temporal_graph.get("accepted_occlusion_owner") is True and temporal_chosen == object_id))
+        depth_accept = bool(raw_depth_accept and support_gate_allows_owner_claim)
         temporal_selected = bool(temporal_chosen == object_id)
         foreground_support = ("foreground" in depth_state and "support" in depth_state and "no_support" not in depth_state and "contradict" not in depth_state)
         foreground_contradiction = "foreground" in depth_state and "contradict" in depth_state
@@ -1529,13 +1716,19 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
                 "object_coverage": float(object_cov),
                 "mesh_temporal_support": float(mesh_support),
                 "temporal_graph_selected": temporal_selected,
-                "temporal_graph_accepted": bool(temporal_graph.get("accepted_occlusion_owner") is True and temporal_selected),
+                "raw_temporal_graph_accepted_before_hawor_support_gate": bool(temporal_graph.get("accepted_occlusion_owner") is True and temporal_selected),
+                "temporal_graph_accepted": bool(temporal_graph.get("accepted_occlusion_owner") is True and temporal_selected and support_gate_allows_owner_claim),
                 "depth_evidence_state": depth_state,
                 "foreground_depth_support": foreground_support,
                 "foreground_depth_contradiction": foreground_contradiction,
                 "depth_order_resolved": depth_resolved,
+                "raw_accepted_by_depth_evidence_before_hawor_support_gate": raw_depth_accept,
                 "accepted_by_depth_evidence": depth_accept,
-                "evidence_scope": "box_mesh_temporal_depth_energy_for_owner_choice",
+                "hand_support_state": hand_support_state,
+                "hand_support_weight": float(hand_support_weight),
+                "support_gate_allows_occlusion_owner_claim": bool(support_gate_allows_owner_claim),
+                "support_gate_reason": "observed_same_frame_hawor_required_for_occlusion_owner_claim" if not support_gate_allows_owner_claim else "observed_same_frame_hawor_support",
+                "evidence_scope": "box_mesh_temporal_depth_energy_for_owner_choice_support_gated_by_hawor_observation",
             }
         )
     if not evaluated:
@@ -1549,10 +1742,15 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
         "chosen_owner_object_id": chosen.get("object_id"),
         "chosen_owner_name": chosen.get("name"),
         "chosen_energy": chosen.get("energy"),
-        "owner_supported_by_depth_evidence": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence")),
-        "state": "depth_order_supported_owner" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") else "inferred_candidate_or_unowned",
-        "inference_method": "box_mesh_depth_temporal_energy_with_unowned_competitor",
-        "support_policy": "owner_support_requires_source_depth_or_temporal_graph_evidence",
+        "owner_supported_by_depth_evidence": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") and support_gate_allows_owner_claim),
+        "raw_owner_supported_by_depth_evidence_before_hawor_support_gate": bool(chosen.get("object_id") and chosen.get("raw_accepted_by_depth_evidence_before_hawor_support_gate")),
+        "state": "depth_order_supported_owner" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") and support_gate_allows_owner_claim else "support_gated_candidate_or_unowned",
+        "inference_method": "box_mesh_depth_temporal_energy_with_unowned_competitor_support_gated_by_hawor_observation",
+        "support_policy": "owner_support_requires_source_depth_or_temporal_graph_evidence_and_observed_same_frame_hawor_hand_support",
+        "hand_support_state": hand_support_state,
+        "hand_support_weight": float(hand_support_weight),
+        "support_gate_allows_occlusion_owner_claim": bool(support_gate_allows_owner_claim),
+        "support_gate_reason": "observed_same_frame_hawor_required_for_occlusion_owner_claim" if not support_gate_allows_owner_claim else "observed_same_frame_hawor_support",
         "candidate_energies": evaluated,
     }
 
@@ -2082,7 +2280,10 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                         "owner_candidates": owner_candidates,
                         "mesh_owner_evidence": occlusion_mesh_evidence,
                         "temporal_owner_graph": occlusion_owner_graph,
-                        "accepted_occlusion_owner_count": int(any(isinstance(row, dict) and row.get("accepted_occlusion_owner") is True for row in occlusion_mesh_evidence) or (isinstance(occlusion_owner_graph, dict) and occlusion_owner_graph.get("accepted_occlusion_owner") is True)),
+                        "raw_accepted_occlusion_owner_count_before_hawor_support_gate": int(any(isinstance(row, dict) and row.get("accepted_occlusion_owner") is True for row in occlusion_mesh_evidence) or (isinstance(occlusion_owner_graph, dict) and occlusion_owner_graph.get("accepted_occlusion_owner") is True)),
+                        "accepted_occlusion_owner_count": int(support_state == "observed_same_frame_detection" and (any(isinstance(row, dict) and row.get("accepted_occlusion_owner") is True for row in occlusion_mesh_evidence) or (isinstance(occlusion_owner_graph, dict) and occlusion_owner_graph.get("accepted_occlusion_owner") is True))),
+                        "support_gate_allows_occlusion_owner_claim": bool(support_state == "observed_same_frame_detection"),
+                        "support_gate_reason": "observed_same_frame_hawor_required_for_occlusion_owner_claim" if support_state != "observed_same_frame_detection" else "observed_same_frame_hawor_support",
                         "confidence": "low" if owner_candidates else "unknown",
                     },
                 }
@@ -2209,6 +2410,8 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     for frame in frames:
         frame_idx = require_int(frame.get("frame_idx"), "frame_idx")
         frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
+    reconstructed_geometry_counts = attach_reconstructed_geometry_pose(frames)
+    module_counts.update(reconstructed_geometry_counts)
     module_counts["factor_graph_variables"] += sum(int(v) for v in factor_graph_summary.get("variable_counts", {}).values())
     module_counts["factor_graph_factors"] += sum(int(v) for v in factor_graph_summary.get("factor_counts", {}).values())
     out = {
@@ -2265,7 +2468,9 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         "factor_graph_summary": factor_graph_summary,
         "module_counts": dict(sorted(module_counts.items())),
         "confidence_counts": dict(sorted(confidence_counts.items())),
-        "hidden_geometry_candidate_object_count": len(completion_by_object),
+        "hidden_geometry_candidate_object_count": len(depth_fused_by_object) if depth_fused_by_object else len(completion_by_object),
+        "reconstructed_geometry_pose_rows": int(reconstructed_geometry_counts.get("reconstructed_geometry_pose_rows", 0)),
+        "renderable_reconstructed_geometry_pose_rows": int(reconstructed_geometry_counts.get("renderable_reconstructed_geometry_pose_rows", 0)),
         "frames": frames,
     }
     case_dir = args.output_root / case
@@ -2282,6 +2487,81 @@ def point_from_bbox_or_pose(obj: dict[str, Any], source_w: float, source_h: floa
     x = int(round(left + max(0.0, min(1.0, center[0] / source_w)) * (right - left)))
     y = int(round(top + max(0.0, min(1.0, center[1] / source_h)) * (bottom - top)))
     return x, y
+
+
+def metric_render_bounds(frames: list[Any]) -> tuple[np.ndarray, np.ndarray] | None:
+    pts: list[np.ndarray] = []
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
+            if not isinstance(obj, dict):
+                continue
+            recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+            corners = recon.get("world_bbox_corners_m") if isinstance(recon.get("world_bbox_corners_m"), list) else []
+            for raw in corners:
+                v = numeric_vector(raw, 3)
+                if v is not None:
+                    pts.append(v[[0, 2]])
+    if not pts:
+        return None
+    arr = np.vstack(pts)
+    mn = arr.min(axis=0)
+    mx = arr.max(axis=0)
+    span = mx - mn
+    pad = np.maximum(span * 0.08, np.asarray([0.05, 0.05]))
+    return mn - pad, mx + pad
+
+
+def metric_xz_to_canvas(raw: Any, bounds: tuple[np.ndarray, np.ndarray] | None, canvas_w: int, canvas_h: int) -> tuple[int, int] | None:
+    v = numeric_vector(raw, 3)
+    if v is None or bounds is None:
+        return None
+    mn, mx = bounds
+    span = np.maximum(mx - mn, np.asarray([1e-6, 1e-6]))
+    left, right = 70, canvas_w - 330
+    top, bottom = 96, canvas_h - 90
+    x_norm = float((v[0] - mn[0]) / span[0])
+    z_norm = float((v[2] - mn[1]) / span[1])
+    x = int(round(left + max(0.0, min(1.0, x_norm)) * (right - left)))
+    y = int(round(bottom - max(0.0, min(1.0, z_norm)) * (bottom - top)))
+    return x, y
+
+
+def draw_metric_mesh_footprint(draw: ImageDraw.ImageDraw, recon: dict[str, Any], bounds: tuple[np.ndarray, np.ndarray] | None, canvas_w: int, canvas_h: int, color: tuple[int, int, int]) -> bool:
+    corners = recon.get("world_bbox_corners_m") if isinstance(recon.get("world_bbox_corners_m"), list) else []
+    pts = [metric_xz_to_canvas(raw, bounds, canvas_w, canvas_h) for raw in corners]
+    if len(pts) != 8 or any(pt is None for pt in pts):
+        return False
+    clean = [pt for pt in pts if pt is not None]
+    for a, b in BBOX_CORNER_EDGES:
+        draw.line((clean[a][0], clean[a][1], clean[b][0], clean[b][1]), fill=color, width=2)
+    center = metric_xz_to_canvas(recon.get("world_bbox_center_m"), bounds, canvas_w, canvas_h)
+    if center is not None:
+        draw.ellipse((center[0] - 4, center[1] - 4, center[0] + 4, center[1] + 4), fill=color)
+    return True
+
+
+def draw_anchored_mesh_glyph(draw: ImageDraw.ImageDraw, recon: dict[str, Any], anchor: tuple[int, int], color: tuple[int, int, int]) -> bool:
+    corners_raw = recon.get("world_bbox_corners_m") if isinstance(recon.get("world_bbox_corners_m"), list) else []
+    corners: list[np.ndarray] = []
+    for raw in corners_raw:
+        v = numeric_vector(raw, 3)
+        if v is not None:
+            corners.append(v)
+    if len(corners) != 8:
+        return False
+    arr = np.vstack(corners)
+    center = arr.mean(axis=0)
+    rel = arr[:, [0, 2]] - center[[0, 2]][None, :]
+    span = np.ptp(rel, axis=0)
+    max_span = float(max(span[0], span[1], 1e-6))
+    px_per_m = min(260.0, max(70.0, 120.0 / max_span))
+    pts = [(int(round(anchor[0] + x * px_per_m)), int(round(anchor[1] - z * px_per_m))) for x, z in rel]
+    for a, b in BBOX_CORNER_EDGES:
+        draw.line((pts[a][0], pts[a][1], pts[b][0], pts[b][1]), fill=color, width=2)
+    draw.ellipse((anchor[0] - 4, anchor[1] - 4, anchor[0] + 4, anchor[1] + 4), fill=color)
+    return True
 
 
 def occlusion_target_object_id(hand: dict[str, Any], occlusion_vars_by_side: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
@@ -2375,6 +2655,10 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                     physical_state = obj['physical_state_decision'].get('decision')
                 label = f"{obj.get('name')} | {physical_state} | {obj.get('confidence')} approx"
                 draw_label(draw, (box[0], max(44, box[1] - 22)), label[:115], small, rgb)
+                recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+                if recon.get("renderable_pose_geometry") is True:
+                    draw_label(draw, (box[0], min(image.size[1] - 58, box[3] + 6)), "depth-fused mesh pose", small, (120, 255, 255), (0, 0, 0))
+                    counts["reconstructed_geometry_pose_labels"] += 1
                 counts["object_boxes"] += 1
             for part in obj.get("parts", [])[:4]:
                 if isinstance(part, dict) and isinstance(part.get("part_mask_path"), str):
@@ -2473,6 +2757,7 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
     font = text_font(20)
     small = text_font(15)
     frames = require_list(ann.get("frames"), "annotation frames")
+    metric_bounds = metric_render_bounds(frames)
     counts: Counter[str] = Counter()
     canvas_w, canvas_h = 1280, 720
     for raw_frame in frames:
@@ -2500,6 +2785,10 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             color = (70, 180, 255) if obj.get("visible_geometry_candidate") else (160, 160, 160)
             radius = 8 if obj.get("visible_geometry_candidate") else 5
             draw.ellipse((pt[0]-radius, pt[1]-radius, pt[0]+radius, pt[1]+radius), fill=color)
+            recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+            if recon.get("renderable_pose_geometry") is True and draw_anchored_mesh_glyph(draw, recon, pt, (120, 255, 255)):
+                draw_label(draw, (pt[0] + 10, pt[1] + 12), "mesh-pose", small, (120, 255, 255), (18, 20, 25))
+                counts["world_reconstructed_mesh_footprints"] += 1
             draw_label(draw, (pt[0]+10, pt[1]-10), str(obj.get("name"))[:36], small, color, (18, 20, 25))
             counts["world_objects"] += 1
         hand_points: dict[str, tuple[int, int]] = {}

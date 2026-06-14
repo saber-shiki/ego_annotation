@@ -23,33 +23,20 @@ def validate_trash(case: dict[str, Any], failures: list[str]) -> None:
     require(case.get("status") == "trash_hawor_bridge_candidate_built_not_accepted", f"trash status unexpected: {case.get('status')}", failures)
     require(case.get("accepted_v18_hawor_foundation") is False, "trash bridge must not be accepted foundation", failures)
     require(case.get("downstream_physical_modules_recomputed_from_bridge") is False, "trash downstream recomputation must remain false", failures)
-    require(case.get("bridge_candidate_rows") == 2098, f"trash expected 2098 bridge rows, got {case.get('bridge_candidate_rows')}", failures)
+    require(case.get("bridge_candidate_rows") == 2100, f"trash expected 2100 bridge rows after explicit boundary-row contract, got {case.get('bridge_candidate_rows')}", failures)
     require(case.get("expected_frame_side_rows") == 2100, f"trash expected 2100 frame-side rows, got {case.get('expected_frame_side_rows')}", failures)
-    require(case.get("valid_hawor_frame_side_rows") == 2098, f"trash expected 2098 valid rows, got {case.get('valid_hawor_frame_side_rows')}", failures)
+    require(case.get("valid_hawor_frame_side_rows") == 2100, f"trash expected 2100 valid rows, got {case.get('valid_hawor_frame_side_rows')}", failures)
     residual = case.get("reference_projection_residual_px_median_per_row") if isinstance(case.get("reference_projection_residual_px_median_per_row"), dict) else {}
-    require(residual.get("count") == 1909, f"trash expected 1909 reference residual rows, got {residual.get('count')}", failures)
-    med = float(residual.get("median", -1.0)) if residual.get("median") is not None else -1.0
-    p95 = float(residual.get("p95", -1.0)) if residual.get("p95") is not None else -1.0
-    require(25.0 <= med <= 45.0, f"trash median residual outside expected candidate range: {med}", failures)
-    require(p95 > 500.0, f"trash residual tail should block acceptance, p95={p95}", failures)
-    thresholds = case.get("reference_projection_residual_threshold_counts") if isinstance(case.get("reference_projection_residual_threshold_counts"), dict) else {}
-    require(thresholds.get("median_px_gt_200", 0) > 0, "trash should preserve large-residual rows as blocker evidence", failures)
-    tail = case.get("projection_residual_tail_localization") if isinstance(case.get("projection_residual_tail_localization"), dict) else {}
-    tail_1000 = tail.get("median_px_gt_1000") if isinstance(tail.get("median_px_gt_1000"), dict) else {}
-    require(tail_1000.get("count") == 30, f"trash expected 30 >1000px tail rows, got {tail_1000.get('count')}", failures)
-    require(tail_1000.get("frame_min") == 509 and tail_1000.get("frame_max") == 528, f"trash >1000px tail should remain localized to frames 509-528, got {tail_1000.get('frame_min')}-{tail_1000.get('frame_max')}", failures)
-    visibility = tail_1000.get("current_visibility_counts") if isinstance(tail_1000.get("current_visibility_counts"), dict) else {}
-    require(int(visibility.get("unresolved", 0)) >= 29, f"trash >1000px tail should mostly be unresolved visibility, got {visibility}", failures)
-    hawor_inside = tail_1000.get("hawor_projected_inside_image_fraction") if isinstance(tail_1000.get("hawor_projected_inside_image_fraction"), dict) else {}
-    require(float(hawor_inside.get("median", 999.0)) == 0.0, f"trash >1000px tail should preserve HaWoR out-of-frame evidence, got {hawor_inside}", failures)
+    require(residual.get("count") == 0, f"trash should not report self-comparison residual rows after final hand candidate becomes HaWoR, got {residual.get('count')}", failures)
+    require(case.get("rows_without_current_reference_projection") == 2100, f"trash expected all rows without independent current reference projection, got {case.get('rows_without_current_reference_projection')}", failures)
+    sources = case.get("reference_projection_source_backend_counts") if isinstance(case.get("reference_projection_source_backend_counts"), dict) else {}
+    require(sources == {"self_hawor_candidate_not_independent_reference": 2100}, f"trash should record rejected self-HaWoR reference rows, got {sources}", failures)
     cam = case.get("camera_trajectory_alignment") if isinstance(case.get("camera_trajectory_alignment"), dict) else {}
     global_err = cam.get("global_sim3", {}).get("error_m", {}) if isinstance(cam.get("global_sim3"), dict) else {}
     require(float(global_err.get("median", 999.0)) > 0.1, f"global Sim3 median unexpectedly small; check acceptance logic: {global_err}", failures)
     blockers = case.get("blocking_reasons") if isinstance(case.get("blocking_reasons"), list) else []
     for blocker in [
         "bridge_candidate_not_consumed_by_contact_occlusion_nonpenetration",
-        "not_all_cases_have_hawor_bridge_candidates",
-        "projection_residual_tail_too_large_for_foundation_acceptance",
         "single_global_HaWoR_to_V18_world_sim3_alignment_too_loose_for_physical_contact",
     ]:
         require(blocker in blockers, f"trash missing blocker {blocker}", failures)
@@ -57,18 +44,18 @@ def validate_trash(case: dict[str, Any], failures: list[str]) -> None:
     require(npz_path.exists(), f"trash bridge NPZ missing: {npz_path}", failures)
     if npz_path.exists():
         z = np.load(npz_path)
-        require(z["frame_idx"].shape == (2098,), f"trash frame_idx shape mismatch: {z['frame_idx'].shape}", failures)
-        require(z["vertices_hawor_camera_m"].shape == (2098, 778, 3), f"trash camera vertices shape mismatch: {z['vertices_hawor_camera_m'].shape}", failures)
-        require(z["joints_hawor_camera_m"].shape == (2098, 21, 3), f"trash camera joints shape mismatch: {z['joints_hawor_camera_m'].shape}", failures)
-        require(z["vertices_current_v18_world_from_hawor_camera_local_m"].shape == (2098, 778, 3), f"trash V18-world vertices shape mismatch: {z['vertices_current_v18_world_from_hawor_camera_local_m'].shape}", failures)
-        require(z["joints_current_v18_world_from_hawor_camera_local_m"].shape == (2098, 21, 3), f"trash V18-world joints shape mismatch: {z['joints_current_v18_world_from_hawor_camera_local_m'].shape}", failures)
+        require(z["frame_idx"].shape == (2100,), f"trash frame_idx shape mismatch: {z['frame_idx'].shape}", failures)
+        require(z["vertices_hawor_camera_m"].shape == (2100, 778, 3), f"trash camera vertices shape mismatch: {z['vertices_hawor_camera_m'].shape}", failures)
+        require(z["joints_hawor_camera_m"].shape == (2100, 21, 3), f"trash camera joints shape mismatch: {z['joints_hawor_camera_m'].shape}", failures)
+        require(z["vertices_current_v18_world_from_hawor_camera_local_m"].shape == (2100, 778, 3), f"trash V18-world vertices shape mismatch: {z['vertices_current_v18_world_from_hawor_camera_local_m'].shape}", failures)
+        require(z["joints_current_v18_world_from_hawor_camera_local_m"].shape == (2100, 21, 3), f"trash V18-world joints shape mismatch: {z['joints_current_v18_world_from_hawor_camera_local_m'].shape}", failures)
         require(np.isfinite(z["joints_hawor_camera_m"]).all(), "trash camera joints contain non-finite values", failures)
         require(np.all(z["joints_hawor_camera_m"][:, :, 2] > 0.0), "trash camera joints contain non-positive depth", failures)
 
 
 def validate_task5(case: dict[str, Any], failures: list[str]) -> None:
     require(case.get("accepted_v18_hawor_foundation") is False, "task5 bridge must not be accepted foundation", failures)
-    require(case.get("hawor_npz") == "/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands.npz", f"task5 bridge should point to contract NPZ path, got {case.get('hawor_npz')}", failures)
+    require(case.get("hawor_npz") == "/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands_with_track_support.npz", f"task5 bridge should point to support-aware NPZ path, got {case.get('hawor_npz')}", failures)
     blockers = case.get("blocking_reasons") if isinstance(case.get("blocking_reasons"), list) else []
     if case.get("status") == "blocked_no_hawor_npz_for_case":
         require(case.get("bridge_candidate_rows") == 0, f"task5 expected 0 bridge rows, got {case.get('bridge_candidate_rows')}", failures)
@@ -77,7 +64,10 @@ def validate_task5(case: dict[str, Any], failures: list[str]) -> None:
             require(blocker in blockers, f"task5 missing blocker {blocker}", failures)
     elif case.get("status") == "hawor_bridge_candidate_built_not_accepted":
         require(int(case.get("expected_frame_side_rows") or 0) == 1920, f"task5 expected frame-side rows 1920, got {case.get('expected_frame_side_rows')}", failures)
-        require(int(case.get("bridge_candidate_rows") or 0) <= 1920, f"task5 bridge rows cannot exceed 1920, got {case.get('bridge_candidate_rows')}", failures)
+        require(int(case.get("bridge_candidate_rows") or 0) == 1920, f"task5 bridge rows should cover full timeline, got {case.get('bridge_candidate_rows')}", failures)
+        require(case.get("rows_without_current_reference_projection") == 1920, f"task5 expected all rows without independent reference projection, got {case.get('rows_without_current_reference_projection')}", failures)
+        sources = case.get("reference_projection_source_backend_counts") if isinstance(case.get("reference_projection_source_backend_counts"), dict) else {}
+        require(sources == {"self_hawor_candidate_not_independent_reference": 1920}, f"task5 should record rejected self-HaWoR reference rows, got {sources}", failures)
         require(case.get("bridge_candidate_npz") is not None, "task5 present bridge should record bridge NPZ", failures)
         require("bridge_candidate_not_consumed_by_contact_occlusion_nonpenetration" in blockers, "task5 present bridge must keep downstream-not-consumed blocker", failures)
     else:

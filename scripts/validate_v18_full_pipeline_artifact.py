@@ -91,6 +91,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(world_occ > 0, f"{case}: world render drew no occlusion-owner evidence")
     require(int(overlay_draw.get("pose_fill_gate_markers", 0)) > 0, f"{case}: overlay rendered no pose-fill gate markers")
     require(int(world_draw.get("world_pose_fill_gate_markers", 0)) > 0, f"{case}: world render drew no pose-fill gate markers")
+    require(int(overlay_draw.get("reconstructed_geometry_pose_labels", 0)) > 0, f"{case}: overlay rendered no reconstructed geometry pose labels")
+    require(int(world_draw.get("world_reconstructed_mesh_footprints", 0)) > 0, f"{case}: world render drew no reconstructed mesh footprints")
 
     ann_path = Path(str(case_report.get("annotations")))
     ann_text = ann_path.read_text(encoding="utf-8")
@@ -128,6 +130,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "rtmlib_key_rows": 0,
         "hand_graph_metric": 0,
         "hand_support_state_rows": 0,
+        "hand_mano_surface_reference_rows": 0,
+        "hand_mano_parameter_contract_rows": 0,
         "hand_support_observed_rows": 0,
         "hand_support_inferred_rows": 0,
         "hand_support_boundary_fill_rows": 0,
@@ -137,6 +141,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "object_se3_rows": 0,
         "object_visible_geometry_rows": 0,
         "object_hidden_or_unresolved_geometry_rows": 0,
+        "object_reconstructed_geometry_pose_rows": 0,
+        "object_renderable_reconstructed_geometry_pose_rows": 0,
         "object_vertex_sample_rows": 0,
         "part_rows": 0,
         "contacts": 0,
@@ -146,12 +152,24 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "contact_metric_inferred_rows": 0,
         "contact_metric_boundary_fill_rows": 0,
         "signed_nonpenetration_rows": 0,
+        "signed_nonpenetration_watertight_rows": 0,
+        "signed_nonpenetration_physical_ineligible_rows": 0,
+        "signed_nonpenetration_evaluated_nonobserved_hawor_rows": 0,
         "triangle_nonpenetration_rows": 0,
+        "triangle_nonpenetration_watertight_rows": 0,
+        "triangle_nonpenetration_physical_ineligible_rows": 0,
+        "triangle_nonpenetration_evaluated_nonobserved_hawor_rows": 0,
         "contact_switch_vars": 0,
         "active_contact_switch_vars": 0,
         "active_contact_switch_vars_with_nonobserved_hawor_hand": 0,
         "raw_contact_switches_gated_by_hawor_support": 0,
+        "hand_occlusion_owner_accepted_rows": 0,
+        "hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand": 0,
+        "hand_raw_occlusion_owner_rows_gated_by_hawor_support": 0,
         "occlusion_owner_vars": 0,
+        "occlusion_owner_supported_vars": 0,
+        "occlusion_owner_supported_vars_with_nonobserved_hawor_hand": 0,
+        "raw_occlusion_owner_vars_gated_by_hawor_support": 0,
         "camera_depth_observed_rows": 0,
         "factor_frames": 0,
     }
@@ -184,15 +202,34 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 counts["active_contact_switch_vars"] += 1
                 if row_support_state != "observed_same_frame_detection":
                     counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
-        counts["occlusion_owner_vars"] += len(vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else [])
+        occlusion_vars = vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else []
+        counts["occlusion_owner_vars"] += len(occlusion_vars)
+        for row in occlusion_vars:
+            if not isinstance(row, dict):
+                continue
+            side = str(row.get("hand_side"))
+            row_support_state = str(row.get("hand_support_state") or hand_support_by_side.get(side, ""))
+            if row.get("raw_owner_supported_by_depth_evidence_before_hawor_support_gate") is True and row.get("owner_supported_by_depth_evidence") is False and row_support_state != "observed_same_frame_detection":
+                counts["raw_occlusion_owner_vars_gated_by_hawor_support"] += 1
+            if row.get("owner_supported_by_depth_evidence") is True:
+                counts["occlusion_owner_supported_vars"] += 1
+                if row_support_state != "observed_same_frame_detection":
+                    counts["occlusion_owner_supported_vars_with_nonobserved_hawor_hand"] += 1
 
         require(len(hands) == 2, f"{case}: frame {frame.get('frame_idx')} does not have two hand rows")
         for hand in hands:
             require(isinstance(hand, dict), f"{case}: non-dict hand row")
             counts["hand_total"] += 1
             metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+            mano = hand.get("mano_candidate") if isinstance(hand.get("mano_candidate"), dict) else {}
             if hand.get("hand_geometry_source") == "HaWoR_metric_MANO_current_V18_world" or str(metric.get("source", "")).startswith("HaWoR_metric_MANO"):
                 counts["hawor_metric_mano"] += 1
+            surface_ref = mano.get("surface_reference") if isinstance(mano.get("surface_reference"), dict) else metric.get("vertices_reference") if isinstance(metric.get("vertices_reference"), dict) else None
+            if isinstance(surface_ref, dict) and surface_ref.get("shape_vertices") == [778, 3] and isinstance(surface_ref.get("bridge_npz"), str):
+                counts["hand_mano_surface_reference_rows"] += 1
+            mano_params = mano.get("mano_params") if isinstance(mano.get("mano_params"), dict) else metric.get("mano_params") if isinstance(metric.get("mano_params"), dict) else None
+            if isinstance(mano_params, dict) and all(isinstance(mano_params.get(k), list) and len(mano_params.get(k)) == n for k, n in [("root_orient_axis_angle", 3), ("hand_pose_axis_angle", 45), ("betas", 10), ("trans_world_m", 3)]):
+                counts["hand_mano_parameter_contract_rows"] += 1
             support_state = str(hand.get("hawor_support_state", ""))
             support_weight = hand.get("hawor_physical_factor_weight")
             require(support_state in {"observed_same_frame_detection", "inferred_no_same_frame_detection", "temporal_boundary_fill", "pipeline_gap_fill", "missing_hawor_row"}, f"{case}: invalid/missing hand HaWoR support state {support_state!r}")
@@ -213,7 +250,17 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             pose_gate = hand.get("occlusion_pose_fill_gate") if isinstance(hand.get("occlusion_pose_fill_gate"), dict) else {}
             if pose_gate:
                 counts["pose_fill_gate_rows"] += 1
-            require(isinstance(hand.get("occlusion_owner_hypothesis"), dict), f"{case}: missing hand occlusion owner hypothesis")
+            occ = hand.get("occlusion_owner_hypothesis") if isinstance(hand.get("occlusion_owner_hypothesis"), dict) else None
+            require(isinstance(occ, dict), f"{case}: missing hand occlusion owner hypothesis")
+            if isinstance(occ, dict):
+                raw_count = int(occ.get("raw_accepted_occlusion_owner_count_before_hawor_support_gate") or 0)
+                accepted_count = int(occ.get("accepted_occlusion_owner_count") or 0)
+                if raw_count > 0 and accepted_count == 0 and support_state != "observed_same_frame_detection":
+                    counts["hand_raw_occlusion_owner_rows_gated_by_hawor_support"] += 1
+                if accepted_count > 0:
+                    counts["hand_occlusion_owner_accepted_rows"] += 1
+                    if support_state != "observed_same_frame_detection":
+                        counts["hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand"] += 1
 
         objects = frame.get("objects") if isinstance(frame.get("objects"), list) else []
         require(objects, f"{case}: frame {frame.get('frame_idx')} has no object rows")
@@ -232,6 +279,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             hidden = obj.get("hidden_geometry_candidate")
             if hidden is not None:
                 counts["object_hidden_or_unresolved_geometry_rows"] += 1
+            recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else None
+            if isinstance(recon, dict):
+                counts["object_reconstructed_geometry_pose_rows"] += 1
+                if recon.get("renderable_pose_geometry") is True:
+                    counts["object_renderable_reconstructed_geometry_pose_rows"] += 1
+                    require(isinstance(recon.get("mesh_path"), str) and Path(str(recon.get("mesh_path"))).exists(), f"{case}: reconstructed geometry mesh path missing")
+                    require(isinstance(recon.get("world_bbox_corners_m"), list) and len(recon.get("world_bbox_corners_m")) == 8, f"{case}: reconstructed geometry pose missing render corners")
+                    require(isinstance(recon.get("translation_world_m"), list) and len(recon.get("translation_world_m")) == 3, f"{case}: reconstructed geometry pose missing translation")
             counts["part_rows"] += len(obj.get("parts") if isinstance(obj.get("parts"), list) else [])
 
         for hyp in frame.get("contact_hypotheses", []) if isinstance(frame.get("contact_hypotheses"), list) else []:
@@ -253,16 +308,34 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 elif support_state == "temporal_boundary_fill":
                     counts["contact_metric_boundary_fill_rows"] += 1
             evidence = hyp.get("evidence") if isinstance(hyp.get("evidence"), dict) else {}
-            if isinstance(evidence.get("signed_nonpenetration_evidence"), dict):
+            signed_np = evidence.get("signed_nonpenetration_evidence") if isinstance(evidence.get("signed_nonpenetration_evidence"), dict) else None
+            if isinstance(signed_np, dict):
                 counts["signed_nonpenetration_rows"] += 1
-            if isinstance(evidence.get("triangle_nonpenetration_evidence"), dict):
+                if signed_np.get("mesh_watertight_by_edges") is True:
+                    counts["signed_nonpenetration_watertight_rows"] += 1
+                if signed_np.get("blocker") == "object_not_strict_rigid_nonpenetration_eligible":
+                    counts["signed_nonpenetration_physical_ineligible_rows"] += 1
+                    require(signed_np.get("strict_nonpenetration_eligibility") == "strict_rigid_nonpenetration_not_eligible", f"{case}: signed nonpenetration physical-ineligible row missing eligibility state")
+                if str(signed_np.get("signed_nonpenetration_claim", "")).startswith("depth_fused_mesh_normal_") and str(signed_np.get("hand_support_state")) != "observed_same_frame_detection":
+                    counts["signed_nonpenetration_evaluated_nonobserved_hawor_rows"] += 1
+            triangle_np = evidence.get("triangle_nonpenetration_evidence") if isinstance(evidence.get("triangle_nonpenetration_evidence"), dict) else None
+            if isinstance(triangle_np, dict):
                 counts["triangle_nonpenetration_rows"] += 1
+                if triangle_np.get("mesh_watertight_by_edges") is True:
+                    counts["triangle_nonpenetration_watertight_rows"] += 1
+                if triangle_np.get("blocker") == "object_not_strict_rigid_nonpenetration_eligible":
+                    counts["triangle_nonpenetration_physical_ineligible_rows"] += 1
+                    require(triangle_np.get("strict_nonpenetration_eligibility") == "strict_rigid_nonpenetration_not_eligible", f"{case}: triangle nonpenetration physical-ineligible row missing eligibility state")
+                if str(triangle_np.get("triangle_nonpenetration_claim", "")).startswith("depth_fused_mesh_triangle_") and str(triangle_np.get("hand_support_state")) != "observed_same_frame_detection":
+                    counts["triangle_nonpenetration_evaluated_nonobserved_hawor_rows"] += 1
 
     expected_hand_rows = expected * 2
     require(counts["hand_total"] == expected_hand_rows, f"{case}: hand rows do not cover full timeline")
     require(counts["hawor_metric_mano"] == expected_hand_rows, f"{case}: HaWoR metric MANO does not cover all hand rows")
     require(counts["hand_graph_metric"] == expected_hand_rows, f"{case}: graph hand variables do not all consume HaWoR metric MANO")
     require(counts["hand_support_state_rows"] == expected_hand_rows, f"{case}: HaWoR support state does not cover all hand rows")
+    require(counts["hand_mano_surface_reference_rows"] == expected_hand_rows, f"{case}: MANO surface references do not cover all hand rows")
+    require(counts["hand_mano_parameter_contract_rows"] == expected_hand_rows, f"{case}: MANO parameter contracts do not cover all hand rows")
     require(counts["hand_support_observed_rows"] > 0, f"{case}: no observed same-frame HaWoR rows")
     require(counts["wilor_key_rows"] == expected_hand_rows, f"{case}: WiLoR/V16 hand evidence keys missing")
     require(counts["rtmlib_key_rows"] == expected_hand_rows, f"{case}: RTMLib hand evidence keys missing")
@@ -273,6 +346,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["object_visible_geometry_rows"] > 0, f"{case}: no depth-visible geometry rows")
     require(counts["object_vertex_sample_rows"] > 0, f"{case}: no visible geometry vertex samples")
     require(counts["object_hidden_or_unresolved_geometry_rows"] > 0, f"{case}: no hidden/unresolved geometry state rows")
+    require(counts["object_reconstructed_geometry_pose_rows"] == counts["object_states"], f"{case}: reconstructed geometry pose state missing on object rows")
+    require(counts["object_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed mesh pose rows")
     require(counts["part_rows"] > 0, f"{case}: no part rows")
     require(counts["factor_frames"] == expected, f"{case}: factor graph not present for every frame")
     require(counts["camera_depth_observed_rows"] > 0, f"{case}: no observed camera/depth correction rows")
@@ -283,8 +358,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["contacts_with_final_metric_distance"] > 0, f"{case}: no final metric MANO-to-object-surface distances")
     require(counts["contacts_with_hawor_support_weight"] == counts["contacts_with_final_metric_distance"], f"{case}: final metric contact distances missing HaWoR support weights")
     require(counts["signed_nonpenetration_rows"] > 0, f"{case}: no signed nonpenetration evidence rows")
+    require(counts["signed_nonpenetration_watertight_rows"] > 0 or counts["signed_nonpenetration_physical_ineligible_rows"] > 0, f"{case}: signed nonpenetration has neither watertight evaluation nor physical-eligibility blockers")
+    require(counts["signed_nonpenetration_evaluated_nonobserved_hawor_rows"] == 0, f"{case}: evaluated signed nonpenetration rows are not support-gated to observed HaWoR hands")
     require(counts["triangle_nonpenetration_rows"] > 0, f"{case}: no triangle nonpenetration evidence rows")
+    require(counts["triangle_nonpenetration_watertight_rows"] > 0 or counts["triangle_nonpenetration_physical_ineligible_rows"] > 0, f"{case}: triangle nonpenetration has neither watertight evaluation nor physical-eligibility blockers")
+    require(counts["triangle_nonpenetration_evaluated_nonobserved_hawor_rows"] == 0, f"{case}: evaluated triangle nonpenetration rows are not support-gated to observed HaWoR hands")
     require(counts["occlusion_owner_vars"] > 0, f"{case}: no occlusion owner graph variables")
+    require(counts["hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce accepted hand occlusion-owner claims")
+    require(counts["occlusion_owner_supported_vars_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce supported occlusion-owner factor claims")
     return {"case": case, "expected_frame_count": expected, **counts}
 
 

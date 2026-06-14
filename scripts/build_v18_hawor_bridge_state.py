@@ -24,7 +24,7 @@ INT_TO_SIDE = {0: "left", 1: "right"}
 EXPECTED_VERTICES = 778
 EXPECTED_JOINTS = 21
 DEFAULT_HAWOR_OUTPUTS = {
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050/hawor_world_hands_with_track_support_boundary_filled.npz"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/trash_1050_tailrepair_padded/hawor_world_hands_trimmed_1050_with_track_support.npz"),
     "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_exports/task5_tomato_960/hawor_world_hands_with_track_support.npz"),
 }
 
@@ -85,10 +85,13 @@ def project_current_mano_candidate(hand: dict[str, Any]) -> tuple[np.ndarray | N
     joints = mano.get("joints3d_camera")
     cam_t = mano.get("cam_t")
     intr = mano.get("source_intrinsics")
+    source = str(mano.get("source")) if mano.get("source") is not None else None
+    if source and source.startswith("HaWoR_metric_MANO"):
+        return None, "self_hawor_candidate_not_independent_reference"
     if not (isinstance(joints, list) and len(joints) == EXPECTED_JOINTS and isinstance(cam_t, list) and len(cam_t) == 3 and isinstance(intr, list) and len(intr) == 4):
-        return None, str(mano.get("source")) if mano.get("source") is not None else None
+        return None, source
     points = np.asarray(joints, dtype=np.float64) + np.asarray(cam_t, dtype=np.float64)[None, :]
-    return project(points, np.asarray(intr, dtype=np.float64)), str(mano.get("source")) if mano.get("source") is not None else None
+    return project(points, np.asarray(intr, dtype=np.float64)), source
 
 
 def current_hands_by_side(frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -314,6 +317,8 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
             }
             median_depth.append(row["median_hawor_camera_depth_m"])
             reference, ref_source = project_current_mano_candidate(current_hands.get(side, {})) if side in current_hands else (None, None)
+            if ref_source:
+                reference_sources.append(ref_source)
             if projected is not None and reference is not None:
                 residual = np.linalg.norm(projected - reference, axis=1)
                 med = float(np.median(residual))
@@ -341,8 +346,6 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
                     "reference_projected_inside_image_fraction": r_inside,
                     "current_visibility_state": current_hands.get(side, {}).get("visibility_state"),
                 })
-                if ref_source:
-                    reference_sources.append(ref_source)
             else:
                 rows_without_reference += 1
                 row["reference_projection_available"] = False
@@ -386,8 +389,9 @@ def build_case(case: str, args: argparse.Namespace) -> dict[str, Any]:
     }
     blockers = [
         "bridge_candidate_not_consumed_by_contact_occlusion_nonpenetration",
-        "not_all_cases_have_hawor_bridge_candidates",
     ]
+    if len(frame_indices) < frame_count * 2:
+        blockers.append("hawor_bridge_candidate_rows_not_full_timeline")
     if residual_summary.get("count", 0) and float(residual_summary.get("p95", 0.0)) > 200.0:
         blockers.append("projection_residual_tail_too_large_for_foundation_acceptance")
     camera_alignment = camera_alignment_report(frames, z)

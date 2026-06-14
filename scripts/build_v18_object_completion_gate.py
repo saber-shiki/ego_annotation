@@ -125,20 +125,36 @@ def classify_gate(geometry: dict[str, Any], motion: dict[str, Any], physical_sch
     return "blocked_unknown_or_unresolved_physical_state", "completion_deferred", blockers, next_evidence
 
 
+def depth_fused_by_object(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    rows = report.get("object_rows") if isinstance(report.get("object_rows"), list) else []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        object_id = raw.get("object_id")
+        mesh = raw.get("mesh_reconstruction") if isinstance(raw.get("mesh_reconstruction"), dict) else {}
+        if isinstance(object_id, str) and (mesh.get("poisson_mesh_path") or mesh.get("convex_hull_mesh_path")):
+            out[object_id] = raw
+    return out
+
+
 def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     geometry_path = args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"
     motion_path = args.fast_motion_root / case / "v18_fast_motion_state_report.json"
     physical_schema_path = args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"
+    depth_fused_path = args.depth_fused_root / case / "v18_depth_fused_reconstruction_report.json"
     geometry_report = require_dict(load_json(geometry_path), f"{case} visible geometry report")
     motion_report = require_dict(load_json(motion_path), f"{case} fast motion report")
     physical_schema_report = require_dict(load_json(physical_schema_path), f"{case} physical state schema")
+    depth_fused_report = require_dict(load_json(depth_fused_path), f"{case} depth fused reconstruction report") if depth_fused_path.exists() else {"object_rows": []}
     physical_schema_index = {
         require_str(row.get("object_id"), "physical schema object_id"): row
         for row in [require_dict(raw, "physical schema object row") for raw in require_list(physical_schema_report.get("object_rows"), "physical schema object rows")]
     }
     geometry_index = visible_geometry_by_object(geometry_report)
     motion_index = fast_motion_by_object(motion_report)
-    object_ids = sorted(set(geometry_index) | set(motion_index) | set(physical_schema_index))
+    depth_fused_index = depth_fused_by_object(depth_fused_report)
+    object_ids = sorted(set(geometry_index) | set(motion_index) | set(physical_schema_index) | set(depth_fused_index))
     rows: list[dict[str, Any]] = []
     gate_counts: Counter[str] = Counter()
     action_counts: Counter[str] = Counter()
@@ -146,6 +162,9 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         geometry = geometry_index.get(object_id, {})
         motion = motion_index.get(object_id, {})
         physical_schema = physical_schema_index.get(object_id, {})
+        depth_fused = depth_fused_index.get(object_id, {})
+        depth_mesh = depth_fused.get("mesh_reconstruction") if isinstance(depth_fused.get("mesh_reconstruction"), dict) else {}
+        depth_fused_mesh_ready = bool(depth_mesh.get("poisson_mesh_path") or depth_mesh.get("convex_hull_mesh_path"))
         gate_state, action, blockers, next_evidence = classify_gate(geometry, motion, physical_schema)
         gate_counts[gate_state] += 1
         action_counts[action] += 1
@@ -170,9 +189,15 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
                 "completion_action": action,
                 "blockers": blockers,
                 "required_next_evidence": next_evidence,
-                "completion_run": False,
-                "hidden_geometry_reconstructed": False,
-                "canonical_mesh_ready": False,
+                "completion_run": depth_fused_mesh_ready,
+                "hidden_geometry_reconstructed": depth_fused_mesh_ready,
+                "canonical_mesh_ready": depth_fused_mesh_ready,
+                "depth_fused_reconstruction_report": str(depth_fused_path) if depth_fused else None,
+                "depth_fused_source_frame_count": depth_fused.get("source_frame_count"),
+                "depth_fused_sampled_point_count": depth_fused.get("sampled_point_count"),
+                "depth_fused_poisson_mesh_path": depth_mesh.get("poisson_mesh_path"),
+                "depth_fused_convex_hull_mesh_path": depth_mesh.get("convex_hull_mesh_path"),
+                "depth_fused_mesh_status": depth_mesh.get("status"),
                 "complete_object_pose_ready": False,
                 "object_geometry_complete": False,
                 "object_pose_requirement_met": False,
@@ -183,14 +208,15 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
         "status": STATUS,
         "claim": CLAIM,
         "case": case,
-        "sources": {"v18_visible_geometry_archive": str(geometry_path), "v18_fast_motion_state": str(motion_path), "v18_physical_state_schema": str(physical_schema_path)},
+        "sources": {"v18_visible_geometry_archive": str(geometry_path), "v18_fast_motion_state": str(motion_path), "v18_physical_state_schema": str(physical_schema_path), "v18_depth_fused_reconstruction": str(depth_fused_path)},
         "object_count": len(rows),
         "completion_gate_state_counts": dict(sorted(gate_counts.items())),
         "completion_action_counts": dict(sorted(action_counts.items())),
         "completion_candidate_count": gate_counts.get("bounded_rigid_completion_candidate_visible_surface_only", 0),
         "part_split_candidate_count": gate_counts.get("part_motion_requires_part_split_no_single_rigid_completion", 0),
-        "completion_run_count": 0,
-        "hidden_geometry_reconstructed_count": 0,
+        "completion_run_count": sum(1 for row in rows if row.get("completion_run") is True),
+        "hidden_geometry_reconstructed_count": sum(1 for row in rows if row.get("hidden_geometry_reconstructed") is True),
+        "canonical_mesh_ready_count": sum(1 for row in rows if row.get("canonical_mesh_ready") is True),
         "complete_object_pose_ready_count": 0,
         "object_rows": rows,
         "default_path_uses_bundlesdf_or_nerf": False,
@@ -220,8 +246,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "completion_action_counts": dict(sorted(action_counts.items())),
         "completion_candidate_count": gate_counts.get("bounded_rigid_completion_candidate_visible_surface_only", 0),
         "part_split_candidate_count": gate_counts.get("part_motion_requires_part_split_no_single_rigid_completion", 0),
-        "completion_run_count": 0,
-        "hidden_geometry_reconstructed_count": 0,
+        "completion_run_count": sum(require_int(report.get("completion_run_count"), "completion_run_count") for report in reports),
+        "hidden_geometry_reconstructed_count": sum(require_int(report.get("hidden_geometry_reconstructed_count"), "hidden_geometry_reconstructed_count") for report in reports),
+        "canonical_mesh_ready_count": sum(require_int(report.get("canonical_mesh_ready_count"), "canonical_mesh_ready_count") for report in reports),
         "complete_object_pose_ready_count": 0,
         "default_path_uses_bundlesdf_or_nerf": False,
         "cases": [
@@ -232,6 +259,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "completion_gate_state_counts": report["completion_gate_state_counts"],
                 "completion_candidate_count": report["completion_candidate_count"],
                 "part_split_candidate_count": report["part_split_candidate_count"],
+                "completion_run_count": report["completion_run_count"],
+                "hidden_geometry_reconstructed_count": report["hidden_geometry_reconstructed_count"],
+                "canonical_mesh_ready_count": report["canonical_mesh_ready_count"],
                 **FALSE_READY,
             }
             for report in reports
@@ -247,6 +277,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--fast-motion-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_fast_motion_state"))
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
+    parser.add_argument("--depth-fused-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_object_completion_gate"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
