@@ -827,6 +827,46 @@ def load_depth_fused_reconstruction_index(path: Path) -> dict[str, dict[str, Any
     return out
 
 
+def load_part_depth_fused_reconstruction_index(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "part depth fused reconstruction report")
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("part_rows"), "part depth fused rows"):
+        row = require_dict(raw, "part depth fused row")
+        object_id = str(row.get("object_id"))
+        label = str(row.get("part_track_label"))
+        raw_mesh = row.get("mesh_reconstruction")
+        mesh: dict[str, Any] = raw_mesh if isinstance(raw_mesh, dict) else {}
+        out[(object_id, label)] = {
+            "method": "part_depth_fused_visible_surface_poisson_and_hull_candidate",
+            "scope": "graph_part_se3_aligned_depth_fused_visible_part_geometry_with_explicit_hidden_geometry_limits",
+            "source_report": str(path),
+            "object_id": object_id,
+            "part_track_label": label,
+            "source_frame_count": row.get("source_frame_count"),
+            "source_point_count": row.get("source_point_count"),
+            "sampled_point_count": row.get("sampled_point_count"),
+            "canonical_coordinate_source": row.get("canonical_coordinate_source"),
+            "canonical_bbox_min_m": row.get("canonical_bbox_min_m"),
+            "canonical_bbox_max_m": row.get("canonical_bbox_max_m"),
+            "fused_point_cloud_path": mesh.get("fused_point_cloud_path"),
+            "poisson_mesh_path": mesh.get("poisson_mesh_path"),
+            "poisson_vertices": mesh.get("poisson_vertices"),
+            "poisson_faces": mesh.get("poisson_faces"),
+            "convex_hull_mesh_path": mesh.get("convex_hull_mesh_path"),
+            "convex_hull_vertices": mesh.get("convex_hull_vertices"),
+            "convex_hull_faces": mesh.get("convex_hull_faces"),
+            "mesh_status": mesh.get("status"),
+            "mesh_blockers": mesh.get("blockers"),
+            "part_geometry_complete": False,
+            "part_pose_ready": False,
+            "object_pose_requirement_met": False,
+            "uncertainty": "visible_part_depth_fusion_with_explicit_hidden_completion_uncertainty",
+        }
+    return out
+
+
 def index_bounded_frames(path: Path) -> dict[int, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1304,6 +1344,25 @@ def object_se3_variable_by_id(frame: dict[str, Any]) -> dict[str, dict[str, Any]
     return out
 
 
+def part_se3_variable_by_key(frame: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    graph = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+    variables = graph.get("variables") if isinstance(graph.get("variables"), dict) else {}
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    rows = variables.get("part_se3") if isinstance(variables.get("part_se3"), list) else []
+    prefix = "part_se3::"
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        variable_id = str(raw.get("variable_id"))
+        if not variable_id.startswith(prefix):
+            continue
+        rest = variable_id[len(prefix):]
+        object_id, sep, label = rest.partition("::")
+        if sep and label:
+            out[(object_id, label)] = raw
+    return out
+
+
 def rigid_pose_support_from_schema(obj: dict[str, Any], completion: dict[str, Any], graph_var: dict[str, Any] | None) -> tuple[bool, str, list[str]]:
     schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
     physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
@@ -1398,10 +1457,69 @@ def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str,
     }
 
 
+def posed_reconstructed_part_geometry_state(part: dict[str, Any], candidate: dict[str, Any], graph_var: dict[str, Any] | None) -> dict[str, Any]:
+    mesh_path = candidate.get("convex_hull_mesh_path") or candidate.get("poisson_mesh_path")
+    corners = bbox_corners_from_min_max(candidate.get("canonical_bbox_min_m"), candidate.get("canonical_bbox_max_m"))
+    if not mesh_path or corners is None:
+        return {"state": "no_part_depth_fused_mesh_pose_for_frame", "renderable_part_pose_geometry": False, "mesh_path": mesh_path}
+    estimate = graph_var.get("estimate") if isinstance(graph_var, dict) else None
+    t = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+    if t is None:
+        return {
+            "state": "part_depth_fused_mesh_without_factor_graph_pose",
+            "renderable_part_pose_geometry": False,
+            "mesh_path": mesh_path,
+            "mesh_source": candidate.get("method"),
+            "scope": "part_mesh_reconstruction_available_but_frame_pose_missing",
+        }
+    rotvec = numeric_vector(estimate[3:6] if isinstance(estimate, list) and len(estimate) >= 6 else None, 3)
+    if rotvec is not None:
+        rotation_part_from_camera = Rotation.from_rotvec(rotvec).as_matrix()
+        rotation_camera_from_canonical = rotation_part_from_camera.T
+        pose_kind = "translation_plus_rotvec"
+    else:
+        rotation_camera_from_canonical = np.eye(3, dtype=np.float64)
+        pose_kind = "translation_only"
+    corners_camera = corners @ rotation_camera_from_canonical + t[None, :]
+    mn = corners_camera.min(axis=0)
+    mx = corners_camera.max(axis=0)
+    center = corners_camera.mean(axis=0)
+    extent = mx - mn
+    return {
+        "state": "part_depth_fused_mesh_posed_by_factor_graph",
+        "renderable_part_pose_geometry": True,
+        "mesh_path": mesh_path,
+        "mesh_kind": "convex_hull_preferred_watertight" if candidate.get("convex_hull_mesh_path") else "poisson_visible_surface",
+        "mesh_source": candidate.get("method"),
+        "mesh_scope": candidate.get("scope"),
+        "source_frame_count": candidate.get("source_frame_count"),
+        "sampled_point_count": candidate.get("sampled_point_count"),
+        "canonical_bbox_min_m": candidate.get("canonical_bbox_min_m"),
+        "canonical_bbox_max_m": candidate.get("canonical_bbox_max_m"),
+        "pose_kind": pose_kind,
+        "pose_source": graph_var.get("source") if isinstance(graph_var, dict) else None,
+        "pose_variable_id": graph_var.get("variable_id") if isinstance(graph_var, dict) else None,
+        "pose_observation_residual_norm": graph_var.get("observation_residual_norm") if isinstance(graph_var, dict) else None,
+        "translation_camera_m": [float(v) for v in t.tolist()],
+        "rotation_camera_from_canonical_matrix": [[float(x) for x in row] for row in rotation_camera_from_canonical.tolist()],
+        "rotation_camera_from_canonical_rotvec": [float(v) for v in Rotation.from_matrix(rotation_camera_from_canonical).as_rotvec().tolist()],
+        "part_bbox_corners_camera_m": [[float(x) for x in row] for row in corners_camera.tolist()],
+        "part_bbox_min_camera_m": [float(v) for v in mn.tolist()],
+        "part_bbox_max_camera_m": [float(v) for v in mx.tolist()],
+        "part_bbox_center_camera_m": [float(v) for v in center.tolist()],
+        "part_extent_camera_m": [float(v) for v in extent.tolist()],
+        "part_geometry_complete": False,
+        "part_pose_ready": False,
+        "object_pose_requirement_met": False,
+        "scope": "renderable_part_depth_fused_visible_completion_mesh_with_explicit_hidden_surface_uncertainty",
+    }
+
+
 def attach_reconstructed_geometry_pose(frames: list[dict[str, Any]]) -> Counter[str]:
     counts: Counter[str] = Counter()
     for frame in frames:
         graph_vars = object_se3_variable_by_id(frame)
+        part_graph_vars = part_se3_variable_by_key(frame)
         for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
             if not isinstance(obj, dict):
                 continue
@@ -1411,6 +1529,16 @@ def attach_reconstructed_geometry_pose(frames: list[dict[str, Any]]) -> Counter[
             counts["reconstructed_geometry_pose_rows"] += 1
             if state.get("renderable_pose_geometry") is True:
                 counts["renderable_reconstructed_geometry_pose_rows"] += 1
+            for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
+                if not isinstance(part, dict):
+                    continue
+                label = str(part.get("part_track_label"))
+                candidate = part.get("reconstructed_part_geometry_candidate") if isinstance(part.get("reconstructed_part_geometry_candidate"), dict) else {}
+                part_state = posed_reconstructed_part_geometry_state(part, candidate, part_graph_vars.get((object_id, label))) if candidate else {"state": "no_part_depth_fused_candidate", "renderable_part_pose_geometry": False}
+                part["reconstructed_part_geometry_pose"] = part_state
+                counts["part_reconstructed_geometry_pose_rows"] += 1
+                if part_state.get("renderable_part_pose_geometry") is True:
+                    counts["renderable_part_reconstructed_geometry_pose_rows"] += 1
     return counts
 
 
@@ -2210,6 +2338,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     geom_index, completion_by_object, visible_archive = load_visible_geometry_index(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json")
     physical_schema_by_object = load_physical_state_schema_index(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json")
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
+    part_depth_fused_by_key = load_part_depth_fused_reconstruction_index(args.part_depth_fused_reconstruction_root / case / "v18_part_depth_fused_reconstruction_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
     contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
     signed_nonpenetration_index = load_signed_nonpenetration_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
@@ -2340,7 +2469,15 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             obj = require_dict(raw_obj, "object")
             object_id = str(obj.get("object_id"))
             geom = geom_index.get((frame_idx, object_id))
-            parts = part_index.get((frame_idx, object_id), [])
+            parts_raw = part_index.get((frame_idx, object_id), [])
+            parts: list[dict[str, Any]] = []
+            for raw_part in parts_raw:
+                part = dict(raw_part) if isinstance(raw_part, dict) else {}
+                label = str(part.get("part_track_label"))
+                candidate = part_depth_fused_by_key.get((object_id, label))
+                if candidate is not None:
+                    part["reconstructed_part_geometry_candidate"] = candidate
+                parts.append(part)
             pose = object_se3_observation(obj, geom)
             completion = depth_fused_by_object.get(object_id) or completion_by_object.get(object_id, {
                 "method": "no_visible_surface_completion_candidate_available",
@@ -2472,6 +2609,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "visible_geometry_archive": str(args.visible_geometry_root / case / "v18_visible_geometry_archive_report.json"),
             "physical_state_schema": str(args.physical_state_schema_root / case / "v18_physical_state_schema_report.json"),
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
+            "part_depth_fused_reconstruction": str(args.part_depth_fused_reconstruction_root / case / "v18_part_depth_fused_reconstruction_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
             "contact_ownership_graph": str(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json"),
@@ -2607,6 +2745,28 @@ def draw_anchored_mesh_glyph(draw: ImageDraw.ImageDraw, recon: dict[str, Any], a
     return True
 
 
+def draw_anchored_part_mesh_glyph(draw: ImageDraw.ImageDraw, recon: dict[str, Any], anchor: tuple[int, int], color: tuple[int, int, int]) -> bool:
+    corners_raw = recon.get("part_bbox_corners_camera_m") if isinstance(recon.get("part_bbox_corners_camera_m"), list) else []
+    corners: list[np.ndarray] = []
+    for raw in corners_raw:
+        v = numeric_vector(raw, 3)
+        if v is not None:
+            corners.append(v)
+    if len(corners) != 8:
+        return False
+    arr = np.vstack(corners)
+    center = arr.mean(axis=0)
+    rel = arr[:, [0, 2]] - center[[0, 2]][None, :]
+    span = np.ptp(rel, axis=0)
+    max_span = float(max(span[0], span[1], 1e-6))
+    px_per_m = min(280.0, max(90.0, 90.0 / max_span))
+    pts = [(int(round(anchor[0] + x * px_per_m)), int(round(anchor[1] - z * px_per_m))) for x, z in rel]
+    for a, b in BBOX_CORNER_EDGES:
+        draw.line((pts[a][0], pts[a][1], pts[b][0], pts[b][1]), fill=color, width=2)
+    draw.rectangle((anchor[0] - 3, anchor[1] - 3, anchor[0] + 3, anchor[1] + 3), fill=color)
+    return True
+
+
 def occlusion_target_object_id(hand: dict[str, Any], occlusion_vars_by_side: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
     """Choose a renderable occlusion-owner evidence target from final artifact fields.
 
@@ -2703,11 +2863,16 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                     draw_label(draw, (box[0], min(image.size[1] - 58, box[3] + 6)), "depth-fused mesh pose", small, (120, 255, 255), (0, 0, 0))
                     counts["reconstructed_geometry_pose_labels"] += 1
                 counts["object_boxes"] += 1
-            for part in obj.get("parts", [])[:4]:
+            for part_idx, part in enumerate(obj.get("parts", [])[:4]):
                 if isinstance(part, dict) and isinstance(part.get("part_mask_path"), str):
                     image = mask_overlay(image, str(part.get("part_mask_path")), (255, 230, 90), 0.22)
                     draw = ImageDraw.Draw(image)
                     counts["part_masks"] += 1
+                if isinstance(part, dict):
+                    part_recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
+                    if part_recon.get("renderable_part_pose_geometry") is True and box:
+                        draw_label(draw, (box[0], min(image.size[1] - 34, box[3] + 26 + 18 * part_idx)), "part depth-fused mesh pose", small, (255, 230, 90), (0, 0, 0))
+                        counts["part_reconstructed_geometry_pose_labels"] += 1
         for raw_hand in frame.get("hands", []):
             hand = require_dict(raw_hand, "hand")
             raw_video = require_dict(ann.get("raw_video", {}), "raw_video")
@@ -2837,6 +3002,18 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                     counts["world_reconstructed_mesh_footprints"] += 1
                     if recon.get("rigid_pose_supported_visible_mesh") is True:
                         counts["world_supported_rigid_mesh_poses"] += 1
+            part_mesh_drawn = 0
+            for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
+                if not isinstance(part, dict):
+                    continue
+                part_recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
+                if part_recon.get("renderable_part_pose_geometry") is not True:
+                    continue
+                part_anchor = (pt[0] + 16 + 18 * part_mesh_drawn, pt[1] + 34 + 10 * part_mesh_drawn)
+                if draw_anchored_part_mesh_glyph(draw, part_recon, part_anchor, (255, 230, 90)):
+                    draw_label(draw, (part_anchor[0] + 8, part_anchor[1] + 8), "part-mesh", small, (255, 230, 90), (18, 20, 25))
+                    counts["world_part_reconstructed_mesh_footprints"] += 1
+                    part_mesh_drawn += 1
             draw_label(draw, (pt[0]+10, pt[1]-10), str(obj.get("name"))[:36], small, color, (18, 20, 25))
             counts["world_objects"] += 1
         hand_points: dict[str, tuple[int, int]] = {}
@@ -3004,6 +3181,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_visible_geometry_archive"))
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
+    parser.add_argument("--part-depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_depth_fused_reconstruction"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_depth_fused_reconstruction"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
     parser.add_argument("--contact-ownership-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))

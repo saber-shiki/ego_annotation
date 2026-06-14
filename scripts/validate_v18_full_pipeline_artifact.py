@@ -93,6 +93,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(int(world_draw.get("world_pose_fill_gate_markers", 0)) > 0, f"{case}: world render drew no pose-fill gate markers")
     require(int(overlay_draw.get("reconstructed_geometry_pose_labels", 0)) > 0, f"{case}: overlay rendered no reconstructed geometry pose labels")
     require(int(world_draw.get("world_reconstructed_mesh_footprints", 0)) > 0, f"{case}: world render drew no reconstructed mesh footprints")
+    require(int(overlay_draw.get("part_reconstructed_geometry_pose_labels", 0)) > 0, f"{case}: overlay rendered no reconstructed part geometry pose labels")
+    require(int(world_draw.get("world_part_reconstructed_mesh_footprints", 0)) > 0, f"{case}: world render drew no reconstructed part mesh footprints")
 
     ann_path = Path(str(case_report.get("annotations")))
     ann_text = ann_path.read_text(encoding="utf-8")
@@ -145,6 +147,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "object_renderable_reconstructed_geometry_pose_rows": 0,
         "object_vertex_sample_rows": 0,
         "part_rows": 0,
+        "part_reconstructed_geometry_pose_rows": 0,
+        "part_renderable_reconstructed_geometry_pose_rows": 0,
         "contacts": 0,
         "contacts_with_final_metric_distance": 0,
         "contacts_with_hawor_support_weight": 0,
@@ -287,7 +291,18 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(isinstance(recon.get("mesh_path"), str) and Path(str(recon.get("mesh_path"))).exists(), f"{case}: reconstructed geometry mesh path missing")
                     require(isinstance(recon.get("world_bbox_corners_m"), list) and len(recon.get("world_bbox_corners_m")) == 8, f"{case}: reconstructed geometry pose missing render corners")
                     require(isinstance(recon.get("translation_world_m"), list) and len(recon.get("translation_world_m")) == 3, f"{case}: reconstructed geometry pose missing translation")
-            counts["part_rows"] += len(obj.get("parts") if isinstance(obj.get("parts"), list) else [])
+            for part in obj.get("parts") if isinstance(obj.get("parts"), list) else []:
+                if not isinstance(part, dict):
+                    continue
+                counts["part_rows"] += 1
+                part_recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else None
+                if isinstance(part_recon, dict):
+                    counts["part_reconstructed_geometry_pose_rows"] += 1
+                    if part_recon.get("renderable_part_pose_geometry") is True:
+                        counts["part_renderable_reconstructed_geometry_pose_rows"] += 1
+                        require(isinstance(part_recon.get("mesh_path"), str) and Path(str(part_recon.get("mesh_path"))).exists(), f"{case}: reconstructed part geometry mesh path missing")
+                        require(isinstance(part_recon.get("part_bbox_corners_camera_m"), list) and len(part_recon.get("part_bbox_corners_camera_m")) == 8, f"{case}: reconstructed part geometry pose missing render corners")
+                        require(isinstance(part_recon.get("translation_camera_m"), list) and len(part_recon.get("translation_camera_m")) == 3, f"{case}: reconstructed part geometry pose missing translation")
 
         for hyp in frame.get("contact_hypotheses", []) if isinstance(frame.get("contact_hypotheses"), list) else []:
             if not isinstance(hyp, dict):
@@ -349,6 +364,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["object_reconstructed_geometry_pose_rows"] == counts["object_states"], f"{case}: reconstructed geometry pose state missing on object rows")
     require(counts["object_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed mesh pose rows")
     require(counts["part_rows"] > 0, f"{case}: no part rows")
+    require(counts["part_reconstructed_geometry_pose_rows"] == counts["part_rows"], f"{case}: reconstructed part geometry pose state missing on part rows")
+    require(counts["part_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed part mesh pose rows")
     require(counts["factor_frames"] == expected, f"{case}: factor graph not present for every frame")
     require(counts["camera_depth_observed_rows"] > 0, f"{case}: no observed camera/depth correction rows")
     require(counts["contacts"] > 0, f"{case}: no contact hypotheses")
