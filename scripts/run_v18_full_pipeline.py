@@ -2044,6 +2044,27 @@ def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, A
         paths.append("rigid_visible_depth_silhouette_pose")
     if switch.get("surface_changing_pose_contact_claim_supported") is True and (validation.get("surface_changing_compact_visible_pose_supported") is True or recon.get("surface_changing_compact_pose_supported_visible_mesh") is True):
         paths.append("surface_changing_visible_depth_silhouette_pose")
+    elif switch.get("surface_changing_pose_contact_claim_supported") is True:
+        prior = switch.get("visual_contact_prior") if isinstance(switch.get("visual_contact_prior"), dict) else {}
+        observed_mask = validation.get("observed_projection_mask_support") if isinstance(validation.get("observed_projection_mask_support"), dict) else {}
+        observed_distance = validation.get("observed_to_predicted_distance_m") if isinstance(validation.get("observed_to_predicted_distance_m"), dict) else {}
+        observed_inside = finite_float(observed_mask.get("inside_mask_fraction"), float("nan"))
+        observed_median = finite_float(observed_distance.get("median"), float("nan"))
+        effective_distance = finite_float(switch.get("effective_metric_contact_distance_m"), float("nan"))
+        if prior.get("contact_prior_supported") is True and math.isfinite(effective_distance) and effective_distance <= 0.07 and math.isfinite(observed_inside) and observed_inside >= 0.80 and math.isfinite(observed_median) and observed_median <= 0.075 and switch.get("nonpenetration_conflict") is not True:
+            paths.append("surface_changing_local_visible_contact_surface")
+            switch["surface_changing_local_visible_contact_support"] = {
+                "method": "local_observed_surface_support_for_surface_changing_contact_under_partial_visibility",
+                "scope": "contact_support_only_not_full_object_pose_or_hidden_geometry_completion",
+                "observed_projection_inside_mask_fraction": float(observed_inside),
+                "min_observed_projection_inside_mask_fraction": 0.80,
+                "observed_to_predicted_median_m": float(observed_median),
+                "max_observed_to_predicted_median_m": 0.075,
+                "effective_metric_contact_distance_m": float(effective_distance),
+                "max_effective_metric_contact_distance_m": 0.07,
+                "visual_contact_prior_supported": True,
+                "nonpenetration_conflict": False,
+            }
     schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
     physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
     geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
@@ -2101,7 +2122,7 @@ def contact_mode_supported_distance(switch: dict[str, Any], support_paths: list[
         )
     if "deformable_same_frame_visible_surface" in support_paths or "deformable_same_frame_visible_surface_near_noncontact" in support_paths:
         candidates.append(finite_float(switch.get("final_metric_contact_distance_m"), float("nan")))
-    if "surface_changing_visible_depth_silhouette_pose" in support_paths or "rigid_visible_depth_silhouette_pose" in support_paths:
+    if "surface_changing_visible_depth_silhouette_pose" in support_paths or "surface_changing_local_visible_contact_surface" in support_paths or "rigid_visible_depth_silhouette_pose" in support_paths:
         candidates.extend(
             finite_float(switch.get(key), float("nan"))
             for key in ["final_metric_contact_distance_m", "coupled_object_metric_contact_distance_m", "effective_metric_contact_distance_m"]

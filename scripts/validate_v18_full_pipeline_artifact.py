@@ -292,8 +292,18 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 if row.get("surface_changing_pose_contact_claim_supported") is True:
                     obj = object_by_id.get(str(row.get("object_id")), {})
                     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
-                    require(validation.get("surface_changing_compact_visible_pose_supported") is True, f"{case}: active surface-changing contact lacks final object pose validation support")
-                    require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.12, f"{case}: active surface-changing contact is not near MANO/object geometry")
+                    row_support_paths = row.get("physical_contact_mode_support_paths") if isinstance(row.get("physical_contact_mode_support_paths"), list) else []
+                    has_compact_support = validation.get("surface_changing_compact_visible_pose_supported") is True and "surface_changing_visible_depth_silhouette_pose" in row_support_paths
+                    local_support = row.get("surface_changing_local_visible_contact_support") if isinstance(row.get("surface_changing_local_visible_contact_support"), dict) else {}
+                    has_local_support = "surface_changing_local_visible_contact_surface" in row_support_paths
+                    require(has_compact_support or has_local_support, f"{case}: active surface-changing contact lacks final compact or local visible-surface support")
+                    if has_local_support:
+                        require(row.get("visual_contact_prior_supported") is True, f"{case}: local surface-changing contact lacks visual prior")
+                        require(float(local_support.get("observed_projection_inside_mask_fraction") or 0.0) >= 0.80, f"{case}: local surface-changing contact lacks observed mask support")
+                        require(float(local_support.get("observed_to_predicted_median_m") or 999.0) <= 0.075, f"{case}: local surface-changing contact residual too high")
+                        require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.07, f"{case}: local surface-changing contact is outside close visual-prior band")
+                    else:
+                        require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.12, f"{case}: active surface-changing contact is not near MANO/object geometry")
                 if row.get("validated_part_pose_contact_claim_supported") is True:
                     obj = object_by_id.get(str(row.get("object_id")), {})
                     parts = obj.get("parts") if isinstance(obj, dict) and isinstance(obj.get("parts"), list) else []
