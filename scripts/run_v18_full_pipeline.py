@@ -1826,9 +1826,7 @@ def attach_object_depth_silhouette_pose_validation(frames: list[dict[str, Any]])
 
 
 def part_validation_supports_current_frame(validation: dict[str, Any]) -> bool:
-    if "frame_visible_depth_silhouette_pose_supported" in validation:
-        return validation.get("frame_visible_depth_silhouette_pose_supported") is True
-    return validation.get("visible_depth_silhouette_pose_supported") is True
+    return validation.get("frame_visible_depth_silhouette_pose_supported") is True
 
 
 def project_camera_points_to_mask(points_camera: np.ndarray, intrinsics_raw: Any, mask_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray] | None:
@@ -2091,6 +2089,30 @@ def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, A
     return paths
 
 
+def contact_mode_supported_distance(switch: dict[str, Any], support_paths: list[str]) -> float:
+    candidates: list[float] = []
+    if "validated_part_visible_depth_silhouette_pose" in support_paths:
+        candidates.extend(
+            finite_float(switch.get(key), float("nan"))
+            for key in ["final_validated_part_metric_contact_distance_m", "validated_part_metric_contact_distance_m"]
+        )
+    if "deformable_same_frame_visible_surface" in support_paths:
+        candidates.append(finite_float(switch.get("final_metric_contact_distance_m"), float("nan")))
+    if "surface_changing_visible_depth_silhouette_pose" in support_paths or "rigid_visible_depth_silhouette_pose" in support_paths:
+        candidates.extend(
+            finite_float(switch.get(key), float("nan"))
+            for key in ["final_metric_contact_distance_m", "coupled_object_metric_contact_distance_m", "effective_metric_contact_distance_m"]
+        )
+    finite_candidates = [v for v in candidates if math.isfinite(v)]
+    if finite_candidates:
+        return min(finite_candidates)
+    fallback_candidates = [
+        finite_float(switch.get(key), float("nan"))
+        for key in ["effective_metric_contact_distance_m", "final_metric_contact_distance_m", "validated_part_metric_contact_distance_m", "final_validated_part_metric_contact_distance_m"]
+    ]
+    return min((v for v in fallback_candidates if math.isfinite(v)), default=float("nan"))
+
+
 def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
     counts: Counter[str] = Counter()
     for frame in frames:
@@ -2103,8 +2125,7 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
                 continue
             obj = objects_by_id.get(str(switch.get("object_id")), {})
             support_paths = final_contact_support_paths_for_mode(frame, obj, switch) if isinstance(obj, dict) else []
-            distance_candidates = [finite_float(switch.get(key), float("nan")) for key in ["effective_metric_contact_distance_m", "final_metric_contact_distance_m", "validated_part_metric_contact_distance_m", "final_validated_part_metric_contact_distance_m"]]
-            near_distance = min((v for v in distance_candidates if math.isfinite(v)), default=float("nan"))
+            near_distance = contact_mode_supported_distance(switch, support_paths)
             near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
             active = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True and switch.get("support_gate_allows_active_contact") is True)
             if active:
@@ -4513,7 +4534,11 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             part_o = switch.get("validated_part_nearest_part_point_world_m")
             coupled_h = switch.get("coupled_object_nearest_hand_point_world_m")
             coupled_o = switch.get("coupled_object_nearest_object_point_world_m")
-            if raw_h is not None and raw_o is not None:
+            support_paths = switch.get("physical_contact_mode_support_paths") if isinstance(switch.get("physical_contact_mode_support_paths"), list) else []
+            if "validated_part_visible_depth_silhouette_pose" in support_paths and part_h is not None and part_o is not None:
+                hp = point_from_metric_anchor(part_h, metric_bounds, canvas_w, canvas_h)
+                op = point_from_metric_anchor(part_o, metric_bounds, canvas_w, canvas_h)
+            if (hp is None or op is None) and raw_h is not None and raw_o is not None:
                 hp = point_from_metric_anchor(raw_h, metric_bounds, canvas_w, canvas_h)
                 op = point_from_metric_anchor(raw_o, metric_bounds, canvas_w, canvas_h)
             if (hp is None or op is None) and part_h is not None and part_o is not None:
@@ -4522,13 +4547,11 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             if (hp is None or op is None) and coupled_h is not None and coupled_o is not None:
                 hp = point_from_metric_anchor(coupled_h, metric_bounds, canvas_w, canvas_h)
                 op = point_from_metric_anchor(coupled_o, metric_bounds, canvas_w, canvas_h)
-            if mode == "active_physical_contact":
-                if hp is None:
-                    hp = hand_points.get(str(switch.get("hand_side")))
-                if op is None:
-                    op = object_points.get(str(switch.get("object_id")))
-            elif hp is None or op is None:
-                counts["world_nonactive_contact_mode_missing_metric_endpoints"] += 1
+            if hp is None or op is None:
+                if mode == "active_physical_contact":
+                    counts["world_active_contact_missing_metric_endpoints"] += 1
+                else:
+                    counts["world_nonactive_contact_mode_missing_metric_endpoints"] += 1
                 continue
             if hp and op:
                 if dashed:

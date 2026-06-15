@@ -258,8 +258,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 require(row.get("estimate") is not True, f"{case}: supported near noncontact mode is active")
                 require(renderable_mode, f"{case}: supported near noncontact mode is not renderable")
                 require(row.get("depth_conflict_blocks_active_contact") is not True, f"{case}: supported near noncontact mode has depth conflict")
-                require(isinstance(row.get("physical_contact_mode_support_paths"), list) and len(row.get("physical_contact_mode_support_paths")) > 0, f"{case}: supported near noncontact mode lacks final support path")
+                support_paths = row.get("physical_contact_mode_support_paths") if isinstance(row.get("physical_contact_mode_support_paths"), list) else []
+                require(len(support_paths) > 0, f"{case}: supported near noncontact mode lacks final support path")
                 require(row.get("physical_contact_mode_nearest_distance_m") is not None and float(row.get("physical_contact_mode_nearest_distance_m")) <= 0.12, f"{case}: supported near noncontact mode is not near geometry")
+                if "validated_part_visible_depth_silhouette_pose" in support_paths:
+                    require(row.get("final_validated_part_metric_contact_distance_m") is not None, f"{case}: validated-part near mode missing final validated part distance")
+                    require(abs(float(row.get("physical_contact_mode_nearest_distance_m")) - float(row.get("final_validated_part_metric_contact_distance_m"))) < 1e-6, f"{case}: validated-part near mode distance does not match supported part distance")
+                    require(isinstance(row.get("validated_part_nearest_hand_point_world_m"), list) and len(row.get("validated_part_nearest_hand_point_world_m")) == 3, f"{case}: validated-part near mode missing metric hand endpoint")
+                    require(isinstance(row.get("validated_part_nearest_part_point_world_m"), list) and len(row.get("validated_part_nearest_part_point_world_m")) == 3, f"{case}: validated-part near mode missing metric part endpoint")
             elif renderable_mode:
                 raise AssertionError(f"{case}: unsupported physical_contact_mode is renderable: {mode}")
             if row.get("raw_estimate_before_hawor_support_gate") is True and row.get("estimate") is False and row_support_state != "observed_same_frame_detection":
@@ -528,6 +534,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["hand_contact_depth_order_occlusion_rows"] == counts["contact_physical_mode_depth_occluded_possible"], f"{case}: contact depth-order occlusion hand evidence does not match depth-occluded possible contact modes")
     require(int(overlay_draw.get("contact_lines", 0)) <= counts["active_contact_switch_vars"], f"{case}: overlay draws more contact lines than active physical contacts")
     require(int(world_draw.get("world_contact_edges", 0)) <= counts["active_contact_switch_vars"], f"{case}: world render draws more contact edges than active physical contacts")
+    require(int(world_draw.get("world_active_contact_missing_metric_endpoints", 0)) == 0, f"{case}: active contact world render is missing metric endpoints")
     require(int(overlay_draw.get("contact_depth_occluded_possible_lines", 0)) <= counts["contact_physical_mode_depth_occluded_possible"], f"{case}: overlay draws more depth-occluded possible contact lines than solved modes")
     require(int(overlay_draw.get("contact_supported_near_noncontact_lines", 0)) <= counts["contact_physical_mode_supported_near_noncontact"], f"{case}: overlay draws more supported-near lines than solved modes")
     require(int(world_draw.get("world_contact_depth_occluded_possible_lines", 0)) <= counts["contact_physical_mode_depth_occluded_possible"], f"{case}: world render draws more depth-occluded possible contact edges than solved modes")
