@@ -279,6 +279,14 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             if row.get("estimate") is True:
                 counts["active_contact_switch_vars"] += 1
                 require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks physical support flag")
+                if row.get("depth_contradiction") is True:
+                    prior = row.get("visual_contact_prior") if isinstance(row.get("visual_contact_prior"), dict) else {}
+                    require(row.get("depth_conflict_blocks_active_contact") is not True, f"{case}: active contact still has blocking depth conflict")
+                    require(row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active depth-contradicted contact lacks explicit visual-prior override")
+                    require(prior.get("contact_prior_supported") is True, f"{case}: active depth-contradicted contact lacks supported visual prior evidence")
+                    require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.07, f"{case}: visual-prior active contact is not in close metric band")
+                    require(float(row.get("mesh_contact_support_score") or 0.0) >= 0.90, f"{case}: visual-prior active contact lacks high mesh contact support")
+                    require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
                 support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True, row.get("deformable_visible_surface_contact_claim_supported") is True]
                 require(any(support_paths), f"{case}: active contact lacks rigid/part/surface-changing/deformable-surface support path")
                 if row.get("surface_changing_pose_contact_claim_supported") is True:
@@ -303,7 +311,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True, f"{case}: active deformable contact is not on deformable object")
                     require(isinstance(geom.get("world_vertices_sample_m"), list) and len(geom.get("world_vertices_sample_m")) > 0, f"{case}: active deformable contact lacks visible depth surface")
                     require(row.get("final_metric_contact_distance_m") is not None and float(row.get("final_metric_contact_distance_m")) <= 0.05, f"{case}: active deformable contact is not within 5cm same-frame visible surface band")
-                require(row.get("depth_contradiction") is not True, f"{case}: active contact has depth contradiction")
+                require(row.get("depth_contradiction") is not True or row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active contact has depth contradiction without visual-prior override")
                 if row_support_state != "observed_same_frame_detection":
                     counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
         occlusion_vars = vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else []

@@ -161,7 +161,12 @@ def validate_case(path: Path) -> dict[str, Any]:
                     if row.get("estimate") is True:
                         require(row.get("geometry_contact_evidence_available") is True, f"{case}: active contact lacks geometry evidence")
                         require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks supported rigid object or validated part pose")
-                        require(row.get("depth_contradiction") is not True, f"{case}: active contact has depth contradiction")
+                        if row.get("depth_contradiction") is True:
+                            prior = row.get("visual_contact_prior") if isinstance(row.get("visual_contact_prior"), dict) else {}
+                            require(row.get("depth_conflict_blocks_active_contact") is not True, f"{case}: active contact still has blocking depth conflict")
+                            require(row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active depth-contradicted contact lacks explicit visual-prior override")
+                            require(prior.get("contact_prior_supported") is True, f"{case}: active depth-contradicted contact lacks supported visual prior")
+                            require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
                         if row.get("deformable_visible_surface_contact_claim_supported") is True:
                             raw_distance = row.get("final_metric_contact_distance_m")
                             require(isinstance(raw_distance, (int, float)) and float(raw_distance) <= 0.05, f"{case}: deformable active contact uses non-same-frame/proxy distance")

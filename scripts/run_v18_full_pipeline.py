@@ -2130,10 +2130,27 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             support_paths = final_contact_support_paths_for_mode(frame, obj, switch) if isinstance(obj, dict) else []
             near_distance = contact_mode_supported_distance(switch, support_paths)
             near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
-            active = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True and switch.get("support_gate_allows_active_contact") is True)
+            final_support_allows_active = bool(near_supported)
+            switch["post_graph_final_support_paths_present"] = bool(support_paths)
+            switch["post_graph_final_support_allows_active_contact"] = bool(final_support_allows_active)
+            if "surface_changing_visible_depth_silhouette_pose" in support_paths:
+                switch["surface_changing_final_pose_supported_for_visual_prior"] = True
+            prior = switch.get("visual_contact_prior") if isinstance(switch.get("visual_contact_prior"), dict) else None
+            if prior is not None:
+                prior["post_graph_final_support_present"] = bool(support_paths)
+                prior["post_graph_final_support_allows_active_contact"] = bool(final_support_allows_active)
+                prior["post_graph_final_support_paths"] = list(support_paths)
+            if switch.get("estimate") is True and not final_support_allows_active:
+                switch["estimate_before_final_support_gate"] = True
+                switch["final_support_gate_demoted_active_contact"] = True
+                switch["final_support_gate_reason"] = "post_graph_object_or_part_support_path_missing_or_not_near"
+                switch["estimate"] = False
+            active = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True and switch.get("support_gate_allows_active_contact") is True and final_support_allows_active)
             if active:
                 mode = "active_physical_contact"
                 reason = "temporal_contact_switch_on_with_supported_physical_path_and_no_depth_conflict"
+                if switch.get("visual_contact_prior_overrode_weak_depth_conflict") is True:
+                    reason = "temporal_contact_switch_on_with_visual_contact_prior_close_metric_geometry_and_demoted_weak_depth_conflict"
                 renderable = True
             elif near_supported and switch.get("depth_conflict_blocks_active_contact") is True and switch.get("raw_estimate_before_physical_contact_gate") is True:
                 mode = "depth_occluded_contact_possible"
@@ -2164,6 +2181,11 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             counts[f"contact_physical_mode_{mode}"] += 1
             if renderable and mode != "active_physical_contact":
                 counts[f"renderable_nonactive_contact_mode_{mode}"] += 1
+        solution = fg.get("solution") if isinstance(fg.get("solution"), dict) else None
+        if solution is not None:
+            solution["active_contact_hypotheses"] = sum(1 for row in contact_switches if isinstance(row, dict) and row.get("estimate") is True)
+            solution["unresolved_or_contradicted_contact_hypotheses"] = sum(1 for row in contact_switches if isinstance(row, dict) and (row.get("depth_contradiction") or row.get("metric_depth_compatible_candidate") is False))
+            solution["active_contact_hypotheses_recomputed_after_final_support_modes"] = True
     return counts
 
 
@@ -3049,11 +3071,15 @@ def contact_switch_energy(
     rigid_pose_claim_supported = False
     part_pose_claim_supported = False
     surface_changing_pose_claim_supported = False
+    surface_changing_final_pose_supported = False
     deformable_visible_surface_contact_supported = False
     if isinstance(obj, dict):
         rigid_pose_claim_supported, _, _ = rigid_pose_support_from_schema(obj, obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}, object_graph_var)
         surface_allowed, _ = surface_changing_contact_pose_allowed(obj)
         surface_changing_pose_claim_supported = bool(surface_allowed and isinstance(object_graph_var, dict) and math.isfinite(effective_metric_contact_distance_m) and effective_metric_contact_distance_m <= 0.12)
+        validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
+        recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+        surface_changing_final_pose_supported = bool(validation.get("surface_changing_compact_visible_pose_supported") is True or recon.get("surface_changing_compact_pose_supported_visible_mesh") is True)
         deformable_allowed, _ = deformable_visible_surface_contact_allowed(obj)
         deformable_visible_surface_contact_supported = bool(deformable_allowed and math.isfinite(final_metric_distance_m) and final_metric_distance_m <= 0.05 and (mesh_support > 0.5 or final_metric_raw_support_from_same_frame > 0.70))
         part_pose_claim_supported = bool(validated_part_label is not None and math.isfinite(validated_part_distance_m) and validated_part_distance_m <= 0.12)
@@ -3062,6 +3088,19 @@ def contact_switch_energy(
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
     support_gate_allows_active_contact = hand_support_state == "observed_same_frame_detection"
     final_metric_support = final_metric_raw_support * hand_support_weight
+    preliminary_physical_support_for_visual_prior = bool(physical_contact_claim_supported)
+    visual_contact_prior_supported = bool(
+        image_contact
+        and coverage >= 0.75
+        and mesh_support >= 0.90
+        and math.isfinite(effective_metric_contact_distance_m)
+        and effective_metric_contact_distance_m <= 0.07
+        and geometry_far_contact_penalty <= 0.15
+        and preliminary_physical_support_for_visual_prior
+        and support_gate_allows_active_contact
+        and not nonpenetration_conflict
+    )
+    weak_depth_conflict_overridden_by_visual_prior = bool(depth_contradiction and visual_contact_prior_supported)
     image_support = max(iou, coverage, mesh_support, final_metric_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
     # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
     on_energy = (1.0 - image_support) ** 2 + dist_term
@@ -3101,7 +3140,7 @@ def contact_switch_energy(
     if missing_geometry_contact_penalty > 0.0:
         off_energy *= 0.5
     raw_switch_on_before_physical_gate = (on_energy < off_energy) and not nonpenetration_conflict
-    depth_conflict_blocks_active_contact = bool(depth_contradiction)
+    depth_conflict_blocks_active_contact = bool(depth_contradiction and not weak_depth_conflict_overridden_by_visual_prior)
     raw_switch_on = raw_switch_on_before_physical_gate and physical_contact_claim_supported and not depth_conflict_blocks_active_contact
     switch_on = raw_switch_on and support_gate_allows_active_contact
     return {
@@ -3116,7 +3155,25 @@ def contact_switch_energy(
         "rigid_pose_contact_claim_supported": bool(rigid_pose_claim_supported),
         "validated_part_pose_contact_claim_supported": bool(part_pose_claim_supported),
         "surface_changing_pose_contact_claim_supported": bool(surface_changing_pose_claim_supported),
+        "surface_changing_final_pose_supported_for_visual_prior": bool(surface_changing_final_pose_supported),
         "deformable_visible_surface_contact_claim_supported": bool(deformable_visible_surface_contact_supported),
+        "visual_contact_prior": {
+            "method": "bounded_v18_visual_contact_prior_from_image_contact_metric_geometry_and_nonpenetration_consistency",
+            "contact_prior_supported": bool(visual_contact_prior_supported),
+            "source": "image_contact_candidate_plus_metric_mano_object_surface_distance_not_standalone_contact_oracle",
+            "scope": "may_demote_weak_depth_order_veto_in_graph_only; final_active_contact_still_requires_post_graph_object_or_part_support_path",
+            "image_contact_candidate": bool(image_contact),
+            "min_box_coverage": float(coverage),
+            "mesh_contact_support_score": float(mesh_support),
+            "effective_metric_contact_distance_m": float(effective_metric_contact_distance_m) if math.isfinite(effective_metric_contact_distance_m) else None,
+            "max_supported_distance_m": 0.07,
+            "requires_preliminary_physical_support": True,
+            "preliminary_physical_support_present": bool(preliminary_physical_support_for_visual_prior),
+            "post_graph_final_support_still_required_for_active_claim": True,
+            "nonpenetration_conflict": bool(nonpenetration_conflict),
+        },
+        "visual_contact_prior_supported": bool(visual_contact_prior_supported),
+        "visual_contact_prior_overrode_weak_depth_conflict": bool(weak_depth_conflict_overridden_by_visual_prior),
         "support_gate_allows_active_contact": bool(support_gate_allows_active_contact),
         "support_gate_reason": "observed_same_frame_hawor_required_for_active_contact" if not support_gate_allows_active_contact else "observed_same_frame_hawor_support",
         "on_energy": float(on_energy),
@@ -3127,6 +3184,7 @@ def contact_switch_energy(
         "center_distance_norm": float(dist) if dist is not None else None,
         "depth_contradiction": bool(depth_contradiction),
         "depth_conflict_blocks_active_contact": bool(depth_conflict_blocks_active_contact),
+        "depth_conflict_resolution": "weak_depth_order_demoted_by_visual_contact_prior" if weak_depth_conflict_overridden_by_visual_prior else "depth_order_blocks_active_contact" if depth_conflict_blocks_active_contact else "no_depth_order_block",
         "metric_depth_compatible_candidate": depth_compatible,
         "mesh_contact_support_score": mesh_support,
         "final_metric_contact_support_score": float(final_metric_support),
