@@ -266,6 +266,10 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(abs(float(row.get("physical_contact_mode_nearest_distance_m")) - float(row.get("final_validated_part_metric_contact_distance_m"))) < 1e-6, f"{case}: validated-part near mode distance does not match supported part distance")
                     require(isinstance(row.get("validated_part_nearest_hand_point_world_m"), list) and len(row.get("validated_part_nearest_hand_point_world_m")) == 3, f"{case}: validated-part near mode missing metric hand endpoint")
                     require(isinstance(row.get("validated_part_nearest_part_point_world_m"), list) and len(row.get("validated_part_nearest_part_point_world_m")) == 3, f"{case}: validated-part near mode missing metric part endpoint")
+                if "deformable_same_frame_visible_surface_near_noncontact" in support_paths:
+                    require(row.get("final_metric_contact_distance_m") is not None, f"{case}: deformable near mode missing same-frame metric distance")
+                    require(0.05 < float(row.get("final_metric_contact_distance_m")) <= 0.12, f"{case}: deformable near mode is outside non-active near band")
+                    require(abs(float(row.get("physical_contact_mode_nearest_distance_m")) - float(row.get("final_metric_contact_distance_m"))) < 1e-6, f"{case}: deformable near mode distance does not match same-frame visible-surface distance")
             elif renderable_mode:
                 raise AssertionError(f"{case}: unsupported physical_contact_mode is renderable: {mode}")
             if row.get("raw_estimate_before_hawor_support_gate") is True and row.get("estimate") is False and row_support_state != "observed_same_frame_detection":

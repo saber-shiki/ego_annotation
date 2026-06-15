@@ -2044,13 +2044,16 @@ def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, A
         paths.append("rigid_visible_depth_silhouette_pose")
     if switch.get("surface_changing_pose_contact_claim_supported") is True and (validation.get("surface_changing_compact_visible_pose_supported") is True or recon.get("surface_changing_compact_pose_supported_visible_mesh") is True):
         paths.append("surface_changing_visible_depth_silhouette_pose")
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+    final_distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
+    has_deformable_surface = bool((physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True) and isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m") and math.isfinite(final_distance))
     if switch.get("deformable_visible_surface_contact_claim_supported") is True:
-        schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
-        physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
-        geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
-        final_distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
-        if (physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True) and isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m") and math.isfinite(final_distance) and final_distance <= 0.05:
+        if has_deformable_surface and final_distance <= 0.05:
             paths.append("deformable_same_frame_visible_surface")
+    elif has_deformable_surface and final_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True:
+        paths.append("deformable_same_frame_visible_surface_near_noncontact")
     hand = next((h for h in frame.get("hands", []) if isinstance(h, dict) and str(h.get("hand_side")) == str(switch.get("hand_side"))), None) if isinstance(frame.get("hands"), list) else None
     metric_state = hand.get("metric_mano_state") if isinstance(hand, dict) and isinstance(hand.get("metric_mano_state"), dict) else {}
     hand_camera = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
@@ -2096,7 +2099,7 @@ def contact_mode_supported_distance(switch: dict[str, Any], support_paths: list[
             finite_float(switch.get(key), float("nan"))
             for key in ["final_validated_part_metric_contact_distance_m", "validated_part_metric_contact_distance_m"]
         )
-    if "deformable_same_frame_visible_surface" in support_paths:
+    if "deformable_same_frame_visible_surface" in support_paths or "deformable_same_frame_visible_surface_near_noncontact" in support_paths:
         candidates.append(finite_float(switch.get("final_metric_contact_distance_m"), float("nan")))
     if "surface_changing_visible_depth_silhouette_pose" in support_paths or "rigid_visible_depth_silhouette_pose" in support_paths:
         candidates.extend(
