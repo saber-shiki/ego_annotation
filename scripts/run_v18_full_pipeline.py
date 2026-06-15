@@ -1995,6 +1995,127 @@ def attach_frame_local_part_pose_validation(frames: list[dict[str, Any]], part_p
     return counts
 
 
+def summarize_physical_contact_states(frames: list[dict[str, Any]]) -> dict[str, Any]:
+    active_by_variable: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+    counts: Counter[str] = Counter()
+    support_path_counts: Counter[str] = Counter()
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "contact summary frame_idx")
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        contact_switches = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
+        for switch in contact_switches:
+            if not isinstance(switch, dict):
+                continue
+            if switch.get("physical_contact_mode") != "active_physical_contact" or switch.get("estimate") is not True:
+                continue
+            variable_id = str(switch.get("variable_id"))
+            active_by_variable[variable_id].append((frame_idx, switch))
+            counts["active_frame_pair_states"] += 1
+            if switch.get("post_graph_direct_visible_or_validated_near_support") is True:
+                counts["active_frame_pair_states_with_direct_visible_or_validated_geometry"] += 1
+            if switch.get("post_graph_manipulation_episode_support") is True:
+                counts["active_frame_pair_states_with_manipulation_episode_support"] += 1
+            if switch.get("post_graph_manipulation_episode_support") is True and switch.get("post_graph_direct_visible_or_validated_near_support") is not True:
+                if switch.get("manipulation_contact_episode_frame_role") == "occluded_contact_patch_anchor":
+                    counts["active_frame_pair_states_with_local_occluded_contact_patch_anchor"] += 1
+                else:
+                    counts["active_frame_pair_states_with_bounded_short_gap_episode_inference"] += 1
+            if switch.get("nonpenetration_conflict") is True:
+                counts["active_frame_pair_states_with_nonpenetration_conflict"] += 1
+            distance = finite_float(switch.get("physical_contact_mode_nearest_distance_m"), float("nan"))
+            if math.isfinite(distance):
+                counts["active_frame_pair_states_with_visible_or_validated_surface_distance"] += 1
+                if distance <= 0.12:
+                    counts["active_frame_pair_states_with_near_visible_or_validated_surface_distance"] += 1
+            paths = switch.get("physical_contact_mode_support_paths") if isinstance(switch.get("physical_contact_mode_support_paths"), list) else []
+            for path in paths:
+                support_path_counts[str(path)] += 1
+    temporal_episodes: list[dict[str, Any]] = []
+    for variable_id, rows in sorted(active_by_variable.items()):
+        rows.sort(key=lambda item: item[0])
+        current: list[tuple[int, dict[str, Any]]] = []
+        prev_frame: int | None = None
+        for row in rows:
+            frame_idx = row[0]
+            if prev_frame is None or frame_idx == prev_frame + 1:
+                current.append(row)
+            else:
+                if current:
+                    temporal_episodes.append(contact_temporal_episode_summary(variable_id, current))
+                current = [row]
+            prev_frame = frame_idx
+        if current:
+            temporal_episodes.append(contact_temporal_episode_summary(variable_id, current))
+    counts["active_temporal_contact_episodes_consecutive"] = len(temporal_episodes)
+    return {
+        "semantics": {
+            "active_frame_pair_states": "count of solved active physical contact states for (frame, hand, object_or_part)",
+            "active_temporal_contact_episodes_consecutive": "count of consecutive-frame active-contact runs per hand-object variable; gaps split episodes",
+            "contact_geometry_evidence": "support-path, direct visible/validated anchors, local occluded-contact-patch anchors, and bounded nearest-anchor distances backing the active state; render lines are excluded",
+        },
+        "counts": dict(sorted(counts.items())),
+        "active_support_path_counts": dict(sorted(support_path_counts.items())),
+        "temporal_episodes": temporal_episodes,
+        "render_counts_excluded_from_contact_semantics": True,
+    }
+
+
+def contact_temporal_episode_summary(variable_id: str, rows: list[tuple[int, dict[str, Any]]]) -> dict[str, Any]:
+    start = rows[0][0]
+    end = rows[-1][0]
+    first_switch = rows[0][1]
+    paths: Counter[str] = Counter()
+    episode_ids = sorted({str(row[1].get("manipulation_contact_episode_id")) for row in rows if row[1].get("manipulation_contact_episode_id") is not None})
+    direct_count = 0
+    occluded_anchor_count = 0
+    bounded_bridge_count = 0
+    episode_count = 0
+    nearest_anchor_distances: list[int] = []
+    distances: list[float] = []
+    for _, switch in rows:
+        if switch.get("post_graph_direct_visible_or_validated_near_support") is True:
+            direct_count += 1
+        if switch.get("post_graph_manipulation_episode_support") is True:
+            episode_count += 1
+            if switch.get("manipulation_contact_episode_frame_role") == "occluded_contact_patch_anchor":
+                occluded_anchor_count += 1
+            elif switch.get("post_graph_direct_visible_or_validated_near_support") is not True:
+                bounded_bridge_count += 1
+        nearest_anchor_distance = switch.get("manipulation_contact_episode_nearest_anchor_frame_distance")
+        if isinstance(nearest_anchor_distance, int):
+            nearest_anchor_distances.append(nearest_anchor_distance)
+        for path in switch.get("physical_contact_mode_support_paths") if isinstance(switch.get("physical_contact_mode_support_paths"), list) else []:
+            paths[str(path)] += 1
+        distance = finite_float(switch.get("physical_contact_mode_nearest_distance_m"), float("nan"))
+        if math.isfinite(distance):
+            distances.append(distance)
+    out = {
+        "contact_variable_id": variable_id,
+        "hand_side": first_switch.get("hand_side"),
+        "object_id": first_switch.get("object_id"),
+        "start_frame_idx": int(start),
+        "end_frame_idx": int(end),
+        "frame_pair_state_count": len(rows),
+        "direct_visible_or_validated_geometry_frame_count": int(direct_count),
+        "local_occluded_contact_patch_anchor_frame_count": int(occluded_anchor_count),
+        "bounded_short_gap_episode_inference_frame_count": int(bounded_bridge_count),
+        "manipulation_episode_supported_frame_count": int(episode_count),
+        "manipulation_contact_episode_ids": episode_ids,
+        "support_path_counts": dict(sorted(paths.items())),
+        "scope": "physical_contact_temporal_episode_summary_not_render_count_with_bounded_anchor_distance",
+    }
+    if nearest_anchor_distances:
+        out["max_nearest_anchor_frame_distance"] = int(max(nearest_anchor_distances))
+        out["nearest_anchor_distance_semantics"] = "non-anchor episode frames must remain within the configured nearest-anchor bound"
+    if distances:
+        out["visible_or_validated_surface_distance_min_m"] = float(min(distances))
+        out["visible_or_validated_surface_distance_median_m"] = float(np.median(np.asarray(distances, dtype=np.float64)))
+        out["visible_or_validated_surface_distance_max_m"] = float(max(distances))
+        out["distance_semantics"] = "visible_or_validated_surface_distance; episode-supported frames may have occluded/unmodeled contact patches"
+    return out
+
+
 def attach_contact_depth_order_occlusion(frames: list[dict[str, Any]]) -> Counter[str]:
     counts: Counter[str] = Counter()
     for frame in frames:
@@ -2097,6 +2218,19 @@ def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, A
             paths.append("deformable_same_frame_visible_surface")
     elif has_deformable_surface and final_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True:
         paths.append("deformable_same_frame_visible_surface_near_noncontact")
+    if switch.get("manipulation_contact_episode_supported") is True and switch.get("support_gate_allows_active_contact") is True and switch.get("nonpenetration_conflict") is not True:
+        paths.append("manipulation_contact_episode_persistent_constraint")
+        switch["manipulation_contact_episode_final_support"] = {
+            "method": "directly_anchored_temporal_manipulation_contact_episode",
+            "episode_id": switch.get("manipulation_contact_episode_id"),
+            "frame_role": switch.get("manipulation_contact_episode_frame_role"),
+            "support_state": switch.get("manipulation_contact_episode_support_state"),
+            "anchor_frame_indices": switch.get("manipulation_contact_episode_anchor_frame_indices"),
+            "candidate_score": switch.get("manipulation_contact_episode_candidate_score"),
+            "visible_surface_distance_m": switch.get("effective_metric_contact_distance_m"),
+            "visible_surface_distance_interpretation": "not_required_to_be_near_when_the_contact_patch_is_occluded_or_unmodeled_inside_a_supported_manipulation_episode",
+            "scope": "contact_state_only_not_object_geometry_completion_not_hidden_pose_closure",
+        }
     hand = next((h for h in frame.get("hands", []) if isinstance(h, dict) and str(h.get("hand_side")) == str(switch.get("hand_side"))), None) if isinstance(frame.get("hands"), list) else None
     metric_state = hand.get("metric_mano_state") if isinstance(hand, dict) and isinstance(hand.get("metric_mano_state"), dict) else {}
     hand_camera = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
@@ -2172,10 +2306,14 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             obj = objects_by_id.get(str(switch.get("object_id")), {})
             support_paths = final_contact_support_paths_for_mode(frame, obj, switch) if isinstance(obj, dict) else []
             near_distance = contact_mode_supported_distance(switch, support_paths)
-            near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
-            final_support_allows_active = bool(near_supported)
+            episode_supported = "manipulation_contact_episode_persistent_constraint" in support_paths
+            direct_near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
+            near_supported = bool(direct_near_supported)
+            final_support_allows_active = bool(direct_near_supported or episode_supported)
             switch["post_graph_final_support_paths_present"] = bool(support_paths)
             switch["post_graph_final_support_allows_active_contact"] = bool(final_support_allows_active)
+            switch["post_graph_direct_visible_or_validated_near_support"] = bool(direct_near_supported)
+            switch["post_graph_manipulation_episode_support"] = bool(episode_supported)
             if "surface_changing_visible_depth_silhouette_pose" in support_paths:
                 switch["surface_changing_final_pose_supported_for_visual_prior"] = True
             prior = switch.get("visual_contact_prior") if isinstance(switch.get("visual_contact_prior"), dict) else None
@@ -2186,13 +2324,24 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             if switch.get("estimate") is True and not final_support_allows_active:
                 switch["estimate_before_final_support_gate"] = True
                 switch["final_support_gate_demoted_active_contact"] = True
-                switch["final_support_gate_reason"] = "post_graph_object_or_part_support_path_missing_or_not_near"
+                switch["final_support_gate_reason"] = "post_graph_object_or_part_support_path_missing_or_no_episode_support"
                 switch["estimate"] = False
-            active = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True and switch.get("support_gate_allows_active_contact") is True and final_support_allows_active)
+            active = bool(
+                switch.get("estimate") is True
+                and (switch.get("physical_contact_claim_supported") is True or episode_supported)
+                and (switch.get("depth_conflict_blocks_active_contact") is not True or episode_supported)
+                and switch.get("support_gate_allows_active_contact") is True
+                and final_support_allows_active
+                and switch.get("nonpenetration_conflict") is not True
+            )
             if active:
                 mode = "active_physical_contact"
                 reason = "temporal_contact_switch_on_with_supported_physical_path_and_no_depth_conflict"
-                if switch.get("visual_contact_prior_overrode_weak_depth_conflict") is True:
+                if episode_supported and not direct_near_supported:
+                    reason = "temporal_contact_switch_on_with_directly_anchored_manipulation_episode_contact_state"
+                elif episode_supported:
+                    reason = "temporal_contact_switch_on_with_direct_contact_anchor_inside_manipulation_episode"
+                elif switch.get("visual_contact_prior_overrode_weak_depth_conflict") is True:
                     reason = "temporal_contact_switch_on_with_visual_contact_prior_close_metric_geometry_and_demoted_weak_depth_conflict"
                 renderable = True
             elif near_supported and switch.get("depth_conflict_blocks_active_contact") is True and switch.get("raw_estimate_before_physical_contact_gate") is True:
@@ -2219,6 +2368,7 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             switch["physical_contact_mode_reason"] = reason
             switch["physical_contact_mode_support_paths"] = support_paths
             switch["physical_contact_mode_nearest_distance_m"] = float(near_distance) if math.isfinite(near_distance) else None
+            switch["physical_contact_mode_distance_semantics"] = "nearest_visible_or_validated_surface_distance_not_contact_patch_gap_for_episode_supported_frames" if episode_supported and not direct_near_supported else "supported_visible_or_validated_surface_distance"
             switch["physical_contact_mode_renderable"] = bool(renderable)
             switch["physical_contact_mode_scope"] = "active_contact_claim" if mode == "active_physical_contact" else "nonactive_uncertain_state_not_a_contact_claim" if renderable else "nonrendered_noncontact_or_unsupported_proposal"
             counts[f"contact_physical_mode_{mode}"] += 1
@@ -2733,13 +2883,21 @@ def compact_multiview_geometry_completion_assessment(obj: dict[str, Any], recon:
     supported_pose = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
     blockers: list[str] = []
     schema_eligible = bool(
-        (physical == "rigid" or schema.get("surface_change_without_pose_state") is True)
+        physical == "rigid"
+        and schema.get("surface_change_without_pose_state") is not True
         and schema.get("requires_part_or_relative_motion_model") is not True
         and schema.get("secondary_deformable_or_surface_component") is not True
-        and physical != "deformable"
     )
+    if physical != "rigid":
+        blockers.append("primary_physical_state_not_clean_rigid_compact")
+    if schema.get("surface_change_without_pose_state") is True:
+        blockers.append("surface_change_without_pose_model_not_compact_completion")
+    if schema.get("requires_part_or_relative_motion_model") is True:
+        blockers.append("part_or_relative_motion_model_required_not_compact_completion")
+    if schema.get("secondary_deformable_or_surface_component") is True or physical == "deformable":
+        blockers.append("deformable_or_secondary_surface_component_not_compact_completion")
     if not schema_eligible:
-        blockers.append("schema_not_compact_single_object_geometry")
+        blockers.append("schema_not_clean_rigid_compact_object_geometry")
     if not supported_pose:
         blockers.append("current_frame_visible_depth_silhouette_pose_not_supported")
     if source_frames < 100:
@@ -2768,7 +2926,7 @@ def compact_multiview_geometry_completion_assessment(obj: dict[str, Any], recon:
         "object_geometry_complete": bool(complete),
         "object_pose_requirement_met": bool(complete),
         "blockers": blockers,
-        "scope": "approximate_compact_multiview_depth_fused_object_mesh_pose_not_category_primitive_not_centroid",
+        "scope": "strict_clean_rigid_compact_multiview_depth_fused_object_mesh_pose_not_category_primitive_not_centroid_not_surface_changing_contact_support",
         "hidden_geometry_uncertainty": "remaining_unobserved_surfaces_are_approximated_by_multiview_depth_fused_poisson_or_hull_mesh_with_uncertainty" if complete else "not_enough_evidence_to_complete_hidden_geometry",
     }
 
@@ -3325,6 +3483,218 @@ def contact_switch_energy(
     }
 
 
+def contact_episode_candidate_score(switch: dict[str, Any]) -> tuple[float, bool, bool, str]:
+    evidence = switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}
+    image_contact = bool(evidence.get("pair_contact_image_candidate"))
+    image_overlap = bool(evidence.get("image_overlap_candidate"))
+    coverage = max(0.0, min(1.0, finite_float(switch.get("min_box_coverage"), 0.0)))
+    iou = max(0.0, min(1.0, finite_float(switch.get("image_iou"), 0.0)))
+    mesh_support = max(0.0, min(1.0, finite_float(switch.get("mesh_contact_support_score"), 0.0)))
+    metric_support = max(0.0, min(1.0, finite_float(switch.get("final_metric_contact_raw_distance_support_score"), 0.0)))
+    owner_support = 0.80 if switch.get("accepted_contact_owner") is True else 0.55 if switch.get("selected_contact_owner") is True else 0.0
+    cue_score = max(mesh_support, coverage, iou, metric_support, owner_support, 0.80 if image_contact else 0.0, 0.45 if image_overlap else 0.0)
+    observed_hand = switch.get("support_gate_allows_active_contact") is True
+    no_nonpenetration_conflict = switch.get("nonpenetration_conflict") is not True
+    depth_contradiction = switch.get("depth_contradiction") is True
+    candidate = bool(observed_hand and no_nonpenetration_conflict and (image_contact or mesh_support >= 0.70 or coverage >= 0.75) and cue_score >= 0.65)
+    effective_distance = finite_float(switch.get("effective_metric_contact_distance_m"), float("nan"))
+    direct_visible_anchor = bool(
+        candidate
+        and (
+            switch.get("visual_contact_prior_supported") is True
+            or switch.get("deformable_visible_surface_contact_claim_supported") is True
+            or switch.get("validated_part_pose_contact_claim_supported") is True
+            or (switch.get("physical_contact_claim_supported") is True and math.isfinite(effective_distance) and effective_distance <= 0.07 and mesh_support >= 0.50)
+        )
+    )
+    occluded_contact_patch_anchor = bool(
+        candidate
+        and not direct_visible_anchor
+        and image_contact
+        and coverage >= 0.90
+        and mesh_support >= 0.90
+        and switch.get("accepted_contact_owner") is True
+        and depth_contradiction
+    )
+    anchor = bool(direct_visible_anchor or occluded_contact_patch_anchor)
+    if direct_visible_anchor:
+        role = "direct_visible_or_validated_contact_anchor"
+    elif occluded_contact_patch_anchor:
+        role = "occluded_contact_patch_anchor"
+    elif candidate:
+        role = "bounded_episode_bridge_candidate"
+    else:
+        role = "not_episode_candidate"
+    return float(cue_score), candidate, anchor, role
+
+
+def nearest_anchor_frame_distance(frame_idx: int, anchor_frames: list[int]) -> int | None:
+    if not anchor_frames:
+        return None
+    return int(min(abs(frame_idx - anchor) for anchor in anchor_frames))
+
+
+def split_episode_rows_by_gap(
+    rows: list[tuple[int, int, dict[str, Any], float, bool, str]],
+    max_internal_gap_frames: int,
+) -> list[list[tuple[int, int, dict[str, Any], float, bool, str]]]:
+    intervals: list[list[tuple[int, int, dict[str, Any], float, bool, str]]] = []
+    current: list[tuple[int, int, dict[str, Any], float, bool, str]] = []
+    prev_frame: int | None = None
+    for row in rows:
+        frame_idx = row[1]
+        if prev_frame is None or frame_idx - prev_frame <= max_internal_gap_frames:
+            current.append(row)
+        else:
+            if current:
+                intervals.append(current)
+            current = [row]
+        prev_frame = frame_idx
+    if current:
+        intervals.append(current)
+    return intervals
+
+
+def annotate_manipulation_contact_episodes(
+    contact_switch_series: dict[str, list[tuple[int, dict[str, Any]]]],
+    max_internal_gap_frames: int,
+    max_nearest_anchor_distance_frames: int,
+) -> dict[str, Any]:
+    episode_counts: Counter[str] = Counter()
+    episode_summaries: list[dict[str, Any]] = []
+    for variable_id, raw_sequence in contact_switch_series.items():
+        sequence = sorted(raw_sequence, key=lambda item: item[0])
+        candidate_rows: list[tuple[int, int, dict[str, Any], float, bool, str]] = []
+        for seq_index, (frame_idx, switch) in enumerate(sequence):
+            score, candidate, anchor, role = contact_episode_candidate_score(switch)
+            switch["manipulation_contact_episode_candidate_score"] = float(score)
+            switch["manipulation_contact_episode_candidate"] = bool(candidate)
+            switch["manipulation_contact_episode_anchor"] = bool(anchor)
+            switch["manipulation_contact_episode_anchor_role"] = role if anchor else None
+            switch["manipulation_contact_episode_candidate_role"] = role
+            if candidate:
+                candidate_rows.append((seq_index, frame_idx, switch, score, anchor, role))
+        if not candidate_rows:
+            continue
+        coarse_intervals = split_episode_rows_by_gap(candidate_rows, max_internal_gap_frames)
+        for coarse_rows in coarse_intervals:
+            anchor_rows = [row for row in coarse_rows if row[4]]
+            if not anchor_rows:
+                continue
+            anchor_frames = [int(row[1]) for row in anchor_rows]
+            supported_rows: list[tuple[int, int, dict[str, Any], float, bool, str]] = []
+            for row in coarse_rows:
+                frame_idx = int(row[1])
+                nearest_distance = nearest_anchor_frame_distance(frame_idx, anchor_frames)
+                row[2]["manipulation_contact_episode_nearest_anchor_frame_distance"] = nearest_distance
+                row[2]["manipulation_contact_episode_max_nearest_anchor_distance_frames"] = int(max_nearest_anchor_distance_frames)
+                if nearest_distance is not None and nearest_distance <= max_nearest_anchor_distance_frames:
+                    supported_rows.append(row)
+            if not supported_rows:
+                continue
+            for rows in split_episode_rows_by_gap(supported_rows, max_internal_gap_frames):
+                anchors = [row for row in rows if row[4]]
+                if not anchors:
+                    continue
+                start = rows[0][1]
+                end = rows[-1][1]
+                episode_id = f"{variable_id}::episode::{start:06d}-{end:06d}"
+                scores = [row[3] for row in rows]
+                local_anchor_frames = [int(row[1]) for row in anchors]
+                direct_visible_anchor_frames = [int(row[1]) for row in anchors if row[5] == "direct_visible_or_validated_contact_anchor"]
+                occluded_anchor_frames = [int(row[1]) for row in anchors if row[5] == "occluded_contact_patch_anchor"]
+                max_gap = 0
+                max_nearest_anchor_distance = 0
+                for prev, curr in zip(rows, rows[1:]):
+                    max_gap = max(max_gap, curr[1] - prev[1])
+                for _, frame_idx, switch, _, _, _ in rows:
+                    nearest_distance = nearest_anchor_frame_distance(int(frame_idx), local_anchor_frames)
+                    if nearest_distance is not None:
+                        max_nearest_anchor_distance = max(max_nearest_anchor_distance, nearest_distance)
+                        switch["manipulation_contact_episode_nearest_anchor_frame_distance"] = int(nearest_distance)
+                summary = {
+                    "episode_id": episode_id,
+                    "contact_variable_id": variable_id,
+                    "start_frame_idx": int(start),
+                    "end_frame_idx": int(end),
+                    "frame_pair_state_count": len(rows),
+                    "anchor_frame_indices": [int(v) for v in local_anchor_frames],
+                    "direct_visible_or_validated_anchor_frame_indices": [int(v) for v in direct_visible_anchor_frames],
+                    "occluded_contact_patch_anchor_frame_indices": [int(v) for v in occluded_anchor_frames],
+                    "anchor_count": len(local_anchor_frames),
+                    "direct_visible_or_validated_anchor_count": len(direct_visible_anchor_frames),
+                    "occluded_contact_patch_anchor_count": len(occluded_anchor_frames),
+                    "max_internal_gap_frames": int(max_gap),
+                    "max_nearest_anchor_distance_frames": int(max_nearest_anchor_distance),
+                    "allowed_max_nearest_anchor_distance_frames": int(max_nearest_anchor_distance_frames),
+                    "candidate_score_min": float(min(scores)),
+                    "candidate_score_median": float(np.median(np.asarray(scores, dtype=np.float64))),
+                    "candidate_score_max": float(max(scores)),
+                    "mechanism": "local_contact_anchors_plus_bounded_short_gap_episode_persistence",
+                    "scope": "contact_state_only_not_object_geometry_completion_or_hidden_pose_closure",
+                }
+                episode_summaries.append(summary)
+                episode_counts["manipulation_contact_episode_count"] += 1
+                episode_counts["manipulation_contact_episode_frame_pair_states"] += len(rows)
+                episode_counts["manipulation_contact_episode_anchor_frames"] += len(local_anchor_frames)
+                episode_counts["manipulation_contact_episode_direct_visible_anchor_frames"] += len(direct_visible_anchor_frames)
+                episode_counts["manipulation_contact_episode_occluded_patch_anchor_frames"] += len(occluded_anchor_frames)
+                for _, frame_idx, switch, score, anchor, role in rows:
+                    effective_distance = finite_float(switch.get("effective_metric_contact_distance_m"), float("nan"))
+                    visible_surface_distance_state = "visible_surface_distance_unavailable"
+                    if math.isfinite(effective_distance):
+                        visible_surface_distance_state = "direct_visible_surface_near_contact" if effective_distance <= 0.12 else "visible_surface_not_the_contact_patch_or_alignment_uncertain"
+                    depth_state = "depth_contradicted_or_contact_patch_occluded" if switch.get("depth_contradiction") is True else "no_depth_order_block"
+                    nearest_distance = nearest_anchor_frame_distance(int(frame_idx), local_anchor_frames)
+                    switch["manipulation_contact_episode_supported"] = True
+                    switch["manipulation_contact_episode_id"] = episode_id
+                    switch["manipulation_contact_episode_start_frame_idx"] = int(start)
+                    switch["manipulation_contact_episode_end_frame_idx"] = int(end)
+                    switch["manipulation_contact_episode_anchor_frame_indices"] = [int(v) for v in local_anchor_frames]
+                    switch["manipulation_contact_episode_direct_visible_or_validated_anchor_frame_indices"] = [int(v) for v in direct_visible_anchor_frames]
+                    switch["manipulation_contact_episode_occluded_contact_patch_anchor_frame_indices"] = [int(v) for v in occluded_anchor_frames]
+                    switch["manipulation_contact_episode_nearest_anchor_frame_distance"] = int(nearest_distance) if nearest_distance is not None else None
+                    switch["manipulation_contact_episode_max_nearest_anchor_distance_frames"] = int(max_nearest_anchor_distance_frames)
+                    switch["manipulation_contact_episode_frame_role"] = role if anchor else "bounded_episode_bridge_candidate"
+                    if role == "direct_visible_or_validated_contact_anchor":
+                        support_state = "direct_visible_or_validated_contact_anchor"
+                    elif role == "occluded_contact_patch_anchor":
+                        support_state = "local_occluded_contact_patch_anchor"
+                    else:
+                        support_state = "bounded_short_gap_contact_persistence_from_nearby_anchor"
+                    switch["manipulation_contact_episode_support_state"] = support_state
+                    switch["manipulation_contact_episode_evidence"] = {
+                        "episode_id": episode_id,
+                        "candidate_score": float(score),
+                        "anchor": bool(anchor),
+                        "anchor_role": role if anchor else None,
+                        "anchor_frame_indices": [int(v) for v in local_anchor_frames],
+                        "direct_visible_or_validated_anchor_frame_indices": [int(v) for v in direct_visible_anchor_frames],
+                        "occluded_contact_patch_anchor_frame_indices": [int(v) for v in occluded_anchor_frames],
+                        "nearest_anchor_frame_distance": int(nearest_distance) if nearest_distance is not None else None,
+                        "max_nearest_anchor_distance_frames": int(max_nearest_anchor_distance_frames),
+                        "visible_surface_distance_state": visible_surface_distance_state,
+                        "depth_order_state": depth_state,
+                        "occluded_contact_patch_anchor_supported": bool(role == "occluded_contact_patch_anchor"),
+                        "support_gate_allows_active_contact": bool(switch.get("support_gate_allows_active_contact") is True),
+                        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+                        "mechanism": "contact state is local to direct visible anchors or high-confidence occluded contact-patch anchors, with only short bounded gap persistence",
+                        "scope": "physical_contact_state_variable_not_render_count_not_full_object_pose_or_hidden_geometry_completion",
+                    }
+                    episode_on = 0.08 + 0.42 * (1.0 - max(0.0, min(1.0, score))) ** 2
+                    if anchor:
+                        episode_on *= 0.55
+                    switch["manipulation_contact_episode_on_energy"] = float(episode_on)
+                    switch["manipulation_contact_episode_off_penalty"] = float(0.55 + 0.45 * max(0.0, min(1.0, score)))
+                    switch["manipulation_contact_episode_temporal_max_internal_gap_frames"] = int(max_internal_gap_frames)
+                    if switch.get("depth_conflict_blocks_active_contact") is True:
+                        switch["depth_conflict_blocks_active_contact_before_episode_support"] = True
+                        switch["depth_conflict_blocks_active_contact"] = False
+                        switch["depth_conflict_resolution"] = "local_contact_anchor_or_bounded_gap_persistence_through_occluded_or_unmodeled_contact_patch"
+                    episode_counts["manipulation_contact_episode_supported_switches"] += 1
+    return {"counts": dict(sorted(episode_counts.items())), "episodes": episode_summaries}
+
+
 def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
     occlusion = hand.get("occlusion_owner_hypothesis")
     if not isinstance(occlusion, dict):
@@ -3439,7 +3809,7 @@ def solve_v18_factor_graph(
     part_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     articulation_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     per_frame_terms: dict[int, dict[str, Any]] = defaultdict(lambda: {
-        "variables": {"camera_depth_correction": [], "hand_state": [], "object_se3": [], "part_se3": [], "articulation_parameter": [], "contact_switch": [], "occlusion_owner": []},
+        "variables": {"camera_depth_correction": [], "hand_state": [], "object_se3": [], "part_se3": [], "articulation_parameter": [], "contact_switch": [], "contact_episode": [], "occlusion_owner": []},
         "factor_energy_initial": defaultdict(float),
         "factor_energy_after": defaultdict(float),
         "factor_counts": Counter(),
@@ -3635,6 +4005,8 @@ def solve_v18_factor_graph(
     contact_temporal_energy_after_total = 0.0
     contact_temporal_switch_penalty = 0.18
     contact_temporal_max_gap_frames = 30
+    contact_episode_max_internal_gap_frames = 5
+    contact_episode_max_nearest_anchor_distance_frames = 10
     for frame in frames:
         frame_idx = require_int(frame.get("frame_idx"), "graph frame_idx")
         hands = hand_lookup_by_frame.get(frame_idx, {})
@@ -3700,22 +4072,53 @@ def solve_v18_factor_graph(
             if owner.get("owner_supported_by_depth_evidence") is True or owner.get("accepted_owner") is True:
                 accepted_owner_count += 1
 
+    contact_episode_summary = annotate_manipulation_contact_episodes(contact_switch_series, contact_episode_max_internal_gap_frames, contact_episode_max_nearest_anchor_distance_frames)
+    contact_episode_counts = contact_episode_summary.get("counts") if isinstance(contact_episode_summary.get("counts"), dict) else {}
     for variable_id, sequence in contact_switch_series.items():
         sequence.sort(key=lambda item: item[0])
+        episode_frames = [item for item in sequence if item[1].get("manipulation_contact_episode_supported") is True]
+        if episode_frames:
+            for frame_idx, switch in episode_frames:
+                terms = per_frame_terms[frame_idx]
+                episode_var = {
+                    "variable_id": str(switch.get("manipulation_contact_episode_id")),
+                    "contact_switch_variable_id": variable_id,
+                    "hand_side": switch.get("hand_side"),
+                    "object_id": switch.get("object_id"),
+                    "estimate": True,
+                    "frame_idx": int(frame_idx),
+                    "frame_role": switch.get("manipulation_contact_episode_frame_role"),
+                    "support_state": switch.get("manipulation_contact_episode_support_state"),
+                    "candidate_score": switch.get("manipulation_contact_episode_candidate_score"),
+                    "anchor_frame_indices": switch.get("manipulation_contact_episode_anchor_frame_indices"),
+                    "nearest_anchor_frame_distance": switch.get("manipulation_contact_episode_nearest_anchor_frame_distance"),
+                    "max_nearest_anchor_distance_frames": switch.get("manipulation_contact_episode_max_nearest_anchor_distance_frames"),
+                    "scope": "per_frame_physical_contact_episode_state_not_render_count_not_object_geometry_completion",
+                }
+                terms["variables"]["contact_episode"].append(episode_var)
+                terms["factor_counts"]["contact_episode_persistence"] += 1
+                factor_counts["contact_episode_persistence"] += 1
+                variable_counts["contact_episode"] += 1
         if not sequence:
             continue
         off_costs: list[float] = []
         on_costs: list[float] = []
         for _, switch in sequence:
-            off_costs.append(finite_float(switch.get("off_energy"), 0.0))
+            episode_supported = switch.get("manipulation_contact_episode_supported") is True
+            off_energy = finite_float(switch.get("off_energy"), 0.0)
+            if episode_supported:
+                off_energy += finite_float(switch.get("manipulation_contact_episode_off_penalty"), 0.0)
+            off_costs.append(off_energy)
             on_energy = finite_float(switch.get("on_energy"), 0.0)
+            if episode_supported:
+                on_energy = min(on_energy, finite_float(switch.get("manipulation_contact_episode_on_energy"), on_energy))
             if switch.get("nonpenetration_conflict") is True:
                 on_energy += 1e6
             if switch.get("support_gate_allows_active_contact") is not True:
                 on_energy += 1e6
-            if switch.get("physical_contact_claim_supported") is not True:
+            if switch.get("physical_contact_claim_supported") is not True and not episode_supported:
                 on_energy += 1e6
-            if switch.get("depth_conflict_blocks_active_contact") is True:
+            if switch.get("depth_conflict_blocks_active_contact") is True and not episode_supported:
                 on_energy += 1e6
             on_costs.append(on_energy)
         dp_off = [off_costs[0]]
@@ -3756,9 +4159,16 @@ def solve_v18_factor_graph(
             if i > 0 and isinstance(frame_gap, int) and transition_applied and prev_state is not None and prev_state != state:
                 temporal_energy = contact_temporal_switch_penalty / float(max(1, frame_gap))
                 contact_temporal_switch_count += 1
-            chosen_energy = finite_float(switch.get("on_energy" if state else "off_energy"), 0.0)
-            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True and switch.get("physical_contact_claim_supported") is True and switch.get("depth_conflict_blocks_active_contact") is not True)
-            switch["chosen_energy"] = chosen_energy if switch["estimate"] else finite_float(switch.get("off_energy"), 0.0)
+            episode_supported = switch.get("manipulation_contact_episode_supported") is True
+            chosen_on_energy = finite_float(switch.get("on_energy"), 0.0)
+            if episode_supported:
+                chosen_on_energy = min(chosen_on_energy, finite_float(switch.get("manipulation_contact_episode_on_energy"), chosen_on_energy))
+            chosen_off_energy = finite_float(switch.get("off_energy"), 0.0)
+            if episode_supported:
+                chosen_off_energy += finite_float(switch.get("manipulation_contact_episode_off_penalty"), 0.0)
+            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True and (switch.get("physical_contact_claim_supported") is True or episode_supported) and (switch.get("depth_conflict_blocks_active_contact") is not True or episode_supported))
+            chosen_energy = chosen_on_energy if switch["estimate"] else chosen_off_energy
+            switch["chosen_energy"] = chosen_energy
             switch["temporal_contact_variable_id"] = variable_id
             switch["temporal_contact_previous_frame_gap"] = frame_gap
             switch["temporal_contact_transition_applied"] = transition_applied
@@ -3801,6 +4211,7 @@ def solve_v18_factor_graph(
                 "part_se3": terms["variables"]["part_se3"],
                 "articulation_parameter": terms["variables"]["articulation_parameter"],
                 "contact_switch": contact_switches,
+                "contact_episode": terms["variables"]["contact_episode"],
                 "occlusion_owner": occlusion_owners,
             },
             "factors": dict(sorted(terms["factor_counts"].items())),
@@ -3825,14 +4236,15 @@ def solve_v18_factor_graph(
         }
     summary = {
         "solver": "v18_numerical_temporal_factor_graph_v1",
-        "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "articulation_parameter", "contact_switch", "occlusion_owner"],
+        "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "articulation_parameter", "contact_switch", "contact_episode", "occlusion_owner"],
         "implemented_variable_status": {
             "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
             "hand_state": "HaWoR_metric_MANO_wrist_world_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_contact_object_pose_coupling_when_rigid_and_supported",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_contact_part_pose_coupling_when_part_mesh_and_observed_mano_are_near",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
-            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_coupled_object_pose_coupled_part_pose_and_physical_contact_claim_support_gate",
+            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_coupled_object_pose_coupled_part_pose_direct_support_or_episode_support_gate",
+            "contact_episode": "directly_anchored_temporal_manipulation_contact_episode_state_for_contact_persistence_not_geometry_completion",
             "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence",
         },
         "implemented_factor_families": [
@@ -3842,19 +4254,20 @@ def solve_v18_factor_graph(
             "visible_part_surface_pose_observation_residual",
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
-            "contact_overlap_depth_mesh_distance_owner_graph_energy_with_physical_contact_claim_support_gate",
+            "contact_overlap_depth_mesh_distance_owner_graph_energy_with_direct_or_episode_physical_contact_support_gate",
             "contact_object_pose_anchor_factor_for_rigid_supported_mano_object_surface_proposals",
             "contact_object_nonpenetration_repel_factor_for_rigid_supported_local_conflicts",
             "contact_part_pose_anchor_factor_for_observed_mano_to_depth_fused_part_mesh_proposals",
             "contact_local_nonpenetration_factor_from_signed_normal_and_nearest_triangle_evidence",
             "contact_switch_temporal_continuity_factor",
+            "contact_episode_persistence_factor_from_direct_anchor_and_continuous_manipulation_evidence",
             "occlusion_owner_box_mesh_depth_temporal_candidate_energy",
         ],
         "spec_factor_gaps_remaining": [
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
             "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration_and_contact_object_coupling_for_eligible_rigid_contacts",
             "part_SE3_uses_visible_surface_PCA_geometry_contact_part_pose_coupling_and_occlusion_uncertainty",
-            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_coupled_object_or_part_pose_evidence_and_blocks_active_claims_without_supported_object_or_part_pose",
+            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_coupled_object_or_part_pose_evidence_and_blocks_active_claims_without_direct_support_or_episode_support",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),
@@ -3875,6 +4288,8 @@ def solve_v18_factor_graph(
         "articulation_sources": articulation_sources,
         "solution_counts": {
             "active_contact_switches": active_contact_count,
+            "contact_episode_summary": contact_episode_summary,
+            "contact_episode_counts": contact_episode_counts,
             "contact_temporal_switch_count": contact_temporal_switch_count,
             "contact_temporal_energy_after": contact_temporal_energy_after_total,
             "unresolved_or_depth_contradicted_contacts": unresolved_contact_count,
@@ -4172,9 +4587,11 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
     object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
     contact_physical_mode_counts = attach_contact_physical_modes(frames)
+    physical_contact_state_report = summarize_physical_contact_states(frames)
     contact_depth_order_occlusion_counts = attach_contact_depth_order_occlusion(frames)
     factor_graph_summary["frame_local_part_pose_graph_counts"] = dict(sorted(frame_local_part_pose_graph_counts.items()))
     factor_graph_summary["contact_physical_mode_counts"] = dict(sorted(contact_physical_mode_counts.items()))
+    factor_graph_summary["physical_contact_state_report"] = physical_contact_state_report
     factor_graph_summary["contact_depth_order_occlusion_counts"] = dict(sorted(contact_depth_order_occlusion_counts.items()))
     module_counts.update(reconstructed_geometry_counts)
     module_counts.update(frame_local_part_pose_graph_counts)
@@ -4425,6 +4842,8 @@ def hand_render_style(hand: dict[str, Any]) -> tuple[tuple[int, int, int], str, 
 def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], str, int, bool, str] | None:
     mode = str(switch.get("physical_contact_mode") or "")
     if mode == "active_physical_contact":
+        if switch.get("post_graph_manipulation_episode_support") is True and switch.get("post_graph_direct_visible_or_validated_near_support") is not True:
+            return (255, 255, 80), "active contact episode", 2, True, "contact_lines"
         return (255, 255, 80), "active physical contact", 2, False, "contact_lines"
     if mode == "depth_occluded_contact_possible" and switch.get("physical_contact_mode_renderable") is True:
         return (80, 220, 255), "depth-occluded contact possible", 2, True, "contact_depth_occluded_possible_lines"
@@ -4681,6 +5100,16 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                 continue
             color, _label, width, dashed, count_key = style
             mode = str(switch.get("physical_contact_mode") or "")
+            episode_only = bool(mode == "active_physical_contact" and switch.get("post_graph_manipulation_episode_support") is True and switch.get("post_graph_direct_visible_or_validated_near_support") is not True)
+            if episode_only:
+                hp_episode = hand_points.get(str(switch.get("hand_side")))
+                op_episode = object_points.get(str(switch.get("object_id")))
+                if hp_episode is not None and op_episode is not None:
+                    draw_segmented_line(draw, hp_episode, op_episode, fill=color, width=width)
+                    counts["world_contact_episode_state_edges"] += 1
+                else:
+                    counts["world_contact_episode_state_missing_anchors"] += 1
+                continue
             hp = None
             op = None
             raw_h = switch.get("raw_metric_nearest_hand_point_world_m")
@@ -4744,7 +5173,7 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                 counts["world_pose_fill_gate_markers"] += 1
         sol = require_dict(fg.get("solution"), "factor graph solution")
         summary = (
-            f"V18 graph overlay: contact candidates={sol.get('active_contact_hypotheses')} "
+            f"V18 graph overlay: active contact states={sol.get('active_contact_hypotheses')} "
             f"unresolved={sol.get('unresolved_or_contradicted_contact_hypotheses')} | approximate/uncertain"
         )
         draw_label(draw, (14, 52), summary, small, (255, 255, 255), (0, 0, 0))

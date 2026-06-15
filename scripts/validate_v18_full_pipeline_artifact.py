@@ -122,6 +122,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     ann = json.loads(ann_text)
     frames = ann.get("frames")
     require(isinstance(frames, list) and len(frames) == expected, f"{case}: annotation frame count mismatch")
+    factor_graph_summary = ann.get("factor_graph_summary") if isinstance(ann.get("factor_graph_summary"), dict) else {}
+    physical_contact_state_report = factor_graph_summary.get("physical_contact_state_report") if isinstance(factor_graph_summary.get("physical_contact_state_report"), dict) else {}
 
     modules_raw = ann.get("modules")
     modules: dict[str, Any] = modules_raw if isinstance(modules_raw, dict) else {}
@@ -280,17 +282,43 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 counts["raw_contact_switches_gated_by_physical_support"] += 1
             if row.get("estimate") is True:
                 counts["active_contact_switch_vars"] += 1
-                require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks physical support flag")
+                row_support_paths = row.get("physical_contact_mode_support_paths") if isinstance(row.get("physical_contact_mode_support_paths"), list) else []
+                episode_support = bool(row.get("post_graph_manipulation_episode_support") is True and "manipulation_contact_episode_persistent_constraint" in row_support_paths)
+                direct_support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True, row.get("deformable_visible_surface_contact_claim_supported") is True]
+                require(row.get("physical_contact_claim_supported") is True or episode_support, f"{case}: active contact lacks direct support or manipulation-episode support")
+                if episode_support:
+                    episode = row.get("manipulation_contact_episode_final_support") if isinstance(row.get("manipulation_contact_episode_final_support"), dict) else {}
+                    episode_evidence = row.get("manipulation_contact_episode_evidence") if isinstance(row.get("manipulation_contact_episode_evidence"), dict) else {}
+                    require(row.get("manipulation_contact_episode_supported") is True, f"{case}: active episode contact lacks episode support flag")
+                    require(isinstance(row.get("manipulation_contact_episode_anchor_frame_indices"), list) and len(row.get("manipulation_contact_episode_anchor_frame_indices")) > 0, f"{case}: active episode contact lacks local anchor frames")
+                    require(float(row.get("manipulation_contact_episode_candidate_score") or 0.0) >= 0.65, f"{case}: active episode contact lacks strong manipulation candidate score")
+                    nearest_anchor_distance = row.get("manipulation_contact_episode_nearest_anchor_frame_distance")
+                    max_anchor_distance = int(row.get("manipulation_contact_episode_max_nearest_anchor_distance_frames") or 0)
+                    require(isinstance(nearest_anchor_distance, int) and max_anchor_distance > 0 and nearest_anchor_distance <= max_anchor_distance, f"{case}: active episode contact is not locally bounded by an anchor")
+                    role = str(row.get("manipulation_contact_episode_frame_role") or "")
+                    require(role in {"direct_visible_or_validated_contact_anchor", "occluded_contact_patch_anchor", "bounded_episode_bridge_candidate"}, f"{case}: active episode contact has invalid frame role {role!r}")
+                    if role == "occluded_contact_patch_anchor":
+                        require(episode_evidence.get("occluded_contact_patch_anchor_supported") is True, f"{case}: occluded contact anchor lacks evidence flag")
+                        require(row.get("depth_contradiction") is True, f"{case}: occluded contact anchor lacks depth/contact-patch occlusion state")
+                        require(row.get("accepted_contact_owner") is True, f"{case}: occluded contact anchor lacks accepted contact-owner support")
+                        require(float(row.get("min_box_coverage") or 0.0) >= 0.90, f"{case}: occluded contact anchor lacks high box coverage")
+                        require(float(row.get("mesh_contact_support_score") or 0.0) >= 0.90, f"{case}: occluded contact anchor lacks high mesh contact support")
+                    if role == "bounded_episode_bridge_candidate":
+                        require(nearest_anchor_distance > 0, f"{case}: bridge candidate cannot be zero-distance anchor")
+                    require(episode.get("scope") == "contact_state_only_not_object_geometry_completion_not_hidden_pose_closure", f"{case}: active episode support scope overclaims")
+                    require(row.get("nonpenetration_conflict") is not True, f"{case}: episode contact overrode nonpenetration conflict")
                 if row.get("depth_contradiction") is True:
                     prior = row.get("visual_contact_prior") if isinstance(row.get("visual_contact_prior"), dict) else {}
                     require(row.get("depth_conflict_blocks_active_contact") is not True, f"{case}: active contact still has blocking depth conflict")
-                    require(row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active depth-contradicted contact lacks explicit visual-prior override")
-                    require(prior.get("contact_prior_supported") is True, f"{case}: active depth-contradicted contact lacks supported visual prior evidence")
-                    require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.07, f"{case}: visual-prior active contact is not in close metric band")
-                    require(float(row.get("mesh_contact_support_score") or 0.0) >= 0.90, f"{case}: visual-prior active contact lacks high mesh contact support")
-                    require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
-                support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True, row.get("deformable_visible_surface_contact_claim_supported") is True]
-                require(any(support_paths), f"{case}: active contact lacks rigid/part/surface-changing/deformable-surface support path")
+                    if episode_support:
+                        require(str(row.get("depth_conflict_resolution")) in {"contact_episode_persistence_through_occluded_or_unmodeled_contact_patch", "local_contact_anchor_or_bounded_gap_persistence_through_occluded_or_unmodeled_contact_patch"} or row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active episode depth contradiction lacks episode/visual-prior resolution")
+                    else:
+                        require(row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active depth-contradicted contact lacks explicit visual-prior override")
+                        require(prior.get("contact_prior_supported") is True, f"{case}: active depth-contradicted contact lacks supported visual prior evidence")
+                        require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.07, f"{case}: visual-prior active contact is not in close metric band")
+                        require(float(row.get("mesh_contact_support_score") or 0.0) >= 0.90, f"{case}: visual-prior active contact lacks high mesh contact support")
+                        require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
+                require(any(direct_support_paths) or episode_support, f"{case}: active contact lacks rigid/part/surface-changing/deformable-surface or episode support path")
                 if row.get("surface_changing_pose_contact_claim_supported") is True:
                     obj = object_by_id.get(str(row.get("object_id")), {})
                     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
@@ -323,7 +351,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True, f"{case}: active deformable contact is not on deformable object")
                     require(isinstance(geom.get("world_vertices_sample_m"), list) and len(geom.get("world_vertices_sample_m")) > 0, f"{case}: active deformable contact lacks visible depth surface")
                     require(row.get("final_metric_contact_distance_m") is not None and float(row.get("final_metric_contact_distance_m")) <= 0.05, f"{case}: active deformable contact is not within 5cm same-frame visible surface band")
-                require(row.get("depth_contradiction") is not True or row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active contact has depth contradiction without visual-prior override")
+                require(row.get("depth_contradiction") is not True or row.get("visual_contact_prior_overrode_weak_depth_conflict") is True or episode_support, f"{case}: active contact has depth contradiction without visual-prior or episode resolution")
                 if row_support_state != "observed_same_frame_detection":
                     counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] += 1
         occlusion_vars = vars.get("occlusion_owner") if isinstance(vars.get("occlusion_owner"), list) else []
@@ -422,7 +450,13 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 assessment = validation.get("compact_multiview_geometry_completion_assessment") if isinstance(validation.get("compact_multiview_geometry_completion_assessment"), dict) else {}
                 if validation.get("object_geometry_complete") is True or validation.get("object_pose_requirement_met") is True:
                     require(assessment.get("object_geometry_complete") is True and assessment.get("object_pose_requirement_met") is True, f"{case}: object completion lacks compact multiview assessment support")
+                    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+                    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
                     require(assessment.get("schema_eligible_compact_object") is True, f"{case}: object completion schema is not compact eligible")
+                    require(physical == "rigid", f"{case}: object completion is not clean rigid compact geometry")
+                    require(schema.get("surface_change_without_pose_state") is not True, f"{case}: surface-changing object completion overclaims hidden geometry/pose")
+                    require(schema.get("requires_part_or_relative_motion_model") is not True, f"{case}: part/relative-motion object completion overclaims single-object geometry")
+                    require(schema.get("secondary_deformable_or_surface_component") is not True, f"{case}: deformable/surface-component object completion overclaims compact geometry")
                     require(assessment.get("current_frame_visible_depth_silhouette_pose_supported") is True, f"{case}: object completion lacks current-frame visible pose support")
                     require(int(assessment.get("source_frame_count") or 0) >= int(assessment.get("min_source_frame_count") or 100), f"{case}: object completion has too few source frames")
                     require(max(int(assessment.get("source_point_count") or 0), int(assessment.get("sampled_point_count") or 0)) >= int(assessment.get("min_depth_point_count") or 5000), f"{case}: object completion has too few depth points")
@@ -573,10 +607,16 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["triangle_nonpenetration_evaluated_nonobserved_hawor_rows"] == 0, f"{case}: evaluated triangle nonpenetration rows are not support-gated to observed HaWoR hands")
     require(counts["occlusion_owner_vars"] > 0, f"{case}: no occlusion owner graph variables")
     require(counts["contact_physical_mode_active"] == counts["active_contact_switch_vars"], f"{case}: active contact mode count does not match active contact switches")
+    contact_report_counts = physical_contact_state_report.get("counts") if isinstance(physical_contact_state_report.get("counts"), dict) else {}
+    require(bool(physical_contact_state_report.get("render_counts_excluded_from_contact_semantics")) is True, f"{case}: contact state report does not exclude render counts")
+    require(int(contact_report_counts.get("active_frame_pair_states", -1)) == counts["active_contact_switch_vars"], f"{case}: contact state report active frame-pair count mismatch")
+    require(int(contact_report_counts.get("active_temporal_contact_episodes_consecutive", 0)) > 0, f"{case}: contact state report lacks temporal episodes")
+    require(isinstance(physical_contact_state_report.get("temporal_episodes"), list) and len(physical_contact_state_report.get("temporal_episodes")) == int(contact_report_counts.get("active_temporal_contact_episodes_consecutive", -1)), f"{case}: contact temporal episode list/count mismatch")
     require(counts["hand_contact_depth_order_occlusion_rows"] == counts["contact_physical_mode_depth_occluded_possible"], f"{case}: contact depth-order occlusion hand evidence does not match depth-occluded possible contact modes")
     require(int(overlay_draw.get("contact_lines", 0)) <= counts["active_contact_switch_vars"], f"{case}: overlay draws more contact lines than active physical contacts")
-    require(int(world_draw.get("world_contact_edges", 0)) <= counts["active_contact_switch_vars"], f"{case}: world render draws more contact edges than active physical contacts")
-    require(int(world_draw.get("world_active_contact_missing_metric_endpoints", 0)) == 0, f"{case}: active contact world render is missing metric endpoints")
+    world_active_drawn = int(world_draw.get("world_contact_edges", 0)) + int(world_draw.get("world_contact_episode_state_edges", 0))
+    require(world_active_drawn <= counts["active_contact_switch_vars"], f"{case}: world render draws more active contact states than solved active contacts")
+    require(int(world_draw.get("world_active_contact_missing_metric_endpoints", 0)) == 0, f"{case}: direct active contact world render is missing metric endpoints")
     require(int(overlay_draw.get("contact_depth_occluded_possible_lines", 0)) <= counts["contact_physical_mode_depth_occluded_possible"], f"{case}: overlay draws more depth-occluded possible contact lines than solved modes")
     require(int(overlay_draw.get("contact_supported_near_noncontact_lines", 0)) <= counts["contact_physical_mode_supported_near_noncontact"], f"{case}: overlay draws more supported-near lines than solved modes")
     require(int(world_draw.get("world_contact_depth_occluded_possible_lines", 0)) <= counts["contact_physical_mode_depth_occluded_possible"], f"{case}: world render draws more depth-occluded possible contact edges than solved modes")

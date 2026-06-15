@@ -65,6 +65,8 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(part_6d_count > 0, f"{case}: no 6D part SE3 series")
     frame_with_graph = 0
     temporal_contact_rows = 0
+    contact_episode_rows = 0
+    contact_episode_factor_rows = 0
     temporal_contact_factor_rows = 0
     temporal_contact_active_conflicts = 0
     temporal_contact_bad_gaps = 0
@@ -84,6 +86,7 @@ def validate_case(path: Path) -> dict[str, Any]:
             factors_raw = g.get("factors")
             factors: dict[str, Any] = factors_raw if isinstance(factors_raw, dict) else {}
             local_temporal_factor_count_sum += int(factors.get("contact_switch_temporal", 0))
+            contact_episode_factor_rows += int(factors.get("contact_episode_persistence", 0))
             local_nonpenetration_factor_count_sum += int(factors.get("contact_local_nonpenetration", 0))
             local_occlusion_factor_count_sum += int(factors.get("occlusion_owner_discrete", 0))
             variables_raw = g.get("variables")
@@ -141,6 +144,20 @@ def validate_case(path: Path) -> dict[str, Any]:
                     if isinstance(components, list) and components:
                         contact_part_component_rows += len(components)
                         require(any(isinstance(comp, dict) and comp.get("factor_family") == "contact_part_pose_anchor" for comp in components), f"{case}: part contact component missing factor family")
+            episode_raw = variables.get("contact_episode")
+            if isinstance(episode_raw, list):
+                for episode_var_raw in episode_raw:
+                    episode_var: dict[str, Any] = episode_var_raw if isinstance(episode_var_raw, dict) else {}
+                    contact_episode_rows += 1
+                    require(episode_var.get("estimate") is True, f"{case}: contact episode variable is not active")
+                    scope = str(episode_var.get("scope"))
+                    require("contact_state_only" in scope or "contact_episode_state" in scope, f"{case}: contact episode variable scope missing")
+                    require(isinstance(episode_var.get("anchor_frame_indices"), list) and len(episode_var.get("anchor_frame_indices")) > 0, f"{case}: contact episode variable lacks anchors")
+                    nearest_anchor_distance = episode_var.get("nearest_anchor_frame_distance")
+                    max_anchor_distance = episode_var.get("max_nearest_anchor_distance_frames")
+                    candidate_score = episode_var.get("candidate_score")
+                    require(isinstance(candidate_score, (int, float)) and float(candidate_score) >= 0.65, f"{case}: contact episode variable has weak candidate score")
+                    require(isinstance(nearest_anchor_distance, int) and isinstance(max_anchor_distance, int) and max_anchor_distance > 0 and nearest_anchor_distance <= max_anchor_distance, f"{case}: contact episode variable exceeds nearest-anchor bound")
             contact_raw = variables.get("contact_switch")
             if isinstance(contact_raw, list):
                 for row_raw in contact_raw:
@@ -159,21 +176,41 @@ def validate_case(path: Path) -> dict[str, Any]:
                     if row.get("estimate") is True and union_conflict:
                         temporal_contact_active_conflicts += 1
                     if row.get("estimate") is True:
-                        require(row.get("geometry_contact_evidence_available") is True, f"{case}: active contact lacks geometry evidence")
-                        require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks supported rigid object or validated part pose")
+                        episode_support = bool(row.get("manipulation_contact_episode_supported") is True and row.get("post_graph_manipulation_episode_support") is True)
+                        require(row.get("geometry_contact_evidence_available") is True or episode_support, f"{case}: active contact lacks geometry or episode evidence")
+                        require(row.get("physical_contact_claim_supported") is True or episode_support, f"{case}: active contact lacks direct physical support or manipulation episode support")
+                        if episode_support:
+                            require(isinstance(row.get("manipulation_contact_episode_anchor_frame_indices"), list) and len(row.get("manipulation_contact_episode_anchor_frame_indices")) > 0, f"{case}: active episode contact lacks local anchors")
+                            require(float(row.get("manipulation_contact_episode_candidate_score") or 0.0) >= 0.65, f"{case}: active episode contact has weak candidate score")
+                            nearest_anchor_distance = row.get("manipulation_contact_episode_nearest_anchor_frame_distance")
+                            max_anchor_distance = int(row.get("manipulation_contact_episode_max_nearest_anchor_distance_frames") or 0)
+                            require(isinstance(nearest_anchor_distance, int) and max_anchor_distance > 0 and nearest_anchor_distance <= max_anchor_distance, f"{case}: active episode contact is not locally bounded by an anchor")
+                            role = str(row.get("manipulation_contact_episode_frame_role") or "")
+                            require(role in {"direct_visible_or_validated_contact_anchor", "occluded_contact_patch_anchor", "bounded_episode_bridge_candidate"}, f"{case}: active episode contact has invalid frame role {role!r}")
+                            if role == "occluded_contact_patch_anchor":
+                                evidence = row.get("manipulation_contact_episode_evidence") if isinstance(row.get("manipulation_contact_episode_evidence"), dict) else {}
+                                require(evidence.get("occluded_contact_patch_anchor_supported") is True, f"{case}: occluded contact anchor lacks evidence flag")
+                                require(row.get("depth_contradiction") is True, f"{case}: occluded contact anchor lacks depth/contact-patch occlusion state")
+                                require(row.get("accepted_contact_owner") is True, f"{case}: occluded contact anchor lacks accepted contact-owner support")
+                                require(float(row.get("min_box_coverage") or 0.0) >= 0.90, f"{case}: occluded contact anchor lacks high box coverage")
+                                require(float(row.get("mesh_contact_support_score") or 0.0) >= 0.90, f"{case}: occluded contact anchor lacks high mesh contact support")
+                            require(row.get("nonpenetration_conflict") is not True, f"{case}: episode contact overrode nonpenetration conflict")
                         if row.get("depth_contradiction") is True:
                             prior = row.get("visual_contact_prior") if isinstance(row.get("visual_contact_prior"), dict) else {}
                             require(row.get("depth_conflict_blocks_active_contact") is not True, f"{case}: active contact still has blocking depth conflict")
-                            require(row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active depth-contradicted contact lacks explicit visual-prior override")
-                            require(prior.get("contact_prior_supported") is True, f"{case}: active depth-contradicted contact lacks supported visual prior")
-                            require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
+                            if episode_support:
+                                require(str(row.get("depth_conflict_resolution")) in {"contact_episode_persistence_through_occluded_or_unmodeled_contact_patch", "local_contact_anchor_or_bounded_gap_persistence_through_occluded_or_unmodeled_contact_patch"} or row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active depth-contradicted episode contact lacks episode/visual-prior resolution")
+                            else:
+                                require(row.get("visual_contact_prior_overrode_weak_depth_conflict") is True, f"{case}: active depth-contradicted contact lacks explicit visual-prior override")
+                                require(prior.get("contact_prior_supported") is True, f"{case}: active depth-contradicted contact lacks supported visual prior")
+                                require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
                         if row.get("deformable_visible_surface_contact_claim_supported") is True:
                             raw_distance = row.get("final_metric_contact_distance_m")
                             require(isinstance(raw_distance, (int, float)) and float(raw_distance) <= 0.05, f"{case}: deformable active contact uses non-same-frame/proxy distance")
                         effective_distance = row.get("effective_metric_contact_distance_m")
                         mesh_support = float(row.get("mesh_contact_support_score", 0.0) or 0.0)
                         near_effective = isinstance(effective_distance, (int, float)) and float(effective_distance) <= 0.20
-                        require(near_effective or mesh_support > 0.5, f"{case}: active contact lacks near metric distance or strong mesh support")
+                        require(near_effective or mesh_support > 0.5 or episode_support, f"{case}: active contact lacks near metric distance, strong mesh support, or episode support")
                     gap = row.get("temporal_contact_previous_frame_gap")
                     has_factor = row.get("temporal_contact_has_factor") is True
                     applied = row.get("temporal_contact_transition_applied") is True
@@ -188,6 +225,9 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(local_occlusion_factor_count_sum == occlusion_owner_rows and occlusion_owner_rows == int(factor_counts.get("occlusion_owner_discrete", -1)), f"{case}: occlusion owner factor count mismatch")
     require(occlusion_owner_with_temporal_or_mesh > 0, f"{case}: occlusion owner variables missing temporal/mesh evidence")
     require(temporal_contact_rows == int(variable_counts.get("contact_switch", -1)), f"{case}: contact switch variable count mismatch")
+    if int(variable_counts.get("contact_episode", 0)) > 0 or int(factor_counts.get("contact_episode_persistence", 0)) > 0:
+        require(contact_episode_rows == int(variable_counts.get("contact_episode", -1)), f"{case}: contact episode variable count mismatch")
+        require(contact_episode_factor_rows == int(factor_counts.get("contact_episode_persistence", -1)), f"{case}: contact episode factor count mismatch")
     require(temporal_contact_factor_rows == int(factor_counts.get("contact_switch_temporal", -1)), f"{case}: temporal contact factor count mismatch")
     require(contact_nonpenetration_factor_rows == int(factor_counts.get("contact_local_nonpenetration", -1)), f"{case}: contact local nonpenetration factor count mismatch")
     require(contact_object_component_rows == int(factor_counts.get("contact_object_pose_anchor", 0)) + int(factor_counts.get("contact_surface_changing_object_pose_anchor", 0)) + int(factor_counts.get("contact_object_nonpenetration_repel", 0)), f"{case}: contact-object component count mismatch")
@@ -208,6 +248,8 @@ def validate_case(path: Path) -> dict[str, Any]:
         "part_6d_series_count": part_6d_count,
         "contact_switch_temporal_factors": int(factor_counts.get("contact_switch_temporal", 0)),
         "contact_switch_temporal_rows": temporal_contact_rows,
+        "contact_episode_rows": contact_episode_rows,
+        "contact_episode_factors": int(factor_counts.get("contact_episode_persistence", 0)),
         "contact_local_nonpenetration_factors": int(factor_counts.get("contact_local_nonpenetration", 0)),
         "occlusion_owner_rows": occlusion_owner_rows,
         "frame_with_graph_count": frame_with_graph,
