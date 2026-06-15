@@ -1975,6 +1975,56 @@ def attach_frame_local_part_pose_validation(frames: list[dict[str, Any]], part_p
     return counts
 
 
+def attach_contact_depth_order_occlusion(frames: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for frame in frames:
+        hands_by_side = {str(h.get("hand_side")): h for h in frame.get("hands", []) if isinstance(h, dict)} if isinstance(frame.get("hands"), list) else {}
+        objects_by_id = {str(o.get("object_id")): o for o in frame.get("objects", []) if isinstance(o, dict)} if isinstance(frame.get("objects"), list) else {}
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        contact_switches = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
+        for switch in contact_switches:
+            if not isinstance(switch, dict) or switch.get("physical_contact_mode") != "depth_occluded_contact_possible":
+                continue
+            side = str(switch.get("hand_side"))
+            object_id = str(switch.get("object_id"))
+            hand = hands_by_side.get(side)
+            obj = objects_by_id.get(object_id)
+            if hand is None or obj is None:
+                continue
+            evidence = switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}
+            row = {
+                "hand_side": side,
+                "object_id": object_id,
+                "object_name": obj.get("name"),
+                "contact_variable_id": switch.get("variable_id"),
+                "contact_physical_mode": switch.get("physical_contact_mode"),
+                "depth_order_state": evidence.get("pair_depth_gap_state"),
+                "depth_conflict_blocks_active_contact": bool(switch.get("depth_conflict_blocks_active_contact") is True),
+                "nearest_metric_distance_m": switch.get("physical_contact_mode_nearest_distance_m"),
+                "support_paths": switch.get("physical_contact_mode_support_paths"),
+                "contact_depth_order_supported": True,
+                "global_occlusion_owner_claim": False,
+                "scope": "contact_pair_depth_order_occlusion_evidence_not_global_hand_occlusion_owner",
+            }
+            hand_rows = hand.setdefault("contact_depth_order_occlusion_evidence", [])
+            if isinstance(hand_rows, list):
+                hand_rows.append(row)
+            hand_occ = hand.get("occlusion_owner_hypothesis") if isinstance(hand.get("occlusion_owner_hypothesis"), dict) else {}
+            depth_rows = hand_occ.setdefault("contact_depth_order_evidence", [])
+            if isinstance(depth_rows, list):
+                depth_rows.append(row)
+                hand_occ["contact_depth_order_evidence_count"] = len(depth_rows)
+                hand_occ["contact_depth_order_scope"] = "local_contact_pair_occlusion_evidence_not_accepted_global_owner"
+                hand_occ["global_owner_unchanged_by_contact_depth_order"] = True
+            hand["occlusion_owner_hypothesis"] = hand_occ
+            object_rows = obj.setdefault("contact_depth_order_occludes_hands", [])
+            if isinstance(object_rows, list):
+                object_rows.append(row)
+            counts["contact_depth_order_occlusion_rows"] += 1
+    return counts
+
+
 def camera_to_world_point(frame: dict[str, Any], point_camera: np.ndarray) -> list[float] | None:
     camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
     transform = np.asarray(camera.get("T_world_camera_metric", []), dtype=np.float64)
@@ -3946,12 +3996,15 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
     object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
     contact_physical_mode_counts = attach_contact_physical_modes(frames)
+    contact_depth_order_occlusion_counts = attach_contact_depth_order_occlusion(frames)
     factor_graph_summary["frame_local_part_pose_graph_counts"] = dict(sorted(frame_local_part_pose_graph_counts.items()))
     factor_graph_summary["contact_physical_mode_counts"] = dict(sorted(contact_physical_mode_counts.items()))
+    factor_graph_summary["contact_depth_order_occlusion_counts"] = dict(sorted(contact_depth_order_occlusion_counts.items()))
     module_counts.update(reconstructed_geometry_counts)
     module_counts.update(frame_local_part_pose_graph_counts)
     module_counts.update(object_pose_validation_counts)
     module_counts.update(contact_physical_mode_counts)
+    module_counts.update(contact_depth_order_occlusion_counts)
     module_counts["factor_graph_variables"] += sum(int(v) for v in factor_graph_summary.get("variable_counts", {}).values())
     module_counts["factor_graph_factors"] += sum(int(v) for v in factor_graph_summary.get("factor_counts", {}).values())
     out = {

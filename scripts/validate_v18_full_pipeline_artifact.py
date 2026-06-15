@@ -201,6 +201,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "hand_occlusion_owner_accepted_rows": 0,
         "hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand": 0,
         "hand_raw_occlusion_owner_rows_gated_by_hawor_support": 0,
+        "hand_contact_depth_order_occlusion_rows": 0,
         "occlusion_owner_vars": 0,
         "occlusion_owner_supported_vars": 0,
         "occlusion_owner_supported_vars_with_nonobserved_hawor_hand": 0,
@@ -354,6 +355,13 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     counts["hand_occlusion_owner_accepted_rows"] += 1
                     if support_state != "observed_same_frame_detection":
                         counts["hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand"] += 1
+                depth_rows = occ.get("contact_depth_order_evidence") if isinstance(occ.get("contact_depth_order_evidence"), list) else []
+                counts["hand_contact_depth_order_occlusion_rows"] += len(depth_rows)
+                for depth_row in depth_rows:
+                    require(isinstance(depth_row, dict), f"{case}: contact depth-order occlusion row is not dict")
+                    require(depth_row.get("contact_depth_order_supported") is True, f"{case}: contact depth-order occlusion row lacks support flag")
+                    require(depth_row.get("global_occlusion_owner_claim") is False, f"{case}: contact depth-order occlusion row overclaims global owner")
+                    require("contact_pair_depth_order" in str(depth_row.get("scope")), f"{case}: contact depth-order occlusion row scope missing")
 
         objects = frame.get("objects") if isinstance(frame.get("objects"), list) else []
         require(objects, f"{case}: frame {frame.get('frame_idx')} has no object rows")
@@ -517,6 +525,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["triangle_nonpenetration_evaluated_nonobserved_hawor_rows"] == 0, f"{case}: evaluated triangle nonpenetration rows are not support-gated to observed HaWoR hands")
     require(counts["occlusion_owner_vars"] > 0, f"{case}: no occlusion owner graph variables")
     require(counts["contact_physical_mode_active"] == counts["active_contact_switch_vars"], f"{case}: active contact mode count does not match active contact switches")
+    require(counts["hand_contact_depth_order_occlusion_rows"] == counts["contact_physical_mode_depth_occluded_possible"], f"{case}: contact depth-order occlusion hand evidence does not match depth-occluded possible contact modes")
     require(int(overlay_draw.get("contact_lines", 0)) <= counts["active_contact_switch_vars"], f"{case}: overlay draws more contact lines than active physical contacts")
     require(int(world_draw.get("world_contact_edges", 0)) <= counts["active_contact_switch_vars"], f"{case}: world render draws more contact edges than active physical contacts")
     require(int(overlay_draw.get("contact_depth_occluded_possible_lines", 0)) <= counts["contact_physical_mode_depth_occluded_possible"], f"{case}: overlay draws more depth-occluded possible contact lines than solved modes")
