@@ -166,6 +166,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "object_renderable_reconstructed_geometry_pose_rows": 0,
         "object_depth_silhouette_pose_validation_rows": 0,
         "object_depth_silhouette_pose_supported_rows": 0,
+        "object_geometry_complete_rows": 0,
+        "object_pose_requirement_met_rows": 0,
         "object_vertex_sample_rows": 0,
         "part_rows": 0,
         "part_reconstructed_geometry_pose_rows": 0,
@@ -417,8 +419,18 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 counts["object_depth_silhouette_pose_validation_rows"] += 1
                 if validation.get("visible_depth_silhouette_pose_supported") is True:
                     counts["object_depth_silhouette_pose_supported_rows"] += 1
-                require(validation.get("object_pose_requirement_met") is False, f"{case}: object pose validation overclaims object pose completion")
-                require(validation.get("object_geometry_complete") is False, f"{case}: object pose validation overclaims geometry completion")
+                assessment = validation.get("compact_multiview_geometry_completion_assessment") if isinstance(validation.get("compact_multiview_geometry_completion_assessment"), dict) else {}
+                if validation.get("object_geometry_complete") is True or validation.get("object_pose_requirement_met") is True:
+                    require(assessment.get("object_geometry_complete") is True and assessment.get("object_pose_requirement_met") is True, f"{case}: object completion lacks compact multiview assessment support")
+                    require(assessment.get("schema_eligible_compact_object") is True, f"{case}: object completion schema is not compact eligible")
+                    require(assessment.get("current_frame_visible_depth_silhouette_pose_supported") is True, f"{case}: object completion lacks current-frame visible pose support")
+                    require(int(assessment.get("source_frame_count") or 0) >= int(assessment.get("min_source_frame_count") or 100), f"{case}: object completion has too few source frames")
+                    require(max(int(assessment.get("source_point_count") or 0), int(assessment.get("sampled_point_count") or 0)) >= int(assessment.get("min_depth_point_count") or 5000), f"{case}: object completion has too few depth points")
+                    require(int(assessment.get("convex_hull_faces") or 0) >= int(assessment.get("min_convex_hull_faces") or 40), f"{case}: object completion hull too sparse")
+                    require(int(assessment.get("poisson_vertices") or 0) >= int(assessment.get("min_poisson_vertices") or 1000), f"{case}: object completion poisson mesh too sparse")
+                    require("not_category_primitive_not_centroid" in str(assessment.get("scope")), f"{case}: object completion assessment scope missing anti-proxy guarantee")
+                    counts["object_geometry_complete_rows"] += int(validation.get("object_geometry_complete") is True)
+                    counts["object_pose_requirement_met_rows"] += int(validation.get("object_pose_requirement_met") is True)
                 require("visible_depth" in str(validation.get("scope")), f"{case}: object pose validation scope missing")
             recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else None
             if isinstance(recon, dict):
@@ -428,11 +440,19 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(isinstance(recon.get("mesh_path"), str) and Path(str(recon.get("mesh_path"))).exists(), f"{case}: reconstructed geometry mesh path missing")
                     require(isinstance(recon.get("world_bbox_corners_m"), list) and len(recon.get("world_bbox_corners_m")) == 8, f"{case}: reconstructed geometry pose missing render corners")
                     require(isinstance(recon.get("translation_world_m"), list) and len(recon.get("translation_world_m")) == 3, f"{case}: reconstructed geometry pose missing translation")
-                    require(recon.get("object_pose_requirement_met") is False, f"{case}: reconstructed geometry pose overclaims object pose completion")
-                    require(recon.get("object_geometry_complete") is False, f"{case}: reconstructed geometry pose overclaims geometry completion")
+                    recon_assessment = recon.get("compact_multiview_geometry_completion_assessment") if isinstance(recon.get("compact_multiview_geometry_completion_assessment"), dict) else {}
+                    if recon.get("object_pose_requirement_met") is True or recon.get("object_geometry_complete") is True:
+                        require(recon_assessment.get("object_pose_requirement_met") is True and recon_assessment.get("object_geometry_complete") is True, f"{case}: reconstructed geometry completion lacks compact multiview support")
+                        require("not_category_primitive_not_centroid" in str(recon_assessment.get("scope")), f"{case}: reconstructed geometry completion scope missing anti-proxy guarantee")
                     require(recon.get("visible_depth_silhouette_pose_supported") in {True, False}, f"{case}: reconstructed geometry pose missing object depth/silhouette validation support field")
                     if geom.get("weak_visible_depth_pose_candidate") is True:
                         require(recon.get("rigid_pose_supported_visible_mesh") is not True, f"{case}: weak visible-depth row must not support strict rigid pose")
+            if isinstance(obj.get("object_geometry_complete"), bool):
+                require(validation is not None, f"{case}: root object geometry completion field lacks validation row")
+                require(obj.get("object_geometry_complete") == bool(validation.get("object_geometry_complete") is True), f"{case}: root object geometry completion disagrees with validation")
+            if isinstance(obj.get("object_pose_requirement_met"), bool):
+                require(validation is not None, f"{case}: root object pose requirement field lacks validation row")
+                require(obj.get("object_pose_requirement_met") == bool(validation.get("object_pose_requirement_met") is True), f"{case}: root object pose requirement disagrees with validation")
             for part in obj.get("parts") if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
                     continue

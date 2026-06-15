@@ -1680,7 +1680,12 @@ def posed_reconstructed_geometry_state(obj: dict[str, Any], graph_var: dict[str,
         "mesh_source": completion.get("method"),
         "mesh_scope": completion.get("scope"),
         "source_frame_count": completion.get("source_frame_count"),
+        "source_point_count": completion.get("source_point_count"),
         "sampled_point_count": completion.get("sampled_point_count"),
+        "convex_hull_vertices": completion.get("convex_hull_vertices"),
+        "convex_hull_faces": completion.get("convex_hull_faces"),
+        "poisson_vertices": completion.get("poisson_vertices"),
+        "poisson_faces": completion.get("poisson_faces"),
         "canonical_bbox_min_m": completion.get("canonical_bbox_min_m"),
         "canonical_bbox_max_m": completion.get("canonical_bbox_max_m"),
         "pose_kind": pose_kind,
@@ -1817,6 +1822,23 @@ def attach_object_depth_silhouette_pose_validation(frames: list[dict[str, Any]])
                 recon["rigid_pose_supported_visible_mesh"] = bool(validation.get("rigid_pose_supported_visible_mesh") is True)
                 recon["surface_changing_compact_pose_supported_visible_mesh"] = bool(validation.get("surface_changing_compact_pose_supported_visible_mesh") is True)
                 recon["object_pose_validation_blockers"] = validation.get("validation_blockers", [])
+                completion_assessment = compact_multiview_geometry_completion_assessment(obj, recon, validation)
+                validation["compact_multiview_geometry_completion_assessment"] = completion_assessment
+                recon["compact_multiview_geometry_completion_assessment"] = completion_assessment
+                validation["object_geometry_complete"] = bool(completion_assessment.get("object_geometry_complete") is True)
+                validation["object_pose_requirement_met"] = bool(completion_assessment.get("object_pose_requirement_met") is True)
+                recon["object_geometry_complete"] = bool(completion_assessment.get("object_geometry_complete") is True)
+                recon["object_pose_requirement_met"] = bool(completion_assessment.get("object_pose_requirement_met") is True)
+                obj["object_geometry_complete"] = bool(completion_assessment.get("object_geometry_complete") is True)
+                obj["object_pose_requirement_met"] = bool(completion_assessment.get("object_pose_requirement_met") is True)
+                obj["object_geometry_completion_assessment"] = completion_assessment
+                if completion_assessment.get("object_geometry_complete") is True:
+                    counts["object_geometry_complete_rows"] += 1
+                if completion_assessment.get("object_pose_requirement_met") is True:
+                    counts["object_pose_requirement_met_rows"] += 1
+            else:
+                obj["object_geometry_complete"] = False
+                obj["object_pose_requirement_met"] = False
             counts["object_depth_silhouette_pose_validation_rows"] += 1
             if validation.get("visible_depth_silhouette_pose_supported") is True:
                 counts["object_depth_silhouette_pose_supported_rows"] += 1
@@ -2697,6 +2719,57 @@ def object_depth_silhouette_pose_validation(frame: dict[str, Any], obj: dict[str
         "object_geometry_complete": False,
         "object_pose_requirement_met": False,
         "scope": "visible_depth_and_mask_projection_support_for_posed_depth_fused_mesh_only_not_hidden_geometry_completion",
+    }
+
+
+def compact_multiview_geometry_completion_assessment(obj: dict[str, Any], recon: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    source_frames = int(finite_float(recon.get("source_frame_count"), 0.0))
+    sampled_points = int(finite_float(recon.get("sampled_point_count"), 0.0))
+    source_points = int(finite_float(recon.get("source_point_count"), 0.0))
+    hull_faces = int(finite_float(recon.get("convex_hull_faces"), 0.0))
+    poisson_vertices = int(finite_float(recon.get("poisson_vertices"), 0.0))
+    supported_pose = bool(validation.get("visible_depth_silhouette_pose_supported") is True)
+    blockers: list[str] = []
+    schema_eligible = bool(
+        (physical == "rigid" or schema.get("surface_change_without_pose_state") is True)
+        and schema.get("requires_part_or_relative_motion_model") is not True
+        and schema.get("secondary_deformable_or_surface_component") is not True
+        and physical != "deformable"
+    )
+    if not schema_eligible:
+        blockers.append("schema_not_compact_single_object_geometry")
+    if not supported_pose:
+        blockers.append("current_frame_visible_depth_silhouette_pose_not_supported")
+    if source_frames < 100:
+        blockers.append("multiview_source_frame_count_below_100")
+    if max(sampled_points, source_points) < 5000:
+        blockers.append("multiview_depth_point_count_below_5000")
+    if hull_faces < 40:
+        blockers.append("closed_hull_mesh_too_sparse")
+    if poisson_vertices < 1000:
+        blockers.append("poisson_visible_surface_mesh_too_sparse")
+    complete = not blockers
+    return {
+        "method": "compact_multiview_depth_fused_geometry_completion_assessment",
+        "geometry_completion_state": "compact_multiview_reconstructed_geometry_pose_supported" if complete else "compact_multiview_reconstructed_geometry_pose_not_supported",
+        "schema_eligible_compact_object": bool(schema_eligible),
+        "source_frame_count": source_frames,
+        "min_source_frame_count": 100,
+        "source_point_count": source_points,
+        "sampled_point_count": sampled_points,
+        "min_depth_point_count": 5000,
+        "convex_hull_faces": hull_faces,
+        "min_convex_hull_faces": 40,
+        "poisson_vertices": poisson_vertices,
+        "min_poisson_vertices": 1000,
+        "current_frame_visible_depth_silhouette_pose_supported": bool(supported_pose),
+        "object_geometry_complete": bool(complete),
+        "object_pose_requirement_met": bool(complete),
+        "blockers": blockers,
+        "scope": "approximate_compact_multiview_depth_fused_object_mesh_pose_not_category_primitive_not_centroid",
+        "hidden_geometry_uncertainty": "remaining_unobserved_surfaces_are_approximated_by_multiview_depth_fused_poisson_or_hull_mesh_with_uncertainty" if complete else "not_enough_evidence_to_complete_hidden_geometry",
     }
 
 
