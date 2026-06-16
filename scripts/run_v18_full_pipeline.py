@@ -2387,6 +2387,17 @@ def attach_contact_physical_modes(
         objects_by_id = {str(o.get("object_id")): o for o in frame.get("objects", []) if isinstance(o, dict)} if isinstance(frame.get("objects"), list) else {}
         fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
         vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        deformable_patch_keys: set[tuple[str, str]] = set()
+        patch_rows = vars_raw.get("deformable_surface_patch") if isinstance(vars_raw.get("deformable_surface_patch"), list) else []
+        for patch in patch_rows:
+            if not isinstance(patch, dict):
+                continue
+            variable_id = str(patch.get("variable_id", ""))
+            if not variable_id.startswith("deformable_surface_patch::"):
+                continue
+            fields = variable_id[len("deformable_surface_patch::"):].split("::")
+            if len(fields) >= 2:
+                deformable_patch_keys.add((fields[0], fields[1]))
         contact_switches = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
         for switch in contact_switches:
             if not isinstance(switch, dict):
@@ -2526,8 +2537,21 @@ def attach_contact_physical_modes(
                         "coupling_family": "contact_part_pose_anchor",
                     })
                 elif "deformable_same_frame_visible_surface" in support_paths:
-                    coupling_state["blockers"] = ["deformable_object_contact_has_no_nonrigid_object_state_model_in_v18_default_solver"]
-                    coupling_state["coupling_state"] = "active_deformable_contact_state_not_coupled_to_object_pose"
+                    patch_key = (str(switch.get("object_id")), str(switch.get("hand_side")))
+                    if patch_key in deformable_patch_keys:
+                        coupling_state.update({
+                            "contact_state_affects_deformable_surface_patch_state": True,
+                            "deformable_surface_patch_factor_emitted": True,
+                            "deformable_surface_patch_variable_id": f"deformable_surface_patch::{patch_key[0]}::{patch_key[1]}",
+                            "coupling_state": "active_deformable_contact_coupled_to_local_visible_surface_patch",
+                            "coupling_family": "deformable_surface_patch_contact_anchor",
+                            "blockers": ["whole_object_pose_not_coupled_deformable_patch_state_only"],
+                        })
+                    else:
+                        coupling_state["contact_state_affects_deformable_surface_patch_state"] = False
+                        coupling_state["deformable_surface_patch_factor_emitted"] = False
+                        coupling_state["blockers"] = ["deformable_object_contact_missing_local_surface_patch_state"]
+                        coupling_state["coupling_state"] = "active_deformable_contact_state_not_coupled_to_object_pose"
                 elif direct_contact_support_paths and stable_anchor_candidate:
                     coupling_state["blockers"] = ["stable_contact_support_but_pose_anchor_factor_not_emitted_by_pre_solve_geometry_or_pose_precondition"]
                     coupling_state["coupling_state"] = "active_contact_not_pose_coupled_stable_anchor_factor_not_emitted"
@@ -2745,6 +2769,7 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
         summary_family_counts.update(family_counts)
         contact_object_components: list[dict[str, Any]] = []
         contact_part_components: list[dict[str, Any]] = []
+        deformable_surface_patch_components: list[dict[str, Any]] = []
         for comp in obs.get("components", []):
             if isinstance(comp, dict) and isinstance(comp.get("contact_object_coupling"), dict):
                 contact_object_components.append(
@@ -2764,6 +2789,15 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
                         "coupling": comp.get("contact_part_coupling"),
                     }
                 )
+            if isinstance(comp, dict) and isinstance(comp.get("deformable_surface_patch_coupling"), dict):
+                deformable_surface_patch_components.append(
+                    {
+                        "factor_family": comp.get("factor_family"),
+                        "weight": float(comp.get("weight", 0.0)),
+                        "source": comp.get("source"),
+                        "coupling": comp.get("deformable_surface_patch_coupling"),
+                    }
+                )
         estimates[frame_idx] = {
             "variable_id": obs.get("variable_id"),
             "source": obs.get("source"),
@@ -2777,6 +2811,7 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
             "factor_family_energy_after": component_energy_by_family(estimate[i], obs),
             "contact_object_coupling_components": contact_object_components,
             "contact_part_coupling_components": contact_part_components,
+            "deformable_surface_patch_components": deformable_surface_patch_components,
             "local_temporal_energy_initial": temporal_before / 2.0,
             "local_temporal_energy_after": temporal_after / 2.0,
             "unit": unit,
@@ -3381,6 +3416,67 @@ def contact_part_pose_observation(
             "scope": "strict_part_contact_anchor_for_active_raw_or_accepted_owner_contact_proposal_without_complete_object_pose_claim",
         },
     }
+
+
+def deformable_surface_patch_observations(frame_idx: int, switch: dict[str, Any], obj: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if obj is None:
+        return []
+    if switch.get("estimate") is not True:
+        return []
+    if switch.get("deformable_visible_surface_contact_claim_supported") is not True:
+        return []
+    if switch.get("support_gate_allows_active_contact") is not True or switch.get("nonpenetration_conflict") is True:
+        return []
+    distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
+    if not math.isfinite(distance) or distance > 0.05:
+        return []
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    if schema.get("requires_part_or_relative_motion_model") is True:
+        return []
+    if not (physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True):
+        return []
+    hand_pt = numeric_vector(switch.get("raw_metric_nearest_hand_point_world_m"), 3)
+    object_pt = numeric_vector(switch.get("raw_metric_nearest_object_point_world_m"), 3)
+    if hand_pt is None or object_pt is None:
+        return []
+    variable_id = f"deformable_surface_patch::{obj.get('object_id')}::{switch.get('hand_side')}"
+    distance_support = max(0.0, min(1.0, (0.05 - distance) / 0.05))
+    common_coupling = {
+        "hand_side": switch.get("hand_side"),
+        "object_id": obj.get("object_id"),
+        "frame_idx": int(frame_idx),
+        "nearest_hand_point_world_m": [float(v) for v in hand_pt.tolist()],
+        "nearest_visible_surface_point_world_m": [float(v) for v in object_pt.tolist()],
+        "pre_patch_contact_gap_m": float(distance),
+        "contact_switch_active": True,
+        "contact_proposal_used": True,
+        "raw_contact_switch_active": bool(switch.get("raw_estimate_before_physical_contact_gate") is True or switch.get("raw_estimate_before_hawor_support_gate") is True),
+        "support_path": "deformable_same_frame_visible_surface",
+        "scope": "local_visible_deformable_surface_patch_state_not_whole_object_pose_not_hidden_geometry_completion",
+    }
+    visible_weight = 2.0
+    contact_weight = 1.0 + 2.0 * distance_support
+    return [
+        {
+            "frame_idx": int(frame_idx),
+            "variable_id": variable_id,
+            "value": object_pt,
+            "weight": visible_weight,
+            "source": "visible_depth_surface_patch_observation_at_active_deformable_contact",
+            "factor_family": "deformable_surface_visible_observation",
+            "deformable_surface_patch_coupling": {**common_coupling, "observation_role": "visible_surface_point"},
+        },
+        {
+            "frame_idx": int(frame_idx),
+            "variable_id": variable_id,
+            "value": hand_pt,
+            "weight": contact_weight,
+            "source": "observed_hawor_mano_contact_anchor_for_deformable_visible_surface_patch",
+            "factor_family": "deformable_surface_contact_anchor",
+            "deformable_surface_patch_coupling": {**common_coupling, "observation_role": "mano_contact_anchor"},
+        },
+    ]
 
 
 def load_articulation_index(path: Path) -> tuple[dict[int, list[dict[str, Any]]], list[dict[str, Any]]]:
@@ -4069,7 +4165,7 @@ def solve_v18_factor_graph(
     articulation_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     contact_pose_anchor_switches = contact_pose_anchor_switches or {}
     per_frame_terms: dict[int, dict[str, Any]] = defaultdict(lambda: {
-        "variables": {"camera_depth_correction": [], "hand_state": [], "object_se3": [], "part_se3": [], "articulation_parameter": [], "contact_switch": [], "contact_episode": [], "occlusion_owner": []},
+        "variables": {"camera_depth_correction": [], "hand_state": [], "object_se3": [], "part_se3": [], "deformable_surface_patch": [], "articulation_parameter": [], "contact_switch": [], "contact_episode": [], "occlusion_owner": []},
         "factor_energy_initial": defaultdict(float),
         "factor_energy_after": defaultdict(float),
         "factor_counts": Counter(),
@@ -4211,6 +4307,8 @@ def solve_v18_factor_graph(
                     terms["variables"]["object_se3"].append(est)
                 elif kind == "part_se3":
                     terms["variables"]["part_se3"].append(est)
+                elif kind == "deformable_surface_patch":
+                    terms["variables"]["deformable_surface_patch"].append(est)
                 elif kind == "articulation_parameter":
                     terms["variables"]["articulation_parameter"].append(est)
                 family_energy_after = est.get("factor_family_energy_after") if isinstance(est.get("factor_family_energy_after"), dict) else {}
@@ -4276,6 +4374,7 @@ def solve_v18_factor_graph(
     contact_temporal_max_gap_frames = 30
     contact_episode_max_internal_gap_frames = 5
     contact_episode_max_nearest_anchor_distance_frames = 10
+    deformable_patch_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for frame in frames:
         frame_idx = require_int(frame.get("frame_idx"), "graph frame_idx")
         hands = hand_lookup_by_frame.get(frame_idx, {})
@@ -4460,7 +4559,12 @@ def solve_v18_factor_graph(
             contact_temporal_energy_after_total += temporal_energy
             if switch.get("estimate") is True:
                 active_contact_count += 1
+                obj = object_lookup_by_frame.get(frame_idx, {}).get(str(switch.get("object_id")))
+                for patch_obs in deformable_surface_patch_observations(frame_idx, switch, obj):
+                    deformable_patch_obs[str(patch_obs.get("variable_id"))].append(patch_obs)
             prev_state = bool(switch.get("estimate"))
+
+    absorb_series("deformable_surface_patch", deformable_patch_obs, temporal_weight=0.25, default_weight=1.0, unit="world_m_local_visible_deformable_surface_patch_xyz")
 
     by_frame: dict[int, dict[str, Any]] = {}
     for frame in frames:
@@ -4479,6 +4583,7 @@ def solve_v18_factor_graph(
                 "hand_state": terms["variables"]["hand_state"],
                 "object_se3": terms["variables"]["object_se3"],
                 "part_se3": terms["variables"]["part_se3"],
+                "deformable_surface_patch": terms["variables"]["deformable_surface_patch"],
                 "articulation_parameter": terms["variables"]["articulation_parameter"],
                 "contact_switch": contact_switches,
                 "contact_episode": terms["variables"]["contact_episode"],
@@ -4508,12 +4613,13 @@ def solve_v18_factor_graph(
         "solver": "v18_numerical_temporal_factor_graph_v1",
         "solve_pass_label": solve_pass_label,
         "contact_pose_anchor_input_count": len(contact_pose_anchor_switches),
-        "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "articulation_parameter", "contact_switch", "contact_episode", "occlusion_owner"],
+        "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "deformable_surface_patch", "articulation_parameter", "contact_switch", "contact_episode", "occlusion_owner"],
         "implemented_variable_status": {
             "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
             "hand_state": "HaWoR_metric_MANO_wrist_world_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_stable_contact_object_pose_anchor_coupling_when_rigid_or_surface-changing-compact_and_supported",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_strict_contact_part_pose_coupling_only_for_active_raw_or_accepted_owner_part_contact_proposals",
+            "deformable_surface_patch": "frame_local_visible_surface_patch_state_for_solved_active_deformable_contacts_with_visible_depth_surface_and_observed_hawor_mano_anchor_not_whole_object_pose",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
             "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_and_stable_contact_pose_anchor_direct_support_or_episode_support_gate",
             "contact_episode": "directly_anchored_temporal_manipulation_contact_episode_state_for_contact_persistence_not_geometry_completion",
@@ -4529,6 +4635,7 @@ def solve_v18_factor_graph(
             "contact_overlap_depth_mesh_distance_owner_graph_energy_with_direct_or_episode_physical_contact_support_gate",
             "contact_object_pose_anchor_factor_for_rigid_supported_mano_object_surface_proposals",
             "contact_part_pose_anchor_factor_for_active_raw_or_accepted_owner_observed_mano_to_depth_fused_part_mesh_proposals",
+            "deformable_surface_patch_factor_for_active_observed_mano_to_visible_deformable_surface_contacts",
             "contact_local_nonpenetration_factor_from_signed_normal_and_nearest_triangle_evidence",
             "contact_switch_temporal_continuity_factor",
             "contact_episode_persistence_factor_from_direct_anchor_and_continuous_manipulation_evidence",
@@ -4538,7 +4645,7 @@ def solve_v18_factor_graph(
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
             "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration_and_contact_object_coupling_for_eligible_rigid_contacts",
             "part_SE3_uses_visible_surface_PCA_geometry_with_contact_part_pose_coupling_only_when_active_raw_or_accepted_owner_contact_proposals_exist_and_occlusion_uncertainty_remains",
-            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_coupled_object_or_part_pose_evidence_and_blocks_active_claims_without_direct_support_or_episode_support",
+            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_as_veto_diagnostic_not_pose_motion_and_blocks_active_claims_without_direct_support_or_episode_support",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),
@@ -5366,6 +5473,25 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
         }
         fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
         vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        patch_vars = vars_raw.get("deformable_surface_patch") if isinstance(vars_raw.get("deformable_surface_patch"), list) else []
+        for patch in patch_vars:
+            if not isinstance(patch, dict):
+                continue
+            estimate = numeric_vector(patch.get("estimate"), 3)
+            if estimate is None:
+                continue
+            projected = project_world_points_to_mask(estimate.reshape(1, 3), frame, (image.size[1], image.size[0]))
+            if projected is None:
+                counts["deformable_surface_patch_markers_unprojected"] += 1
+                continue
+            uv, depth = projected
+            if depth.shape[0] and depth[0] > 0 and np.isfinite(uv[0]).all() and 0 <= uv[0, 0] < image.size[0] and 0 <= uv[0, 1] < image.size[1]:
+                px, py = int(round(float(uv[0, 0]))), int(round(float(uv[0, 1])))
+                draw.ellipse((px - 10, py - 10, px + 10, py + 10), outline=(40, 255, 180), width=4)
+                draw_label(draw, (px + 12, py - 12), "deformable patch", small, (40, 255, 180), (0, 0, 0))
+                counts["deformable_surface_patch_markers"] += 1
+            else:
+                counts["deformable_surface_patch_markers_outside_overlay"] += 1
         occlusion_vars = vars_raw.get("occlusion_owner") if isinstance(vars_raw.get("occlusion_owner"), list) else []
         occlusion_vars_by_side = {str(v.get("hand_side")): v for v in occlusion_vars if isinstance(v, dict)}
         for raw_hand in frame.get("hands", []):
@@ -5502,6 +5628,17 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             counts[f"world_hands_{support_label}"] += 1
         fg = require_dict(frame.get("factor_graph_solution"), "factor graph")
         vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        patch_vars = vars_raw.get("deformable_surface_patch") if isinstance(vars_raw.get("deformable_surface_patch"), list) else []
+        for patch in patch_vars:
+            if not isinstance(patch, dict):
+                continue
+            estimate = numeric_vector(patch.get("estimate"), 3)
+            pp = point_from_metric_anchor([float(v) for v in estimate.tolist()], metric_bounds, canvas_w, canvas_h) if estimate is not None else None
+            if pp is None:
+                continue
+            draw.ellipse((pp[0] - 7, pp[1] - 7, pp[0] + 7, pp[1] + 7), outline=(40, 255, 180), width=3)
+            draw_label(draw, (pp[0] + 10, pp[1] - 10), "deformable local patch", small, (40, 255, 180), (18, 20, 25))
+            counts["world_deformable_surface_patch_markers"] += 1
         contact_vars = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
         for switch in contact_vars:
             if not isinstance(switch, dict):

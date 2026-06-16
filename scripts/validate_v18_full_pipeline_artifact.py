@@ -216,6 +216,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "triangle_nonpenetration_watertight_rows": 0,
         "triangle_nonpenetration_physical_ineligible_rows": 0,
         "triangle_nonpenetration_evaluated_nonobserved_hawor_rows": 0,
+        "deformable_surface_patch_vars": 0,
+        "active_deformable_surface_patch_coupled_rows": 0,
         "contact_switch_vars": 0,
         "active_contact_switch_vars": 0,
         "active_contact_switch_vars_with_nonobserved_hawor_hand": 0,
@@ -260,6 +262,18 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         for row in hand_vars:
             if isinstance(row, dict) and str(row.get("source", "")).startswith("HaWoR_metric_MANO_wrist_current_V18_world_m"):
                 require(row.get("unit") == "world_m_wrist_xyz", f"{case}: metric hand graph variable has wrong unit")
+        patch_vars = vars.get("deformable_surface_patch") if isinstance(vars.get("deformable_surface_patch"), list) else []
+        counts["deformable_surface_patch_vars"] += len(patch_vars)
+        deformable_patch_ids = {str(row.get("variable_id")) for row in patch_vars if isinstance(row, dict)}
+        for patch in patch_vars:
+            if not isinstance(patch, dict):
+                continue
+            require(str(patch.get("variable_id", "")).startswith("deformable_surface_patch::"), f"{case}: deformable patch variable id invalid")
+            require(patch.get("unit") == "world_m_local_visible_deformable_surface_patch_xyz", f"{case}: deformable patch variable has wrong unit")
+            require(patch.get("dimension") == 3, f"{case}: deformable patch variable is not 3D")
+            components = patch.get("deformable_surface_patch_components") if isinstance(patch.get("deformable_surface_patch_components"), list) else []
+            families = {str(comp.get("factor_family")) for comp in components if isinstance(comp, dict)}
+            require("deformable_surface_visible_observation" in families and "deformable_surface_contact_anchor" in families, f"{case}: deformable patch variable lacks visible/contact components")
         contact_vars = vars.get("contact_switch") if isinstance(vars.get("contact_switch"), list) else []
         counts["contact_switch_vars"] += len(contact_vars)
         for row in contact_vars:
@@ -397,7 +411,12 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require("stable_contact_support_but_pose_anchor_factor_not_emitted_by_pre_solve_geometry_or_pose_precondition" in (coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else []), f"{case}: stable-not-emitted row lacks precondition blocker")
                 if "deformable_same_frame_visible_surface" in row_support_paths:
                     require(coupling.get("contact_state_affects_object_or_part_pose") is False, f"{case}: deformable contact falsely coupled to object pose")
-                    require("deformable_object_contact_has_no_nonrigid_object_state_model_in_v18_default_solver" in (coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else []), f"{case}: deformable active contact lacks concrete nonrigid-model blocker")
+                    require(coupling.get("contact_state_affects_deformable_surface_patch_state") is True, f"{case}: deformable active contact lacks local surface patch coupling")
+                    patch_id = str(coupling.get("deformable_surface_patch_variable_id") or "")
+                    require(patch_id in deformable_patch_ids, f"{case}: deformable active contact references missing local patch variable")
+                    require(coupling.get("deformable_surface_patch_factor_emitted") is True, f"{case}: deformable active contact lacks emitted patch factor")
+                    require("whole_object_pose_not_coupled_deformable_patch_state_only" in (coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else []), f"{case}: deformable patch coupling scope blocker missing")
+                    counts["active_deformable_surface_patch_coupled_rows"] += 1
                 if row.get("surface_changing_pose_contact_claim_supported") is True:
                     obj = object_by_id.get(str(row.get("object_id")), {})
                     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
@@ -707,6 +726,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["contacts"] > 0, f"{case}: no contact hypotheses")
     require(counts["contact_switch_vars"] == counts["contacts"], f"{case}: contact switch variables do not cover contact hypotheses")
     require(counts["active_contact_pose_coupled_rows"] == int(contact_pose_anchor_fixed_point.get("emitted_anchor_factor_count", -1)), f"{case}: active pose-coupled row count does not match emitted stable anchor factors")
+    require(counts["deformable_surface_patch_vars"] > 0, f"{case}: no deformable surface patch variables")
+    require(counts["active_deformable_surface_patch_coupled_rows"] > 0, f"{case}: no active deformable contacts coupled to local patch state")
     require(counts["active_contact_switch_vars"] > 0 or counts["raw_contact_switches_gated_by_physical_support"] > 0, f"{case}: neither active physical contacts nor physically gated raw contact evidence exists")
     require(counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce active contact switches")
     require(counts["contacts_with_final_metric_distance"] > 0, f"{case}: no final metric MANO-to-object-surface distances")

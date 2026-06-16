@@ -34,6 +34,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(isinstance(variable_counts, dict) and isinstance(factor_counts, dict), f"{case}: counts missing")
     for key in ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "contact_switch", "occlusion_owner"]:
         require(int(variable_counts.get(key, 0)) > 0, f"{case}: missing {key} variables")
+    require(int(variable_counts.get("deformable_surface_patch", 0)) > 0, f"{case}: missing deformable surface patch variables")
     for key in ["camera_depth_correction_observation", "hand_state_observation", "object_se3_observation", "part_se3_observation", "contact_switch_discrete", "contact_switch_temporal", "contact_local_nonpenetration", "occlusion_owner_discrete"]:
         require(int(factor_counts.get(key, 0)) > 0, f"{case}: missing {key} factors")
     implemented_status = fg.get("implemented_variable_status")
@@ -55,6 +56,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(isinstance(implemented_families, list) and any("contact_switch_temporal" in str(item) for item in implemented_families), f"{case}: contact temporal factor family missing")
     require(isinstance(implemented_families, list) and any("contact_local_nonpenetration" in str(item) for item in implemented_families), f"{case}: contact local nonpenetration factor family missing")
     require(isinstance(implemented_families, list) and any("contact_part_pose_anchor" in str(item) for item in implemented_families), f"{case}: contact-part pose anchor factor family missing")
+    require(isinstance(implemented_families, list) and any("deformable_surface_patch" in str(item) for item in implemented_families), f"{case}: deformable surface patch factor family missing")
     inference = fg.get("inference")
     require(isinstance(inference, dict), f"{case}: inference missing")
     require("SciPy" in str(inference.get("continuous_method")), f"{case}: continuous solve is not SciPy-backed")
@@ -63,8 +65,10 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(isinstance(series, dict) and len(series) > 0, f"{case}: series summaries missing")
     object_se3_series = {k: v for k, v in series.items() if str(k).startswith("object_se3::") and isinstance(v, dict)}
     part_se3_series = {k: v for k, v in series.items() if str(k).startswith("part_se3::") and isinstance(v, dict)}
+    deformable_patch_series = {k: v for k, v in series.items() if str(k).startswith("deformable_surface_patch::") and isinstance(v, dict)}
     require(len(object_se3_series) > 0, f"{case}: object SE3 series missing")
     require(len(part_se3_series) > 0, f"{case}: part SE3 series missing")
+    require(len(deformable_patch_series) > 0, f"{case}: deformable surface patch series missing")
     object_6d_count = sum(1 for v in object_se3_series.values() if int(v.get("dimension", 0)) == 6)
     part_6d_count = sum(1 for v in part_se3_series.values() if int(v.get("dimension", 0)) == 6)
     require(object_6d_count > 0, f"{case}: no 6D object SE3 series")
@@ -81,6 +85,9 @@ def validate_case(path: Path) -> dict[str, Any]:
     contact_nonpenetration_factor_rows = 0
     contact_object_component_rows = 0
     contact_part_component_rows = 0
+    deformable_surface_patch_rows = 0
+    deformable_surface_visible_factor_rows = 0
+    deformable_surface_contact_factor_rows = 0
     occlusion_owner_rows = 0
     occlusion_owner_with_temporal_or_mesh = 0
     accepted_occlusion_owner_rows = 0
@@ -142,6 +149,25 @@ def validate_case(path: Path) -> dict[str, Any]:
                             require(coupling.get("contact_switch_active") is True and coupling.get("contact_proposal_used") is True and near, f"{case}: object contact pose anchor is not solved-active and near")
                             require(coupling.get("nonpenetration_conflict") is not True, f"{case}: object contact pose anchor includes nonpenetration conflict")
                             require(coupling.get("raw_contact_switch_active") in {True, False}, f"{case}: object anchor raw diagnostic flag missing")
+            patch_raw = variables.get("deformable_surface_patch")
+            if isinstance(patch_raw, list):
+                for patch_var_raw in patch_raw:
+                    patch_var: dict[str, Any] = patch_var_raw if isinstance(patch_var_raw, dict) else {}
+                    deformable_surface_patch_rows += 1
+                    require(str(patch_var.get("variable_id", "")).startswith("deformable_surface_patch::"), f"{case}: deformable patch variable id invalid")
+                    require(patch_var.get("unit") == "world_m_local_visible_deformable_surface_patch_xyz", f"{case}: deformable patch variable has wrong unit")
+                    require(patch_var.get("dimension") == 3, f"{case}: deformable patch variable is not 3D")
+                    components = patch_var.get("deformable_surface_patch_components") if isinstance(patch_var.get("deformable_surface_patch_components"), list) else []
+                    families = {str(comp.get("factor_family")) for comp in components if isinstance(comp, dict)}
+                    require("deformable_surface_visible_observation" in families, f"{case}: deformable patch lacks visible-surface observation")
+                    require("deformable_surface_contact_anchor" in families, f"{case}: deformable patch lacks MANO contact anchor")
+                    deformable_surface_visible_factor_rows += int(patch_var.get("factor_family_counts", {}).get("deformable_surface_visible_observation", 0)) if isinstance(patch_var.get("factor_family_counts"), dict) else 0
+                    deformable_surface_contact_factor_rows += int(patch_var.get("factor_family_counts", {}).get("deformable_surface_contact_anchor", 0)) if isinstance(patch_var.get("factor_family_counts"), dict) else 0
+                    for comp in components:
+                        coupling = comp.get("coupling") if isinstance(comp, dict) and isinstance(comp.get("coupling"), dict) else {}
+                        require(coupling.get("contact_switch_active") is True and coupling.get("contact_proposal_used") is True, f"{case}: deformable patch component not tied to active contact")
+                        require(coupling.get("support_path") == "deformable_same_frame_visible_surface", f"{case}: deformable patch component support path invalid")
+                        require("not_whole_object_pose" in str(coupling.get("scope")), f"{case}: deformable patch scope overclaims object pose")
             part_raw = variables.get("part_se3")
             if isinstance(part_raw, list):
                 for part_var_raw in part_raw:
@@ -241,6 +267,9 @@ def validate_case(path: Path) -> dict[str, Any]:
         require(contact_episode_factor_rows == int(factor_counts.get("contact_episode_persistence", -1)), f"{case}: contact episode factor count mismatch")
     require(temporal_contact_factor_rows == int(factor_counts.get("contact_switch_temporal", -1)), f"{case}: temporal contact factor count mismatch")
     require(contact_nonpenetration_factor_rows == int(factor_counts.get("contact_local_nonpenetration", -1)), f"{case}: contact local nonpenetration factor count mismatch")
+    require(deformable_surface_patch_rows == int(variable_counts.get("deformable_surface_patch", -1)), f"{case}: deformable surface patch variable count mismatch")
+    require(deformable_surface_visible_factor_rows == int(factor_counts.get("deformable_surface_visible_observation", -1)), f"{case}: deformable surface visible factor count mismatch")
+    require(deformable_surface_contact_factor_rows == int(factor_counts.get("deformable_surface_contact_anchor", -1)), f"{case}: deformable surface contact factor count mismatch")
     require(int(factor_counts.get("contact_object_nonpenetration_repel", 0)) == 0, f"{case}: nonpenetration conflict must not move object pose")
     require(contact_object_component_rows == int(factor_counts.get("contact_object_pose_anchor", 0)) + int(factor_counts.get("contact_surface_changing_object_pose_anchor", 0)), f"{case}: contact-object component count mismatch")
     require(contact_part_component_rows == int(factor_counts.get("contact_part_pose_anchor", 0)), f"{case}: contact-part component count mismatch")
@@ -263,6 +292,9 @@ def validate_case(path: Path) -> dict[str, Any]:
         "contact_episode_rows": contact_episode_rows,
         "contact_episode_factors": int(factor_counts.get("contact_episode_persistence", 0)),
         "contact_local_nonpenetration_factors": int(factor_counts.get("contact_local_nonpenetration", 0)),
+        "deformable_surface_patch_rows": deformable_surface_patch_rows,
+        "deformable_surface_visible_factors": int(factor_counts.get("deformable_surface_visible_observation", 0)),
+        "deformable_surface_contact_factors": int(factor_counts.get("deformable_surface_contact_anchor", 0)),
         "occlusion_owner_rows": occlusion_owner_rows,
         "frame_with_graph_count": frame_with_graph,
     }
