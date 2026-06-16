@@ -262,11 +262,20 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             side = str(row.get("hand_side"))
             row_support_state = str(row.get("hand_support_state") or hand_support_by_side.get(side, ""))
             mode = str(row.get("physical_contact_mode") or "")
-            require(mode in {"active_physical_contact", "depth_occluded_contact_possible", "supported_near_noncontact", "raw_contact_proposal_without_final_validated_physical_support", "depth_contradicted_noncontact", "separated_or_unresolved_noncontact"}, f"{case}: contact switch missing/invalid physical_contact_mode {mode!r}")
+            require(mode in {"active_physical_contact", "contact_episode_hypothesis_nonactive", "depth_occluded_contact_possible", "supported_near_noncontact", "raw_contact_proposal_without_final_validated_physical_support", "depth_contradicted_noncontact", "separated_or_unresolved_noncontact"}, f"{case}: contact switch missing/invalid physical_contact_mode {mode!r}")
             renderable_mode = row.get("physical_contact_mode_renderable") is True
             if mode == "active_physical_contact":
                 counts["contact_physical_mode_active"] += 1
                 require(row.get("estimate") is True, f"{case}: active physical_contact_mode without active estimate")
+            elif mode == "contact_episode_hypothesis_nonactive":
+                counts["renderable_nonactive_contact_modes"] += int(renderable_mode)
+                require(row.get("estimate") is not True, f"{case}: episode hypothesis mode is active")
+                require(renderable_mode, f"{case}: episode hypothesis mode is not renderable")
+                support_paths = row.get("physical_contact_mode_support_paths") if isinstance(row.get("physical_contact_mode_support_paths"), list) else []
+                require("manipulation_contact_episode_persistent_constraint" in support_paths, f"{case}: episode hypothesis lacks episode support path")
+                require(row.get("post_graph_manipulation_episode_support") is True, f"{case}: episode hypothesis lacks post-graph episode flag")
+                require(row.get("post_graph_direct_visible_or_validated_near_support") is not True, f"{case}: episode hypothesis has direct near support and should be classified by direct evidence")
+                require(row.get("physical_contact_claim_supported") is not True, f"{case}: episode hypothesis overclaims solved contact")
             elif mode == "depth_occluded_contact_possible":
                 counts["contact_physical_mode_depth_occluded_possible"] += 1
                 counts["renderable_nonactive_contact_modes"] += int(renderable_mode)
@@ -296,16 +305,37 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(abs(float(row.get("physical_contact_mode_nearest_distance_m")) - float(row.get("final_metric_contact_distance_m"))) < 1e-6, f"{case}: deformable near mode distance does not match same-frame visible-surface distance")
             elif renderable_mode:
                 raise AssertionError(f"{case}: unsupported physical_contact_mode is renderable: {mode}")
+            solved_claim_keys = [
+                "physical_contact_claim_supported",
+                "rigid_pose_contact_claim_supported",
+                "validated_part_pose_contact_claim_supported",
+                "surface_changing_pose_contact_claim_supported",
+                "deformable_visible_surface_contact_claim_supported",
+            ]
+            evidence_keys = [
+                "physical_contact_evidence_supported",
+                "rigid_pose_contact_evidence_supported",
+                "validated_part_pose_contact_evidence_supported",
+                "surface_changing_pose_contact_evidence_supported",
+                "deformable_visible_surface_contact_evidence_supported",
+            ]
+            if mode != "active_physical_contact":
+                for key in solved_claim_keys:
+                    require(row.get(key) is not True, f"{case}: non-active contact row carries solved claim flag {key}")
+            for key in evidence_keys:
+                if key in row:
+                    require(row.get(key) in {True, False}, f"{case}: contact evidence flag {key} is not boolean")
             if row.get("raw_estimate_before_hawor_support_gate") is True and row.get("estimate") is False and row_support_state != "observed_same_frame_detection":
                 counts["raw_contact_switches_gated_by_hawor_support"] += 1
-            if row.get("raw_estimate_before_physical_contact_gate") is True and row.get("physical_contact_claim_supported") is not True:
+            if row.get("raw_estimate_before_physical_contact_gate") is True and row.get("physical_contact_evidence_supported") is not True:
                 counts["raw_contact_switches_gated_by_physical_support"] += 1
             if row.get("estimate") is True:
                 counts["active_contact_switch_vars"] += 1
                 row_support_paths = row.get("physical_contact_mode_support_paths") if isinstance(row.get("physical_contact_mode_support_paths"), list) else []
                 episode_support = bool(row.get("post_graph_manipulation_episode_support") is True and "manipulation_contact_episode_persistent_constraint" in row_support_paths)
                 direct_support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True, row.get("deformable_visible_surface_contact_claim_supported") is True]
-                require(row.get("physical_contact_claim_supported") is True or episode_support, f"{case}: active contact lacks direct support or manipulation-episode support")
+                require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks solved direct physical contact support")
+                require(row.get("post_graph_direct_visible_or_validated_near_support") is True, f"{case}: active contact lacks direct frame-local visible/validated near support")
                 if episode_support:
                     episode = row.get("manipulation_contact_episode_final_support") if isinstance(row.get("manipulation_contact_episode_final_support"), dict) else {}
                     episode_evidence = row.get("manipulation_contact_episode_evidence") if isinstance(row.get("manipulation_contact_episode_evidence"), dict) else {}
@@ -338,7 +368,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                         require(row.get("effective_metric_contact_distance_m") is not None and float(row.get("effective_metric_contact_distance_m")) <= 0.07, f"{case}: visual-prior active contact is not in close metric band")
                         require(float(row.get("mesh_contact_support_score") or 0.0) >= 0.90, f"{case}: visual-prior active contact lacks high mesh contact support")
                         require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
-                require(any(direct_support_paths) or episode_support, f"{case}: active contact lacks rigid/part/surface-changing/deformable-surface or episode support path")
+                require(any(direct_support_paths), f"{case}: active contact lacks rigid/part/surface-changing/deformable-surface support path")
                 if row.get("surface_changing_pose_contact_claim_supported") is True:
                     obj = object_by_id.get(str(row.get("object_id")), {})
                     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}

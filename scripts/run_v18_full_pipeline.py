@@ -2375,9 +2375,13 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             support_paths = final_contact_support_paths_for_mode(frame, obj, switch) if isinstance(obj, dict) else []
             near_distance = contact_mode_supported_distance(switch, support_paths)
             episode_supported = "manipulation_contact_episode_persistent_constraint" in support_paths
-            direct_near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
-            near_supported = bool(direct_near_supported)
-            final_support_allows_active = bool(direct_near_supported or episode_supported)
+            direct_contact_support_paths = [
+                path for path in support_paths
+                if path not in {"manipulation_contact_episode_persistent_constraint", "deformable_same_frame_visible_surface_near_noncontact"}
+            ]
+            direct_near_supported = bool(direct_contact_support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
+            near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
+            final_support_allows_active = bool(direct_near_supported)
             switch["post_graph_final_support_paths_present"] = bool(support_paths)
             switch["post_graph_final_support_allows_active_contact"] = bool(final_support_allows_active)
             switch["post_graph_direct_visible_or_validated_near_support"] = bool(direct_near_supported)
@@ -2392,12 +2396,12 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             if switch.get("estimate") is True and not final_support_allows_active:
                 switch["estimate_before_final_support_gate"] = True
                 switch["final_support_gate_demoted_active_contact"] = True
-                switch["final_support_gate_reason"] = "post_graph_object_or_part_support_path_missing_or_no_episode_support"
+                switch["final_support_gate_reason"] = "direct_frame_local_object_or_part_contact_support_missing"
                 switch["estimate"] = False
             active = bool(
                 switch.get("estimate") is True
-                and (switch.get("physical_contact_claim_supported") is True or episode_supported)
-                and (switch.get("depth_conflict_blocks_active_contact") is not True or episode_supported)
+                and switch.get("physical_contact_claim_supported") is True
+                and switch.get("depth_conflict_blocks_active_contact") is not True
                 and switch.get("support_gate_allows_active_contact") is True
                 and final_support_allows_active
                 and switch.get("nonpenetration_conflict") is not True
@@ -2411,6 +2415,10 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
                     reason = "temporal_contact_switch_on_with_direct_contact_anchor_inside_manipulation_episode"
                 elif switch.get("visual_contact_prior_overrode_weak_depth_conflict") is True:
                     reason = "temporal_contact_switch_on_with_visual_contact_prior_close_metric_geometry_and_demoted_weak_depth_conflict"
+                renderable = True
+            elif episode_supported:
+                mode = "contact_episode_hypothesis_nonactive"
+                reason = "bounded_manipulation_episode_without_direct_frame_local_physical_contact_evidence"
                 renderable = True
             elif near_supported and switch.get("depth_conflict_blocks_active_contact") is True and switch.get("raw_estimate_before_physical_contact_gate") is True:
                 mode = "depth_occluded_contact_possible"
@@ -2454,7 +2462,7 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             switch["physical_contact_mode_reason"] = reason
             switch["physical_contact_mode_support_paths"] = support_paths
             switch["physical_contact_mode_nearest_distance_m"] = float(near_distance) if math.isfinite(near_distance) else None
-            switch["physical_contact_mode_distance_semantics"] = "nearest_visible_or_validated_surface_distance_not_contact_patch_gap_for_episode_supported_frames" if episode_supported and not direct_near_supported else "supported_visible_or_validated_surface_distance"
+            switch["physical_contact_mode_distance_semantics"] = "nearest_visible_or_validated_surface_distance_not_contact_patch_gap_for_episode_hypothesis_frames" if episode_supported and not direct_near_supported else "supported_visible_or_validated_surface_distance"
             switch["physical_contact_mode_renderable"] = bool(renderable)
             switch["physical_contact_mode_scope"] = "active_contact_claim" if mode == "active_physical_contact" else "nonactive_uncertain_state_not_a_contact_claim" if renderable else "nonrendered_noncontact_or_unsupported_proposal"
             counts[f"contact_physical_mode_{mode}"] += 1
@@ -4936,6 +4944,8 @@ def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], 
         return (80, 220, 255), "depth-occluded contact possible", 2, True, "contact_depth_occluded_possible_lines"
     if mode == "supported_near_noncontact" and switch.get("physical_contact_mode_renderable") is True:
         return (255, 170, 80), "supported near non-contact", 2, True, "contact_supported_near_noncontact_lines"
+    if mode == "contact_episode_hypothesis_nonactive" and switch.get("physical_contact_mode_renderable") is True:
+        return (120, 220, 255), "episode contact hypothesis", 1, True, "contact_episode_hypothesis_lines"
     return None
 
 
