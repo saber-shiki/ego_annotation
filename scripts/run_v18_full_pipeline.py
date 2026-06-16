@@ -4847,6 +4847,17 @@ def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], 
     return None
 
 
+def object_pose_render_style(obj: dict[str, Any], recon: dict[str, Any]) -> tuple[tuple[int, int, int], str, str]:
+    validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
+    if recon.get("rigid_pose_supported_visible_mesh") is True:
+        return (80, 255, 130), "rigid visible pose supported", "supported"
+    if recon.get("surface_changing_compact_pose_supported_visible_mesh") is True:
+        return (120, 255, 255), "surface-changing visible pose supported", "supported"
+    if validation or recon.get("visible_depth_silhouette_pose_supported") is False:
+        return (150, 150, 150), "object mesh candidate — pose rejected", "rejected"
+    return (120, 210, 255), "object mesh candidate — unvalidated", "unvalidated"
+
+
 def part_pose_render_style(part: dict[str, Any], recon: dict[str, Any]) -> tuple[tuple[int, int, int], str, str]:
     validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
     if validation.get("frame_visible_depth_silhouette_pose_supported") is True or recon.get("visible_depth_silhouette_pose_supported") is True:
@@ -4900,14 +4911,9 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 draw_label(draw, (box[0], max(44, box[1] - 22)), label[:115], small, rgb)
                 recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
                 if recon.get("renderable_pose_geometry") is True:
-                    if recon.get("rigid_pose_supported_visible_mesh") is True:
-                        mesh_text = "supported rigid mesh pose"
-                    elif recon.get("surface_changing_compact_pose_supported_visible_mesh") is True:
-                        mesh_text = "surface-changing visible pose"
-                    else:
-                        mesh_text = "depth-fused mesh candidate"
-                    draw_label(draw, (box[0], min(image.size[1] - 58, box[3] + 6)), mesh_text, small, (120, 255, 255), (0, 0, 0))
-                    counts["reconstructed_geometry_pose_labels"] += 1
+                    mesh_color, mesh_text, mesh_state = object_pose_render_style(obj, recon)
+                    draw_label(draw, (box[0], min(image.size[1] - 58, box[3] + 6)), mesh_text, small, mesh_color, (0, 0, 0))
+                    counts[f"reconstructed_geometry_pose_labels_{mesh_state}"] += 1
                 counts["object_boxes"] += 1
             for part_idx, part in enumerate(obj.get("parts", [])[:4]):
                 if isinstance(part, dict) and isinstance(part.get("part_mask_path"), str):
@@ -5050,20 +5056,12 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             draw.ellipse((pt[0]-radius, pt[1]-radius, pt[0]+radius, pt[1]+radius), fill=color)
             recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
             if recon.get("renderable_pose_geometry") is True:
-                if recon.get("rigid_pose_supported_visible_mesh") is True:
-                    mesh_color = (80, 255, 130)
-                    mesh_label = "rigid-pose"
-                elif recon.get("surface_changing_compact_pose_supported_visible_mesh") is True:
-                    mesh_color = (120, 255, 255)
-                    mesh_label = "surface-pose"
-                else:
-                    mesh_color = (120, 210, 255)
-                    mesh_label = "mesh-candidate"
+                mesh_color, mesh_label, mesh_state = object_pose_render_style(obj, recon)
                 if draw_metric_mesh_footprint(draw, recon, metric_bounds, canvas_w, canvas_h, mesh_color):
                     draw_label(draw, (pt[0] + 10, pt[1] + 12), mesh_label, small, mesh_color, (18, 20, 25))
-                    counts["world_reconstructed_mesh_footprints"] += 1
-                    if recon.get("rigid_pose_supported_visible_mesh") is True:
-                        counts["world_supported_rigid_mesh_poses"] += 1
+                    counts[f"world_reconstructed_mesh_footprints_{mesh_state}"] += 1
+                    if mesh_state == "supported":
+                        counts["world_supported_object_mesh_poses"] += 1
             part_mesh_drawn = 0
             for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
