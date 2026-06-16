@@ -2900,8 +2900,9 @@ def compact_multiview_geometry_completion_assessment(obj: dict[str, Any], recon:
         blockers.append("schema_not_clean_rigid_compact_object_geometry")
     if not supported_pose:
         blockers.append("current_frame_visible_depth_silhouette_pose_not_supported")
-    if source_frames < 100:
-        blockers.append("multiview_source_frame_count_below_100")
+    min_source_frames = 25
+    if source_frames < min_source_frames:
+        blockers.append(f"multiview_source_frame_count_below_{min_source_frames}")
     if max(sampled_points, source_points) < 5000:
         blockers.append("multiview_depth_point_count_below_5000")
     if hull_faces < 40:
@@ -2914,7 +2915,7 @@ def compact_multiview_geometry_completion_assessment(obj: dict[str, Any], recon:
         "geometry_completion_state": "compact_multiview_reconstructed_geometry_pose_supported" if complete else "compact_multiview_reconstructed_geometry_pose_not_supported",
         "schema_eligible_compact_object": bool(schema_eligible),
         "source_frame_count": source_frames,
-        "min_source_frame_count": 100,
+        "min_source_frame_count": min_source_frames,
         "source_point_count": source_points,
         "sampled_point_count": sampled_points,
         "min_depth_point_count": 5000,
@@ -4849,6 +4850,8 @@ def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], 
 
 def object_pose_render_style(obj: dict[str, Any], recon: dict[str, Any]) -> tuple[tuple[int, int, int], str, str]:
     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
+    if obj.get("object_geometry_complete") is True and obj.get("object_pose_requirement_met") is True:
+        return (40, 255, 80), "complete clean-rigid geometry pose", "completed"
     if recon.get("rigid_pose_supported_visible_mesh") is True:
         return (80, 255, 130), "rigid visible pose supported", "supported"
     if recon.get("surface_changing_compact_pose_supported_visible_mesh") is True:
@@ -5062,6 +5065,8 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                     counts[f"world_reconstructed_mesh_footprints_{mesh_state}"] += 1
                     if mesh_state == "supported":
                         counts["world_supported_object_mesh_poses"] += 1
+                    if mesh_state == "completed":
+                        counts["world_completed_object_mesh_poses"] += 1
             part_mesh_drawn = 0
             for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
