@@ -21,10 +21,10 @@ FALSE_READY: dict[str, bool] = {
 
 STATUS = "v18_physical_state_schema"
 CLAIM = (
-    "This artifact converts model-produced physical notes into a structured object physical-state schema: primary "
-    "whole-object state, part/relative-motion requirement, deformable/optical secondary evidence, and unresolved "
-    "surface-change flags. It centralizes the text adapter so downstream gates do not each parse free text. It does "
-    "not infer geometry, pose, articulation parameters, or contact ownership."
+    "This artifact consumes structured VLM physical-model fields for each object: primary whole-object state, "
+    "pose-model eligibility, part/relative-motion requirement, deformable/optical secondary evidence, and surface "
+    "appearance uncertainty. It does not parse free-text notes to decide physical model type, and it does not infer "
+    "geometry, pose, articulation parameters, or contact ownership."
 )
 
 PRIMARY_STATES = {"rigid", "deformable", "articulated", "unknown", "unknown_optically_difficult"}
@@ -116,90 +116,39 @@ def matched_terms(text: str, terms: tuple[str, ...]) -> list[str]:
     return [term for term in terms if term in text]
 
 
-def structured_from_notes(notes: Any) -> dict[str, Any]:
-    if not isinstance(notes, str) or not notes.strip():
-        return {
-            "model_physical_state_type": "unknown",
-            "physical_state_source": "unknown_no_model_notes",
-            "requires_part_or_relative_motion_model": False,
-            "part_or_relative_motion_evidence_terms": [],
-            "secondary_deformable_or_surface_component": False,
-            "secondary_deformable_evidence_terms": [],
-            "optical_difficulty": False,
-            "optical_evidence_terms": [],
-            "surface_change_without_pose_state": False,
-            "surface_change_evidence_terms": [],
-            "schema_confidence": "low",
-            "schema_blockers": ["missing_model_physical_notes"],
-        }
-    text = notes.lower()
-    rigid_matches = matched_terms(text, RIGID_TERMS)
-    if "non-rigid" in text or "nonrigid" in text:
-        rigid_matches = [term for term in rigid_matches if term != "rigid"]
-    deform_matches = matched_terms(text, DEFORMABLE_TERMS)
-    primary_articulation_matches = matched_terms(text, PRIMARY_ARTICULATION_TERMS)
-    part_motion_matches = matched_terms(text, PART_OR_RELATIVE_MOTION_TERMS)
-    optical_matches = matched_terms(text, OPTICAL_TERMS)
-    surface_change_matches = matched_terms(text, SURFACE_CHANGE_TERMS)
-
-    has_rigid = bool(rigid_matches)
-    has_deform = bool(deform_matches) or "no fixed geometry should be assumed" in text
-    has_articulation = bool(primary_articulation_matches)
-    has_part_or_relative_motion = bool(part_motion_matches)
-    has_optical = bool(optical_matches)
-    has_surface_change = bool(surface_change_matches)
-
-    blockers: list[str] = []
-    if has_articulation:
-        primary = "articulated"
-    elif has_deform and not has_rigid:
-        primary = "deformable"
-    elif has_rigid:
-        primary = "rigid"
-    elif has_optical:
-        primary = "unknown_optically_difficult"
-        blockers.append("optical_terms_without_primary_physical_state")
-    else:
-        primary = "unknown"
-        blockers.append("no_explicit_primary_physical_state_term")
+def structured_from_vlm_physical_model(row: dict[str, Any]) -> dict[str, Any]:
+    primary = require_str(row.get("primary_physical_model"), "primary physical model")
     if primary not in PRIMARY_STATES:
-        raise RuntimeError(f"unexpected primary physical state: {primary}")
-    secondary_deformable = bool(has_deform and primary in {"rigid", "articulated"})
-    if secondary_deformable:
-        blockers.append("secondary_deformable_or_surface_component_present")
-    if has_surface_change and primary == "unknown":
-        blockers.append("surface_change_without_pose_model")
-    confidence = "high" if primary in {"rigid", "deformable", "articulated"} and not blockers else "medium" if primary != "unknown" else "low"
+        raise RuntimeError(f"unexpected primary physical model: {primary}")
+    confidence_raw = row.get("confidence")
+    confidence = float(confidence_raw) if isinstance(confidence_raw, (int, float)) else 0.0
+    pose_allowed = bool(row.get("pose_model_allowed") is True)
+    blockers: list[str] = []
+    if primary == "unknown":
+        blockers.append("structured_vlm_primary_physical_model_unknown")
+    if not pose_allowed:
+        blockers.append("structured_vlm_pose_model_not_allowed")
     return {
         "model_physical_state_type": primary,
-        "physical_state_source": "vlm_physical_notes_structured_schema_v1",
-        "requires_part_or_relative_motion_model": has_part_or_relative_motion,
-        "primary_articulation_evidence_terms": primary_articulation_matches,
-        "part_or_relative_motion_evidence_terms": part_motion_matches,
-        "secondary_deformable_or_surface_component": secondary_deformable,
-        "secondary_deformable_evidence_terms": deform_matches if secondary_deformable else [],
-        "optical_difficulty": has_optical,
-        "optical_evidence_terms": optical_matches,
-        "surface_change_without_pose_state": has_surface_change and primary == "unknown",
-        "surface_change_evidence_terms": surface_change_matches,
-        "schema_confidence": confidence,
+        "physical_state_source": "structured_vlm_physical_model_fields_v1",
+        "pose_model_allowed_by_structured_vlm": pose_allowed,
+        "surface_appearance_changes": bool(row.get("surface_appearance_changes") is True),
+        "geometry_changes": row.get("geometry_changes"),
+        "requires_part_or_relative_motion_model": bool(row.get("requires_part_or_relative_motion_model") is True),
+        "primary_articulation_evidence_terms": [row.get("evidence")] if row.get("requires_part_or_relative_motion_model") is True else [],
+        "part_or_relative_motion_evidence_terms": [row.get("evidence")] if row.get("requires_part_or_relative_motion_model") is True else [],
+        "secondary_deformable_or_surface_component": bool(row.get("secondary_deformable_or_surface_component") is True),
+        "secondary_deformable_evidence_terms": [row.get("evidence")] if row.get("secondary_deformable_or_surface_component") is True else [],
+        "optical_difficulty": bool(row.get("optical_difficulty") is True),
+        "optical_evidence_terms": [row.get("evidence")] if row.get("optical_difficulty") is True else [],
+        "surface_change_without_pose_state": bool(row.get("surface_appearance_changes") is True and not pose_allowed),
+        "surface_change_evidence_terms": [row.get("evidence")] if row.get("surface_appearance_changes") is True else [],
+        "structured_vlm_confidence": confidence,
+        "structured_vlm_evidence": row.get("evidence"),
+        "structured_vlm_uncertainty": row.get("uncertainty"),
+        "schema_confidence": "high" if confidence >= 0.8 and not blockers else "medium" if confidence >= 0.5 else "low",
         "schema_blockers": blockers,
     }
-
-
-def legacy_physical_state_from_notes(notes: Any) -> str:
-    if not isinstance(notes, str) or not notes.strip():
-        return "unknown"
-    text = notes.lower()
-    if any(word in text for word in ("hinged", "lever", "articulated")):
-        return "articulated"
-    if any(word in text for word in ("deformable", "non-rigid", "nonrigid", "flexible", "thin", "changes shape", "curled")):
-        return "deformable"
-    if "rigid" in text:
-        return "rigid"
-    if any(word in text for word in ("transparent", "translucent", "reflective")):
-        return "unknown_optically_difficult"
-    return "unknown"
 
 
 def timeline_objects(timeline: dict[str, Any], roster_by_object_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -222,6 +171,9 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     timeline_path = existing(args.multi_object_timeline_root / case / "v17_multi_object_timeline.json", f"{case} object timeline")
     timeline = require_dict(load_json(timeline_path), f"{case} object timeline")
     roster_path = existing(Path(require_str(measurement_manifest.get("object_roster"), f"{case} object_roster")), f"{case} object roster")
+    structured_model_path = existing(args.structured_physical_model_root / case / "v18_structured_physical_model.json", f"{case} structured physical model")
+    structured_model = require_dict(load_json(structured_model_path), f"{case} structured physical model")
+    structured_by_track_id = {require_str(row.get("track_id"), "structured model track_id"): require_dict(row, "structured model row") for row in require_list(structured_model.get("objects"), "structured model objects")}
     roster_rows = [require_dict(row, "object roster row") for row in require_list(load_json(roster_path), f"{case} object roster")]
     roster_by_object_id = {require_str(row.get("object_id"), "roster object_id"): row for row in roster_rows}
     object_rows: list[dict[str, Any]] = []
@@ -234,10 +186,13 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
     changed_from_legacy: list[dict[str, Any]] = []
     for obj in timeline_objects(timeline, roster_by_object_id):
         notes = obj.get("physical_notes")
-        structured = structured_from_notes(notes)
-        legacy = legacy_physical_state_from_notes(notes)
+        track_id = require_str(obj.get("track_id"), "timeline object track_id")
+        if track_id not in structured_by_track_id:
+            raise RuntimeError(f"{case}: missing structured VLM physical model for track_id {track_id}")
+        structured = structured_from_vlm_physical_model(structured_by_track_id[track_id])
         primary = require_str(structured.get("model_physical_state_type"), "model physical state")
         primary_counts[primary] += 1
+        legacy = "not_used_structured_vlm_required"
         legacy_counts[legacy] += 1
         if bool(structured.get("requires_part_or_relative_motion_model")):
             part_motion_count += 1
@@ -255,6 +210,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "role_status": obj.get("role_status"),
             "roster_source": obj.get("source"),
             "legacy_keyword_physical_state_type": legacy,
+            "structured_physical_model_source": str(structured_model_path),
             **structured,
             "structured_schema_ready": True,
             "part_pose_ready": False,
@@ -279,6 +235,7 @@ def case_report(case: str, args: argparse.Namespace) -> dict[str, Any]:
             "v17_measurement_manifest": str(measurement_manifest_path),
             "v17_multi_object_timeline": str(timeline_path),
             "object_roster": str(roster_path),
+            "structured_physical_model": str(structured_model_path),
         },
         "object_count": len(object_rows),
         "model_physical_state_type_counts": dict(sorted(primary_counts.items())),
@@ -347,6 +304,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measurement-store-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_measurement_store"))
     parser.add_argument("--multi-object-timeline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_multi_object_timeline"))
     parser.add_argument("--output-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
+    parser.add_argument("--structured-physical-model-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_structured_physical_model"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
 

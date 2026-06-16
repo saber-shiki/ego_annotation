@@ -142,6 +142,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(isinstance(frames, list) and len(frames) == expected, f"{case}: annotation frame count mismatch")
     factor_graph_summary = ann.get("factor_graph_summary") if isinstance(ann.get("factor_graph_summary"), dict) else {}
     physical_contact_state_report = factor_graph_summary.get("physical_contact_state_report") if isinstance(factor_graph_summary.get("physical_contact_state_report"), dict) else {}
+    contact_pose_anchor_fixed_point = factor_graph_summary.get("contact_pose_anchor_fixed_point") if isinstance(factor_graph_summary.get("contact_pose_anchor_fixed_point"), dict) else {}
+    require(contact_pose_anchor_fixed_point.get("method") == "bounded_two_stage_contact_pose_anchor_fixed_point", f"{case}: contact pose anchor fixed-point summary missing")
+    require("raw_contact_proposals_remain_evidence_only" in str(contact_pose_anchor_fixed_point.get("semantics")), f"{case}: contact pose anchors do not exclude raw proposal coupling")
 
     modules_raw = ann.get("modules")
     modules: dict[str, Any] = modules_raw if isinstance(modules_raw, dict) else {}
@@ -216,6 +219,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "contact_switch_vars": 0,
         "active_contact_switch_vars": 0,
         "active_contact_switch_vars_with_nonobserved_hawor_hand": 0,
+        "active_contact_pose_coupled_rows": 0,
+        "active_contact_unstable_anchor_rows": 0,
+        "active_contact_stable_anchor_not_emitted_rows": 0,
         "contact_physical_mode_active": 0,
         "contact_physical_mode_depth_occluded_possible": 0,
         "contact_physical_mode_supported_near_noncontact": 0,
@@ -336,6 +342,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 direct_support_paths = [row.get("rigid_pose_contact_claim_supported") is True, row.get("validated_part_pose_contact_claim_supported") is True, row.get("surface_changing_pose_contact_claim_supported") is True, row.get("deformable_visible_surface_contact_claim_supported") is True]
                 require(row.get("physical_contact_claim_supported") is True, f"{case}: active contact lacks solved direct physical contact support")
                 require(row.get("post_graph_direct_visible_or_validated_near_support") is True, f"{case}: active contact lacks direct frame-local visible/validated near support")
+                require(row.get("hand_depth_scale_supported_for_contact") is True, f"{case}: active contact lacks depth-scaled HaWoR metric support")
+                require(row.get("hand_depth_scale_status") == "depth_scaled_from_projected_hawor_vertices_to_unidepth", f"{case}: active contact has invalid hand depth scale status")
+                require(int(row.get("hand_depth_scale_sample_count") or 0) >= 40, f"{case}: active contact has too few hand depth scale samples")
                 if episode_support:
                     episode = row.get("manipulation_contact_episode_final_support") if isinstance(row.get("manipulation_contact_episode_final_support"), dict) else {}
                     episode_evidence = row.get("manipulation_contact_episode_evidence") if isinstance(row.get("manipulation_contact_episode_evidence"), dict) else {}
@@ -373,6 +382,19 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 require(isinstance(coupling, dict), f"{case}: active contact lacks object/part coupling state")
                 require(coupling.get("contact_state_affects_object_or_part_pose") in {True, False}, f"{case}: active contact coupling state missing boolean effect field")
                 require("not_a_contact_claim_source" in str(coupling.get("scope")), f"{case}: active contact coupling state scope missing")
+                if coupling.get("contact_state_affects_object_or_part_pose") is True:
+                    counts["active_contact_pose_coupled_rows"] += 1
+                    require(coupling.get("stable_contact_pose_anchor_factor_emitted") is True, f"{case}: active contact pose coupling lacks emitted stable anchor factor")
+                    require(coupling.get("coupling_family") in {"contact_object_pose_anchor", "contact_surface_changing_object_pose_anchor", "contact_part_pose_anchor"}, f"{case}: active contact pose coupling has invalid family")
+                elif coupling.get("coupling_state") == "active_contact_not_pose_coupled_unstable_anchor_fixed_point":
+                    counts["active_contact_unstable_anchor_rows"] += 1
+                    require(coupling.get("stable_contact_pose_anchor_factor_emitted") is False, f"{case}: unstable anchor row claims emitted factor")
+                    require("direct_contact_support_is_not_a_stable_contact_pose_anchor_fixed_point" in (coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else []), f"{case}: unstable anchor row lacks blocker")
+                elif coupling.get("coupling_state") == "active_contact_not_pose_coupled_stable_anchor_factor_not_emitted":
+                    counts["active_contact_stable_anchor_not_emitted_rows"] += 1
+                    require(coupling.get("stable_contact_pose_anchor_candidate") is True, f"{case}: stable-not-emitted row lacks stable candidate flag")
+                    require(coupling.get("stable_contact_pose_anchor_factor_emitted") is False, f"{case}: stable-not-emitted row claims emitted factor")
+                    require("stable_contact_support_but_pose_anchor_factor_not_emitted_by_pre_solve_geometry_or_pose_precondition" in (coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else []), f"{case}: stable-not-emitted row lacks precondition blocker")
                 if "deformable_same_frame_visible_surface" in row_support_paths:
                     require(coupling.get("contact_state_affects_object_or_part_pose") is False, f"{case}: deformable contact falsely coupled to object pose")
                     require("deformable_object_contact_has_no_nonrigid_object_state_model_in_v18_default_solver" in (coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else []), f"{case}: deformable active contact lacks concrete nonrigid-model blocker")
@@ -405,6 +427,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     schema = obj.get("physical_state_schema") if isinstance(obj, dict) and isinstance(obj.get("physical_state_schema"), dict) else {}
                     geom = obj.get("visible_geometry_candidate") if isinstance(obj, dict) and isinstance(obj.get("visible_geometry_candidate"), dict) else {}
                     physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown") if isinstance(obj, dict) else "unknown"
+                    require(schema.get("requires_part_or_relative_motion_model") is not True, f"{case}: part-required object used whole-object deformable contact path")
                     require(physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True, f"{case}: active deformable contact is not on deformable object")
                     require(isinstance(geom.get("world_vertices_sample_m"), list) and len(geom.get("world_vertices_sample_m")) > 0, f"{case}: active deformable contact lacks visible depth surface")
                     require(row.get("final_metric_contact_distance_m") is not None and float(row.get("final_metric_contact_distance_m")) <= 0.05, f"{case}: active deformable contact is not within 5cm same-frame visible surface band")
@@ -512,6 +535,10 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     require(assessment.get("schema_eligible_compact_object") is True, f"{case}: object completion schema is not compact eligible")
                     require(physical == "rigid", f"{case}: object completion is not clean rigid compact geometry")
                     require(schema.get("surface_change_without_pose_state") is not True, f"{case}: surface-changing object completion overclaims hidden geometry/pose")
+                    if schema.get("surface_appearance_changes") is True:
+                        require(assessment.get("surface_appearance_compatible_with_compact_completion") is True, f"{case}: surface-appearance object completion lacks structured compact-compatibility support")
+                        require(schema.get("pose_model_allowed_by_structured_vlm") is True, f"{case}: surface-appearance completion lacks structured pose-model allowance")
+                        require(str(schema.get("geometry_changes")) in {"none", "minor_surface_layer_or_texture_change"}, f"{case}: surface-appearance completion has non-minor geometry change")
                     require(schema.get("requires_part_or_relative_motion_model") is not True, f"{case}: part/relative-motion object completion overclaims single-object geometry")
                     require(schema.get("secondary_deformable_or_surface_component") is not True, f"{case}: deformable/surface-component object completion overclaims compact geometry")
                     require(assessment.get("current_frame_visible_depth_silhouette_pose_supported") is True, f"{case}: object completion lacks current-frame visible pose support")
@@ -679,6 +706,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["camera_depth_observed_rows"] > 0, f"{case}: no observed camera/depth correction rows")
     require(counts["contacts"] > 0, f"{case}: no contact hypotheses")
     require(counts["contact_switch_vars"] == counts["contacts"], f"{case}: contact switch variables do not cover contact hypotheses")
+    require(counts["active_contact_pose_coupled_rows"] == int(contact_pose_anchor_fixed_point.get("emitted_anchor_factor_count", -1)), f"{case}: active pose-coupled row count does not match emitted stable anchor factors")
     require(counts["active_contact_switch_vars"] > 0 or counts["raw_contact_switches_gated_by_physical_support"] > 0, f"{case}: neither active physical contacts nor physically gated raw contact evidence exists")
     require(counts["active_contact_switch_vars_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce active contact switches")
     require(counts["contacts_with_final_metric_distance"] > 0, f"{case}: no final metric MANO-to-object-surface distances")
