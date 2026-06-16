@@ -42,6 +42,10 @@ MESH_VERTEX_SAMPLE_CACHE: dict[str, np.ndarray] = {}
 DENSE_VERTEX_SAMPLE_CACHE: dict[tuple[str, int], np.ndarray] = {}
 PART_VISIBLE_SURFACE_POINT_CACHE: dict[tuple[str, int], np.ndarray] = {}
 MASK_IMAGE_CACHE: dict[str, np.ndarray] = {}
+RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE = "scene_depth_supports_foreground_occluder_candidate_owner_unaccepted"
+ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE = "scene_depth_supports_accepted_foreground_occluder_owner"
+ROW_RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE = "row_scene_depth_supports_at_least_one_foreground_candidate_owner_unaccepted"
+ROW_ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE = "row_scene_depth_supports_accepted_foreground_occluder_owner"
 
 CLAIM = (
     "V18 full pipeline artifact: full-video annotations with executable hand, object/part, geometry, "
@@ -55,6 +59,22 @@ def load_json(path: Path) -> Any:
         return json.load(f)
 
 
+def normalize_accepted_occlusion_owner_labels(value: Any) -> Any:
+    if isinstance(value, dict):
+        out = {k: normalize_accepted_occlusion_owner_labels(v) for k, v in value.items()}
+        accepted = bool(out.get("accepted_occlusion_owner") is True or out.get("accepted_by_strict_depth_mesh_temporal_gate") is True)
+        if accepted and out.get("depth_pair_evidence_state") == RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE:
+            out["raw_depth_pair_evidence_state_before_graph_acceptance"] = RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE
+            out["depth_pair_evidence_state"] = ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE
+        if accepted and out.get("source_depth_order_state") == ROW_RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE:
+            out["raw_source_depth_order_state_before_graph_acceptance"] = ROW_RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE
+            out["source_depth_order_state"] = ROW_ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE
+        return out
+    if isinstance(value, list):
+        return [normalize_accepted_occlusion_owner_labels(v) for v in value]
+    return value
+
+
 def sanitize_for_final_artifact(value: Any) -> Any:
     """Remove old gate/report vocabulary from final-pipeline outputs.
 
@@ -62,11 +82,6 @@ def sanitize_for_final_artifact(value: Any) -> Any:
     side-report framing as completion status.
     """
     replacements = {
-        "not_accepted": "requires_final_evidence",
-        "not accepted": "requires final evidence",
-        "unaccepted": "requires_final_evidence",
-        "accepted": "supported",
-        "acceptance": "support",
         "not_complete": "completion_limited",
         "not complete": "completion limited",
         "not_ground_truth": "with_explicit_evidence",
@@ -1186,16 +1201,32 @@ def load_occlusion_pose_fill_gate_index(path: Path) -> dict[tuple[int, str], dic
             "source_report": str(path),
             "pose_fill_gate_claim": row.get("pose_fill_gate_claim"),
             "pose_fill_through_occlusion_accepted": row.get("pose_fill_through_occlusion_accepted"),
+            "pose_filled_through_occlusion": row.get("pose_filled_through_occlusion"),
+            "pose_fill_acceptance_type": row.get("pose_fill_acceptance_type"),
+            "observed_mano_pose_through_occlusion_accepted": row.get("observed_mano_pose_through_occlusion_accepted"),
+            "temporal_pose_fill_accepted": row.get("temporal_pose_fill_accepted"),
             "accepted_occlusion_owner": row.get("accepted_occlusion_owner"),
+            "owner_depth_order_supported": row.get("owner_depth_order_supported"),
             "chosen_owner_object_id": row.get("chosen_owner_object_id"),
             "hand_baseline_state": row.get("hand_baseline_state"),
             "hawor_measurement_available": row.get("hawor_measurement_available"),
             "hawor_candidate_present": row.get("hawor_candidate_present"),
+            "final_hawor_support_state": row.get("final_hawor_support_state"),
+            "final_hawor_same_frame_detection": row.get("final_hawor_same_frame_detection"),
+            "final_hawor_observed_depth_scaled_mano_supported": row.get("final_hawor_observed_depth_scaled_mano_supported"),
+            "hawor_to_v18_depth_scale_status": row.get("hawor_to_v18_depth_scale_status"),
+            "hawor_to_v18_depth_scale_sample_count": row.get("hawor_to_v18_depth_scale_sample_count"),
+            "required_hawor_to_v18_depth_scale_status": row.get("required_hawor_to_v18_depth_scale_status"),
+            "min_hawor_to_v18_depth_scale_sample_count": row.get("min_hawor_to_v18_depth_scale_sample_count"),
             "interior_metric_depth_compatible": row.get("interior_metric_depth_compatible"),
+            "interior_depth_role": row.get("interior_depth_role"),
             "hand_baseline_temporal_occlusion_pose_accepted": row.get("hand_baseline_temporal_occlusion_pose_accepted"),
             "occlusion_owner_acceptance_blockers": row.get("occlusion_owner_acceptance_blockers"),
             "source_occlusion_owner_candidate_rows": row.get("source_occlusion_owner_candidate_rows"),
+            "source_occlusion_owner_depth_support": row.get("source_occlusion_owner_depth_support"),
+            "source_hawor_bridge_row": row.get("source_hawor_bridge_row"),
             "blockers": row.get("blockers"),
+            "observed_pose_acceptance_blockers": row.get("observed_pose_acceptance_blockers"),
         }
     return out
 
@@ -2770,6 +2801,7 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
         contact_object_components: list[dict[str, Any]] = []
         contact_part_components: list[dict[str, Any]] = []
         deformable_surface_patch_components: list[dict[str, Any]] = []
+        hand_occlusion_pose_fill_components: list[dict[str, Any]] = []
         for comp in obs.get("components", []):
             if isinstance(comp, dict) and isinstance(comp.get("contact_object_coupling"), dict):
                 contact_object_components.append(
@@ -2798,6 +2830,15 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
                         "coupling": comp.get("deformable_surface_patch_coupling"),
                     }
                 )
+            if isinstance(comp, dict) and isinstance(comp.get("hand_occlusion_pose_fill"), dict):
+                hand_occlusion_pose_fill_components.append(
+                    {
+                        "factor_family": comp.get("factor_family"),
+                        "weight": float(comp.get("weight", 0.0)),
+                        "source": comp.get("source"),
+                        "coupling": comp.get("hand_occlusion_pose_fill"),
+                    }
+                )
         estimates[frame_idx] = {
             "variable_id": obs.get("variable_id"),
             "source": obs.get("source"),
@@ -2812,6 +2853,7 @@ def solve_temporal_series(observations: list[dict[str, Any]], temporal_weight: f
             "contact_object_coupling_components": contact_object_components,
             "contact_part_coupling_components": contact_part_components,
             "deformable_surface_patch_components": deformable_surface_patch_components,
+            "hand_occlusion_pose_fill_components": hand_occlusion_pose_fill_components,
             "local_temporal_energy_initial": temporal_before / 2.0,
             "local_temporal_energy_after": temporal_after / 2.0,
             "unit": unit,
@@ -4211,6 +4253,32 @@ def solve_v18_factor_graph(
                 source = "bbox_center_normalized_fallback"
                 weight = 1.5 if confidence == "low" else 0.5
             hand_obs[f"hand::{side}"].append({"frame_idx": frame_idx, "variable_id": f"hand::{side}", "value": value, "weight": weight, "source": source})
+            pose_fill_gate = hand.get("occlusion_pose_fill_gate") if isinstance(hand.get("occlusion_pose_fill_gate"), dict) else {}
+            if pose_fill_gate.get("pose_fill_through_occlusion_accepted") is True and wrist is not None:
+                acceptance_type = str(pose_fill_gate.get("pose_fill_acceptance_type") or "unknown_pose_fill_acceptance")
+                hand_obs[f"hand::{side}"].append(
+                    {
+                        "frame_idx": frame_idx,
+                        "variable_id": f"hand::{side}",
+                        "value": wrist,
+                        "weight": 8.0,
+                        "source": f"occlusion_pose_fill_gate_{acceptance_type}",
+                        "factor_family": "hand_occlusion_pose_fill",
+                        "hand_occlusion_pose_fill": {
+                            "pose_fill_gate_claim": pose_fill_gate.get("pose_fill_gate_claim"),
+                            "pose_fill_acceptance_type": pose_fill_gate.get("pose_fill_acceptance_type"),
+                            "accepted_occlusion_owner": pose_fill_gate.get("accepted_occlusion_owner"),
+                            "owner_depth_order_supported": pose_fill_gate.get("owner_depth_order_supported"),
+                            "chosen_owner_object_id": pose_fill_gate.get("chosen_owner_object_id"),
+                            "source_occlusion_owner_depth_support": pose_fill_gate.get("source_occlusion_owner_depth_support"),
+                            "observed_mano_pose_through_occlusion_accepted": pose_fill_gate.get("observed_mano_pose_through_occlusion_accepted"),
+                            "final_hawor_support_state": pose_fill_gate.get("final_hawor_support_state"),
+                            "hawor_to_v18_depth_scale_status": pose_fill_gate.get("hawor_to_v18_depth_scale_status"),
+                            "hawor_to_v18_depth_scale_sample_count": pose_fill_gate.get("hawor_to_v18_depth_scale_sample_count"),
+                            "scope": "occluded_hand_state_observation_from_depth_scaled_same_frame_mano_and_accepted_occluder_depth_order_not_temporal_hallucination",
+                        },
+                    }
+                )
         for obj in object_lookup.values():
             pose_raw = obj.get("object_se3_observation")
             pose: dict[str, Any] = pose_raw if isinstance(pose_raw, dict) else {}
@@ -4808,7 +4876,17 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                             "acceptance_blockers": graph_row.get("acceptance_blockers"),
                         }
                     )
-                occlusion_mesh_evidence.append(mesh_row)
+                occlusion_mesh_evidence.append(normalize_accepted_occlusion_owner_labels(mesh_row))
+            if isinstance(occlusion_owner_graph, dict):
+                occlusion_owner_graph = normalize_accepted_occlusion_owner_labels(occlusion_owner_graph)
+            raw_accepted_occlusion_owner_count = int(any(isinstance(row, dict) and row.get("accepted_occlusion_owner") is True for row in occlusion_mesh_evidence) or (isinstance(occlusion_owner_graph, dict) and occlusion_owner_graph.get("accepted_occlusion_owner") is True))
+            accepted_occlusion_owner_count = int(support_state == "observed_same_frame_detection" and raw_accepted_occlusion_owner_count > 0)
+            if accepted_occlusion_owner_count > 0:
+                occlusion_owner_state = "accepted_occlusion_owner_by_final_graph_and_observed_hawor_support"
+            elif raw_accepted_occlusion_owner_count > 0:
+                occlusion_owner_state = "raw_occlusion_owner_support_gated_by_missing_observed_hawor"
+            else:
+                occlusion_owner_state = occlusion_solution.get("occluder_owner_status", "unresolved_or_not_applicable")
             hands.append(
                 {
                     "hand_side": side,
@@ -4830,12 +4908,13 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "confidence": confidence,
                     "uncertainty": f"metric_hawor_mano_support_state_{support_state}" if isinstance(hawor_state, dict) else "legacy_visible_fallback_for_missing_hawor_row",
                     "occlusion_owner_hypothesis": {
-                        "state": occlusion_solution.get("occluder_owner_status", "unresolved_or_not_applicable"),
+                        "state": occlusion_owner_state,
+                        "pre_graph_diagnostic_state": occlusion_solution.get("occluder_owner_status", "unresolved_or_not_applicable"),
                         "owner_candidates": owner_candidates,
                         "mesh_owner_evidence": occlusion_mesh_evidence,
                         "temporal_owner_graph": occlusion_owner_graph,
-                        "raw_accepted_occlusion_owner_count_before_hawor_support_gate": int(any(isinstance(row, dict) and row.get("accepted_occlusion_owner") is True for row in occlusion_mesh_evidence) or (isinstance(occlusion_owner_graph, dict) and occlusion_owner_graph.get("accepted_occlusion_owner") is True)),
-                        "accepted_occlusion_owner_count": int(support_state == "observed_same_frame_detection" and (any(isinstance(row, dict) and row.get("accepted_occlusion_owner") is True for row in occlusion_mesh_evidence) or (isinstance(occlusion_owner_graph, dict) and occlusion_owner_graph.get("accepted_occlusion_owner") is True))),
+                        "raw_accepted_occlusion_owner_count_before_hawor_support_gate": raw_accepted_occlusion_owner_count,
+                        "accepted_occlusion_owner_count": accepted_occlusion_owner_count,
                         "support_gate_allows_occlusion_owner_claim": bool(support_state == "observed_same_frame_detection"),
                         "support_gate_reason": "observed_same_frame_hawor_required_for_occlusion_owner_claim" if support_state != "observed_same_frame_detection" else "observed_same_frame_hawor_support",
                         "confidence": "low" if owner_candidates else "unknown",
@@ -5539,7 +5618,14 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 counts["occlusion_unowned_or_unresolved_labels"] += 1
             gate = raw_hand.get("occlusion_pose_fill_gate") if isinstance(raw_hand.get("occlusion_pose_fill_gate"), dict) else {}
             if gate:
-                draw.ellipse((hc[0] - 18, hc[1] - 18, hc[0] + 18, hc[1] + 18), outline=(210, 80, 255), width=2)
+                accepted_pose_fill = gate.get("pose_fill_through_occlusion_accepted") is True
+                color = (80, 255, 220) if accepted_pose_fill else (210, 80, 255)
+                width_px = 4 if accepted_pose_fill else 2
+                draw.ellipse((hc[0] - 18, hc[1] - 18, hc[0] + 18, hc[1] + 18), outline=color, width=width_px)
+                if accepted_pose_fill:
+                    label = "pose-fill obs MANO" if gate.get("observed_mano_pose_through_occlusion_accepted") is True else "pose-fill accepted"
+                    draw_label(draw, (int(hc[0]) + 20, int(hc[1]) - 22), label, small, color, (0, 0, 0))
+                    counts["pose_fill_accepted_markers"] += 1
                 counts["pose_fill_gate_markers"] += 1
         contact_vars = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
         for switch in contact_vars:
@@ -5743,7 +5829,14 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                 counts["world_occlusion_unowned_or_unresolved_labels"] += 1
             gate = raw_hand.get("occlusion_pose_fill_gate") if isinstance(raw_hand.get("occlusion_pose_fill_gate"), dict) else {}
             if gate:
-                draw.ellipse((hp[0] - 16, hp[1] - 16, hp[0] + 16, hp[1] + 16), outline=(210, 80, 255), width=2)
+                accepted_pose_fill = gate.get("pose_fill_through_occlusion_accepted") is True
+                color = (80, 255, 220) if accepted_pose_fill else (210, 80, 255)
+                width_px = 4 if accepted_pose_fill else 2
+                draw.ellipse((hp[0] - 16, hp[1] - 16, hp[0] + 16, hp[1] + 16), outline=color, width=width_px)
+                if accepted_pose_fill:
+                    label = "POSE-FILL OBS" if gate.get("observed_mano_pose_through_occlusion_accepted") is True else "POSE-FILL"
+                    draw_label(draw, (hp[0] + 18, hp[1] - 22), label, small, color, (18, 20, 25))
+                    counts["world_pose_fill_accepted_markers"] += 1
                 counts["world_pose_fill_gate_markers"] += 1
         sol = require_dict(fg.get("solution"), "factor graph solution")
         summary = (

@@ -88,15 +88,19 @@ def validate_case(path: Path) -> dict[str, Any]:
             pose_fill: dict[str, Any] = pose_fill_raw if isinstance(pose_fill_raw, dict) else {}
             if pose_fill.get("pose_fill_through_occlusion_accepted") is True:
                 pose_fill_accepted_rows += 1
+                acceptance_type = str(pose_fill.get("pose_fill_acceptance_type") or "")
+                require(acceptance_type == "observed_depth_scaled_mano_behind_accepted_occluder", f"{case}: unsupported pose-fill acceptance type {acceptance_type!r}")
+                require(pose_fill.get("accepted_occlusion_owner") is True and pose_fill.get("owner_depth_order_supported") is True, f"{case}: observed pose fill lacks accepted owner depth support")
+                require(pose_fill.get("final_hawor_support_state") == "observed_same_frame_detection", f"{case}: observed pose fill lacks same-frame final HaWoR support")
+                require(pose_fill.get("final_hawor_observed_depth_scaled_mano_supported") is True, f"{case}: observed pose fill lacks depth-scaled MANO support")
             if baseline.get("temporal_occlusion_pose_accepted") is True:
                 accepted_occlusion_pose += 1
-            require(baseline.get("pose_claim") in {"no_occluded_pose_accepted_from_current_hand_baseline", None}, f"{case}: unsupported hand pose claim")
+            require(baseline.get("pose_claim") in {"no_occluded_pose_accepted_from_current_hand_baseline", "no_occluded_pose_supported_from_current_hand_baseline", None}, f"{case}: unsupported hand pose claim")
     require(hand_rows > 0, f"{case}: no hands")
     require(baseline_rows == hand_rows, f"{case}: not every hand has baseline row")
     require(missing_rows == 0, f"{case}: missing baseline integration rows")
     require(blocker_rows > 0, f"{case}: no blockers preserved")
-    require(accepted_occlusion_pose == 0, f"{case}: accepted occlusion hand pose unexpectedly present")
-    require(pose_fill_accepted_rows == 0, f"{case}: pose fill-through-occlusion unexpectedly accepted")
+    require(accepted_occlusion_pose == 0, f"{case}: temporal hand-baseline occlusion pose unexpectedly accepted")
     require(metric_depth_component_rows > 0, f"{case}: no metric-depth evidence component rows")
     if hawor_rows > 0:
         require(temporal_acceleration_component_rows > 0, f"{case}: HaWoR rows exist but no temporal-acceleration component rows")

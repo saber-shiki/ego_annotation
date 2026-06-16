@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 
+ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE = "scene_depth_supports_accepted_foreground_occluder_owner"
+
+
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -91,6 +94,8 @@ def validate_case(path: Path) -> dict[str, Any]:
     occlusion_owner_rows = 0
     occlusion_owner_with_temporal_or_mesh = 0
     accepted_occlusion_owner_rows = 0
+    hand_occlusion_pose_fill_rows = 0
+    hand_occlusion_pose_fill_factor_rows = 0
     local_occlusion_factor_count_sum = 0
     for frame in frames:
         g = frame.get("factor_graph_solution")
@@ -134,6 +139,26 @@ def validate_case(path: Path) -> dict[str, Any]:
                         chosen = occ.get("chosen_owner_object_id")
                         chosen_candidates = [cand for cand in candidates if isinstance(cand, dict) and cand.get("object_id") == chosen]
                         require(any(cand.get("accepted_by_depth_evidence") is True or cand.get("temporal_graph_accepted") is True for cand in chosen_candidates), f"{case}: accepted occlusion owner lacks source support")
+            hand_raw = variables.get("hand_state")
+            if isinstance(hand_raw, list):
+                for hand_var_raw in hand_raw:
+                    hand_var: dict[str, Any] = hand_var_raw if isinstance(hand_var_raw, dict) else {}
+                    components = hand_var.get("hand_occlusion_pose_fill_components") if isinstance(hand_var.get("hand_occlusion_pose_fill_components"), list) else []
+                    if components:
+                        hand_occlusion_pose_fill_rows += len(components)
+                        hand_occlusion_pose_fill_factor_rows += int(hand_var.get("factor_family_counts", {}).get("hand_occlusion_pose_fill", 0)) if isinstance(hand_var.get("factor_family_counts"), dict) else 0
+                        for comp in components:
+                            require(isinstance(comp, dict) and comp.get("factor_family") == "hand_occlusion_pose_fill", f"{case}: hand pose-fill component missing factor family")
+                            coupling = comp.get("coupling") if isinstance(comp.get("coupling"), dict) else {}
+                            require(coupling.get("accepted_occlusion_owner") is True and coupling.get("owner_depth_order_supported") is True, f"{case}: hand pose-fill factor lacks accepted owner depth support")
+                            owner_support = coupling.get("source_occlusion_owner_depth_support") if isinstance(coupling.get("source_occlusion_owner_depth_support"), dict) else {}
+                            require(owner_support.get("graph_occlusion_owner_accepted") is True, f"{case}: hand pose-fill factor lacks graph-accepted owner flag")
+                            require(owner_support.get("depth_pair_evidence_state") == ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE, f"{case}: hand pose-fill factor carries non-accepted depth support label")
+                            require(coupling.get("observed_mano_pose_through_occlusion_accepted") is True, f"{case}: hand pose-fill factor is not observed-MANO supported")
+                            require(coupling.get("final_hawor_support_state") == "observed_same_frame_detection", f"{case}: hand pose-fill factor lacks observed HaWoR support")
+                            require(coupling.get("hawor_to_v18_depth_scale_status") == "depth_scaled_from_projected_hawor_vertices_to_unidepth", f"{case}: hand pose-fill factor has invalid depth-scale status")
+                            require(int(coupling.get("hawor_to_v18_depth_scale_sample_count") or 0) >= 40, f"{case}: hand pose-fill factor has too few depth-scale samples")
+                            require("not_temporal_hallucination" in str(coupling.get("scope")), f"{case}: hand pose-fill scope overclaims temporal fill")
             object_raw = variables.get("object_se3")
             if isinstance(object_raw, list):
                 for object_var_raw in object_raw:
@@ -270,6 +295,9 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(deformable_surface_patch_rows == int(variable_counts.get("deformable_surface_patch", -1)), f"{case}: deformable surface patch variable count mismatch")
     require(deformable_surface_visible_factor_rows == int(factor_counts.get("deformable_surface_visible_observation", -1)), f"{case}: deformable surface visible factor count mismatch")
     require(deformable_surface_contact_factor_rows == int(factor_counts.get("deformable_surface_contact_anchor", -1)), f"{case}: deformable surface contact factor count mismatch")
+    if int(factor_counts.get("hand_occlusion_pose_fill", 0)) > 0:
+        require(hand_occlusion_pose_fill_rows == int(factor_counts.get("hand_occlusion_pose_fill", -1)), f"{case}: hand occlusion pose-fill component count mismatch")
+        require(hand_occlusion_pose_fill_factor_rows == int(factor_counts.get("hand_occlusion_pose_fill", -1)), f"{case}: hand occlusion pose-fill factor count mismatch")
     require(int(factor_counts.get("contact_object_nonpenetration_repel", 0)) == 0, f"{case}: nonpenetration conflict must not move object pose")
     require(contact_object_component_rows == int(factor_counts.get("contact_object_pose_anchor", 0)) + int(factor_counts.get("contact_surface_changing_object_pose_anchor", 0)), f"{case}: contact-object component count mismatch")
     require(contact_part_component_rows == int(factor_counts.get("contact_part_pose_anchor", 0)), f"{case}: contact-part component count mismatch")
@@ -295,6 +323,7 @@ def validate_case(path: Path) -> dict[str, Any]:
         "deformable_surface_patch_rows": deformable_surface_patch_rows,
         "deformable_surface_visible_factors": int(factor_counts.get("deformable_surface_visible_observation", 0)),
         "deformable_surface_contact_factors": int(factor_counts.get("deformable_surface_contact_anchor", 0)),
+        "hand_occlusion_pose_fill_factors": int(factor_counts.get("hand_occlusion_pose_fill", 0)),
         "occlusion_owner_rows": occlusion_owner_rows,
         "frame_with_graph_count": frame_with_graph,
     }

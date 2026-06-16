@@ -9,20 +9,17 @@ from typing import Any
 
 
 FORBIDDEN_FINAL_STRINGS = [
-    "not_accepted",
-    "not accepted",
     "not_complete",
     "not complete",
-    "unaccepted",
     "verification status",
     "available_partial_score_2d_terms_only",
     "partial_score",
     "candidate-only",
     "candidate_only",
     "object_pose_candidate",
-    "acceptance",
-    "accepted",
 ]
+ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE = "scene_depth_supports_accepted_foreground_occluder_owner"
+RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE = "scene_depth_supports_foreground_occluder_candidate_owner_unaccepted"
 
 
 def load_json(path: Path) -> Any:
@@ -75,6 +72,24 @@ def serialized_contains_forbidden(report_text: str, ann_text: str) -> list[str]:
     report_semantic_lines = [line.lower() for line in report_text.splitlines() if "/" not in line]
     semantic_text = "\n".join(report_semantic_lines + _semantic_strings(json.loads(ann_text)))
     return [term for term in FORBIDDEN_FINAL_STRINGS if term.lower() in semantic_text]
+
+
+def stale_unaccepted_label_paths(value: Any, path: str = "") -> list[str]:
+    out: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            out.extend(stale_unaccepted_label_paths(child, child_path))
+        return out
+    if isinstance(value, list):
+        for idx, child in enumerate(value):
+            out.extend(stale_unaccepted_label_paths(child, f"{path}[{idx}]"))
+        return out
+    if isinstance(value, str) and "unaccepted" in value:
+        allowed_raw_provenance = any(token in path for token in ("raw_", "source_depth_pair_evidence", "source_row"))
+        if not allowed_raw_provenance:
+            out.append(path)
+    return out
 
 
 def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, Any]:
@@ -180,6 +195,9 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "hand_support_inferred_rows": 0,
         "hand_support_boundary_fill_rows": 0,
         "pose_fill_gate_rows": 0,
+        "pose_fill_accepted_rows": 0,
+        "pose_fill_observed_mano_rows": 0,
+        "pose_fill_temporal_rows": 0,
         "object_states": 0,
         "object_physical_state_rows": 0,
         "object_se3_rows": 0,
@@ -501,6 +519,33 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             pose_gate = hand.get("occlusion_pose_fill_gate") if isinstance(hand.get("occlusion_pose_fill_gate"), dict) else {}
             if pose_gate:
                 counts["pose_fill_gate_rows"] += 1
+                if pose_gate.get("pose_fill_through_occlusion_accepted") is True:
+                    counts["pose_fill_accepted_rows"] += 1
+                    require(pose_gate.get("accepted_occlusion_owner") is True and pose_gate.get("owner_depth_order_supported") is True, f"{case}: accepted pose fill lacks accepted owner depth support")
+                    require(pose_gate.get("final_hawor_support_state") == "observed_same_frame_detection", f"{case}: accepted pose fill lacks observed final HaWoR support")
+                    require(pose_gate.get("final_hawor_same_frame_detection") is True, f"{case}: accepted pose fill lacks same-frame detector flag")
+                    require(pose_gate.get("final_hawor_observed_depth_scaled_mano_supported") is True, f"{case}: accepted pose fill lacks depth-scaled MANO support")
+                    require(pose_gate.get("hawor_to_v18_depth_scale_status") == "depth_scaled_from_projected_hawor_vertices_to_unidepth", f"{case}: accepted pose fill has invalid depth-scale status")
+                    sample_count = int(pose_gate.get("hawor_to_v18_depth_scale_sample_count") or 0)
+                    min_samples = int(pose_gate.get("min_hawor_to_v18_depth_scale_sample_count") or 0)
+                    require(min_samples > 0 and sample_count >= min_samples, f"{case}: accepted pose fill has too few depth-scale samples")
+                    require(not pose_gate.get("observed_pose_acceptance_blockers"), f"{case}: accepted observed pose fill has fatal blockers")
+                    stale_paths = stale_unaccepted_label_paths({"pose_gate": pose_gate, "occlusion_owner_hypothesis": hand.get("occlusion_owner_hypothesis")})
+                    require(not stale_paths, f"{case}: accepted pose fill contains stale non-accepted owner labels outside raw provenance: {stale_paths[:5]}")
+                    owner_support = pose_gate.get("source_occlusion_owner_depth_support") if isinstance(pose_gate.get("source_occlusion_owner_depth_support"), dict) else {}
+                    require(owner_support.get("graph_occlusion_owner_accepted") is True, f"{case}: accepted pose fill lacks graph-accepted owner flag")
+                    require(owner_support.get("depth_pair_evidence_state") == ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE, f"{case}: accepted pose fill carries non-accepted depth support label")
+                    raw_depth_state = owner_support.get("raw_depth_pair_evidence_state_before_graph_acceptance")
+                    require(raw_depth_state is None or raw_depth_state == RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE, f"{case}: accepted pose fill raw depth provenance has unexpected state")
+                    acceptance_type = str(pose_gate.get("pose_fill_acceptance_type") or "")
+                    if acceptance_type == "observed_depth_scaled_mano_behind_accepted_occluder":
+                        counts["pose_fill_observed_mano_rows"] += 1
+                        require(pose_gate.get("observed_mano_pose_through_occlusion_accepted") is True, f"{case}: observed pose fill flag missing")
+                    elif acceptance_type == "temporal_occlusion_pose_baseline":
+                        counts["pose_fill_temporal_rows"] += 1
+                        require(pose_gate.get("hand_baseline_temporal_occlusion_pose_accepted") is True, f"{case}: temporal pose fill lacks baseline acceptance")
+                    else:
+                        raise RuntimeError(f"{case}: unsupported pose-fill acceptance type {acceptance_type!r}")
             occ = hand.get("occlusion_owner_hypothesis") if isinstance(hand.get("occlusion_owner_hypothesis"), dict) else None
             require(isinstance(occ, dict), f"{case}: missing hand occlusion owner hypothesis")
             if isinstance(occ, dict):
@@ -510,6 +555,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     counts["hand_raw_occlusion_owner_rows_gated_by_hawor_support"] += 1
                 if accepted_count > 0:
                     counts["hand_occlusion_owner_accepted_rows"] += 1
+                    require(occ.get("state") == "accepted_occlusion_owner_by_final_graph_and_observed_hawor_support", f"{case}: accepted hand occlusion owner carries stale/non-accepted state")
                     if support_state != "observed_same_frame_detection":
                         counts["hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand"] += 1
                 depth_rows = occ.get("contact_depth_order_evidence") if isinstance(occ.get("contact_depth_order_evidence"), list) else []
@@ -703,6 +749,10 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["wilor_key_rows"] == expected_hand_rows, f"{case}: WiLoR/V16 hand evidence keys missing")
     require(counts["rtmlib_key_rows"] == expected_hand_rows, f"{case}: RTMLib hand evidence keys missing")
     require(counts["pose_fill_gate_rows"] == expected_hand_rows, f"{case}: pose fill gate rows do not cover both hands/full timeline")
+    if counts["pose_fill_accepted_rows"] > 0:
+        require(counts["pose_fill_accepted_rows"] == counts["pose_fill_observed_mano_rows"] + counts["pose_fill_temporal_rows"], f"{case}: accepted pose-fill rows are not classified")
+        require(int(overlay_draw.get("pose_fill_accepted_markers", 0)) == counts["pose_fill_accepted_rows"], f"{case}: overlay accepted pose-fill markers do not match backing state")
+        require(int(world_draw.get("world_pose_fill_accepted_markers", 0)) == counts["pose_fill_accepted_rows"], f"{case}: world accepted pose-fill markers do not match backing state")
     require(counts["object_states"] > 0, f"{case}: no object states")
     require(counts["object_physical_state_rows"] == counts["object_states"], f"{case}: physical-state decisions missing on object rows")
     require(counts["object_se3_rows"] == counts["object_states"], f"{case}: object SE3 observations missing on object rows")
