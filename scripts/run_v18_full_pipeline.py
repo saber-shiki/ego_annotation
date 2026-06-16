@@ -5325,7 +5325,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-depth-correction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_camera_depth_correction"))
     parser.add_argument("--hand-baseline-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_hand_baseline_branch"))
     parser.add_argument("--hawor-bridge-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_corrective_1600/hawor_bridge_state"))
-    parser.add_argument("--occlusion-pose-fill-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_pose_fill_gate"))
+    parser.add_argument("--occlusion-pose-fill-gate-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_pose_fill_gate_complete_depth_hawor"))
     parser.add_argument("--visible-geometry-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_unidepth_extension/v18_visible_geometry_archive_complete_depth"))
     parser.add_argument("--physical-state-schema-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_physical_state_schema"))
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
