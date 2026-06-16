@@ -3318,6 +3318,7 @@ def contact_part_pose_observation(
     switch: dict[str, Any],
     hand: dict[str, Any] | None,
     obj: dict[str, Any] | None,
+    part_graph_vars: dict[str, dict[str, Any]] | None = None,
     *,
     allow_contact_pose_anchor: bool,
 ) -> dict[str, Any] | None:
@@ -3338,33 +3339,44 @@ def contact_part_pose_observation(
         finite_float(switch.get("final_metric_contact_support_score"), 0.0),
     )
     proposal_contact = bool((allow_contact_pose_anchor and active_contact) or accepted_contact_owner)
-    best: tuple[dict[str, Any], np.ndarray, np.ndarray, float] | None = None
-    best_validated: tuple[dict[str, Any], np.ndarray, np.ndarray, float] | None = None
+    part_graph_vars = part_graph_vars or {}
+    best: tuple[dict[str, Any], dict[str, Any] | None, np.ndarray, np.ndarray, float] | None = None
+    best_validated: tuple[dict[str, Any], dict[str, Any] | None, np.ndarray, np.ndarray, float] | None = None
     for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
         if not isinstance(part, dict):
             continue
         candidate = part.get("reconstructed_part_geometry_candidate") if isinstance(part.get("reconstructed_part_geometry_candidate"), dict) else {}
         if not candidate:
             continue
-        part_points = posed_part_mesh_sample_camera(part)
-        pair = nearest_point_pair(hand_points, part_points)
-        if pair is None:
+        label = str(part.get("part_track_label"))
+        graph_var = part_graph_vars.get(label)
+        candidate_pair = nearest_point_pair(hand_points, posed_part_mesh_sample_camera(part, None))
+        graph_pair = nearest_point_pair(hand_points, posed_part_mesh_sample_camera(part, graph_var)) if isinstance(graph_var, dict) else None
+        selected_pair = candidate_pair
+        selected_graph_var = None
+        if graph_pair is not None:
+            graph_distance = float(graph_pair[2])
+            candidate_distance = float(candidate_pair[2]) if candidate_pair is not None else float("inf")
+            if candidate_pair is None or (candidate_distance > 0.12 and graph_distance <= 0.12):
+                selected_pair = graph_pair
+                selected_graph_var = graph_var
+        if selected_pair is None:
             continue
-        hand_pt, part_pt, distance = pair
-        if best is None or distance < best[3]:
-            best = (part, hand_pt, part_pt, distance)
-        validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
-        if part_validation_supports_current_frame(validation) and (best_validated is None or distance < best_validated[3]):
-            best_validated = (part, hand_pt, part_pt, distance)
+        hand_pt, part_pt, distance = selected_pair
+        if best is None or distance < best[4]:
+            best = (part, selected_graph_var, hand_pt, part_pt, distance)
+        validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation", None), dict) else {}
+        if part_validation_supports_current_frame(validation) and (best_validated is None or distance < best_validated[4]):
+            best_validated = (part, selected_graph_var, hand_pt, part_pt, distance)
     if best is None:
         return None
-    if best_validated is not None and best_validated[3] <= 0.12:
+    if best_validated is not None and best_validated[4] <= 0.12:
         best = best_validated
-    part, hand_pt, part_pt, distance = best
+    part, graph_var, hand_pt, part_pt, distance = best
     near_part_geometry = distance <= 0.12
     if not proposal_contact or not near_part_geometry:
         return None
-    center, rotvec = part_pose_value_from_graph_or_candidate(part)
+    center, rotvec = part_pose_value_from_graph_or_candidate(part, graph_var)
     if center is None:
         return None
     delta = hand_pt - part_pt
@@ -3413,6 +3425,7 @@ def contact_part_pose_observation(
             "accepted_contact_owner": accepted_contact_owner,
             "part_geometry_source": "depth_fused_reconstructed_part_mesh_candidate",
             "part_pose_validation_supported": part_validation_supports_current_frame(part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}),
+            "part_pose_source": "factor_graph_part_se3_estimate" if isinstance(graph_var, dict) else "part_visible_surface_pose_candidate",
             "scope": "strict_part_contact_anchor_for_active_raw_or_accepted_owner_contact_proposal_without_complete_object_pose_claim",
         },
     }
@@ -4247,6 +4260,19 @@ def solve_v18_factor_graph(
                     source = "part_visible_surface_center_camera_rotation_unresolved"
                     key = f"part_se3::{object_id}::{label}::translation_only"
                 part_obs[key].append({"frame_idx": frame_idx, "variable_id": key, "value": value, "weight": weight, "source": source})
+        prior_part_graph_vars_by_object: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        prior_fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        prior_vars = prior_fg.get("variables") if isinstance(prior_fg.get("variables"), dict) else {}
+        prior_part_rows = prior_vars.get("part_se3") if isinstance(prior_vars.get("part_se3"), list) else []
+        for prior_var in prior_part_rows:
+            if not isinstance(prior_var, dict):
+                continue
+            variable_id = str(prior_var.get("variable_id", ""))
+            if not variable_id.startswith("part_se3::"):
+                continue
+            fields = variable_id[len("part_se3::"):].split("::")
+            if len(fields) >= 2:
+                prior_part_graph_vars_by_object[fields[0]][fields[1]] = prior_var
         for hyp in frame.get("contact_hypotheses", []):
             if not isinstance(hyp, dict):
                 continue
@@ -4267,7 +4293,7 @@ def solve_v18_factor_graph(
             contact_obs = contact_object_pose_observation(hyp_with_frame, switch_probe, hand, obj, allow_contact_pose_anchor=allow_contact_pose_anchor)
             if contact_obs is not None:
                 object_obs[str(contact_obs.get("variable_id"))].append(contact_obs)
-            part_contact_obs = contact_part_pose_observation(hyp_with_frame, switch_probe, hand, obj, allow_contact_pose_anchor=allow_contact_pose_anchor)
+            part_contact_obs = contact_part_pose_observation(hyp_with_frame, switch_probe, hand, obj, prior_part_graph_vars_by_object.get(str(hyp.get("object_id"))), allow_contact_pose_anchor=allow_contact_pose_anchor)
             if part_contact_obs is not None:
                 part_obs[str(part_contact_obs.get("variable_id"))].append(part_contact_obs)
 
