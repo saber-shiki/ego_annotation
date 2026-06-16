@@ -369,6 +369,13 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                         require(float(row.get("mesh_contact_support_score") or 0.0) >= 0.90, f"{case}: visual-prior active contact lacks high mesh contact support")
                         require(row.get("nonpenetration_conflict") is not True, f"{case}: visual prior overrode nonpenetration conflict")
                 require(any(direct_support_paths), f"{case}: active contact lacks rigid/part/surface-changing/deformable-surface support path")
+                coupling = row.get("active_contact_coupling_state") if isinstance(row.get("active_contact_coupling_state"), dict) else None
+                require(isinstance(coupling, dict), f"{case}: active contact lacks object/part coupling state")
+                require(coupling.get("contact_state_affects_object_or_part_pose") in {True, False}, f"{case}: active contact coupling state missing boolean effect field")
+                require("not_a_contact_claim_source" in str(coupling.get("scope")), f"{case}: active contact coupling state scope missing")
+                if "deformable_same_frame_visible_surface" in row_support_paths:
+                    require(coupling.get("contact_state_affects_object_or_part_pose") is False, f"{case}: deformable contact falsely coupled to object pose")
+                    require("deformable_object_contact_has_no_nonrigid_object_state_model_in_v18_default_solver" in (coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else []), f"{case}: deformable active contact lacks concrete nonrigid-model blocker")
                 if row.get("surface_changing_pose_contact_claim_supported") is True:
                     obj = object_by_id.get(str(row.get("object_id")), {})
                     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj, dict) and isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}

@@ -2465,6 +2465,38 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
             switch["physical_contact_mode_distance_semantics"] = "nearest_visible_or_validated_surface_distance_not_contact_patch_gap_for_episode_hypothesis_frames" if episode_supported and not direct_near_supported else "supported_visible_or_validated_surface_distance"
             switch["physical_contact_mode_renderable"] = bool(renderable)
             switch["physical_contact_mode_scope"] = "active_contact_claim" if mode == "active_physical_contact" else "nonactive_uncertain_state_not_a_contact_claim" if renderable else "nonrendered_noncontact_or_unsupported_proposal"
+            if mode == "active_physical_contact":
+                coupling_state = {
+                    "method": "final_pipeline_active_contact_object_part_coupling_state",
+                    "contact_state_affects_object_or_part_pose": False,
+                    "coupling_state": "active_contact_not_coupled_to_object_or_part_pose",
+                    "coupling_family": None,
+                    "blockers": [],
+                    "scope": "records_whether_solved_active_contact_changes_object_or_part_pose_not_a_contact_claim_source",
+                }
+                if "surface_changing_visible_depth_silhouette_pose" in support_paths or "surface_changing_local_visible_contact_surface" in support_paths:
+                    coupling_state.update({
+                        "contact_state_affects_object_or_part_pose": True,
+                        "coupling_state": "surface_changing_object_pose_anchor_factor_emitted_before_temporal_solve",
+                        "coupling_family": "contact_surface_changing_object_pose_anchor",
+                    })
+                elif "rigid_visible_depth_silhouette_pose" in support_paths:
+                    coupling_state.update({
+                        "contact_state_affects_object_or_part_pose": True,
+                        "coupling_state": "rigid_object_pose_anchor_factor_emitted_before_temporal_solve",
+                        "coupling_family": "contact_object_pose_anchor",
+                    })
+                elif "validated_part_visible_depth_silhouette_pose" in support_paths:
+                    coupling_state.update({
+                        "contact_state_affects_object_or_part_pose": True,
+                        "coupling_state": "validated_part_pose_anchor_factor_required_for_active_part_contact",
+                        "coupling_family": "contact_part_pose_anchor",
+                    })
+                elif "deformable_same_frame_visible_surface" in support_paths:
+                    coupling_state["blockers"] = ["deformable_object_contact_has_no_nonrigid_object_state_model_in_v18_default_solver"]
+                    coupling_state["coupling_state"] = "active_deformable_contact_state_not_coupled_to_object_pose"
+                switch["active_contact_coupling_state"] = coupling_state
+                counts[f"active_contact_coupling_{coupling_state['coupling_state']}"] += 1
             counts[f"contact_physical_mode_{mode}"] += 1
             if renderable and mode != "active_physical_contact":
                 counts[f"renderable_nonactive_contact_mode_{mode}"] += 1
