@@ -2432,6 +2432,24 @@ def attach_contact_physical_modes(frames: list[dict[str, Any]]) -> Counter[str]:
                 mode = "separated_or_unresolved_noncontact"
                 reason = "no_active_or_renderable_supported_near_contact_state"
                 renderable = False
+            pre_mode_claims = {
+                "rigid_pose_contact_claim_supported": bool(switch.get("rigid_pose_contact_claim_supported") is True),
+                "validated_part_pose_contact_claim_supported": bool(switch.get("validated_part_pose_contact_claim_supported") is True),
+                "surface_changing_pose_contact_claim_supported": bool(switch.get("surface_changing_pose_contact_claim_supported") is True),
+                "deformable_visible_surface_contact_claim_supported": bool(switch.get("deformable_visible_surface_contact_claim_supported") is True),
+                "physical_contact_claim_supported": bool(switch.get("physical_contact_claim_supported") is True),
+            }
+            switch["physical_contact_evidence_supported"] = bool(pre_mode_claims["physical_contact_claim_supported"])
+            switch["physical_contact_evidence_state"] = "supported_geometry_or_schema_evidence_present" if pre_mode_claims["physical_contact_claim_supported"] else "blocked_no_supported_rigid_validated_part_surface_or_deformable_surface"
+            for key, value in pre_mode_claims.items():
+                switch[key.replace("_claim_supported", "_evidence_supported")] = bool(value)
+            solved_active_claim = bool(mode == "active_physical_contact")
+            switch["physical_contact_claim_supported"] = solved_active_claim
+            switch["rigid_pose_contact_claim_supported"] = bool(pre_mode_claims["rigid_pose_contact_claim_supported"] and solved_active_claim)
+            switch["validated_part_pose_contact_claim_supported"] = bool(pre_mode_claims["validated_part_pose_contact_claim_supported"] and solved_active_claim)
+            switch["surface_changing_pose_contact_claim_supported"] = bool(pre_mode_claims["surface_changing_pose_contact_claim_supported"] and solved_active_claim)
+            switch["deformable_visible_surface_contact_claim_supported"] = bool(pre_mode_claims["deformable_visible_surface_contact_claim_supported"] and solved_active_claim)
+            switch["physical_contact_support_state"] = "solved_active_physical_contact_state" if solved_active_claim else "geometry_or_schema_evidence_only_nonactive_state" if pre_mode_claims["physical_contact_claim_supported"] else "blocked_no_supported_rigid_validated_part_surface_or_deformable_surface"
             switch["physical_contact_mode"] = mode
             switch["physical_contact_mode_reason"] = reason
             switch["physical_contact_mode_support_paths"] = support_paths
