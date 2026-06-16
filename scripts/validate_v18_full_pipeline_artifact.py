@@ -188,6 +188,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
         "object_depth_silhouette_pose_supported_rows": 0,
         "object_geometry_complete_rows": 0,
         "object_pose_requirement_met_rows": 0,
+        "part_structured_object_pose_state_rows": 0,
+        "part_structured_object_pose_ready_rows": 0,
         "object_vertex_sample_rows": 0,
         "part_rows": 0,
         "part_reconstructed_geometry_pose_rows": 0,
@@ -505,6 +507,31 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
             if isinstance(obj.get("object_pose_requirement_met"), bool):
                 require(validation is not None, f"{case}: root object pose requirement field lacks validation row")
                 require(obj.get("object_pose_requirement_met") == bool(validation.get("object_pose_requirement_met") is True), f"{case}: root object pose requirement disagrees with validation")
+            structured = obj.get("part_structured_pose_state") if isinstance(obj.get("part_structured_pose_state"), dict) else None
+            if isinstance(structured, dict):
+                counts["part_structured_object_pose_state_rows"] += 1
+                schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+                parts = [p for p in obj.get("parts", []) if isinstance(p, dict)] if isinstance(obj.get("parts"), list) else []
+                required_labels = sorted(str(p.get("part_track_label")) for p in parts if p.get("part_track_label"))
+                ready_labels = []
+                for part in parts:
+                    recon_part = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
+                    if recon_part.get("part_pose_ready") is True and part.get("part_track_label"):
+                        ready_labels.append(str(part.get("part_track_label")))
+                ready_labels = sorted(ready_labels)
+                require(structured.get("required_part_track_labels") == required_labels, f"{case}: structured part-pose required labels disagree with object parts")
+                require(structured.get("ready_part_track_labels") == ready_labels, f"{case}: structured part-pose ready labels disagree with ready part rows")
+                require(structured.get("object_pose_requirement_met") is False, f"{case}: structured part-pose overclaims object pose completion")
+                require(structured.get("object_geometry_complete") is False, f"{case}: structured part-pose overclaims hidden geometry completion")
+                require("not_hidden_geometry_completion" in str(structured.get("scope")), f"{case}: structured part-pose scope missing hidden-geometry limit")
+                supported = bool(structured.get("part_structured_pose_ready") is True)
+                require(obj.get("part_structured_pose_ready") is supported, f"{case}: root structured part-pose readiness disagrees with state")
+                if supported:
+                    counts["part_structured_object_pose_ready_rows"] += 1
+                    require(schema.get("requires_part_or_relative_motion_model") is True, f"{case}: structured part-pose ready on object without part/relative-motion schema")
+                    require(len(required_labels) >= 2, f"{case}: structured part-pose ready with fewer than two required parts")
+                    require(ready_labels == required_labels, f"{case}: structured part-pose ready without all required parts ready")
+                    require(isinstance(structured.get("ready_parts"), list) and len(structured.get("ready_parts")) == len(required_labels), f"{case}: structured part-pose ready missing ready part pose records")
             for part in obj.get("parts") if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
                     continue
@@ -602,6 +629,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(counts["object_reconstructed_geometry_pose_rows"] == counts["object_states"], f"{case}: reconstructed geometry pose state missing on object rows")
     require(counts["object_renderable_reconstructed_geometry_pose_rows"] > 0, f"{case}: no renderable reconstructed mesh pose rows")
     require(counts["object_depth_silhouette_pose_validation_rows"] > 0, f"{case}: no object depth/silhouette pose validation rows")
+    require(counts["part_structured_object_pose_state_rows"] == counts["object_states"], f"{case}: structured part-pose state missing on object rows")
     if case == "task5_tomato_960":
         require(counts["object_depth_silhouette_pose_supported_rows"] > 0, f"{case}: no supported object depth/silhouette pose validation rows")
     require(counts["part_rows"] > 0, f"{case}: no part rows")
@@ -642,6 +670,8 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(int(world_draw.get("world_contact_supported_near_noncontact_lines", 0)) <= counts["contact_physical_mode_supported_near_noncontact"], f"{case}: world render draws more supported-near edges than solved modes")
     require(int(overlay_draw.get("occlusion_owner_edges", 0)) <= counts["occlusion_owner_supported_vars"], f"{case}: overlay draws unsupported occlusion owner edges")
     require(int(world_draw.get("world_occlusion_owner_edges", 0)) <= counts["occlusion_owner_supported_vars"], f"{case}: world render draws unsupported occlusion owner edges")
+    require(int(overlay_draw.get("part_structured_object_pose_ready_labels", 0)) <= counts["part_structured_object_pose_ready_rows"], f"{case}: overlay draws unsupported structured part-object pose readiness")
+    require(int(world_draw.get("world_part_structured_object_pose_ready_labels", 0)) <= counts["part_structured_object_pose_ready_rows"], f"{case}: world render draws unsupported structured part-object pose readiness")
     require(counts["hand_occlusion_owner_accepted_rows_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce accepted hand occlusion-owner claims")
     require(counts["occlusion_owner_supported_vars_with_nonobserved_hawor_hand"] == 0, f"{case}: non-observed HaWoR hand rows still produce supported occlusion-owner factor claims")
     return {"case": case, "expected_frame_count": expected, **counts}

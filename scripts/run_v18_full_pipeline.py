@@ -2005,6 +2005,64 @@ def attach_frame_local_part_pose_validation(frames: list[dict[str, Any]], part_p
     return counts
 
 
+def attach_part_structured_object_pose_state(frames: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "part structured pose frame_idx")
+        for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
+            if not isinstance(obj, dict):
+                continue
+            schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+            parts = [p for p in obj.get("parts", []) if isinstance(p, dict)] if isinstance(obj.get("parts"), list) else []
+            required_labels = sorted(str(p.get("part_track_label")) for p in parts if p.get("part_track_label"))
+            ready_parts: list[dict[str, Any]] = []
+            blockers: list[str] = []
+            if schema.get("requires_part_or_relative_motion_model") is not True:
+                blockers.append("object_schema_does_not_require_part_or_relative_motion_model")
+            if len(required_labels) < 2:
+                blockers.append("fewer_than_two_required_part_tracks")
+            for part in parts:
+                label = str(part.get("part_track_label"))
+                recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
+                if recon.get("part_pose_ready") is True:
+                    ready_parts.append(
+                        {
+                            "part_track_label": label,
+                            "pose_variable_id": recon.get("pose_variable_id"),
+                            "translation_camera_m": recon.get("translation_camera_m"),
+                            "rotation_camera_from_canonical_rotvec": recon.get("rotation_camera_from_canonical_rotvec"),
+                            "part_extent_camera_m": recon.get("part_extent_camera_m"),
+                            "part_pose_ready_scope": recon.get("part_pose_ready_scope"),
+                        }
+                    )
+                else:
+                    blockers.append(f"part_pose_not_frame_ready::{label}")
+            ready_labels = sorted(str(row.get("part_track_label")) for row in ready_parts if row.get("part_track_label"))
+            supported = bool(schema.get("requires_part_or_relative_motion_model") is True and len(required_labels) >= 2 and ready_labels == required_labels)
+            state = {
+                "method": "final_pipeline_frame_local_part_structured_object_pose_state",
+                "frame_idx": frame_idx,
+                "object_id": obj.get("object_id"),
+                "part_structured_pose_ready": supported,
+                "required_part_track_labels": required_labels,
+                "ready_part_track_labels": ready_labels,
+                "ready_parts": ready_parts,
+                "blockers": [] if supported else blockers,
+                "object_pose_requirement_met": False,
+                "object_geometry_complete": False,
+                "scope": "frame_local_articulated_or_part_required_object_state_from_all_required_ready_part_poses_not_hidden_geometry_completion_not_single_rigid_object_pose",
+            }
+            obj["part_structured_pose_state"] = state
+            obj["part_structured_pose_ready"] = supported
+            if isinstance(schema, dict):
+                schema["part_pose_ready"] = supported
+                schema["part_pose_ready_scope"] = state["scope"]
+            counts["part_structured_object_pose_state_rows"] += 1
+            if supported:
+                counts["part_structured_object_pose_ready_rows"] += 1
+    return counts
+
+
 def summarize_physical_contact_states(frames: list[dict[str, Any]]) -> dict[str, Any]:
     active_by_variable: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
     counts: Counter[str] = Counter()
@@ -4594,6 +4652,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
     reconstructed_geometry_counts = attach_reconstructed_geometry_pose(frames)
     frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
+    part_structured_object_pose_counts = attach_part_structured_object_pose_state(frames)
     object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
     contact_physical_mode_counts = attach_contact_physical_modes(frames)
     physical_contact_state_report = summarize_physical_contact_states(frames)
@@ -4604,6 +4663,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     factor_graph_summary["contact_depth_order_occlusion_counts"] = dict(sorted(contact_depth_order_occlusion_counts.items()))
     module_counts.update(reconstructed_geometry_counts)
     module_counts.update(frame_local_part_pose_graph_counts)
+    module_counts.update(part_structured_object_pose_counts)
     module_counts.update(object_pose_validation_counts)
     module_counts.update(contact_physical_mode_counts)
     module_counts.update(contact_depth_order_occlusion_counts)
@@ -4930,6 +4990,9 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                     mesh_color, mesh_text, mesh_state = object_pose_render_style(obj, recon)
                     draw_label(draw, (box[0], min(image.size[1] - 58, box[3] + 6)), mesh_text, small, mesh_color, (0, 0, 0))
                     counts[f"reconstructed_geometry_pose_labels_{mesh_state}"] += 1
+                if obj.get("part_structured_pose_ready") is True:
+                    draw_label(draw, (box[0], min(image.size[1] - 76, box[3] + 44)), "part-structured pose ready", small, (80, 255, 210), (0, 0, 0))
+                    counts["part_structured_object_pose_ready_labels"] += 1
                 counts["object_boxes"] += 1
             for part_idx, part in enumerate(obj.get("parts", [])[:4]):
                 if isinstance(part, dict) and isinstance(part.get("part_mask_path"), str):
@@ -5080,6 +5143,9 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                         counts["world_supported_object_mesh_poses"] += 1
                     if mesh_state == "completed":
                         counts["world_completed_object_mesh_poses"] += 1
+            if obj.get("part_structured_pose_ready") is True:
+                draw_label(draw, (pt[0] + 10, pt[1] + 30), "part-structured pose ready", small, (80, 255, 210), (18, 20, 25))
+                counts["world_part_structured_object_pose_ready_labels"] += 1
             part_mesh_drawn = 0
             for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
