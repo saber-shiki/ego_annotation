@@ -4847,6 +4847,15 @@ def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], 
     return None
 
 
+def part_pose_render_style(part: dict[str, Any], recon: dict[str, Any]) -> tuple[tuple[int, int, int], str, str]:
+    validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+    if validation.get("frame_visible_depth_silhouette_pose_supported") is True or recon.get("visible_depth_silhouette_pose_supported") is True:
+        return (80, 255, 130), "part visible pose supported", "supported"
+    if validation:
+        return (150, 150, 150), "part mesh candidate — pose rejected", "rejected"
+    return (170, 140, 80), "part mesh candidate — unvalidated", "unvalidated"
+
+
 def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     case_dir = args.output_root / case
     frame_dir = case_dir / "overlay_frames"
@@ -4908,8 +4917,9 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 if isinstance(part, dict):
                     part_recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
                     if part_recon.get("renderable_part_pose_geometry") is True and box:
-                        draw_label(draw, (box[0], min(image.size[1] - 34, box[3] + 26 + 18 * part_idx)), "part depth-fused mesh pose", small, (255, 230, 90), (0, 0, 0))
-                        counts["part_reconstructed_geometry_pose_labels"] += 1
+                        part_color, part_label, part_state = part_pose_render_style(part, part_recon)
+                        draw_label(draw, (box[0], min(image.size[1] - 34, box[3] + 26 + 18 * part_idx)), part_label, small, part_color, (0, 0, 0))
+                        counts[f"part_reconstructed_geometry_pose_labels_{part_state}"] += 1
         for raw_hand in frame.get("hands", []):
             hand = require_dict(raw_hand, "hand")
             raw_video = require_dict(ann.get("raw_video", {}), "raw_video")
@@ -5062,9 +5072,10 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                 if part_recon.get("renderable_part_pose_geometry") is not True:
                     continue
                 part_anchor = (pt[0] + 16 + 18 * part_mesh_drawn, pt[1] + 34 + 10 * part_mesh_drawn)
-                if draw_anchored_part_mesh_glyph(draw, part_recon, part_anchor, (255, 230, 90)):
-                    draw_label(draw, (part_anchor[0] + 8, part_anchor[1] + 8), "part-mesh", small, (255, 230, 90), (18, 20, 25))
-                    counts["world_part_reconstructed_mesh_footprints"] += 1
+                part_color, part_label, part_state = part_pose_render_style(part, part_recon)
+                if draw_anchored_part_mesh_glyph(draw, part_recon, part_anchor, part_color):
+                    draw_label(draw, (part_anchor[0] + 8, part_anchor[1] + 8), part_label, small, part_color, (18, 20, 25))
+                    counts[f"world_part_reconstructed_mesh_footprints_{part_state}"] += 1
                     part_mesh_drawn += 1
             draw_label(draw, (pt[0]+10, pt[1]-10), str(obj.get("name"))[:36], small, color, (18, 20, 25))
             counts["world_objects"] += 1
