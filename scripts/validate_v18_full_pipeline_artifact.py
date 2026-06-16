@@ -121,14 +121,16 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     require(overlay_object_completed + overlay_object_supported + overlay_object_rejected + overlay_object_unvalidated > 0, f"{case}: overlay rendered no reconstructed geometry pose labels")
     require(world_object_completed + world_object_supported + world_object_rejected + world_object_unvalidated > 0, f"{case}: world render drew no reconstructed mesh footprints")
     require(overlay_object_rejected > 0 and world_object_rejected > 0, f"{case}: render does not expose rejected/uncertain object pose candidates separately")
+    overlay_part_ready = int(overlay_draw.get("part_reconstructed_geometry_pose_labels_ready", 0))
     overlay_part_supported = int(overlay_draw.get("part_reconstructed_geometry_pose_labels_supported", 0))
     overlay_part_rejected = int(overlay_draw.get("part_reconstructed_geometry_pose_labels_rejected", 0))
     overlay_part_unvalidated = int(overlay_draw.get("part_reconstructed_geometry_pose_labels_unvalidated", 0))
+    world_part_ready = int(world_draw.get("world_part_reconstructed_mesh_footprints_ready", 0))
     world_part_supported = int(world_draw.get("world_part_reconstructed_mesh_footprints_supported", 0))
     world_part_rejected = int(world_draw.get("world_part_reconstructed_mesh_footprints_rejected", 0))
     world_part_unvalidated = int(world_draw.get("world_part_reconstructed_mesh_footprints_unvalidated", 0))
-    require(overlay_part_supported + overlay_part_rejected + overlay_part_unvalidated > 0, f"{case}: overlay rendered no reconstructed part geometry pose labels")
-    require(world_part_supported + world_part_rejected + world_part_unvalidated > 0, f"{case}: world render drew no reconstructed part mesh footprints")
+    require(overlay_part_ready + overlay_part_supported + overlay_part_rejected + overlay_part_unvalidated > 0, f"{case}: overlay rendered no reconstructed part geometry pose labels")
+    require(world_part_ready + world_part_supported + world_part_rejected + world_part_unvalidated > 0, f"{case}: world render drew no reconstructed part mesh footprints")
     require(overlay_part_rejected > 0 and world_part_rejected > 0, f"{case}: render does not expose rejected/uncertain part pose candidates separately")
 
     ann_path = Path(str(case_report.get("annotations")))
@@ -514,12 +516,13 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                     counts["part_silhouette_depth_pose_validation_rows"] += 1
                     if validation.get("visible_depth_silhouette_pose_supported") is True:
                         counts["part_silhouette_depth_pose_supported_rows"] += 1
-                    require(validation.get("part_pose_ready") is False, f"{case}: part validation overclaims part_pose_ready")
                     require(validation.get("object_pose_requirement_met") is False, f"{case}: part validation overclaims object pose")
                     require("visible_same_frame_depth" in str(validation.get("scope")), f"{case}: part validation scope missing")
                     if "frame_visible_depth_silhouette_pose_supported" in validation:
+                        frame_supported = bool(validation.get("frame_visible_depth_silhouette_pose_supported") is True)
+                        require(validation.get("part_pose_ready") is frame_supported, f"{case}: part validation readiness disagrees with frame-local support")
                         counts["frame_local_part_pose_validation_rows"] += 1
-                        if validation.get("frame_visible_depth_silhouette_pose_supported") is True:
+                        if frame_supported:
                             counts["frame_local_part_pose_validation_supported_rows"] += 1
                         else:
                             counts["frame_local_part_pose_validation_rejected_rows"] += 1
@@ -535,7 +538,7 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                         require(isinstance(part_recon.get("mesh_path"), str) and Path(str(part_recon.get("mesh_path"))).exists(), f"{case}: reconstructed part geometry mesh path missing")
                         require(isinstance(part_recon.get("part_bbox_corners_camera_m"), list) and len(part_recon.get("part_bbox_corners_camera_m")) == 8, f"{case}: reconstructed part geometry pose missing render corners")
                         require(isinstance(part_recon.get("translation_camera_m"), list) and len(part_recon.get("translation_camera_m")) == 3, f"{case}: reconstructed part geometry pose missing translation")
-                        require(part_recon.get("part_pose_ready") is False, f"{case}: reconstructed part geometry overclaims part_pose_ready")
+                        require(part_recon.get("part_pose_ready") in {True, False}, f"{case}: reconstructed part geometry missing part_pose_ready field")
                         require(part_recon.get("object_pose_requirement_met") is False, f"{case}: reconstructed part geometry overclaims object pose")
                         require(part_recon.get("visible_depth_silhouette_pose_supported") in {True, False}, f"{case}: reconstructed part geometry missing silhouette/depth pose support field")
 

@@ -1773,6 +1773,7 @@ def posed_reconstructed_part_geometry_state(part: dict[str, Any], candidate: dic
         "part_pose_validation_blockers": validation.get("part_pose_validation_blockers", []),
         "part_geometry_complete": False,
         "part_pose_ready": False,
+        "part_pose_ready_scope": "awaiting_frame_local_visible_depth_silhouette_validation",
         "object_pose_requirement_met": False,
         "scope": "renderable_part_depth_fused_visible_completion_mesh_with_visible_depth_silhouette_validation_and_explicit_hidden_surface_uncertainty",
     }
@@ -1986,9 +1987,18 @@ def attach_frame_local_part_pose_validation(frames: list[dict[str, Any]], part_p
                 validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
                 validation.update(frame_validation)
                 validation["frame_local_validation_phase"] = phase
+                frame_supported = bool(frame_validation.get("frame_visible_depth_silhouette_pose_supported") is True)
+                if use_graph_estimate:
+                    validation["part_pose_ready"] = frame_supported
+                    validation["part_pose_ready_scope"] = "current_frame_visible_depth_silhouette_supported_part_pose_not_hidden_part_completion"
+                    part_recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else None
+                    if part_recon is not None:
+                        part_recon["part_pose_ready"] = frame_supported
+                        part_recon["visible_depth_silhouette_pose_supported"] = frame_supported
+                        part_recon["part_pose_ready_scope"] = validation["part_pose_ready_scope"]
                 part["part_silhouette_depth_pose_validation"] = validation
                 counts[f"frame_local_part_pose_validation_{phase}_rows"] += 1
-                if frame_validation.get("frame_visible_depth_silhouette_pose_supported") is True:
+                if frame_supported:
                     counts[f"frame_local_part_pose_validation_{phase}_supported_rows"] += 1
                 else:
                     counts[f"frame_local_part_pose_validation_{phase}_rejected_rows"] += 1
@@ -4866,8 +4876,8 @@ def object_pose_render_style(obj: dict[str, Any], recon: dict[str, Any]) -> tupl
 
 def part_pose_render_style(part: dict[str, Any], recon: dict[str, Any]) -> tuple[tuple[int, int, int], str, str]:
     validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
-    if validation.get("frame_visible_depth_silhouette_pose_supported") is True or recon.get("visible_depth_silhouette_pose_supported") is True:
-        return (80, 255, 130), "part visible pose supported", "supported"
+    if validation.get("part_pose_ready") is True or recon.get("part_pose_ready") is True:
+        return (80, 255, 130), "part pose ready", "ready"
     if validation:
         return (150, 150, 150), "part mesh candidate — pose rejected", "rejected"
     return (170, 140, 80), "part mesh candidate — unvalidated", "unvalidated"
