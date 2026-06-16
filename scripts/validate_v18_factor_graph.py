@@ -48,7 +48,6 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(isinstance(implemented_families, list) and any("contact_switch_temporal" in str(item) for item in implemented_families), f"{case}: contact temporal factor family missing")
     require(isinstance(implemented_families, list) and any("contact_local_nonpenetration" in str(item) for item in implemented_families), f"{case}: contact local nonpenetration factor family missing")
     require(isinstance(implemented_families, list) and any("contact_part_pose_anchor" in str(item) for item in implemented_families), f"{case}: contact-part pose anchor factor family missing")
-    require(int(factor_counts.get("contact_part_pose_anchor", 0)) > 0, f"{case}: contact-part pose anchor factors missing")
     inference = fg.get("inference")
     require(isinstance(inference, dict), f"{case}: inference missing")
     require("SciPy" in str(inference.get("continuous_method")), f"{case}: continuous solve is not SciPy-backed")
@@ -143,7 +142,13 @@ def validate_case(path: Path) -> dict[str, Any]:
                     components = part_var.get("contact_part_coupling_components")
                     if isinstance(components, list) and components:
                         contact_part_component_rows += len(components)
-                        require(any(isinstance(comp, dict) and comp.get("factor_family") == "contact_part_pose_anchor" for comp in components), f"{case}: part contact component missing factor family")
+                        for comp in components:
+                            require(isinstance(comp, dict) and comp.get("factor_family") == "contact_part_pose_anchor", f"{case}: part contact component missing factor family")
+                            coupling = comp.get("coupling") if isinstance(comp.get("coupling"), dict) else {}
+                            raw_or_active = coupling.get("contact_switch_active") is True or coupling.get("raw_contact_switch_active") is True or coupling.get("accepted_contact_owner") is True
+                            distance = coupling.get("pre_coupling_surface_distance_m")
+                            near = isinstance(distance, (int, float)) and float(distance) <= 0.12
+                            require(raw_or_active and near, f"{case}: part contact anchor is not active/raw/owner-supported and near")
             episode_raw = variables.get("contact_episode")
             if isinstance(episode_raw, list):
                 for episode_var_raw in episode_raw:
@@ -231,7 +236,7 @@ def validate_case(path: Path) -> dict[str, Any]:
     require(temporal_contact_factor_rows == int(factor_counts.get("contact_switch_temporal", -1)), f"{case}: temporal contact factor count mismatch")
     require(contact_nonpenetration_factor_rows == int(factor_counts.get("contact_local_nonpenetration", -1)), f"{case}: contact local nonpenetration factor count mismatch")
     require(contact_object_component_rows == int(factor_counts.get("contact_object_pose_anchor", 0)) + int(factor_counts.get("contact_surface_changing_object_pose_anchor", 0)) + int(factor_counts.get("contact_object_nonpenetration_repel", 0)), f"{case}: contact-object component count mismatch")
-    require(contact_part_component_rows == int(factor_counts.get("contact_part_pose_anchor", -1)), f"{case}: contact-part component count mismatch")
+    require(contact_part_component_rows == int(factor_counts.get("contact_part_pose_anchor", 0)), f"{case}: contact-part component count mismatch")
     require(local_nonpenetration_factor_count_sum == contact_nonpenetration_factor_rows, f"{case}: local nonpenetration factor sum mismatch")
     require(local_temporal_factor_count_sum == temporal_contact_factor_rows, f"{case}: local temporal contact factor sum mismatch")
     require(temporal_contact_active_conflicts == 0, f"{case}: active temporal contact has nonpenetration conflict")

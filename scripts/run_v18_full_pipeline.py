@@ -3043,19 +3043,15 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
     if hand_points.ndim != 2 or hand_points.shape[1] != 3 or hand_points.shape[0] == 0:
         return None
     active_contact = bool(switch.get("estimate") is True)
-    raw_contact = bool(switch.get("raw_estimate_before_hawor_support_gate") is True)
+    raw_contact = bool(switch.get("raw_estimate_before_physical_contact_gate") is True or switch.get("raw_estimate_before_hawor_support_gate") is True)
+    accepted_contact_owner = bool(switch.get("accepted_contact_owner") is True)
     image_support = max(
         finite_float(switch.get("image_iou"), 0.0),
         finite_float(switch.get("min_box_coverage"), 0.0),
         finite_float(switch.get("mesh_contact_support_score"), 0.0),
         finite_float(switch.get("final_metric_contact_support_score"), 0.0),
     )
-    proposal_contact = bool(
-        active_contact
-        or raw_contact
-        or hyp.get("confidence") in {"low", "medium"}
-        or image_support > 0.08
-    )
+    proposal_contact = bool(active_contact or raw_contact or accepted_contact_owner)
     best: tuple[dict[str, Any], np.ndarray, np.ndarray, float] | None = None
     best_validated: tuple[dict[str, Any], np.ndarray, np.ndarray, float] | None = None
     for part in obj.get("parts", []) if isinstance(obj.get("parts"), list) else []:
@@ -3080,9 +3076,7 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
         best = best_validated
     part, hand_pt, part_pt, distance = best
     near_part_geometry = distance <= 0.12
-    if not proposal_contact and not near_part_geometry:
-        return None
-    if not near_part_geometry:
+    if not proposal_contact or not near_part_geometry:
         return None
     center, rotvec = part_pose_value_from_graph_or_candidate(part)
     if center is None:
@@ -3129,9 +3123,10 @@ def contact_part_pose_observation(hyp: dict[str, Any], switch: dict[str, Any], h
             "contact_switch_active": active_contact,
             "raw_contact_switch_active": raw_contact,
             "contact_proposal_used": proposal_contact,
+            "accepted_contact_owner": accepted_contact_owner,
             "part_geometry_source": "depth_fused_reconstructed_part_mesh_candidate",
             "part_pose_validation_supported": part_validation_supports_current_frame(part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}),
-            "scope": "part_contact_anchor_for_articulated_or_part_required_object_without_complete_object_pose_claim",
+            "scope": "strict_part_contact_anchor_for_active_raw_or_accepted_owner_contact_proposal_without_complete_object_pose_claim",
         },
     }
 
@@ -4241,7 +4236,7 @@ def solve_v18_factor_graph(
             "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
             "hand_state": "HaWoR_metric_MANO_wrist_world_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_contact_object_pose_coupling_when_rigid_and_supported",
-            "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_contact_part_pose_coupling_when_part_mesh_and_observed_mano_are_near",
+            "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_strict_contact_part_pose_coupling_only_for_active_raw_or_accepted_owner_part_contact_proposals",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
             "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_coupled_object_pose_coupled_part_pose_direct_support_or_episode_support_gate",
             "contact_episode": "directly_anchored_temporal_manipulation_contact_episode_state_for_contact_persistence_not_geometry_completion",
@@ -4257,7 +4252,7 @@ def solve_v18_factor_graph(
             "contact_overlap_depth_mesh_distance_owner_graph_energy_with_direct_or_episode_physical_contact_support_gate",
             "contact_object_pose_anchor_factor_for_rigid_supported_mano_object_surface_proposals",
             "contact_object_nonpenetration_repel_factor_for_rigid_supported_local_conflicts",
-            "contact_part_pose_anchor_factor_for_observed_mano_to_depth_fused_part_mesh_proposals",
+            "contact_part_pose_anchor_factor_for_active_raw_or_accepted_owner_observed_mano_to_depth_fused_part_mesh_proposals",
             "contact_local_nonpenetration_factor_from_signed_normal_and_nearest_triangle_evidence",
             "contact_switch_temporal_continuity_factor",
             "contact_episode_persistence_factor_from_direct_anchor_and_continuous_manipulation_evidence",
@@ -4266,7 +4261,7 @@ def solve_v18_factor_graph(
         "spec_factor_gaps_remaining": [
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
             "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration_and_contact_object_coupling_for_eligible_rigid_contacts",
-            "part_SE3_uses_visible_surface_PCA_geometry_contact_part_pose_coupling_and_occlusion_uncertainty",
+            "part_SE3_uses_visible_surface_PCA_geometry_with_contact_part_pose_coupling_only_when_active_raw_or_accepted_owner_contact_proposals_exist_and_occlusion_uncertainty_remains",
             "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_coupled_object_or_part_pose_evidence_and_blocks_active_claims_without_direct_support_or_episode_support",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
