@@ -3722,11 +3722,12 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
         iou = finite_float(cand.get("iou"), finite_float(mesh_row.get("bbox_iou"), 0.0))
         hand_cov = finite_float(cand.get("hand_box_coverage_by_object_box"), finite_float(mesh_row.get("hand_box_coverage_by_object_box"), 0.0))
         object_cov = finite_float(cand.get("object_box_coverage_by_hand_box"), 0.0)
-        depth_state = str(mesh_row.get("depth_pair_evidence_state") or mesh_row.get("source_depth_order_state") or cand.get("depth_order_state") or cand.get("source_depth_order_state") or "unknown_depth_order_state")
-        depth_resolved = bool(cand.get("depth_order_resolved") or cand.get("occluder_owner_accepted") or mesh_row.get("depth_order_resolved"))
-        raw_depth_accept = bool(cand.get("occluder_owner_accepted") is True or mesh_row.get("accepted_occlusion_owner") is True or (temporal_graph.get("accepted_occlusion_owner") is True and temporal_chosen == object_id))
-        depth_accept = bool(raw_depth_accept and support_gate_allows_owner_claim)
         temporal_selected = bool(temporal_chosen == object_id)
+        temporal_acceptance_gate = temporal_graph.get("acceptance_gate") if isinstance(temporal_graph.get("acceptance_gate"), dict) else {}
+        depth_state = str(temporal_graph.get("depth_pair_evidence_state") if temporal_selected and temporal_graph.get("depth_pair_evidence_state") else mesh_row.get("depth_pair_evidence_state") or mesh_row.get("source_depth_order_state") or cand.get("depth_order_state") or cand.get("source_depth_order_state") or "unknown_depth_order_state")
+        depth_resolved = bool(cand.get("depth_order_resolved") or cand.get("occluder_owner_accepted") or mesh_row.get("depth_order_resolved") or (temporal_selected and temporal_acceptance_gate.get("source_depth_order_resolved") is True))
+        raw_depth_accept = bool(cand.get("occluder_owner_accepted") is True or mesh_row.get("accepted_occlusion_owner") is True or (temporal_graph.get("accepted_occlusion_owner") is True and temporal_selected))
+        depth_accept = bool(raw_depth_accept and support_gate_allows_owner_claim)
         foreground_support = ("foreground" in depth_state and "support" in depth_state and "no_support" not in depth_state and "contradict" not in depth_state)
         foreground_contradiction = "foreground" in depth_state and "contradict" in depth_state
         support = max(0.0, min(1.0, 0.34 * iou + 0.34 * hand_cov + 0.08 * object_cov + 0.16 * mesh_support + (0.08 if temporal_selected else 0.0)))
@@ -3777,6 +3778,8 @@ def occlusion_owner_energy(hand: dict[str, Any]) -> dict[str, Any] | None:
         "chosen_owner_object_id": chosen.get("object_id"),
         "chosen_owner_name": chosen.get("name"),
         "chosen_energy": chosen.get("energy"),
+        "accepted_occlusion_owner": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") and support_gate_allows_owner_claim),
+        "occlusion_owner_claim": "accepted_occlusion_owner_by_strict_depth_mesh_temporal_gate" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") and support_gate_allows_owner_claim else "unresolved_or_unowned_occlusion_owner",
         "owner_supported_by_depth_evidence": bool(chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") and support_gate_allows_owner_claim),
         "raw_owner_supported_by_depth_evidence_before_hawor_support_gate": bool(chosen.get("object_id") and chosen.get("raw_accepted_by_depth_evidence_before_hawor_support_gate")),
         "state": "depth_order_supported_owner" if chosen.get("object_id") and chosen.get("accepted_by_depth_evidence") and support_gate_allows_owner_claim else "support_gated_candidate_or_unowned",
@@ -5324,7 +5327,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--signed-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_signed_nonpenetration_evidence"))
     parser.add_argument("--triangle-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_triangle_nonpenetration_evidence"))
     parser.add_argument("--occlusion-mesh-owner-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_mesh_owner_evidence"))
-    parser.add_argument("--occlusion-owner-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_owner_graph"))
+    parser.add_argument("--occlusion-owner-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_unidepth_extension/v18_occlusion_owner_graph_complete_depth_hawor"))
     parser.add_argument("--articulation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_articulation_fit_candidates"))
     parser.add_argument("--cases", nargs="+", default=["trash_1050", "task5_tomato_960"])
     return parser.parse_args()
