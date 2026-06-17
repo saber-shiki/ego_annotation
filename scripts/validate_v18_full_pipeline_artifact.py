@@ -153,6 +153,17 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
     forbidden = serialized_contains_forbidden(report_text, ann_text)
     require(not forbidden, f"{case}: forbidden final-artifact wording present: {forbidden}")
     ann = json.loads(ann_text)
+    sources = ann.get("sources") if isinstance(ann.get("sources"), dict) else {}
+    part_manifest_path = Path(str(sources.get("part_object_blocker_manifest", "")))
+    require(part_manifest_path.exists(), f"{case}: missing part-object blocker manifest source for global part labels")
+    part_manifest = load_json(part_manifest_path)
+    part_manifest_rows = part_manifest.get("object_rows") if isinstance(part_manifest, dict) else []
+    require(isinstance(part_manifest_rows, list), f"{case}: part-object blocker manifest lacks object rows")
+    accepted_global_labels_by_object = {
+        str(row.get("object_id")): sorted(str(label) for label in row.get("accepted_part_track_labels", []) if isinstance(label, str))
+        for row in part_manifest_rows
+        if isinstance(row, dict)
+    }
     frames = ann.get("frames")
     require(isinstance(frames, list) and len(frames) == expected, f"{case}: annotation frame count mismatch")
     factor_graph_summary = ann.get("factor_graph_summary") if isinstance(ann.get("factor_graph_summary"), dict) else {}
@@ -641,15 +652,29 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 counts["part_structured_object_pose_state_rows"] += 1
                 schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
                 parts = [p for p in obj.get("parts", []) if isinstance(p, dict)] if isinstance(obj.get("parts"), list) else []
-                required_labels = sorted(str(p.get("part_track_label")) for p in parts if p.get("part_track_label"))
-                ready_labels = []
+                current_frame_labels = sorted(str(p.get("part_track_label")) for p in parts if p.get("part_track_label"))
+                current_frame_ready_labels = []
                 for part in parts:
                     recon_part = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
                     if recon_part.get("part_pose_ready") is True and part.get("part_track_label"):
-                        ready_labels.append(str(part.get("part_track_label")))
-                ready_labels = sorted(ready_labels)
-                require(structured.get("required_part_track_labels") == required_labels, f"{case}: structured part-pose required labels disagree with object parts")
-                require(structured.get("ready_part_track_labels") == ready_labels, f"{case}: structured part-pose ready labels disagree with ready part rows")
+                        current_frame_ready_labels.append(str(part.get("part_track_label")))
+                current_frame_ready_labels = sorted(current_frame_ready_labels)
+                manifest_required_labels = accepted_global_labels_by_object.get(str(obj.get("object_id")), [])
+                required_labels = sorted(str(label) for label in structured.get("accepted_global_part_track_labels", []) if isinstance(label, str))
+                if schema.get("requires_part_or_relative_motion_model") is True:
+                    require(required_labels == manifest_required_labels, f"{case}: structured part-pose accepted global labels disagree with part-object manifest")
+                ready_labels = sorted(str(label) for label in structured.get("ready_part_track_labels", []) if isinstance(label, str))
+                require(structured.get("current_frame_part_track_labels") == current_frame_labels, f"{case}: structured part-pose current-frame labels disagree with object parts")
+                require(structured.get("current_frame_ready_part_track_labels") == current_frame_ready_labels, f"{case}: structured part-pose current-frame ready labels disagree with object parts")
+                require(structured.get("required_part_track_labels") == required_labels, f"{case}: structured part-pose required labels disagree with accepted global labels")
+                tracked_labels = structured.get("tracked_part_labels")
+                require(tracked_labels is None or tracked_labels == required_labels, f"{case}: structured part-pose tracked labels disagree with accepted global labels")
+                require(all(label in required_labels for label in ready_labels), f"{case}: structured part-pose ready labels include non-global part tracks")
+                unready_labels = sorted(label for label in required_labels if label not in set(ready_labels))
+                structured_unready_labels = structured.get("unready_part_track_labels")
+                require(structured_unready_labels is None or structured_unready_labels == unready_labels, f"{case}: structured part-pose unready labels disagree with accepted global labels")
+                missing_current_frame_labels = sorted(label for label in required_labels if label not in set(current_frame_labels))
+                require(structured.get("missing_current_frame_part_track_labels") == missing_current_frame_labels, f"{case}: structured part-pose missing current-frame labels disagree with accepted global labels")
                 require(structured.get("object_pose_requirement_met") is False, f"{case}: structured part-pose overclaims object pose completion")
                 require(structured.get("object_geometry_complete") is False, f"{case}: structured part-pose overclaims hidden geometry completion")
                 require("not_hidden_geometry_completion" in str(structured.get("scope")), f"{case}: structured part-pose scope missing hidden-geometry limit")
@@ -658,9 +683,17 @@ def validate_case(case_report: dict[str, Any], report_text: str) -> dict[str, An
                 if supported:
                     counts["part_structured_object_pose_ready_rows"] += 1
                     require(schema.get("requires_part_or_relative_motion_model") is True, f"{case}: structured part-pose ready on object without part/relative-motion schema")
-                    require(len(required_labels) >= 2, f"{case}: structured part-pose ready with fewer than two required parts")
-                    require(ready_labels == required_labels, f"{case}: structured part-pose ready without all required parts ready")
-                    require(isinstance(structured.get("ready_parts"), list) and len(structured.get("ready_parts")) == len(required_labels), f"{case}: structured part-pose ready missing ready part pose records")
+                    require(structured.get("part_structured_pose_support_mode") == "visible_base_reference_plus_ready_moving_part", f"{case}: structured part-pose ready has unsupported mode")
+                    require(structured.get("base_visible_surface_reference_available") is True, f"{case}: structured part-pose ready lacks visible base reference support")
+                    require(structured.get("base_visible_surface_reference_not_object_pose") is True, f"{case}: structured part-pose base reference overclaims object pose")
+                    require(len(required_labels) >= 1, f"{case}: structured part-pose ready without accepted global part tracks")
+                    require(len(ready_labels) >= 1, f"{case}: structured part-pose ready without any ready moving part")
+                    require(isinstance(structured.get("ready_parts"), list) and len(structured.get("ready_parts")) == len(ready_labels), f"{case}: structured part-pose ready missing ready part pose records")
+                    residual_uncertainty = structured.get("residual_uncertainty") if isinstance(structured.get("residual_uncertainty"), list) else []
+                    for label in unready_labels:
+                        require(any(str(label) in str(item) for item in residual_uncertainty), f"{case}: structured part-pose ready drops residual uncertainty for {label}")
+                    require("not_whole_object_pose" in str(structured.get("scope")), f"{case}: structured part-pose scope overclaims whole-object pose")
+                    require(structured.get("object_pose_requirement_met") is False and structured.get("object_geometry_complete") is False, f"{case}: structured part-pose ready overclaims object completion")
             for part in obj.get("parts") if isinstance(obj.get("parts"), list) else []:
                 if not isinstance(part, dict):
                     continue

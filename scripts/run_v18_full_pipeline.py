@@ -1106,6 +1106,18 @@ def load_part_pose_validation_index(path: Path) -> tuple[dict[tuple[str, str], d
     return out, summary
 
 
+def load_global_part_track_labels(path: Path) -> dict[str, list[str]]:
+    report = require_dict(load_json(path), "part object blocker manifest")
+    out: dict[str, list[str]] = {}
+    for raw in require_list(report.get("object_rows"), "part object blocker rows"):
+        row = require_dict(raw, "part object blocker row")
+        object_id = str(row.get("object_id"))
+        labels = sorted({str(label) for label in row.get("accepted_part_track_labels", []) if isinstance(label, str) and label})
+        if labels:
+            out[object_id] = labels
+    return out
+
+
 def index_bounded_frames(path: Path) -> dict[int, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -2050,7 +2062,7 @@ def attach_frame_local_part_pose_validation(frames: list[dict[str, Any]], part_p
     return counts
 
 
-def attach_part_structured_object_pose_state(frames: list[dict[str, Any]]) -> Counter[str]:
+def attach_part_structured_object_pose_state(frames: list[dict[str, Any]], global_part_track_labels_by_object: dict[str, list[str]]) -> Counter[str]:
     counts: Counter[str] = Counter()
     for frame in frames:
         frame_idx = require_int(frame.get("frame_idx"), "part structured pose frame_idx")
@@ -2058,44 +2070,81 @@ def attach_part_structured_object_pose_state(frames: list[dict[str, Any]]) -> Co
             if not isinstance(obj, dict):
                 continue
             schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+            recon_obj = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+            object_id = str(obj.get("object_id"))
             parts = [p for p in obj.get("parts", []) if isinstance(p, dict)] if isinstance(obj.get("parts"), list) else []
-            required_labels = sorted(str(p.get("part_track_label")) for p in parts if p.get("part_track_label"))
+            current_frame_labels = sorted(str(p.get("part_track_label")) for p in parts if p.get("part_track_label"))
+            accepted_global_labels = sorted(global_part_track_labels_by_object.get(object_id, []))
             ready_parts: list[dict[str, Any]] = []
+            current_frame_ready_part_labels: list[str] = []
             blockers: list[str] = []
+            base_visible_surface_reference_available = bool(recon_obj.get("renderable_pose_geometry") is True and recon_obj.get("translation_world_m") is not None)
             if schema.get("requires_part_or_relative_motion_model") is not True:
                 blockers.append("object_schema_does_not_require_part_or_relative_motion_model")
-            if len(required_labels) < 2:
-                blockers.append("fewer_than_two_required_part_tracks")
+            if not base_visible_surface_reference_available:
+                blockers.append("base_visible_surface_reference_missing_for_part_structured_state")
+            if schema.get("requires_part_or_relative_motion_model") is True and not accepted_global_labels:
+                blockers.append("missing_accepted_global_part_track_labels_for_part_structured_state")
             for part in parts:
                 label = str(part.get("part_track_label"))
                 recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
-                if recon.get("part_pose_ready") is True:
-                    ready_parts.append(
-                        {
-                            "part_track_label": label,
-                            "pose_variable_id": recon.get("pose_variable_id"),
-                            "translation_camera_m": recon.get("translation_camera_m"),
-                            "rotation_camera_from_canonical_rotvec": recon.get("rotation_camera_from_canonical_rotvec"),
-                            "part_extent_camera_m": recon.get("part_extent_camera_m"),
-                            "part_pose_ready_scope": recon.get("part_pose_ready_scope"),
-                        }
-                    )
+                if recon.get("part_pose_ready") is True and label:
+                    current_frame_ready_part_labels.append(label)
+                    if label in set(accepted_global_labels):
+                        ready_parts.append(
+                            {
+                                "part_track_label": label,
+                                "pose_variable_id": recon.get("pose_variable_id"),
+                                "translation_camera_m": recon.get("translation_camera_m"),
+                                "rotation_camera_from_canonical_rotvec": recon.get("rotation_camera_from_canonical_rotvec"),
+                                "part_extent_camera_m": recon.get("part_extent_camera_m"),
+                                "part_pose_ready_scope": recon.get("part_pose_ready_scope"),
+                            }
+                        )
+                    elif schema.get("requires_part_or_relative_motion_model") is True:
+                        blockers.append(f"ready_part_track_not_in_accepted_global_set::{label}")
+            ready_labels = sorted(str(row.get("part_track_label")) for row in ready_parts if row.get("part_track_label"))
+            unready_part_labels = sorted(label for label in accepted_global_labels if label not in set(ready_labels))
+            missing_current_frame_part_labels = sorted(label for label in accepted_global_labels if label not in set(current_frame_labels))
+            for label in unready_part_labels:
+                if label in missing_current_frame_part_labels:
+                    blockers.append(f"accepted_part_track_absent_from_current_frame::{label}")
                 else:
                     blockers.append(f"part_pose_not_frame_ready::{label}")
-            ready_labels = sorted(str(row.get("part_track_label")) for row in ready_parts if row.get("part_track_label"))
-            supported = bool(schema.get("requires_part_or_relative_motion_model") is True and len(required_labels) >= 2 and ready_labels == required_labels)
+            supported = bool(
+                schema.get("requires_part_or_relative_motion_model") is True
+                and base_visible_surface_reference_available
+                and len(accepted_global_labels) >= 1
+                and len(ready_labels) >= 1
+            )
+            if schema.get("requires_part_or_relative_motion_model") is True and not ready_labels:
+                blockers.append("no_frame_ready_moving_part_pose")
+            support_mode = "visible_base_reference_plus_ready_moving_part" if supported else None
             state = {
                 "method": "final_pipeline_frame_local_part_structured_object_pose_state",
                 "frame_idx": frame_idx,
                 "object_id": obj.get("object_id"),
                 "part_structured_pose_ready": supported,
-                "required_part_track_labels": required_labels,
+                "part_structured_pose_support_mode": support_mode,
+                "base_visible_surface_reference_available": base_visible_surface_reference_available,
+                "base_visible_surface_reference_not_object_pose": True,
+                "base_visible_surface_reference_variable_id": recon_obj.get("pose_variable_id"),
+                "base_visible_surface_reference_world_m": recon_obj.get("translation_world_m"),
+                "base_visible_surface_reference_rotation_world_from_canonical_rotvec": recon_obj.get("rotation_world_from_canonical_rotvec"),
+                "current_frame_part_track_labels": current_frame_labels,
+                "current_frame_ready_part_track_labels": sorted(current_frame_ready_part_labels),
+                "tracked_part_labels": accepted_global_labels,
+                "accepted_global_part_track_labels": accepted_global_labels,
+                "required_part_track_labels": accepted_global_labels,
                 "ready_part_track_labels": ready_labels,
+                "unready_part_track_labels": unready_part_labels,
+                "missing_current_frame_part_track_labels": missing_current_frame_part_labels,
                 "ready_parts": ready_parts,
-                "blockers": [] if supported else blockers,
+                "blockers": [] if supported else sorted(set(blockers)),
+                "residual_uncertainty": sorted(set(blockers)) if supported and blockers else [],
                 "object_pose_requirement_met": False,
                 "object_geometry_complete": False,
-                "scope": "frame_local_articulated_or_part_required_object_state_from_all_required_ready_part_poses_not_hidden_geometry_completion_not_single_rigid_object_pose",
+                "scope": "frame_local_part_required_object_state_from_visible_base_surface_reference_plus_ready_moving_part_poses_not_hidden_geometry_completion_not_complete_object_pose_not_whole_object_pose",
             }
             obj["part_structured_pose_state"] = state
             obj["part_structured_pose_ready"] = supported
@@ -2105,6 +2154,7 @@ def attach_part_structured_object_pose_state(frames: list[dict[str, Any]]) -> Co
             counts["part_structured_object_pose_state_rows"] += 1
             if supported:
                 counts["part_structured_object_pose_ready_rows"] += 1
+                counts[f"part_structured_object_pose_ready_{support_mode}_rows"] += 1
     return counts
 
 
@@ -4791,6 +4841,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     depth_fused_by_object = load_depth_fused_reconstruction_index(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json")
     part_depth_fused_by_key = load_part_depth_fused_reconstruction_index(args.part_depth_fused_reconstruction_root / case / "v18_part_depth_fused_reconstruction_report.json")
     part_pose_validation_by_key, part_pose_validation_summary = load_part_pose_validation_index(args.part_silhouette_depth_pose_validation_root / case / "v18_part_silhouette_depth_pose_validation_report.json")
+    global_part_track_labels_by_object = load_global_part_track_labels(args.part_object_blocker_manifest_root / case / "v18_part_object_blocker_manifest_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
     contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
     signed_nonpenetration_index = load_signed_nonpenetration_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
@@ -5094,7 +5145,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
         reconstructed_geometry_counts = attach_reconstructed_geometry_pose(frames)
         frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
-        part_structured_object_pose_counts = attach_part_structured_object_pose_state(frames)
+        part_structured_object_pose_counts = attach_part_structured_object_pose_state(frames, global_part_track_labels_by_object)
         object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
         contact_physical_mode_counts = attach_contact_physical_modes(frames, set(contact_pose_anchor_switches.keys()), set(contact_pose_anchor_switches.keys()))
         physical_contact_state_report = summarize_physical_contact_states(frames)
@@ -5157,7 +5208,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             frame["factor_graph_solution"] = factor_graph_by_frame.get(frame_idx, {})
         reconstructed_geometry_counts = attach_reconstructed_geometry_pose(frames)
         frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
-        part_structured_object_pose_counts = attach_part_structured_object_pose_state(frames)
+        part_structured_object_pose_counts = attach_part_structured_object_pose_state(frames, global_part_track_labels_by_object)
         object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
         contact_physical_mode_counts = attach_contact_physical_modes(frames, set(stable_contact_pose_anchor_switches.keys()), set(stable_contact_pose_anchor_switches.keys()))
         physical_contact_state_report = summarize_physical_contact_states(frames)
@@ -5220,6 +5271,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
             "part_visible_surfaces": str(args.part_surfaces_root / case / "v18_part_visible_surfaces_report.json"),
             "part_depth_fused_reconstruction": str(args.part_depth_fused_reconstruction_root / case / "v18_part_depth_fused_reconstruction_report.json"),
             "part_silhouette_depth_pose_validation": str(args.part_silhouette_depth_pose_validation_root / case / "v18_part_silhouette_depth_pose_validation_report.json"),
+            "part_object_blocker_manifest": str(args.part_object_blocker_manifest_root / case / "v18_part_object_blocker_manifest_report.json"),
             "depth_fused_reconstruction": str(args.depth_fused_reconstruction_root / case / "v18_depth_fused_reconstruction_report.json"),
             "mesh_contact_evidence": str(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json"),
             "contact_ownership_graph": str(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json"),
@@ -5976,6 +6028,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--part-surfaces-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_visible_surfaces"))
     parser.add_argument("--part-depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_depth_fused_reconstruction"))
     parser.add_argument("--part-silhouette-depth-pose-validation-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_silhouette_depth_pose_validation"))
+    parser.add_argument("--part-object-blocker-manifest-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_part_object_blocker_manifest"))
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_unidepth_extension/v18_depth_fused_reconstruction_complete_depth_pass2"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
     parser.add_argument("--contact-ownership-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))
