@@ -35,8 +35,8 @@ def main() -> None:
     parser.add_argument("--base-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--python", default=".venv/bin/python")
-    parser.add_argument("--task5-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_v2/v18_mano_object_constraint_state.json"))
-    parser.add_argument("--trash-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame872/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_v23_verified_final_remeasure/v18_mano_object_constraint_state.json"))
+    parser.add_argument("--task5-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_finalv2_source_consistent_v1/iter1_remeasure/v18_mano_object_constraint_state.json"))
+    parser.add_argument("--trash-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame937/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_frame937_undercoverage1_verified_source_v1/combined_trash_hprime_remeasurement_frame872_plus_frame937_undercoverage1.json"))
     parser.add_argument("--verified-annotation", action="append", default=[], help="CASE=/path/to/verified annotations override passed to merge and verifier")
     args = parser.parse_args()
 

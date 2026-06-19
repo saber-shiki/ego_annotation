@@ -31,11 +31,12 @@ EXPECTED = {
 }
 
 DEFAULT_VERIFIED = {
-    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_v2/annotations_v18_full_with_surface806_sign929_mano_constraint.json"),
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame872/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_v22_verified_hprime_final/annotations_v18_full_with_verified_lid_hprime.json"),
+    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_finalv2_source_consistent_v1/iter1_select/annotations_v18_full_with_verified_tomato_hprime.json"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame937/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_frame937_undercoverage1_verified_source_v1/annotations_v18_full_with_frame937_undercoverage1_hprime.json"),
 }
 
-DEFAULT_TRASH_REMEASURE = Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame872/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_v23_verified_final_remeasure/v18_mano_object_constraint_state.json")
+DEFAULT_TASK5_REMEASURE = Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_finalv2_source_consistent_v1/iter1_remeasure/v18_mano_object_constraint_state.json")
+DEFAULT_TRASH_REMEASURE = Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame937/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_frame937_undercoverage1_verified_source_v1/combined_trash_hprime_remeasurement_frame872_plus_frame937_undercoverage1.json")
 DOMINANT_TOKEN = "dominant_visible_part"
 POINT_METRIC_FIELDS = {
     "joints_current_v18_world_m": (21, 3),
@@ -491,7 +492,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
-    parser.add_argument("--task5-remeasure-report", type=Path, default=None)
+    parser.add_argument("--task5-remeasure-report", type=Path, default=DEFAULT_TASK5_REMEASURE)
     parser.add_argument("--trash-remeasure-report", type=Path, default=DEFAULT_TRASH_REMEASURE)
     parser.add_argument("--verified-annotation", action="append", type=parse_case_path, default=[])
     args = parser.parse_args()

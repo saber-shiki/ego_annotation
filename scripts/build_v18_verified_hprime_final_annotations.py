@@ -12,8 +12,8 @@ import numpy as np
 
 
 DEFAULT_VERIFIED_ANNOTATIONS = {
-    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_v2/annotations_v18_full_with_surface806_sign929_mano_constraint.json"),
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame872/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_v22_verified_hprime_final/annotations_v18_full_with_verified_lid_hprime.json"),
+    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_finalv2_source_consistent_v1/iter1_select/annotations_v18_full_with_verified_tomato_hprime.json"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame937/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_frame937_undercoverage1_verified_source_v1/annotations_v18_full_with_frame937_undercoverage1_hprime.json"),
 }
 
 DOMINANT_TOKEN = "dominant_visible_part"
@@ -55,11 +55,26 @@ def parse_case_path(raw: str) -> tuple[str, Path]:
     return case, Path(path)
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def require_int_field(node: dict[str, Any], field: str, label: str) -> int:
+    value = node.get(field)
+    if value is None:
+        raise RuntimeError(f"{label}: missing {field}")
+    return int(value)
+
+
 def compact_update(hand: dict[str, Any]) -> dict[str, Any] | None:
     update = hand.get("compact_rigid_object_mano_constraint_update")
     if isinstance(update, dict):
         return update
-    metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    metric = as_dict(hand.get("metric_mano_state"))
     update = metric.get("compact_rigid_object_constraint_update")
     return update if isinstance(update, dict) else None
 
@@ -69,7 +84,7 @@ def hprime_state(update: dict[str, Any] | None) -> str:
 
 
 def is_coordinate_hprime(hand: dict[str, Any], update: dict[str, Any] | None = None) -> bool:
-    metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    metric = as_dict(hand.get("metric_mano_state"))
     return bool(
         (isinstance(update, dict) and update.get("coordinate_update_applied") is True)
         or metric.get("compact_rigid_object_corrected_h_prime") is True
@@ -77,19 +92,21 @@ def is_coordinate_hprime(hand: dict[str, Any], update: dict[str, Any] | None = N
 
 
 def hand_key(frame: dict[str, Any], hand: dict[str, Any]) -> tuple[int, str]:
-    return int(frame.get("frame_idx")), str(hand.get("hand_side"))
+    return require_int_field(frame, "frame_idx", "frame"), str(hand.get("hand_side"))
 
 
 def index_hands(ann: dict[str, Any], label: str) -> dict[tuple[int, str], dict[str, Any]]:
     out: dict[tuple[int, str], dict[str, Any]] = {}
-    for frame in ann.get("frames", []) if isinstance(ann.get("frames"), list) else []:
-        if not isinstance(frame, dict):
+    for frame_raw in as_list(ann.get("frames")):
+        if not isinstance(frame_raw, dict):
             continue
+        frame = frame_raw
         seen_sides: set[str] = set()
-        frame_idx = int(frame.get("frame_idx"))
-        for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
-            if not isinstance(hand, dict):
+        frame_idx = require_int_field(frame, "frame_idx", f"{label} frame")
+        for hand_raw in as_list(frame.get("hands")):
+            if not isinstance(hand_raw, dict):
                 continue
+            hand = hand_raw
             side = str(hand.get("hand_side"))
             if side in seen_sides:
                 raise RuntimeError(f"{label}: duplicate hand side {side!r} in frame {frame_idx}")
@@ -148,10 +165,11 @@ def validate_corrected_verified_metric(metric: dict[str, Any], *, case: str, key
 def frame_alignment_signature(ann: dict[str, Any]) -> list[tuple[int, str, float]]:
     sig: list[tuple[int, str, float]] = []
     seen: set[int] = set()
-    for frame in ann.get("frames", []) if isinstance(ann.get("frames"), list) else []:
-        if not isinstance(frame, dict):
+    for frame_raw in as_list(ann.get("frames")):
+        if not isinstance(frame_raw, dict):
             continue
-        idx = int(frame.get("frame_idx"))
+        frame = frame_raw
+        idx = require_int_field(frame, "frame_idx", "frame alignment")
         if idx in seen:
             raise RuntimeError(f"duplicate frame_idx {idx}")
         seen.add(idx)
@@ -279,8 +297,8 @@ def transplant_hand_state(case: str, key: tuple[int, str], base_hand: dict[str, 
     out = copy.deepcopy(base_hand)
     copied_update = copy.deepcopy(update)
     out["compact_rigid_object_mano_constraint_update"] = copied_update
-    verified_metric = verified_hand.get("metric_mano_state") if isinstance(verified_hand.get("metric_mano_state"), dict) else {}
-    base_metric = out.get("metric_mano_state") if isinstance(out.get("metric_mano_state"), dict) else {}
+    verified_metric = as_dict(verified_hand.get("metric_mano_state"))
+    base_metric = as_dict(out.get("metric_mano_state"))
     if not isinstance(base_metric, dict):
         base_metric = {}
         out["metric_mano_state"] = base_metric
@@ -294,13 +312,13 @@ def transplant_hand_state(case: str, key: tuple[int, str], base_hand: dict[str, 
         base_metric["compact_rigid_object_corrected_h_prime"] = True
         base_metric["compact_rigid_object_hprime_transplant_source"] = "verified_compact_rigid_post_signed_remeasurement"
         base_metric["compact_rigid_object_hprime_transplant_scope"] = "coordinate-bearing metric MANO fields copied only for post-verified H-prime rows"
-        base_candidate = out.get("mano_candidate") if isinstance(out.get("mano_candidate"), dict) else {}
-        verified_candidate = verified_hand.get("mano_candidate") if isinstance(verified_hand.get("mano_candidate"), dict) else {}
-        if isinstance(base_candidate, dict):
-            if isinstance(verified_candidate.get("mano_params"), dict):
-                base_candidate["mano_params"] = copy.deepcopy(verified_candidate["mano_params"])
-            base_candidate["compact_rigid_object_corrected_h_prime_available_in_metric_state"] = True
-            out["mano_candidate"] = base_candidate
+        base_candidate = as_dict(out.get("mano_candidate"))
+        verified_candidate = as_dict(verified_hand.get("mano_candidate"))
+        verified_candidate_params = verified_candidate.get("mano_params")
+        if isinstance(verified_candidate_params, dict):
+            base_candidate["mano_params"] = copy.deepcopy(verified_candidate_params)
+        base_candidate["compact_rigid_object_corrected_h_prime_available_in_metric_state"] = True
+        out["mano_candidate"] = base_candidate
         out["hand_geometry_source"] = "HaWoR_metric_MANO_plus_verified_compact_rigid_Hprime_translation"
         out["uncertainty"] = verified_hand.get("uncertainty", out.get("uncertainty"))
         return out, "coordinate_hprime_transplanted"
@@ -331,10 +349,11 @@ def merge_case(case: str, base_ann: dict[str, Any], verified_ann: dict[str, Any]
     out = copy.deepcopy(scrubbed_base)
     transplant_counts: dict[str, int] = {}
     used_keys: set[tuple[int, str]] = set()
-    for frame in out.get("frames", []) if isinstance(out.get("frames"), list) else []:
-        if not isinstance(frame, dict):
+    for frame_raw in as_list(out.get("frames")):
+        if not isinstance(frame_raw, dict):
             continue
-        hands = frame.get("hands", []) if isinstance(frame.get("hands"), list) else []
+        frame = frame_raw
+        hands = as_list(frame.get("hands"))
         for idx, hand in enumerate(hands):
             if not isinstance(hand, dict):
                 continue
