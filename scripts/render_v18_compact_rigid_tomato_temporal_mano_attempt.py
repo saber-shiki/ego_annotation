@@ -75,6 +75,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--mesh-projection-stride", type=int, default=15)
     parser.add_argument("--world-mesh-stride", type=int, default=15)
+    parser.add_argument("--world-view", choices=("local", "global"), default="local")
+    parser.add_argument("--local-world-padding-m", type=float, default=0.08)
     parser.add_argument("--max-frames", type=int, default=None)
     return parser.parse_args()
 
@@ -151,6 +153,32 @@ def world_to_screen(
     if 0 <= x < canvas_w and 0 <= y < canvas_h:
         return (x, y)
     return None
+
+
+def frame_world_bounds(
+    frame: dict[str, Any],
+    frame_idx: int,
+    object_vertices: np.ndarray,
+    poses: dict[int, tuple[np.ndarray, np.ndarray]],
+    global_min_xyz: np.ndarray,
+    global_max_xyz: np.ndarray,
+    padding_m: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    chunks: list[np.ndarray] = []
+    if frame_idx in poses:
+        rot, trans = poses[frame_idx]
+        chunks.append(object_vertices[::50] @ rot.T + trans[None, :])
+    for hand in frame.get("hands", []):
+        metric = hand.get("metric_mano_state") or {}
+        joints_world = np.asarray(metric.get("joints_current_v18_world_m") or [], dtype=float)
+        if joints_world.shape == (21, 3):
+            chunks.append(joints_world)
+    if not chunks:
+        return global_min_xyz, global_max_xyz
+    pts = np.vstack(chunks)
+    min_xyz = pts.min(axis=0) - float(padding_m)
+    max_xyz = pts.max(axis=0) + float(padding_m)
+    return min_xyz, max_xyz
 
 
 def first_intrinsics(frame: dict[str, Any], width: int, height: int) -> tuple[float, float, float, float]:
@@ -330,11 +358,25 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         cv2.imwrite(str(overlay_dir / f"{frame_idx:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
         world = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        if args.world_view == "local":
+            world_min_xyz, world_max_xyz = frame_world_bounds(
+                frame,
+                frame_idx,
+                object_vertices,
+                poses,
+                min_xyz,
+                max_xyz,
+                float(args.local_world_padding_m),
+            )
+            world_label = f"local metric world  frame {frame_idx:04d}"
+        else:
+            world_min_xyz, world_max_xyz = min_xyz, max_xyz
+            world_label = f"global metric world  frame {frame_idx:04d}"
         if tomato_present:
             rot, trans = poses[frame_idx]
             vertices_world = object_vertices[:: max(1, int(args.world_mesh_stride))] @ rot.T + trans[None, :]
             for vertex in vertices_world:
-                point = world_to_screen(vertex, min_xyz, max_xyz, canvas_w, canvas_h)
+                point = world_to_screen(vertex, world_min_xyz, world_max_xyz, canvas_w, canvas_h)
                 if point is not None:
                     cv2.circle(world, point, 1, (40, 255, 80), -1)
         for hand in frame.get("hands", []):
@@ -345,13 +387,13 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             joints_world = np.asarray(metric.get("joints_current_v18_world_m") or [], dtype=float)
             if joints_world.shape == (21, 3):
                 for a, b in HAND_EDGES:
-                    pa = world_to_screen(joints_world[a], min_xyz, max_xyz, canvas_w, canvas_h)
-                    pb = world_to_screen(joints_world[b], min_xyz, max_xyz, canvas_w, canvas_h)
+                    pa = world_to_screen(joints_world[a], world_min_xyz, world_max_xyz, canvas_w, canvas_h)
+                    pb = world_to_screen(joints_world[b], world_min_xyz, world_max_xyz, canvas_w, canvas_h)
                     if pa is not None and pb is not None:
                         cv2.line(world, pa, pb, color, max(2, line_width - 1))
         cv2.putText(
             world,
-            f"metric world  frame {frame_idx:04d}",
+            world_label,
             (20, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -420,6 +462,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "hand_model": "current V18 metric MANO skeletons with full-bridge compact-rigid tomato constraint state",
             "legacy_deformable_tomato_state_consumed": False,
             "coordinate_level_mano_correction_accepted": False,
+            "world_view": str(args.world_view),
         },
         "evidence": {
             "total_frames": len(frames),
