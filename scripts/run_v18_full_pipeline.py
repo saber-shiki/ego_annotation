@@ -16,7 +16,7 @@ import trimesh  # type: ignore[reportMissingTypeStubs]
 from PIL import Image, ImageDraw, ImageFont
 from scipy.sparse import diags  # type: ignore[reportMissingTypeStubs]
 from scipy.sparse.linalg import spsolve  # type: ignore[reportMissingTypeStubs]
-from scipy.ndimage import binary_dilation  # type: ignore[reportMissingTypeStubs]
+from scipy.ndimage import binary_dilation, distance_transform_edt  # type: ignore[reportMissingTypeStubs]
 from scipy.spatial import cKDTree  # type: ignore[reportMissingTypeStubs]
 from scipy.spatial.transform import Rotation  # type: ignore[reportMissingTypeStubs]
 
@@ -42,6 +42,17 @@ MESH_VERTEX_SAMPLE_CACHE: dict[str, np.ndarray] = {}
 DENSE_VERTEX_SAMPLE_CACHE: dict[tuple[str, int], np.ndarray] = {}
 PART_VISIBLE_SURFACE_POINT_CACHE: dict[tuple[str, int], np.ndarray] = {}
 MASK_IMAGE_CACHE: dict[str, np.ndarray] = {}
+MASK_DISTANCE_CACHE: dict[tuple[str, tuple[int, int]], np.ndarray] = {}
+MASK_NEAREST_CACHE: dict[tuple[str, tuple[int, int]], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+HAND_EXCLUDED_OBJECT_NEAREST_CACHE: dict[tuple[str, tuple[int, int], int, str, float], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+MASK_DISTANCE_CACHE_MAX_ITEMS = 64
+MASK_NEAREST_CACHE_MAX_ITEMS = 16
+HAND_EXCLUDED_OBJECT_NEAREST_CACHE_MAX_ITEMS = 128
+HAND_CAMERA_VERTEX_CACHE: dict[tuple[str, int], np.ndarray] = {}
+HAND_CONTACT_CORRECTION_SUPPORT_PATHS = {
+    "rigid_local_visible_surface_contact_state",
+    "deformable_same_frame_visible_surface",
+}
 RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE = "scene_depth_supports_foreground_occluder_candidate_owner_unaccepted"
 ACCEPTED_FOREGROUND_OCCLUDER_SUPPORT_STATE = "scene_depth_supports_accepted_foreground_occluder_owner"
 ROW_RAW_FOREGROUND_CANDIDATE_SUPPORT_STATE = "row_scene_depth_supports_at_least_one_foreground_candidate_owner_unaccepted"
@@ -232,6 +243,29 @@ def project_mano_joints(mano: dict[str, Any], source_w: float, source_h: float, 
     return pts
 
 
+def project_metric_mano_joints(metric_state: dict[str, Any], image_w: float, image_h: float) -> list[tuple[int, int]]:
+    joints = metric_state.get("joints_current_v18_camera_m")
+    intr = metric_state.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
+    if not (isinstance(joints, list) and isinstance(intr, list) and len(intr) == 4):
+        return []
+    fx, fy, cx, cy = [finite_float(v) for v in intr]
+    sx = image_w / max(1.0, 2.0 * cx)
+    sy = image_h / max(1.0, 2.0 * cy)
+    pts: list[tuple[int, int]] = []
+    for raw in joints:
+        if not (isinstance(raw, list) and len(raw) == 3):
+            return []
+        x, y, z = [finite_float(v) for v in raw]
+        if z <= 1e-6:
+            return []
+        u = (fx * x / z + cx) * sx
+        v = (fy * y / z + cy) * sy
+        if not (math.isfinite(u) and math.isfinite(v)):
+            return []
+        pts.append((int(round(u)), int(round(v))))
+    return pts
+
+
 
 def sampled_points(points: np.ndarray, max_count: int = GEOMETRY_SAMPLE_COUNT) -> np.ndarray:
     pts = np.asarray(points, dtype=np.float64)
@@ -274,14 +308,22 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
     support_z = np.load(source_hawor_npz, allow_pickle=True) if source_hawor_npz is not None and source_hawor_npz.exists() else None
     frame_idx = np.asarray(z["frame_idx"], dtype=np.int32)
     side_arr = np.asarray(z["side"], dtype=np.int32)
-    joints_camera = np.asarray(z["joints_hawor_camera_m"], dtype=np.float64)
-    vertices_camera = np.asarray(z["vertices_hawor_camera_m"], dtype=np.float64)
-    joints_world = np.asarray(z["joints_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
-    vertices_world = np.asarray(z["vertices_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
+    joints_hawor_camera = np.asarray(z["joints_hawor_camera_m"], dtype=np.float64)
+    vertices_hawor_camera = np.asarray(z["vertices_hawor_camera_m"], dtype=np.float64)
+    joints_camera = np.asarray(z["joints_current_v18_camera_m"], dtype=np.float64) if "joints_current_v18_camera_m" in z.files else joints_hawor_camera
+    vertices_camera = np.asarray(z["vertices_current_v18_camera_m"], dtype=np.float64) if "vertices_current_v18_camera_m" in z.files else vertices_hawor_camera
+    joints_world = np.asarray(z["joints_current_v18_world_from_hawor_projection_relift_m"], dtype=np.float64) if "joints_current_v18_world_from_hawor_projection_relift_m" in z.files else np.asarray(z["joints_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
+    vertices_world = np.asarray(z["vertices_current_v18_world_from_hawor_projection_relift_m"], dtype=np.float64) if "vertices_current_v18_world_from_hawor_projection_relift_m" in z.files else np.asarray(z["vertices_current_v18_world_from_hawor_camera_local_m"], dtype=np.float64)
+    source_complete_depth_npz = str(np.asarray(z["source_complete_depth_npz"]).reshape(-1)[0]) if "source_complete_depth_npz" in z.files else None
+    source_complete_depth_z = np.load(Path(source_complete_depth_npz), allow_pickle=True) if source_complete_depth_npz is not None and Path(source_complete_depth_npz).exists() else None
+    source_depth_intrinsics_by_frame: dict[int, list[float]] = {}
+    if source_complete_depth_z is not None and "frame_idx" in source_complete_depth_z.files and "intrinsics_fx_fy_cx_cy" in source_complete_depth_z.files:
+        for raw_frame, raw_intrinsics in zip(np.asarray(source_complete_depth_z["frame_idx"], dtype=np.int32), np.asarray(source_complete_depth_z["intrinsics_fx_fy_cx_cy"], dtype=np.float64)):
+            if raw_intrinsics.shape == (4,) and np.isfinite(raw_intrinsics).all():
+                source_depth_intrinsics_by_frame[int(raw_frame)] = [float(v) for v in raw_intrinsics.tolist()]
     depth_scales = np.asarray(z["hawor_to_v18_depth_scale"], dtype=np.float64) if "hawor_to_v18_depth_scale" in z.files else np.ones(len(frame_idx), dtype=np.float64)
     depth_scale_status = np.asarray(z["hawor_to_v18_depth_scale_status"]) if "hawor_to_v18_depth_scale_status" in z.files else np.asarray(["missing_depth_scale_metadata"] * len(frame_idx))
     depth_scale_sample_count = np.asarray(z["hawor_to_v18_depth_scale_sample_count"], dtype=np.int32) if "hawor_to_v18_depth_scale_sample_count" in z.files else np.zeros(len(frame_idx), dtype=np.int32)
-    source_complete_depth_npz = str(np.asarray(z["source_complete_depth_npz"]).reshape(-1)[0]) if "source_complete_depth_npz" in z.files else None
     coord = str(np.asarray(z["coordinate_status"]).reshape(-1)[0]) if "coordinate_status" in z.files else "hawor_bridge_current_v18_world"
     def support_for(side: str, frame: int, source: str) -> dict[str, Any]:
         if source.startswith("HaWoR_metric_MANO_temporal_gap_fill"):
@@ -349,6 +391,8 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
     def make_state(row_idx: int, side: str, frame: int, source: str, interp: dict[str, Any] | None = None) -> dict[str, Any]:
         jc = np.asarray(joints_camera[row_idx], dtype=np.float64)
         jw = np.asarray(joints_world[row_idx], dtype=np.float64)
+        raw_jc = np.asarray(joints_hawor_camera[row_idx], dtype=np.float64)
+        raw_vc_sample = sampled_points(vertices_hawor_camera[row_idx], GEOMETRY_SAMPLE_COUNT)
         vc_sample = sampled_points(vertices_camera[row_idx], GEOMETRY_SAMPLE_COUNT)
         vw_sample = sampled_points(vertices_world[row_idx], GEOMETRY_SAMPLE_COUNT)
         support = support_for(side, frame, source)
@@ -360,8 +404,9 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
         row_depth_scale_samples = int(depth_scale_sample_count[row_idx]) if row_idx < len(depth_scale_sample_count) else 0
         surface_reference = {
             "bridge_npz": str(npz_path),
-            "bridge_vertices_world_array": "vertices_current_v18_world_from_hawor_camera_local_m",
-            "bridge_vertices_camera_array": "vertices_hawor_camera_m",
+            "bridge_vertices_world_array": "vertices_current_v18_world_from_hawor_projection_relift_m",
+            "bridge_vertices_camera_array": "vertices_current_v18_camera_m",
+            "bridge_raw_hawor_vertices_camera_array": "vertices_hawor_camera_m",
             "bridge_row_index": int(row_idx),
             "source_hawor_npz": str(source_hawor_npz) if source_hawor_npz is not None else None,
             "source_complete_depth_npz": source_complete_depth_npz,
@@ -407,7 +452,7 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
             "mano_candidate": {
                 "source": source,
                 "bbox_xyxy": None,
-                "joints3d_camera": [[float(x) for x in row] for row in jc.tolist()],
+                "joints3d_camera": [[float(x) for x in row] for row in raw_jc.tolist()],
                 "cam_t": [0.0, 0.0, 0.0],
                 "source_intrinsics": [2304.0, 2304.0, 960.0, 540.0],
                 "detector_score": None,
@@ -428,11 +473,14 @@ def load_hawor_bridge_index(report_path: Path, expected_frame_count: int) -> tup
                 "hawor_to_v18_depth_scale_sample_count": row_depth_scale_samples,
                 "vertices_reference": surface_reference,
                 "mano_params": mano_params,
-                "joints_hawor_camera_m": [[float(x) for x in row] for row in jc.tolist()],
+                "joints_hawor_camera_m": [[float(x) for x in row] for row in raw_jc.tolist()],
+                "vertices_hawor_camera_sample_m": [[float(x) for x in row] for row in raw_vc_sample.tolist()],
+                "joints_current_v18_camera_m": [[float(x) for x in row] for row in jc.tolist()],
                 "joints_current_v18_world_m": [[float(x) for x in row] for row in jw.tolist()],
                 "wrist_current_v18_world_m": [float(x) for x in jw[0].tolist()],
                 "vertices_world_sample_m": [[float(x) for x in row] for row in vw_sample.tolist()],
                 "vertices_camera_sample_m": [[float(x) for x in row] for row in vc_sample.tolist()],
+                "current_v18_camera_intrinsics_fx_fy_cx_cy": source_depth_intrinsics_by_frame.get(frame),
                 "hawor_support": support,
                 "support_state": support.get("state"),
                 "same_frame_detection": support.get("same_frame_detection"),
@@ -1118,6 +1166,177 @@ def load_global_part_track_labels(path: Path) -> dict[str, list[str]]:
     return out
 
 
+def semantic_part_token_from_track_label(label: str) -> str:
+    tokens = [token for token in str(label).split("_") if token]
+    return tokens[-1] if tokens else "part"
+
+
+def dominant_visible_part_text_supported(physical_schema: dict[str, Any], accepted_global_labels: list[str]) -> tuple[bool, str | None]:
+    """Deprecated: VLM wording alone is not admissible part-surface evidence.
+
+    The previous implementation used fixed substring matches in object-plan notes to
+    decide that an object mask could be reinterpreted as a part surface. Clean-room
+    review falsified that mechanism: it relabeled parent-object geometry as lid/rim
+    geometry. Keep the token extraction only for diagnostics; never return support
+    until a real model-produced or geometry-measured part surface mechanism replaces
+    this text proxy.
+    """
+    if len(accepted_global_labels) != 1:
+        return False, None
+    part_label = accepted_global_labels[0]
+    part_token = semantic_part_token_from_track_label(part_label).lower()
+    return False, part_token
+
+
+def dominant_visible_part_surface_contact_candidate_needed(contact_hypotheses: list[dict[str, Any]]) -> bool:
+    """Return true only when same-frame contact evidence needs a part-scoped visible surface.
+
+    This helper no longer authorizes object-mask-as-part candidate creation. It is
+    retained only as a diagnostic predicate for future replacement with real part
+    surface evidence. A contact need cannot manufacture the missing part geometry.
+    """
+    for hyp in contact_hypotheses:
+        if not isinstance(hyp, dict):
+            continue
+        evidence = hyp.get("evidence") if isinstance(hyp.get("evidence"), dict) else {}
+        pair = evidence.get("pairwise_contact_depth_gap") if isinstance(evidence.get("pairwise_contact_depth_gap"), dict) else {}
+        metric = hyp.get("final_metric_contact_evidence") if isinstance(hyp.get("final_metric_contact_evidence"), dict) else {}
+        signed = evidence.get("signed_nonpenetration_evidence") if isinstance(evidence.get("signed_nonpenetration_evidence"), dict) else None
+        tri = evidence.get("triangle_nonpenetration_evidence") if isinstance(evidence.get("triangle_nonpenetration_evidence"), dict) else None
+        if (
+            (evidence.get("pair_contact_image_candidate") is True or (isinstance(evidence.get("dominant_visible_part_visual_association"), dict) and evidence.get("dominant_visible_part_visual_association", {}).get("supported") is True))
+            and metric.get("hand_support_state") == "observed_same_frame_detection"
+            and pair.get("metric_depth_compatible_candidate") is True
+            and pair.get("object_depth_excludes_projected_hand_footprint") is True
+            and contact_nonpenetration_conflict(signed, tri) is not True
+            and math.isfinite(finite_float(metric.get("min_distance_m"), float("nan")))
+            and finite_float(metric.get("min_distance_m"), float("nan")) <= ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M
+        ):
+            return True
+    return False
+
+
+def dominant_visible_part_surface_candidate(
+    *,
+    frame_idx: int,
+    frame_camera: dict[str, Any],
+    obj: dict[str, Any],
+    geom: dict[str, Any] | None,
+    physical_schema: dict[str, Any],
+    accepted_global_labels: list[str],
+    current_parts: list[dict[str, Any]],
+    needed_for_contact_candidate: bool,
+) -> dict[str, Any] | None:
+    # Disabled after clean-room falsification: the previous implementation used
+    # parent-object visible geometry as a claimed lid/rim part surface and set
+    # object_mask_as_part_surface=True without measuring part dominance. Missing
+    # same-frame part evidence must remain unresolved until a model-produced or
+    # geometry-measured part-specific visible surface exists.
+    return None
+    if not needed_for_contact_candidate:
+        return None
+    if physical_schema.get("requires_part_or_relative_motion_model") is not True:
+        return None
+    if len(accepted_global_labels) != 1:
+        return None
+    if any(isinstance(part, dict) and part.get("part_track_label") in set(accepted_global_labels) for part in current_parts):
+        return None
+    dominant_text_supported, part_token_raw = dominant_visible_part_text_supported(physical_schema, accepted_global_labels)
+    part_label = accepted_global_labels[0]
+    part_token = str(part_token_raw or semantic_part_token_from_track_label(part_label)).lower()
+    if not dominant_text_supported:
+        return None
+    if not isinstance(geom, dict) or not isinstance(geom.get("world_vertices_sample_m"), list) or not geom.get("world_vertices_sample_m"):
+        return None
+    world_pts = np.asarray(geom.get("world_vertices_sample_m", []), dtype=np.float64)
+    if world_pts.ndim != 2 or world_pts.shape[1] != 3 or world_pts.shape[0] < 8 or not np.isfinite(world_pts).all():
+        return None
+    camera_pts = world_to_camera_points({"camera": frame_camera}, world_pts)
+    if camera_pts is None or camera_pts.ndim != 2 or camera_pts.shape[1] != 3 or camera_pts.shape[0] < 8:
+        return None
+    pose = pca_pose_observation(camera_pts)
+    if pose is None:
+        return None
+    sampled_camera = sampled_points(camera_pts, 256)
+    part_mask_path = obj.get("mask_path") or geom.get("source_mask_path")
+    pose_candidate = {
+        "type": "dominant_visible_part_surface_from_model_defined_object_mask",
+        "translation_camera_m": [float(v) for v in pose["center"].tolist()],
+        "rotation_camera_from_part_rotvec": [float(v) for v in pose["rotation_vector"].tolist()],
+        "rotation_camera_from_part_matrix": [[float(x) for x in row] for row in pose["rotation_matrix"].tolist()],
+        "pca_anisotropy": float(pose["anisotropy"]),
+        "pca_singular_values": [float(v) for v in pose["singular_values"].tolist()],
+        "pose_source": "current_object_visible_surface_reinterpreted_as_dominant_model_defined_part_surface",
+        "uncertainty": "part_surface_dominates_visible_object_mask_but_hidden_part_body_split_unresolved",
+    }
+    state = {
+        "method": "dominant_visible_part_surface_from_vlm_object_mask",
+        "frame_idx": int(frame_idx),
+        "object_id": obj.get("object_id"),
+        "part_track_label": part_label,
+        "part_token": part_token,
+        "accepted_global_part_track_labels": list(accepted_global_labels),
+        "source_object_mask_path": obj.get("mask_path"),
+        "source_visible_geometry_mask_path": geom.get("source_mask_path"),
+        "source_visible_geometry_vertex_count": geom.get("vertex_count"),
+        "source_physical_notes": physical_schema.get("physical_notes"),
+        "source_structured_vlm_evidence": physical_schema.get("structured_vlm_evidence"),
+        "dominant_part_text_supported": True,
+        "object_mask_as_part_surface": True,
+        "dominant_state_instantiation_reason": "same_frame_close_direct_depth_compatible_part_contact_candidate_needs_part_scoped_visible_surface",
+        "visible_surface_only": True,
+        "part_geometry_complete": False,
+        "parent_object_pose_correction_allowed": False,
+        "scope": "part_scoped_current_visible_surface_state_from_model_defined_dominant_part_mask_not_parent_object_se3_not_complete_part_geometry",
+    }
+    validation = {
+        "method": "dominant_visible_part_surface_from_vlm_object_mask",
+        "frame_visible_depth_silhouette_pose_supported": True,
+        "frame_part_pose_validation_state": "frame_dominant_visible_part_surface_supported_uncertain",
+        "visible_depth_silhouette_pose_supported": True,
+        "part_pose_validation_state": "dominant_visible_part_surface_supported_not_complete",
+        "part_pose_ready": True,
+        "part_pose_ready_scope": "current_frame_dominant_visible_part_surface_only_not_complete_part_pose_not_parent_object_pose",
+        "dominant_visible_part_surface_state": state,
+        "scope": "visible_same_frame_depth_dominant_part_surface_from_model_defined_object_mask_not_hidden_part_completion_not_parent_object_pose",
+        "frame_local_validation_phase": "dominant_visible_surface_direct",
+        "frame_local_validation_scope": "same_frame_visible_depth_model_defined_dominant_part_surface_from_object_mask_not_hidden_part_completion",
+        "frame_observed_to_predicted_median_m": None,
+        "frame_observed_to_predicted_p95_m": None,
+        "frame_residual_semantics": "self_observed_visible_surface_state_no_independent_depth_fused_part_mesh_residual",
+        "part_geometry_complete": False,
+        "object_pose_requirement_met": False,
+    }
+    return {
+        "part_track_label": part_label,
+        "part_mask_path": part_mask_path,
+        "status": "dominant_visible_part_surface_from_model_defined_object_mask",
+        "coordinate_frame": "camera_metric",
+        "vertices": [[float(x) for x in row] for row in sampled_camera.tolist()],
+        "visible_surface_camera_sample_m": [[float(x) for x in row] for row in sampled_camera.tolist()],
+        "depth_intrinsics_fx_fy_cx_cy": geom.get("source_depth_intrinsics_fx_fy_cx_cy"),
+        "part_containment_in_object": 1.0,
+        "object_coverage_by_part": 1.0,
+        "bbox_camera_min_m": [float(v) for v in camera_pts.min(axis=0).tolist()],
+        "bbox_camera_max_m": [float(v) for v in camera_pts.max(axis=0).tolist()],
+        "center_camera_m": [float(v) for v in pose["center"].tolist()],
+        "pose_candidate": pose_candidate,
+        "dominant_visible_part_surface_state": state,
+        "part_silhouette_depth_pose_validation": validation,
+        "reconstructed_part_geometry_candidate": {
+            "method": "dominant_visible_part_surface_from_current_object_visible_geometry",
+            "scope": "current_frame_visible_surface_only_for_part_contact_residual_not_depth_fused_part_mesh_not_complete_geometry",
+            "object_id": obj.get("object_id"),
+            "part_track_label": part_label,
+            "dominant_visible_part_surface_only": True,
+            "part_geometry_complete": False,
+            "part_pose_ready": True,
+            "object_pose_requirement_met": False,
+            "source_visible_geometry_vertex_count": geom.get("vertex_count"),
+        },
+    }
+
+
 def index_bounded_frames(path: Path) -> dict[int, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1407,6 +1626,368 @@ def load_signed_nonpenetration_index(path: Path) -> dict[tuple[int, str, str], d
     return out
 
 
+def load_pairwise_contact_depth_gap_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    report = require_dict(load_json(path), "pairwise contact depth gap report")
+    out: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for raw in require_list(report.get("rows"), "pairwise contact depth rows"):
+        row = require_dict(raw, "pairwise contact depth row")
+        frame_idx = require_int(row.get("frame_idx"), "pairwise depth frame_idx")
+        key = (frame_idx, str(row.get("hand_side")), str(row.get("object_id")))
+        hand_minus = row.get("hand_minus_object_depth_m") if isinstance(row.get("hand_minus_object_depth_m"), dict) else {}
+        abs_gap = row.get("abs_hand_minus_object_depth_m") if isinstance(row.get("abs_hand_minus_object_depth_m"), dict) else {}
+        out[key] = {
+            "source_report": str(path),
+            "depth_gap_state": row.get("depth_gap_state"),
+            "metric_depth_compatible_candidate": row.get("metric_depth_compatible_candidate"),
+            "valid_depth_vertices": row.get("valid_depth_vertices"),
+            "near_mask_projected_vertices": row.get("near_mask_projected_vertices"),
+            "hand_minus_object_depth_m": hand_minus,
+            "abs_hand_minus_object_depth_m": abs_gap,
+            "hand_minus_object_depth_median_m": summary_stat(hand_minus, "median"),
+            "abs_hand_minus_object_depth_p95_m": summary_stat(abs_gap, "p95"),
+            "max_median_abs_depth_gap_m": (report.get("parameters") or {}).get("max_median_abs_depth_gap_m") if isinstance(report.get("parameters"), dict) else None,
+            "max_p95_abs_depth_gap_m": (report.get("parameters") or {}).get("max_p95_abs_depth_gap_m") if isinstance(report.get("parameters"), dict) else None,
+            "scope": "legacy_v17_pairwise_depth_gap_provenance_not_current_v18_contact_admissibility_when_current_hand_depth_exists",
+        }
+    return out
+
+
+def numeric_summary(values: np.ndarray) -> dict[str, Any]:
+    vals = np.asarray(values, dtype=np.float64)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return {"count": 0}
+    return {
+        "count": int(vals.size),
+        "median": float(np.median(vals)),
+        "p05": float(np.percentile(vals, 5.0)),
+        "p95": float(np.percentile(vals, 95.0)),
+        "min": float(np.min(vals)),
+        "max": float(np.max(vals)),
+    }
+
+
+def current_hand_camera_vertices(metric_state: dict[str, Any]) -> np.ndarray:
+    ref = metric_state.get("vertices_reference") if isinstance(metric_state.get("vertices_reference"), dict) else {}
+    bridge_npz_raw = ref.get("bridge_npz") or metric_state.get("bridge_npz")
+    bridge_idx_raw = metric_state.get("bridge_row_index")
+    bridge_array = str(ref.get("bridge_vertices_camera_array") or "vertices_current_v18_camera_m")
+    if bridge_npz_raw is not None and bridge_idx_raw is not None:
+        try:
+            bridge_idx = int(bridge_idx_raw)
+            cache_key = (str(bridge_npz_raw), bridge_idx)
+            cached = HAND_CAMERA_VERTEX_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            z = np.load(str(bridge_npz_raw), mmap_mode="r", allow_pickle=True)
+            if bridge_array in z.files:
+                vertices = np.asarray(z[bridge_array][bridge_idx], dtype=np.float64)
+                if vertices.ndim == 2 and vertices.shape[1] == 3 and np.isfinite(vertices).all():
+                    HAND_CAMERA_VERTEX_CACHE[cache_key] = vertices
+                    return vertices
+        except (OSError, ValueError, IndexError, KeyError):
+            pass
+    sample = np.asarray(metric_state.get("vertices_camera_sample_m", []), dtype=np.float64)
+    if sample.ndim == 2 and sample.shape[1] == 3:
+        return sample
+    return np.zeros((0, 3), dtype=np.float64)
+
+
+def compact_legacy_pairwise_depth(legacy_pairwise_depth: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(legacy_pairwise_depth, dict):
+        return None
+    return {
+        "source_report": legacy_pairwise_depth.get("source_report"),
+        "depth_gap_state": legacy_pairwise_depth.get("depth_gap_state"),
+        "metric_depth_compatible_candidate": legacy_pairwise_depth.get("metric_depth_compatible_candidate"),
+        "valid_depth_vertices": legacy_pairwise_depth.get("valid_depth_vertices"),
+        "near_mask_projected_vertices": legacy_pairwise_depth.get("near_mask_projected_vertices"),
+        "hand_minus_object_depth_median_m": legacy_pairwise_depth.get("hand_minus_object_depth_median_m"),
+        "abs_hand_minus_object_depth_p95_m": legacy_pairwise_depth.get("abs_hand_minus_object_depth_p95_m"),
+        "scope": legacy_pairwise_depth.get("scope"),
+    }
+
+
+def current_hand_pairwise_depth_observation(
+    *,
+    frame_idx: int,
+    hand_side: str,
+    object_id: str,
+    hand: dict[str, Any],
+    obj: dict[str, Any],
+    depth_source: dict[str, Any],
+    legacy_pairwise_depth: dict[str, Any] | None,
+    near_mask_px: float = 20.0,
+    min_depth_vertices: int = 5,
+) -> dict[str, Any]:
+    legacy = compact_legacy_pairwise_depth(legacy_pairwise_depth)
+    metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    points_camera = current_hand_camera_vertices(metric_state)
+    intr = np.asarray(metric_state.get("current_v18_camera_intrinsics_fx_fy_cx_cy", []), dtype=np.float64)
+    frame_to_i = depth_source.get("frame_to_i") if isinstance(depth_source.get("frame_to_i"), dict) else {}
+    depth_i = frame_to_i.get(frame_idx)
+    mask_path = str(obj.get("mask_path") or "")
+    missing: list[str] = []
+    if points_camera.ndim != 2 or points_camera.shape[1] != 3 or points_camera.shape[0] == 0:
+        missing.append("current_v18_hand_camera_vertices")
+    if intr.shape != (4,) or not np.isfinite(intr).all() or intr[0] <= 0.0 or intr[1] <= 0.0:
+        missing.append("current_v18_depth_intrinsics")
+    if depth_i is None:
+        missing.append("source_metric_depth_frame")
+    if not mask_path:
+        missing.append("object_mask_path")
+    if not depth_source:
+        missing.append("metric_depth_source")
+    if missing:
+        return {
+            "source_report": depth_source.get("source_report"),
+            "legacy_pairwise_contact_depth_gap": legacy,
+            "depth_gap_state": "unobserved_current_object_owned_contact_patch_depth",
+            "missing_depth_evidence": missing,
+            "metric_depth_compatible_candidate": False,
+            "valid_depth_vertices": 0,
+            "near_mask_projected_vertices": 0,
+            "hand_minus_object_depth_m": {"count": 0},
+            "abs_hand_minus_object_depth_m": {"count": 0},
+            "hand_minus_object_depth_median_m": None,
+            "abs_hand_minus_object_depth_p95_m": None,
+            "scope": "current_v18_object_owned_pairwise_depth_unobserved_legacy_not_used_for_admissibility",
+        }
+    depth = np.asarray(depth_source["depth"][int(depth_i)], dtype=np.float64)
+    if depth.ndim != 2 or depth.size == 0:
+        return {
+            "source_report": depth_source.get("source_report"),
+            "legacy_pairwise_contact_depth_gap": legacy,
+            "depth_gap_state": "unobserved_current_object_owned_contact_patch_depth",
+            "missing_depth_evidence": ["valid_depth_array"],
+            "metric_depth_compatible_candidate": False,
+            "valid_depth_vertices": 0,
+            "near_mask_projected_vertices": 0,
+            "hand_minus_object_depth_m": {"count": 0},
+            "abs_hand_minus_object_depth_m": {"count": 0},
+            "hand_minus_object_depth_median_m": None,
+            "abs_hand_minus_object_depth_p95_m": None,
+            "scope": "current_v18_object_owned_pairwise_depth_unobserved_legacy_not_used_for_admissibility",
+        }
+    mask, distance_image, nearest_mask_y_image, nearest_mask_x_image = mask_distance_and_nearest_field(mask_path, (int(depth.shape[0]), int(depth.shape[1])))
+    if mask.ndim != 2 or mask.size == 0 or not np.isfinite(distance_image).any():
+        return {
+            "source_report": depth_source.get("source_report"),
+            "legacy_pairwise_contact_depth_gap": legacy,
+            "depth_gap_state": "unobserved_current_object_owned_contact_patch_depth",
+            "missing_depth_evidence": ["valid_mask_array"],
+            "metric_depth_compatible_candidate": False,
+            "valid_depth_vertices": 0,
+            "near_mask_projected_vertices": 0,
+            "hand_minus_object_depth_m": {"count": 0},
+            "abs_hand_minus_object_depth_m": {"count": 0},
+            "hand_minus_object_depth_median_m": None,
+            "abs_hand_minus_object_depth_p95_m": None,
+            "scope": "current_v18_object_owned_pairwise_depth_unobserved_legacy_not_used_for_admissibility",
+        }
+    z = points_camera[:, 2]
+    uv = np.full((points_camera.shape[0], 2), np.nan, dtype=np.float64)
+    positive_z = z > 1e-6
+    uv[positive_z, 0] = intr[0] * points_camera[positive_z, 0] / z[positive_z] + intr[2]
+    uv[positive_z, 1] = intr[1] * points_camera[positive_z, 1] / z[positive_z] + intr[3]
+    valid = (
+        positive_z
+        & np.isfinite(uv).all(axis=1)
+        & (uv[:, 0] >= 0.0)
+        & (uv[:, 0] < depth.shape[1])
+        & (uv[:, 1] >= 0.0)
+        & (uv[:, 1] < depth.shape[0])
+    )
+    if not np.any(valid):
+        return {
+            "source_report": depth_source.get("source_report"),
+            "legacy_pairwise_contact_depth_gap": legacy,
+            "depth_gap_state": "unobserved_current_object_owned_contact_patch_depth",
+            "missing_depth_evidence": ["projected_current_hand_vertices_inside_depth_image"],
+            "metric_depth_compatible_candidate": False,
+            "valid_depth_vertices": 0,
+            "near_mask_projected_vertices": 0,
+            "hand_minus_object_depth_m": {"count": 0},
+            "abs_hand_minus_object_depth_m": {"count": 0},
+            "hand_minus_object_depth_median_m": None,
+            "abs_hand_minus_object_depth_p95_m": None,
+            "scope": "current_v18_object_owned_pairwise_depth_unobserved_legacy_not_used_for_admissibility",
+        }
+    valid_ids = np.flatnonzero(valid)
+    x = np.clip(np.rint(uv[valid, 0]).astype(np.int32), 0, depth.shape[1] - 1)
+    y = np.clip(np.rint(uv[valid, 1]).astype(np.int32), 0, depth.shape[0] - 1)
+    all_valid_x = x.copy()
+    all_valid_y = y.copy()
+    distances = np.asarray(distance_image[y, x], dtype=np.float64)
+    selected = distances <= float(near_mask_px)
+    if int(np.count_nonzero(selected)) < int(min_depth_vertices):
+        return {
+            "source_report": depth_source.get("source_report"),
+            "legacy_pairwise_contact_depth_gap": legacy,
+            "depth_gap_state": "unobserved_current_object_owned_contact_patch_depth",
+            "missing_depth_evidence": ["near_mask_current_hand_vertices_for_depth"],
+            "projected_vertices": int(valid_ids.shape[0]),
+            "near_mask_projected_vertices": int(np.count_nonzero(selected)),
+            "metric_depth_compatible_candidate": False,
+            "valid_depth_vertices": 0,
+            "hand_minus_object_depth_m": {"count": 0},
+            "abs_hand_minus_object_depth_m": {"count": 0},
+            "hand_minus_object_depth_median_m": None,
+            "abs_hand_minus_object_depth_p95_m": None,
+            "scope": "current_v18_object_owned_pairwise_depth_unobserved_legacy_not_used_for_admissibility",
+        }
+    selected_ids = valid_ids[selected]
+    sx = x[selected]
+    sy = y[selected]
+    distances = np.asarray(distances[selected], dtype=np.float64)
+    hand_z = z[selected_ids].astype(np.float64)
+    # The object-depth observation must be object-owned.  Depth at the hand
+    # projection can be the hand/foreground depth and is kept only as a
+    # diagnostic.  The admissibility observation samples the nearest pixel that
+    # belongs to the object mask.
+    hand_pixel_scene_z = depth[sy, sx].astype(np.float64)
+    # Nearest object-mask depth is object-owned only if it is not the current
+    # hand's projected foreground footprint.  Otherwise a projected hand vertex
+    # that lies inside the object mask can reintroduce the same-pixel/self-depth
+    # tautology.  Build a hand-footprint-excluded object mask for the same frame,
+    # hand, and object; if no nearby object-owned depth remains, the measurement
+    # is unresolved rather than falling back to hand-pixel depth.
+    hand_exclusion_radius_px = 4.0
+    max_hand_excluded_object_depth_distance_px = 20.0
+    excluded_cache_key = (mask_path, (int(depth.shape[0]), int(depth.shape[1])), int(frame_idx), str(hand_side), float(hand_exclusion_radius_px))
+    excluded_cached = HAND_EXCLUDED_OBJECT_NEAREST_CACHE.get(excluded_cache_key)
+    if excluded_cached is None:
+        projected_hand_mask = np.zeros((int(depth.shape[0]), int(depth.shape[1])), dtype=bool)
+        if all_valid_x.size > 0 and all_valid_y.size > 0:
+            projected_hand_mask[all_valid_y, all_valid_x] = True
+            hand_pixel_distance = distance_transform_edt(~projected_hand_mask)
+            projected_hand_footprint = hand_pixel_distance <= float(hand_exclusion_radius_px)
+        else:
+            projected_hand_footprint = projected_hand_mask
+        hand_excluded_object_mask = mask & (~projected_hand_footprint)
+        if np.any(hand_excluded_object_mask):
+            hand_excluded_distance, hand_excluded_nearest = distance_transform_edt(~hand_excluded_object_mask, return_indices=True)
+            excluded_cached = (
+                hand_excluded_object_mask,
+                np.asarray(hand_excluded_distance, dtype=np.float32),
+                np.asarray(hand_excluded_nearest[0], dtype=np.int32),
+                np.asarray(hand_excluded_nearest[1], dtype=np.int32),
+            )
+        else:
+            excluded_cached = (
+                hand_excluded_object_mask,
+                np.full((int(depth.shape[0]), int(depth.shape[1])), np.inf, dtype=np.float32),
+                np.zeros((int(depth.shape[0]), int(depth.shape[1])), dtype=np.int32),
+                np.zeros((int(depth.shape[0]), int(depth.shape[1])), dtype=np.int32),
+            )
+        if len(HAND_EXCLUDED_OBJECT_NEAREST_CACHE) >= HAND_EXCLUDED_OBJECT_NEAREST_CACHE_MAX_ITEMS:
+            oldest_key = next(iter(HAND_EXCLUDED_OBJECT_NEAREST_CACHE))
+            HAND_EXCLUDED_OBJECT_NEAREST_CACHE.pop(oldest_key, None)
+        HAND_EXCLUDED_OBJECT_NEAREST_CACHE[excluded_cache_key] = excluded_cached
+    hand_excluded_object_mask, hand_excluded_distance_image, hand_excluded_nearest_y, hand_excluded_nearest_x = excluded_cached
+    nearest_y = hand_excluded_nearest_y[sy, sx]
+    nearest_x = hand_excluded_nearest_x[sy, sx]
+    object_z = depth[nearest_y, nearest_x].astype(np.float64)
+    selected_inside_object_mask = mask[sy, sx]
+    hand_excluded_object_depth_distance_px = np.asarray(hand_excluded_distance_image[sy, sx], dtype=np.float64)
+    object_depth_valid = np.isfinite(object_z) & (object_z >= 0.05) & (object_z <= 5.0) & (hand_excluded_object_depth_distance_px <= float(max_hand_excluded_object_depth_distance_px))
+    if int(np.count_nonzero(object_depth_valid)) < int(min_depth_vertices):
+        return {
+            "source_report": depth_source.get("source_report"),
+            "legacy_pairwise_contact_depth_gap": legacy,
+            "depth_gap_state": "unobserved_current_object_owned_contact_patch_depth",
+            "missing_depth_evidence": ["valid_source_depth_at_nearest_object_mask_pixels"],
+            "projected_vertices": int(valid_ids.shape[0]),
+            "near_mask_projected_vertices": int(np.count_nonzero(selected)),
+            "valid_depth_vertices": int(np.count_nonzero(object_depth_valid)),
+            "metric_depth_compatible_candidate": False,
+            "hand_minus_object_depth_m": {"count": 0},
+            "abs_hand_minus_object_depth_m": {"count": 0},
+            "hand_minus_object_depth_median_m": None,
+            "abs_hand_minus_object_depth_p95_m": None,
+            "scope": "current_v18_object_owned_pairwise_depth_unobserved_legacy_not_used_for_admissibility",
+        }
+    hand_pixel_scene_valid = np.isfinite(hand_pixel_scene_z) & (hand_pixel_scene_z >= 0.05) & (hand_pixel_scene_z <= 5.0)
+    hand_pixel_scene_gap = hand_z[hand_pixel_scene_valid] - hand_pixel_scene_z[hand_pixel_scene_valid]
+    broad_hand_z = hand_z[object_depth_valid]
+    broad_object_z = object_z[object_depth_valid]
+    broad_distances = distances[object_depth_valid]
+    broad_hand_excluded_object_depth_distances = hand_excluded_object_depth_distance_px[object_depth_valid]
+    broad_gap = broad_hand_z - broad_object_z
+    local_contact_patch_mask_distance_px = 2.0
+    local_patch = broad_distances <= local_contact_patch_mask_distance_px
+    local_min_vertices = max(int(min_depth_vertices), 8)
+    if int(np.count_nonzero(local_patch)) < local_min_vertices:
+        gap = broad_gap
+        object_contact_z = broad_object_z
+        patch_hand_z = broad_hand_z
+        patch_distances = broad_distances
+        patch_hand_excluded_object_depth_distances = broad_hand_excluded_object_depth_distances
+        compatible = False
+        state = "unresolved_insufficient_object_owned_contact_patch_depth"
+    else:
+        gap = broad_gap[local_patch]
+        object_contact_z = broad_object_z[local_patch]
+        patch_hand_z = broad_hand_z[local_patch]
+        patch_distances = broad_distances[local_patch]
+        patch_hand_excluded_object_depth_distances = broad_hand_excluded_object_depth_distances[local_patch]
+        abs_gap = np.abs(gap)
+        median_gap = float(np.median(gap))
+        p95_abs = float(np.percentile(abs_gap, 95.0))
+        compatible = bool(abs(median_gap) <= 0.03 and p95_abs <= 0.05 and int(gap.shape[0]) >= local_min_vertices)
+        if compatible:
+            state = "current_v18_object_owned_contact_patch_depth_compatible"
+        elif median_gap > 0.03:
+            state = "current_v18_object_owned_contact_patch_hand_behind_object_depth"
+        elif median_gap < -0.03:
+            state = "current_v18_object_owned_contact_patch_hand_in_front_of_object_depth"
+        else:
+            state = "current_v18_object_owned_contact_patch_depth_tail_incompatible"
+    abs_gap = np.abs(gap)
+    median_gap = float(np.median(gap)) if gap.size else float("nan")
+    p95_abs = float(np.percentile(abs_gap, 95.0)) if abs_gap.size else float("nan")
+    return {
+        "source_report": depth_source.get("source_report"),
+        "source_depth_npz": depth_source.get("depth_npz"),
+        "source": "current_v18_hawor_mano_vertices_against_hand_footprint_excluded_object_owned_source_unidepth_mask_pixels",
+        "legacy_pairwise_contact_depth_gap": legacy,
+        "depth_gap_state": state,
+        "metric_depth_compatible_candidate": bool(compatible),
+        "valid_depth_vertices": int(gap.shape[0]),
+        "near_mask_projected_vertices": int(np.count_nonzero(selected)),
+        "projected_vertices": int(valid_ids.shape[0]),
+        "selected_inside_object_mask_vertices": int(np.count_nonzero(selected_inside_object_mask)),
+        "selected_inside_object_mask_fraction": float(np.count_nonzero(selected_inside_object_mask) / max(1, selected_inside_object_mask.shape[0])),
+        "object_depth_excludes_projected_hand_footprint": True,
+        "projected_hand_footprint_exclusion_radius_px": float(hand_exclusion_radius_px),
+        "max_hand_excluded_object_depth_distance_px": float(max_hand_excluded_object_depth_distance_px),
+        "hand_excluded_object_depth_available_pixels": int(np.count_nonzero(hand_excluded_object_mask)),
+        "contact_patch_max_mask_distance_px": float(local_contact_patch_mask_distance_px),
+        "contact_patch_min_depth_vertices": int(local_min_vertices),
+        "near_mask_distance_px": numeric_summary(patch_distances),
+        "hand_excluded_object_depth_nearest_distance_px": numeric_summary(patch_hand_excluded_object_depth_distances),
+        "hand_source_depth_m": numeric_summary(patch_hand_z),
+        "object_unidepth_m": numeric_summary(object_contact_z),
+        "hand_minus_object_depth_m": numeric_summary(gap),
+        "abs_hand_minus_object_depth_m": numeric_summary(abs_gap),
+        "hand_minus_object_depth_median_m": float(median_gap) if math.isfinite(median_gap) else None,
+        "abs_hand_minus_object_depth_p95_m": float(p95_abs) if math.isfinite(p95_abs) else None,
+        "max_median_abs_depth_gap_m": 0.03,
+        "max_p95_abs_depth_gap_m": 0.05,
+        "broad_near_mask_object_owned_depth_gap_m": numeric_summary(broad_gap),
+        "broad_near_mask_distance_px": numeric_summary(broad_distances),
+        "broad_hand_excluded_object_depth_nearest_distance_px": numeric_summary(broad_hand_excluded_object_depth_distances),
+        "hand_pixel_scene_depth_gap_m": numeric_summary(hand_pixel_scene_gap),
+        "hand_pixel_scene_depth_is_diagnostic_not_contact_admissibility": True,
+        "current_hand_depth_scale_status": metric_state.get("hawor_to_v18_depth_scale_status"),
+        "current_hand_depth_scale_sample_count": metric_state.get("hawor_to_v18_depth_scale_sample_count"),
+        "object_mask_path": mask_path,
+        "scope": "current_v18_object_owned_contact_patch_depth_for_contact_admissibility_immutable_to_contact_labels_not_stale_v17_hand_geometry_not_hand_pixel_scene_depth_object_depth_excludes_projected_hand_footprint",
+    }
+
+
 def load_contact_ownership_graph_index(path: Path) -> dict[tuple[int, str, str], dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1453,15 +2034,18 @@ def contact_hypothesis(
     contact_owner_graph: dict[str, Any] | None = None,
     signed_nonpenetration: dict[str, Any] | None = None,
     triangle_nonpenetration: dict[str, Any] | None = None,
+    pairwise_depth_gap: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state = str(contact_row.get("v18_consistency_state"))
-    if contact_row.get("metric_depth_compatible_candidate") is True:
+    pairwise_depth_gap = pairwise_depth_gap if isinstance(pairwise_depth_gap, dict) else {}
+    current_depth_compatible = bool(pairwise_depth_gap.get("metric_depth_compatible_candidate") is True)
+    if current_depth_compatible:
         confidence = "medium"
-        ownership = "candidate_metric_depth_compatible"
+        ownership = "candidate_current_v18_metric_depth_compatible"
     elif contact_row.get("image_overlap_candidate") is True or contact_row.get("pair_contact_image_candidate") is True:
         confidence = "low"
         ownership = "candidate_image_overlap_only"
-    elif state == "rejected_contact_current_metric_depth":
+    elif str(pairwise_depth_gap.get("depth_gap_state") or "") in {"current_v18_object_owned_contact_patch_hand_behind_object_depth", "current_v18_object_owned_contact_patch_hand_in_front_of_object_depth", "current_v18_object_owned_contact_patch_depth_tail_incompatible", "unresolved_insufficient_object_owned_contact_patch_depth"}:
         confidence = "very_low_depth_contradiction"
         ownership = "unlikely_current_frame"
     else:
@@ -1477,6 +2061,15 @@ def contact_hypothesis(
     elif contact_owner_graph and contact_owner_graph.get("selected_by_contact_graph") is True:
         confidence = "low_temporal_mesh_selected"
         ownership = "selected_by_contact_graph"
+    raw_depth_strength = raw_depth_conflict_strength(
+        {
+            "pair_depth_gap_state": pairwise_depth_gap.get("depth_gap_state") or contact_row.get("pair_depth_gap_state"),
+            "raw_hand_minus_object_depth_median_m": pairwise_depth_gap.get("hand_minus_object_depth_median_m"),
+            "raw_abs_hand_minus_object_depth_p95_m": pairwise_depth_gap.get("abs_hand_minus_object_depth_p95_m"),
+            "raw_pair_depth_valid_depth_vertices": pairwise_depth_gap.get("valid_depth_vertices"),
+            "state": state,
+        }
+    )
     return {
         "hand_side": contact_row.get("hand_side"),
         "object_id": contact_row.get("object_id"),
@@ -1487,8 +2080,13 @@ def contact_hypothesis(
         "evidence": {
             "image_overlap_candidate": contact_row.get("image_overlap_candidate"),
             "pair_contact_image_candidate": contact_row.get("pair_contact_image_candidate"),
-            "metric_depth_compatible_candidate": contact_row.get("metric_depth_compatible_candidate"),
-            "pair_depth_gap_state": contact_row.get("pair_depth_gap_state"),
+            "metric_depth_compatible_candidate": pairwise_depth_gap.get("metric_depth_compatible_candidate"),
+            "pair_depth_gap_state": pairwise_depth_gap.get("depth_gap_state"),
+            "pairwise_contact_depth_gap": pairwise_depth_gap or None,
+            "raw_depth_conflict_strength": raw_depth_strength,
+            "raw_hand_minus_object_depth_median_m": raw_depth_strength.get("hand_minus_object_depth_median_m"),
+            "raw_abs_hand_minus_object_depth_p95_m": raw_depth_strength.get("abs_hand_minus_object_depth_p95_m"),
+            "raw_pair_depth_valid_depth_vertices": raw_depth_strength.get("valid_depth_vertices"),
             "mesh_contact_evidence": mesh_contact,
             "contact_ownership_graph": contact_owner_graph,
             "signed_nonpenetration_evidence": signed_nonpenetration,
@@ -2342,11 +2940,516 @@ def camera_to_world_point(frame: dict[str, Any], point_camera: np.ndarray) -> li
     return [float(v) for v in world[:3].tolist()]
 
 
+def world_to_camera_points(frame: dict[str, Any], points_world: Any) -> np.ndarray | None:
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    transform = np.asarray(camera.get("T_world_camera_metric", []), dtype=np.float64)
+    pts = np.asarray(points_world, dtype=np.float64)
+    if transform.shape != (4, 4) or pts.ndim != 2 or pts.shape[1] != 3 or not np.isfinite(pts).all():
+        return None
+    try:
+        inv_transform = np.linalg.inv(transform)
+    except np.linalg.LinAlgError:
+        return None
+    hom = np.concatenate([pts, np.ones((pts.shape[0], 1), dtype=np.float64)], axis=1)
+    camera_pts = (hom @ inv_transform.T)[:, :3]
+    if camera_pts.ndim != 2 or camera_pts.shape[1] != 3 or not np.isfinite(camera_pts).all():
+        return None
+    return camera_pts
+
+
+def object_camera_depth_interval_from_geometry(frame: dict[str, Any], obj: dict[str, Any], graph_var: dict[str, Any] | None = None) -> dict[str, Any]:
+    points: list[list[float]] = []
+    sources: list[str] = []
+    graph_pose_reliable = False
+    graph_pose_support_state = None
+    graph_pose_support_blockers: list[str] = []
+    completion = obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}
+    completion_corners = bbox_corners_from_min_max(completion.get("canonical_bbox_min_m"), completion.get("canonical_bbox_max_m"))
+    if completion_corners is not None and isinstance(graph_var, dict):
+        estimate = graph_var.get("estimate")
+        t = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+        rotvec = numeric_vector(estimate[3:6] if isinstance(estimate, list) and len(estimate) >= 6 else None, 3)
+        if t is not None:
+            rotation_world_from_canonical = Rotation.from_rotvec(rotvec).as_matrix().T if rotvec is not None else np.eye(3, dtype=np.float64)
+            corners_world = completion_corners @ rotation_world_from_canonical + t[None, :]
+            points.extend([[float(x) for x in row] for row in corners_world.tolist()])
+            sources.append("factor_graph_object_se3_depth_fused_canonical_bbox")
+            graph_pose_reliable, graph_pose_support_state, graph_pose_support_blockers = rigid_pose_support_from_schema(obj, completion, graph_var)
+        else:
+            graph_pose_support_blockers.append("object_se3_estimate_missing_translation")
+    recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
+    corners = recon.get("world_bbox_corners_m")
+    if isinstance(corners, list) and corners:
+        points.extend(corners)
+        sources.append("reconstructed_geometry_pose_world_bbox_corners")
+    geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+    visible = geom.get("world_vertices_sample_m")
+    if isinstance(visible, list) and visible:
+        points.extend(visible)
+        sources.append("visible_geometry_candidate_world_vertices_sample")
+    pts_camera = world_to_camera_points(frame, points) if points else None
+    if pts_camera is None or pts_camera.shape[0] < 2:
+        return {"available": False, "sources": sources, "reason": "missing_or_invalid_world_geometry_or_camera_transform", "graph_pose_support_state": graph_pose_support_state, "graph_pose_support_blockers": graph_pose_support_blockers}
+    z = pts_camera[:, 2]
+    finite_z = z[np.isfinite(z)]
+    finite_z = finite_z[finite_z > 0.0]
+    if finite_z.size < 2:
+        return {"available": False, "sources": sources, "reason": "insufficient_positive_camera_depth_samples"}
+    z_min = float(np.min(finite_z))
+    z_max = float(np.max(finite_z))
+    z_extent = float(max(0.0, z_max - z_min))
+    validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
+    observed_distance = validation.get("observed_to_predicted_distance_m") if isinstance(validation.get("observed_to_predicted_distance_m"), dict) else {}
+    validation_p95 = finite_float(observed_distance.get("p95"), float("nan"))
+    validation_uncertainty = validation_p95 if math.isfinite(validation_p95) else 0.0
+    depth_uncertainty = max(
+        RIGID_OCCLUDED_PATCH_MIN_DEPTH_UNCERTAINTY_M,
+        validation_uncertainty,
+        RIGID_OCCLUDED_PATCH_EXTRA_DEPTH_UNCERTAINTY_FACTOR * z_extent,
+    )
+    recon_supported = bool(
+        recon.get("rigid_pose_supported_visible_mesh") is True
+        or recon.get("visible_depth_silhouette_pose_supported") is True
+        or recon.get("object_pose_requirement_met") is True
+    )
+    validation_supported = bool(
+        validation.get("rigid_pose_supported_visible_mesh") is True
+        or validation.get("visible_depth_silhouette_pose_supported") is True
+        or validation.get("object_pose_requirement_met") is True
+    )
+    pose_interval_reliable = bool(graph_pose_reliable or obj.get("object_pose_requirement_met") is True or recon_supported or validation_supported)
+    reliability_blockers = [] if pose_interval_reliable else sorted(set(graph_pose_support_blockers + ["object_pose_or_visible_depth_silhouette_validation_not_supported"]))
+    return {
+        "available": True,
+        "pose_interval_reliable": bool(pose_interval_reliable),
+        "pose_interval_reliability_blockers": reliability_blockers,
+        "graph_pose_support_state": graph_pose_support_state,
+        "graph_pose_support_blockers": graph_pose_support_blockers,
+        "sources": sources,
+        "camera_depth_min_m": z_min,
+        "camera_depth_max_m": z_max,
+        "camera_depth_extent_m": z_extent,
+        "depth_uncertainty_m": float(depth_uncertainty),
+        "max_explainable_hand_behind_gap_m": float(z_extent + depth_uncertainty),
+        "sample_count": int(finite_z.size),
+        "object_depth_validation_p95_m": float(validation_p95) if math.isfinite(validation_p95) else None,
+        "scope": "posed_object_depth_interval_bounds_hidden_contact_patch_feasibility_not_contact_claim; unreliable_pose_interval_cannot_prove_real_hidden_surface_impossible",
+    }
+
+
+RIGID_CONTACT_PROPOSAL_CAPTURE_RADIUS_M = 0.12
+RIGID_SOLVED_CONTACT_MAX_DISTANCE_M = 0.05
+LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M = 0.02
+RIGID_CONTACT_MAX_CORRECTION_M = 0.08
+DEFORMABLE_PRE_PATCH_CONTACT_MAX_DISTANCE_M = 0.05
+RIGID_TEMPORAL_EPISODE_SEPARATION_CONTRADICTION_M = 0.18
+RIGID_OCCLUDED_PATCH_MIN_DEPTH_UNCERTAINTY_M = 0.08
+RIGID_OCCLUDED_PATCH_EXTRA_DEPTH_UNCERTAINTY_FACTOR = 0.25
+RAW_DEPTH_WEAK_MAX_MEDIAN_ABS_GAP_M = 0.02
+RAW_DEPTH_WEAK_MAX_P95_ABS_GAP_M = 0.05
+
+
+def summary_stat(summary: Any, key: str) -> float:
+    if isinstance(summary, dict):
+        return finite_float(summary.get(key), float("nan"))
+    return float("nan")
+
+
+def raw_depth_conflict_strength(contact_row_or_switch: dict[str, Any]) -> dict[str, Any]:
+    evidence = contact_row_or_switch.get("evidence") if isinstance(contact_row_or_switch.get("evidence"), dict) else {}
+    median_gap = finite_float(contact_row_or_switch.get("raw_hand_minus_object_depth_median_m"), float("nan"))
+    p95_abs_gap = finite_float(contact_row_or_switch.get("raw_abs_hand_minus_object_depth_p95_m"), float("nan"))
+    valid_depth_vertices = int(finite_float(contact_row_or_switch.get("raw_pair_depth_valid_depth_vertices"), 0.0))
+    if not math.isfinite(median_gap):
+        median_gap = finite_float(evidence.get("raw_hand_minus_object_depth_median_m"), float("nan"))
+    if not math.isfinite(p95_abs_gap):
+        p95_abs_gap = finite_float(evidence.get("raw_abs_hand_minus_object_depth_p95_m"), float("nan"))
+    if valid_depth_vertices <= 0:
+        valid_depth_vertices = int(finite_float(evidence.get("raw_pair_depth_valid_depth_vertices"), 0.0))
+    raw_state = str(contact_row_or_switch.get("pair_depth_gap_state") or evidence.get("pair_depth_gap_state") or contact_row_or_switch.get("depth_gap_state") or "")
+    raw_contradiction = bool(
+        contact_row_or_switch.get("depth_contradiction") is True
+        or "behind" in raw_state
+        or "in_front" in raw_state
+        or "tail_incompatible" in raw_state
+        or "contradiction" in raw_state
+        or raw_state.startswith("unresolved_insufficient_object_owned_contact_patch_depth")
+    )
+    weakness_supported = bool(
+        raw_contradiction
+        and math.isfinite(median_gap)
+        and math.isfinite(p95_abs_gap)
+        and abs(median_gap) <= RAW_DEPTH_WEAK_MAX_MEDIAN_ABS_GAP_M
+        and p95_abs_gap <= RAW_DEPTH_WEAK_MAX_P95_ABS_GAP_M
+        and valid_depth_vertices >= 5
+    )
+    return {
+        "method": "current_v18_object_owned_contact_patch_depth_strength_from_source_depth_and_object_mask",
+        "raw_depth_contradiction": bool(raw_contradiction),
+        "raw_pair_depth_gap_state": raw_state or None,
+        "hand_minus_object_depth_median_m": float(median_gap) if math.isfinite(median_gap) else None,
+        "abs_hand_minus_object_depth_p95_m": float(p95_abs_gap) if math.isfinite(p95_abs_gap) else None,
+        "valid_depth_vertices": int(valid_depth_vertices),
+        "weak_depth_conflict_supported": bool(weakness_supported),
+        "weak_max_median_abs_gap_m": RAW_DEPTH_WEAK_MAX_MEDIAN_ABS_GAP_M,
+        "weak_max_p95_abs_gap_m": RAW_DEPTH_WEAK_MAX_P95_ABS_GAP_M,
+        "scope": "current_graph_hand_depth_evidence_compared_to_object_owned_contact_patch_depth_not_rewritten_by_contact_episode_owner_or_visual_prior",
+    }
+
+
+def raw_depth_conflict_blocks_contact(switch: dict[str, Any]) -> bool:
+    strength = switch.get("raw_depth_conflict_strength") if isinstance(switch.get("raw_depth_conflict_strength"), dict) else raw_depth_conflict_strength(switch)
+    return bool(strength.get("raw_depth_contradiction") is True and strength.get("weak_depth_conflict_supported") is not True)
+
+
+def contact_association_reasons(switch: dict[str, Any], *, allow_accepted_owner: bool = True) -> list[str]:
+    prior = switch.get("visual_contact_prior") if isinstance(switch.get("visual_contact_prior"), dict) else {}
+    evidence = switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}
+    dominant_assoc = evidence.get("dominant_visible_part_visual_association") if isinstance(evidence.get("dominant_visible_part_visual_association"), dict) else {}
+    reasons: list[str] = []
+    if prior.get("image_contact_candidate") is True or evidence.get("pair_contact_image_candidate") is True:
+        reasons.append("pair_contact_image_candidate")
+    if dominant_assoc.get("supported") is True:
+        reasons.append("dominant_visible_part_visual_association")
+    if allow_accepted_owner and switch.get("accepted_contact_owner") is True:
+        reasons.append("accepted_contact_owner")
+    if switch.get("visual_contact_prior_supported") is True or prior.get("contact_prior_supported") is True:
+        reasons.append("visual_contact_prior_supported")
+    return reasons
+
+
+def temporal_contact_emission_reasons(switch: dict[str, Any]) -> list[str]:
+    """Independent emissions that may support posterior temporal C_t.
+
+    Contact-owner selection is intentionally excluded: owner is conditional on a
+    contact explanation and must not be used as independent evidence for contact.
+    """
+    prior = switch.get("visual_contact_prior") if isinstance(switch.get("visual_contact_prior"), dict) else {}
+    evidence = switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}
+    dominant_assoc = evidence.get("dominant_visible_part_visual_association") if isinstance(evidence.get("dominant_visible_part_visual_association"), dict) else {}
+    reasons: list[str] = []
+    if prior.get("image_contact_candidate") is True or evidence.get("pair_contact_image_candidate") is True:
+        reasons.append("pair_contact_image_candidate")
+    if dominant_assoc.get("supported") is True:
+        reasons.append("dominant_visible_part_visual_association")
+    if switch.get("visual_contact_prior_supported") is True or prior.get("contact_prior_supported") is True:
+        reasons.append("visual_contact_prior_supported")
+    return reasons
+
+
+def represented_rigid_occluded_contact_patch_state(frame: dict[str, Any], obj: dict[str, Any], switch: dict[str, Any], graph_var: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Bound whether a hidden rigid contact patch could explain a raw depth conflict.
+
+    This is a physical feasibility state, not an activation label.  It compares
+    the immutable raw hand-behind-object depth gap against the posed object's
+    camera-ray depth interval plus explicit uncertainty.  If the raw gap is much
+    larger than the object's possible hidden thickness, an occluded patch cannot
+    be the mechanism for contact in that frame.
+    """
+    frame_idx = require_int(frame.get("frame_idx"), "occluded patch frame_idx")
+    hand_side = str(switch.get("hand_side"))
+    object_id = str(switch.get("object_id"))
+    strength = switch.get("raw_depth_conflict_strength") if isinstance(switch.get("raw_depth_conflict_strength"), dict) else raw_depth_conflict_strength(switch)
+    interval = object_camera_depth_interval_from_geometry(frame, obj, graph_var)
+    association_reasons = temporal_contact_emission_reasons(switch)
+    raw_gap = finite_float(strength.get("hand_minus_object_depth_median_m"), float("nan"))
+    raw_p95 = finite_float(strength.get("abs_hand_minus_object_depth_p95_m"), float("nan"))
+    max_gap = finite_float(interval.get("max_explainable_hand_behind_gap_m"), float("nan"))
+    raw_depth_conflict = bool(strength.get("raw_depth_contradiction") is True and strength.get("weak_depth_conflict_supported") is not True)
+    raw_state = str(strength.get("raw_pair_depth_gap_state") or "")
+    hand_behind_object_conflict = bool("behind" in raw_state and math.isfinite(raw_gap) and raw_gap > 0.0)
+    geometry_available = bool(interval.get("available") is True)
+    pose_interval_reliable = bool(interval.get("pose_interval_reliable") is True)
+    gap_compatible = bool(math.isfinite(raw_gap) and math.isfinite(max_gap) and raw_gap <= max_gap)
+    p95_compatible = bool(math.isfinite(raw_p95) and math.isfinite(max_gap) and raw_p95 <= max_gap + float(interval.get("depth_uncertainty_m") or 0.0))
+    association_supported = bool(any(reason in {"pair_contact_image_candidate", "visual_contact_prior_supported"} for reason in association_reasons))
+    nearest_hand_world = numeric_vector(switch.get("raw_metric_nearest_hand_point_world_m"), 3)
+    if nearest_hand_world is None:
+        nearest_hand_world = numeric_vector(switch.get("coupled_object_nearest_hand_point_world_m"), 3)
+    hand_camera_point: list[float] | None = None
+    hidden_back_surface_camera_point: list[float] | None = None
+    hidden_back_surface_world_point: list[float] | None = None
+    camera_ray_depth_scale_to_back_surface: float | None = None
+    if nearest_hand_world is not None:
+        hand_cam = world_to_camera_points(frame, [nearest_hand_world.tolist()])
+        if hand_cam is not None and hand_cam.shape == (1, 3):
+            hand_camera_point = [float(v) for v in hand_cam[0].tolist()]
+            interval_z_max = finite_float(interval.get("camera_depth_max_m"), float("nan"))
+            if math.isfinite(interval_z_max) and math.isfinite(hand_cam[0, 2]) and abs(float(hand_cam[0, 2])) > 1e-9:
+                ray_scale = interval_z_max / float(hand_cam[0, 2])
+                camera_ray_depth_scale_to_back_surface = float(ray_scale)
+                patch_cam = np.asarray([hand_cam[0, 0] * ray_scale, hand_cam[0, 1] * ray_scale, interval_z_max], dtype=np.float64)
+                hidden_back_surface_camera_point = [float(v) for v in patch_cam.tolist()]
+                hidden_back_surface_world_point = camera_to_world_point(frame, patch_cam)
+    supported = bool(
+        raw_depth_conflict
+        and hand_behind_object_conflict
+        and geometry_available
+        and pose_interval_reliable
+        and gap_compatible
+        and p95_compatible
+        and association_supported
+        and switch.get("support_gate_allows_active_contact") is True
+        and switch.get("nonpenetration_conflict") is not True
+    )
+    if not raw_depth_conflict:
+        state = "not_applicable_no_strong_raw_depth_conflict"
+    elif not hand_behind_object_conflict:
+        state = "physically_incompatible_raw_depth_not_hidden_back_surface_conflict"
+    elif not geometry_available:
+        state = "unresolved_missing_object_depth_interval"
+    elif not pose_interval_reliable:
+        state = "unresolved_unreliable_object_depth_interval"
+    elif not association_supported:
+        state = "blocked_no_independent_contact_association"
+    elif not gap_compatible or not p95_compatible:
+        state = "physically_incompatible_raw_depth_gap_exceeds_reliable_object_depth_interval"
+    elif switch.get("support_gate_allows_active_contact") is not True:
+        state = "blocked_missing_observed_metric_hand_support"
+    elif switch.get("nonpenetration_conflict") is True:
+        state = "blocked_nonpenetration_conflict"
+    else:
+        state = "supported_occluded_patch_depth_interval_compatible"
+    result = {
+        "variable_id": f"rigid_occluded_contact_patch::{frame_idx}::{hand_side}::{object_id}",
+        "frame_idx": frame_idx,
+        "hand_side": hand_side,
+        "object_id": object_id,
+        "estimate": bool(supported),
+        "state": state,
+        "method": "raw_depth_gap_vs_posed_object_camera_depth_interval_feasibility",
+        "raw_depth_conflict_strength": strength,
+        "object_camera_depth_interval": interval,
+        "raw_hand_minus_object_depth_median_m": float(raw_gap) if math.isfinite(raw_gap) else None,
+        "raw_abs_hand_minus_object_depth_p95_m": float(raw_p95) if math.isfinite(raw_p95) else None,
+        "pose_interval_reliable": bool(pose_interval_reliable),
+        "gap_compatible_with_object_depth_interval": bool(gap_compatible),
+        "p95_compatible_with_object_depth_interval": bool(p95_compatible),
+        "association_reasons": association_reasons,
+        "association_supported": bool(association_supported),
+        "support_gate_allows_active_contact": bool(switch.get("support_gate_allows_active_contact") is True),
+        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+        "candidate_contact_ray": {
+            "hand_nearest_surface_point_world_m": [float(v) for v in nearest_hand_world.tolist()] if nearest_hand_world is not None else None,
+            "hand_nearest_surface_point_camera_m": hand_camera_point,
+            "hidden_back_surface_patch_point_camera_m": hidden_back_surface_camera_point,
+            "hidden_back_surface_patch_point_world_m": hidden_back_surface_world_point,
+            "camera_ray_depth_scale_to_back_surface": camera_ray_depth_scale_to_back_surface,
+            "hidden_surface_depth_interval_m": [interval.get("camera_depth_min_m"), interval.get("camera_depth_max_m")] if interval.get("available") is True else None,
+            "ray_scope": "same_hand_image_ray_back_surface_candidate_for_occluded_rigid_contact_feasibility_not_rendered_contact_edge",
+        },
+        "occluder_and_association_provenance": {
+            "accepted_contact_owner": bool(switch.get("accepted_contact_owner") is True),
+            "selected_contact_owner": bool(switch.get("selected_contact_owner") is True),
+            "min_box_coverage": switch.get("min_box_coverage"),
+            "mesh_contact_support_score": switch.get("mesh_contact_support_score"),
+            "visual_contact_prior_supported": bool(switch.get("visual_contact_prior_supported") is True),
+            "association_reasons_used": association_reasons,
+            "accepted_contact_owner_is_not_independent_association": True,
+        },
+        "contact_state_affects_object_or_part_pose": False,
+        "scope": "represented_occluded_patch_feasibility_state_not_contact_claim_not_object_pose_correction",
+    }
+    return result
+
+
+def occluded_contact_patch_explained_by_independent_evidence(switch: dict[str, Any], role: str | None = None) -> bool:
+    """Return whether strong raw-depth conflict has a represented rigid occluded patch explanation."""
+    role_value = str(role if role is not None else switch.get("manipulation_contact_episode_frame_role") or "")
+    association_reasons = temporal_contact_emission_reasons(switch)
+    label_like_candidate = bool(
+        role_value == "occluded_contact_patch_anchor"
+        and switch.get("accepted_contact_owner") is True
+        and "pair_contact_image_candidate" in association_reasons
+        and finite_float(switch.get("min_box_coverage"), 0.0) >= 0.90
+        and finite_float(switch.get("mesh_contact_support_score"), 0.0) >= 0.90
+    )
+    patch_state = switch.get("rigid_occluded_contact_patch_state") if isinstance(switch.get("rigid_occluded_contact_patch_state"), dict) else {}
+    represented_supported = bool(patch_state.get("estimate") is True and patch_state.get("state") == "supported_occluded_patch_depth_interval_compatible")
+    switch["occluded_contact_patch_label_candidate"] = bool(label_like_candidate)
+    switch["occluded_contact_patch_label_candidate_not_depth_explanation"] = bool(label_like_candidate and not represented_supported)
+    switch["represented_occluded_contact_patch_state_supported"] = bool(represented_supported)
+    switch["represented_occluded_contact_patch_state_required_for_strong_raw_depth_override"] = True
+    return bool(represented_supported)
+
+
+def episode_persistence_factor_eligible(switch: dict[str, Any]) -> bool:
+    if switch.get("manipulation_contact_episode_supported") is not True:
+        return False
+    role = str(switch.get("manipulation_contact_episode_frame_role") or "")
+    if not temporal_contact_emission_reasons(switch):
+        return False
+    if role == "bounded_episode_bridge_candidate" and switch.get("manipulation_contact_episode_bracketed_by_anchors") is not True:
+        return False
+    raw_depth_conflict = raw_depth_conflict_blocks_contact(switch)
+    if raw_depth_conflict and not occluded_contact_patch_explained_by_independent_evidence(switch, role):
+        return False
+    return True
+
+
+def rigid_pre_anchor_contact_supported(switch: dict[str, Any]) -> bool:
+    final_distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
+    reasons = contact_association_reasons(switch)
+    supported = bool(
+        math.isfinite(final_distance)
+        and final_distance <= RIGID_CONTACT_PROPOSAL_CAPTURE_RADIUS_M
+        and switch.get("support_gate_allows_active_contact") is True
+        and switch.get("nonpenetration_conflict") is not True
+        and reasons
+    )
+    switch["rigid_pre_anchor_contact_support"] = {
+        "method": "independent_pre_anchor_rigid_contact_proposal_support",
+        "supported": bool(supported),
+        "capture_radius_m": RIGID_CONTACT_PROPOSAL_CAPTURE_RADIUS_M,
+        "max_distance_m": RIGID_CONTACT_PROPOSAL_CAPTURE_RADIUS_M,
+        "solved_contact_max_distance_m": RIGID_SOLVED_CONTACT_MAX_DISTANCE_M,
+        "final_metric_contact_distance_m": float(final_distance) if math.isfinite(final_distance) else None,
+        "association_reasons": reasons,
+        "support_gate_allows_active_contact": bool(switch.get("support_gate_allows_active_contact") is True),
+        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+        "scope": "pre_object_pose_feedback_association_and_capture_radius_supports_contact_factor_proposal_not_final_contact_claim",
+    }
+    return supported
+
+
+def deformable_pre_patch_contact_supported(switch: dict[str, Any]) -> bool:
+    final_distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
+    reasons = contact_association_reasons(switch, allow_accepted_owner=False)
+    supported = bool(
+        math.isfinite(final_distance)
+        and final_distance <= DEFORMABLE_PRE_PATCH_CONTACT_MAX_DISTANCE_M
+        and switch.get("support_gate_allows_active_contact") is True
+        and switch.get("nonpenetration_conflict") is not True
+        and reasons
+    )
+    switch["deformable_pre_patch_contact_support"] = {
+        "method": "independent_pre_patch_deformable_contact_support",
+        "supported": bool(supported),
+        "max_distance_m": DEFORMABLE_PRE_PATCH_CONTACT_MAX_DISTANCE_M,
+        "final_metric_contact_distance_m": float(final_distance) if math.isfinite(final_distance) else None,
+        "association_reasons": reasons,
+        "mesh_contact_support_score": switch.get("mesh_contact_support_score"),
+        "mesh_contact_support_interpretation": "distance_kernel_evidence_not_independent_association_reason",
+        "accepted_contact_owner_interpretation": "temporal_mesh_distance_owner_not_independent_deformable_pre_patch_association_reason",
+        "support_gate_allows_active_contact": bool(switch.get("support_gate_allows_active_contact") is True),
+        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+        "scope": "pre_patch_contact_support_required_before_visible_surface_proximity_can_instantiate_solved_local_deformable_patch_contact",
+    }
+    return supported
+
+
+PART_PRE_ANCHOR_CONTACT_MAX_DISTANCE_M = 0.05
+ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M = 0.05
+
+
+def part_pre_anchor_contact_supported(switch: dict[str, Any], distance_m: float | None = None, label: str | None = None) -> bool:
+    direct_distance = finite_float(distance_m if distance_m is not None else switch.get("validated_part_metric_contact_distance_m"), float("nan"))
+    reasons = contact_association_reasons(switch, allow_accepted_owner=False)
+    supported = bool(
+        math.isfinite(direct_distance)
+        and direct_distance <= PART_PRE_ANCHOR_CONTACT_MAX_DISTANCE_M
+        and switch.get("support_gate_allows_active_contact") is True
+        and switch.get("nonpenetration_conflict") is not True
+        and reasons
+    )
+    switch["part_pre_anchor_contact_support"] = {
+        "method": "independent_pre_anchor_part_contact_support",
+        "supported": bool(supported),
+        "max_distance_m": PART_PRE_ANCHOR_CONTACT_MAX_DISTANCE_M,
+        "part_track_label": label or switch.get("validated_part_track_label") or switch.get("final_validated_part_track_label"),
+        "validated_part_metric_contact_distance_m": float(direct_distance) if math.isfinite(direct_distance) else None,
+        "association_reasons": reasons,
+        "accepted_contact_owner_interpretation": "contact_owner_not_used_as_independent_part_pre_anchor_association_reason",
+        "support_gate_allows_active_contact": bool(switch.get("support_gate_allows_active_contact") is True),
+        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+        "scope": "pre_part_pose_feedback_contact_support_required_before_validated_part_pose_can_instantiate_active_part_contact_or_move_part_se3",
+    }
+    return supported
+
+
+def rigid_temporal_episode_contact_supported(obj: dict[str, Any], switch: dict[str, Any]) -> bool:
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+    nearest_anchor_distance = switch.get("manipulation_contact_episode_nearest_anchor_frame_distance")
+    max_anchor_distance = int(finite_float(switch.get("manipulation_contact_episode_max_nearest_anchor_distance_frames"), 0.0))
+    candidate_score = finite_float(switch.get("manipulation_contact_episode_candidate_score"), 0.0)
+    anchor_frames = switch.get("manipulation_contact_episode_anchor_frame_indices") if isinstance(switch.get("manipulation_contact_episode_anchor_frame_indices"), list) else []
+    direct_anchor_frames = switch.get("manipulation_contact_episode_direct_visible_or_validated_anchor_frame_indices") if isinstance(switch.get("manipulation_contact_episode_direct_visible_or_validated_anchor_frame_indices"), list) else []
+    occluded_anchor_frames = switch.get("manipulation_contact_episode_occluded_contact_patch_anchor_frame_indices") if isinstance(switch.get("manipulation_contact_episode_occluded_contact_patch_anchor_frame_indices"), list) else []
+    role = str(switch.get("manipulation_contact_episode_frame_role") or "")
+    association_reasons = temporal_contact_emission_reasons(switch)
+    final_distance = finite_float(switch.get("effective_metric_contact_distance_m"), finite_float(switch.get("final_metric_contact_distance_m"), float("nan")))
+    prev_anchor_distance = switch.get("manipulation_contact_episode_prev_anchor_frame_distance")
+    next_anchor_distance = switch.get("manipulation_contact_episode_next_anchor_frame_distance")
+    bracketed_by_anchors = bool(isinstance(prev_anchor_distance, int) and isinstance(next_anchor_distance, int) and prev_anchor_distance <= max_anchor_distance and next_anchor_distance <= max_anchor_distance)
+    raw_depth_conflict = raw_depth_conflict_blocks_contact(switch)
+    occluded_contact_patch_explained = occluded_contact_patch_explained_by_independent_evidence(switch, role)
+    far_visible_surface_is_contradiction = bool(
+        math.isfinite(final_distance)
+        and final_distance > RIGID_TEMPORAL_EPISODE_SEPARATION_CONTRADICTION_M
+        and not occluded_contact_patch_explained
+    )
+    supported = bool(
+        physical == "rigid"
+        and schema.get("pose_model_allowed_by_structured_vlm") is True
+        and schema.get("requires_part_or_relative_motion_model") is not True
+        and schema.get("secondary_deformable_or_surface_component") is not True
+        and switch.get("estimate") is True
+        and episode_persistence_factor_eligible(switch)
+        and switch.get("support_gate_allows_active_contact") is True
+        and switch.get("nonpenetration_conflict") is not True
+        and (not raw_depth_conflict or occluded_contact_patch_explained)
+        and isinstance(nearest_anchor_distance, int)
+        and max_anchor_distance > 0
+        and nearest_anchor_distance <= max_anchor_distance
+        and candidate_score >= 0.65
+        and len(anchor_frames) > 0
+        and (len(direct_anchor_frames) > 0 or len(occluded_anchor_frames) > 0)
+        and role in {"direct_visible_or_validated_contact_anchor", "occluded_contact_patch_anchor", "bounded_episode_bridge_candidate"}
+        and len(association_reasons) > 0
+        and (role != "bounded_episode_bridge_candidate" or bracketed_by_anchors)
+        and not far_visible_surface_is_contradiction
+    )
+    switch["rigid_temporal_contact_episode_state_support"] = {
+        "method": "latent_rigid_contact_state_from_viterbi_episode_persistence",
+        "supported": bool(supported),
+        "scope": "posterior_contact_mode_state_only_not_same_frame_distance_gate_not_object_se3_correction",
+        "contact_switch_variable": "contact_switch_temporal_latent_contact_mode",
+        "contact_episode_variable": switch.get("manipulation_contact_episode_id"),
+        "frame_role": role,
+        "candidate_score": float(candidate_score),
+        "min_candidate_score": 0.65,
+        "nearest_anchor_frame_distance": int(nearest_anchor_distance) if isinstance(nearest_anchor_distance, int) else None,
+        "prev_anchor_frame_distance": int(prev_anchor_distance) if isinstance(prev_anchor_distance, int) else None,
+        "next_anchor_frame_distance": int(next_anchor_distance) if isinstance(next_anchor_distance, int) else None,
+        "bracketed_by_anchors": bool(bracketed_by_anchors),
+        "max_nearest_anchor_frame_distance": int(max_anchor_distance) if max_anchor_distance > 0 else None,
+        "anchor_frame_indices": [int(v) for v in anchor_frames if isinstance(v, int)],
+        "direct_visible_or_validated_anchor_frame_indices": [int(v) for v in direct_anchor_frames if isinstance(v, int)],
+        "occluded_contact_patch_anchor_frame_indices": [int(v) for v in occluded_anchor_frames if isinstance(v, int)],
+        "association_reasons": association_reasons,
+        "excluded_association_reasons": ["accepted_contact_owner"],
+        "visible_surface_distance_m": float(final_distance) if math.isfinite(final_distance) else None,
+        "separation_contradiction_distance_m": RIGID_TEMPORAL_EPISODE_SEPARATION_CONTRADICTION_M,
+        "far_visible_surface_is_contradiction": bool(far_visible_surface_is_contradiction),
+        "support_gate_allows_active_contact": bool(switch.get("support_gate_allows_active_contact") is True),
+        "raw_depth_conflict_blocks_active_contact": bool(raw_depth_conflict),
+        "occluded_contact_patch_explained_by_independent_evidence": bool(occluded_contact_patch_explained),
+        "represented_occluded_contact_patch_state_supported": bool(occluded_contact_patch_explained),
+        "rigid_occluded_contact_patch_state": switch.get("rigid_occluded_contact_patch_state"),
+        "depth_conflict_blocks_active_contact": bool(switch.get("depth_conflict_blocks_active_contact") is True),
+        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+        "does_not_claim_object_se3_correction": True,
+        "mechanism": "C_t persists through bounded gaps between contact anchors when association remains positive and no stronger separation/nonpenetration explanation dominates",
+    }
+    return supported
+
+
 def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, Any], switch: dict[str, Any]) -> list[str]:
     paths: list[str] = []
     validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
     recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
-    if switch.get("rigid_pose_contact_claim_supported") is True and (validation.get("rigid_pose_supported_visible_mesh") is True or recon.get("rigid_pose_supported_visible_mesh") is True):
+    if switch.get("rigid_pose_contact_claim_supported") is True and rigid_pre_anchor_contact_supported(switch) and (validation.get("rigid_pose_supported_visible_mesh") is True or recon.get("rigid_pose_supported_visible_mesh") is True):
         paths.append("rigid_visible_depth_silhouette_pose")
     if switch.get("surface_changing_pose_contact_claim_supported") is True and (validation.get("surface_changing_compact_visible_pose_supported") is True or recon.get("surface_changing_compact_pose_supported_visible_mesh") is True):
         paths.append("surface_changing_visible_depth_silhouette_pose")
@@ -2375,13 +3478,86 @@ def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, A
     physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
     geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
     final_distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
-    has_deformable_surface = bool(schema.get("requires_part_or_relative_motion_model") is not True and (physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True) and isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m") and math.isfinite(final_distance))
-    if switch.get("deformable_visible_surface_contact_claim_supported") is True:
-        if has_deformable_surface and final_distance <= 0.05:
-            paths.append("deformable_same_frame_visible_surface")
+    visible_surface_available = bool(isinstance(geom.get("world_vertices_sample_m"), list) and geom.get("world_vertices_sample_m"))
+    rigid_visible_contact_anchor = bool(
+        physical == "rigid"
+        and schema.get("pose_model_allowed_by_structured_vlm") is True
+        and schema.get("requires_part_or_relative_motion_model") is not True
+        and schema.get("secondary_deformable_or_surface_component") is not True
+        and visible_surface_available
+        and math.isfinite(final_distance)
+        and final_distance <= 0.02
+        and switch.get("support_gate_allows_active_contact") is True
+        and switch.get("nonpenetration_conflict") is not True
+        and switch.get("accepted_contact_owner") is True
+        and switch.get("visual_contact_prior_supported") is True
+        and finite_float(switch.get("mesh_contact_support_score"), 0.0) >= 0.90
+    )
+    if rigid_visible_contact_anchor:
+        paths.append("rigid_visible_surface_contact_anchor")
+        switch["rigid_visible_surface_contact_anchor_support"] = {
+            "method": "accepted_owner_image_supported_observed_mano_to_visible_surface_contact",
+            "scope": "contact_observation_for_latent_contact_state_not_full_object_pose_or_hidden_geometry_completion",
+            "physical_state_source": schema.get("physical_state_source"),
+            "model_physical_state_type": physical,
+            "effective_metric_contact_distance_m": float(final_distance),
+            "max_effective_metric_contact_distance_m": 0.02,
+            "mesh_contact_support_score": switch.get("mesh_contact_support_score"),
+            "mesh_contact_support_interpretation": "distance_kernel_evidence_not_independent_association_reason",
+            "accepted_contact_owner": True,
+            "visual_contact_prior_supported": True,
+            "visible_surface_vertex_count": geom.get("vertex_count"),
+        }
+        if switch.get("manipulation_contact_episode_supported") is True:
+            paths.append("rigid_latent_visible_surface_contact_state")
+            switch["rigid_latent_visible_surface_contact_state_support"] = {
+                "method": "latent_rigid_contact_state_from_temporal_contact_switch_and_visible_surface_observation",
+                "scope": "active_contact_state_without_per_frame_full_object_pose_correction",
+                "contact_switch_variable": "contact_switch_temporal_latent_contact_mode",
+                "visible_surface_observation": switch.get("rigid_visible_surface_contact_anchor_support"),
+                "manipulation_contact_episode_supported": True,
+                "metric_contact_residual_m": float(final_distance),
+                "max_metric_contact_residual_m": 0.02,
+                "nonpenetration_conflict": False,
+                "does_not_claim_object_se3_correction": True,
+            }
+    part_contact_state = switch.get("articulated_part_contact_patch_state") if isinstance(switch.get("articulated_part_contact_patch_state"), dict) else {}
+    if part_contact_state.get("estimate") is True and part_contact_state.get("state") in {"supported_part_visible_surface_contact", "supported_dominant_visible_part_surface_contact"}:
+        if part_contact_state.get("supported_by_dominant_visible_part_surface_state") is True:
+            paths.append("dominant_visible_part_surface_state")
+        paths.append("articulated_part_local_contact_state")
+        switch["articulated_part_local_contact_state_support"] = {
+            **part_contact_state,
+            "method": "part_scoped_local_contact_state_from_current_mano_represented_part_and_hand_excluded_object_depth_noncontradiction",
+            "scope": "active_part_contact_state_without_parent_object_pose_correction; dominant visible-surface states remain contact-only and cannot emit part pose-anchor factors" if part_contact_state.get("supported_by_dominant_visible_part_surface_state") is True else "active_part_contact_state_without_parent_object_pose_correction; part_pose_may_move_only_through_separate_stable_part_pose_anchor",
+            "does_not_claim_parent_object_se3_correction": True,
+        }
+    local_rigid_support = switch.get("local_rigid_visible_surface_contact_state_support") if isinstance(switch.get("local_rigid_visible_surface_contact_state_support"), dict) else {}
+    if local_rigid_support.get("supported") is True:
+        paths.append("rigid_local_visible_surface_contact_state")
+        switch["rigid_local_visible_surface_contact_state_support"] = {
+            **local_rigid_support,
+            "method": "local_rigid_visible_surface_contact_state_from_current_mano_visible_surface_and_hand_excluded_object_depth",
+            "scope": "active_local_contact_state_without_full_object_pose_correction_or_hidden_geometry_completion",
+            "visible_surface_vertex_count": geom.get("vertex_count"),
+            "contact_switch_variable": "contact_switch_temporal_latent_contact_mode",
+            "does_not_claim_object_se3_correction": True,
+        }
+    has_deformable_surface = bool(schema.get("requires_part_or_relative_motion_model") is not True and (physical == "deformable" or schema.get("secondary_deformable_or_surface_component") is True) and visible_surface_available and math.isfinite(final_distance))
+    deformable_pre_patch_supported_now = bool(has_deformable_surface and deformable_pre_patch_contact_supported(switch))
+    if deformable_pre_patch_supported_now:
+        paths.append("deformable_same_frame_visible_surface")
+    elif switch.get("deformable_visible_surface_contact_claim_supported") is True:
+        if has_deformable_surface and final_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True:
+            paths.append("deformable_same_frame_visible_surface_near_noncontact")
     elif has_deformable_surface and 0.05 < final_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True:
         paths.append("deformable_same_frame_visible_surface_near_noncontact")
-    if switch.get("manipulation_contact_episode_supported") is True and switch.get("support_gate_allows_active_contact") is True and switch.get("nonpenetration_conflict") is not True:
+    patch_state = switch.get("rigid_occluded_contact_patch_state") if isinstance(switch.get("rigid_occluded_contact_patch_state"), dict) else {}
+    if patch_state.get("estimate") is True and patch_state.get("state") == "supported_occluded_patch_depth_interval_compatible":
+        paths.append("rigid_occluded_contact_patch_state")
+    if rigid_temporal_episode_contact_supported(obj, switch):
+        paths.append("rigid_temporal_contact_episode_state")
+    if episode_persistence_factor_eligible(switch) and switch.get("support_gate_allows_active_contact") is True and switch.get("nonpenetration_conflict") is not True:
         paths.append("manipulation_contact_episode_persistent_constraint")
         switch["manipulation_contact_episode_final_support"] = {
             "method": "directly_anchored_temporal_manipulation_contact_episode",
@@ -2408,43 +3584,59 @@ def final_contact_support_paths_for_mode(frame: dict[str, Any], obj: dict[str, A
                 continue
             label = str(part.get("part_track_label"))
             graph_var = part_graph_vars.get((str(obj.get("object_id")), label))
-            part_points = posed_part_mesh_sample_camera(part, graph_var)
-            pair = nearest_point_pair(hand_camera, part_points)
-            if pair is None:
+            raw_pair = nearest_point_pair(hand_camera, posed_part_mesh_sample_camera(part, None))
+            graph_pair = nearest_point_pair(hand_camera, posed_part_mesh_sample_camera(part, graph_var)) if isinstance(graph_var, dict) else None
+            if raw_pair is None:
                 continue
-            hand_pt, part_pt, distance = pair
-            if distance <= 0.12 and (best_part is None or distance < best_part[3]):
-                best_part = (label, hand_pt, part_pt, float(distance))
+            hand_pt, part_pt, raw_distance = raw_pair
+            graph_distance = float(graph_pair[2]) if graph_pair is not None else float("nan")
+            if raw_distance <= 0.12 and (best_part is None or raw_distance < best_part[3]):
+                best_part = (label, hand_pt, part_pt, float(raw_distance))
+                switch["final_graph_validated_part_metric_contact_distance_m"] = float(graph_distance) if math.isfinite(graph_distance) else None
     if best_part is not None:
         label, hand_pt, part_pt, part_distance = best_part
-        paths.append("validated_part_visible_depth_silhouette_pose")
         switch["final_validated_part_track_label"] = label
         switch["final_validated_part_metric_contact_distance_m"] = float(part_distance)
         if switch.get("validated_part_track_label") is None:
             switch["validated_part_track_label"] = label
         if switch.get("validated_part_metric_contact_distance_m") is None:
             switch["validated_part_metric_contact_distance_m"] = float(part_distance)
+        if part_pre_anchor_contact_supported(switch, part_distance, label):
+            if validation_part.get("method") == "dominant_visible_part_surface_from_vlm_object_mask":
+                paths.append("dominant_visible_part_surface_state")
+                support = switch.get("part_pre_anchor_contact_support") if isinstance(switch.get("part_pre_anchor_contact_support"), dict) else {}
+                support["method"] = "dominant_visible_part_surface_contact_support"
+                support["scope"] = "current_frame_dominant_visible_part_surface_contact_support_not_complete_part_pose_not_parent_object_pose_and_not_part_pose_anchor"
+                support["dominant_visible_part_surface_state"] = validation_part.get("dominant_visible_part_surface_state")
+                support["contact_state_affects_object_or_part_pose"] = False
+                switch["part_pre_anchor_contact_support"] = support
+            else:
+                paths.append("validated_part_visible_depth_silhouette_pose")
         hand_world = camera_to_world_point(frame, hand_pt)
         part_world = camera_to_world_point(frame, part_pt)
         if hand_world is not None and part_world is not None:
             switch["validated_part_nearest_hand_point_world_m"] = hand_world
             switch["validated_part_nearest_part_point_world_m"] = part_world
-    return paths
+    deduped_paths: list[str] = []
+    for path in paths:
+        if path not in deduped_paths:
+            deduped_paths.append(path)
+    return deduped_paths
 
 
 def contact_mode_supported_distance(switch: dict[str, Any], support_paths: list[str]) -> float:
     candidates: list[float] = []
-    if "validated_part_visible_depth_silhouette_pose" in support_paths:
+    if "validated_part_visible_depth_silhouette_pose" in support_paths or "dominant_visible_part_surface_state" in support_paths or "articulated_part_local_contact_state" in support_paths:
         candidates.extend(
             finite_float(switch.get(key), float("nan"))
             for key in ["final_validated_part_metric_contact_distance_m", "validated_part_metric_contact_distance_m"]
         )
     if "deformable_same_frame_visible_surface" in support_paths or "deformable_same_frame_visible_surface_near_noncontact" in support_paths:
         candidates.append(finite_float(switch.get("final_metric_contact_distance_m"), float("nan")))
-    if "surface_changing_visible_depth_silhouette_pose" in support_paths or "surface_changing_local_visible_contact_surface" in support_paths or "rigid_visible_depth_silhouette_pose" in support_paths:
+    if "surface_changing_visible_depth_silhouette_pose" in support_paths or "surface_changing_local_visible_contact_surface" in support_paths or "rigid_visible_depth_silhouette_pose" in support_paths or "rigid_visible_surface_contact_anchor" in support_paths or "rigid_local_visible_surface_contact_state" in support_paths or "rigid_latent_visible_surface_contact_state" in support_paths or "rigid_occluded_contact_patch_state" in support_paths or "rigid_temporal_contact_episode_state" in support_paths:
         candidates.extend(
             finite_float(switch.get(key), float("nan"))
-            for key in ["final_metric_contact_distance_m", "coupled_object_metric_contact_distance_m", "effective_metric_contact_distance_m"]
+            for key in ["final_metric_contact_distance_m", "effective_metric_contact_distance_m"]
         )
     finite_candidates = [v for v in candidates if math.isfinite(v)]
     if finite_candidates:
@@ -2460,6 +3652,7 @@ def attach_contact_physical_modes(
     frames: list[dict[str, Any]],
     contact_pose_anchor_factor_keys: set[tuple[int, str, str]] | None = None,
     stable_contact_pose_anchor_keys: set[tuple[int, str, str]] | None = None,
+    require_emitted_coupling_for_active: bool = True,
 ) -> Counter[str]:
     counts: Counter[str] = Counter()
     contact_pose_anchor_factor_keys = contact_pose_anchor_factor_keys or set()
@@ -2491,12 +3684,129 @@ def attach_contact_physical_modes(
                 path for path in support_paths
                 if path not in {"manipulation_contact_episode_persistent_constraint", "deformable_same_frame_visible_surface_near_noncontact"}
             ]
-            direct_near_supported = bool(direct_contact_support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
+            active_state_support_paths = [path for path in support_paths if path in ACTIVE_CONTACT_STATE_SUPPORT_PATHS]
+            contact_only_support_paths = [path for path in direct_contact_support_paths if path not in ACTIVE_CONTACT_STATE_SUPPORT_PATHS]
+            frame_idx_for_anchor = require_int(frame.get("frame_idx"), "contact final support frame_idx")
+            contact_anchor_key = (frame_idx_for_anchor, str(switch.get("hand_side")), str(switch.get("object_id")))
+            stable_anchor_factor_emitted_for_contact = contact_anchor_key in contact_pose_anchor_factor_keys
+            deformable_coupled_support_paths = []
+            if "deformable_same_frame_visible_surface" in active_state_support_paths:
+                patch_key_for_support = (str(switch.get("object_id")), str(switch.get("hand_side")))
+                if patch_key_for_support in deformable_patch_keys:
+                    deformable_coupled_support_paths.append("deformable_same_frame_visible_surface")
+            uncoupled_state_support_paths = [
+                path for path in active_state_support_paths
+                if (path in CONTACT_POSE_ANCHOR_SUPPORT_PATHS and require_emitted_coupling_for_active and not stable_anchor_factor_emitted_for_contact)
+                or (path == "deformable_same_frame_visible_surface" and path not in deformable_coupled_support_paths)
+            ]
+            graph_coupled_active_support_paths = [
+                path for path in active_state_support_paths
+                if (path in CONTACT_POSE_ANCHOR_SUPPORT_PATHS and (stable_anchor_factor_emitted_for_contact or not require_emitted_coupling_for_active))
+                or path in deformable_coupled_support_paths
+                or path in {"rigid_local_visible_surface_contact_state", "rigid_latent_visible_surface_contact_state", "rigid_occluded_contact_patch_state", "rigid_temporal_contact_episode_state", "articulated_part_local_contact_state"}
+            ]
+            coupled_distance_for_support = finite_float(switch.get("coupled_object_metric_contact_distance_m"), float("nan"))
+            coupled_delta = numeric_vector(switch.get("coupled_object_translation_delta_world_m"), 3)
+            coupled_correction_norm = float(np.linalg.norm(coupled_delta)) if coupled_delta is not None else float("nan")
+            solved_pose_contact_supported = bool(
+                any(path in CONTACT_POSE_ANCHOR_SUPPORT_PATHS for path in graph_coupled_active_support_paths)
+                and math.isfinite(coupled_distance_for_support)
+                and coupled_distance_for_support <= RIGID_SOLVED_CONTACT_MAX_DISTANCE_M
+                and math.isfinite(coupled_correction_norm)
+                and coupled_correction_norm <= RIGID_CONTACT_MAX_CORRECTION_M
+            )
+            direct_patch_contact_supported = bool(
+                "deformable_same_frame_visible_surface" in graph_coupled_active_support_paths
+                and math.isfinite(near_distance)
+                and near_distance <= DEFORMABLE_PRE_PATCH_CONTACT_MAX_DISTANCE_M
+            )
+            local_visible_rigid_contact_supported = bool(
+                "rigid_local_visible_surface_contact_state" in graph_coupled_active_support_paths
+                and math.isfinite(near_distance)
+                and near_distance <= LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M
+                and isinstance(switch.get("rigid_local_visible_surface_contact_state_support"), dict)
+                and (switch.get("rigid_local_visible_surface_contact_state_support") or {}).get("supported") is True
+            )
+            latent_visible_rigid_contact_supported = bool(
+                "rigid_latent_visible_surface_contact_state" in graph_coupled_active_support_paths
+                and math.isfinite(near_distance)
+                and near_distance <= 0.02
+                and switch.get("rigid_latent_visible_surface_contact_state_support") is not None
+            )
+            part_contact_support = switch.get("articulated_part_local_contact_state_support") if isinstance(switch.get("articulated_part_local_contact_state_support"), dict) else {}
+            part_local_contact_supported = bool(
+                "articulated_part_local_contact_state" in graph_coupled_active_support_paths
+                and part_contact_support.get("supported") is True
+                and part_contact_support.get("estimate") is True
+                and part_contact_support.get("state") in {"supported_part_visible_surface_contact", "supported_dominant_visible_part_surface_contact"}
+                and math.isfinite(near_distance)
+                and near_distance <= ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M
+            )
+            represented_occluded_patch = switch.get("rigid_occluded_contact_patch_state") if isinstance(switch.get("rigid_occluded_contact_patch_state"), dict) else {}
+            represented_occluded_patch_supported = bool(
+                "rigid_occluded_contact_patch_state" in graph_coupled_active_support_paths
+                and represented_occluded_patch.get("estimate") is True
+                and represented_occluded_patch.get("state") == "supported_occluded_patch_depth_interval_compatible"
+            )
+            represented_occluded_patch_physically_incompatible = bool(
+                represented_occluded_patch.get("state") == "physically_incompatible_raw_depth_gap_exceeds_reliable_object_depth_interval"
+                and represented_occluded_patch.get("pose_interval_reliable") is True
+                and represented_occluded_patch.get("estimate") is not True
+            )
+            represented_occluded_patch_state_value = str(represented_occluded_patch.get("state") or "")
+            represented_occluded_patch_allows_depth_possible = bool(
+                represented_occluded_patch
+                and represented_occluded_patch_state_value in {
+                    "supported_occluded_patch_depth_interval_compatible",
+                    "unresolved_unreliable_object_depth_interval",
+                    "unresolved_missing_object_depth_interval",
+                }
+            )
+            temporal_episode_support = switch.get("rigid_temporal_contact_episode_state_support") if isinstance(switch.get("rigid_temporal_contact_episode_state_support"), dict) else {}
+            temporal_episode_rigid_contact_supported = bool(
+                "rigid_temporal_contact_episode_state" in graph_coupled_active_support_paths
+                and temporal_episode_support.get("supported") is True
+            )
+            switch["represented_occluded_contact_patch_state_supported"] = bool(represented_occluded_patch_supported or switch.get("represented_occluded_contact_patch_state_supported") is True)
+            raw_depth_conflict_blocks_active = raw_depth_conflict_blocks_contact(switch)
+            depth_conflict_explained_for_active = bool(
+                not raw_depth_conflict_blocks_active
+                or switch.get("local_deformable_patch_explains_depth_conflict") is True
+                or represented_occluded_patch_supported
+                or temporal_episode_support.get("represented_occluded_contact_patch_state_supported") is True
+            )
+            active_state_supported = bool((solved_pose_contact_supported or direct_patch_contact_supported or local_visible_rigid_contact_supported or latent_visible_rigid_contact_supported or represented_occluded_patch_supported or temporal_episode_rigid_contact_supported or part_local_contact_supported) and switch.get("support_gate_allows_active_contact") is True and depth_conflict_explained_for_active)
+            direct_near_supported = bool(solved_pose_contact_supported or direct_patch_contact_supported or local_visible_rigid_contact_supported or latent_visible_rigid_contact_supported or part_local_contact_supported)
             near_supported = bool(support_paths and math.isfinite(near_distance) and near_distance <= 0.12 and switch.get("support_gate_allows_active_contact") is True)
-            final_support_allows_active = bool(direct_near_supported)
+            final_support_allows_active = bool(active_state_supported)
+            final_direct_physical_contact_support = bool(active_state_supported and switch.get("support_gate_allows_active_contact") is True and switch.get("nonpenetration_conflict") is not True)
             switch["post_graph_final_support_paths_present"] = bool(support_paths)
             switch["post_graph_final_support_allows_active_contact"] = bool(final_support_allows_active)
             switch["post_graph_direct_visible_or_validated_near_support"] = bool(direct_near_supported)
+            switch["post_graph_state_coupled_support_paths"] = list(graph_coupled_active_support_paths)
+            switch["post_graph_uncoupled_state_support_paths"] = list(uncoupled_state_support_paths)
+            switch["post_graph_contact_only_support_paths"] = list(contact_only_support_paths)
+            switch["post_graph_state_coupled_near_support"] = bool(direct_near_supported)
+            switch["post_graph_state_coupled_contact_support"] = bool(active_state_supported)
+            switch["post_graph_solved_pose_contact_supported"] = bool(solved_pose_contact_supported)
+            switch["post_graph_solved_pose_contact_distance_m"] = float(coupled_distance_for_support) if math.isfinite(coupled_distance_for_support) else None
+            switch["post_graph_solved_pose_contact_correction_norm_m"] = float(coupled_correction_norm) if math.isfinite(coupled_correction_norm) else None
+            switch["post_graph_solved_pose_contact_max_distance_m"] = RIGID_SOLVED_CONTACT_MAX_DISTANCE_M
+            switch["post_graph_solved_pose_contact_max_correction_m"] = RIGID_CONTACT_MAX_CORRECTION_M
+            switch["post_graph_latent_rigid_contact_supported"] = bool(local_visible_rigid_contact_supported or latent_visible_rigid_contact_supported or represented_occluded_patch_supported or temporal_episode_rigid_contact_supported)
+            switch["post_graph_local_visible_rigid_contact_supported"] = bool(local_visible_rigid_contact_supported)
+            switch["post_graph_latent_visible_rigid_contact_supported"] = bool(latent_visible_rigid_contact_supported)
+            switch["post_graph_represented_occluded_patch_supported"] = bool(represented_occluded_patch_supported)
+            switch["post_graph_represented_occluded_patch_physically_incompatible"] = bool(represented_occluded_patch_physically_incompatible)
+            switch["post_graph_represented_occluded_patch_allows_depth_possible"] = bool(represented_occluded_patch_allows_depth_possible)
+            switch["post_graph_temporal_episode_rigid_contact_supported"] = bool(temporal_episode_rigid_contact_supported)
+            switch["post_graph_raw_depth_conflict_blocks_active_contact"] = bool(raw_depth_conflict_blocks_active)
+            switch["post_graph_depth_conflict_explained_for_active_contact"] = bool(depth_conflict_explained_for_active)
+            switch["post_graph_direct_deformable_patch_contact_supported"] = bool(direct_patch_contact_supported)
+            switch["post_graph_articulated_part_local_contact_supported"] = bool(part_local_contact_supported)
+            switch["post_graph_direct_physical_contact_support"] = bool(final_direct_physical_contact_support)
+            switch["post_graph_stable_contact_pose_anchor_factor_emitted"] = bool(stable_anchor_factor_emitted_for_contact)
+            switch["post_graph_requires_emitted_coupling_for_active"] = bool(require_emitted_coupling_for_active)
             switch["post_graph_manipulation_episode_support"] = bool(episode_supported)
             if "surface_changing_visible_depth_silhouette_pose" in support_paths:
                 switch["surface_changing_final_pose_supported_for_visual_prior"] = True
@@ -2508,12 +3818,15 @@ def attach_contact_physical_modes(
             if switch.get("estimate") is True and not final_support_allows_active:
                 switch["estimate_before_final_support_gate"] = True
                 switch["final_support_gate_demoted_active_contact"] = True
-                switch["final_support_gate_reason"] = "direct_frame_local_object_or_part_contact_support_missing"
+                switch["final_support_gate_reason"] = "direct_frame_local_state_coupled_contact_support_missing"
+                if uncoupled_state_support_paths:
+                    switch["final_support_gate_uncoupled_state_support_paths"] = list(uncoupled_state_support_paths)
+                    switch["final_support_gate_reason"] = "state_support_measurement_exists_but_no_stable_graph_coupling_factor_emitted"
                 switch["estimate"] = False
             active = bool(
                 switch.get("estimate") is True
-                and switch.get("physical_contact_claim_supported") is True
-                and switch.get("depth_conflict_blocks_active_contact") is not True
+                and (switch.get("physical_contact_claim_supported") is True or final_direct_physical_contact_support)
+                and depth_conflict_explained_for_active
                 and switch.get("support_gate_allows_active_contact") is True
                 and final_support_allows_active
                 and switch.get("nonpenetration_conflict") is not True
@@ -2525,16 +3838,33 @@ def attach_contact_physical_modes(
                     reason = "temporal_contact_switch_on_with_directly_anchored_manipulation_episode_contact_state"
                 elif episode_supported:
                     reason = "temporal_contact_switch_on_with_direct_contact_anchor_inside_manipulation_episode"
+                elif part_local_contact_supported:
+                    reason = "articulated_part_local_contact_state_with_represented_part_geometry_and_hand_excluded_depth_noncontradiction"
+                elif local_visible_rigid_contact_supported:
+                    reason = "local_rigid_visible_surface_contact_state_with_hand_excluded_object_depth_compatibility"
+                elif represented_occluded_patch_supported:
+                    reason = "temporal_contact_switch_on_with_represented_rigid_occluded_patch_depth_interval_explaining_depth_conflict"
+                elif switch.get("local_deformable_patch_explains_depth_conflict") is True:
+                    reason = "temporal_contact_switch_on_with_local_deformable_patch_explaining_depth_conflict"
                 elif switch.get("visual_contact_prior_overrode_weak_depth_conflict") is True:
                     reason = "temporal_contact_switch_on_with_visual_contact_prior_close_metric_geometry_and_demoted_weak_depth_conflict"
                 renderable = True
+            elif switch.get("depth_conflict_blocks_active_contact") is True and not represented_occluded_patch_allows_depth_possible:
+                mode = "depth_contradicted_noncontact"
+                if represented_occluded_patch_physically_incompatible:
+                    reason = "represented_rigid_occluded_patch_depth_interval_physically_incompatible_with_raw_depth_gap"
+                elif represented_occluded_patch:
+                    reason = "represented_hidden_depth_patch_state_blocks_depth_occluded_contact_possible"
+                else:
+                    reason = "strong_raw_depth_conflict_lacks_represented_hidden_depth_contact_explanation"
+                renderable = False
             elif episode_supported:
                 mode = "contact_episode_hypothesis_nonactive"
                 reason = "bounded_manipulation_episode_without_direct_frame_local_physical_contact_evidence"
                 renderable = True
-            elif near_supported and switch.get("depth_conflict_blocks_active_contact") is True and switch.get("raw_estimate_before_physical_contact_gate") is True:
+            elif near_supported and switch.get("depth_conflict_blocks_active_contact") is True and switch.get("raw_estimate_before_physical_contact_gate") is True and represented_occluded_patch_allows_depth_possible:
                 mode = "depth_occluded_contact_possible"
-                reason = "near_supported_geometry_and_raw_contact_energy_but_depth_order_blocks_active_contact"
+                reason = "near_supported_geometry_and_raw_contact_energy_but_depth_order_blocks_active_contact_unresolved_by_represented_patch_interval"
                 renderable = True
             elif switch.get("depth_conflict_blocks_active_contact") is True:
                 mode = "depth_contradicted_noncontact"
@@ -2543,6 +3873,10 @@ def attach_contact_physical_modes(
             elif near_supported:
                 mode = "supported_near_noncontact"
                 reason = "validated_physical_support_and_near_geometry_but_contact_switch_off"
+                renderable = True
+            elif isinstance(switch.get("articulated_part_contact_patch_state"), dict) and switch["articulated_part_contact_patch_state"].get("estimate") is not True and switch["articulated_part_contact_patch_state"].get("state") in {"unresolved_missing_current_frame_part_state", "unresolved_current_part_pose_not_ready", "unresolved_no_validated_hand_to_part_contact_residual"}:
+                mode = "articulated_part_contact_unresolved"
+                reason = str(switch["articulated_part_contact_patch_state"].get("state"))
                 renderable = True
             elif switch.get("raw_estimate_before_physical_contact_gate") is True and not support_paths:
                 mode = "raw_contact_proposal_without_final_validated_physical_support"
@@ -2559,11 +3893,12 @@ def attach_contact_physical_modes(
                 return bool(switch.get(claim_key) is True)
 
             pre_mode_claims = {
-                "rigid_pose_contact_claim_supported": preserved_contact_evidence_or_claim("rigid_pose_contact_claim_supported"),
-                "validated_part_pose_contact_claim_supported": preserved_contact_evidence_or_claim("validated_part_pose_contact_claim_supported"),
+                "rigid_pose_contact_claim_supported": bool(preserved_contact_evidence_or_claim("rigid_pose_contact_claim_supported") or "rigid_visible_surface_contact_anchor" in support_paths),
+                "validated_part_pose_contact_claim_supported": bool(preserved_contact_evidence_or_claim("validated_part_pose_contact_claim_supported") or "articulated_part_local_contact_state" in support_paths),
                 "surface_changing_pose_contact_claim_supported": preserved_contact_evidence_or_claim("surface_changing_pose_contact_claim_supported"),
+                "local_rigid_visible_surface_contact_claim_supported": bool(preserved_contact_evidence_or_claim("local_rigid_visible_surface_contact_claim_supported") or "rigid_local_visible_surface_contact_state" in support_paths),
                 "deformable_visible_surface_contact_claim_supported": preserved_contact_evidence_or_claim("deformable_visible_surface_contact_claim_supported"),
-                "physical_contact_claim_supported": preserved_contact_evidence_or_claim("physical_contact_claim_supported"),
+                "physical_contact_claim_supported": bool(preserved_contact_evidence_or_claim("physical_contact_claim_supported") or final_direct_physical_contact_support),
             }
             switch["physical_contact_evidence_supported"] = bool(pre_mode_claims["physical_contact_claim_supported"])
             switch["physical_contact_evidence_state"] = "supported_geometry_or_schema_evidence_present" if pre_mode_claims["physical_contact_claim_supported"] else "blocked_no_supported_rigid_validated_part_surface_or_deformable_surface"
@@ -2574,6 +3909,7 @@ def attach_contact_physical_modes(
             switch["rigid_pose_contact_claim_supported"] = bool(pre_mode_claims["rigid_pose_contact_claim_supported"] and solved_active_claim)
             switch["validated_part_pose_contact_claim_supported"] = bool(pre_mode_claims["validated_part_pose_contact_claim_supported"] and solved_active_claim)
             switch["surface_changing_pose_contact_claim_supported"] = bool(pre_mode_claims["surface_changing_pose_contact_claim_supported"] and solved_active_claim)
+            switch["local_rigid_visible_surface_contact_claim_supported"] = bool(pre_mode_claims["local_rigid_visible_surface_contact_claim_supported"] and solved_active_claim)
             switch["deformable_visible_surface_contact_claim_supported"] = bool(pre_mode_claims["deformable_visible_surface_contact_claim_supported"] and solved_active_claim)
             switch["physical_contact_support_state"] = "solved_active_physical_contact_state" if solved_active_claim else "geometry_or_schema_evidence_only_nonactive_state" if pre_mode_claims["physical_contact_claim_supported"] else "blocked_no_supported_rigid_validated_part_surface_or_deformable_surface"
             switch["physical_contact_mode"] = mode
@@ -2617,6 +3953,17 @@ def attach_contact_physical_modes(
                         "coupling_state": "stable_validated_part_pose_anchor_factor_emitted",
                         "coupling_family": "contact_part_pose_anchor",
                     })
+                elif "articulated_part_local_contact_state" in support_paths:
+                    part_state = switch.get("articulated_part_contact_patch_state") if isinstance(switch.get("articulated_part_contact_patch_state"), dict) else {}
+                    coupling_state.update({
+                        "contact_state_affects_latent_contact_state": True,
+                        "contact_state_affects_object_or_part_pose": False,
+                        "latent_contact_state_variable_id": str(switch.get("variable_id")),
+                        "articulated_part_contact_patch_variable_id": part_state.get("variable_id"),
+                        "coupling_state": "active_articulated_part_contact_coupled_to_part_local_contact_state",
+                        "coupling_family": "articulated_part_local_contact_state",
+                        "blockers": ["parent_object_pose_not_coupled_part_local_contact_state_only"],
+                    })
                 elif "deformable_same_frame_visible_surface" in support_paths:
                     patch_key = (str(switch.get("object_id")), str(switch.get("hand_side")))
                     if patch_key in deformable_patch_keys:
@@ -2633,6 +3980,41 @@ def attach_contact_physical_modes(
                         coupling_state["deformable_surface_patch_factor_emitted"] = False
                         coupling_state["blockers"] = ["deformable_object_contact_missing_local_surface_patch_state"]
                         coupling_state["coupling_state"] = "active_deformable_contact_state_not_coupled_to_object_pose"
+                elif "rigid_local_visible_surface_contact_state" in support_paths or "rigid_latent_visible_surface_contact_state" in support_paths or "rigid_occluded_contact_patch_state" in support_paths or "rigid_temporal_contact_episode_state" in support_paths:
+                    if "rigid_occluded_contact_patch_state" in support_paths:
+                        coupling_state.update({
+                            "contact_state_affects_latent_contact_state": True,
+                            "contact_state_affects_object_or_part_pose": False,
+                            "latent_contact_state_variable_id": str(switch.get("variable_id")),
+                            "rigid_occluded_contact_patch_variable_id": (switch.get("rigid_occluded_contact_patch_state") or {}).get("variable_id") if isinstance(switch.get("rigid_occluded_contact_patch_state"), dict) else None,
+                            "coupling_state": "active_rigid_contact_coupled_to_represented_occluded_patch_state",
+                            "coupling_family": "rigid_occluded_contact_patch_depth_interval",
+                            "blockers": ["full_object_pose_not_coupled_occluded_patch_contact_state_only"],
+                        })
+                    elif "rigid_temporal_contact_episode_state" in support_paths and "rigid_latent_visible_surface_contact_state" not in support_paths and "rigid_local_visible_surface_contact_state" not in support_paths:
+                        coupling_state.update({
+                            "contact_state_affects_latent_contact_state": True,
+                            "contact_state_affects_object_or_part_pose": False,
+                            "latent_contact_state_variable_id": str(switch.get("variable_id")),
+                            "contact_episode_variable_id": switch.get("manipulation_contact_episode_id"),
+                            "coupling_state": "active_rigid_contact_coupled_to_temporal_contact_episode_state",
+                            "coupling_family": "contact_switch_temporal_episode_latent_rigid_contact",
+                            "blockers": ["full_object_pose_not_coupled_temporal_contact_state_only"],
+                        })
+                    else:
+                        coupling_state.update({
+                            "contact_state_affects_latent_contact_state": True,
+                            "contact_state_affects_object_or_part_pose": False,
+                            "latent_contact_state_variable_id": str(switch.get("variable_id")),
+                            "coupling_state": "active_rigid_contact_coupled_to_local_visible_surface_contact_state" if "rigid_local_visible_surface_contact_state" in support_paths else "active_rigid_contact_coupled_to_latent_visible_surface_contact_state",
+                            "coupling_family": "local_rigid_visible_surface_contact_state" if "rigid_local_visible_surface_contact_state" in support_paths else "contact_switch_latent_rigid_visible_surface_contact",
+                            "local_rigid_visible_surface_contact_state_support": switch.get("rigid_local_visible_surface_contact_state_support") if "rigid_local_visible_surface_contact_state" in support_paths else None,
+                            "local_rigid_visible_contact_patch_variable_id": switch.get("local_rigid_visible_contact_patch_variable_id") if "rigid_local_visible_surface_contact_state" in support_paths else None,
+                            "blockers": ["full_object_pose_not_coupled_this_frame_local_contact_state_only"],
+                        })
+                elif direct_contact_support_paths and not any(path in CONTACT_POSE_ANCHOR_SUPPORT_PATHS for path in direct_contact_support_paths):
+                    coupling_state["blockers"] = ["direct_contact_support_paths_are_contact_only_not_pose_anchor_eligible"]
+                    coupling_state["coupling_state"] = "active_contact_not_pose_coupled_contact_support_only"
                 elif direct_contact_support_paths and stable_anchor_candidate:
                     coupling_state["blockers"] = ["stable_contact_support_but_pose_anchor_factor_not_emitted_by_pre_solve_geometry_or_pose_precondition"]
                     coupling_state["coupling_state"] = "active_contact_not_pose_coupled_stable_anchor_factor_not_emitted"
@@ -2649,15 +4031,188 @@ def attach_contact_physical_modes(
             solution["active_contact_hypotheses"] = sum(1 for row in contact_switches if isinstance(row, dict) and row.get("estimate") is True)
             solution["unresolved_or_contradicted_contact_hypotheses"] = sum(1 for row in contact_switches if isinstance(row, dict) and (row.get("depth_contradiction") or row.get("metric_depth_compatible_candidate") is False))
             solution["active_contact_hypotheses_recomputed_after_final_support_modes"] = True
+    final_anchor_counts = enforce_final_temporal_bridge_anchor_gate(frames)
+    recomputed_counts = recompute_contact_physical_mode_counts(frames)
+    for key, value in final_anchor_counts.items():
+        recomputed_counts[key] += value
+    return recomputed_counts
+
+
+def recompute_contact_physical_mode_counts(frames: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for frame in frames:
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        contact_switches = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
+        for switch in contact_switches:
+            if not isinstance(switch, dict):
+                continue
+            mode = str(switch.get("physical_contact_mode") or "separated_or_unresolved_noncontact")
+            counts[f"contact_physical_mode_{mode}"] += 1
+            if switch.get("physical_contact_mode_renderable") is True and mode != "active_physical_contact":
+                counts[f"renderable_nonactive_contact_mode_{mode}"] += 1
+            if mode == "active_physical_contact":
+                coupling = switch.get("active_contact_coupling_state") if isinstance(switch.get("active_contact_coupling_state"), dict) else {}
+                coupling_state = str(coupling.get("coupling_state") or "active_contact_missing_coupling_state")
+                counts[f"active_contact_coupling_{coupling_state}"] += 1
     return counts
 
+
+def enforce_final_temporal_bridge_anchor_gate(frames: list[dict[str, Any]]) -> Counter[str]:
+    """Demote temporal bridge contacts not bracketed by final active direct anchors."""
+    counts: Counter[str] = Counter()
+    final_direct_anchor_keys: set[tuple[int, str, str]] = set()
+    switches_by_key: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "final temporal anchor frame_idx")
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        for switch in vars_raw.get("contact_switch", []) if isinstance(vars_raw.get("contact_switch"), list) else []:
+            if not isinstance(switch, dict):
+                continue
+            key = (frame_idx, str(switch.get("hand_side")), str(switch.get("object_id")))
+            switches_by_key[key] = switch
+            paths = set(str(path) for path in switch.get("physical_contact_mode_support_paths", []) if isinstance(path, str)) if isinstance(switch.get("physical_contact_mode_support_paths"), list) else set()
+            direct_paths = paths - {"rigid_temporal_contact_episode_state", "manipulation_contact_episode_persistent_constraint"}
+            if switch.get("physical_contact_mode") == "active_physical_contact" and switch.get("estimate") is True and direct_paths:
+                final_direct_anchor_keys.add(key)
+    for key, switch in switches_by_key.items():
+        if switch.get("physical_contact_mode") != "active_physical_contact" or switch.get("estimate") is not True:
+            continue
+        temporal = switch.get("rigid_temporal_contact_episode_state_support") if isinstance(switch.get("rigid_temporal_contact_episode_state_support"), dict) else {}
+        if temporal.get("frame_role") != "bounded_episode_bridge_candidate":
+            continue
+        frame_idx, hand_side, object_id = key
+        anchors = temporal.get("direct_visible_or_validated_anchor_frame_indices") if isinstance(temporal.get("direct_visible_or_validated_anchor_frame_indices"), list) else []
+        max_dist = int(finite_float(temporal.get("max_nearest_anchor_frame_distance"), finite_float(switch.get("manipulation_contact_episode_max_nearest_anchor_distance_frames"), 0.0)))
+        prev = [int(anchor) for anchor in anchors if isinstance(anchor, int) and anchor < frame_idx and (int(anchor), hand_side, object_id) in final_direct_anchor_keys]
+        nxt = [int(anchor) for anchor in anchors if isinstance(anchor, int) and anchor > frame_idx and (int(anchor), hand_side, object_id) in final_direct_anchor_keys]
+        prev_dist = frame_idx - max(prev) if prev else None
+        next_dist = min(nxt) - frame_idx if nxt else None
+        final_bracketed = bool(prev_dist is not None and next_dist is not None and max_dist > 0 and prev_dist <= max_dist and next_dist <= max_dist)
+        temporal["final_active_direct_anchor_bracketed"] = bool(final_bracketed)
+        temporal["final_active_prev_anchor_frame_distance"] = int(prev_dist) if prev_dist is not None else None
+        temporal["final_active_next_anchor_frame_distance"] = int(next_dist) if next_dist is not None else None
+        temporal["final_active_direct_anchor_frame_indices"] = sorted([anchor for anchor in anchors if isinstance(anchor, int) and (int(anchor), hand_side, object_id) in final_direct_anchor_keys])
+        temporal["final_anchor_gate_requires_final_active_direct_physical_anchors"] = True
+        if final_bracketed:
+            counts["final_temporal_bridge_anchor_gate_preserved_active"] += 1
+            continue
+        switch["estimate_before_final_temporal_anchor_gate"] = True
+        switch["final_temporal_anchor_gate_demoted_active_contact"] = True
+        switch["final_temporal_anchor_gate_reason"] = "bounded_temporal_bridge_not_bracketed_by_final_active_direct_physical_anchors"
+        switch["estimate"] = False
+        switch["physical_contact_claim_supported"] = False
+        switch["physical_contact_mode"] = "contact_episode_hypothesis_nonactive"
+        switch["physical_contact_mode_reason"] = "bounded_episode_hypothesis_demoted_because_final_active_direct_anchor_bracket_missing"
+        switch["physical_contact_mode_renderable"] = True
+        switch["physical_contact_mode_scope"] = "nonactive_uncertain_state_not_a_contact_claim"
+        switch["post_graph_final_support_allows_active_contact"] = False
+        switch["post_graph_state_coupled_contact_support"] = False
+        switch["post_graph_temporal_episode_rigid_contact_supported"] = False
+        switch["post_graph_direct_physical_contact_support"] = False
+        switch["active_contact_coupling_state_before_final_temporal_anchor_gate"] = switch.get("active_contact_coupling_state")
+        switch["active_contact_coupling_state"] = {
+            "method": "final_pipeline_active_contact_object_part_coupling_state",
+            "contact_state_affects_object_or_part_pose": False,
+            "contact_state_affects_latent_contact_state": False,
+            "coupling_state": "inactive_contact_episode_hypothesis_demoted_by_final_anchor_gate",
+            "coupling_family": None,
+            "blockers": ["bounded_temporal_bridge_not_bracketed_by_final_active_direct_physical_anchors"],
+            "scope": "demoted_bridge_contact_does_not_change_object_part_or_latent_active_contact_state",
+        }
+        counts["final_temporal_bridge_anchor_gate_demoted_active"] += 1
+    for frame in frames:
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        solution = fg.get("solution") if isinstance(fg.get("solution"), dict) else None
+        if solution is not None:
+            contact_switches = (fg.get("variables") or {}).get("contact_switch") if isinstance(fg.get("variables"), dict) else []
+            solution["active_contact_hypotheses"] = sum(1 for row in contact_switches if isinstance(row, dict) and row.get("estimate") is True)
+            solution["active_contact_hypotheses_recomputed_after_final_temporal_anchor_gate"] = True
+    return counts
+
+
+ACTIVE_CONTACT_STATE_SUPPORT_PATHS = {
+    "rigid_visible_depth_silhouette_pose",
+    "surface_changing_visible_depth_silhouette_pose",
+    "validated_part_visible_depth_silhouette_pose",
+    "dominant_visible_part_surface_state",
+    "articulated_part_local_contact_state",
+    "deformable_same_frame_visible_surface",
+    "rigid_local_visible_surface_contact_state",
+    "rigid_latent_visible_surface_contact_state",
+    "rigid_occluded_contact_patch_state",
+    "rigid_temporal_contact_episode_state",
+}
 
 CONTACT_POSE_ANCHOR_SUPPORT_PATHS = {
     "rigid_visible_depth_silhouette_pose",
     "surface_changing_visible_depth_silhouette_pose",
-    "surface_changing_local_visible_contact_surface",
     "validated_part_visible_depth_silhouette_pose",
 }
+
+
+def propagate_final_contact_modes_to_hypotheses(frames: list[dict[str, Any]]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for frame in frames:
+        frame_idx = require_int(frame.get("frame_idx"), "contact propagation frame_idx")
+        fg = frame.get("factor_graph_solution") if isinstance(frame.get("factor_graph_solution"), dict) else {}
+        vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
+        switches = vars_raw.get("contact_switch") if isinstance(vars_raw.get("contact_switch"), list) else []
+        switch_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for switch in switches:
+            if not isinstance(switch, dict):
+                continue
+            switch_by_key[(str(switch.get("hand_side")), str(switch.get("object_id")))] = switch
+        hypotheses: list[dict[str, Any]] = []
+        if isinstance(frame.get("contact_hypotheses"), list):
+            hypotheses.extend(row for row in frame["contact_hypotheses"] if isinstance(row, dict))
+        for obj in frame.get("objects", []):
+            if not isinstance(obj, dict):
+                continue
+            if isinstance(obj.get("contact_hypotheses"), list):
+                hypotheses.extend(row for row in obj["contact_hypotheses"] if isinstance(row, dict))
+        for hyp in hypotheses:
+            key = (str(hyp.get("hand_side")), str(hyp.get("object_id")))
+            switch = switch_by_key.get(key)
+            if not isinstance(switch, dict):
+                continue
+            source_state = hyp.get("state")
+            mode = str(switch.get("physical_contact_mode") or "separated_or_unresolved_noncontact")
+            hyp["source_contact_state_before_final_graph"] = source_state
+            hyp["state"] = mode
+            hyp["physical_contact_claim_supported"] = bool(switch.get("physical_contact_claim_supported") is True)
+            hyp["physical_contact_evidence_supported"] = bool(switch.get("physical_contact_evidence_supported") is True)
+            hyp["physical_contact_mode_reason"] = switch.get("physical_contact_mode_reason")
+            hyp["physical_contact_mode_support_paths"] = switch.get("physical_contact_mode_support_paths")
+            hyp["physical_contact_mode_scope"] = switch.get("physical_contact_mode_scope")
+            hyp["active_contact_coupling_state"] = switch.get("active_contact_coupling_state")
+            hyp["rigid_pre_anchor_contact_support"] = switch.get("rigid_pre_anchor_contact_support")
+            hyp["rigid_occluded_contact_patch_state"] = switch.get("rigid_occluded_contact_patch_state")
+            hyp["articulated_part_contact_patch_state"] = switch.get("articulated_part_contact_patch_state")
+            hyp["final_contact_switch"] = {
+                "estimate": switch.get("estimate"),
+                "physical_contact_mode": switch.get("physical_contact_mode"),
+                "physical_contact_claim_supported": switch.get("physical_contact_claim_supported"),
+                "physical_contact_evidence_supported": switch.get("physical_contact_evidence_supported"),
+                "depth_conflict_blocks_active_contact": switch.get("depth_conflict_blocks_active_contact"),
+                "support_gate_allows_active_contact": switch.get("support_gate_allows_active_contact"),
+                "post_graph_direct_visible_or_validated_near_support": switch.get("post_graph_direct_visible_or_validated_near_support"),
+                "post_graph_state_coupled_support_paths": switch.get("post_graph_state_coupled_support_paths"),
+                "post_graph_contact_only_support_paths": switch.get("post_graph_contact_only_support_paths"),
+                "post_graph_state_coupled_near_support": switch.get("post_graph_state_coupled_near_support"),
+                "post_graph_latent_rigid_contact_supported": switch.get("post_graph_latent_rigid_contact_supported"),
+                "post_graph_solved_pose_contact_supported": switch.get("post_graph_solved_pose_contact_supported"),
+                "post_graph_direct_physical_contact_support": switch.get("post_graph_direct_physical_contact_support"),
+                "rigid_pre_anchor_contact_support": switch.get("rigid_pre_anchor_contact_support"),
+                "rigid_occluded_contact_patch_state": switch.get("rigid_occluded_contact_patch_state"),
+                "articulated_part_contact_patch_state": switch.get("articulated_part_contact_patch_state"),
+                "post_graph_articulated_part_local_contact_supported": switch.get("post_graph_articulated_part_local_contact_supported"),
+                "represented_occluded_contact_patch_state_supported": switch.get("represented_occluded_contact_patch_state_supported"),
+                "physical_contact_mode_nearest_distance_m": switch.get("physical_contact_mode_nearest_distance_m"),
+            }
+            counts[f"propagated_contact_mode_{mode}"] += 1
+    return counts
 
 
 def extract_solved_contact_pose_anchor_switches(frames: list[dict[str, Any]]) -> dict[tuple[int, str, str], dict[str, Any]]:
@@ -2678,6 +4233,10 @@ def extract_solved_contact_pose_anchor_switches(frames: list[dict[str, Any]]) ->
                 continue
             if not (paths & CONTACT_POSE_ANCHOR_SUPPORT_PATHS):
                 continue
+            if "rigid_visible_depth_silhouette_pose" in paths:
+                rigid_pre_anchor = switch.get("rigid_pre_anchor_contact_support") if isinstance(switch.get("rigid_pre_anchor_contact_support"), dict) else {}
+                if rigid_pre_anchor.get("supported") is not True:
+                    continue
             key = (frame_idx, str(switch.get("hand_side")), str(switch.get("object_id")))
             anchors[key] = dict(switch)
     return anchors
@@ -3057,6 +4616,9 @@ def part_pose_value_from_graph_or_candidate(part: dict[str, Any], graph_var: dic
 
 def posed_part_mesh_sample_camera(part: dict[str, Any], graph_var: dict[str, Any] | None = None) -> np.ndarray:
     candidate = part.get("reconstructed_part_geometry_candidate") if isinstance(part.get("reconstructed_part_geometry_candidate"), dict) else {}
+    dominant_sample = np.asarray(part.get("visible_surface_camera_sample_m", []), dtype=np.float64)
+    if candidate.get("dominant_visible_part_surface_only") is True and dominant_sample.ndim == 2 and dominant_sample.shape[1] == 3 and dominant_sample.shape[0] > 0:
+        return dominant_sample
     recon = part.get("reconstructed_part_geometry_pose") if isinstance(part.get("reconstructed_part_geometry_pose"), dict) else {}
     mesh_path = candidate.get("convex_hull_mesh_path") or candidate.get("poisson_mesh_path") or recon.get("mesh_path")
     vertices = load_mesh_vertex_sample(mesh_path, 192)
@@ -3086,6 +4648,41 @@ def load_mask_bool(mask_path_raw: Any) -> np.ndarray:
     return mask
 
 
+def mask_distance_field(mask_path_raw: Any, shape_hw: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    mask, dist, _, _ = mask_distance_and_nearest_field(mask_path_raw, shape_hw)
+    return mask, dist
+
+
+def mask_distance_and_nearest_field(mask_path_raw: Any, shape_hw: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    mask_path = str(mask_path_raw or "")
+    mask = load_mask_bool(mask_path)
+    if mask.ndim != 2 or mask.size == 0:
+        return (
+            np.zeros(shape_hw, dtype=bool),
+            np.full(shape_hw, np.inf, dtype=np.float32),
+            np.zeros(shape_hw, dtype=np.int32),
+            np.zeros(shape_hw, dtype=np.int32),
+        )
+    if mask.shape != shape_hw:
+        mask_img = Image.fromarray((mask.astype(np.uint8) * 255))
+        mask = np.asarray(mask_img.resize((shape_hw[1], shape_hw[0]), resample=Image.Resampling.NEAREST)) > 0
+    cache_key = (mask_path, shape_hw)
+    cached = MASK_NEAREST_CACHE.get(cache_key)
+    if cached is None:
+        dist, nearest = distance_transform_edt(~mask, return_indices=True)
+        cached = (
+            np.asarray(dist, dtype=np.float32),
+            np.asarray(nearest[0], dtype=np.int32),
+            np.asarray(nearest[1], dtype=np.int32),
+        )
+        if len(MASK_NEAREST_CACHE) >= MASK_NEAREST_CACHE_MAX_ITEMS:
+            oldest_key = next(iter(MASK_NEAREST_CACHE))
+            MASK_NEAREST_CACHE.pop(oldest_key, None)
+        MASK_NEAREST_CACHE[cache_key] = cached
+    dist, nearest_y, nearest_x = cached
+    return mask, dist, nearest_y, nearest_x
+
+
 def distance_distribution_summary(query_points: np.ndarray, target_points: np.ndarray, query_max: int = 128, target_max: int = 256) -> dict[str, Any]:
     query = sampled_points(query_points, query_max)
     target = sampled_points(target_points, target_max)
@@ -3111,18 +4708,34 @@ def posed_object_mesh_sample_world(recon: dict[str, Any]) -> np.ndarray:
     return vertices @ rotation + t[None, :]
 
 
+def frame_depth_intrinsics(frame: dict[str, Any]) -> list[float] | None:
+    for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
+        if not isinstance(obj, dict):
+            continue
+        geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+        raw_intrinsics = geom.get("source_depth_intrinsics_fx_fy_cx_cy")
+        if isinstance(raw_intrinsics, list) and len(raw_intrinsics) == 4:
+            intrinsics = [finite_float(v, float("nan")) for v in raw_intrinsics]
+            if all(math.isfinite(v) and v > 0.0 for v in intrinsics):
+                return intrinsics
+    for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
+        if not isinstance(hand, dict):
+            continue
+        metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+        raw_intrinsics = metric_state.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
+        if isinstance(raw_intrinsics, list) and len(raw_intrinsics) == 4:
+            intrinsics = [finite_float(v, float("nan")) for v in raw_intrinsics]
+            if all(math.isfinite(v) and v > 0.0 for v in intrinsics):
+                return intrinsics
+    return None
+
+
 def project_world_points_to_mask(points_world: np.ndarray, frame: dict[str, Any], mask_shape: tuple[int, int], intrinsics_override: list[Any] | None = None) -> tuple[np.ndarray, np.ndarray] | None:
     intrinsics: list[float] | None = None
     if isinstance(intrinsics_override, list) and len(intrinsics_override) == 4:
         intrinsics = [finite_float(v, float("nan")) for v in intrinsics_override]
-    for hand in frame.get("hands", []) if intrinsics is None and isinstance(frame.get("hands"), list) else []:
-        if not isinstance(hand, dict):
-            continue
-        mano = hand.get("mano_candidate") if isinstance(hand.get("mano_candidate"), dict) else {}
-        raw_intrinsics = mano.get("source_intrinsics")
-        if isinstance(raw_intrinsics, list) and len(raw_intrinsics) == 4:
-            intrinsics = [finite_float(v, float("nan")) for v in raw_intrinsics]
-            break
+    if intrinsics is None:
+        intrinsics = frame_depth_intrinsics(frame)
     camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
     transform = np.asarray(camera.get("T_world_camera_metric", []), dtype=np.float64)
     pts = np.asarray(points_world, dtype=np.float64)
@@ -3345,13 +4958,14 @@ def contact_object_pose_observation(
     unit = delta / norm
     nonpenetration_conflict = bool(switch.get("nonpenetration_conflict") is True)
     active_contact = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True)
-    contact_anchor_allowed = bool(allow_contact_pose_anchor and active_contact)
+    pre_anchor_supported = rigid_pre_anchor_contact_supported(switch)
+    contact_anchor_allowed = bool(allow_contact_pose_anchor and active_contact and pre_anchor_supported)
     if not contact_anchor_allowed or nonpenetration_conflict:
         return None
-    if distance > 0.12:
+    if distance > RIGID_CONTACT_PROPOSAL_CAPTURE_RADIUS_M:
         return None
     desired_gap_m = 0.018
-    max_correction_m = 0.08
+    max_correction_m = RIGID_CONTACT_MAX_CORRECTION_M
     if distance > desired_gap_m:
         magnitude = min(max_correction_m, distance - desired_gap_m)
         correction = unit * magnitude
@@ -3396,6 +5010,8 @@ def contact_object_pose_observation(
             "raw_contact_switch_active": bool(switch.get("raw_estimate_before_hawor_support_gate") is True or switch.get("raw_estimate_before_physical_contact_gate") is True),
             "contact_proposal_used": contact_anchor_allowed,
             "contact_pose_anchor_source": switch.get("contact_pose_anchor_source"),
+            "contact_pose_anchor_support_paths": switch.get("physical_contact_mode_support_paths"),
+            "rigid_pre_anchor_contact_support": switch.get("rigid_pre_anchor_contact_support"),
             "nonpenetration_conflict": nonpenetration_conflict,
             "object_contact_pose_mode": pose_mode,
             "rigid_contact_pose_allowed": pose_mode == "rigid",
@@ -3423,14 +5039,13 @@ def contact_part_pose_observation(
     if hand_points.ndim != 2 or hand_points.shape[1] != 3 or hand_points.shape[0] == 0:
         return None
     active_contact = bool(switch.get("estimate") is True and switch.get("physical_contact_claim_supported") is True)
-    accepted_contact_owner = bool(switch.get("accepted_contact_owner") is True and allow_contact_pose_anchor)
     image_support = max(
         finite_float(switch.get("image_iou"), 0.0),
         finite_float(switch.get("min_box_coverage"), 0.0),
         finite_float(switch.get("mesh_contact_support_score"), 0.0),
         finite_float(switch.get("final_metric_contact_support_score"), 0.0),
     )
-    proposal_contact = bool((allow_contact_pose_anchor and active_contact) or accepted_contact_owner)
+    proposal_contact = bool(allow_contact_pose_anchor and active_contact)
     part_graph_vars = part_graph_vars or {}
     best: tuple[dict[str, Any], dict[str, Any] | None, np.ndarray, np.ndarray, float] | None = None
     best_validated: tuple[dict[str, Any], dict[str, Any] | None, np.ndarray, np.ndarray, float] | None = None
@@ -3438,35 +5053,26 @@ def contact_part_pose_observation(
         if not isinstance(part, dict):
             continue
         candidate = part.get("reconstructed_part_geometry_candidate") if isinstance(part.get("reconstructed_part_geometry_candidate"), dict) else {}
-        if not candidate:
+        if not candidate or candidate.get("dominant_visible_part_surface_only") is True:
             continue
         label = str(part.get("part_track_label"))
-        graph_var = part_graph_vars.get(label)
         candidate_pair = nearest_point_pair(hand_points, posed_part_mesh_sample_camera(part, None))
-        graph_pair = nearest_point_pair(hand_points, posed_part_mesh_sample_camera(part, graph_var)) if isinstance(graph_var, dict) else None
-        selected_pair = candidate_pair
-        selected_graph_var = None
-        if graph_pair is not None:
-            graph_distance = float(graph_pair[2])
-            candidate_distance = float(candidate_pair[2]) if candidate_pair is not None else float("inf")
-            if candidate_pair is None or (candidate_distance > 0.12 and graph_distance <= 0.12):
-                selected_pair = graph_pair
-                selected_graph_var = graph_var
-        if selected_pair is None:
+        if candidate_pair is None:
             continue
-        hand_pt, part_pt, distance = selected_pair
+        hand_pt, part_pt, distance = candidate_pair
         if best is None or distance < best[4]:
-            best = (part, selected_graph_var, hand_pt, part_pt, distance)
+            best = (part, None, hand_pt, part_pt, distance)
         validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation", None), dict) else {}
         if part_validation_supports_current_frame(validation) and (best_validated is None or distance < best_validated[4]):
-            best_validated = (part, selected_graph_var, hand_pt, part_pt, distance)
+            best_validated = (part, None, hand_pt, part_pt, distance)
     if best is None:
         return None
     if best_validated is not None and best_validated[4] <= 0.12:
         best = best_validated
     part, graph_var, hand_pt, part_pt, distance = best
-    near_part_geometry = distance <= 0.12
-    if not proposal_contact or not near_part_geometry:
+    pre_anchor_supported = part_pre_anchor_contact_supported(switch, distance, str(part.get("part_track_label")))
+    near_part_geometry = distance <= PART_PRE_ANCHOR_CONTACT_MAX_DISTANCE_M
+    if not proposal_contact or not near_part_geometry or not pre_anchor_supported:
         return None
     center, rotvec = part_pose_value_from_graph_or_candidate(part, graph_var)
     if center is None:
@@ -3514,12 +5120,167 @@ def contact_part_pose_observation(
             "raw_contact_switch_active": bool(switch.get("raw_estimate_before_physical_contact_gate") is True or switch.get("raw_estimate_before_hawor_support_gate") is True),
             "contact_proposal_used": proposal_contact,
             "contact_pose_anchor_source": switch.get("contact_pose_anchor_source"),
-            "accepted_contact_owner": accepted_contact_owner,
-            "part_geometry_source": "depth_fused_reconstructed_part_mesh_candidate",
+            "accepted_contact_owner": bool(switch.get("accepted_contact_owner") is True),
+            "part_pre_anchor_contact_support": switch.get("part_pre_anchor_contact_support"),
+            "part_geometry_source": "depth_fused_reconstructed_part_mesh_candidate_pre_graph_pose",
             "part_pose_validation_supported": part_validation_supports_current_frame(part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}),
             "part_pose_source": "factor_graph_part_se3_estimate" if isinstance(graph_var, dict) else "part_visible_surface_pose_candidate",
             "scope": "strict_part_contact_anchor_for_active_raw_or_accepted_owner_contact_proposal_without_complete_object_pose_claim",
         },
+    }
+
+
+def local_rigid_visible_surface_contact_patch_state(frame_idx: int, switch: dict[str, Any], obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    if obj is None:
+        return None
+    if switch.get("estimate") is not True:
+        return None
+    local_support = switch.get("rigid_local_visible_surface_contact_state_support") if isinstance(switch.get("rigid_local_visible_surface_contact_state_support"), dict) else switch.get("local_rigid_visible_surface_contact_state_support") if isinstance(switch.get("local_rigid_visible_surface_contact_state_support"), dict) else {}
+    if local_support.get("supported") is not True:
+        return None
+    hand_pt = numeric_vector(switch.get("raw_metric_nearest_hand_point_world_m"), 3)
+    object_pt = numeric_vector(switch.get("raw_metric_nearest_object_point_world_m"), 3)
+    if hand_pt is None or object_pt is None:
+        return None
+    residual = finite_float(switch.get("final_metric_contact_distance_m"), finite_float(switch.get("effective_metric_contact_distance_m"), float("nan")))
+    if not math.isfinite(residual):
+        return None
+    pair = (switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}).get("pairwise_contact_depth_gap") if isinstance((switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}).get("pairwise_contact_depth_gap"), dict) else {}
+    midpoint = (hand_pt + object_pt) * 0.5
+    variable_id = f"local_rigid_visible_contact_patch::{int(frame_idx)}::{switch.get('hand_side')}::{obj.get('object_id')}"
+    residual_weight = max(0.5, min(4.0, 1.0 + 3.0 * max(0.0, (LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M - residual) / LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M)))
+    return {
+        "variable_id": variable_id,
+        "frame_idx": int(frame_idx),
+        "hand_side": switch.get("hand_side"),
+        "object_id": obj.get("object_id"),
+        "estimate": True,
+        "estimate_world_m": [float(v) for v in midpoint.tolist()],
+        "nearest_hand_point_world_m": [float(v) for v in hand_pt.tolist()],
+        "nearest_visible_surface_point_world_m": [float(v) for v in object_pt.tolist()],
+        "contact_residual_m": float(residual),
+        "max_contact_residual_m": float(LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M),
+        "residual_factor_weight": float(residual_weight),
+        "hand_footprint_excluded_object_depth_state": pair.get("depth_gap_state"),
+        "object_depth_excludes_projected_hand_footprint": bool(pair.get("object_depth_excludes_projected_hand_footprint") is True),
+        "hand_excluded_object_depth_nearest_distance_px": pair.get("hand_excluded_object_depth_nearest_distance_px"),
+        "association_reasons": local_support.get("association_reasons") if isinstance(local_support.get("association_reasons"), list) else [],
+        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+        "contact_switch_variable_id": switch.get("variable_id"),
+        "factor_family": "local_rigid_visible_surface_contact_patch",
+        "contact_state_affects_latent_contact_state": True,
+        "contact_state_affects_object_or_part_pose": False,
+        "does_not_claim_object_se3_correction": True,
+        "scope": "time_indexed_local_rigid_visible_surface_contact_manifold_state_not_full_object_pose_not_hidden_geometry_completion",
+    }
+
+
+def articulated_part_contact_patch_state(frame_idx: int, switch: dict[str, Any], obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    if obj is None:
+        return None
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    if schema.get("requires_part_or_relative_motion_model") is not True:
+        return None
+    association_reasons = contact_association_reasons(switch, allow_accepted_owner=False)
+    pair = (switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}).get("pairwise_contact_depth_gap") if isinstance((switch.get("evidence") if isinstance(switch.get("evidence"), dict) else {}).get("pairwise_contact_depth_gap"), dict) else {}
+    raw_depth = switch.get("raw_depth_conflict_strength") if isinstance(switch.get("raw_depth_conflict_strength"), dict) else {}
+    effective_distance = finite_float(switch.get("effective_metric_contact_distance_m"), finite_float(switch.get("final_metric_contact_distance_m"), float("nan")))
+    object_depth_compatible = bool(
+        raw_depth.get("raw_depth_contradiction") is not True
+        and raw_depth.get("raw_pair_depth_gap_state") == "current_v18_object_owned_contact_patch_depth_compatible"
+        and pair.get("object_depth_excludes_projected_hand_footprint") is True
+    )
+    contact_candidate = bool(
+        math.isfinite(effective_distance)
+        and effective_distance <= ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M
+        and association_reasons
+        and switch.get("support_gate_allows_active_contact") is True
+        and switch.get("nonpenetration_conflict") is not True
+        and object_depth_compatible
+    )
+    if not contact_candidate:
+        return None
+    parts = [part for part in obj.get("parts", []) if isinstance(part, dict)] if isinstance(obj.get("parts"), list) else []
+    tracked_labels = sorted({str(label) for label in obj.get("accepted_global_part_track_labels", []) if isinstance(label, str) and label})
+    if not tracked_labels:
+        part_state = obj.get("part_structured_pose_state") if isinstance(obj.get("part_structured_pose_state"), dict) else {}
+        tracked_labels = sorted({str(label) for label in part_state.get("accepted_global_part_track_labels", []) if isinstance(label, str) and label})
+    current_labels = sorted({str(part.get("part_track_label")) for part in parts if part.get("part_track_label")})
+    ready_labels: list[str] = []
+    for part in parts:
+        label = str(part.get("part_track_label"))
+        validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
+        if label and part_validation_supports_current_frame(validation):
+            ready_labels.append(label)
+    ready_labels = sorted(set(ready_labels))
+    validated_label = str(switch.get("validated_part_track_label") or switch.get("final_validated_part_track_label") or "")
+    validated_distance = finite_float(switch.get("validated_part_metric_contact_distance_m"), finite_float(switch.get("final_validated_part_metric_contact_distance_m"), float("nan")))
+    validated_part_record = next((part for part in parts if str(part.get("part_track_label")) == validated_label), None)
+    validated_part_validation = validated_part_record.get("part_silhouette_depth_pose_validation") if isinstance(validated_part_record, dict) and isinstance(validated_part_record.get("part_silhouette_depth_pose_validation"), dict) else {}
+    dominant_visible_surface_support = bool(validated_part_validation.get("method") == "dominant_visible_part_surface_from_vlm_object_mask")
+    supported = bool(
+        validated_label
+        and validated_label in set(ready_labels)
+        and math.isfinite(validated_distance)
+        and validated_distance <= ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M
+        and part_pre_anchor_contact_supported(switch, validated_distance, validated_label)
+    )
+    if supported:
+        state = "supported_dominant_visible_part_surface_contact" if dominant_visible_surface_support else "supported_part_visible_surface_contact"
+        blockers: list[str] = []
+        part_label_for_id = validated_label
+        contact_residual = validated_distance
+    elif not current_labels:
+        state = "unresolved_missing_current_frame_part_state"
+        blockers = ["accepted_part_track_absent_from_current_frame"]
+        part_label_for_id = tracked_labels[0] if tracked_labels else "unresolved_part"
+        contact_residual = effective_distance
+    elif not ready_labels:
+        state = "unresolved_current_part_pose_not_ready"
+        blockers = ["current_frame_part_track_present_but_pose_not_ready"]
+        part_label_for_id = current_labels[0]
+        contact_residual = effective_distance
+    else:
+        state = "unresolved_no_validated_hand_to_part_contact_residual"
+        blockers = ["ready_part_state_exists_but_hand_to_part_residual_not_supported"]
+        part_label_for_id = ready_labels[0]
+        contact_residual = effective_distance
+    variable_id = f"articulated_part_contact_patch::{int(frame_idx)}::{switch.get('hand_side')}::{obj.get('object_id')}::{part_label_for_id}"
+    return {
+        "variable_id": variable_id,
+        "frame_idx": int(frame_idx),
+        "hand_side": switch.get("hand_side"),
+        "object_id": obj.get("object_id"),
+        "part_track_label": part_label_for_id,
+        "estimate": bool(supported),
+        "state": state,
+        "supported": bool(supported),
+        "blockers": blockers,
+        "tracked_part_labels": tracked_labels,
+        "current_frame_part_track_labels": current_labels,
+        "current_frame_ready_part_track_labels": ready_labels,
+        "validated_part_track_label": validated_label or None,
+        "validated_part_metric_contact_distance_m": float(validated_distance) if math.isfinite(validated_distance) else None,
+        "parent_visible_surface_contact_residual_m": float(effective_distance) if math.isfinite(effective_distance) else None,
+        "contact_residual_m": float(contact_residual) if math.isfinite(contact_residual) else None,
+        "max_contact_residual_m": float(ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M),
+        "association_reasons": association_reasons,
+        "object_depth_compatibility_is_noncontradiction_not_part_depth_proof": True,
+        "hand_footprint_excluded_object_depth_state": pair.get("depth_gap_state"),
+        "object_depth_excludes_projected_hand_footprint": bool(pair.get("object_depth_excludes_projected_hand_footprint") is True),
+        "nonpenetration_conflict": bool(switch.get("nonpenetration_conflict") is True),
+        "contact_switch_variable_id": switch.get("variable_id"),
+        "factor_family": "articulated_part_contact_patch",
+        "contact_state_affects_latent_contact_state": bool(supported),
+        "contact_state_affects_object_or_part_pose": False,
+        "does_not_claim_parent_object_se3_correction": True,
+        "supported_by_dominant_visible_part_surface_state": bool(supported and dominant_visible_surface_support),
+        "supported_by_complete_part_mesh_pose": bool(supported and not dominant_visible_surface_support),
+        "dominant_visible_part_surface_state": validated_part_validation.get("dominant_visible_part_surface_state") if dominant_visible_surface_support else None,
+        "part_pose_ready_scope": validated_part_validation.get("part_pose_ready_scope"),
+        "part_geometry_complete": bool(validated_part_validation.get("part_geometry_complete") is True),
+        "contact_state_semantics": "current_frame_visible_lid_rim_surface_contact_only_completion_limited_geometry_no_pose_anchor" if dominant_visible_surface_support else "validated_part_visible_depth_silhouette_contact",
+        "scope": "part_scoped_contact_state_for_articulated_object_supported_by_current_frame_dominant_visible_part_surface_not_complete_part_geometry_not_parent_object_contact" if dominant_visible_surface_support else "part_scoped_contact_state_for_articulated_object_supported_only_by_represented_part_state_missing_part_state_remains_unresolved_not_parent_object_contact",
     }
 
 
@@ -3532,8 +5293,10 @@ def deformable_surface_patch_observations(frame_idx: int, switch: dict[str, Any]
         return []
     if switch.get("support_gate_allows_active_contact") is not True or switch.get("nonpenetration_conflict") is True:
         return []
+    if not deformable_pre_patch_contact_supported(switch):
+        return []
     distance = finite_float(switch.get("final_metric_contact_distance_m"), float("nan"))
-    if not math.isfinite(distance) or distance > 0.05:
+    if not math.isfinite(distance) or distance > DEFORMABLE_PRE_PATCH_CONTACT_MAX_DISTANCE_M:
         return []
     schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
     physical = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
@@ -3554,6 +5317,7 @@ def deformable_surface_patch_observations(frame_idx: int, switch: dict[str, Any]
         "nearest_hand_point_world_m": [float(v) for v in hand_pt.tolist()],
         "nearest_visible_surface_point_world_m": [float(v) for v in object_pt.tolist()],
         "pre_patch_contact_gap_m": float(distance),
+        "deformable_pre_patch_contact_support": switch.get("deformable_pre_patch_contact_support"),
         "contact_switch_active": True,
         "contact_proposal_used": True,
         "raw_contact_switch_active": bool(switch.get("raw_estimate_before_physical_contact_gate") is True or switch.get("raw_estimate_before_hawor_support_gate") is True),
@@ -3659,7 +5423,9 @@ def contact_switch_energy(
     image_contact = bool(evidence.get("pair_contact_image_candidate"))
     depth_compatible = bool(evidence.get("metric_depth_compatible_candidate"))
     depth_state = str(evidence.get("pair_depth_gap_state"))
-    depth_contradiction = "behind" in depth_state or "contradiction" in str(hyp.get("state")) or "rejected" in str(hyp.get("state"))
+    raw_depth_strength = evidence.get("raw_depth_conflict_strength") if isinstance(evidence.get("raw_depth_conflict_strength"), dict) else raw_depth_conflict_strength({**hyp, "evidence": evidence})
+    depth_contradiction = bool(raw_depth_strength.get("raw_depth_contradiction") is True or "behind" in depth_state)
+    raw_depth_weak_conflict_supported = bool(raw_depth_strength.get("weak_depth_conflict_supported") is True)
     mesh_candidate = evidence.get("mesh_contact_evidence")
     mesh_raw: dict[str, Any] = mesh_candidate if isinstance(mesh_candidate, dict) else {}
     mesh_support = max(0.0, min(1.0, finite_float(mesh_raw.get("mesh_contact_support_score"), 0.0)))
@@ -3734,31 +5500,31 @@ def contact_switch_energy(
                     continue
                 label = str(part.get("part_track_label"))
                 graph_var = part_graph_vars.get(label)
-                if graph_var is None:
-                    continue
-                part_points = posed_part_mesh_sample_camera(part, graph_var)
-                pair = nearest_point_pair(hand_sample_camera, part_points)
-                if pair is None:
-                    continue
-                _, _, distance = pair
-                if distance < coupled_part_distance_m or not math.isfinite(coupled_part_distance_m):
-                    coupled_part_distance_m = float(distance)
-                    coupled_part_label = label
-                    center_base, _ = part_pose_value_from_graph_or_candidate(part)
-                    estimate = graph_var.get("estimate")
-                    center_est = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
-                    if center_base is not None and center_est is not None:
-                        coupled_part_delta_m = [float(v) for v in (center_est - center_base).tolist()]
-                    part_support = max(0.0, min(1.0, (0.15 - coupled_part_distance_m) / 0.13))
+                raw_pair = nearest_point_pair(hand_sample_camera, posed_part_mesh_sample_camera(part, None))
+                graph_pair = nearest_point_pair(hand_sample_camera, posed_part_mesh_sample_camera(part, graph_var)) if isinstance(graph_var, dict) else None
+                if graph_pair is not None:
+                    _, _, graph_distance = graph_pair
+                    if graph_distance < coupled_part_distance_m or not math.isfinite(coupled_part_distance_m):
+                        coupled_part_distance_m = float(graph_distance)
+                        coupled_part_label = label
+                        center_base, _ = part_pose_value_from_graph_or_candidate(part)
+                        estimate = graph_var.get("estimate") if isinstance(graph_var, dict) else None
+                        center_est = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+                        if center_base is not None and center_est is not None:
+                            coupled_part_delta_m = [float(v) for v in (center_est - center_base).tolist()]
+                        part_support = max(0.0, min(1.0, (0.15 - coupled_part_distance_m) / 0.13))
                 validation = part.get("part_silhouette_depth_pose_validation") if isinstance(part.get("part_silhouette_depth_pose_validation"), dict) else {}
-                if part_validation_supports_current_frame(validation) and (distance < validated_part_distance_m or not math.isfinite(validated_part_distance_m)):
-                    validated_part_distance_m = float(distance)
-                    validated_part_label = label
-                    center_base, _ = part_pose_value_from_graph_or_candidate(part)
-                    estimate = graph_var.get("estimate")
-                    center_est = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
-                    if center_base is not None and center_est is not None:
-                        validated_part_delta_m = [float(v) for v in (center_est - center_base).tolist()]
+                if raw_pair is not None:
+                    _, _, raw_distance = raw_pair
+                    if part_validation_supports_current_frame(validation) and (raw_distance < validated_part_distance_m or not math.isfinite(validated_part_distance_m)):
+                        validated_part_distance_m = float(raw_distance)
+                        validated_part_label = label
+                        if graph_var is not None:
+                            center_base, _ = part_pose_value_from_graph_or_candidate(part)
+                            estimate = graph_var.get("estimate")
+                            center_est = numeric_vector(estimate[:3] if isinstance(estimate, list) else None, 3)
+                            if center_base is not None and center_est is not None:
+                                validated_part_delta_m = [float(v) for v in (center_est - center_base).tolist()]
     direct_metric_distance_candidates = [v for v in [final_metric_distance_m, validated_part_distance_m] if math.isfinite(v)]
     effective_metric_contact_distance_m = min(direct_metric_distance_candidates) if direct_metric_distance_candidates else float("nan")
     if math.isfinite(effective_metric_contact_distance_m):
@@ -3770,6 +5536,7 @@ def contact_switch_energy(
     part_pose_claim_supported = False
     surface_changing_pose_claim_supported = False
     surface_changing_final_pose_supported = False
+    local_rigid_visible_surface_contact_supported = False
     deformable_visible_surface_contact_supported = False
     if isinstance(obj, dict):
         rigid_pose_supported_by_schema, _, _ = rigid_pose_support_from_schema(obj, obj.get("hidden_geometry_candidate") if isinstance(obj.get("hidden_geometry_candidate"), dict) else {}, object_graph_var)
@@ -3779,10 +5546,59 @@ def contact_switch_energy(
         validation = obj.get("object_depth_silhouette_pose_validation") if isinstance(obj.get("object_depth_silhouette_pose_validation"), dict) else {}
         recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
         surface_changing_final_pose_supported = bool(validation.get("surface_changing_compact_visible_pose_supported") is True or recon.get("surface_changing_compact_pose_supported_visible_mesh") is True)
+        schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+        physical_type = str(schema.get("model_physical_state_type") or obj.get("physical_state_label") or "unknown")
+        visible_geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+        pairwise_depth = evidence.get("pairwise_contact_depth_gap") if isinstance(evidence.get("pairwise_contact_depth_gap"), dict) else {}
+        local_rigid_assoc_reasons = ["pair_contact_image_candidate"] if image_contact else []
+        local_rigid_depth_compatible = bool(
+            raw_depth_strength.get("raw_depth_contradiction") is not True
+            and raw_depth_strength.get("raw_pair_depth_gap_state") == "current_v18_object_owned_contact_patch_depth_compatible"
+            and pairwise_depth.get("object_depth_excludes_projected_hand_footprint") is True
+        )
+        local_rigid_visible_surface_contact_supported = bool(
+            physical_type == "rigid"
+            and schema.get("pose_model_allowed_by_structured_vlm") is True
+            and schema.get("requires_part_or_relative_motion_model") is not True
+            and schema.get("secondary_deformable_or_surface_component") is not True
+            and isinstance(visible_geom.get("world_vertices_sample_m"), list)
+            and bool(visible_geom.get("world_vertices_sample_m"))
+            and math.isfinite(final_metric_distance_m)
+            and final_metric_distance_m <= LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M
+            and local_rigid_assoc_reasons
+            and local_rigid_depth_compatible
+            and not nonpenetration_conflict
+        )
         deformable_allowed, _ = deformable_visible_surface_contact_allowed(obj)
-        deformable_visible_surface_contact_supported = bool(deformable_allowed and math.isfinite(final_metric_distance_m) and final_metric_distance_m <= 0.05 and (mesh_support > 0.5 or final_metric_raw_support_from_same_frame > 0.70))
-        part_pose_claim_supported = bool(validated_part_label is not None and math.isfinite(validated_part_distance_m) and validated_part_distance_m <= 0.12)
-    physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported or surface_changing_pose_claim_supported or deformable_visible_surface_contact_supported)
+        deformable_assoc_reasons: list[str] = []
+        if image_contact:
+            deformable_assoc_reasons.append("pair_contact_image_candidate")
+        deformable_visible_surface_contact_supported = bool(
+            deformable_allowed
+            and math.isfinite(final_metric_distance_m)
+            and final_metric_distance_m <= DEFORMABLE_PRE_PATCH_CONTACT_MAX_DISTANCE_M
+            and deformable_assoc_reasons
+        )
+        dominant_part_visual_assoc = evidence.get("dominant_visible_part_visual_association") if isinstance(evidence.get("dominant_visible_part_visual_association"), dict) else {}
+        part_assoc_reasons: list[str] = []
+        if image_contact:
+            part_assoc_reasons.append("pair_contact_image_candidate")
+        if dominant_part_visual_assoc.get("supported") is True:
+            part_assoc_reasons.append("dominant_visible_part_visual_association")
+        part_pose_claim_supported = bool(
+            validated_part_label is not None
+            and math.isfinite(validated_part_distance_m)
+            and validated_part_distance_m <= PART_PRE_ANCHOR_CONTACT_MAX_DISTANCE_M
+            and part_assoc_reasons
+        )
+    physical_contact_claim_supported = bool(rigid_pose_claim_supported or part_pose_claim_supported or surface_changing_pose_claim_supported or local_rigid_visible_surface_contact_supported or deformable_visible_surface_contact_supported)
+    local_deformable_patch_explains_depth_conflict = bool(
+        deformable_visible_surface_contact_supported
+        and image_contact
+        and math.isfinite(final_metric_distance_m)
+        and final_metric_distance_m <= DEFORMABLE_PRE_PATCH_CONTACT_MAX_DISTANCE_M
+        and not nonpenetration_conflict
+    )
     hand_support_state = str((hand or {}).get("hawor_support_state") or final_metric.get("hand_support_state") or "missing_hawor_support")
     hand_support_weight = max(0.0, min(1.0, finite_float((hand or {}).get("hawor_physical_factor_weight"), finite_float(final_metric.get("hand_physical_factor_weight"), 0.0))))
     metric_state_for_scale = hand.get("metric_mano_state") if isinstance(hand, dict) and isinstance(hand.get("metric_mano_state"), dict) else {}
@@ -3803,7 +5619,8 @@ def contact_switch_energy(
         and support_gate_allows_active_contact
         and not nonpenetration_conflict
     )
-    weak_depth_conflict_overridden_by_visual_prior = bool(depth_contradiction and visual_contact_prior_supported)
+    weak_depth_conflict_overridden_by_visual_prior = bool(depth_contradiction and raw_depth_weak_conflict_supported and visual_contact_prior_supported)
+    depth_conflict_explained_by_local_deformable_patch = bool(depth_contradiction and local_deformable_patch_explains_depth_conflict)
     image_support = max(iou, coverage, mesh_support, final_metric_support, 0.55 if image_contact else 0.0, 0.25 if image_overlap else 0.0)
     # These are explicit model terms in a mixed normalized energy, not hidden thresholds.
     on_energy = (1.0 - image_support) ** 2 + dist_term
@@ -3820,7 +5637,9 @@ def contact_switch_energy(
         on_energy += 2.0
     if missing_geometry_contact_penalty > 0.0:
         on_energy += missing_geometry_contact_penalty
-    if accepted_contact_owner and geometry_far_contact_penalty < 0.5:
+    if local_deformable_patch_explains_depth_conflict:
+        on_energy *= 0.25
+    elif accepted_contact_owner and geometry_far_contact_penalty < 0.5:
         on_energy *= 0.35
     elif selected_contact_owner and geometry_far_contact_penalty < 0.5:
         on_energy *= 0.75
@@ -3831,6 +5650,8 @@ def contact_switch_energy(
         off_energy += mesh_support
     if final_metric_support > 0.0:
         off_energy += final_metric_support
+    if local_deformable_patch_explains_depth_conflict:
+        off_energy += 1.0
     if accepted_contact_owner and geometry_far_contact_penalty < 0.5:
         off_energy += 1.0
     if depth_contradiction and not accepted_contact_owner:
@@ -3843,7 +5664,7 @@ def contact_switch_energy(
     if missing_geometry_contact_penalty > 0.0:
         off_energy *= 0.5
     raw_switch_on_before_physical_gate = (on_energy < off_energy) and not nonpenetration_conflict
-    depth_conflict_blocks_active_contact = bool(depth_contradiction and not weak_depth_conflict_overridden_by_visual_prior)
+    depth_conflict_blocks_active_contact = bool(depth_contradiction and not weak_depth_conflict_overridden_by_visual_prior and not depth_conflict_explained_by_local_deformable_patch)
     raw_switch_on = raw_switch_on_before_physical_gate and physical_contact_claim_supported and not depth_conflict_blocks_active_contact
     switch_on = raw_switch_on and support_gate_allows_active_contact
     return {
@@ -3859,7 +5680,23 @@ def contact_switch_energy(
         "validated_part_pose_contact_claim_supported": bool(part_pose_claim_supported),
         "surface_changing_pose_contact_claim_supported": bool(surface_changing_pose_claim_supported),
         "surface_changing_final_pose_supported_for_visual_prior": bool(surface_changing_final_pose_supported),
+        "local_rigid_visible_surface_contact_state_support": {
+            "method": "current_mano_to_local_visible_rigid_surface_contact_state",
+            "supported": bool(local_rigid_visible_surface_contact_supported),
+            "scope": "local_contact_state_only_not_full_object_pose_correction",
+            "final_metric_contact_distance_m": float(final_metric_distance_m) if math.isfinite(final_metric_distance_m) else None,
+            "max_final_metric_contact_distance_m": float(LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M),
+            "association_reasons": local_rigid_assoc_reasons if 'local_rigid_assoc_reasons' in locals() else [],
+            "requires_hand_footprint_excluded_object_depth": True,
+            "object_depth_excludes_projected_hand_footprint": bool((evidence.get("pairwise_contact_depth_gap") if isinstance(evidence.get("pairwise_contact_depth_gap"), dict) else {}).get("object_depth_excludes_projected_hand_footprint") is True),
+            "raw_pair_depth_gap_state": raw_depth_strength.get("raw_pair_depth_gap_state"),
+            "raw_depth_contradiction": bool(raw_depth_strength.get("raw_depth_contradiction") is True),
+            "nonpenetration_conflict": bool(nonpenetration_conflict),
+            "does_not_claim_object_se3_correction": True,
+        },
+        "local_rigid_visible_surface_contact_claim_supported": bool(local_rigid_visible_surface_contact_supported),
         "deformable_visible_surface_contact_claim_supported": bool(deformable_visible_surface_contact_supported),
+        "local_deformable_patch_explains_depth_conflict": bool(local_deformable_patch_explains_depth_conflict),
         "visual_contact_prior": {
             "method": "bounded_v18_visual_contact_prior_from_image_contact_metric_geometry_and_nonpenetration_consistency",
             "contact_prior_supported": bool(visual_contact_prior_supported),
@@ -3876,6 +5713,8 @@ def contact_switch_energy(
             "nonpenetration_conflict": bool(nonpenetration_conflict),
         },
         "visual_contact_prior_supported": bool(visual_contact_prior_supported),
+        "raw_depth_conflict_strength": raw_depth_strength,
+        "raw_depth_weak_conflict_supported_for_visual_override": bool(raw_depth_weak_conflict_supported),
         "visual_contact_prior_overrode_weak_depth_conflict": bool(weak_depth_conflict_overridden_by_visual_prior),
         "support_gate_allows_active_contact": bool(support_gate_allows_active_contact),
         "support_gate_reason": "observed_same_frame_hawor_and_depth_scaled_metric_support_required_for_active_contact" if not support_gate_allows_active_contact else "observed_same_frame_hawor_depth_scaled_metric_support",
@@ -3891,7 +5730,7 @@ def contact_switch_energy(
         "center_distance_norm": float(dist) if dist is not None else None,
         "depth_contradiction": bool(depth_contradiction),
         "depth_conflict_blocks_active_contact": bool(depth_conflict_blocks_active_contact),
-        "depth_conflict_resolution": "weak_depth_order_demoted_by_visual_contact_prior" if weak_depth_conflict_overridden_by_visual_prior else "depth_order_blocks_active_contact" if depth_conflict_blocks_active_contact else "no_depth_order_block",
+        "depth_conflict_resolution": "local_deformable_patch_contact_explains_depth_conflict" if depth_conflict_explained_by_local_deformable_patch else "numerically_weak_depth_order_demoted_by_visual_contact_prior" if weak_depth_conflict_overridden_by_visual_prior else "strong_or_unexplained_raw_depth_order_blocks_active_contact" if depth_conflict_blocks_active_contact else "no_depth_order_block",
         "metric_depth_compatible_candidate": depth_compatible,
         "mesh_contact_support_score": mesh_support,
         "final_metric_contact_support_score": float(final_metric_support),
@@ -3953,8 +5792,10 @@ def contact_episode_candidate_score(switch: dict[str, Any]) -> tuple[float, bool
     depth_contradiction = switch.get("depth_contradiction") is True
     candidate = bool(observed_hand and no_nonpenetration_conflict and (image_contact or mesh_support >= 0.70 or coverage >= 0.75) and cue_score >= 0.65)
     effective_distance = finite_float(switch.get("effective_metric_contact_distance_m"), float("nan"))
+    independent_contact_on = bool(switch.get("independent_estimate") is True or switch.get("estimate") is True)
     direct_visible_anchor = bool(
         candidate
+        and independent_contact_on
         and (
             switch.get("visual_contact_prior_supported") is True
             or switch.get("deformable_visible_surface_contact_claim_supported") is True
@@ -3971,7 +5812,10 @@ def contact_episode_candidate_score(switch: dict[str, Any]) -> tuple[float, bool
         and switch.get("accepted_contact_owner") is True
         and depth_contradiction
     )
-    anchor = bool(direct_visible_anchor or occluded_contact_patch_anchor)
+    # A label-like occluded-contact row is not a physical anchor until a represented
+    # occluded patch/depth state exists. Keep the role for provenance, but do not
+    # let it anchor or bracket temporal persistence.
+    anchor = bool(direct_visible_anchor)
     if direct_visible_anchor:
         role = "direct_visible_or_validated_contact_anchor"
     elif occluded_contact_patch_anchor:
@@ -3987,6 +5831,14 @@ def nearest_anchor_frame_distance(frame_idx: int, anchor_frames: list[int]) -> i
     if not anchor_frames:
         return None
     return int(min(abs(frame_idx - anchor) for anchor in anchor_frames))
+
+
+def bracketing_anchor_distances(frame_idx: int, anchor_frames: list[int]) -> tuple[int | None, int | None]:
+    previous = [anchor for anchor in anchor_frames if anchor < frame_idx]
+    following = [anchor for anchor in anchor_frames if anchor > frame_idx]
+    prev_distance = int(frame_idx - max(previous)) if previous else None
+    next_distance = int(min(following) - frame_idx) if following else None
+    return prev_distance, next_distance
 
 
 def split_episode_rows_by_gap(
@@ -4064,9 +5916,13 @@ def annotate_manipulation_contact_episodes(
                     max_gap = max(max_gap, curr[1] - prev[1])
                 for _, frame_idx, switch, _, _, _ in rows:
                     nearest_distance = nearest_anchor_frame_distance(int(frame_idx), local_anchor_frames)
+                    prev_anchor_distance, next_anchor_distance = bracketing_anchor_distances(int(frame_idx), local_anchor_frames)
                     if nearest_distance is not None:
                         max_nearest_anchor_distance = max(max_nearest_anchor_distance, nearest_distance)
                         switch["manipulation_contact_episode_nearest_anchor_frame_distance"] = int(nearest_distance)
+                    switch["manipulation_contact_episode_prev_anchor_frame_distance"] = int(prev_anchor_distance) if prev_anchor_distance is not None else None
+                    switch["manipulation_contact_episode_next_anchor_frame_distance"] = int(next_anchor_distance) if next_anchor_distance is not None else None
+                    switch["manipulation_contact_episode_bracketed_by_anchors"] = bool(prev_anchor_distance is not None and next_anchor_distance is not None)
                 summary = {
                     "episode_id": episode_id,
                     "contact_variable_id": variable_id,
@@ -4110,6 +5966,10 @@ def annotate_manipulation_contact_episodes(
                     switch["manipulation_contact_episode_occluded_contact_patch_anchor_frame_indices"] = [int(v) for v in occluded_anchor_frames]
                     switch["manipulation_contact_episode_nearest_anchor_frame_distance"] = int(nearest_distance) if nearest_distance is not None else None
                     switch["manipulation_contact_episode_max_nearest_anchor_distance_frames"] = int(max_nearest_anchor_distance_frames)
+                    prev_anchor_distance, next_anchor_distance = bracketing_anchor_distances(int(frame_idx), local_anchor_frames)
+                    switch["manipulation_contact_episode_prev_anchor_frame_distance"] = int(prev_anchor_distance) if prev_anchor_distance is not None else None
+                    switch["manipulation_contact_episode_next_anchor_frame_distance"] = int(next_anchor_distance) if next_anchor_distance is not None else None
+                    switch["manipulation_contact_episode_bracketed_by_anchors"] = bool(prev_anchor_distance is not None and next_anchor_distance is not None)
                     switch["manipulation_contact_episode_frame_role"] = role if anchor else "bounded_episode_bridge_candidate"
                     if role == "direct_visible_or_validated_contact_anchor":
                         support_state = "direct_visible_or_validated_contact_anchor"
@@ -4127,6 +5987,9 @@ def annotate_manipulation_contact_episodes(
                         "direct_visible_or_validated_anchor_frame_indices": [int(v) for v in direct_visible_anchor_frames],
                         "occluded_contact_patch_anchor_frame_indices": [int(v) for v in occluded_anchor_frames],
                         "nearest_anchor_frame_distance": int(nearest_distance) if nearest_distance is not None else None,
+                        "prev_anchor_frame_distance": int(prev_anchor_distance) if prev_anchor_distance is not None else None,
+                        "next_anchor_frame_distance": int(next_anchor_distance) if next_anchor_distance is not None else None,
+                        "bracketed_by_anchors": bool(prev_anchor_distance is not None and next_anchor_distance is not None),
                         "max_nearest_anchor_distance_frames": int(max_nearest_anchor_distance_frames),
                         "visible_surface_distance_state": visible_surface_distance_state,
                         "depth_order_state": depth_state,
@@ -4142,10 +6005,15 @@ def annotate_manipulation_contact_episodes(
                     switch["manipulation_contact_episode_on_energy"] = float(episode_on)
                     switch["manipulation_contact_episode_off_penalty"] = float(0.55 + 0.45 * max(0.0, min(1.0, score)))
                     switch["manipulation_contact_episode_temporal_max_internal_gap_frames"] = int(max_internal_gap_frames)
-                    if switch.get("depth_conflict_blocks_active_contact") is True:
+                    if raw_depth_conflict_blocks_contact(switch):
+                        switch["raw_depth_conflict_blocks_active_contact"] = True
                         switch["depth_conflict_blocks_active_contact_before_episode_support"] = True
-                        switch["depth_conflict_blocks_active_contact"] = False
-                        switch["depth_conflict_resolution"] = "local_contact_anchor_or_bounded_gap_persistence_through_occluded_or_unmodeled_contact_patch"
+                        if switch.get("local_deformable_patch_explains_depth_conflict") is True:
+                            switch["depth_conflict_resolution"] = "local_deformable_patch_contact_explains_strong_raw_depth_conflict"
+                        else:
+                            switch["depth_conflict_resolution"] = "strong_or_unexplained_raw_depth_conflict_requires_independent_occluded_contact_patch_explanation"
+                    else:
+                        switch.setdefault("raw_depth_conflict_blocks_active_contact", False)
                     episode_counts["manipulation_contact_episode_supported_switches"] += 1
     return {"counts": dict(sorted(episode_counts.items())), "episodes": episode_summaries}
 
@@ -4270,7 +6138,7 @@ def solve_v18_factor_graph(
     articulation_obs: dict[str, list[dict[str, Any]]] = defaultdict(list)
     contact_pose_anchor_switches = contact_pose_anchor_switches or {}
     per_frame_terms: dict[int, dict[str, Any]] = defaultdict(lambda: {
-        "variables": {"camera_depth_correction": [], "hand_state": [], "object_se3": [], "part_se3": [], "deformable_surface_patch": [], "articulation_parameter": [], "contact_switch": [], "contact_episode": [], "occlusion_owner": []},
+        "variables": {"camera_depth_correction": [], "hand_state": [], "object_se3": [], "part_se3": [], "deformable_surface_patch": [], "local_rigid_visible_contact_patch": [], "articulated_part_contact_patch": [], "rigid_occluded_contact_patch": [], "articulation_parameter": [], "contact_switch": [], "contact_episode": [], "occlusion_owner": []},
         "factor_energy_initial": defaultdict(float),
         "factor_energy_after": defaultdict(float),
         "factor_counts": Counter(),
@@ -4553,6 +6421,51 @@ def solve_v18_factor_graph(
                 object_graph_vars.get(object_id),
                 part_graph_vars_by_object.get(object_id),
             )
+            obj_for_patch = objects.get(object_id)
+            obj_schema_for_patch = obj_for_patch.get("physical_state_schema") if isinstance(obj_for_patch, dict) and isinstance(obj_for_patch.get("physical_state_schema"), dict) else {}
+            rigid_occluded_patch_candidate = bool(
+                isinstance(obj_for_patch, dict)
+                and (obj_schema_for_patch.get("model_physical_state_type") == "rigid" or obj_for_patch.get("physical_state_label") == "rigid")
+                and obj_schema_for_patch.get("requires_part_or_relative_motion_model") is not True
+                and obj_schema_for_patch.get("secondary_deformable_or_surface_component") is not True
+            )
+            if rigid_occluded_patch_candidate and raw_depth_conflict_blocks_contact(switch):
+                patch_state = represented_rigid_occluded_contact_patch_state(frame, obj_for_patch, switch, object_graph_vars.get(object_id))
+                switch["rigid_occluded_contact_patch_state"] = patch_state
+                terms["variables"]["rigid_occluded_contact_patch"].append(patch_state)
+                terms["factor_counts"]["rigid_occluded_contact_patch_depth_interval"] += 1
+                variable_counts["rigid_occluded_contact_patch"] += 1
+                factor_counts["rigid_occluded_contact_patch_depth_interval"] += 1
+                incompatibility = 0.0
+                interval = patch_state.get("object_camera_depth_interval") if isinstance(patch_state.get("object_camera_depth_interval"), dict) else {}
+                raw_gap = finite_float(patch_state.get("raw_hand_minus_object_depth_median_m"), float("nan"))
+                max_gap = finite_float(interval.get("max_explainable_hand_behind_gap_m"), float("nan"))
+                if math.isfinite(raw_gap) and math.isfinite(max_gap):
+                    incompatibility = max(0.0, raw_gap - max_gap) ** 2
+                terms["factor_energy_initial"]["rigid_occluded_contact_patch_depth_interval"] += incompatibility
+                terms["factor_energy_after"]["rigid_occluded_contact_patch_depth_interval"] += 0.0 if patch_state.get("estimate") is True else incompatibility
+                energy_initial_total += incompatibility
+                energy_after_total += 0.0 if patch_state.get("estimate") is True else incompatibility
+            articulated_part_state = articulated_part_contact_patch_state(frame_idx, switch, obj_for_patch)
+            if articulated_part_state is not None:
+                switch["articulated_part_contact_patch_state"] = articulated_part_state
+                terms["variables"]["articulated_part_contact_patch"].append(articulated_part_state)
+                terms["factor_counts"]["articulated_part_contact_patch"] += 1
+                variable_counts["articulated_part_contact_patch"] += 1
+                factor_counts["articulated_part_contact_patch"] += 1
+                residual = finite_float(articulated_part_state.get("contact_residual_m"), 0.0)
+                max_residual = finite_float(articulated_part_state.get("max_contact_residual_m"), ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M)
+                residual_energy = max(0.0, residual / max(max_residual, 1e-6)) ** 2
+                if articulated_part_state.get("estimate") is True:
+                    terms["factor_energy_after"]["articulated_part_contact_patch"] += residual_energy
+                    energy_after_total += residual_energy
+                else:
+                    missing_penalty = 1.0
+                    articulated_part_state["missing_part_state_energy_penalty"] = missing_penalty
+                    terms["factor_energy_after"]["articulated_part_contact_patch"] += missing_penalty
+                    energy_after_total += missing_penalty
+                terms["factor_energy_initial"]["articulated_part_contact_patch"] += residual_energy
+                energy_initial_total += residual_energy
             switch["independent_estimate"] = switch.get("estimate")
             switch["independent_chosen_energy"] = switch.get("chosen_energy")
             switch["temporal_contact_switch_penalty"] = contact_temporal_switch_penalty
@@ -4591,13 +6504,18 @@ def solve_v18_factor_graph(
         episode_frames = [item for item in sequence if item[1].get("manipulation_contact_episode_supported") is True]
         if episode_frames:
             for frame_idx, switch in episode_frames:
+                eligible_episode_factor = bool(episode_persistence_factor_eligible(switch))
+                switch["manipulation_contact_episode_persistence_factor_eligible"] = bool(eligible_episode_factor)
+                if not eligible_episode_factor:
+                    continue
                 terms = per_frame_terms[frame_idx]
                 episode_var = {
                     "variable_id": str(switch.get("manipulation_contact_episode_id")),
                     "contact_switch_variable_id": variable_id,
                     "hand_side": switch.get("hand_side"),
                     "object_id": switch.get("object_id"),
-                    "estimate": True,
+                    "estimate": None,
+                    "state_role": "persistence_factor_observation_not_solved_contact_variable",
                     "frame_idx": int(frame_idx),
                     "frame_role": switch.get("manipulation_contact_episode_frame_role"),
                     "support_state": switch.get("manipulation_contact_episode_support_state"),
@@ -4605,7 +6523,11 @@ def solve_v18_factor_graph(
                     "anchor_frame_indices": switch.get("manipulation_contact_episode_anchor_frame_indices"),
                     "nearest_anchor_frame_distance": switch.get("manipulation_contact_episode_nearest_anchor_frame_distance"),
                     "max_nearest_anchor_distance_frames": switch.get("manipulation_contact_episode_max_nearest_anchor_distance_frames"),
-                    "scope": "per_frame_physical_contact_episode_state_not_render_count_not_object_geometry_completion",
+                    "prev_anchor_frame_distance": switch.get("manipulation_contact_episode_prev_anchor_frame_distance"),
+                    "next_anchor_frame_distance": switch.get("manipulation_contact_episode_next_anchor_frame_distance"),
+                    "bracketed_by_anchors": switch.get("manipulation_contact_episode_bracketed_by_anchors"),
+                    "persistence_factor_eligible": True,
+                    "scope": "per_frame_contact_persistence_factor_not_solved_contact_variable_not_render_count_not_object_geometry_completion",
                 }
                 terms["variables"]["contact_episode"].append(episode_var)
                 terms["factor_counts"]["contact_episode_persistence"] += 1
@@ -4616,7 +6538,8 @@ def solve_v18_factor_graph(
         off_costs: list[float] = []
         on_costs: list[float] = []
         for _, switch in sequence:
-            episode_supported = switch.get("manipulation_contact_episode_supported") is True
+            episode_supported = bool(episode_persistence_factor_eligible(switch))
+            switch["manipulation_contact_episode_persistence_factor_eligible"] = bool(episode_supported)
             off_energy = finite_float(switch.get("off_energy"), 0.0)
             if episode_supported:
                 off_energy += finite_float(switch.get("manipulation_contact_episode_off_penalty"), 0.0)
@@ -4624,13 +6547,20 @@ def solve_v18_factor_graph(
             on_energy = finite_float(switch.get("on_energy"), 0.0)
             if episode_supported:
                 on_energy = min(on_energy, finite_float(switch.get("manipulation_contact_episode_on_energy"), on_energy))
-            if switch.get("nonpenetration_conflict") is True:
-                on_energy += 1e6
-            if switch.get("support_gate_allows_active_contact") is not True:
-                on_energy += 1e6
-            if switch.get("physical_contact_claim_supported") is not True and not episode_supported:
-                on_energy += 1e6
-            if switch.get("depth_conflict_blocks_active_contact") is True and not episode_supported:
+            raw_depth_conflict = raw_depth_conflict_blocks_contact(switch)
+            depth_explained_by_episode = bool(raw_depth_conflict and episode_supported and occluded_contact_patch_explained_by_independent_evidence(switch))
+            depth_explained_by_local_deformable = bool(raw_depth_conflict and switch.get("local_deformable_patch_explains_depth_conflict") is True)
+            contact_admissible = bool(
+                switch.get("nonpenetration_conflict") is not True
+                and switch.get("support_gate_allows_active_contact") is True
+                and (switch.get("physical_contact_claim_supported") is True or episode_supported or switch.get("local_deformable_patch_explains_depth_conflict") is True)
+                and (not raw_depth_conflict or depth_explained_by_episode or depth_explained_by_local_deformable)
+            )
+            switch["contact_switch_dp_admissible"] = bool(contact_admissible)
+            switch["contact_switch_dp_raw_depth_conflict_blocks_contact"] = bool(raw_depth_conflict)
+            switch["contact_switch_dp_depth_explained_by_episode"] = bool(depth_explained_by_episode)
+            switch["contact_switch_dp_depth_explained_by_local_deformable_patch"] = bool(depth_explained_by_local_deformable)
+            if not contact_admissible:
                 on_energy += 1e6
             on_costs.append(on_energy)
         dp_off = [off_costs[0]]
@@ -4671,14 +6601,20 @@ def solve_v18_factor_graph(
             if i > 0 and isinstance(frame_gap, int) and transition_applied and prev_state is not None and prev_state != state:
                 temporal_energy = contact_temporal_switch_penalty / float(max(1, frame_gap))
                 contact_temporal_switch_count += 1
-            episode_supported = switch.get("manipulation_contact_episode_supported") is True
+            episode_supported = bool(episode_persistence_factor_eligible(switch))
+            switch["manipulation_contact_episode_persistence_factor_eligible"] = bool(episode_supported)
             chosen_on_energy = finite_float(switch.get("on_energy"), 0.0)
             if episode_supported:
                 chosen_on_energy = min(chosen_on_energy, finite_float(switch.get("manipulation_contact_episode_on_energy"), chosen_on_energy))
             chosen_off_energy = finite_float(switch.get("off_energy"), 0.0)
             if episode_supported:
                 chosen_off_energy += finite_float(switch.get("manipulation_contact_episode_off_penalty"), 0.0)
-            switch["estimate"] = bool(state and switch.get("nonpenetration_conflict") is not True and switch.get("support_gate_allows_active_contact") is True and (switch.get("physical_contact_claim_supported") is True or episode_supported) and (switch.get("depth_conflict_blocks_active_contact") is not True or episode_supported))
+            raw_depth_conflict = raw_depth_conflict_blocks_contact(switch)
+            depth_explained_by_episode = bool(raw_depth_conflict and episode_supported and occluded_contact_patch_explained_by_independent_evidence(switch))
+            depth_explained_by_local_deformable = bool(raw_depth_conflict and switch.get("local_deformable_patch_explains_depth_conflict") is True)
+            contact_admissible = bool(switch.get("contact_switch_dp_admissible") is True)
+            switch["estimate"] = bool(state and contact_admissible)
+            switch["contact_switch_dp_final_state_without_posthoc_clipping"] = bool(switch["estimate"] == state or not state)
             chosen_energy = chosen_on_energy if switch["estimate"] else chosen_off_energy
             switch["chosen_energy"] = chosen_energy
             switch["temporal_contact_variable_id"] = variable_id
@@ -4704,6 +6640,20 @@ def solve_v18_factor_graph(
             if switch.get("estimate") is True:
                 active_contact_count += 1
                 obj = object_lookup_by_frame.get(frame_idx, {}).get(str(switch.get("object_id")))
+                local_patch = local_rigid_visible_surface_contact_patch_state(frame_idx, switch, obj)
+                if local_patch is not None:
+                    terms["variables"]["local_rigid_visible_contact_patch"].append(local_patch)
+                    terms["factor_counts"]["local_rigid_visible_surface_contact_patch"] += 1
+                    factor_counts["local_rigid_visible_surface_contact_patch"] += 1
+                    variable_counts["local_rigid_visible_contact_patch"] += 1
+                    residual = finite_float(local_patch.get("contact_residual_m"), 0.0)
+                    max_residual = finite_float(local_patch.get("max_contact_residual_m"), LOCAL_RIGID_VISIBLE_CONTACT_MAX_DISTANCE_M)
+                    residual_energy = max(0.0, residual / max(max_residual, 1e-6)) ** 2
+                    terms["factor_energy_initial"]["local_rigid_visible_surface_contact_patch"] += residual_energy
+                    terms["factor_energy_after"]["local_rigid_visible_surface_contact_patch"] += residual_energy
+                    energy_initial_total += residual_energy
+                    energy_after_total += residual_energy
+                    switch["local_rigid_visible_contact_patch_variable_id"] = local_patch.get("variable_id")
                 for patch_obs in deformable_surface_patch_observations(frame_idx, switch, obj):
                     deformable_patch_obs[str(patch_obs.get("variable_id"))].append(patch_obs)
             prev_state = bool(switch.get("estimate"))
@@ -4728,6 +6678,9 @@ def solve_v18_factor_graph(
                 "object_se3": terms["variables"]["object_se3"],
                 "part_se3": terms["variables"]["part_se3"],
                 "deformable_surface_patch": terms["variables"]["deformable_surface_patch"],
+                "local_rigid_visible_contact_patch": terms["variables"]["local_rigid_visible_contact_patch"],
+                "articulated_part_contact_patch": terms["variables"]["articulated_part_contact_patch"],
+                "rigid_occluded_contact_patch": terms["variables"]["rigid_occluded_contact_patch"],
                 "articulation_parameter": terms["variables"]["articulation_parameter"],
                 "contact_switch": contact_switches,
                 "contact_episode": terms["variables"]["contact_episode"],
@@ -4757,16 +6710,19 @@ def solve_v18_factor_graph(
         "solver": "v18_numerical_temporal_factor_graph_v1",
         "solve_pass_label": solve_pass_label,
         "contact_pose_anchor_input_count": len(contact_pose_anchor_switches),
-        "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "deformable_surface_patch", "articulation_parameter", "contact_switch", "contact_episode", "occlusion_owner"],
+        "variables_required_by_spec": ["camera_depth_correction", "hand_state", "object_se3", "part_se3", "deformable_surface_patch", "local_rigid_visible_contact_patch", "articulated_part_contact_patch", "rigid_occluded_contact_patch", "articulation_parameter", "contact_switch", "contact_episode", "occlusion_owner"],
         "implemented_variable_status": {
             "camera_depth_correction": "observed_depth_scale_correction_from_v16_object_depth_targets_with_temporal_interpolation",
             "hand_state": "HaWoR_metric_MANO_wrist_world_observation",
             "object_se3": "visible_surface_translation_plus_pca_rotvec_when_point_cloud_available_plus_stable_contact_object_pose_anchor_coupling_when_rigid_or_surface-changing-compact_and_supported",
             "part_se3": "visible_part_surface_translation_plus_pca_rotvec_when_archive_vertices_available_plus_strict_contact_part_pose_coupling_only_for_active_raw_or_accepted_owner_part_contact_proposals",
             "deformable_surface_patch": "frame_local_visible_surface_patch_state_for_solved_active_deformable_contacts_with_visible_depth_surface_and_observed_hawor_mano_anchor_not_whole_object_pose",
+            "local_rigid_visible_contact_patch": "time_indexed_local_rigid_visible_surface_contact_manifold_state_for_active_rigid_contacts_with_hand_excluded_object_depth_not_whole_object_pose",
+            "articulated_part_contact_patch": "time_indexed_part_scoped_contact_state_for_articulated_or_part_required_objects_records_supported_or_missing_part_state_without_parent_object_pose_shortcut",
+            "rigid_occluded_contact_patch": "bounded_hidden_rigid_contact_patch_feasibility_state_from_raw_depth_gap_and_posed_object_camera_depth_interval_not_a_contact_label",
             "articulation_parameter": "visible_part_relative_center_distance_coordinate_only",
-            "contact_switch": "discrete_energy_from_overlap_depth_mesh_distance_contact_owner_graph_explicit_local_nonpenetration_and_stable_contact_pose_anchor_direct_support_or_episode_support_gate",
-            "contact_episode": "directly_anchored_temporal_manipulation_contact_episode_state_for_contact_persistence_not_geometry_completion",
+            "contact_switch": "discrete_posterior_contact_mode_C_t_from_overlap_depth_mesh_distance_contact_owner_graph_local_nonpenetration_pose_anchor_emissions_and_episode_persistence_factors",
+            "contact_episode": "directly_anchored_temporal_manipulation_persistence_factor_observation_not_solved_contact_variable_not_geometry_completion",
             "occlusion_owner": "discrete_energy_over_owner_candidates_with_box_mesh_depth_temporal_evidence",
         },
         "implemented_factor_families": [
@@ -4776,10 +6732,13 @@ def solve_v18_factor_graph(
             "visible_part_surface_pose_observation_residual",
             "adjacent_frame_temporal_consistency",
             "articulation_visible_coordinate_residual",
-            "contact_overlap_depth_mesh_distance_owner_graph_energy_with_direct_or_episode_physical_contact_support_gate",
+            "contact_overlap_depth_mesh_distance_owner_graph_energy_with_direct_emissions_and_episode_persistence_factor_not_episode_label_contact_gate",
             "contact_object_pose_anchor_factor_for_rigid_supported_mano_object_surface_proposals",
             "contact_part_pose_anchor_factor_for_active_raw_or_accepted_owner_observed_mano_to_depth_fused_part_mesh_proposals",
             "deformable_surface_patch_factor_for_active_observed_mano_to_visible_deformable_surface_contacts",
+            "local_rigid_visible_surface_contact_patch_factor_for_active_observed_mano_to_visible_rigid_surface_contacts_without_object_pose_coupling",
+            "articulated_part_contact_patch_factor_for_part_required_contacts_or_missing_part_state_uncertainty",
+            "rigid_occluded_contact_patch_depth_interval_factor_for_strong_raw_depth_conflict_feasibility",
             "contact_local_nonpenetration_factor_from_signed_normal_and_nearest_triangle_evidence",
             "contact_switch_temporal_continuity_factor",
             "contact_episode_persistence_factor_from_direct_anchor_and_continuous_manipulation_evidence",
@@ -4789,7 +6748,7 @@ def solve_v18_factor_graph(
             "camera_depth_correction_is_scale_only_from_v16_object_depth_targets_not_new_slam_or_dense_depth_refit",
             "object_mask_depth_registration_residual_uses_visible_surface_geometry_registration_and_contact_object_coupling_for_eligible_rigid_contacts",
             "part_SE3_uses_visible_surface_PCA_geometry_with_contact_part_pose_coupling_only_when_active_raw_or_accepted_owner_contact_proposals_exist_and_occlusion_uncertainty_remains",
-            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_as_veto_diagnostic_not_pose_motion_and_blocks_active_claims_without_direct_support_or_episode_support",
+            "contact_nonpenetration_uses_signed_normal_nearest_triangle_metric_distance_as_veto_diagnostic_not_pose_motion_and_blocks_active_claims_without_direct_emission_or_eligible_episode_persistence_factor",
             "occlusion_depth_order_owner_energy_does_not_accept_new_owners_without_source_depth_evidence",
         ],
         "variable_counts": dict(sorted(variable_counts.items())),
@@ -4844,6 +6803,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
     global_part_track_labels_by_object = load_global_part_track_labels(args.part_object_blocker_manifest_root / case / "v18_part_object_blocker_manifest_report.json")
     mesh_contact_index = load_mesh_contact_evidence_index(args.mesh_contact_evidence_root / case / "v18_mesh_contact_evidence_report.json")
     contact_owner_index = load_contact_ownership_graph_index(args.contact_ownership_graph_root / case / "v18_contact_ownership_graph_report.json")
+    pairwise_depth_gap_index = load_pairwise_contact_depth_gap_index(args.pairwise_contact_depth_gap_root / case / "v17_pairwise_contact_depth_gap.json")
     signed_nonpenetration_index = load_signed_nonpenetration_index(args.signed_nonpenetration_root / case / "v18_signed_nonpenetration_evidence_report.json")
     triangle_nonpenetration_index = load_triangle_nonpenetration_index(args.triangle_nonpenetration_root / case / "v18_triangle_nonpenetration_evidence_report.json")
     occlusion_mesh_index = load_occlusion_mesh_owner_evidence_index(args.occlusion_mesh_owner_evidence_root / case / "v18_occlusion_mesh_owner_evidence_report.json")
@@ -4987,6 +6947,9 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                 geom = weak_visible_geometry_from_mask_depth(frame_idx, object_id, obj, v16_frame, weak_visible_depth_source)
                 if geom is not None:
                     module_counts["weak_visible_depth_pose_candidate_rows"] += 1
+            physical_schema = physical_schema_by_object.get(object_id)
+            if not isinstance(physical_schema, dict):
+                raise RuntimeError(f"{case}: missing physical_state_schema for {object_id}")
             parts_raw = part_index.get((frame_idx, object_id), [])
             parts: list[dict[str, Any]] = []
             for raw_part in parts_raw:
@@ -5016,8 +6979,19 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     row = dict(raw_contact)
                     row["object_id"] = object_id
                     contact_key = (frame_idx, str(row.get("hand_side")), object_id)
-                    hyp = contact_hypothesis(row, mesh_contact_index.get(contact_key), contact_owner_index.get(contact_key), signed_nonpenetration_index.get(contact_key), triangle_nonpenetration_index.get(contact_key))
                     hand_final = hands_by_side_final.get(str(row.get("hand_side")), {})
+                    current_pairwise_depth = current_hand_pairwise_depth_observation(
+                        frame_idx=frame_idx,
+                        hand_side=str(row.get("hand_side")),
+                        object_id=object_id,
+                        hand=hand_final,
+                        obj=obj,
+                        depth_source=weak_visible_depth_source,
+                        legacy_pairwise_depth=pairwise_depth_gap_index.get(contact_key),
+                    )
+                    signed_np = signed_nonpenetration_index.get(contact_key)
+                    triangle_np = triangle_nonpenetration_index.get(contact_key)
+                    hyp = contact_hypothesis(row, mesh_contact_index.get(contact_key), contact_owner_index.get(contact_key), signed_np, triangle_np, current_pairwise_depth)
                     metric_state = hand_final.get("metric_mano_state") if isinstance(hand_final.get("metric_mano_state"), dict) else {}
                     hand_sample = np.asarray(metric_state.get("vertices_world_sample_m", []), dtype=np.float64)
                     obj_sample = np.asarray(geom.get("world_vertices_sample_m", []) if isinstance(geom, dict) else [], dtype=np.float64)
@@ -5041,19 +7015,83 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                             "contact_switch_observation": "near" if sample_distance <= 0.05 else "separated",
                             "nonpenetration_observation": "open_surface_sample_distance_observation",
                         }
+                    accepted_labels = sorted(global_part_track_labels_by_object.get(object_id, []))
+                    dominant_text_supported, dominant_part_token = dominant_visible_part_text_supported(physical_schema, accepted_labels)
+                    current_part_labels = {str(part.get("part_track_label")) for part in parts if isinstance(part, dict) and part.get("part_track_label")}
+                    hand_depth_scale_status = str(metric_state.get("hawor_to_v18_depth_scale_status") or "missing_depth_scale_metadata")
+                    hand_depth_scale_sample_count = int(finite_float(metric_state.get("hawor_to_v18_depth_scale_sample_count"), 0.0))
+                    hand_depth_scale_supported = bool(hand_depth_scale_status == "depth_scaled_from_projected_hawor_vertices_to_unidepth" and hand_depth_scale_sample_count >= 40)
+                    bbox_visual_coverage = bbox_min_coverage(hand_final.get("bbox_xyxy"), obj.get("bbox_xyxy"))
+                    dominant_visual_supported = bool(
+                        physical_schema.get("requires_part_or_relative_motion_model") is True
+                        and dominant_text_supported
+                        and len(accepted_labels) == 1
+                        and accepted_labels[0] not in current_part_labels
+                        and sample_distance is not None
+                        and sample_distance <= ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M
+                        and current_pairwise_depth.get("metric_depth_compatible_candidate") is True
+                        and current_pairwise_depth.get("object_depth_excludes_projected_hand_footprint") is True
+                        and support_state == "observed_same_frame_detection"
+                        and hand_depth_scale_supported
+                        and contact_nonpenetration_conflict(signed_np, triangle_np) is not True
+                        and bbox_visual_coverage >= 0.2
+                    )
+                    if isinstance(hyp.get("evidence"), dict):
+                        hyp["evidence"]["dominant_visible_part_visual_association"] = {
+                            "method": "model_schema_caption_bbox_visual_association_for_dominant_part_surface",
+                            "supported": bool(dominant_visual_supported),
+                            "part_track_label": accepted_labels[0] if len(accepted_labels) == 1 else None,
+                            "part_token": dominant_part_token,
+                            "dominant_part_text_supported": bool(dominant_text_supported),
+                            "bbox_min_coverage": float(bbox_visual_coverage),
+                            "min_required_bbox_coverage": 0.2,
+                            "metric_contact_distance_m": float(sample_distance) if sample_distance is not None else None,
+                            "max_metric_contact_distance_m": float(ARTICULATED_PART_LOCAL_CONTACT_MAX_DISTANCE_M),
+                            "hand_support_state": support_state,
+                            "hand_depth_scale_supported": bool(hand_depth_scale_supported),
+                            "hand_depth_scale_status": hand_depth_scale_status,
+                            "hand_depth_scale_sample_count": hand_depth_scale_sample_count,
+                            "hand_footprint_excluded_object_depth_state": current_pairwise_depth.get("depth_gap_state"),
+                            "object_depth_excludes_projected_hand_footprint": bool(current_pairwise_depth.get("object_depth_excludes_projected_hand_footprint") is True),
+                            "nonpenetration_conflict": bool(contact_nonpenetration_conflict(signed_np, triangle_np)),
+                            "source_physical_notes": physical_schema.get("physical_notes"),
+                            "source_structured_vlm_evidence": physical_schema.get("structured_vlm_evidence"),
+                            "scope": "visual_association_factor_for_part_scoped_dominant_visible_surface_contact_not_parent_object_contact_not_owner_or_proximity_only",
+                        }
                     contact_hypotheses.append(hyp)
                     object_contacts.append(hyp)
+            dominant_part = dominant_visible_part_surface_candidate(
+                frame_idx=frame_idx,
+                frame_camera=v16_frame.get("camera", {}) if isinstance(v16_frame.get("camera"), dict) else {},
+                obj=obj,
+                geom=geom,
+                physical_schema=physical_schema,
+                accepted_global_labels=sorted(global_part_track_labels_by_object.get(object_id, [])),
+                current_parts=parts,
+                needed_for_contact_candidate=dominant_visible_part_surface_contact_candidate_needed(object_contacts),
+            )
+            if dominant_part is not None:
+                parts.append(dominant_part)
+                module_counts["dominant_visible_part_surface_state_rows"] += 1
             confidence = "low" if geom is not None else "very_low" if obj.get("visibility_state") == "visible" else "unknown"
             confidence_counts[f"object_{confidence}"] += 1
-            physical_state_label = str(obj.get("model_physical_state_type") or "unknown")
+            physical_state_label = str(physical_schema.get("model_physical_state_type") or "unknown")
+            if physical_state_label == "unknown":
+                raise RuntimeError(f"{case}: physical_state_schema for {object_id} has unknown model_physical_state_type")
             physical_state_decision = {
                 "decision": physical_state_label,
-                "source": "VLM_physical_state_schema_plus_geometry_residual_evidence_consumed_by_final_pipeline",
+                "source": str(physical_schema.get("physical_state_source") or "physical_state_schema"),
                 "model_physical_state_type": physical_state_label,
+                "pose_model_allowed_by_structured_vlm": physical_schema.get("pose_model_allowed_by_structured_vlm"),
+                "geometry_changes": physical_schema.get("geometry_changes"),
+                "surface_appearance_changes": physical_schema.get("surface_appearance_changes"),
+                "secondary_deformable_or_surface_component": physical_schema.get("secondary_deformable_or_surface_component"),
+                "requires_part_or_relative_motion_model": physical_schema.get("requires_part_or_relative_motion_model"),
                 "visibility_state": obj.get("visibility_state"),
                 "visible_geometry_evidence_present": geom is not None,
                 "visible_geometry_vertex_count": geom.get("vertex_count") if isinstance(geom, dict) else 0,
                 "part_surface_observation_count": len(parts),
+                "accepted_global_part_track_labels": sorted(global_part_track_labels_by_object.get(object_id, [])),
                 "object_se3_observation_present": bool(pose.get("translation_world_m")),
                 "hidden_geometry_method": completion.get("method") if isinstance(completion, dict) else None,
                 "residual_tests_consumed": [
@@ -5071,7 +7109,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "visibility_state": obj.get("visibility_state"),
                     "physical_state_label": physical_state_label,
                     "physical_state_decision": physical_state_decision,
-                    "physical_state_schema": physical_schema_by_object.get(object_id),
+                    "physical_state_schema": physical_schema,
                     "bbox_xyxy": obj.get("bbox_xyxy"),
                     "mask_path": obj.get("mask_path"),
                     "renderable_mask": obj.get("renderable_mask"),
@@ -5079,6 +7117,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
                     "hidden_geometry_candidate": completion,
                     "object_se3_observation": pose,
                     "parts": parts,
+                    "accepted_global_part_track_labels": sorted(global_part_track_labels_by_object.get(object_id, [])),
                     "part_pose_candidate_count": len(parts),
                     "contact_hypotheses": object_contacts,
                     "occlusion_owner_hypothesis": {
@@ -5147,7 +7186,8 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
         part_structured_object_pose_counts = attach_part_structured_object_pose_state(frames, global_part_track_labels_by_object)
         object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
-        contact_physical_mode_counts = attach_contact_physical_modes(frames, set(contact_pose_anchor_switches.keys()), set(contact_pose_anchor_switches.keys()))
+        contact_physical_mode_counts = attach_contact_physical_modes(frames, set(contact_pose_anchor_switches.keys()), set(contact_pose_anchor_switches.keys()), require_emitted_coupling_for_active=False)
+        contact_hypothesis_propagation_counts = propagate_final_contact_modes_to_hypotheses(frames)
         physical_contact_state_report = summarize_physical_contact_states(frames)
         next_contact_pose_anchor_switches = extract_solved_contact_pose_anchor_switches(frames)
         contact_pose_anchor_output_maps.append(next_contact_pose_anchor_switches)
@@ -5210,7 +7250,8 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         frame_local_part_pose_graph_counts = attach_frame_local_part_pose_validation(frames, part_pose_validation_summary, use_graph_estimate=True)
         part_structured_object_pose_counts = attach_part_structured_object_pose_state(frames, global_part_track_labels_by_object)
         object_pose_validation_counts = attach_object_depth_silhouette_pose_validation(frames)
-        contact_physical_mode_counts = attach_contact_physical_modes(frames, set(stable_contact_pose_anchor_switches.keys()), set(stable_contact_pose_anchor_switches.keys()))
+        contact_physical_mode_counts = attach_contact_physical_modes(frames, set(stable_contact_pose_anchor_switches.keys()), set(stable_contact_pose_anchor_switches.keys()), require_emitted_coupling_for_active=False)
+        contact_hypothesis_propagation_counts = propagate_final_contact_modes_to_hypotheses(frames)
         physical_contact_state_report = summarize_physical_contact_states(frames)
         final_output_anchor_switches = extract_solved_contact_pose_anchor_switches(frames)
         contact_pose_anchor_history.append(
@@ -5228,6 +7269,7 @@ def build_case_annotations(case: str, args: argparse.Namespace) -> dict[str, Any
         )
     emitted_contact_pose_factor_keys = extract_emitted_contact_pose_factor_keys(frames)
     contact_physical_mode_counts = attach_contact_physical_modes(frames, emitted_contact_pose_factor_keys, set(stable_contact_pose_anchor_switches.keys()))
+    contact_hypothesis_propagation_counts = propagate_final_contact_modes_to_hypotheses(frames)
     physical_contact_state_report = summarize_physical_contact_states(frames)
     factor_graph_summary["frame_local_part_pose_graph_counts"] = dict(sorted(frame_local_part_pose_graph_counts.items()))
     factor_graph_summary["contact_physical_mode_counts"] = dict(sorted(contact_physical_mode_counts.items()))
@@ -5493,11 +7535,58 @@ def hand_render_style(hand: dict[str, Any]) -> tuple[tuple[int, int, int], str, 
     return ((170, 170, 170), state, 2)
 
 
+def compact_rigid_mano_update_render_style(hand: dict[str, Any]) -> tuple[tuple[int, int, int], str, str] | None:
+    update = hand.get("compact_rigid_object_mano_constraint_update")
+    if not isinstance(update, dict):
+        metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+        update = metric.get("compact_rigid_object_constraint_update") if isinstance(metric.get("compact_rigid_object_constraint_update"), dict) else None
+    if not isinstance(update, dict):
+        return None
+    state = str(update.get("h_prime_state") or "")
+    obj_constraint = update.get("object_constraint") if isinstance(update.get("object_constraint"), dict) else {}
+    near = obj_constraint.get("near_surface_vertex_count")
+    if state == "compact_rigid_object_nonpenetration_corrected":
+        return (80, 255, 255), f"MANO H' corrected by compact object near={near}", "corrected"
+    if state == "candidate_coordinate_correction_requires_visible_2d_review":
+        return (255, 80, 40), f"MANO correction candidate from compact object near={near}", "candidate"
+    if state == "unchanged_with_compact_rigid_object_overlap_uncertainty":
+        return (255, 220, 60), f"MANO object-constraint uncertainty near={near}", "uncertainty"
+    return None
+
+
+def object_display_label(obj: dict[str, Any]) -> str:
+    name = str(obj.get("name") or obj.get("object_id") or "object")
+    physical_state = obj.get("physical_state_label")
+    if physical_state is None and isinstance(obj.get("physical_state_decision"), dict):
+        physical_state = obj["physical_state_decision"].get("decision")
+    schema = obj.get("physical_state_schema") if isinstance(obj.get("physical_state_schema"), dict) else {}
+    role = "separate object track"
+    if str(obj.get("object_id")) == "object:obj_tomato":
+        role = "main object track"
+    elif str(obj.get("object_id")) == "object:obj_tomato_peel":
+        role = "separate peel track"
+    if schema.get("secondary_deformable_or_surface_component") is True:
+        role = "object with attached deformable component"
+    return f"{role}: {name} | state: {physical_state}"
+
+
+def temporal_only_contact_state(switch: dict[str, Any]) -> bool:
+    mode = str(switch.get("physical_contact_mode") or "")
+    paths = switch.get("physical_contact_mode_support_paths") if isinstance(switch.get("physical_contact_mode_support_paths"), list) else []
+    return bool(
+        mode == "active_physical_contact"
+        and "rigid_temporal_contact_episode_state" in paths
+        and switch.get("post_graph_direct_visible_or_validated_near_support") is not True
+        and switch.get("post_graph_solved_pose_contact_supported") is not True
+        and switch.get("post_graph_direct_deformable_patch_contact_supported") is not True
+    )
+
+
 def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], str, int, bool, str] | None:
     mode = str(switch.get("physical_contact_mode") or "")
     if mode == "active_physical_contact":
-        if switch.get("post_graph_manipulation_episode_support") is True and switch.get("post_graph_direct_visible_or_validated_near_support") is not True:
-            return (255, 255, 80), "active contact episode", 2, True, "contact_lines"
+        if temporal_only_contact_state(switch):
+            return (255, 255, 80), "latent temporal contact state", 2, True, "contact_temporal_state_labels"
         return (255, 255, 80), "active physical contact", 2, False, "contact_lines"
     if mode == "depth_occluded_contact_possible" and switch.get("physical_contact_mode_renderable") is True:
         return (80, 220, 255), "depth-occluded contact possible", 2, True, "contact_depth_occluded_possible_lines"
@@ -5505,6 +7594,8 @@ def contact_render_style(switch: dict[str, Any]) -> tuple[tuple[int, int, int], 
         return (255, 170, 80), "supported near non-contact", 2, True, "contact_supported_near_noncontact_lines"
     if mode == "contact_episode_hypothesis_nonactive" and switch.get("physical_contact_mode_renderable") is True:
         return (120, 220, 255), "episode contact hypothesis", 1, True, "contact_episode_hypothesis_lines"
+    if mode == "articulated_part_contact_unresolved" and switch.get("physical_contact_mode_renderable") is True:
+        return (220, 140, 255), "part contact unresolved", 1, True, "contact_part_unresolved_labels"
     return None
 
 
@@ -5567,11 +7658,8 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
             box = bbox_tuple(draw_bbox)
             if box:
                 draw.rectangle(box, outline=rgb, width=3)
-                physical_state = obj.get('physical_state_label')
-                if physical_state is None and isinstance(obj.get('physical_state_decision'), dict):
-                    physical_state = obj['physical_state_decision'].get('decision')
-                label = f"{obj.get('name')} | {physical_state} | {obj.get('confidence')} approx"
-                draw_label(draw, (box[0], max(44, box[1] - 22)), label[:115], small, rgb)
+                label = object_display_label(obj)
+                draw_label(draw, (box[0], max(44, box[1] - 22)), label[:140], small, rgb)
                 recon = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
                 if recon.get("renderable_pose_geometry") is True:
                     mesh_color, mesh_text, mesh_state = object_pose_render_style(obj, recon)
@@ -5604,6 +7692,12 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
             if box:
                 draw.rectangle(box, outline=color, width=max(2, line_width))
                 draw_label(draw, (box[0], max(44, box[1] - 22)), f"{hand.get('hand_side')} HaWoR {support_label} w={support_weight:.2f}", small, color)
+                update_style = compact_rigid_mano_update_render_style(hand)
+                if update_style is not None:
+                    update_color, update_label, update_state = update_style
+                    draw.rectangle((box[0] - 5, box[1] - 5, box[2] + 5, box[3] + 5), outline=update_color, width=3)
+                    draw_label(draw, (box[0], min(image.size[1] - 72, box[3] + 8)), update_label[:110], small, update_color, (0, 0, 0))
+                    counts[f"compact_rigid_mano_update_{update_state}"] += 1
                 counts[f"hand_boxes_{support_label}"] += 1
             pts = project_mano_joints(require_dict(hand.get("mano_candidate", {}), "mano candidate"), source_w, source_h, float(image.size[0]), float(image.size[1]))
             if len(pts) >= 21:
@@ -5613,6 +7707,17 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
                 for px, py in pts:
                     draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=color)
                 counts[f"hand_mano_skeletons_{support_label}"] += 1
+            update = hand.get("compact_rigid_object_mano_constraint_update") if isinstance(hand.get("compact_rigid_object_mano_constraint_update"), dict) else {}
+            metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+            if (update.get("coordinate_update_applied") is True or metric_state.get("compact_rigid_object_corrected_h_prime") is True) and isinstance(metric_state, dict):
+                metric_pts = project_metric_mano_joints(metric_state, float(image.size[0]), float(image.size[1]))
+                if len(metric_pts) >= 21:
+                    correction_color = (80, 255, 255)
+                    for a, b in HAND_EDGES:
+                        draw.line((metric_pts[a][0], metric_pts[a][1], metric_pts[b][0], metric_pts[b][1]), fill=correction_color, width=max(3, line_width + 1))
+                    for px, py in metric_pts:
+                        draw.ellipse((px - 4, py - 4, px + 4, py + 4), outline=correction_color, width=2)
+                    counts["hand_metric_hprime_corrected_skeletons"] += 1
         # Draw occlusion-owner evidence and contact lines from final hand/object/graph state.
         raw_video = require_dict(ann.get("raw_video", {}), "raw_video")
         source_w = finite_float(raw_video.get("width"), float(image.size[0]))
@@ -5690,6 +7795,11 @@ def render_overlay(case: str, ann: dict[str, Any], args: argparse.Namespace) -> 
             hc = hand_centers.get(str(switch.get("hand_side")))
             oc = object_centers.get(str(switch.get("object_id")))
             if hc and oc:
+                if temporal_only_contact_state(switch):
+                    draw.ellipse((hc[0] - 14, hc[1] - 14, hc[0] + 14, hc[1] + 14), outline=color, width=width)
+                    draw_label(draw, (int(hc[0]) + 16, int(hc[1]) - 18), label, small, color, (0, 0, 0))
+                    counts[count_key] += 1
+                    continue
                 if dashed:
                     draw_segmented_line(draw, hc, oc, fill=color, width=width)
                 else:
@@ -5772,7 +7882,7 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                     draw_label(draw, (part_anchor[0] + 8, part_anchor[1] + 8), part_label, small, part_color, (18, 20, 25))
                     counts[f"world_part_reconstructed_mesh_footprints_{part_state}"] += 1
                     part_mesh_drawn += 1
-            draw_label(draw, (pt[0]+10, pt[1]-10), str(obj.get("name"))[:36], small, color, (18, 20, 25))
+            draw_label(draw, (pt[0]+10, pt[1]-10), object_display_label(obj)[:64], small, color, (18, 20, 25))
             counts["world_objects"] += 1
         hand_points: dict[str, tuple[int, int]] = {}
         for hand in frame.get("hands", []):
@@ -5789,6 +7899,12 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
             radius = 9 if support_label == "observed" else 7
             draw.rectangle((x-radius, y-radius, x+radius, y+radius), fill=color)
             draw_label(draw, (x+10, y-10), f"{side} {support_label}", small, color, (18, 20, 25))
+            update_style = compact_rigid_mano_update_render_style(hand)
+            if update_style is not None:
+                update_color, update_label, update_state = update_style
+                draw.ellipse((x - radius - 8, y - radius - 8, x + radius + 8, y + radius + 8), outline=update_color, width=3)
+                draw_label(draw, (x + 10, y + 14), update_label[:70], small, update_color, (18, 20, 25))
+                counts[f"world_compact_rigid_mano_update_{update_state}"] += 1
             counts[f"world_hands_{support_label}"] += 1
         fg = require_dict(frame.get("factor_graph_solution"), "factor graph")
         vars_raw = fg.get("variables") if isinstance(fg.get("variables"), dict) else {}
@@ -5812,15 +7928,15 @@ def render_world(case: str, ann: dict[str, Any], args: argparse.Namespace) -> di
                 continue
             color, _label, width, dashed, count_key = style
             mode = str(switch.get("physical_contact_mode") or "")
-            episode_only = bool(mode == "active_physical_contact" and switch.get("post_graph_manipulation_episode_support") is True and switch.get("post_graph_direct_visible_or_validated_near_support") is not True)
+            episode_only = temporal_only_contact_state(switch)
             if episode_only:
                 hp_episode = hand_points.get(str(switch.get("hand_side")))
-                op_episode = object_points.get(str(switch.get("object_id")))
-                if hp_episode is not None and op_episode is not None:
-                    draw_segmented_line(draw, hp_episode, op_episode, fill=color, width=width)
-                    counts["world_contact_episode_state_edges"] += 1
+                if hp_episode is not None:
+                    draw.ellipse((hp_episode[0] - 12, hp_episode[1] - 12, hp_episode[0] + 12, hp_episode[1] + 12), outline=color, width=width)
+                    draw_label(draw, (hp_episode[0] + 14, hp_episode[1] - 18), "latent C_t", small, color, (18, 20, 25))
+                    counts["world_contact_temporal_state_labels"] += 1
                 else:
-                    counts["world_contact_episode_state_missing_anchors"] += 1
+                    counts["world_contact_temporal_state_missing_hand_anchor"] += 1
                 continue
             hp = None
             op = None
@@ -6032,6 +8148,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-fused-reconstruction-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_unidepth_extension/v18_depth_fused_reconstruction_complete_depth_pass2"))
     parser.add_argument("--mesh-contact-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_mesh_contact_evidence"))
     parser.add_argument("--contact-ownership-graph-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_contact_ownership_graph"))
+    parser.add_argument("--pairwise-contact-depth-gap-root", type=Path, default=Path("/data2/ego_annotation_outputs/v17_pairwise_contact_depth_gap"))
     parser.add_argument("--signed-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_signed_nonpenetration_evidence"))
     parser.add_argument("--triangle-nonpenetration-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_triangle_nonpenetration_evidence"))
     parser.add_argument("--occlusion-mesh-owner-evidence-root", type=Path, default=Path("/data2/ego_annotation_outputs/v18_occlusion_mesh_owner_evidence"))
