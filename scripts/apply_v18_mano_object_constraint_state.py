@@ -24,6 +24,15 @@ def index_constraints(report: dict[str, Any]) -> dict[tuple[int, str], dict[str,
     return out
 
 
+def full_signed_domain(row: dict[str, Any]) -> bool:
+    signed_summary = row.get("signed_distance_m") if isinstance(row.get("signed_distance_m"), dict) else {}
+    signed_count = signed_summary.get("count") if isinstance(signed_summary, dict) else None
+    hand_vertex_count = row.get("hand_vertex_count")
+    if isinstance(signed_count, (int, float)) and isinstance(hand_vertex_count, (int, float)):
+        return int(signed_count) == int(hand_vertex_count)
+    return False
+
+
 def hand_update_from_constraint(row: dict[str, Any]) -> dict[str, Any]:
     state = row.get("candidate_application_state")
     if state == "candidate_coordinate_correction_visible_2d_compatible":
@@ -38,10 +47,15 @@ def hand_update_from_constraint(row: dict[str, Any]) -> dict[str, Any]:
         uncertainty = [
             "object mesh suggests signed nonpenetration correction, but coordinate update is held because visible 2D consistency was not established"
         ]
-    elif state in {"uncertainty_only_nonwatertight_mesh_no_signed_correction", "uncertainty_sign_mesh_missing_near_surface_support", "uncertainty_signed_distance_not_evaluated_broadphase_support"}:
+    elif state in {"uncertainty_only_nonwatertight_mesh_no_signed_correction", "uncertainty_sign_mesh_missing_near_surface_support", "uncertainty_signed_distance_not_evaluated_broadphase_support"} or (state == "no_penetration_no_coordinate_change_needed" and not full_signed_domain(row)):
         h_state = "unchanged_with_compact_rigid_object_overlap_uncertainty"
         h_prime_equals_h = True
-        if state == "uncertainty_sign_mesh_missing_near_surface_support":
+        if state == "no_penetration_no_coordinate_change_needed" and not full_signed_domain(row):
+            uncertainty = [
+                "post-correction signed nonpenetration was reported only on a subset of bridge hand vertices",
+                "hand state remains HaWoR metric MANO with object-constraint uncertainty until signed inside/outside evidence covers every bridge hand vertex",
+            ]
+        elif state == "uncertainty_sign_mesh_missing_near_surface_support":
             uncertainty = [
                 "MANO vertices are within the observed object-surface band, but the watertight hidden-volume prior does not cover that region",
                 "hand state remains HaWoR metric MANO with added object-constraint uncertainty; no coordinate move is justified by this sign mesh",
@@ -75,6 +89,10 @@ def hand_update_from_constraint(row: dict[str, Any]) -> dict[str, Any]:
             "sign_mesh_source_report": row.get("sign_mesh_source_report"),
             "completed_surface_mesh_watertight": row.get("completed_surface_mesh_watertight", row.get("completed_mesh_watertight")),
             "sign_mesh_watertight": row.get("sign_mesh_watertight"),
+            "hand_vertex_count": row.get("hand_vertex_count"),
+            "signed_distance_query_scope": row.get("signed_distance_query_scope"),
+            "near_surface_gate_applied_to_signed_distance": row.get("near_surface_gate_applied_to_signed_distance"),
+            "sign_aabb_gate_applied_to_signed_distance": row.get("sign_aabb_gate_applied_to_signed_distance"),
             "observed_band_m": row.get("observed_band_m"),
             "near_surface_vertex_count": row.get("near_surface_vertex_count"),
             "near_surface_vertex_fraction": row.get("near_surface_vertex_fraction"),
@@ -82,6 +100,10 @@ def hand_update_from_constraint(row: dict[str, Any]) -> dict[str, Any]:
             "surface_aabb_candidate_vertex_fraction": row.get("surface_aabb_candidate_vertex_fraction", row.get("aabb_candidate_vertex_fraction")),
             "sign_aabb_candidate_vertex_count": row.get("sign_aabb_candidate_vertex_count"),
             "sign_aabb_candidate_vertex_fraction": row.get("sign_aabb_candidate_vertex_fraction"),
+            "outside_sign_aabb_vertex_count": row.get("outside_sign_aabb_vertex_count"),
+            "outside_sign_aabb_vertex_fraction": row.get("outside_sign_aabb_vertex_fraction"),
+            "signed_query_candidate_vertex_count": row.get("signed_query_candidate_vertex_count"),
+            "signed_query_candidate_vertex_fraction": row.get("signed_query_candidate_vertex_fraction"),
             "penetrating_vertex_count": row.get("penetrating_vertex_count"),
             "nearest_surface_unsigned_m": row.get("nearest_surface_unsigned_m"),
             "signed_distance_m": row.get("signed_distance_m"),
@@ -109,7 +131,8 @@ def add_vec_to_points(raw: Any, delta: np.ndarray) -> list[list[float]] | None:
 
 
 def frame_camera_delta(frame: dict[str, Any], delta_world: np.ndarray) -> tuple[np.ndarray | None, str]:
-    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    camera_raw = frame.get("camera")
+    camera = camera_raw if isinstance(camera_raw, dict) else {}
     transform = np.asarray(camera.get("T_world_camera_metric") or [], dtype=float)
     if transform.shape == (4, 4) and np.all(np.isfinite(transform)):
         return delta_world @ transform[:3, :3], "annotation_frame_T_world_camera_metric"
@@ -214,6 +237,11 @@ def main() -> None:
                     "nearest_surface_unsigned_m": row.get("nearest_surface_unsigned_m"),
                     "signed_distance_m": row.get("signed_distance_m"),
                     "penetrating_vertex_count": row.get("penetrating_vertex_count"),
+                    "hand_vertex_count": row.get("hand_vertex_count"),
+                    "signed_distance_query_scope": row.get("signed_distance_query_scope"),
+                    "signed_query_candidate_vertex_count": row.get("signed_query_candidate_vertex_count"),
+                    "near_surface_gate_applied_to_signed_distance": row.get("near_surface_gate_applied_to_signed_distance"),
+                    "sign_aabb_gate_applied_to_signed_distance": row.get("sign_aabb_gate_applied_to_signed_distance"),
                     "verified_no_additional_coordinate_change": True,
                 }
             hand["compact_rigid_object_mano_constraint_update"] = update

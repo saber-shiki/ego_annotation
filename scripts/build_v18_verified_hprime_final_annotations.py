@@ -12,8 +12,8 @@ import numpy as np
 
 
 DEFAULT_VERIFIED_ANNOTATIONS = {
-    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_full_bridge_v1/iter1_select/annotations_v18_full_with_verified_tomato_full_bridge_hprime.json"),
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_full_bridge_rebuild_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge/iter1_select/annotations_v18_full_with_verified_trash_full_bridge_hprime.json"),
+    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_temporal_guard_v1/task5_tomato_960/object_obj_tomato/surface806_sign929_full_bridge_all_signed_temporal_guard/iter1_select/annotations_v18_full_with_verified_tomato_full_signed_temporal_guard_hprime.json"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_temporal_guard_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge_all_signed_temporal_guard/iter1_select/annotations_v18_full_with_verified_trash_full_signed_temporal_guard_hprime.json"),
 }
 
 DOMINANT_TOKEN = "dominant_visible_part"

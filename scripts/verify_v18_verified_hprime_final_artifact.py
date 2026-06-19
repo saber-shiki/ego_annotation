@@ -31,12 +31,12 @@ EXPECTED = {
 }
 
 DEFAULT_VERIFIED = {
-    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_full_bridge_v1/iter1_select/annotations_v18_full_with_verified_tomato_full_bridge_hprime.json"),
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_full_bridge_rebuild_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge/iter1_select/annotations_v18_full_with_verified_trash_full_bridge_hprime.json"),
+    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_temporal_guard_v1/task5_tomato_960/object_obj_tomato/surface806_sign929_full_bridge_all_signed_temporal_guard/iter1_select/annotations_v18_full_with_verified_tomato_full_signed_temporal_guard_hprime.json"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_temporal_guard_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge_all_signed_temporal_guard/iter1_select/annotations_v18_full_with_verified_trash_full_signed_temporal_guard_hprime.json"),
 }
 
-DEFAULT_TASK5_REMEASURE = Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_full_bridge_v1/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json")
-DEFAULT_TRASH_REMEASURE = Path("/data2/ego_annotation_outputs/v18_trash_full_bridge_rebuild_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json")
+DEFAULT_TASK5_REMEASURE = Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_rebuild_v1/task5_tomato_960/object_obj_tomato/surface806_sign929_full_bridge_all_signed/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json")
+DEFAULT_TRASH_REMEASURE = Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_rebuild_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge_all_signed/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json")
 DOMINANT_TOKEN = "dominant_visible_part"
 POINT_METRIC_FIELDS = {
     "joints_current_v18_world_m": (21, 3),
@@ -415,8 +415,22 @@ def verify_accepted_remeasurement(case: str, corrected_keys: set[tuple[int, str]
         state = str(row.get("candidate_application_state") or "")
         states[state] = states.get(state, 0) + 1
         penetrating = row.get("penetrating_vertex_count")
-        if state != "no_penetration_no_coordinate_change_needed" or penetrating not in {0, 0.0}:
-            bad.append({"key": key, "state": state, "penetrating_vertex_count": penetrating})
+        signed_summary = as_dict(row.get("signed_distance_m"))
+        signed_count = signed_summary.get("count")
+        hand_vertex_count = row.get("hand_vertex_count")
+        signed_domain_ok = False
+        if isinstance(signed_count, (int, float)) and isinstance(hand_vertex_count, (int, float)):
+            signed_domain_ok = int(signed_count) == int(hand_vertex_count)
+        if state != "no_penetration_no_coordinate_change_needed" or penetrating not in {0, 0.0} or not signed_domain_ok:
+            bad.append({
+                "key": key,
+                "state": state,
+                "penetrating_vertex_count": penetrating,
+                "hand_vertex_count": hand_vertex_count,
+                "signed_distance_count": signed_count,
+                "signed_distance_query_scope": row.get("signed_distance_query_scope"),
+                "reason": "accepted row must post-remeasure no penetration with signed distances over every bridge hand vertex",
+            })
     if bad:
         errors.append(f"{case}: corrected H-prime rows failed signed remeasurement")
     return {
@@ -525,7 +539,7 @@ def main() -> None:
         "case_remeasure_reports": {case: (str(path) if path is not None else None) for case, path in remeasure_reports.items()},
         "trash_remeasure_report": str(args.trash_remeasure_report),
         "verified_annotations": {case: str(path) for case, path in verified_paths.items()},
-        "claim_scope": "Verifies the final artifact's consumed metric MANO H-prime/uncertainty hand states by exact key-set and coordinate matching, absence of dominant-visible-part support anywhere in consumed state, signed post-correction remeasurement for every case with accepted corrections, and full-video render frame counts.",
+        "claim_scope": "Verifies the final artifact's consumed metric MANO H-prime/uncertainty hand states by exact key-set and coordinate matching, absence of dominant-visible-part support anywhere in consumed state, signed post-correction remeasurement over every bridge hand vertex for every case with accepted corrections, and full-video render frame counts.",
     }
     write_json(args.summary, out)
     print(json.dumps(out, indent=2))

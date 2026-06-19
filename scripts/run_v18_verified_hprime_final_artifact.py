@@ -35,8 +35,8 @@ def main() -> None:
     parser.add_argument("--base-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--python", default=".venv/bin/python")
-    parser.add_argument("--task5-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_full_bridge_v1/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json"))
-    parser.add_argument("--trash-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_trash_full_bridge_rebuild_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json"))
+    parser.add_argument("--task5-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_rebuild_v1/task5_tomato_960/object_obj_tomato/surface806_sign929_full_bridge_all_signed/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json"))
+    parser.add_argument("--trash-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_full_bridge_all_signed_rebuild_v1/trash_1050/object_pink_lid_trash_can_second/frame872_full_bridge_all_signed/iter1_remeasure/v18_mano_object_constraint_state_full_bridge.json"))
     parser.add_argument("--verified-annotation", action="append", default=[], help="CASE=/path/to/verified annotations override passed to merge and verifier")
     args = parser.parse_args()
 

@@ -166,7 +166,7 @@ def main() -> None:
             near_surface = unsigned_surface_dist <= observed_band_m if observed_band_m > 0 else np.zeros(len(verts_obj), dtype=bool)
             surface_aabb = ((verts_obj >= surface_bounds_min) & (verts_obj <= surface_bounds_max)).all(axis=1)
             sign_aabb = ((verts_obj >= sign_bounds_min) & (verts_obj <= sign_bounds_max)).all(axis=1)
-            signed_query = near_surface & sign_aabb
+            signed_query = np.ones(len(verts_obj), dtype=bool)
             signed = np.full(len(verts_obj), np.nan, dtype=float)
             penetrating = np.zeros(len(verts_obj), dtype=bool)
             correction_obj = np.zeros(3, dtype=float)
@@ -226,6 +226,9 @@ def main() -> None:
                 "sign_mesh_path": str(args.sign_mesh),
                 "sign_mesh_source_report": str(args.sign_mesh_source_report),
                 "signed_distance_semantics": "positive_inside_negative_outside_zero_on_surface_open3d_raycasting_converted_from_negative_inside",
+                "signed_distance_query_scope": "all_full_bridge_hand_vertices",
+                "near_surface_gate_applied_to_signed_distance": False,
+                "sign_aabb_gate_applied_to_signed_distance": False,
                 "completed_surface_mesh_watertight": bool(surface_mesh.is_watertight),
                 "sign_mesh_watertight": bool(sign_mesh.is_watertight),
                 "hand_geometry_source": "full_bridge_vertices_current_v18_world_from_hawor_projection_relift_m",
@@ -240,6 +243,8 @@ def main() -> None:
                 "surface_aabb_candidate_vertex_fraction": float(surface_aabb.mean()),
                 "sign_aabb_candidate_vertex_count": int(sign_aabb.sum()),
                 "sign_aabb_candidate_vertex_fraction": float(sign_aabb.mean()),
+                "outside_sign_aabb_vertex_count": int((~sign_aabb).sum()),
+                "outside_sign_aabb_vertex_fraction": float((~sign_aabb).mean()),
                 "signed_query_candidate_vertex_count": int(signed_query.sum()),
                 "signed_query_candidate_vertex_fraction": float(signed_query.mean()),
                 "penetrating_vertex_count": int(penetrating.sum()),
@@ -263,7 +268,7 @@ def main() -> None:
     report = {
         "method": "build_v18_full_bridge_mano_object_constraint_state",
         "status": "ok",
-        "claim_scope": "Measures compact-rigid nonpenetration on full 778-vertex current-V18 bridge MANO surfaces, not 64-vertex annotation samples. Coordinate corrections are candidates until post-remeasured on the same full bridge surface.",
+        "claim_scope": "Measures compact-rigid nonpenetration on full current-V18 bridge MANO surfaces by signed inside/outside evaluation for every bridge hand vertex, not a near-surface subset or 64-vertex annotation sample. Coordinate corrections are candidates until post-remeasured on the same full bridge surface.",
         "inputs": {
             "annotations": str(args.annotations),
             "hawor_npz": str(args.hawor_npz),
