@@ -72,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT_PATH)
     parser.add_argument("--completed-mesh", type=Path, default=DEFAULT_COMPLETED_MESH_PLY)
     parser.add_argument("--constraint-report", type=Path, default=DEFAULT_CONSTRAINT_REPORT_PATH)
+    parser.add_argument("--temporal-mano-state", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--mesh-projection-stride", type=int, default=15)
     parser.add_argument("--world-mesh-stride", type=int, default=15)
@@ -222,6 +223,47 @@ def constraint_style(state: str) -> tuple[tuple[int, int, int], int, str]:
     return (150, 150, 150), 2, "not measured"
 
 
+def load_temporal_mano_state(path: Path | None) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any] | None]:
+    if path is None:
+        return {}, None
+    data = load_json(path)
+    mapping: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in data.get("per_frame_states", []) if isinstance(data.get("per_frame_states"), list) else []:
+        if isinstance(row, dict):
+            mapping[(int(row["frame_idx"]), str(row["hand_side"]))] = row
+    return mapping, data if isinstance(data, dict) else None
+
+
+def draw_projected_skeleton(
+    image: np.ndarray,
+    joints_camera: np.ndarray,
+    intr: tuple[float, float, float, float],
+    color: tuple[int, int, int],
+    line_width: int,
+) -> None:
+    height, width = image.shape[:2]
+    u, v, valid = project_camera_points(joints_camera, intr, width, height)
+    for a, b in HAND_EDGES:
+        if valid[a] and valid[b]:
+            cv2.line(image, (int(u[a]), int(v[a])), (int(u[b]), int(v[b])), color, line_width)
+
+
+def draw_world_skeleton(
+    image: np.ndarray,
+    joints_world: np.ndarray,
+    min_xyz: np.ndarray,
+    max_xyz: np.ndarray,
+    color: tuple[int, int, int],
+    line_width: int,
+) -> None:
+    height, width = image.shape[:2]
+    for a, b in HAND_EDGES:
+        pa = world_to_screen(joints_world[a], min_xyz, max_xyz, width, height)
+        pb = world_to_screen(joints_world[b], min_xyz, max_xyz, width, height)
+        if pa is not None and pb is not None:
+            cv2.line(image, pa, pb, color, line_width)
+
+
 def encode_video(frame_dir: Path, output_path: Path, fps: float) -> None:
     subprocess.run(
         [
@@ -280,6 +322,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     object_vertices = load_mesh_vertices(args.completed_mesh)
     poses = pose_map(pose_data)
     constraints = constraint_map(constraint_data)
+    temporal_states, temporal_report = load_temporal_mano_state(args.temporal_mano_state)
     frames = annotations.get("frames", [])
     if args.max_frames is not None:
         frames = frames[: args.max_frames]
@@ -325,35 +368,37 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             metric = hand.get("metric_mano_state") or {}
             side = str(hand.get("hand_side"))
             row = constraints.get((frame_idx, side))
+            temporal = temporal_states.get((frame_idx, side))
             state = str((row or {}).get("candidate_application_state", "not_measured"))
             color, line_width, state_label = constraint_style(state)
             penetrating = row.get("penetrating_vertex_count", "?") if row else "?"
-            label_y = 80 + hand_idx * 120
-            cv2.putText(
-                overlay,
-                f"{side} {state_label} | {state[:50]}",
-                (12, label_y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                color,
-                2,
-            )
-            cv2.putText(
-                overlay,
-                f"penetrating verts={penetrating}",
-                (12, label_y + 28),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.50,
-                color,
-                2,
-            )
+            label_y = 80 + hand_idx * 132
+            if temporal is not None:
+                temporal_state = str(temporal.get("temporal_mano_state", "interval_uncertainty"))
+                residual = (temporal.get("residual_penetration_after_translation_m") or {}).get("max")
+                text = f"{side} INTERVAL MANO UNCERTAIN | {temporal_state[:44]}"
+                text2 = f"residual={residual if residual is not None else '?'} m penverts={penetrating}"
+                text_color = (0, 180, 255)
+            else:
+                text = f"{side} {state_label} | {state[:50]}"
+                text2 = f"penetrating verts={penetrating}"
+                text_color = color
+            cv2.putText(overlay, text, (12, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, text_color, 2)
+            cv2.putText(overlay, text2, (12, label_y + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.50, text_color, 2)
             joints_camera = np.asarray(metric.get("joints_current_v18_camera_m") or [], dtype=float)
             intr = metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
             if joints_camera.shape == (21, 3) and isinstance(intr, list) and len(intr) == 4:
-                u, v, valid = project_camera_points(joints_camera, tuple(float(x) for x in intr), width, height)  # type: ignore[arg-type]
-                for a, b in HAND_EDGES:
-                    if valid[a] and valid[b]:
-                        cv2.line(overlay, (int(u[a]), int(v[a])), (int(u[b]), int(v[b])), color, line_width)
+                intr_tuple: tuple[float, float, float, float] = (float(intr[0]), float(intr[1]), float(intr[2]), float(intr[3]))
+                if temporal is not None:
+                    # Thick continuous halo: this hand is inside an interval-level uncertain state.
+                    draw_projected_skeleton(overlay, joints_camera, intr_tuple, (0, 120, 255), max(10, line_width + 6))
+                draw_projected_skeleton(overlay, joints_camera, intr_tuple, color, line_width)
+                if temporal is not None:
+                    delta_world = np.asarray(temporal.get("optimized_translation_world_m") or [], dtype=float)
+                    if delta_world.shape == (3,):
+                        delta_camera = delta_world @ T_world_camera[:3, :3]
+                        candidate_camera = joints_camera + delta_camera[None, :]
+                        draw_projected_skeleton(overlay, candidate_camera, intr_tuple, (255, 255, 0), 2)
 
         cv2.imwrite(str(overlay_dir / f"{frame_idx:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
@@ -383,14 +428,17 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             metric = hand.get("metric_mano_state") or {}
             side = str(hand.get("hand_side"))
             state = str((constraints.get((frame_idx, side)) or {}).get("candidate_application_state", "not_measured"))
+            temporal = temporal_states.get((frame_idx, side))
             color, line_width, _ = constraint_style(state)
             joints_world = np.asarray(metric.get("joints_current_v18_world_m") or [], dtype=float)
             if joints_world.shape == (21, 3):
-                for a, b in HAND_EDGES:
-                    pa = world_to_screen(joints_world[a], world_min_xyz, world_max_xyz, canvas_w, canvas_h)
-                    pb = world_to_screen(joints_world[b], world_min_xyz, world_max_xyz, canvas_w, canvas_h)
-                    if pa is not None and pb is not None:
-                        cv2.line(world, pa, pb, color, max(2, line_width - 1))
+                if temporal is not None:
+                    draw_world_skeleton(world, joints_world, world_min_xyz, world_max_xyz, (0, 120, 255), max(8, line_width + 4))
+                draw_world_skeleton(world, joints_world, world_min_xyz, world_max_xyz, color, max(2, line_width - 1))
+                if temporal is not None:
+                    delta_world = np.asarray(temporal.get("optimized_translation_world_m") or [], dtype=float)
+                    if delta_world.shape == (3,):
+                        draw_world_skeleton(world, joints_world + delta_world[None, :], world_min_xyz, world_max_xyz, (255, 255, 0), 2)
         cv2.putText(
             world,
             world_label,
@@ -463,6 +511,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "legacy_deformable_tomato_state_consumed": False,
             "coordinate_level_mano_correction_accepted": False,
             "world_view": str(args.world_view),
+            "temporal_mano_state_consumed": str(args.temporal_mano_state) if args.temporal_mano_state is not None else None,
+            "temporal_mano_summary": (temporal_report or {}).get("summary") if temporal_report is not None else None,
         },
         "evidence": {
             "total_frames": len(frames),
