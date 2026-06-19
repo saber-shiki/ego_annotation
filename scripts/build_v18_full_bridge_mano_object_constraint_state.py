@@ -75,14 +75,15 @@ def numeric_summary(values: np.ndarray) -> dict[str, Any]:
     }
 
 
-def existing_hprime_delta(hand: dict[str, Any], metric: dict[str, Any]) -> np.ndarray:
+def existing_hprime_delta(hand: dict[str, Any], metric: dict[str, Any]) -> tuple[np.ndarray, str]:
     update_raw = hand.get("compact_rigid_object_mano_constraint_update")
     update = update_raw if isinstance(update_raw, dict) else metric.get("compact_rigid_object_constraint_update")
     if isinstance(update, dict) and update.get("coordinate_update_applied") is True:
-        arr = np.asarray(update.get("candidate_translation_world_m") or [0.0, 0.0, 0.0], dtype=float)
-        if arr.shape == (3,) and np.isfinite(arr).all():
-            return arr
-    return np.zeros(3, dtype=float)
+        for field in ("cumulative_translation_world_m", "applied_translation_world_m", "candidate_translation_world_m"):
+            arr = np.asarray(update.get(field) or [], dtype=float)
+            if arr.shape == (3,) and np.isfinite(arr).all():
+                return arr, field
+    return np.zeros(3, dtype=float), "no_existing_hprime_translation"
 
 
 def main() -> None:
@@ -156,7 +157,7 @@ def main() -> None:
             if bridge_path not in bridge_cache:
                 bridge_cache[bridge_path] = np.load(bridge_path, allow_pickle=True)
             bridge = bridge_cache[bridge_path]
-            existing_delta = existing_hprime_delta(hand, metric)
+            existing_delta, existing_delta_source = existing_hprime_delta(hand, metric)
             verts_w = np.asarray(bridge[vertices_array][int(bridge_row_index)], dtype=float) + existing_delta[None, :]
             joints_w = np.asarray(bridge["joints_current_v18_world_from_hawor_projection_relift_m"][int(bridge_row_index)], dtype=float) + existing_delta[None, :]
 
@@ -231,6 +232,7 @@ def main() -> None:
                 "camera_pose_source_for_reprojection": camera_pose_source,
                 "hand_vertex_count": int(len(verts_w)),
                 "existing_hprime_translation_world_m": [float(x) for x in existing_delta.tolist()],
+                "existing_hprime_translation_source": existing_delta_source,
                 "observed_band_m": observed_band_m,
                 "near_surface_vertex_count": int(near_surface.sum()),
                 "near_surface_vertex_fraction": float(near_surface.mean()),
