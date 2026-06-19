@@ -70,6 +70,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--wilor-root", type=Path, default=Path("third_party/WiLoR"))
     parser.add_argument("--wilor-mano-right", type=Path, default=None)
+    parser.add_argument("--wilor-mano-left", type=Path, default=None)
+    parser.add_argument(
+        "--hawor-left-shapedirs-x-fix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply HaWoR's MANO_LEFT shapedirs[:,0,:] *= -1 convention before left replay.",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--support-margin-m", type=float, default=0.015)
     parser.add_argument("--free-space-margin-m", type=float, default=0.025)
@@ -256,7 +263,7 @@ def list_to_float_array(value: Any, shape: tuple[int, ...] | None = None) -> np.
 
 def make_candidate_vertices(
     *,
-    model: Any,
+    models_by_side: dict[str, Any],
     temporal_row: dict[str, Any],
     hand: dict[str, Any],
     current_vertices: np.ndarray,
@@ -265,8 +272,9 @@ def make_candidate_vertices(
     device: torch.device,
 ) -> tuple[np.ndarray | None, dict[str, Any]]:
     side = str(hand.get("hand_side"))
-    if side != "right":
-        return None, {"state": "no_candidate_left_replay_ineligible"}
+    model = models_by_side.get(side)
+    if model is None:
+        return None, {"state": f"no_candidate_{side}_mano_model_unavailable"}
     delta = list_to_float_array(temporal_row.get("optimized_hand_pose_delta_axis_angle_rad"), (45,))
     if delta is None:
         return None, {"state": "no_candidate_pose_delta_in_temporal_state"}
@@ -276,22 +284,22 @@ def make_candidate_vertices(
     source_path, source_frame = source_info
     source = load_source_arrays(source_cache, source_path)
     required = [
-        "right_vertices_world_m",
-        "right_root_orient_axis_angle",
-        "right_hand_pose_axis_angle",
-        "right_betas",
-        "right_trans_world_m",
+        f"{side}_vertices_world_m",
+        f"{side}_root_orient_axis_angle",
+        f"{side}_hand_pose_axis_angle",
+        f"{side}_betas",
+        f"{side}_trans_world_m",
     ]
     missing = [key for key in required if key not in source]
     if missing:
         return None, {"state": "source_npz_missing_arrays", "missing": missing}
-    raw_vertices = np.asarray(source["right_vertices_world_m"][source_frame], dtype=float)
+    raw_vertices = np.asarray(source[f"{side}_vertices_world_m"][source_frame], dtype=float)
     scale, rot, _trans, sim_err = similarity_from_to(raw_vertices, current_vertices)
-    root = torch.tensor(np.asarray(source["right_root_orient_axis_angle"][source_frame], dtype=float).reshape(1, 1, 3), dtype=torch.float32, device=device)
-    pose = torch.tensor(np.asarray(source["right_hand_pose_axis_angle"][source_frame], dtype=float).reshape(1, 15, 3), dtype=torch.float32, device=device)
+    root = torch.tensor(np.asarray(source[f"{side}_root_orient_axis_angle"][source_frame], dtype=float).reshape(1, 1, 3), dtype=torch.float32, device=device)
+    pose = torch.tensor(np.asarray(source[f"{side}_hand_pose_axis_angle"][source_frame], dtype=float).reshape(1, 15, 3), dtype=torch.float32, device=device)
     pose_delta = torch.tensor(delta.reshape(1, 15, 3), dtype=torch.float32, device=device)
-    betas = torch.tensor(np.asarray(source["right_betas"][source_frame], dtype=float).reshape(1, 10), dtype=torch.float32, device=device)
-    trans = torch.tensor(np.asarray(source["right_trans_world_m"][source_frame], dtype=float).reshape(1, 3), dtype=torch.float32, device=device)
+    betas = torch.tensor(np.asarray(source[f"{side}_betas"][source_frame], dtype=float).reshape(1, 10), dtype=torch.float32, device=device)
+    trans = torch.tensor(np.asarray(source[f"{side}_trans_world_m"][source_frame], dtype=float).reshape(1, 3), dtype=torch.float32, device=device)
     with torch.no_grad():
         base_root = rotvec_to_matrix(root)
         base_pose = rotvec_to_matrix(pose)
@@ -372,13 +380,29 @@ def main() -> None:
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.core.Tensor(vertices_object.astype(np.float32)), o3d.core.Tensor(faces.astype(np.uint32)))
 
-    mano_path = args.wilor_mano_right if args.wilor_mano_right is not None else args.wilor_root / "mano_data" / "MANO_RIGHT.pkl"
-    if not mano_path.exists():
-        raise FileNotFoundError(f"missing MANO_RIGHT model: {mano_path}")
+    mano_right_path = args.wilor_mano_right if args.wilor_mano_right is not None else args.wilor_root / "mano_data" / "MANO_RIGHT.pkl"
+    if not mano_right_path.exists():
+        raise FileNotFoundError(f"missing MANO_RIGHT model: {mano_right_path}")
     mano_cls = load_wilor_mano_class(args.wilor_root)
     device = torch.device(args.device)
-    model = mano_cls(model_path=str(mano_path), is_rhand=True, use_pca=False, flat_hand_mean=False, batch_size=1).to(device)
-    model.eval()
+    models_by_side: dict[str, Any] = {
+        "right": mano_cls(model_path=str(mano_right_path), is_rhand=True, use_pca=False, flat_hand_mean=False, batch_size=1).to(device)
+    }
+    model_paths: dict[str, str] = {"right": str(mano_right_path)}
+    left_model_status = "not_provided"
+    if args.wilor_mano_left is not None:
+        if not args.wilor_mano_left.exists():
+            left_model_status = "missing_mano_left_path"
+        else:
+            left_model = mano_cls(model_path=str(args.wilor_mano_left), is_rhand=False, use_pca=False, flat_hand_mean=False, batch_size=1).to(device)
+            if bool(args.hawor_left_shapedirs_x_fix):
+                with torch.no_grad():
+                    left_model.shapedirs[:, 0, :] *= -1
+            models_by_side["left"] = left_model
+            model_paths["left"] = str(args.wilor_mano_left)
+            left_model_status = "loaded_with_hawor_shapedirs_x_fix" if bool(args.hawor_left_shapedirs_x_fix) else "loaded_without_hawor_shapedirs_x_fix"
+    for model in models_by_side.values():
+        model.eval()
 
     bridge_cache: dict[Path, Any] = {}
     source_cache: dict[Path, Any] = {}
@@ -423,7 +447,7 @@ def main() -> None:
                 penetration_epsilon_m=float(args.penetration_epsilon_m),
             )
             candidate_vertices, candidate_info = make_candidate_vertices(
-                model=model,
+                models_by_side=models_by_side,
                 temporal_row=temporal_row or {},
                 hand=hand,
                 current_vertices=current_vertices,
@@ -517,12 +541,18 @@ def main() -> None:
             )
 
     state_counts = Counter(str(row.get("observed_surface_mano_state")) for row in per_frame_states)
-    right_candidate_rows = [row for row in per_frame_states if row.get("hand_side") == "right" and isinstance(row.get("candidate_full_778_measurement"), dict)]
-    right_candidate_obs_max = [
-        scalar_from_summary(row["candidate_full_778_measurement"].get("observed_supported_strict_penetration_m"))
-        for row in right_candidate_rows
-    ]
-    right_candidate_obs_max = [float(x) for x in right_candidate_obs_max if x is not None]
+    candidate_summary_by_side: dict[str, dict[str, Any]] = {}
+    for side in sorted(set(str(row.get("hand_side")) for row in per_frame_states)):
+        candidate_rows = [row for row in per_frame_states if row.get("hand_side") == side and isinstance(row.get("candidate_full_778_measurement"), dict)]
+        candidate_obs_max = [
+            scalar_from_summary(row["candidate_full_778_measurement"].get("observed_supported_strict_penetration_m"))
+            for row in candidate_rows
+        ]
+        candidate_obs_max = [float(x) for x in candidate_obs_max if x is not None]
+        candidate_summary_by_side[side] = {
+            "candidate_frame_count": int(len(candidate_rows)),
+            "candidate_observed_supported_penetration_max_m": numeric_summary(np.asarray(candidate_obs_max, dtype=float)),
+        }
     report = {
         "method": "build_v18_observed_surface_mano_constraint_state",
         "status": "ok",
@@ -539,7 +569,10 @@ def main() -> None:
             "depth_npz": [str(path) for path in args.depth_npz],
             "articulated_mano_state": str(args.articulated_mano_state),
             "hidden_volume_validation": str(args.hidden_volume_validation) if args.hidden_volume_validation else None,
-            "wilor_mano_right": str(mano_path),
+            "wilor_mano_right": str(mano_right_path),
+            "wilor_mano_left": str(args.wilor_mano_left) if args.wilor_mano_left is not None else None,
+            "loaded_mano_models": model_paths,
+            "left_model_status": left_model_status,
         },
         "parameters": {
             "support_margin_m": float(args.support_margin_m),
@@ -547,14 +580,14 @@ def main() -> None:
             "penetration_epsilon_m": float(args.penetration_epsilon_m),
             "accepted_observed_residual_m": float(args.accepted_observed_residual_m),
             "observed_supported_face_rule": "strict: closest face has at least two depth-supported vertices and no free-space-conflict vertex",
+            "hawor_left_shapedirs_x_fix": bool(args.hawor_left_shapedirs_x_fix),
         },
         "summary": {
             "annotation_frame_count": int(len(as_list(annotations.get("frames")))),
             "pose_frame_count": int(len(poses)),
             "evaluated_hand_frame_count": int(len(per_frame_states)),
             "state_counts": dict(state_counts),
-            "right_candidate_frame_count": int(len(right_candidate_rows)),
-            "right_candidate_observed_supported_penetration_max_m": numeric_summary(np.asarray(right_candidate_obs_max, dtype=float)),
+            "candidate_summary_by_side": candidate_summary_by_side,
             "coordinate_correction_accepted": False,
         },
         "source_temporal_mano_summary": temporal_payload.get("summary") if isinstance(temporal_payload, dict) else None,

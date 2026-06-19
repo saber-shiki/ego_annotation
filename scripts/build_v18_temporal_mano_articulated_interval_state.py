@@ -9,10 +9,10 @@ penetration while preserving visible 2D/depth compatibility.
 
 Important scope:
 - The zero state is the current V18 bridge MANO surface.
-- Right-hand HaWoR replay is required to reproduce the saved HaWoR surface before
-  any right-hand articulated hypothesis is eligible.
-- Left-hand replay is not accepted in this repository because MANO_LEFT.pkl is
-  unavailable and the right-hand model does not reproduce saved left surfaces.
+- HaWoR MANO replay is required to reproduce the saved HaWoR surface before
+  any articulated hypothesis is eligible.
+- Left-hand replay is eligible only when a real MANO_LEFT.pkl is supplied and
+  the documented HaWoR left shapedirs-x fix reproduces saved left surfaces.
 - Free-space-conflicted or otherwise hidden-only object volume cannot support an
   accepted coordinate correction. It can only produce bounded hypotheses or
   interval uncertainty/falsification.
@@ -119,6 +119,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--wilor-root", type=Path, default=Path("third_party/WiLoR"))
     parser.add_argument("--wilor-mano-right", type=Path, default=None)
+    parser.add_argument("--wilor-mano-left", type=Path, default=None)
+    parser.add_argument(
+        "--hawor-left-shapedirs-x-fix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply HaWoR's MANO_LEFT shapedirs[:,0,:] *= -1 convention before left replay.",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--eligible-side", choices=("right", "both"), default="right")
     parser.add_argument("--max-constraints-per-frame", type=int, default=64)
@@ -646,7 +653,7 @@ def optimize_segment(
         interval_state = "bounded_articulated_mano_trajectory_candidate_hidden_volume_unaccepted"
     blockers: list[str] = []
     if not replay_ok:
-        blockers.append("right_hand_mano_replay_not_exact_enough")
+        blockers.append(f"{rows[0].hand_side}_hand_mano_replay_not_exact_enough")
     if residual_max_values and max(residual_max_values) > float(args.accepted_residual_m):
         blockers.append("temporal_articulated_mano_leaves_residual_penetration")
     if visible_shift_values and max(visible_shift_values) > float(args.visible_shift_limit_px):
@@ -737,107 +744,160 @@ def build_rows(args: argparse.Namespace) -> tuple[dict[str, list[ReplayFrame]], 
     return rows_by_side, skipped, metadata
 
 
-def ineligible_intervals(rows_by_side: dict[str, list[ReplayFrame]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def ineligible_intervals(
+    rows: list[ReplayFrame],
+    *,
+    side: str,
+    temporal_state: str,
+    reason: str,
+    blocker: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     intervals: list[dict[str, Any]] = []
     states: list[dict[str, Any]] = []
-    for side, rows in sorted(rows_by_side.items()):
-        if side == "right":
+    rows_by_frame = {row.frame_idx: row for row in rows}
+    for start, end in contiguous_segments(list(rows_by_frame)):
+        seg = [rows_by_frame[idx] for idx in range(start, end + 1) if idx in rows_by_frame]
+        if not seg:
             continue
-        rows_by_frame = {row.frame_idx: row for row in rows}
-        for start, end in contiguous_segments(list(rows_by_frame)):
-            seg = [rows_by_frame[idx] for idx in range(start, end + 1) if idx in rows_by_frame]
-            if not seg:
-                continue
-            for row in seg:
-                state = {
-                    "frame_idx": int(row.frame_idx),
-                    "hand_side": side,
-                    "temporal_mano_state": "articulated_mano_replay_ineligible_missing_left_mano_model",
-                    "coordinate_correction_accepted": False,
-                    "reason": "MANO_LEFT.pkl is absent; right-hand model replay does not reproduce saved left HaWoR surfaces",
-                    "residual_penetration_after_articulated_mano_m": {
-                        "max": float(np.max(row.penetration_depths_all_m)) if len(row.penetration_depths_all_m) else 0.0,
-                        "constraint_count": int(len(row.constraint_depths_m)),
-                    },
-                    "residual_penetration_after_translation_m": {
-                        "max": float(np.max(row.penetration_depths_all_m)) if len(row.penetration_depths_all_m) else 0.0,
-                        "constraint_count": int(len(row.constraint_depths_m)),
-                    },
-                    "hidden_volume_state": row.hidden_volume_state,
-                }
-                states.append(state)
-            intervals.append(
-                {
-                    "hand_side": side,
-                    "start_frame": int(start),
-                    "end_frame": int(end),
-                    "frame_count": int(len(seg)),
-                    "temporal_mano_interval_state": "articulated_mano_replay_ineligible_missing_left_mano_model",
-                    "coordinate_correction_accepted": False,
-                    "state_counts": {"articulated_mano_replay_ineligible_missing_left_mano_model": int(len(seg))},
-                    "blocking_mechanisms": ["missing_MANO_LEFT_model_and_unproven_left_replay"],
-                    "residual_penetration_initial_m": numeric_summary(np.concatenate([row.penetration_depths_all_m for row in seg]) if seg else np.asarray([], dtype=float)),
-                }
-            )
+        for row in seg:
+            state = {
+                "frame_idx": int(row.frame_idx),
+                "hand_side": side,
+                "temporal_mano_state": temporal_state,
+                "coordinate_correction_accepted": False,
+                "reason": reason,
+                "residual_penetration_after_articulated_mano_m": {
+                    "max": float(np.max(row.penetration_depths_all_m)) if len(row.penetration_depths_all_m) else 0.0,
+                    "constraint_count": int(len(row.constraint_depths_m)),
+                },
+                "residual_penetration_after_translation_m": {
+                    "max": float(np.max(row.penetration_depths_all_m)) if len(row.penetration_depths_all_m) else 0.0,
+                    "constraint_count": int(len(row.constraint_depths_m)),
+                },
+                "hidden_volume_state": row.hidden_volume_state,
+            }
+            states.append(state)
+        intervals.append(
+            {
+                "hand_side": side,
+                "start_frame": int(start),
+                "end_frame": int(end),
+                "frame_count": int(len(seg)),
+                "temporal_mano_interval_state": temporal_state,
+                "coordinate_correction_accepted": False,
+                "state_counts": {temporal_state: int(len(seg))},
+                "blocking_mechanisms": [blocker],
+                "residual_penetration_initial_m": numeric_summary(np.concatenate([row.penetration_depths_all_m for row in seg]) if seg else np.asarray([], dtype=float)),
+            }
+        )
     return intervals, states
 
 
 def main() -> None:
     args = parse_args()
     patch_legacy_mano_loader()
-    mano_path = args.wilor_mano_right if args.wilor_mano_right is not None else args.wilor_root / "mano_data" / "MANO_RIGHT.pkl"
-    if not mano_path.exists():
-        raise FileNotFoundError(f"missing MANO_RIGHT model: {mano_path}")
+    mano_right_path = args.wilor_mano_right if args.wilor_mano_right is not None else args.wilor_root / "mano_data" / "MANO_RIGHT.pkl"
+    if not mano_right_path.exists():
+        raise FileNotFoundError(f"missing MANO_RIGHT model: {mano_right_path}")
     mano_cls = load_wilor_mano_class(args.wilor_root)
     device = torch.device(args.device)
-    model = mano_cls(model_path=str(mano_path), is_rhand=True, use_pca=False, flat_hand_mean=False, batch_size=1).to(device)
+    models: dict[str, Any] = {
+        "right": mano_cls(model_path=str(mano_right_path), is_rhand=True, use_pca=False, flat_hand_mean=False, batch_size=1).to(device)
+    }
+    model_paths: dict[str, str] = {"right": str(mano_right_path)}
+    left_model_status = "not_requested_or_not_provided"
+    mano_left_path = args.wilor_mano_left
+    if mano_left_path is not None:
+        if not mano_left_path.exists():
+            left_model_status = "missing_mano_left_path"
+        else:
+            left_model = mano_cls(model_path=str(mano_left_path), is_rhand=False, use_pca=False, flat_hand_mean=False, batch_size=1).to(device)
+            if bool(args.hawor_left_shapedirs_x_fix):
+                with torch.no_grad():
+                    left_model.shapedirs[:, 0, :] *= -1
+            models["left"] = left_model
+            model_paths["left"] = str(mano_left_path)
+            left_model_status = "loaded_with_hawor_shapedirs_x_fix" if bool(args.hawor_left_shapedirs_x_fix) else "loaded_without_hawor_shapedirs_x_fix"
+    for model in models.values():
+        model.eval()
+
     completion = load_json(args.completion_report)
     rows_by_side, skipped, metadata = build_rows(args)
     intervals: list[dict[str, Any]] = []
     per_frame_states: list[dict[str, Any]] = []
-    left_intervals, left_states = ineligible_intervals(rows_by_side)
-    intervals.extend(left_intervals)
-    per_frame_states.extend(left_states)
-    right_rows = sorted(rows_by_side.get("right", []), key=lambda row: row.frame_idx)
-    right_by_frame = {row.frame_idx: row for row in right_rows}
-    optimized_frame_count = 0
-    for start, end in contiguous_segments(list(right_by_frame)):
-        seg = [right_by_frame[idx] for idx in range(start, end + 1) if idx in right_by_frame]
-        if not seg:
+    eligible_sides = {"right"} if args.eligible_side == "right" else {"left", "right"}
+    optimized_frame_count_by_side: Counter[str] = Counter()
+    for side in sorted(rows_by_side):
+        side_rows = sorted(rows_by_side.get(side, []), key=lambda row: row.frame_idx)
+        if side not in eligible_sides:
+            ineligible, states = ineligible_intervals(
+                side_rows,
+                side=side,
+                temporal_state="articulated_mano_not_requested_for_side",
+                reason=f"{side} optimization was not requested by --eligible-side={args.eligible_side}",
+                blocker="side_not_requested_for_articulated_mano_optimization",
+            )
+            intervals.extend(ineligible)
+            per_frame_states.extend(states)
             continue
-        if args.max_articulated_frames is not None and optimized_frame_count >= int(args.max_articulated_frames):
-            for row in seg:
-                per_frame_states.append(
+        model = models.get(side)
+        if model is None:
+            state_name = "articulated_mano_replay_ineligible_missing_left_mano_model" if side == "left" else "articulated_mano_replay_ineligible_missing_mano_model"
+            reason = (
+                "MANO_LEFT.pkl was not supplied or could not be loaded with the HaWoR shapedirs-x replay convention"
+                if side == "left"
+                else "MANO model for this side was not supplied"
+            )
+            ineligible, states = ineligible_intervals(
+                side_rows,
+                side=side,
+                temporal_state=state_name,
+                reason=reason,
+                blocker="missing_or_unloaded_side_specific_mano_model",
+            )
+            intervals.extend(ineligible)
+            per_frame_states.extend(states)
+            continue
+        rows_by_frame = {row.frame_idx: row for row in side_rows}
+        side_optimized = 0
+        for start, end in contiguous_segments(list(rows_by_frame)):
+            seg = [rows_by_frame[idx] for idx in range(start, end + 1) if idx in rows_by_frame]
+            if not seg:
+                continue
+            if args.max_articulated_frames is not None and side_optimized >= int(args.max_articulated_frames):
+                for row in seg:
+                    per_frame_states.append(
+                        {
+                            "frame_idx": int(row.frame_idx),
+                            "hand_side": side,
+                            "temporal_mano_state": "articulated_mano_not_run_max_frame_budget",
+                            "coordinate_correction_accepted": False,
+                        }
+                    )
+                intervals.append(
                     {
-                        "frame_idx": int(row.frame_idx),
-                        "hand_side": "right",
-                        "temporal_mano_state": "articulated_mano_not_run_max_frame_budget",
+                        "hand_side": side,
+                        "start_frame": int(start),
+                        "end_frame": int(end),
+                        "frame_count": int(len(seg)),
+                        "temporal_mano_interval_state": "articulated_mano_not_run_max_frame_budget",
                         "coordinate_correction_accepted": False,
+                        "state_counts": {"articulated_mano_not_run_max_frame_budget": int(len(seg))},
+                        "blocking_mechanisms": ["max_articulated_frames_budget"],
                     }
                 )
-            intervals.append(
-                {
-                    "hand_side": "right",
-                    "start_frame": int(start),
-                    "end_frame": int(end),
-                    "frame_count": int(len(seg)),
-                    "temporal_mano_interval_state": "articulated_mano_not_run_max_frame_budget",
-                    "coordinate_correction_accepted": False,
-                    "state_counts": {"articulated_mano_not_run_max_frame_budget": int(len(seg))},
-                    "blocking_mechanisms": ["max_articulated_frames_budget"],
-                }
-            )
-            continue
-        if args.max_articulated_frames is not None:
-            remaining = int(args.max_articulated_frames) - optimized_frame_count
-            seg = seg[:remaining]
-        interval, states = optimize_segment(model=model, rows=seg, args=args, device=device)
-        interval["interval_id"] = f"right_{seg[0].frame_idx:04d}_{seg[-1].frame_idx:04d}"
-        for state in states:
-            state["interval_id"] = interval["interval_id"]
-        intervals.append(interval)
-        per_frame_states.extend(states)
-        optimized_frame_count += len(seg)
+                continue
+            if args.max_articulated_frames is not None:
+                remaining = int(args.max_articulated_frames) - side_optimized
+                seg = seg[:remaining]
+            interval, states = optimize_segment(model=model, rows=seg, args=args, device=device)
+            interval["interval_id"] = f"{side}_{seg[0].frame_idx:04d}_{seg[-1].frame_idx:04d}"
+            for state in states:
+                state["interval_id"] = interval["interval_id"]
+            intervals.append(interval)
+            per_frame_states.extend(states)
+            side_optimized += len(seg)
+            optimized_frame_count_by_side[side] += len(seg)
     summary_counts = Counter(interval["temporal_mano_interval_state"] for interval in intervals)
     frame_counts = Counter(state.get("temporal_mano_state", "unknown") for state in per_frame_states)
     report = {
@@ -846,9 +906,9 @@ def main() -> None:
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": (
-            "Interval-level articulated MANO hand-pose mechanism test. Right-hand HaWoR MANO replay is exact and "
-            "eligible for pose-delta hypotheses; left-hand replay is ineligible without MANO_LEFT. Coordinate corrections "
-            "remain unaccepted unless residual, visible/depth compatibility, temporal coherence, and hidden-volume evidence all pass."
+            "Interval-level articulated MANO hand-pose mechanism test. Side-specific HaWoR MANO replay must be exact "
+            "before pose-delta hypotheses are eligible; left replay uses MANO_LEFT with the documented HaWoR shapedirs-x fix when supplied. "
+            "Coordinate corrections remain unaccepted unless residual, visible/depth compatibility, temporal coherence, and hidden-volume evidence all pass."
         ),
         "inputs": {
             "annotations": str(args.annotations),
@@ -856,11 +916,15 @@ def main() -> None:
             "completion_report": str(args.completion_report),
             "sign_mesh": str(args.sign_mesh),
             "hidden_volume_validation": str(args.hidden_volume_validation) if args.hidden_volume_validation else None,
-            "wilor_mano_right": str(mano_path),
+            "wilor_mano_right": str(mano_right_path),
+            "wilor_mano_left": str(mano_left_path) if mano_left_path is not None else None,
+            "loaded_mano_models": model_paths,
+            "left_model_status": left_model_status,
         },
         "object_hypothesis_scope": completion.get("claim_scope") if isinstance(completion, dict) else None,
         "parameters": {
             "eligible_side": str(args.eligible_side),
+            "hawor_left_shapedirs_x_fix": bool(args.hawor_left_shapedirs_x_fix),
             "max_constraints_per_frame": int(args.max_constraints_per_frame),
             "accepted_residual_m": float(args.accepted_residual_m),
             "visible_shift_limit_px": float(args.visible_shift_limit_px),
@@ -871,7 +935,9 @@ def main() -> None:
         "summary": {
             "interval_count": int(len(intervals)),
             "per_frame_state_count": int(len(per_frame_states)),
-            "optimized_right_frame_count": int(optimized_frame_count),
+            "optimized_frame_count_by_side": {k: int(v) for k, v in sorted(optimized_frame_count_by_side.items())},
+            "optimized_right_frame_count": int(optimized_frame_count_by_side.get("right", 0)),
+            "optimized_left_frame_count": int(optimized_frame_count_by_side.get("left", 0)),
             "interval_state_counts": dict(summary_counts),
             "per_frame_state_counts": dict(frame_counts),
             "coordinate_correction_accepted": False,
@@ -883,7 +949,7 @@ def main() -> None:
         "physical_conclusion": (
             "This artifact tests finger/wrist articulation as a causal mechanism for the remaining MANO/object conflicts. "
             "Any cyan articulated hypothesis is a bounded or falsified MANO hand-pose perturbation, not an accepted correction, "
-            "because current object hidden volumes remain quarantined and left-hand parameter replay is not available."
+            "because current object hidden volumes remain quarantined and each side must still pass residual, visible/depth, and temporal checks."
         ),
     }
     out_dir = args.output_dir / str(args.case)
