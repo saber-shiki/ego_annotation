@@ -279,6 +279,9 @@ def draw_world_skeleton(
 
 
 def apply_temporal_hypothesis(joints_world: np.ndarray, temporal: dict[str, Any]) -> np.ndarray | None:
+    articulated_joints = np.asarray(temporal.get("optimized_joints_world_m") or [], dtype=float)
+    if articulated_joints.shape == (21, 3):
+        return articulated_joints
     delta_world = np.asarray(temporal.get("optimized_translation_world_m") or [], dtype=float)
     if delta_world.shape != (3,):
         return None
@@ -439,6 +442,12 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                         if candidate_world is not None:
                             candidate_camera = world_points_to_camera(candidate_world, T_world_camera)
                             draw_projected_skeleton(overlay, candidate_camera, intr_tuple, (255, 255, 0), 2)
+                    candidate_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=float)
+                    if candidate_vertices_world.ndim == 2 and candidate_vertices_world.shape[1] == 3 and len(candidate_vertices_world):
+                        candidate_vertices_camera = world_points_to_camera(candidate_vertices_world, T_world_camera)
+                        cu, cv, cvalid = project_camera_points(candidate_vertices_camera, intr_tuple, width, height)
+                        for x, y in zip(cu[cvalid], cv[cvalid]):
+                            cv2.circle(overlay, (int(x), int(y)), 1, (255, 255, 0), -1)
 
         cv2.imwrite(str(overlay_dir / f"{frame_idx:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
@@ -480,6 +489,12 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                     candidate_world = apply_temporal_hypothesis(joints_world, temporal)
                     if candidate_world is not None:
                         draw_world_skeleton(world, candidate_world, world_min_xyz, world_max_xyz, (255, 255, 0), 2)
+                    candidate_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=float)
+                    if candidate_vertices_world.ndim == 2 and candidate_vertices_world.shape[1] == 3 and len(candidate_vertices_world):
+                        for vertex in candidate_vertices_world:
+                            point = world_to_screen(vertex, world_min_xyz, world_max_xyz, canvas_w, canvas_h)
+                            if point is not None:
+                                cv2.circle(world, point, 1, (255, 255, 0), -1)
         cv2.putText(
             world,
             world_label,
