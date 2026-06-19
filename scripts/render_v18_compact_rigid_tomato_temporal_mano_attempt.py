@@ -75,6 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--completed-mesh", type=Path, default=DEFAULT_COMPLETED_MESH_PLY)
     parser.add_argument("--constraint-report", type=Path, default=DEFAULT_CONSTRAINT_REPORT_PATH)
     parser.add_argument("--temporal-mano-state", type=Path, default=None)
+    parser.add_argument("--hidden-volume-validation", type=Path, default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--mesh-projection-stride", type=int, default=15)
     parser.add_argument("--world-mesh-stride", type=int, default=15)
@@ -236,6 +237,17 @@ def load_temporal_mano_state(path: Path | None) -> tuple[dict[tuple[int, str], d
     return mapping, data if isinstance(data, dict) else None
 
 
+def load_hidden_volume_validation(path: Path | None) -> tuple[dict[int, dict[str, Any]], dict[str, Any] | None]:
+    if path is None:
+        return {}, None
+    data = load_json(path)
+    mapping: dict[int, dict[str, Any]] = {}
+    for row in data.get("frame_rows", []) if isinstance(data.get("frame_rows"), list) else []:
+        if isinstance(row, dict):
+            mapping[int(row["frame_idx"])] = row
+    return mapping, data if isinstance(data, dict) else None
+
+
 def draw_projected_skeleton(
     image: np.ndarray,
     joints_camera: np.ndarray,
@@ -341,6 +353,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     poses = pose_map(pose_data)
     constraints = constraint_map(constraint_data)
     temporal_states, temporal_report = load_temporal_mano_state(args.temporal_mano_state)
+    hidden_validation, hidden_validation_report = load_hidden_volume_validation(args.hidden_volume_validation)
     frames = annotations.get("frames", [])
     if args.max_frames is not None:
         frames = frames[: args.max_frames]
@@ -381,6 +394,13 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             object_label = f"frame {frame_idx}: {args.object_label} pose missing"
             object_label_color = (0, 165, 255)
         cv2.putText(overlay, object_label, (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.60, object_label_color, 2)
+        volume_row = hidden_validation.get(frame_idx)
+        if volume_row is not None:
+            volume_state = str(volume_row.get("state", "hidden_volume_unmeasured"))
+            free_frac = volume_row.get("free_space_conflict_fraction_projected")
+            support_frac = volume_row.get("observed_support_fraction_projected")
+            volume_text = f"hidden volume {volume_state} free={free_frac if free_frac is not None else '?'} support={support_frac if support_frac is not None else '?'}"
+            cv2.putText(overlay, volume_text[:120], (12, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 120, 255), 2)
 
         for hand_idx, hand in enumerate(frame.get("hands", [])):
             metric = hand.get("metric_mano_state") or {}
@@ -545,6 +565,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "world_view": str(args.world_view),
             "temporal_mano_state_consumed": str(args.temporal_mano_state) if args.temporal_mano_state is not None else None,
             "temporal_mano_summary": (temporal_report or {}).get("summary") if temporal_report is not None else None,
+            "hidden_volume_validation_consumed": str(args.hidden_volume_validation) if args.hidden_volume_validation is not None else None,
+            "hidden_volume_validation_summary": (hidden_validation_report or {}).get("summary") if hidden_validation_report is not None else None,
         },
         "evidence": {
             "total_frames": len(frames),
