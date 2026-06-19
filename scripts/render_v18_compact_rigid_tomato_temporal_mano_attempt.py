@@ -266,6 +266,22 @@ def draw_world_skeleton(
             cv2.line(image, pa, pb, color, line_width)
 
 
+def apply_temporal_hypothesis(joints_world: np.ndarray, temporal: dict[str, Any]) -> np.ndarray | None:
+    delta_world = np.asarray(temporal.get("optimized_translation_world_m") or [], dtype=float)
+    if delta_world.shape != (3,):
+        return None
+    candidate = joints_world + delta_world[None, :]
+    rotation_world = np.asarray(temporal.get("optimized_rotation_vector_world_rad") or [], dtype=float)
+    center_world = np.asarray(temporal.get("hand_center_world_m") or [], dtype=float)
+    if rotation_world.shape == (3,) and center_world.shape == (3,):
+        candidate = candidate + np.cross(rotation_world[None, :], joints_world - center_world[None, :])
+    return candidate
+
+
+def world_points_to_camera(points_world: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
+    return (points_world - T_world_camera[:3, 3][None, :]) @ T_world_camera[:3, :3]
+
+
 def encode_video(frame_dir: Path, output_path: Path, fps: float) -> None:
     subprocess.run(
         [
@@ -397,11 +413,12 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                     draw_projected_skeleton(overlay, joints_camera, intr_tuple, (0, 120, 255), max(10, line_width + 6))
                 draw_projected_skeleton(overlay, joints_camera, intr_tuple, color, line_width)
                 if temporal is not None:
-                    delta_world = np.asarray(temporal.get("optimized_translation_world_m") or [], dtype=float)
-                    if delta_world.shape == (3,):
-                        delta_camera = delta_world @ T_world_camera[:3, :3]
-                        candidate_camera = joints_camera + delta_camera[None, :]
-                        draw_projected_skeleton(overlay, candidate_camera, intr_tuple, (255, 255, 0), 2)
+                    joints_world = np.asarray(metric.get("joints_current_v18_world_m") or [], dtype=float)
+                    if joints_world.shape == (21, 3):
+                        candidate_world = apply_temporal_hypothesis(joints_world, temporal)
+                        if candidate_world is not None:
+                            candidate_camera = world_points_to_camera(candidate_world, T_world_camera)
+                            draw_projected_skeleton(overlay, candidate_camera, intr_tuple, (255, 255, 0), 2)
 
         cv2.imwrite(str(overlay_dir / f"{frame_idx:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
@@ -440,9 +457,9 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                     draw_world_skeleton(world, joints_world, world_min_xyz, world_max_xyz, (0, 120, 255), max(8, line_width + 4))
                 draw_world_skeleton(world, joints_world, world_min_xyz, world_max_xyz, color, max(2, line_width - 1))
                 if temporal is not None:
-                    delta_world = np.asarray(temporal.get("optimized_translation_world_m") or [], dtype=float)
-                    if delta_world.shape == (3,):
-                        draw_world_skeleton(world, joints_world + delta_world[None, :], world_min_xyz, world_max_xyz, (255, 255, 0), 2)
+                    candidate_world = apply_temporal_hypothesis(joints_world, temporal)
+                    if candidate_world is not None:
+                        draw_world_skeleton(world, candidate_world, world_min_xyz, world_max_xyz, (255, 255, 0), 2)
         cv2.putText(
             world,
             world_label,
