@@ -316,7 +316,7 @@ def transplant_hand_state(case: str, key: tuple[int, str], base_hand: dict[str, 
     return out, "noncoordinate_update_attached"
 
 
-def merge_case(case: str, base_ann: dict[str, Any], verified_ann: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def merge_case(case: str, base_ann: dict[str, Any], verified_ann: dict[str, Any], verified_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     assert_source_alignment(case, base_ann, verified_ann)
     before_dominant_occurrences = recursive_dominant_occurrences(base_ann)
     scrubbed_base, removed_dominant = scrub_dominant_visible_part_artifacts(base_ann)
@@ -360,7 +360,7 @@ def merge_case(case: str, base_ann: dict[str, Any], verified_ann: dict[str, Any]
     if after_dominant_occurrences != 0:
         raise RuntimeError(f"{case}: merged annotations contain dominant-visible-part artifacts")
 
-    out.setdefault("sources", {})["verified_compact_rigid_hprime_hand_state"] = str(DEFAULT_VERIFIED_ANNOTATIONS.get(case, ""))
+    out.setdefault("sources", {})["verified_compact_rigid_hprime_hand_state"] = str(verified_path)
     out["method"] = "run_v18_full_pipeline_plus_verified_compact_rigid_hprime_hand_state"
     out["compact_rigid_hprime_finalization"] = {
         "method": "build_v18_verified_hprime_final_annotations",
@@ -401,7 +401,7 @@ def main() -> None:
             raise RuntimeError(f"{case}: no verified compact-rigid annotation source configured")
         base_ann = load_json(base_path)
         verified_ann = load_json(verified_path)
-        merged, summary = merge_case(case, base_ann, verified_ann)
+        merged, summary = merge_case(case, base_ann, verified_ann, verified_path)
         summary["base_annotations"] = str(base_path)
         summary["verified_annotations"] = str(verified_path)
         output_path = args.output_root / case / "annotations_v18_full.json"

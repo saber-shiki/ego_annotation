@@ -59,6 +59,16 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def parse_case_path(raw: str) -> tuple[str, Path]:
+    if "=" not in raw:
+        raise argparse.ArgumentTypeError("expected CASE=/path/to/annotations.json")
+    case, path = raw.split("=", 1)
+    case = case.strip()
+    if not case:
+        raise argparse.ArgumentTypeError("empty case name")
+    return case, Path(path)
+
+
 def ffprobe_frame_count(path: Path) -> int | None:
     if not path.exists():
         return None
@@ -326,6 +336,32 @@ def verify_corrected_coordinates(case: str, final_hands: dict[tuple[int, str], d
     return {"corrected_count": len(corrected_keys), "max_abs_coordinate_delta_vs_verified": max_deltas}, errors
 
 
+def expected_from_verified(case: str, verified_ann: dict[str, Any]) -> dict[str, Any]:
+    if case not in EXPECTED:
+        raise RuntimeError(f"{case}: no frame-count expectation configured")
+    sets, _, errors = state_sets_updates(verified_ann, f"{case} verified expected")
+    if errors:
+        raise RuntimeError(f"{case}: verified source update consistency errors: {errors[:3]}")
+    corrected = len(sets["corrected"])
+    uncertainty = len(sets["uncertainty"])
+    expected = {
+        "frames": EXPECTED[case]["frames"],
+        "corrected": corrected,
+        "uncertainty": uncertainty,
+        "validated_no_change": len(sets["validated_no_change"]),
+        "overlay_counts": {},
+        "world_counts": {},
+    }
+    if case == "task5_tomato_960":
+        expected["overlay_counts"]["compact_rigid_mano_update_uncertainty"] = uncertainty
+        expected["world_counts"]["world_compact_rigid_mano_update_uncertainty"] = uncertainty
+    elif case == "trash_1050":
+        expected["overlay_counts"]["hand_metric_hprime_corrected_skeletons"] = corrected
+        expected["world_counts"]["world_compact_rigid_mano_update_corrected"] = corrected
+        expected["world_counts"]["world_compact_rigid_mano_update_uncertainty"] = uncertainty
+    return expected
+
+
 def verify_trash_remeasurement(corrected_keys: set[tuple[int, str]], report_path: Path) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     report = load_json(report_path)
@@ -360,10 +396,10 @@ def verify_trash_remeasurement(corrected_keys: set[tuple[int, str]], report_path
 
 def verify_case(root: Path, case: str, verified_path: Path, trash_remeasure_report: Path) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
-    expected = EXPECTED[case]
     ann_path = root / case / "annotations_v18_full.json"
     ann = load_json(ann_path)
     verified_ann = load_json(verified_path)
+    expected = expected_from_verified(case, verified_ann)
     errors.extend(verify_source_alignment(case, ann, verified_ann))
     dominant_occurrences = recursive_dominant_occurrences(ann)
     if dominant_occurrences:
@@ -401,7 +437,9 @@ def verify_case(root: Path, case: str, verified_path: Path, trash_remeasure_repo
     summary = {
         "case": case,
         "annotations": str(ann_path),
+        "verified_annotations": str(verified_path),
         "frame_count": len(ann.get("frames", [])),
+        "dynamic_expected_from_verified_source": expected,
         "dominant_visible_part_recursive_occurrences": dominant_occurrences,
         "state_key_set_summary": set_summary,
         "corrected_coordinate_match": coordinate_summary,
@@ -422,11 +460,16 @@ def main() -> None:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--trash-remeasure-report", type=Path, default=DEFAULT_TRASH_REMEASURE)
+    parser.add_argument("--verified-annotation", action="append", type=parse_case_path, default=[])
     args = parser.parse_args()
+
+    verified_paths = dict(DEFAULT_VERIFIED)
+    for case, path in args.verified_annotation:
+        verified_paths[case] = path
 
     case_summaries: dict[str, Any] = {}
     errors: list[str] = []
-    for case, verified_path in DEFAULT_VERIFIED.items():
+    for case, verified_path in verified_paths.items():
         try:
             summary, case_errors = verify_case(args.root, case, verified_path, args.trash_remeasure_report)
         except Exception as exc:
@@ -442,6 +485,7 @@ def main() -> None:
         "cases": case_summaries,
         "errors": errors,
         "trash_remeasure_report": str(args.trash_remeasure_report),
+        "verified_annotations": {case: str(path) for case, path in verified_paths.items()},
         "claim_scope": "Verifies the final artifact's consumed metric MANO H-prime/uncertainty hand states by exact key-set and coordinate matching, absence of dominant-visible-part support anywhere in consumed state, signed remeasurement of accepted trash corrections, and full-video render frame counts.",
     }
     write_json(args.summary, out)

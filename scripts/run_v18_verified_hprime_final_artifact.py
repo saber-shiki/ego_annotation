@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--python", default=".venv/bin/python")
     parser.add_argument("--task5-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_branch_compare/task5_tomato_960/object_obj_tomato/mano_constraint_surface806_sign929_v2/v18_mano_object_constraint_state.json"))
     parser.add_argument("--trash-constraint-report", type=Path, default=Path("/data2/ego_annotation_outputs/v18_compact_rigid_completion_next_frame872/trash_1050/object_pink_lid_trash_can_second/mano_constraint_seed42_v23_verified_final_remeasure/v18_mano_object_constraint_state.json"))
+    parser.add_argument("--verified-annotation", action="append", default=[], help="CASE=/path/to/verified annotations override passed to merge and verifier")
     args = parser.parse_args()
 
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -50,6 +51,8 @@ def main() -> None:
         "--output-root",
         str(args.output_root),
     ]
+    for item in args.verified_annotation:
+        merge_cmd.extend(["--verified-annotation", item])
     step = run(merge_cmd)
     steps.append(step)
     require_ok(step)
@@ -114,6 +117,8 @@ def main() -> None:
         "--trash-remeasure-report",
         str(args.trash_constraint_report),
     ]
+    for item in args.verified_annotation:
+        verify_cmd.extend(["--verified-annotation", item])
     step = run(verify_cmd)
     steps.append(step)
     require_ok(step)
@@ -123,6 +128,7 @@ def main() -> None:
         "status": "ok",
         "base_root": str(args.base_root),
         "output_root": str(args.output_root),
+        "verified_annotation_overrides": list(args.verified_annotation),
         "steps": [
             {
                 "cmd": s["cmd"],
