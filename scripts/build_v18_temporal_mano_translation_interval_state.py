@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # pyright: reportMissingImports=false
-"""Build interval-level MANO translation hypotheses or uncertainty for task5 tomato.
+"""Build interval-level MANO translation hypotheses or uncertainty for a rigid object.
 
 The variable is a per-frame rigid translation of the current V18 bridge MANO hand
 surface. For each interaction interval, the script minimizes a convex-ish
@@ -52,6 +52,7 @@ DEFAULT_SIGN_MESH = Path(
 DEFAULT_OUTPUT_DIR = Path(
     "/data2/ego_annotation_outputs/v18_scale_sane_tomato_temporal_mano_v1/task5_tomato_960"
 )
+DEFAULT_CASE = "task5_tomato_960"
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT)
     parser.add_argument("--completion-report", type=Path, default=DEFAULT_COMPLETION_REPORT)
     parser.add_argument("--sign-mesh", type=Path, default=DEFAULT_SIGN_MESH)
+    parser.add_argument("--case", default=DEFAULT_CASE)
     parser.add_argument("--object-id", default="object:obj_tomato")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--max-constraints-per-frame", type=int, default=96)
@@ -337,7 +339,10 @@ def optimize_segment(
     normals = [np.asarray(row["normals_world"], dtype=float) for row in segment_rows]
     depths = [np.asarray(row["depths_m"], dtype=float) for row in segment_rows]
     x0 = np.zeros((len(segment_rows), 3), dtype=float)
-    bounds = [(-float(args.max_translation_m), float(args.max_translation_m))] * (len(segment_rows) * 3)
+    # L-BFGS-B supports box constraints, not a Euclidean ball. Use a conservative
+    # per-component box so every feasible translation has ||t||_2 <= max_translation_m.
+    component_bound = float(args.max_translation_m) / math.sqrt(3.0)
+    bounds = [(-component_bound, component_bound)] * (len(segment_rows) * 3)
 
     result = minimize(
         lambda flat: objective_and_grad(
@@ -443,7 +448,7 @@ def optimize_segment(
         blockers.append("temporal_translation_leaves_residual_penetration")
     if interval["visible_joint_shift_max_px"]["max"] is not None and float(interval["visible_joint_shift_max_px"]["max"]) > float(args.visible_shift_limit_px):
         blockers.append("temporal_translation_exceeds_visible_2d_shift_limit")
-    blockers.append("hidden_volume_uncertain_not_observed_depth_overwritten_or_free_space_validated")
+    blockers.append("object_hidden_volume_uncertain_not_observed_depth_overwritten_or_free_space_validated")
     interval["blocking_mechanisms"] = blockers
     return interval, frame_states
 
@@ -477,7 +482,7 @@ def main() -> None:
     report = {
         "method": "build_v18_temporal_mano_translation_interval_state",
         "status": "ok",
-        "case": "task5_tomato_960",
+        "case": str(args.case),
         "object_id": args.object_id,
         "claim_scope": (
             "Temporal translation optimizer for MANO interval uncertainty. Optimized translations are hypotheses; "
@@ -495,6 +500,7 @@ def main() -> None:
             "max_constraints_per_frame": int(args.max_constraints_per_frame),
             "penetration_epsilon_m": float(args.penetration_epsilon_m),
             "max_translation_m": float(args.max_translation_m),
+            "translation_bound_semantics": "euclidean_norm_conservative_box_bound",
             "accepted_residual_m": float(args.accepted_residual_m),
             "visible_shift_limit_px": float(args.visible_shift_limit_px),
             "prior_weight": float(args.prior_weight),
@@ -513,7 +519,7 @@ def main() -> None:
         "physical_conclusion": (
             "A smooth translation-only MANO trajectory can be computed as a hypothesis, but it is not accepted as "
             "a corrected hand state unless residual penetration is cleared within tolerance, visible 2D shift remains "
-            "bounded, and the repaired tomato hidden volume is validated. Current output is therefore interval-level "
+            "bounded, and the object hidden volume is validated. Current output is therefore interval-level "
             "hand-state uncertainty with optional best-effort translation hypotheses."
         ),
     }

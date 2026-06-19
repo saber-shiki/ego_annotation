@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # pyright: reportMissingImports=false
-"""Render the task5 compact-rigid tomato hypothesis with interval-level MANO uncertainty.
+"""Render a compact-rigid object hypothesis with interval-level MANO uncertainty.
 
-This script is a renderer, not a verifier. It consumes the completed compact-rigid
-obj_tomato mesh, per-frame rigid pose report, and full-bridge MANO/object
-constraint rows to produce full-video overlay/world/side-by-side artifacts. It
-does not accept sparse H-prime rows as a delivered MANO trajectory; conflict
-states are rendered as interval-level uncertainty evidence.
+This script is a renderer, not a verifier. It consumes a completed compact-rigid
+object mesh, per-frame rigid pose report, and full-bridge MANO/object constraint
+rows to produce full-video overlay/world/side-by-side artifacts. It does not
+accept sparse H-prime rows as a delivered MANO trajectory; conflict states are
+rendered as interval-level uncertainty evidence.
 """
 from __future__ import annotations
 
@@ -68,6 +68,8 @@ HAND_EDGES = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--case", default=CASE)
+    parser.add_argument("--object-label", default="rigid tomato")
     parser.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS_PATH)
     parser.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT_PATH)
     parser.add_argument("--completed-mesh", type=Path, default=DEFAULT_COMPLETED_MESH_PLY)
@@ -329,7 +331,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(frames, list) or not frames:
         raise RuntimeError(f"No frames found in {args.annotations}")
 
-    output_case_dir = args.output_root / CASE
+    output_case_dir = args.output_root / str(args.case)
     overlay_dir = output_case_dir / "overlay_frames"
     world_dir = output_case_dir / "world_frames"
     overlay_dir.mkdir(parents=True, exist_ok=True)
@@ -348,8 +350,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         camera = frame.get("camera") or {}
         T_world_camera = np.asarray(camera.get("T_world_camera_metric", np.eye(4)), dtype=np.float64)
 
-        tomato_present = frame_idx in poses
-        if tomato_present:
+        object_present = frame_idx in poses
+        if object_present:
             rot, trans = poses[frame_idx]
             vertices_world = object_vertices @ rot.T + trans[None, :]
             sampled_world = vertices_world[:: max(1, int(args.mesh_projection_stride))]
@@ -357,12 +359,12 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             u, v, valid = project_camera_points(vertices_camera, first_intrinsics(frame, width, height), width, height)
             for x, y in zip(u[valid], v[valid]):
                 cv2.circle(overlay, (int(x), int(y)), 1, (40, 255, 80), -1)
-            tomato_label = f"rigid tomato  {object_vertices.shape[0]} verts"
-            tomato_label_color = (40, 255, 80)
+            object_label = f"{args.object_label}  {object_vertices.shape[0]} verts"
+            object_label_color = (40, 255, 80)
         else:
-            tomato_label = f"frame {frame_idx}: rigid tomato pose missing"
-            tomato_label_color = (0, 165, 255)
-        cv2.putText(overlay, tomato_label, (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.60, tomato_label_color, 2)
+            object_label = f"frame {frame_idx}: {args.object_label} pose missing"
+            object_label_color = (0, 165, 255)
+        cv2.putText(overlay, object_label, (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.60, object_label_color, 2)
 
         for hand_idx, hand in enumerate(frame.get("hands", [])):
             metric = hand.get("metric_mano_state") or {}
@@ -371,6 +373,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             temporal = temporal_states.get((frame_idx, side))
             state = str((row or {}).get("candidate_application_state", "not_measured"))
             color, line_width, state_label = constraint_style(state)
+            interval_uncertain = temporal is not None or "uncertainty" in state or "not_applied" in state or "candidate" in state
             penetrating = row.get("penetrating_vertex_count", "?") if row else "?"
             label_y = 80 + hand_idx * 132
             if temporal is not None:
@@ -389,7 +392,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             intr = metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
             if joints_camera.shape == (21, 3) and isinstance(intr, list) and len(intr) == 4:
                 intr_tuple: tuple[float, float, float, float] = (float(intr[0]), float(intr[1]), float(intr[2]), float(intr[3]))
-                if temporal is not None:
+                if interval_uncertain:
                     # Thick continuous halo: this hand is inside an interval-level uncertain state.
                     draw_projected_skeleton(overlay, joints_camera, intr_tuple, (0, 120, 255), max(10, line_width + 6))
                 draw_projected_skeleton(overlay, joints_camera, intr_tuple, color, line_width)
@@ -417,7 +420,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         else:
             world_min_xyz, world_max_xyz = min_xyz, max_xyz
             world_label = f"global metric world  frame {frame_idx:04d}"
-        if tomato_present:
+        if object_present:
             rot, trans = poses[frame_idx]
             vertices_world = object_vertices[:: max(1, int(args.world_mesh_stride))] @ rot.T + trans[None, :]
             for vertex in vertices_world:
@@ -430,9 +433,10 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             state = str((constraints.get((frame_idx, side)) or {}).get("candidate_application_state", "not_measured"))
             temporal = temporal_states.get((frame_idx, side))
             color, line_width, _ = constraint_style(state)
+            interval_uncertain = temporal is not None or "uncertainty" in state or "not_applied" in state or "candidate" in state
             joints_world = np.asarray(metric.get("joints_current_v18_world_m") or [], dtype=float)
             if joints_world.shape == (21, 3):
-                if temporal is not None:
+                if interval_uncertain:
                     draw_world_skeleton(world, joints_world, world_min_xyz, world_max_xyz, (0, 120, 255), max(8, line_width + 4))
                 draw_world_skeleton(world, joints_world, world_min_xyz, world_max_xyz, color, max(2, line_width - 1))
                 if temporal is not None:
@@ -453,9 +457,10 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         if frame_idx % 120 == 0:
             print(f"rendered frame {frame_idx}/{len(frames)}")
 
-    overlay_video = output_case_dir / "v18_overlay_rigid_tomato.mp4"
-    world_video = output_case_dir / "v18_world_rigid_tomato.mp4"
-    side_by_side_video = output_case_dir / "v18_side_by_side_rigid_tomato.mp4"
+    safe_label = str(args.object_label).replace(" ", "_").replace(":", "_")
+    overlay_video = output_case_dir / f"v18_overlay_{safe_label}.mp4"
+    world_video = output_case_dir / f"v18_world_{safe_label}.mp4"
+    side_by_side_video = output_case_dir / f"v18_side_by_side_{safe_label}.mp4"
     encode_video(overlay_dir, overlay_video, fps)
     encode_video(world_dir, world_video, fps)
     subprocess.run(
@@ -488,10 +493,20 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     intervals = constraint_intervals(constraints)
+    remaining_gap = (
+        "Coordinate-level MANO correction remains unaccepted. The rendered temporal state is a bounded/falsified "
+        "uncertainty sequence, not a solved corrected hand trajectory."
+        if temporal_report is not None
+        else (
+            "A temporal MANO trajectory or bounded uncertainty sequence over the conflict intervals is still required. "
+            "This renderer preserves the object/hand dataflow needed for that next mechanism but does not solve it."
+        )
+    )
+
     manifest: dict[str, Any] = {
-        "method": "render_v18_compact_rigid_tomato_temporal_mano_attempt",
+        "method": "render_v18_compact_rigid_object_temporal_mano_attempt",
         "status": "ok",
-        "case": CASE,
+        "case": str(args.case),
         "output_root": str(args.output_root),
         "inputs": {
             "annotations": str(args.annotations),
@@ -503,12 +518,12 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "overlay": str(overlay_video),
             "world": str(world_video),
             "side_by_side": str(side_by_side_video),
-            "manifest": str(output_case_dir / "v18_temporal_rigid_tomato_manifest.json"),
+            "manifest": str(output_case_dir / "v18_temporal_rigid_object_manifest.json"),
         },
         "rendered_state": {
-            "tomato_object": "compact-rigid completed mesh with per-frame visible-depth pose fit",
-            "hand_model": "current V18 metric MANO skeletons with full-bridge compact-rigid tomato constraint state",
-            "legacy_deformable_tomato_state_consumed": False,
+            "object": f"{args.object_label}: compact-rigid completed mesh with per-frame visible-depth pose fit",
+            "hand_model": "current V18 metric MANO skeletons with full-bridge compact-rigid object constraint state",
+            "legacy_deformable_object_state_consumed": False,
             "coordinate_level_mano_correction_accepted": False,
             "world_view": str(args.world_view),
             "temporal_mano_state_consumed": str(args.temporal_mano_state) if args.temporal_mano_state is not None else None,
@@ -516,26 +531,23 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         },
         "evidence": {
             "total_frames": len(frames),
-            "frames_with_tomato_pose": len([idx for idx in range(len(frames)) if idx in poses]),
+            "frames_with_object_pose": len([idx for idx in range(len(frames)) if idx in poses]),
             "constraint_rows": len(constraints),
             "constraint_conflict_intervals": {side: ranges for side, ranges in intervals.items()},
             "conflict_interval_count": {side: len(ranges) for side, ranges in intervals.items()},
         },
         "physical_conclusion": (
-            "The compact-rigid tomato mesh and per-frame pose are rendered directly as the active object state. "
+            "The compact-rigid object mesh and per-frame pose are rendered directly as the active object state. "
             "The MANO/object constraint state is continuous over interaction intervals but does not yield an "
             "accepted coordinate-level MANO trajectory here; unresolved rows are exposed as interval-level hand "
             "state uncertainty rather than sparse accepted-row progress."
         ),
-        "remaining_gap": (
-            "A temporal MANO trajectory or bounded uncertainty sequence over the conflict intervals is still required. "
-            "This renderer preserves the object/hand dataflow needed for that next mechanism but does not solve it."
-        ),
+        "remaining_gap": remaining_gap,
         "visual_inspection_required": True,
-        "claim_scope": "diagnostic integrated rigid-tomato/temporal-MANO-uncertainty artifact, not final V18 delivery",
+        "claim_scope": "diagnostic integrated compact-rigid-object/temporal-MANO-uncertainty artifact, not final V18 delivery",
         "total_elapsed_s": time.time() - started,
     }
-    manifest_path = output_case_dir / "v18_temporal_rigid_tomato_manifest.json"
+    manifest_path = output_case_dir / "v18_temporal_rigid_object_manifest.json"
     with manifest_path.open("w") as f:
         json.dump(manifest, f, indent=2)
     return manifest
