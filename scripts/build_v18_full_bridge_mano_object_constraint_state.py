@@ -137,10 +137,21 @@ def main() -> None:
         frame_pos = frame_pos_by_idx[frame_idx]
         r_obj = np.asarray(pose["rotation_world_from_completed_canonical_matrix"], dtype=float)
         t_obj = np.asarray(pose["translation_world_m"], dtype=float)
+        if "R_c2w" in arrays and "t_c2w" in arrays:
+            fallback_r_c2w = np.asarray(arrays["R_c2w"][frame_pos], dtype=float)
+            fallback_t_c2w = np.asarray(arrays["t_c2w"][frame_pos], dtype=float)
+        elif "T_world_camera_metric_current_v18" in arrays:
+            fallback_t_world_camera = np.asarray(arrays["T_world_camera_metric_current_v18"][frame_pos], dtype=float)
+            if fallback_t_world_camera.shape != (4, 4):
+                raise RuntimeError(f"T_world_camera_metric_current_v18 row has shape {fallback_t_world_camera.shape}, expected (4, 4)")
+            fallback_r_c2w = fallback_t_world_camera[:3, :3]
+            fallback_t_c2w = fallback_t_world_camera[:3, 3]
+        else:
+            raise RuntimeError("bridge NPZ lacks camera pose arrays: expected R_c2w/t_c2w or T_world_camera_metric_current_v18")
         r_c2w, t_c2w, camera_pose_source = frame_camera_pose(
             frame,
-            np.asarray(arrays["R_c2w"][frame_pos], dtype=float),
-            np.asarray(arrays["t_c2w"][frame_pos], dtype=float),
+            fallback_r_c2w,
+            fallback_t_c2w,
         )
         for hand_raw in as_list(frame.get("hands")):
             if not isinstance(hand_raw, dict):
