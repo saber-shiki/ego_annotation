@@ -92,17 +92,32 @@ def ffprobe_frame_count(path: Path) -> int | None:
         return None
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def require_int_field(node: dict[str, Any], field: str, label: str) -> int:
+    value = node.get(field)
+    if value is None:
+        raise RuntimeError(f"{label}: missing {field}")
+    return int(value)
+
+
 def compact_update(hand: dict[str, Any]) -> dict[str, Any] | None:
     update = hand.get("compact_rigid_object_mano_constraint_update")
     if isinstance(update, dict):
         return update
-    metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    metric = as_dict(hand.get("metric_mano_state"))
     update = metric.get("compact_rigid_object_constraint_update")
     return update if isinstance(update, dict) else None
 
 
 def is_corrected(hand: dict[str, Any], update: dict[str, Any] | None = None) -> bool:
-    metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    metric = as_dict(hand.get("metric_mano_state"))
     return bool(
         (isinstance(update, dict) and update.get("coordinate_update_applied") is True)
         or metric.get("compact_rigid_object_corrected_h_prime") is True
@@ -110,19 +125,21 @@ def is_corrected(hand: dict[str, Any], update: dict[str, Any] | None = None) -> 
 
 
 def hand_key(frame: dict[str, Any], hand: dict[str, Any]) -> tuple[int, str]:
-    return int(frame.get("frame_idx")), str(hand.get("hand_side"))
+    return require_int_field(frame, "frame_idx", "frame"), str(hand.get("hand_side"))
 
 
 def index_hands(ann: dict[str, Any], label: str) -> dict[tuple[int, str], dict[str, Any]]:
     out: dict[tuple[int, str], dict[str, Any]] = {}
-    for frame in ann.get("frames", []) if isinstance(ann.get("frames"), list) else []:
-        if not isinstance(frame, dict):
+    for frame_raw in as_list(ann.get("frames")):
+        if not isinstance(frame_raw, dict):
             continue
-        frame_idx = int(frame.get("frame_idx"))
+        frame = frame_raw
+        frame_idx = require_int_field(frame, "frame_idx", f"{label} frame")
         seen_sides: set[str] = set()
-        for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
-            if not isinstance(hand, dict):
+        for hand_raw in as_list(frame.get("hands")):
+            if not isinstance(hand_raw, dict):
                 continue
+            hand = hand_raw
             side = str(hand.get("hand_side"))
             if side in seen_sides:
                 raise RuntimeError(f"{label}: duplicate hand side {side!r} in frame {frame_idx}")
@@ -137,10 +154,11 @@ def index_hands(ann: dict[str, Any], label: str) -> dict[tuple[int, str], dict[s
 def frame_alignment_signature(ann: dict[str, Any]) -> list[tuple[int, str, float]]:
     sig: list[tuple[int, str, float]] = []
     seen: set[int] = set()
-    for frame in ann.get("frames", []) if isinstance(ann.get("frames"), list) else []:
-        if not isinstance(frame, dict):
+    for frame_raw in as_list(ann.get("frames")):
+        if not isinstance(frame_raw, dict):
             continue
-        idx = int(frame.get("frame_idx"))
+        frame = frame_raw
+        idx = require_int_field(frame, "frame_idx", "frame alignment")
         if idx in seen:
             raise RuntimeError(f"duplicate frame_idx {idx}")
         seen.add(idx)
@@ -217,8 +235,9 @@ def state_sets_updates(ann: dict[str, Any], label: str) -> tuple[dict[str, set[t
     errors: list[str] = []
     for key, hand in index_hands(ann, label).items():
         top_update = hand.get("compact_rigid_object_mano_constraint_update") if isinstance(hand.get("compact_rigid_object_mano_constraint_update"), dict) else None
-        metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
-        metric_update = metric.get("compact_rigid_object_constraint_update") if isinstance(metric.get("compact_rigid_object_constraint_update"), dict) else None
+        metric = as_dict(hand.get("metric_mano_state"))
+        metric_update_raw = metric.get("compact_rigid_object_constraint_update")
+        metric_update = metric_update_raw if isinstance(metric_update_raw, dict) else None
         update = top_update or metric_update
         if not isinstance(update, dict):
             continue
@@ -291,8 +310,8 @@ def verify_corrected_coordinates(case: str, final_hands: dict[tuple[int, str], d
         if not isinstance(vhand, dict):
             errors.append(f"{case}: corrected key {key} absent in verified source")
             continue
-        fmetric = fhand.get("metric_mano_state") if isinstance(fhand.get("metric_mano_state"), dict) else {}
-        vmetric = vhand.get("metric_mano_state") if isinstance(vhand.get("metric_mano_state"), dict) else {}
+        fmetric = as_dict(fhand.get("metric_mano_state"))
+        vmetric = as_dict(vhand.get("metric_mano_state"))
         if fhand.get("hand_geometry_source") != "HaWoR_metric_MANO_plus_verified_compact_rigid_Hprime_translation":
             errors.append(f"{case} {key}: corrected hand_geometry_source does not identify verified H-prime")
         if fmetric.get("compact_rigid_object_hprime_transplant_source") != "verified_compact_rigid_post_signed_remeasurement":
@@ -349,21 +368,35 @@ def expected_from_verified(case: str, verified_ann: dict[str, Any]) -> dict[str,
         "corrected": corrected,
         "uncertainty": uncertainty,
         "validated_no_change": len(sets["validated_no_change"]),
-        "overlay_counts": {},
-        "world_counts": {},
+        "overlay_counts": {
+            "hand_metric_hprime_corrected_skeletons": corrected,
+        },
+        "world_counts": {
+            "world_compact_rigid_mano_update_corrected": corrected,
+            "world_compact_rigid_mano_update_uncertainty": uncertainty,
+        },
     }
-    if case == "task5_tomato_960":
-        expected["overlay_counts"]["compact_rigid_mano_update_uncertainty"] = uncertainty
-        expected["world_counts"]["world_compact_rigid_mano_update_uncertainty"] = uncertainty
-    elif case == "trash_1050":
-        expected["overlay_counts"]["hand_metric_hprime_corrected_skeletons"] = corrected
-        expected["world_counts"]["world_compact_rigid_mano_update_corrected"] = corrected
-        expected["world_counts"]["world_compact_rigid_mano_update_uncertainty"] = uncertainty
     return expected
 
 
-def verify_trash_remeasurement(corrected_keys: set[tuple[int, str]], report_path: Path) -> tuple[dict[str, Any], list[str]]:
+def verify_accepted_remeasurement(case: str, corrected_keys: set[tuple[int, str]], report_path: Path | None) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
+    if not corrected_keys:
+        return {
+            "remeasure_report": str(report_path) if report_path is not None else None,
+            "corrected_count": 0,
+            "accepted_remeasure_states": {},
+            "bad_rows": [],
+            "match": True,
+        }, errors
+    if report_path is None:
+        return {
+            "remeasure_report": None,
+            "corrected_count": len(corrected_keys),
+            "accepted_remeasure_states": {},
+            "bad_rows": [{"reason": "missing_case_remeasurement_report"}],
+            "match": False,
+        }, [f"{case}: corrected H-prime rows require a signed post-correction remeasurement report"]
     report = load_json(report_path)
     rows = {}
     for row in report.get("constraint_rows", []) if isinstance(report.get("constraint_rows"), list) else []:
@@ -384,7 +417,7 @@ def verify_trash_remeasurement(corrected_keys: set[tuple[int, str]], report_path
         if state != "no_penetration_no_coordinate_change_needed" or penetrating not in {0, 0.0}:
             bad.append({"key": key, "state": state, "penetrating_vertex_count": penetrating})
     if bad:
-        errors.append("trash_1050: corrected H-prime rows failed signed remeasurement")
+        errors.append(f"{case}: corrected H-prime rows failed signed remeasurement")
     return {
         "remeasure_report": str(report_path),
         "corrected_count": len(corrected_keys),
@@ -394,7 +427,7 @@ def verify_trash_remeasurement(corrected_keys: set[tuple[int, str]], report_path
     }, errors
 
 
-def verify_case(root: Path, case: str, verified_path: Path, trash_remeasure_report: Path) -> tuple[dict[str, Any], list[str]]:
+def verify_case(root: Path, case: str, verified_path: Path, remeasure_reports: dict[str, Path | None]) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     ann_path = root / case / "annotations_v18_full.json"
     ann = load_json(ann_path)
@@ -448,10 +481,9 @@ def verify_case(root: Path, case: str, verified_path: Path, trash_remeasure_repo
         "overlay_compact_counts": {k: overlay_counts.get(k, 0) for k in sorted(expected["overlay_counts"].keys())},
         "world_compact_counts": {k: world_counts.get(k, 0) for k in sorted(expected["world_counts"].keys())},
     }
-    if case == "trash_1050":
-        remeasure, remeasure_errors = verify_trash_remeasurement(corrected_keys, trash_remeasure_report)
-        summary["accepted_hprime_remeasurement"] = remeasure
-        errors.extend(remeasure_errors)
+    remeasure, remeasure_errors = verify_accepted_remeasurement(case, corrected_keys, remeasure_reports.get(case))
+    summary["accepted_hprime_remeasurement"] = remeasure
+    errors.extend(remeasure_errors)
     return summary, errors
 
 
@@ -459,6 +491,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
+    parser.add_argument("--task5-remeasure-report", type=Path, default=None)
     parser.add_argument("--trash-remeasure-report", type=Path, default=DEFAULT_TRASH_REMEASURE)
     parser.add_argument("--verified-annotation", action="append", type=parse_case_path, default=[])
     args = parser.parse_args()
@@ -466,12 +499,16 @@ def main() -> None:
     verified_paths = dict(DEFAULT_VERIFIED)
     for case, path in args.verified_annotation:
         verified_paths[case] = path
+    remeasure_reports: dict[str, Path | None] = {
+        "task5_tomato_960": args.task5_remeasure_report,
+        "trash_1050": args.trash_remeasure_report,
+    }
 
     case_summaries: dict[str, Any] = {}
     errors: list[str] = []
     for case, verified_path in verified_paths.items():
         try:
-            summary, case_errors = verify_case(args.root, case, verified_path, args.trash_remeasure_report)
+            summary, case_errors = verify_case(args.root, case, verified_path, remeasure_reports)
         except Exception as exc:
             summary = {"case": case, "exception": str(exc)}
             case_errors = [f"{case}: verifier exception: {exc}"]
@@ -484,9 +521,10 @@ def main() -> None:
         "root": str(args.root),
         "cases": case_summaries,
         "errors": errors,
+        "case_remeasure_reports": {case: (str(path) if path is not None else None) for case, path in remeasure_reports.items()},
         "trash_remeasure_report": str(args.trash_remeasure_report),
         "verified_annotations": {case: str(path) for case, path in verified_paths.items()},
-        "claim_scope": "Verifies the final artifact's consumed metric MANO H-prime/uncertainty hand states by exact key-set and coordinate matching, absence of dominant-visible-part support anywhere in consumed state, signed remeasurement of accepted trash corrections, and full-video render frame counts.",
+        "claim_scope": "Verifies the final artifact's consumed metric MANO H-prime/uncertainty hand states by exact key-set and coordinate matching, absence of dominant-visible-part support anywhere in consumed state, signed post-correction remeasurement for every case with accepted corrections, and full-video render frame counts.",
     }
     write_json(args.summary, out)
     print(json.dumps(out, indent=2))

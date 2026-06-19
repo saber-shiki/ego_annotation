@@ -114,6 +114,8 @@ def main() -> None:
         str(args.output_root),
         "--summary",
         str(args.output_root / "verify_v18_verified_hprime_final_artifact.json"),
+        "--task5-remeasure-report",
+        str(args.task5_constraint_report),
         "--trash-remeasure-report",
         str(args.trash_constraint_report),
     ]
