@@ -131,10 +131,10 @@ class FrameHandRow:
     visible_surface_track_npz_path: str | None
     visible_surface_track_valid_depth_pixels: int
     visible_surface_track_quarantined_face_count: int
-    visible_lid_depth_vertex_indices: np.ndarray
-    visible_lid_depth_m: np.ndarray
-    visible_lid_depth_initial_delta_m: np.ndarray
-    visible_lid_depth_initial_measure: dict[str, Any]
+    visible_surface_depth_order_vertex_indices: np.ndarray
+    visible_surface_depth_order_depth_m: np.ndarray
+    visible_surface_depth_order_initial_delta_m: np.ndarray
+    visible_surface_depth_order_initial_measure: dict[str, Any]
     joint_visibility_weights: np.ndarray
     joint_depth_residual_m: np.ndarray
     hand_ray_shift_prior_world_m: np.ndarray
@@ -205,14 +205,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--visible-surface-track-factor-report", type=Path, default=None, help="Optional reusable visible-surface track factor report. Active rows provide model-mask/metric-depth first-surface observations for MANO depth-order and hidden-volume quarantine.")
     p.add_argument("--factor-report", type=Path, action="append", default=None, help="Generic reusable factor report(s). Rows are dispatched by factor_family, enabling ownership, surface_eligibility, and visible_surface_track factors through one interface.")
     p.add_argument("--visible-ownership-face-overlap-dilation-px", type=int, default=2, help="Pixel dilation for deciding whether any projected face support sample overlaps non-object-owned ownership pixels.")
-    p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Optional SAM2/OWLv2 visible object/lid mask report. When enabled, masks gate observed mesh faces and/or add depth-order terms for MANO vertices under visible object pixels.")
-    p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Trust observed object mesh faces only when their projected center lies inside the model-produced visible object mask for that frame.")
-    p.add_argument("--visible-mask-quarantine-signed-mesh", action=argparse.BooleanOptionalAction, default=False, help="On frames with a visible object mask, do not use compact-mesh signed nonpenetration as a trusted force; rely on visible mask/depth-order terms instead.")
+    p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Legacy visible entity mask report. Prefer --factor-report with factor_family=visible_surface_track; this path remains only for reproducing earlier mask/depth ablations.")
+    p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Legacy gate: trust observed object mesh faces only when their projected center lies inside the model-produced visible entity mask.")
+    p.add_argument("--visible-mask-quarantine-signed-mesh", action=argparse.BooleanOptionalAction, default=False, help="On frames with a visible entity mask or active visible-surface factor, do not use compact-mesh signed nonpenetration as a trusted force; rely on visible first-surface constraints instead.")
     p.add_argument("--visible-object-mask-dilation-px", type=int, default=2)
-    p.add_argument("--visible-lid-depth-order-term", action=argparse.BooleanOptionalAction, default=False, help="Penalize MANO vertices that project inside the visible lid/object mask but remain in front of the observed lid depth beyond a margin.")
-    p.add_argument("--visible-lid-depth-order-margin-m", type=float, default=0.010)
-    p.add_argument("--visible-lid-depth-order-weight", type=float, default=2.0e4)
-    p.add_argument("--max-visible-lid-depth-vertices", type=int, default=160)
+    p.add_argument("--visible-surface-depth-order-term", dest="visible_surface_depth_order_term", action=argparse.BooleanOptionalAction, default=False, help="Penalize MANO vertices that project inside a visible first-surface mask but remain in front of the observed metric depth beyond a margin. Active visible_surface_track factors enable this residual automatically.")
+    p.add_argument("--visible-surface-depth-order-margin-m", dest="visible_surface_depth_order_margin_m", type=float, default=0.010)
+    p.add_argument("--visible-surface-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=2.0e4)
+    p.add_argument("--max-visible-surface-depth-vertices", dest="max_visible_surface_depth_vertices", type=int, default=160)
+    p.add_argument("--visible-lid-depth-order-term", dest="visible_surface_depth_order_term", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p.add_argument("--visible-lid-depth-order-margin-m", dest="visible_surface_depth_order_margin_m", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p.add_argument("--visible-lid-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p.add_argument("--max-visible-lid-depth-vertices", dest="max_visible_surface_depth_vertices", type=int, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     return p.parse_args()
 
 
@@ -291,12 +295,23 @@ def load_visible_surface_track_rows(report_path: Path | None) -> dict[tuple[int,
     return load_factor_rows(report_path, "factor_rows")
 
 
-def load_generic_factor_reports(report_paths: list[Path] | None) -> dict[str, dict[tuple[int, str], dict[str, Any]]]:
+def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entity_id: str) -> dict[str, dict[tuple[int, str], dict[str, Any]]]:
     out: dict[str, dict[tuple[int, str], dict[str, Any]]] = {
         "visible_ownership": {},
         "surface_eligibility": {},
         "visible_surface_track": {},
     }
+    required_fields = (
+        "factor_family",
+        "target_entity_id",
+        "frame_idx",
+        "hand_side",
+        "variable_affected",
+        "observation_type",
+        "residual_or_quarantine_rule",
+        "provenance",
+        "rendered_uncertainty_channel",
+    )
     for report_path in list(report_paths or []):
         if not report_path.exists():
             raise FileNotFoundError(f"missing generic factor report: {report_path}")
@@ -309,8 +324,14 @@ def load_generic_factor_reports(report_paths: list[Path] | None) -> dict[str, di
             family = str(row.get("factor_family") or "")
             if family not in out:
                 continue
-            if row.get("frame_idx") is None or row.get("hand_side") is None:
-                raise ValueError(f"generic factor row lacks frame_idx/hand_side in {report_path}: {row}")
+            missing = [field for field in required_fields if row.get(field) in (None, "")]
+            if missing:
+                raise ValueError(f"generic {family} factor row lacks required fields {missing} in {report_path}: {row}")
+            if str(row.get("target_entity_id")) != str(target_entity_id):
+                raise ValueError(f"generic {family} factor target {row.get('target_entity_id')} does not match solver target {target_entity_id} in {report_path}")
+            provenance = row.get("provenance")
+            if not isinstance(provenance, dict) or not provenance:
+                raise ValueError(f"generic {family} factor row has empty/non-dict provenance in {report_path}: {row}")
             key = (int(row["frame_idx"]), str(row["hand_side"]))
             if key in out[family]:
                 raise ValueError(f"duplicate generic {family} factor row for {key} while reading {report_path}")
@@ -487,7 +508,7 @@ def visible_object_mask_face_gate(
     return strict, raw_count, int(np.count_nonzero(strict))
 
 
-def visible_lid_depth_order_constraints(
+def visible_surface_depth_order_constraints(
     *,
     frame: dict[str, Any],
     side: str,
@@ -498,35 +519,35 @@ def visible_lid_depth_order_constraints(
     enabled: bool | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
     if enabled is None:
-        enabled = bool(args.visible_lid_depth_order_term)
+        enabled = bool(args.visible_surface_depth_order_term)
     if mask is None or depth_row is None or not bool(enabled):
         empty = np.zeros((0,), dtype=float)
         return np.zeros((0,), dtype=np.int64), empty, empty, {
             "finite_inside_count": 0,
-            "hand_behind_observed_lid_count": 0,
-            "hand_in_front_of_observed_lid_count": 0,
-            "hand_near_observed_lid_depth_count": 0,
-            "depth_delta_hand_minus_lid_m": numeric_summary(empty),
+            "hand_behind_observed_surface_count": 0,
+            "hand_in_front_of_observed_surface_count": 0,
+            "hand_near_observed_surface_depth_count": 0,
+            "depth_delta_hand_minus_surface_m": numeric_summary(empty),
         }
     uv = project_world(vertices_world, frame, side)
     if uv is None:
         empty = np.zeros((0,), dtype=float)
         return np.zeros((0,), dtype=np.int64), empty, empty, {
             "finite_inside_count": 0,
-            "hand_behind_observed_lid_count": 0,
-            "hand_in_front_of_observed_lid_count": 0,
-            "hand_near_observed_lid_depth_count": 0,
-            "depth_delta_hand_minus_lid_m": numeric_summary(empty),
+            "hand_behind_observed_surface_count": 0,
+            "hand_in_front_of_observed_surface_count": 0,
+            "hand_near_observed_surface_depth_count": 0,
+            "depth_delta_hand_minus_surface_m": numeric_summary(empty),
         }
     depth = np.asarray(depth_row.get("depth"), dtype=np.float32)
     if depth.ndim != 2:
         empty = np.zeros((0,), dtype=float)
         return np.zeros((0,), dtype=np.int64), empty, empty, {
             "finite_inside_count": 0,
-            "hand_behind_observed_lid_count": 0,
-            "hand_in_front_of_observed_lid_count": 0,
-            "hand_near_observed_lid_depth_count": 0,
-            "depth_delta_hand_minus_lid_m": numeric_summary(empty),
+            "hand_behind_observed_surface_count": 0,
+            "hand_in_front_of_observed_surface_count": 0,
+            "hand_near_observed_surface_depth_count": 0,
+            "depth_delta_hand_minus_surface_m": numeric_summary(empty),
         }
     height, width = depth.shape
     inside = mask_membership(mask, uv, int(args.visible_object_mask_dilation_px))
@@ -535,41 +556,41 @@ def visible_lid_depth_order_constraints(
     v = np.rint(uv[:, 1]).astype(int)
     valid = inside & (cam[:, 2] > 1.0e-5) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
     if np.any(valid):
-        z_lid_all = depth[v[valid], u[valid]].astype(float)
+        z_surface_all = depth[v[valid], u[valid]].astype(float)
         valid_ids = np.where(valid)[0]
-        finite = np.isfinite(z_lid_all) & (z_lid_all > 1.0e-5)
+        finite = np.isfinite(z_surface_all) & (z_surface_all > 1.0e-5)
         valid_ids = valid_ids[finite]
-        z_lid_all = z_lid_all[finite]
+        z_surface_all = z_surface_all[finite]
     else:
         valid_ids = np.zeros((0,), dtype=np.int64)
-        z_lid_all = np.zeros((0,), dtype=float)
+        z_surface_all = np.zeros((0,), dtype=float)
     if valid_ids.size == 0:
         empty = np.zeros((0,), dtype=float)
         return np.zeros((0,), dtype=np.int64), empty, empty, {
             "finite_inside_count": 0,
-            "hand_behind_observed_lid_count": 0,
-            "hand_in_front_of_observed_lid_count": 0,
-            "hand_near_observed_lid_depth_count": 0,
-            "depth_delta_hand_minus_lid_m": numeric_summary(empty),
+            "hand_behind_observed_surface_count": 0,
+            "hand_in_front_of_observed_surface_count": 0,
+            "hand_near_observed_surface_depth_count": 0,
+            "depth_delta_hand_minus_surface_m": numeric_summary(empty),
         }
-    delta = cam[valid_ids, 2].astype(float) - z_lid_all
-    margin = float(args.visible_lid_depth_order_margin_m)
+    delta = cam[valid_ids, 2].astype(float) - z_surface_all
+    margin = float(args.visible_surface_depth_order_margin_m)
     measure = {
         "finite_inside_count": int(valid_ids.size),
-        "hand_behind_observed_lid_count": int(np.count_nonzero(delta > margin)),
-        "hand_in_front_of_observed_lid_count": int(np.count_nonzero(delta < -margin)),
-        "hand_near_observed_lid_depth_count": int(np.count_nonzero(np.abs(delta) <= margin)),
-        "depth_delta_hand_minus_lid_m": numeric_summary(delta),
+        "hand_behind_observed_surface_count": int(np.count_nonzero(delta > margin)),
+        "hand_in_front_of_observed_surface_count": int(np.count_nonzero(delta < -margin)),
+        "hand_near_observed_surface_depth_count": int(np.count_nonzero(np.abs(delta) <= margin)),
+        "depth_delta_hand_minus_surface_m": numeric_summary(delta),
     }
-    violation = np.maximum(0.0, (z_lid_all - margin) - cam[valid_ids, 2].astype(float))
+    violation = np.maximum(0.0, (z_surface_all - margin) - cam[valid_ids, 2].astype(float))
     order = np.argsort(violation)[::-1]
-    cap = max(0, int(args.max_visible_lid_depth_vertices))
+    cap = max(0, int(args.max_visible_surface_depth_vertices))
     if cap and len(order) > cap:
         order = order[:cap]
     selected_ids = valid_ids[order].astype(np.int64)
-    selected_lid_depth = z_lid_all[order].astype(float)
+    selected_surface_depth = z_surface_all[order].astype(float)
     selected_delta = delta[order].astype(float)
-    return selected_ids, selected_lid_depth, selected_delta, measure
+    return selected_ids, selected_surface_depth, selected_delta, measure
 
 
 def sample_ids(n: int, count: int) -> np.ndarray:
@@ -826,7 +847,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     depth_paths = list(args.depth_npz or [DEFAULT_DEPTH])
     depth_rows = load_depth_sources(depth_paths)
     visible_mask_paths = load_visible_object_mask_paths(args.visible_object_mask_report)
-    generic_factor_rows = load_generic_factor_reports(args.factor_report)
+    generic_factor_rows = load_generic_factor_reports(args.factor_report, target_entity_id=str(args.object_id))
     visible_ownership_rows = merge_factor_row_maps("visible_ownership", load_visible_ownership_rows(args.visible_ownership_factor_report), generic_factor_rows["visible_ownership"])
     surface_eligibility_rows = merge_factor_row_maps("surface_eligibility", load_surface_eligibility_rows(args.surface_eligibility_factor_report), generic_factor_rows["surface_eligibility"])
     visible_surface_track_rows = merge_factor_row_maps("visible_surface_track", load_visible_surface_track_rows(args.visible_surface_track_factor_report), generic_factor_rows["visible_surface_track"])
@@ -962,14 +983,14 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         else:
             joint_visibility_weights = np.ones((21,), dtype=float)
             joint_depth_residual = np.full((21,), np.nan, dtype=float)
-        lid_depth_idx, lid_depth_m, lid_depth_delta, lid_depth_measure = visible_lid_depth_order_constraints(
+        surface_depth_idx, surface_depth_m, surface_depth_delta, surface_depth_measure = visible_surface_depth_order_constraints(
             frame=frame,
             side=side,
             vertices_world=current_vertices,
             mask=visible_mask,
             depth_row=depth_rows.get(frame_idx),
             args=args,
-            enabled=bool(args.visible_lid_depth_order_term) or bool(visible_surface_active),
+            enabled=bool(args.visible_surface_depth_order_term) or bool(visible_surface_active),
         )
         r_obj, t_obj = pose
         ray_shift = hand_ray_shift_priors.get((frame_idx, side))
@@ -1026,10 +1047,10 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 visible_surface_track_npz_path=visible_surface_diag.get("visible_surface_npz_path"),
                 visible_surface_track_valid_depth_pixels=int(visible_surface_diag.get("valid_depth_pixels", 0) or 0),
                 visible_surface_track_quarantined_face_count=int(visible_surface_track_quarantined_face_count),
-                visible_lid_depth_vertex_indices=lid_depth_idx.astype(np.int64),
-                visible_lid_depth_m=lid_depth_m.astype(float),
-                visible_lid_depth_initial_delta_m=lid_depth_delta.astype(float),
-                visible_lid_depth_initial_measure=lid_depth_measure,
+                visible_surface_depth_order_vertex_indices=surface_depth_idx.astype(np.int64),
+                visible_surface_depth_order_depth_m=surface_depth_m.astype(float),
+                visible_surface_depth_order_initial_delta_m=surface_depth_delta.astype(float),
+                visible_surface_depth_order_initial_measure=surface_depth_measure,
                 joint_visibility_weights=joint_visibility_weights.astype(float),
                 joint_depth_residual_m=joint_depth_residual.astype(float),
                 hand_ray_shift_prior_world_m=ray_prior_world.astype(float),
@@ -1247,9 +1268,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     r_c2w_t: list[torch.Tensor] = []
     t_c2w_t: list[torch.Tensor] = []
     base_depth: list[torch.Tensor] = []
-    visible_lid_depth_indices_t: list[torch.Tensor] = []
-    visible_lid_depth_t: list[torch.Tensor] = []
-    visible_lid_initial_counts: list[int] = []
+    visible_surface_depth_order_indices_t: list[torch.Tensor] = []
+    visible_surface_depth_order_depth_t: list[torch.Tensor] = []
+    visible_surface_depth_order_initial_counts: list[int] = []
     for row in rows:
         intr = frame_intrinsics(row.frame, row.side)
         intr_t.append(None if intr is None else torch.tensor(intr, dtype=torch.float32, device=device))
@@ -1259,9 +1280,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         r_c2w_t.append(torch.tensor(r_c2w, dtype=torch.float32, device=device))
         t_c2w_t.append(torch.tensor(t_c2w, dtype=torch.float32, device=device))
         base_depth.append(torch.tensor(world_to_camera(row.current_joints_world, row.frame)[:, 2], dtype=torch.float32, device=device))
-        visible_lid_depth_indices_t.append(torch.tensor(row.visible_lid_depth_vertex_indices, dtype=torch.long, device=device))
-        visible_lid_depth_t.append(torch.tensor(row.visible_lid_depth_m, dtype=torch.float32, device=device))
-        visible_lid_initial_counts.append(int((row.visible_lid_depth_initial_measure or {}).get("finite_inside_count", 0)))
+        visible_surface_depth_order_indices_t.append(torch.tensor(row.visible_surface_depth_order_vertex_indices, dtype=torch.long, device=device))
+        visible_surface_depth_order_depth_t.append(torch.tensor(row.visible_surface_depth_order_depth_m, dtype=torch.float32, device=device))
+        visible_surface_depth_order_initial_counts.append(int((row.visible_surface_depth_order_initial_measure or {}).get("finite_inside_count", 0)))
 
     def hypothesis() -> tuple[torch.Tensor, torch.Tensor]:
         new_root = rotvec_to_matrix(root_delta) @ base_root_mat
@@ -1353,14 +1374,14 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
             depth_shift = torch.abs(cam[:, 2] - base_depth[i])
             depth_hinge = torch.relu(depth_shift - float(args.depth_shift_limit_m)) ** 2
             loss = loss + float(args.depth_hinge_weight) * torch.sum(obs_w * depth_hinge) / obs_den
-            visible_depth_order_enabled = bool(args.visible_lid_depth_order_term) or rows[i].visible_surface_track_factor_state == "active_visible_surface"
-            if visible_depth_order_enabled and len(visible_lid_depth_indices_t[i]):
-                ids = visible_lid_depth_indices_t[i]
-                lid_depth = visible_lid_depth_t[i]
+            visible_depth_order_enabled = bool(args.visible_surface_depth_order_term) or rows[i].visible_surface_track_factor_state == "active_visible_surface"
+            if visible_depth_order_enabled and len(visible_surface_depth_order_indices_t[i]):
+                ids = visible_surface_depth_order_indices_t[i]
+                surface_depth = visible_surface_depth_order_depth_t[i]
                 cam_v = torch.matmul(hyp_vertices[i, ids] - t_c2w_t[i].reshape(1, 3), r_c2w_t[i])
-                residual = torch.relu((lid_depth - float(args.visible_lid_depth_order_margin_m)) - cam_v[:, 2])
+                residual = torch.relu((surface_depth - float(args.visible_surface_depth_order_margin_m)) - cam_v[:, 2])
                 active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
-                loss = loss + float(args.visible_lid_depth_order_weight) * torch.sum(residual * residual) / active_count
+                loss = loss + float(args.visible_surface_depth_order_weight) * torch.sum(residual * residual) / active_count
         loss.backward()
         return loss
 
@@ -1429,10 +1450,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     object_trans_max: list[float] = []
     root_max: list[float] = []
     pose_max: list[float] = []
-    visible_lid_selected_count: list[float] = []
-    visible_lid_initial_in_front_count: list[float] = []
-    visible_lid_final_in_front_count: list[float] = []
-    visible_lid_final_delta_min: list[float] = []
+    visible_surface_depth_order_selected_count: list[float] = []
+    visible_surface_depth_order_initial_in_front_count: list[float] = []
+    visible_surface_depth_order_final_in_front_count: list[float] = []
+    visible_surface_depth_order_final_delta_min: list[float] = []
     corrected_frames = 0
     for i, row in enumerate(rows):
         if len(active_constraint_indices[i]):
@@ -1461,22 +1482,22 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         cam0 = world_to_camera(row.current_joints_world, row.frame)
         cam1 = world_to_camera(hyp_joints[i], row.frame)
         dshift = np.abs(cam1[:, 2] - cam0[:, 2])
-        lid_ids = row.visible_lid_depth_vertex_indices.astype(int)
-        if lid_ids.size:
-            cam_v_final = world_to_camera(hyp_vertices[i, lid_ids], row.frame)[:, 2]
-            lid_final_delta = cam_v_final.astype(float) - row.visible_lid_depth_m.astype(float)
-            lid_initial_delta = row.visible_lid_depth_initial_delta_m.astype(float)
-            lid_initial_in_front = int(np.count_nonzero(lid_initial_delta < -float(args.visible_lid_depth_order_margin_m)))
-            lid_final_in_front = int(np.count_nonzero(lid_final_delta < -float(args.visible_lid_depth_order_margin_m)))
-            lid_final_summary = numeric_summary(lid_final_delta)
-            visible_lid_selected_count.append(float(lid_ids.size))
-            visible_lid_initial_in_front_count.append(float(lid_initial_in_front))
-            visible_lid_final_in_front_count.append(float(lid_final_in_front))
-            visible_lid_final_delta_min.append(float(np.min(lid_final_delta)))
+        surface_ids = row.visible_surface_depth_order_vertex_indices.astype(int)
+        if surface_ids.size:
+            cam_v_final = world_to_camera(hyp_vertices[i, surface_ids], row.frame)[:, 2]
+            surface_final_delta = cam_v_final.astype(float) - row.visible_surface_depth_order_depth_m.astype(float)
+            surface_initial_delta = row.visible_surface_depth_order_initial_delta_m.astype(float)
+            surface_initial_in_front = int(np.count_nonzero(surface_initial_delta < -float(args.visible_surface_depth_order_margin_m)))
+            surface_final_in_front = int(np.count_nonzero(surface_final_delta < -float(args.visible_surface_depth_order_margin_m)))
+            surface_final_summary = numeric_summary(surface_final_delta)
+            visible_surface_depth_order_selected_count.append(float(surface_ids.size))
+            visible_surface_depth_order_initial_in_front_count.append(float(surface_initial_in_front))
+            visible_surface_depth_order_final_in_front_count.append(float(surface_final_in_front))
+            visible_surface_depth_order_final_delta_min.append(float(np.min(surface_final_delta)))
         else:
-            lid_initial_in_front = 0
-            lid_final_in_front = 0
-            lid_final_summary = numeric_summary(np.zeros((0,), dtype=float))
+            surface_initial_in_front = 0
+            surface_final_in_front = 0
+            surface_final_summary = numeric_summary(np.zeros((0,), dtype=float))
         tnorm = float(np.linalg.norm(trans_np[i]))
         otnorm = float(np.linalg.norm(object_trans_np[i]))
         rnorm = float(np.linalg.norm(root_np[i]))
@@ -1536,11 +1557,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "visible_surface_track_npz_path": row.visible_surface_track_npz_path,
                 "visible_surface_track_valid_depth_pixels": int(row.visible_surface_track_valid_depth_pixels),
                 "visible_surface_track_quarantined_face_count": int(row.visible_surface_track_quarantined_face_count),
-                "visible_lid_depth_order_initial": row.visible_lid_depth_initial_measure,
-                "visible_lid_depth_order_selected_vertex_count": int(lid_ids.size),
-                "visible_lid_depth_order_selected_initial_in_front_count": int(lid_initial_in_front),
-                "visible_lid_depth_order_selected_final_in_front_count": int(lid_final_in_front),
-                "visible_lid_depth_order_selected_final_delta_hand_minus_lid_m": lid_final_summary,
+                "visible_surface_depth_order_initial": row.visible_surface_depth_order_initial_measure,
+                "visible_surface_depth_order_selected_vertex_count": int(surface_ids.size),
+                "visible_surface_depth_order_selected_initial_in_front_count": int(surface_initial_in_front),
+                "visible_surface_depth_order_selected_final_in_front_count": int(surface_final_in_front),
+                "visible_surface_depth_order_selected_final_delta_hand_minus_surface_m": surface_final_summary,
                 "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
                 "full_raw_observed_surface_penetration_after_solver_m": full_raw_post.get("observed_supported_penetration_m"),
@@ -1571,10 +1592,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visible_object_mask_face_count": numeric_summary(np.asarray([r.visible_object_mask_face_count for r in rows], dtype=float)),
         "visible_surface_track_active_row_count": int(sum(r.visible_surface_track_factor_state == "active_visible_surface" for r in rows)),
         "visible_surface_track_quarantined_face_count": numeric_summary(np.asarray([r.visible_surface_track_quarantined_face_count for r in rows], dtype=float)),
-        "visible_lid_depth_order_selected_vertex_count": numeric_summary(np.asarray(visible_lid_selected_count, dtype=float)),
-        "visible_lid_depth_order_selected_initial_in_front_count": numeric_summary(np.asarray(visible_lid_initial_in_front_count, dtype=float)),
-        "visible_lid_depth_order_selected_final_in_front_count": numeric_summary(np.asarray(visible_lid_final_in_front_count, dtype=float)),
-        "visible_lid_depth_order_selected_final_delta_min_m": numeric_summary(np.asarray(visible_lid_final_delta_min, dtype=float)),
+        "visible_surface_depth_order_selected_vertex_count": numeric_summary(np.asarray(visible_surface_depth_order_selected_count, dtype=float)),
+        "visible_surface_depth_order_selected_initial_in_front_count": numeric_summary(np.asarray(visible_surface_depth_order_initial_in_front_count, dtype=float)),
+        "visible_surface_depth_order_selected_final_in_front_count": numeric_summary(np.asarray(visible_surface_depth_order_final_in_front_count, dtype=float)),
+        "visible_surface_depth_order_selected_final_delta_min_m": numeric_summary(np.asarray(visible_surface_depth_order_final_delta_min, dtype=float)),
         "visible_joint_shift_max_px": numeric_summary(np.asarray(visible_max, dtype=float)),
         "joint_camera_depth_shift_max_m": numeric_summary(np.asarray(depth_max, dtype=float)),
         "translation_delta_norm_m": numeric_summary(np.asarray(trans_max, dtype=float)),
@@ -1599,7 +1620,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visible_surface_track_factor_enabled": args.visible_surface_track_factor_report is not None or any(r.visible_surface_track_factor_state is not None for r in rows),
         "visible_object_mask_gate_enabled": bool(args.visible_object_mask_gate),
         "visible_mask_quarantine_signed_mesh_enabled": bool(args.visible_mask_quarantine_signed_mesh),
-        "visible_lid_depth_order_term_enabled": bool(args.visible_lid_depth_order_term),
+        "visible_surface_depth_order_term_enabled": bool(args.visible_surface_depth_order_term),
         "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report),
         "dense_observed_surface_barrier_enabled": bool(args.dense_observed_surface_barrier),
         "dense_observed_constraint_count_final": numeric_summary(np.asarray([len(x) for x in dense_constraint_indices], dtype=float)),
@@ -1609,7 +1630,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
 
 def main() -> None:
     args = parse_args()
-    if (bool(args.visible_object_mask_gate) or bool(args.visible_lid_depth_order_term)) and args.visible_object_mask_report is None:
+    if (bool(args.visible_object_mask_gate) or bool(args.visible_surface_depth_order_term)) and args.visible_object_mask_report is None:
         raise ValueError("visible object mask terms require --visible-object-mask-report")
     device = torch.device(args.device)
     models = load_models(args, device)
