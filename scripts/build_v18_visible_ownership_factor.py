@@ -362,11 +362,21 @@ def rasterize_mano_support(
     }
 
 
+def dilate_bool_mask(mask: np.ndarray, radius_px: int) -> np.ndarray:
+    radius = max(0, int(radius_px))
+    if radius == 0:
+        return mask.astype(bool)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    return cv2.dilate(mask.astype(np.uint8), kernel, iterations=1).astype(bool)
+
+
 def render_review_panel(
     *,
     frame_path: Path,
     hand_mask: np.ndarray,
     entity_mask: np.ndarray,
+    mano_support: np.ndarray,
+    aligned_visible_hand: np.ndarray,
     visible_hand_owned: np.ndarray,
     visible_object_owned: np.ndarray,
     mixed_boundary: np.ndarray,
@@ -378,12 +388,14 @@ def render_review_panel(
     base = np.asarray(image).astype(np.float32)
     overlay = base.copy()
     colors = [
-        (hand_mask, np.asarray([0, 255, 255], dtype=np.float32), 0.30),
-        (entity_mask, np.asarray([0, 255, 0], dtype=np.float32), 0.24),
-        (visible_hand_owned, np.asarray([255, 0, 255], dtype=np.float32), 0.70),
-        (visible_object_owned, np.asarray([0, 180, 0], dtype=np.float32), 0.45),
-        (mixed_boundary, np.asarray([255, 255, 0], dtype=np.float32), 0.65),
-        (occluded_or_unresolved, np.asarray([255, 80, 0], dtype=np.float32), 0.70),
+        (hand_mask, np.asarray([0, 255, 255], dtype=np.float32), 0.24),
+        (mano_support, np.asarray([0, 80, 255], dtype=np.float32), 0.45),
+        (aligned_visible_hand, np.asarray([255, 255, 255], dtype=np.float32), 0.35),
+        (entity_mask, np.asarray([0, 255, 0], dtype=np.float32), 0.22),
+        (visible_hand_owned, np.asarray([255, 0, 255], dtype=np.float32), 0.75),
+        (visible_object_owned, np.asarray([0, 180, 0], dtype=np.float32), 0.42),
+        (mixed_boundary, np.asarray([255, 255, 0], dtype=np.float32), 0.68),
+        (occluded_or_unresolved, np.asarray([255, 80, 0], dtype=np.float32), 0.72),
     ]
     for mask, color, alpha in colors:
         if mask.shape != overlay.shape[:2]:
@@ -454,16 +466,35 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 radius_px=int(args.mano_projection_dilation_px),
                 depth_support_m=float(args.mano_depth_support_m),
             )
-            overlap = hand_mask & entity_mask
-            visible_hand_owned = overlap & mano_support
-            mixed_boundary = overlap & ~mano_support
-            visible_object_owned = entity_mask & ~overlap
-            classified = visible_hand_owned | mixed_boundary | visible_object_owned
-            occluded_or_unresolved = entity_mask & ~classified
+            mano_support_for_alignment = dilate_bool_mask(mano_support, int(args.hand_mask_mano_alignment_dilation_px))
+            aligned_visible_hand = hand_mask & mano_support_for_alignment
+            raw_hand_entity_overlap = hand_mask & entity_mask
+            aligned_overlap = aligned_visible_hand & entity_mask
+            mano_entity_candidate = mano_support_for_alignment & entity_mask
+            visible_hand_owned = aligned_overlap & mano_support
+            mixed_boundary = aligned_overlap & ~mano_support
+            mano_only_hand_candidate = mano_entity_candidate & ~hand_mask
+            unaligned_hand_mask_overlap = raw_hand_entity_overlap & ~aligned_visible_hand
+            occluded_or_unresolved = (mano_only_hand_candidate | unaligned_hand_mask_overlap) & entity_mask
             non_object_owned = visible_hand_owned | mixed_boundary
+            # MANO-only or SAM2-only entity overlap is a hand-observation conflict,
+            # not evidence that the visible object/part surface is no longer object-owned.
+            # Only aligned visible-hand evidence removes object-owned eligibility.
+            visible_object_owned = entity_mask & ~non_object_owned
             adjusted_entity = visible_object_owned
+            support_overlap = hand_mask & mano_support_for_alignment
+            support_union = hand_mask | mano_support_for_alignment
+            hand_observation_state = "aligned_visible_hand_observation"
+            if int(support_overlap.sum()) == 0:
+                hand_observation_state = "sam2_hand_mask_unaligned_with_mano_depth_support"
+            elif float(support_overlap.sum() / max(1, int(hand_mask.sum()))) < float(args.min_hand_alignment_fraction):
+                hand_observation_state = "weak_sam2_mano_alignment"
             mask_dir = output_case / "ownership_masks" / side
             paths = {
+                "aligned_visible_hand_mask_path": mask_dir / f"{frame_idx:06d}_aligned_visible_hand.png",
+                "mano_depth_support_mask_path": mask_dir / f"{frame_idx:06d}_mano_depth_support.png",
+                "mano_only_hand_candidate_mask_path": mask_dir / f"{frame_idx:06d}_mano_only_hand_candidate.png",
+                "unaligned_hand_mask_overlap_path": mask_dir / f"{frame_idx:06d}_unaligned_hand_mask_overlap.png",
                 "visible_hand_owned_mask_path": mask_dir / f"{frame_idx:06d}_visible_hand_owned.png",
                 "visible_object_owned_mask_path": mask_dir / f"{frame_idx:06d}_visible_object_owned.png",
                 "mixed_boundary_mask_path": mask_dir / f"{frame_idx:06d}_mixed_boundary.png",
@@ -471,6 +502,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "non_object_owned_mask_path": mask_dir / f"{frame_idx:06d}_non_object_owned.png",
                 "adjusted_entity_mask_path": mask_dir / f"{frame_idx:06d}_adjusted_entity_object_owned.png",
             }
+            save_mask(paths["aligned_visible_hand_mask_path"], aligned_visible_hand)
+            save_mask(paths["mano_depth_support_mask_path"], mano_support)
+            save_mask(paths["mano_only_hand_candidate_mask_path"], mano_only_hand_candidate)
+            save_mask(paths["unaligned_hand_mask_overlap_path"], unaligned_hand_mask_overlap)
             save_mask(paths["visible_hand_owned_mask_path"], visible_hand_owned)
             save_mask(paths["visible_object_owned_mask_path"], visible_object_owned)
             save_mask(paths["mixed_boundary_mask_path"], mixed_boundary)
@@ -478,18 +513,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             save_mask(paths["non_object_owned_mask_path"], non_object_owned)
             save_mask(paths["adjusted_entity_mask_path"], adjusted_entity)
             review_path = None
-            if len(review_paths) < review_limit and (np.any(overlap) or frame_idx in {a for a, _ in spans} or frame_idx in {b for _, b in spans}):
+            if len(review_paths) < review_limit and (np.any(raw_hand_entity_overlap) or np.any(mano_entity_candidate) or frame_idx in {a for a, _ in spans} or frame_idx in {b for _, b in spans}):
                 review_path = output_case / "review_frames" / f"{frame_idx:06d}_{side}_ownership.jpg"
                 render_review_panel(
                     frame_path=Path(frame["raw_frame_path"]),
                     hand_mask=hand_mask,
                     entity_mask=entity_mask,
+                    mano_support=mano_support_for_alignment,
+                    aligned_visible_hand=aligned_visible_hand,
                     visible_hand_owned=visible_hand_owned,
                     visible_object_owned=visible_object_owned,
                     mixed_boundary=mixed_boundary,
                     occluded_or_unresolved=occluded_or_unresolved,
                     output_path=review_path,
-                    label=f"{args.case} f{frame_idx} {side}: cyan hand, green object, magenta hand-owned, yellow mixed, orange unresolved",
+                    label=f"{args.case} f{frame_idx} {side}: cyan SAM2, blue MANO-depth, white aligned, green object, magenta hand-owned, yellow mixed, orange unresolved",
                 )
                 review_paths.append(str(review_path))
             row = {
@@ -498,9 +535,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "hand_side": side,
                 "target_entity_id": args.target_entity_id,
                 "variable_affected": "constraint_eligibility",
-                "observation_type": "sam2_visible_hand_mask_x_visible_entity_mask_x_metric_depth_mano_projection",
-                "residual_or_quarantine_rule": "hard object/depth-order constraints must not use pixels marked non_object_owned_mask_path; visible_object_owned_mask_path remains eligible first surface; occluded_or_unresolved_mask_path is not eligible for hard object support",
-                "rendered_uncertainty_channel": "review frames use magenta for visible_hand_owned, yellow for mixed_boundary/non-object quarantine, green for visible_object_owned, and orange for occluded_or_unresolved",
+                "observation_type": "sam2_visible_hand_mask_aligned_with_metric_depth_mano_projection_x_visible_entity_mask",
+                "residual_or_quarantine_rule": "hard object/depth-order constraints may use only aligned hand/MANO-depth pixels marked non_object_owned_mask_path for hand-owned quarantine; MANO-only or SAM2-only entity overlaps are rendered as hand-observation conflicts but do not by themselves remove visible-object-owned eligibility",
+                "rendered_uncertainty_channel": "review frames use cyan for raw SAM2 hand, blue for MANO-depth support, white for aligned visible hand, magenta for visible_hand_owned, yellow for mixed_boundary/non-object quarantine, green for visible_object_owned, and orange for occluded_or_unresolved",
+                "hand_observation_state": hand_observation_state,
                 "provenance": {
                     "annotations": str(args.annotations),
                     "raw_frame_path": str(frame["raw_frame_path"]),
@@ -512,8 +550,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 **{key: str(path) for key, path in paths.items()},
                 "counts": {
                     "hand_mask_px": int(hand_mask.sum()),
+                    "mano_depth_support_px": int(mano_support.sum()),
+                    "mano_depth_support_aligned_px": int(mano_support_for_alignment.sum()),
+                    "aligned_visible_hand_px": int(aligned_visible_hand.sum()),
                     "entity_mask_px": int(entity_mask.sum()),
-                    "hand_entity_overlap_px": int(overlap.sum()),
+                    "raw_hand_entity_overlap_px": int(raw_hand_entity_overlap.sum()),
+                    "aligned_hand_entity_overlap_px": int(aligned_overlap.sum()),
+                    "mano_entity_candidate_px": int(mano_entity_candidate.sum()),
+                    "mano_only_hand_candidate_px": int(mano_only_hand_candidate.sum()),
+                    "unaligned_hand_mask_overlap_px": int(unaligned_hand_mask_overlap.sum()),
                     "visible_hand_owned_px": int(visible_hand_owned.sum()),
                     "mixed_boundary_px": int(mixed_boundary.sum()),
                     "visible_object_owned_px": int(visible_object_owned.sum()),
@@ -524,13 +569,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "entity_non_object_owned_fraction": float(non_object_owned.sum() / max(1, int(entity_mask.sum()))),
                     "entity_visible_hand_owned_fraction": float(visible_hand_owned.sum() / max(1, int(entity_mask.sum()))),
                     "entity_mixed_boundary_fraction": float(mixed_boundary.sum() / max(1, int(entity_mask.sum()))),
-                    "hand_overlap_fraction": float(overlap.sum() / max(1, int(hand_mask.sum()))),
+                    "entity_occluded_or_unresolved_fraction": float(occluded_or_unresolved.sum() / max(1, int(entity_mask.sum()))),
+                    "raw_hand_overlap_fraction": float(raw_hand_entity_overlap.sum() / max(1, int(hand_mask.sum()))),
+                    "aligned_hand_overlap_fraction": float(aligned_overlap.sum() / max(1, int(aligned_visible_hand.sum()))),
+                    "sam2_mano_alignment_fraction": float(support_overlap.sum() / max(1, int(hand_mask.sum()))),
+                    "sam2_mano_alignment_iou": float(support_overlap.sum() / max(1, int(support_union.sum()))),
                 },
                 "mano_projection_support": mano_diag,
                 "review_frame_path": None if review_path is None else str(review_path),
             }
             ownership_rows.append(row)
             state_counts["ownership_rows"] += 1
+            state_counts[f"hand_observation_state:{hand_observation_state}"] += 1
     report = {
         "method": "build_v18_visible_ownership_factor",
         "status": "ok",
@@ -554,6 +604,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "hand_box_margin_ratio": float(args.hand_box_margin_ratio),
             "mano_projection_dilation_px": int(args.mano_projection_dilation_px),
             "mano_depth_support_m": float(args.mano_depth_support_m),
+            "hand_mask_mano_alignment_dilation_px": int(args.hand_mask_mano_alignment_dilation_px),
+            "min_hand_alignment_fraction": float(args.min_hand_alignment_fraction),
         },
         "prompt_rows": [row for rows in prompts.values() for row in rows],
         "summary": {
@@ -564,7 +616,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "counts": {
                 key: numeric_summary(np.asarray([row["counts"][key] for row in ownership_rows], dtype=float))
                 for key in [
-                    "hand_entity_overlap_px",
+                    "raw_hand_entity_overlap_px",
+                    "aligned_hand_entity_overlap_px",
+                    "mano_entity_candidate_px",
+                    "mano_only_hand_candidate_px",
+                    "unaligned_hand_mask_overlap_px",
                     "visible_hand_owned_px",
                     "mixed_boundary_px",
                     "visible_object_owned_px",
@@ -578,7 +634,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "entity_non_object_owned_fraction",
                     "entity_visible_hand_owned_fraction",
                     "entity_mixed_boundary_fraction",
-                    "hand_overlap_fraction",
+                    "entity_occluded_or_unresolved_fraction",
+                    "raw_hand_overlap_fraction",
+                    "aligned_hand_overlap_fraction",
+                    "sam2_mano_alignment_fraction",
+                    "sam2_mano_alignment_iou",
                 ]
             },
         },
@@ -616,6 +676,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-hand-mask-area-px", type=int, default=80)
     p.add_argument("--mano-projection-dilation-px", type=int, default=5)
     p.add_argument("--mano-depth-support-m", type=float, default=0.040)
+    p.add_argument("--hand-mask-mano-alignment-dilation-px", type=int, default=8, help="Additional dilation around depth-supported MANO projection used to align/filter raw SAM2 hand masks before hard ownership quarantine.")
+    p.add_argument("--min-hand-alignment-fraction", type=float, default=0.02, help="Minimum fraction of the raw SAM2 hand mask overlapped by the MANO-depth support neighborhood before the row is marked well aligned.")
     p.add_argument("--max-review-frames", type=int, default=24)
     return p.parse_args()
 
