@@ -112,13 +112,21 @@ def frame_camera_pose(frame: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
     return transform[:3, :3], transform[:3, 3]
 
 
+ACCEPTED_VISIBLE_DEPTH_POSE_STATUSES = {
+    "fit_to_visible_depth_samples",
+    "fit_to_visible_depth_archive_vertices",
+}
+
+
 def pose_map(pose_report: dict[str, Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for row in as_list(pose_report.get("pose_rows")):
         if not isinstance(row, dict):
             continue
         status = str(row.get("status") or "")
-        if not status.startswith("fit_to_visible_depth"):
+        if status.startswith("fit_to_visible_depth") and status not in ACCEPTED_VISIBLE_DEPTH_POSE_STATUSES:
+            raise ValueError(f"unrecognized visible-depth pose status {status!r} for frame {row.get('frame_idx')}")
+        if status not in ACCEPTED_VISIBLE_DEPTH_POSE_STATUSES:
             continue
         r = np.asarray(row.get("rotation_world_from_completed_canonical_matrix") or [], dtype=float)
         t = np.asarray(row.get("translation_world_m") or [], dtype=float)
