@@ -1286,8 +1286,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     pose_visibility_weights_np = np.ones((b, 15), dtype=float)
     for pose_i, group_i in enumerate(pose_joint_finger_groups.astype(int)):
         pose_visibility_weights_np[:, pose_i] = np.mean(joint_visibility_weights_np[:, OPENPOSE_FINGER_GROUPS[group_i]], axis=1)
+    hand_observation_weight_multiplier_np = np.asarray([float(r.hand_observation_visibility_weight_multiplier) if r.hand_observation_visibility_factor_state == "active_hand_observation_visibility" else 1.0 for r in rows], dtype=float)
     joint_visibility_weights_t = torch.tensor(joint_visibility_weights_np, dtype=torch.float32, device=device)
     pose_visibility_weights_t = torch.tensor(pose_visibility_weights_np, dtype=torch.float32, device=device)
+    hand_observation_weight_multiplier_t = torch.tensor(hand_observation_weight_multiplier_np, dtype=torch.float32, device=device)
     intr_t: list[torch.Tensor | None] = []
     base_uv: list[torch.Tensor | None] = []
     r_c2w_t: list[torch.Tensor] = []
@@ -1350,8 +1352,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         optimizer.zero_grad(set_to_none=True)
         hyp_vertices, hyp_joints = hypothesis()
         loss = torch.tensor(0.0, dtype=torch.float32, device=device)
-        loss = loss + float(args.translation_prior_weight) * torch.mean(trans_delta * trans_delta)
-        loss = loss + float(args.root_prior_weight) * torch.mean(root_delta * root_delta)
+        obs_mult = hand_observation_weight_multiplier_t
+        trans_prior_num = torch.sum(obs_mult[:, None] * trans_delta * trans_delta)
+        trans_prior_den = torch.clamp(torch.sum(obs_mult) * 3.0, min=1.0)
+        loss = loss + float(args.translation_prior_weight) * trans_prior_num / trans_prior_den
+        root_prior_num = torch.sum(obs_mult[:, None, None] * root_delta * root_delta)
+        root_prior_den = torch.clamp(torch.sum(obs_mult) * 9.0, min=1.0)
+        loss = loss + float(args.root_prior_weight) * root_prior_num / root_prior_den
         pose_prior_num = torch.sum(pose_visibility_weights_t[:, :, None] * pose_delta * pose_delta)
         pose_prior_den = torch.clamp(torch.sum(pose_visibility_weights_t) * 3.0, min=1.0)
         loss = loss + float(args.pose_prior_weight) * pose_prior_num / pose_prior_den
@@ -1637,6 +1644,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visibility_weighted_hand_observation_enabled": bool(args.visibility_weighted_hand_observation),
         "hand_observation_visibility_factor_active_row_count": int(sum(r.hand_observation_visibility_factor_state == "active_hand_observation_visibility" for r in rows)),
         "hand_observation_visibility_candidate_px": numeric_summary(np.asarray([r.hand_observation_visibility_candidate_px for r in rows], dtype=float)),
+        "hand_observation_weight_multiplier": numeric_summary(hand_observation_weight_multiplier_np),
         "joint_visibility_weight": numeric_summary(joint_visibility_weights_np.reshape(-1)),
         "pose_visibility_weight": numeric_summary(pose_visibility_weights_np.reshape(-1)),
         "pose_joint_finger_groups": pose_joint_finger_groups.astype(int).tolist(),
