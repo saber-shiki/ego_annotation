@@ -745,15 +745,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             raw_hand_entity_overlap = hand_mask & entity_mask
             aligned_overlap = aligned_visible_hand & entity_mask
             mano_entity_candidate = mano_support_for_alignment & entity_mask
-            visible_hand_owned = aligned_overlap & mano_support
-            mixed_boundary = aligned_overlap & ~mano_support
+            candidate_visible_hand_owned = aligned_overlap & mano_support
+            candidate_mixed_boundary = aligned_overlap & ~mano_support
+            candidate_non_object_owned = candidate_visible_hand_owned | candidate_mixed_boundary
             mano_only_hand_candidate = mano_entity_candidate & ~hand_mask
             unaligned_hand_mask_overlap = raw_hand_entity_overlap & ~aligned_visible_hand
-            occluded_or_unresolved = (mano_only_hand_candidate | unaligned_hand_mask_overlap) & entity_mask
-            non_object_owned = visible_hand_owned | mixed_boundary
-            # MANO-only or SAM2-only entity overlap is a hand-observation conflict,
-            # not evidence that the visible object/part surface is no longer object-owned.
-            # Only aligned visible-hand evidence removes object-owned eligibility.
+            hard_prompt_independent = str(args.hand_prompt_source) == "annotation_box"
+            # MANO/depth-support prompts are useful for exposing a hand-state/occlusion
+            # conflict, but they are not independent evidence for removing object-owned
+            # first-surface constraints on the same MANO variable.  Hard hand ownership
+            # is emitted only for prompt sources that did not use MANO support.
+            if hard_prompt_independent:
+                visible_hand_owned = candidate_visible_hand_owned
+                mixed_boundary = candidate_mixed_boundary
+                non_object_owned = candidate_non_object_owned
+                hard_ownership_state = "hard_independent_visible_hand_evidence"
+            else:
+                visible_hand_owned = np.zeros_like(entity_mask, dtype=bool)
+                mixed_boundary = np.zeros_like(entity_mask, dtype=bool)
+                non_object_owned = np.zeros_like(entity_mask, dtype=bool)
+                hard_ownership_state = "mano_prompt_candidate_requires_independent_visible_hand_confirmation"
+            occluded_or_unresolved = (mano_only_hand_candidate | unaligned_hand_mask_overlap | (candidate_non_object_owned & ~non_object_owned)) & entity_mask
             visible_object_owned = entity_mask & ~non_object_owned
             adjusted_entity = visible_object_owned
             support_overlap = hand_mask & mano_support_for_alignment
@@ -810,9 +822,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "target_entity_id": args.target_entity_id,
                 "variable_affected": "constraint_eligibility",
                 "observation_type": "sam2_visible_hand_mask_aligned_with_metric_depth_mano_projection_x_visible_entity_mask",
-                "residual_or_quarantine_rule": "hard object/depth-order constraints may use only aligned hand/MANO-depth pixels marked non_object_owned_mask_path for hand-owned quarantine; MANO-only or SAM2-only entity overlaps are rendered as hand-observation conflicts but do not by themselves remove visible-object-owned eligibility",
-                "rendered_uncertainty_channel": "review frames use cyan for raw SAM2 hand, blue for MANO-depth support, white for aligned visible hand, magenta for visible_hand_owned, yellow for mixed_boundary/non-object quarantine, green for visible_object_owned, and orange for occluded_or_unresolved",
+                "residual_or_quarantine_rule": "hard object/depth-order constraints may use non_object_owned_mask_path only when the visible-hand mask was generated without MANO/depth-support prompts; MANO-seeded SAM2 agreement is rendered as candidate hand-state/occlusion conflict and does not by itself remove visible-object-owned eligibility",
+                "rendered_uncertainty_channel": "review frames use cyan for raw SAM2 hand, blue for MANO-depth support, white for aligned visible hand, magenta for hard visible_hand_owned, yellow for hard mixed_boundary/non-object quarantine, green for visible_object_owned, and orange for occluded_or_unresolved or MANO-prompt self-confirmation candidates",
                 "hand_observation_state": hand_observation_state,
+                "hard_ownership_state": hard_ownership_state,
+                "hard_ownership_prompt_independent": bool(hard_prompt_independent),
                 "provenance": {
                     "annotations": str(args.annotations),
                     "raw_frame_path": str(frame["raw_frame_path"]),
@@ -820,6 +834,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "entity_mask_path": str(entity_path),
                     "entity_mask_source": "visible_entity_mask_report" if frame_idx in report_masks else "annotation_object_mask",
                     "depth_npz": str(args.depth_npz),
+                    "hand_prompt_source": str(args.hand_prompt_source),
+                    "hard_ownership_prompt_independent": bool(hard_prompt_independent),
                 },
                 **{key: str(path) for key, path in paths.items()},
                 "counts": {
@@ -833,6 +849,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "mano_entity_candidate_px": int(mano_entity_candidate.sum()),
                     "mano_only_hand_candidate_px": int(mano_only_hand_candidate.sum()),
                     "unaligned_hand_mask_overlap_px": int(unaligned_hand_mask_overlap.sum()),
+                    "candidate_visible_hand_owned_px": int(candidate_visible_hand_owned.sum()),
+                    "candidate_mixed_boundary_px": int(candidate_mixed_boundary.sum()),
+                    "candidate_non_object_owned_px": int(candidate_non_object_owned.sum()),
                     "visible_hand_owned_px": int(visible_hand_owned.sum()),
                     "mixed_boundary_px": int(mixed_boundary.sum()),
                     "visible_object_owned_px": int(visible_object_owned.sum()),
@@ -840,6 +859,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "non_object_owned_px": int(non_object_owned.sum()),
                 },
                 "fractions": {
+                    "entity_candidate_non_object_owned_fraction": float(candidate_non_object_owned.sum() / max(1, int(entity_mask.sum()))),
                     "entity_non_object_owned_fraction": float(non_object_owned.sum() / max(1, int(entity_mask.sum()))),
                     "entity_visible_hand_owned_fraction": float(visible_hand_owned.sum() / max(1, int(entity_mask.sum()))),
                     "entity_mixed_boundary_fraction": float(mixed_boundary.sum() / max(1, int(entity_mask.sum()))),
