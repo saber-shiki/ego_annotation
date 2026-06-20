@@ -113,6 +113,11 @@ class FrameHandRow:
     face_strict_observed_raw: np.ndarray
     face_strict_observed: np.ndarray
     hand_owned_quarantined_face_count: int
+    visible_ownership_non_object_mask_path: str | None
+    visible_ownership_object_owned_mask_path: str | None
+    visible_ownership_non_object_owned_px: int
+    visible_ownership_object_owned_px: int
+    visible_ownership_quarantined_face_count: int
     visible_object_mask_path: str | None
     visible_object_mask_face_count_raw: int
     visible_object_mask_face_count: int
@@ -184,6 +189,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bound-hinge-weight", type=float, default=3.0e3)
     p.add_argument("--sample-vertex-count-for-render", type=int, default=160)
     p.add_argument("--active-set-iterations", type=int, default=6, help="Maximum active-set passes. Each pass optimizes, remeasures full observed-surface penetration, and expands constraints. A closed pass adds zero constraints.")
+    p.add_argument("--visible-ownership-factor-report", type=Path, default=None, help="Optional reusable visible ownership factor report. Its non_object_owned masks quarantine hard object constraints; its visible_object_owned masks replace visible-object masks for depth-order/gating when present.")
+    p.add_argument("--visible-ownership-face-overlap-dilation-px", type=int, default=2, help="Pixel dilation for deciding whether any projected face support sample overlaps non-object-owned ownership pixels.")
     p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Optional SAM2/OWLv2 visible object/lid mask report. When enabled, masks gate observed mesh faces and/or add depth-order terms for MANO vertices under visible object pixels.")
     p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Trust observed object mesh faces only when their projected center lies inside the model-produced visible object mask for that frame.")
     p.add_argument("--visible-mask-quarantine-signed-mesh", action=argparse.BooleanOptionalAction, default=False, help="On frames with a visible object mask, do not use compact-mesh signed nonpenetration as a trusted force; rely on visible mask/depth-order terms instead.")
@@ -241,6 +248,85 @@ def load_binary_mask(mask_path: Path, cache: dict[Path, np.ndarray]) -> np.ndarr
     mask = np.asarray(Image.open(mask_path).convert("L")) > 0
     cache[mask_path] = mask
     return mask
+
+
+def load_visible_ownership_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
+    if report_path is None:
+        return {}
+    if not report_path.exists():
+        raise FileNotFoundError(f"missing visible ownership factor report: {report_path}")
+    payload = load_json(report_path)
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in as_list(payload.get("ownership_rows")) if isinstance(payload, dict) else []:
+        if not isinstance(row, dict) or row.get("frame_idx") is None or row.get("hand_side") is None:
+            continue
+        key = (int(row["frame_idx"]), str(row["hand_side"]))
+        out[key] = row
+    return out
+
+
+def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path, np.ndarray]) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None, None, {"state": "missing_visible_ownership_row"}
+    non_object_raw = row.get("non_object_owned_mask_path")
+    object_owned_raw = row.get("visible_object_owned_mask_path") or row.get("adjusted_entity_mask_path")
+    non_object_mask = None
+    object_owned_mask = None
+    if isinstance(non_object_raw, str) and Path(non_object_raw).exists():
+        non_object_mask = load_binary_mask(Path(non_object_raw), cache)
+    if isinstance(object_owned_raw, str) and Path(object_owned_raw).exists():
+        object_owned_mask = load_binary_mask(Path(object_owned_raw), cache)
+    counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
+    return non_object_mask, object_owned_mask, {
+        "state": "ok",
+        "non_object_owned_mask_path": non_object_raw if isinstance(non_object_raw, str) else None,
+        "visible_object_owned_mask_path": object_owned_raw if isinstance(object_owned_raw, str) else None,
+        "non_object_owned_px": int(counts.get("non_object_owned_px", int(non_object_mask.sum()) if non_object_mask is not None else 0)),
+        "visible_object_owned_px": int(counts.get("visible_object_owned_px", int(object_owned_mask.sum()) if object_owned_mask is not None else 0)),
+    }
+
+
+def visible_ownership_quarantine_faces(
+    *,
+    frame: dict[str, Any],
+    side: str,
+    object_vertices: np.ndarray,
+    object_faces: np.ndarray,
+    object_pose: tuple[np.ndarray, np.ndarray],
+    face_strict_observed: np.ndarray,
+    non_object_owned_mask: np.ndarray | None,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, int]:
+    strict = np.asarray(face_strict_observed, dtype=bool).copy()
+    if non_object_owned_mask is None or not np.any(strict):
+        return strict, 0
+    r_obj, t_obj = object_pose
+    tri = object_vertices[object_faces]
+    # A face-center-only mask test misses thin hand/object boundary ownership
+    # evidence whenever the triangle covers non-object-owned pixels but its
+    # center projects outside that small region.  Use a small fixed support set
+    # that is still category-agnostic: vertices, edge midpoints, and center.
+    samples_obj = np.stack(
+        [
+            tri[:, 0],
+            tri[:, 1],
+            tri[:, 2],
+            0.5 * (tri[:, 0] + tri[:, 1]),
+            0.5 * (tri[:, 1] + tri[:, 2]),
+            0.5 * (tri[:, 2] + tri[:, 0]),
+            tri.mean(axis=1),
+        ],
+        axis=1,
+    )
+    samples_world = samples_obj.reshape(-1, 3) @ np.asarray(r_obj, dtype=float).T + np.asarray(t_obj, dtype=float)[None, :]
+    uv = project_world(samples_world, frame, side)
+    inside_flat = mask_membership(non_object_owned_mask, uv, int(args.visible_ownership_face_overlap_dilation_px))
+    if inside_flat.shape[0] != samples_world.shape[0]:
+        return strict, 0
+    inside = inside_flat.reshape(len(object_faces), -1).any(axis=1)
+    q = strict & inside
+    strict[q] = False
+    return strict, int(np.count_nonzero(q))
 
 
 def mask_membership(mask: np.ndarray, uv: np.ndarray | None, dilation_px: int = 0) -> np.ndarray:
@@ -632,6 +718,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     depth_paths = list(args.depth_npz or [DEFAULT_DEPTH])
     depth_rows = load_depth_sources(depth_paths)
     visible_mask_paths = load_visible_object_mask_paths(args.visible_object_mask_report)
+    visible_ownership_rows = load_visible_ownership_rows(args.visible_ownership_factor_report)
     visible_mask_cache: dict[Path, np.ndarray] = {}
     hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
     bridge_cache: dict[Path, Any] = {}
@@ -681,8 +768,22 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             depth_row=depth_rows.get(frame_idx),
             args=args,
         )
+        ownership_row = visible_ownership_rows.get((frame_idx, side))
+        ownership_non_object_mask, ownership_object_owned_mask, ownership_diag = visible_ownership_masks_for_row(ownership_row, visible_mask_cache)
+        strict, visible_ownership_quarantined = visible_ownership_quarantine_faces(
+            frame=frame,
+            side=side,
+            object_vertices=vertices_object,
+            object_faces=faces,
+            object_pose=pose,
+            face_strict_observed=strict,
+            non_object_owned_mask=ownership_non_object_mask,
+            args=args,
+        )
         visible_mask_path = visible_mask_paths.get(frame_idx)
         visible_mask = None if visible_mask_path is None else load_binary_mask(visible_mask_path, visible_mask_cache)
+        if ownership_object_owned_mask is not None:
+            visible_mask = ownership_object_owned_mask if visible_mask is None else (visible_mask & ownership_object_owned_mask)
         strict, visible_mask_face_count_raw, visible_mask_face_count = visible_object_mask_face_gate(
             frame=frame,
             side=side,
@@ -769,6 +870,11 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 face_strict_observed_raw=strict_raw.astype(bool),
                 face_strict_observed=strict.astype(bool),
                 hand_owned_quarantined_face_count=int(hand_owned_quarantined),
+                visible_ownership_non_object_mask_path=ownership_diag.get("non_object_owned_mask_path"),
+                visible_ownership_object_owned_mask_path=ownership_diag.get("visible_object_owned_mask_path"),
+                visible_ownership_non_object_owned_px=int(ownership_diag.get("non_object_owned_px", 0)),
+                visible_ownership_object_owned_px=int(ownership_diag.get("visible_object_owned_px", 0)),
+                visible_ownership_quarantined_face_count=int(visible_ownership_quarantined),
                 visible_object_mask_path=None if visible_mask_path is None else str(visible_mask_path),
                 visible_object_mask_face_count_raw=int(visible_mask_face_count_raw),
                 visible_object_mask_face_count=int(visible_mask_face_count),
@@ -1263,6 +1369,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "initial_raw_observed_surface_penetration_m": init_raw_measure.get("observed_supported_penetration_m"),
                 "current_bridge_observed_surface_penetration_m": row.observed_initial_measure.get("observed_supported_penetration_m"),
                 "hand_owned_quarantined_face_count": int(row.hand_owned_quarantined_face_count),
+                "visible_ownership_non_object_mask_path": row.visible_ownership_non_object_mask_path,
+                "visible_ownership_object_owned_mask_path": row.visible_ownership_object_owned_mask_path,
+                "visible_ownership_non_object_owned_px": int(row.visible_ownership_non_object_owned_px),
+                "visible_ownership_object_owned_px": int(row.visible_ownership_object_owned_px),
+                "visible_ownership_quarantined_face_count": int(row.visible_ownership_quarantined_face_count),
                 "visible_object_mask_path": row.visible_object_mask_path,
                 "visible_object_mask_face_count_raw": int(row.visible_object_mask_face_count_raw),
                 "visible_object_mask_face_count": int(row.visible_object_mask_face_count),
@@ -1321,6 +1432,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "hand_ray_shift_prior_count": int(sum(np.linalg.norm(r.hand_ray_shift_prior_world_m) > 1.0e-9 for r in rows)),
         "object_translation_optimized": bool(args.optimize_object_translation),
         "hand_owned_object_depth_quarantine_enabled": bool(args.hand_owned_object_depth_quarantine),
+        "visible_ownership_factor_enabled": args.visible_ownership_factor_report is not None,
         "visible_object_mask_gate_enabled": bool(args.visible_object_mask_gate),
         "visible_mask_quarantine_signed_mesh_enabled": bool(args.visible_mask_quarantine_signed_mesh),
         "visible_lid_depth_order_term_enabled": bool(args.visible_lid_depth_order_term),
@@ -1357,7 +1469,7 @@ def main() -> None:
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface.",
-        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report)},
+        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report)},
         "parameters": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k not in {"depth_npz"}},
         "build_meta": build_meta,
         "summary": {"interval_count": int(len(intervals)), "per_frame_state_count": int(len(per_frame_states)), "frame_span": [int(args.start_frame), int(args.end_frame)], "sides": list(args.sides)},
