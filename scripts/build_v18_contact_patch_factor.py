@@ -92,8 +92,56 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--object-pose-fit-report", type=Path, default=None, help="Optional independent object pose/support report. When supplied, per-frame support uncertainty is added to the contact deadband so the factor cannot force sub-support-scale MANO motion.")
     p.add_argument("--object-support-uncertainty-stat", default="observed_to_mesh_final.p95_m", help="Dotted field in pose_rows[] used as object_support_uncertainty_m. Default uses visible-depth-to-mesh p95 support.")
     p.add_argument("--default-object-support-uncertainty-m", type=float, default=0.0, help="Fallback support uncertainty when the pose report is absent or lacks the selected stat.")
+    p.add_argument("--contact-evidence-report", type=Path, default=None, help="Optional independent contact evidence report. With --require-independent-contact-evidence, contact_patch rows are emitted only when the report has matching visual association plus metric-depth compatibility or an accepted contact owner.")
+    p.add_argument("--require-independent-contact-evidence", action="store_true", help="Reject annotation-only/proximity-only contact hypotheses unless --contact-evidence-report has independent visual+metric support for the same target/frame/side.")
     p.add_argument("--include-unsupported-near", action="store_true", help="Include raw near-contact proposals without final support. Default is false because unsupported proposals should not constrain H_t.")
     return p.parse_args()
+
+
+def load_contact_evidence(path: Path | None, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    if path is None:
+        return {}
+    payload = load_json(path)
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError(f"contact evidence report has no rows list: {path}")
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("object_id")) != str(target_entity_id):
+            continue
+        side = str(row.get("hand_side") or "")
+        if side not in {"left", "right"}:
+            continue
+        key = (int(row["frame_idx"]), side)
+        if key in out:
+            raise ValueError(f"duplicate contact evidence row for {key} and target {target_entity_id}: {path}")
+        out[key] = row
+    return out
+
+
+def independent_contact_evidence_supported(row: dict[str, Any] | None) -> tuple[bool, str]:
+    if not isinstance(row, dict):
+        return False, "missing_independent_contact_evidence_row"
+    ev = row.get("source_contact_evidence") if isinstance(row.get("source_contact_evidence"), dict) else {}
+    graph = ev.get("contact_ownership_graph") if isinstance(ev.get("contact_ownership_graph"), dict) else {}
+    accepted_owner = bool(graph.get("accepted_contact_owner")) or str(row.get("contact_owner_claim") or "").startswith("accepted")
+    image_supported = bool(ev.get("image_overlap_candidate") or ev.get("pair_contact_image_candidate"))
+    metric_supported = bool(ev.get("metric_depth_compatible_candidate"))
+    depth_gap_state = str(ev.get("pair_depth_gap_state") or "")
+    source_state = str(row.get("source_contact_state") or "")
+    if source_state == "image_contact_rejected_by_metric_depth" or depth_gap_state in {"hand_behind_object_depth", "object_behind_hand_depth"}:
+        return False, f"metric_depth_rejects_visual_contact:{source_state}:{depth_gap_state}"
+    if accepted_owner:
+        return True, "accepted_contact_owner"
+    if image_supported and metric_supported:
+        return True, "visual_association_and_metric_depth_compatible"
+    if image_supported and not metric_supported:
+        return False, "visual_association_without_metric_depth_support"
+    if metric_supported and not image_supported:
+        return False, "metric_depth_without_visual_association"
+    return False, "no_independent_visual_metric_contact_support"
 
 
 def contact_supported(row: dict[str, Any], *, include_unsupported_near: bool) -> bool:
@@ -117,6 +165,9 @@ def main() -> None:
         stat=str(args.object_support_uncertainty_stat),
         default_m=float(args.default_object_support_uncertainty_m),
     )
+    contact_evidence = load_contact_evidence(args.contact_evidence_report, str(args.target_entity_id))
+    if bool(args.require_independent_contact_evidence) and args.contact_evidence_report is None:
+        raise ValueError("--require-independent-contact-evidence requires --contact-evidence-report")
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for frame in frames:
@@ -136,6 +187,18 @@ def main() -> None:
                 continue
             if not contact_supported(hyp, include_unsupported_near=bool(args.include_unsupported_near)):
                 skipped.append({"frame_idx": frame_idx, "hand_side": side, "reason": "contact_not_supported", "state": hyp.get("state"), "physical_contact_claim_supported": hyp.get("physical_contact_claim_supported")})
+                continue
+            independent_evidence_row = contact_evidence.get((frame_idx, side)) if contact_evidence else None
+            independent_supported, independent_reason = independent_contact_evidence_supported(independent_evidence_row)
+            if bool(args.require_independent_contact_evidence) and not independent_supported:
+                skipped.append({
+                    "frame_idx": frame_idx,
+                    "hand_side": side,
+                    "reason": "independent_contact_evidence_rejected",
+                    "independent_contact_evidence_reason": independent_reason,
+                    "annotation_state": hyp.get("state"),
+                    "annotation_contact_owner_hypothesis": hyp.get("contact_owner_hypothesis"),
+                })
                 continue
             evidence = hyp.get("final_metric_contact_evidence") if isinstance(hyp.get("final_metric_contact_evidence"), dict) else {}
             support_uncertainty_m = float(support_by_frame.get(frame_idx, float(args.default_object_support_uncertainty_m)))
@@ -166,11 +229,15 @@ def main() -> None:
                     "source_object_pose_fit_report": str(args.object_pose_fit_report) if args.object_pose_fit_report else None,
                     "source_contact_coupling_state": (hyp.get("active_contact_coupling_state") or {}).get("coupling_state") if isinstance(hyp.get("active_contact_coupling_state"), dict) else None,
                     "source_stable_contact_pose_anchor_factor_emitted": (hyp.get("active_contact_coupling_state") or {}).get("stable_contact_pose_anchor_factor_emitted") if isinstance(hyp.get("active_contact_coupling_state"), dict) else None,
+                    "independent_contact_evidence_supported": bool(independent_supported),
+                    "independent_contact_evidence_reason": independent_reason,
+                    "source_contact_evidence_report": str(args.contact_evidence_report) if args.contact_evidence_report else None,
                     "provenance": {
                         "annotations": str(args.annotations),
                         "frame_contact_hypothesis_key": "frames[].contact_hypotheses[]",
-                        "selection_rule": "target object, supported active physical contact, side in left/right",
+                        "selection_rule": "target object, supported active physical contact, side in left/right, and independent contact evidence when required",
                         "final_metric_contact_evidence": evidence,
+                        "independent_contact_evidence_row": independent_evidence_row,
                     },
                 }
             )
@@ -194,6 +261,7 @@ def main() -> None:
         "inputs": {
             "annotations": str(args.annotations),
             "object_pose_fit_report": str(args.object_pose_fit_report) if args.object_pose_fit_report else None,
+            "contact_evidence_report": str(args.contact_evidence_report) if args.contact_evidence_report else None,
         },
         "parameters": {
             "start_frame": int(args.start_frame),
@@ -205,6 +273,7 @@ def main() -> None:
             "object_support_uncertainty_stat": str(args.object_support_uncertainty_stat),
             "default_object_support_uncertainty_m": float(args.default_object_support_uncertainty_m),
             "include_unsupported_near": bool(args.include_unsupported_near),
+            "require_independent_contact_evidence": bool(args.require_independent_contact_evidence),
         },
         "summary": {
             "factor_row_count": len(deduped),
@@ -213,6 +282,7 @@ def main() -> None:
             "sides": sorted({str(r["hand_side"]) for r in deduped}),
             "object_support_uncertainty_m": numeric_summary([float(r.get("object_support_uncertainty_m", 0.0)) for r in deduped]),
             "contact_patch_deadband_m": numeric_summary([float(r.get("contact_patch_deadband_m", 0.0)) for r in deduped]),
+            "independent_contact_evidence_rejected_count": sum(1 for r in skipped if r.get("reason") == "independent_contact_evidence_rejected"),
         },
         "factor_rows": deduped,
         "skipped_rows_sample": skipped[:50],
