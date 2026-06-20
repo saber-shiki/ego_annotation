@@ -83,11 +83,19 @@ def load_mesh_vertices(path: Path) -> np.ndarray:
 def pose_map(report: dict[str, Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for row in report.get("pose_rows", []) if isinstance(report, dict) else []:
-        if isinstance(row, dict) and row.get("status") == "fit_to_visible_depth_samples":
-            out[int(row["frame_idx"])] = (
-                np.asarray(row["rotation_world_from_completed_canonical_matrix"], dtype=float),
-                np.asarray(row["translation_world_m"], dtype=float),
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "")
+        if not status.startswith("fit_to_visible_depth"):
+            continue
+        r = np.asarray(row.get("rotation_world_from_completed_canonical_matrix") or [], dtype=float)
+        t = np.asarray(row.get("translation_world_m") or [], dtype=float)
+        if r.shape != (3, 3) or t.shape != (3,):
+            raise ValueError(
+                f"pose row frame={row.get('frame_idx')} status={status!r} has invalid pose shapes "
+                f"rotation={r.shape} translation={t.shape}"
             )
+        out[int(row["frame_idx"])] = (r, t)
     return out
 
 
