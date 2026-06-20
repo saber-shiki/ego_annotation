@@ -113,6 +113,11 @@ class FrameHandRow:
     face_strict_observed_raw: np.ndarray
     face_strict_observed: np.ndarray
     hand_owned_quarantined_face_count: int
+    surface_eligibility_npz_path: str | None
+    surface_eligibility_mode: str | None
+    surface_eligible_face_count: int
+    surface_input_face_count: int
+    surface_applied_face_delta: int
     visible_ownership_non_object_mask_path: str | None
     visible_ownership_object_owned_mask_path: str | None
     visible_ownership_non_object_owned_px: int
@@ -190,6 +195,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sample-vertex-count-for-render", type=int, default=160)
     p.add_argument("--active-set-iterations", type=int, default=6, help="Maximum active-set passes. Each pass optimizes, remeasures full observed-surface penetration, and expands constraints. A closed pass adds zero constraints.")
     p.add_argument("--visible-ownership-factor-report", type=Path, default=None, help="Optional reusable visible ownership factor report. Its non_object_owned masks quarantine hard object constraints; its visible_object_owned masks replace visible-object masks for depth-order/gating when present.")
+    p.add_argument("--surface-eligibility-factor-report", type=Path, default=None, help="Optional reusable surface eligibility factor report. Its eligible_hard_observed face masks define which object faces may exert hard MANO constraints.")
+    p.add_argument("--surface-eligibility-mode", choices=("replace", "intersect"), default="intersect", help="How to apply surface eligibility to the current trusted face set when a factor report is supplied. Default intersects to preserve existing ownership/visibility quarantines unless replacement is explicitly justified.")
     p.add_argument("--visible-ownership-face-overlap-dilation-px", type=int, default=2, help="Pixel dilation for deciding whether any projected face support sample overlaps non-object-owned ownership pixels.")
     p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Optional SAM2/OWLv2 visible object/lid mask report. When enabled, masks gate observed mesh faces and/or add depth-order terms for MANO vertices under visible object pixels.")
     p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Trust observed object mesh faces only when their projected center lies inside the model-produced visible object mask for that frame.")
@@ -250,19 +257,45 @@ def load_binary_mask(mask_path: Path, cache: dict[Path, np.ndarray]) -> np.ndarr
     return mask
 
 
-def load_visible_ownership_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
+def load_factor_rows(report_path: Path | None, row_key: str) -> dict[tuple[int, str], dict[str, Any]]:
     if report_path is None:
         return {}
     if not report_path.exists():
-        raise FileNotFoundError(f"missing visible ownership factor report: {report_path}")
+        raise FileNotFoundError(f"missing factor report: {report_path}")
     payload = load_json(report_path)
     out: dict[tuple[int, str], dict[str, Any]] = {}
-    for row in as_list(payload.get("ownership_rows")) if isinstance(payload, dict) else []:
+    for row in as_list(payload.get(row_key)) if isinstance(payload, dict) else []:
         if not isinstance(row, dict) or row.get("frame_idx") is None or row.get("hand_side") is None:
             continue
         key = (int(row["frame_idx"]), str(row["hand_side"]))
         out[key] = row
     return out
+
+
+def load_visible_ownership_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
+    return load_factor_rows(report_path, "ownership_rows")
+
+
+def load_surface_eligibility_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
+    return load_factor_rows(report_path, "factor_rows")
+
+
+def surface_eligibility_mask_for_row(row: dict[str, Any] | None, expected_count: int, cache: dict[Path, np.ndarray]) -> tuple[np.ndarray | None, dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None, {"state": "missing_surface_eligibility_row"}
+    raw = row.get("face_state_npz_path")
+    if not isinstance(raw, str) or not Path(raw).exists():
+        return None, {"state": "missing_surface_eligibility_npz", "face_state_npz_path": raw if isinstance(raw, str) else None}
+    path = Path(raw)
+    if path not in cache:
+        with np.load(path) as data:
+            if "eligible_hard_observed" not in data:
+                raise KeyError(f"surface eligibility NPZ lacks eligible_hard_observed: {path}")
+            cache[path] = np.asarray(data["eligible_hard_observed"], dtype=bool)
+    mask = cache[path]
+    if mask.shape != (int(expected_count),):
+        return None, {"state": "surface_eligibility_shape_mismatch", "face_state_npz_path": str(path), "mask_count": int(mask.size), "expected_count": int(expected_count)}
+    return mask.copy(), {"state": "ok", "face_state_npz_path": str(path), "eligible_hard_observed_count": int(np.count_nonzero(mask))}
 
 
 def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path, np.ndarray]) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
@@ -719,7 +752,9 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     depth_rows = load_depth_sources(depth_paths)
     visible_mask_paths = load_visible_object_mask_paths(args.visible_object_mask_report)
     visible_ownership_rows = load_visible_ownership_rows(args.visible_ownership_factor_report)
+    surface_eligibility_rows = load_surface_eligibility_rows(args.surface_eligibility_factor_report)
     visible_mask_cache: dict[Path, np.ndarray] = {}
+    surface_eligibility_cache: dict[Path, np.ndarray] = {}
     hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
     bridge_cache: dict[Path, Any] = {}
     source_cache: dict[Path, Any] = {}
@@ -794,6 +829,18 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             mask=visible_mask,
             args=args,
         )
+        surface_row = surface_eligibility_rows.get((frame_idx, side))
+        surface_mask, surface_diag = surface_eligibility_mask_for_row(surface_row, len(faces), surface_eligibility_cache)
+        surface_input_face_count = int(np.count_nonzero(strict))
+        if args.surface_eligibility_factor_report is not None and surface_mask is None:
+            raise ValueError(f"surface eligibility factor could not supply frame={frame_idx} side={side}: {surface_diag}")
+        if surface_mask is not None:
+            if str(args.surface_eligibility_mode) == "replace":
+                strict = surface_mask.astype(bool)
+            else:
+                strict = strict & surface_mask.astype(bool)
+        surface_eligible_face_count = int(np.count_nonzero(surface_mask)) if surface_mask is not None else 0
+        surface_applied_face_delta = int(np.count_nonzero(strict)) - surface_input_face_count
         source_path, source_frame = source_info
         source = load_source_arrays(source_cache, source_path)
         required = [
@@ -870,6 +917,11 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 face_strict_observed_raw=strict_raw.astype(bool),
                 face_strict_observed=strict.astype(bool),
                 hand_owned_quarantined_face_count=int(hand_owned_quarantined),
+                surface_eligibility_npz_path=surface_diag.get("face_state_npz_path"),
+                surface_eligibility_mode=str(args.surface_eligibility_mode) if args.surface_eligibility_factor_report is not None else None,
+                surface_eligible_face_count=int(surface_eligible_face_count),
+                surface_input_face_count=int(surface_input_face_count),
+                surface_applied_face_delta=int(surface_applied_face_delta),
                 visible_ownership_non_object_mask_path=ownership_diag.get("non_object_owned_mask_path"),
                 visible_ownership_object_owned_mask_path=ownership_diag.get("visible_object_owned_mask_path"),
                 visible_ownership_non_object_owned_px=int(ownership_diag.get("non_object_owned_px", 0)),
@@ -1369,6 +1421,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "initial_raw_observed_surface_penetration_m": init_raw_measure.get("observed_supported_penetration_m"),
                 "current_bridge_observed_surface_penetration_m": row.observed_initial_measure.get("observed_supported_penetration_m"),
                 "hand_owned_quarantined_face_count": int(row.hand_owned_quarantined_face_count),
+                "surface_eligibility_npz_path": row.surface_eligibility_npz_path,
+                "surface_eligibility_mode": row.surface_eligibility_mode,
+                "surface_eligible_face_count": int(row.surface_eligible_face_count),
+                "surface_input_face_count": int(row.surface_input_face_count),
+                "surface_applied_face_delta": int(row.surface_applied_face_delta),
                 "visible_ownership_non_object_mask_path": row.visible_ownership_non_object_mask_path,
                 "visible_ownership_object_owned_mask_path": row.visible_ownership_object_owned_mask_path,
                 "visible_ownership_non_object_owned_px": int(row.visible_ownership_non_object_owned_px),
@@ -1432,6 +1489,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "hand_ray_shift_prior_count": int(sum(np.linalg.norm(r.hand_ray_shift_prior_world_m) > 1.0e-9 for r in rows)),
         "object_translation_optimized": bool(args.optimize_object_translation),
         "hand_owned_object_depth_quarantine_enabled": bool(args.hand_owned_object_depth_quarantine),
+        "surface_eligibility_factor_enabled": args.surface_eligibility_factor_report is not None,
+        "surface_eligibility_mode": str(args.surface_eligibility_mode),
         "visible_ownership_factor_enabled": args.visible_ownership_factor_report is not None,
         "visible_object_mask_gate_enabled": bool(args.visible_object_mask_gate),
         "visible_mask_quarantine_signed_mesh_enabled": bool(args.visible_mask_quarantine_signed_mesh),
@@ -1469,7 +1528,7 @@ def main() -> None:
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface.",
-        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report)},
+        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report)},
         "parameters": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k not in {"depth_npz"}},
         "build_meta": build_meta,
         "summary": {"interval_count": int(len(intervals)), "per_frame_state_count": int(len(per_frame_states)), "frame_span": [int(args.start_frame), int(args.end_frame)], "sides": list(args.sides)},
