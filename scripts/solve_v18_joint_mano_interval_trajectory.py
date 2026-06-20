@@ -152,6 +152,7 @@ class FrameHandRow:
     joint_depth_residual_m: np.ndarray
     hand_ray_shift_prior_world_m: np.ndarray
     hand_ray_shift_prior_source_m: float | None
+    hand_ray_shift_prior_weight: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -446,7 +447,18 @@ def hand_depth_shift_prior_for_row(row: dict[str, Any] | None) -> dict[str, Any]
         shift = float(row.get("camera_z_shift_m", 0.0) or 0.0)
     except Exception:
         shift = 0.0
-    return {"state": state, "camera_z_shift_m": shift, "weight": row.get("weight")}
+    raw_weight = row.get("weight")
+    weight: float | None
+    if raw_weight in (None, ""):
+        weight = None
+    else:
+        try:
+            weight = float(raw_weight)
+        except Exception as exc:
+            raise ValueError(f"hand_depth_shift_prior row has invalid weight {raw_weight!r}: {row}") from exc
+        if not np.isfinite(weight) or weight < 0.0:
+            raise ValueError(f"hand_depth_shift_prior row has invalid nonnegative finite weight {raw_weight!r}: {row}")
+    return {"state": state, "camera_z_shift_m": shift, "weight": weight}
 
 
 def hand_observation_visibility_for_row(row: dict[str, Any] | None, args: argparse.Namespace) -> dict[str, Any]:
@@ -1129,6 +1141,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         # moves the hand away from the camera, behind the visible first surface.
         ray_prior_world = np.zeros(3, dtype=float)
         ray_prior_source: float | None = None
+        ray_prior_weight = float(args.hand_ray_shift_prior_weight)
         if bool(args.use_hand_ray_shift_prior) and ray_shift is not None:
             ray_prior_world = -float(ray_shift) * np.asarray(r_c2w_frame[:, 2], dtype=float)
             ray_prior_source = float(ray_shift)
@@ -1136,6 +1149,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             camera_z_shift = float(hand_depth_shift_diag.get("camera_z_shift_m", 0.0))
             ray_prior_world = camera_z_shift * np.asarray(r_c2w_frame[:, 2], dtype=float)
             ray_prior_source = camera_z_shift
+            if hand_depth_shift_diag.get("weight") is not None:
+                ray_prior_weight = float(hand_depth_shift_diag["weight"])
         rows.append(
             FrameHandRow(
                 frame_idx=frame_idx,
@@ -1203,6 +1218,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 joint_depth_residual_m=joint_depth_residual.astype(float),
                 hand_ray_shift_prior_world_m=ray_prior_world.astype(float),
                 hand_ray_shift_prior_source_m=ray_prior_source,
+                hand_ray_shift_prior_weight=float(ray_prior_weight),
             )
         )
     meta = {
@@ -1395,10 +1411,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     root_delta = torch.zeros((b, 1, 3), dtype=torch.float32, device=device, requires_grad=True)
     pose_delta = torch.zeros((b, 15, 3), dtype=torch.float32, device=device, requires_grad=True)
     hand_ray_shift_prior_t = torch.tensor(np.stack([r.hand_ray_shift_prior_world_m for r in rows]), dtype=torch.float32, device=device)
+    hand_ray_shift_prior_weight_t = torch.tensor(np.asarray([float(r.hand_ray_shift_prior_weight) for r in rows], dtype=float), dtype=torch.float32, device=device)
     trans_init = hand_ray_shift_prior_t.detach().clone() if bool(args.initialize_hand_ray_shift) else torch.zeros((b, 3), dtype=torch.float32, device=device)
     trans_delta = trans_init.clone().detach().requires_grad_(True)
     object_trans_delta = torch.zeros((b, 3), dtype=torch.float32, device=device, requires_grad=bool(args.optimize_object_translation))
-    hand_ray_shift_prior_active = torch.linalg.norm(hand_ray_shift_prior_t, dim=1) > 1.0e-9
+    hand_ray_shift_prior_active = (torch.linalg.norm(hand_ray_shift_prior_t, dim=1) > 1.0e-9) & (hand_ray_shift_prior_weight_t > 0.0)
     optim_params = [root_delta, pose_delta, trans_delta]
     if bool(args.optimize_object_translation):
         optim_params.append(object_trans_delta)
@@ -1549,7 +1566,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
             loss = loss + temporal_terms(object_trans_delta, float(args.object_smooth_weight))
         if torch.any(hand_ray_shift_prior_active):
             diff = trans_delta[hand_ray_shift_prior_active] - hand_ray_shift_prior_t[hand_ray_shift_prior_active]
-            loss = loss + float(args.hand_ray_shift_prior_weight) * torch.mean(diff * diff)
+            weights = hand_ray_shift_prior_weight_t[hand_ray_shift_prior_active].reshape(-1, 1)
+            denom = torch.clamp(torch.tensor(float(diff.numel()), dtype=torch.float32, device=device), min=1.0)
+            loss = loss + torch.sum(weights * diff * diff) / denom
         trans_norm = torch.linalg.norm(trans_delta, dim=1)
         object_trans_norm = torch.linalg.norm(object_trans_delta, dim=1)
         root_norm = torch.linalg.norm(root_delta.reshape(b, 3), dim=1)
@@ -1745,6 +1764,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "optimized_translation_world_m": trans_np[i].astype(float).tolist(),
                 "hand_ray_shift_prior_translation_world_m": row.hand_ray_shift_prior_world_m.astype(float).tolist(),
                 "hand_ray_shift_prior_source_m": row.hand_ray_shift_prior_source_m,
+                "hand_ray_shift_prior_weight": float(row.hand_ray_shift_prior_weight),
                 "optimized_object_translation_world_m": object_trans_np[i].astype(float).tolist(),
                 "joint_visibility_weights": row.joint_visibility_weights.astype(float).tolist(),
                 "joint_depth_residual_m": [None if not np.isfinite(x) else float(x) for x in row.joint_depth_residual_m],
