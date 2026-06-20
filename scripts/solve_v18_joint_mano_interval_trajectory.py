@@ -304,6 +304,7 @@ def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entit
         "surface_eligibility": {},
         "visible_surface_track": {},
         "hand_observation_visibility": {},
+        "hand_depth_shift_prior": {},
     }
     required_fields = (
         "factor_family",
@@ -414,6 +415,17 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
         "non_object_owned_px": int(counts.get("non_object_owned_px", int(non_object_mask.sum()) if non_object_mask is not None else 0)),
         "visible_object_owned_px": int(counts.get("visible_object_owned_px", int(object_owned_mask.sum()) if object_owned_mask is not None else 0)),
     }
+
+
+def hand_depth_shift_prior_for_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {"state": "missing_hand_depth_shift_prior_row", "camera_z_shift_m": 0.0, "weight": None}
+    state = str(row.get("state") or "active_hand_depth_shift_prior")
+    try:
+        shift = float(row.get("camera_z_shift_m", 0.0) or 0.0)
+    except Exception:
+        shift = 0.0
+    return {"state": state, "camera_z_shift_m": shift, "weight": row.get("weight")}
 
 
 def hand_observation_visibility_for_row(row: dict[str, Any] | None, args: argparse.Namespace) -> dict[str, Any]:
@@ -870,6 +882,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     surface_eligibility_rows = merge_factor_row_maps("surface_eligibility", load_surface_eligibility_rows(args.surface_eligibility_factor_report), generic_factor_rows["surface_eligibility"])
     visible_surface_track_rows = merge_factor_row_maps("visible_surface_track", load_visible_surface_track_rows(args.visible_surface_track_factor_report), generic_factor_rows["visible_surface_track"])
     hand_observation_visibility_rows = generic_factor_rows["hand_observation_visibility"]
+    hand_depth_shift_prior_rows = generic_factor_rows["hand_depth_shift_prior"]
     visible_mask_cache: dict[Path, np.ndarray] = {}
     surface_eligibility_cache: dict[Path, np.ndarray] = {}
     hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
@@ -1016,13 +1029,22 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         )
         r_obj, t_obj = pose
         ray_shift = hand_ray_shift_priors.get((frame_idx, side))
+        hand_depth_shift_diag = hand_depth_shift_prior_for_row(hand_depth_shift_prior_rows.get((frame_idx, side)))
         r_c2w_frame, _t_c2w_frame = frame_camera_pose(frame)
         # V17 hand_ray_shift_m is a camera-ray depth repair observation.  The
         # direction that reduced current observed-surface residual in the
-        # workbench probe is the negative camera-z shift.
-        ray_prior_world = np.zeros(3, dtype=float) if ray_shift is None else (-float(ray_shift) * np.asarray(r_c2w_frame[:, 2], dtype=float))
-        if not bool(args.use_hand_ray_shift_prior):
-            ray_prior_world = np.zeros(3, dtype=float)
+        # workbench probe is the negative camera-z shift.  Generic hand-depth
+        # shift factors instead specify camera_z_shift_m directly: positive
+        # moves the hand away from the camera, behind the visible first surface.
+        ray_prior_world = np.zeros(3, dtype=float)
+        ray_prior_source: float | None = None
+        if bool(args.use_hand_ray_shift_prior) and ray_shift is not None:
+            ray_prior_world = -float(ray_shift) * np.asarray(r_c2w_frame[:, 2], dtype=float)
+            ray_prior_source = float(ray_shift)
+        if hand_depth_shift_diag.get("state") == "active_hand_depth_shift_prior":
+            camera_z_shift = float(hand_depth_shift_diag.get("camera_z_shift_m", 0.0))
+            ray_prior_world = camera_z_shift * np.asarray(r_c2w_frame[:, 2], dtype=float)
+            ray_prior_source = camera_z_shift
         rows.append(
             FrameHandRow(
                 frame_idx=frame_idx,
@@ -1079,7 +1101,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 joint_visibility_weights=joint_visibility_weights.astype(float),
                 joint_depth_residual_m=joint_depth_residual.astype(float),
                 hand_ray_shift_prior_world_m=ray_prior_world.astype(float),
-                hand_ray_shift_prior_source_m=None if ray_shift is None else float(ray_shift),
+                hand_ray_shift_prior_source_m=ray_prior_source,
             )
         )
     meta = {
@@ -1368,7 +1390,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         if bool(args.optimize_object_translation):
             loss = loss + float(args.object_translation_prior_weight) * torch.mean(object_trans_delta * object_trans_delta)
             loss = loss + temporal_terms(object_trans_delta, float(args.object_smooth_weight))
-        if bool(args.use_hand_ray_shift_prior) and torch.any(hand_ray_shift_prior_active):
+        if torch.any(hand_ray_shift_prior_active):
             diff = trans_delta[hand_ray_shift_prior_active] - hand_ray_shift_prior_t[hand_ray_shift_prior_active]
             loss = loss + float(args.hand_ray_shift_prior_weight) * torch.mean(diff * diff)
         trans_norm = torch.linalg.norm(trans_delta, dim=1)
