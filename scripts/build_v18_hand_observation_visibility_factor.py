@@ -22,6 +22,25 @@ def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def parse_zero_observation_interval(spec: str) -> dict[str, Any]:
+    """Parse side:start:end:reason into a durable factor-input record."""
+    parts = str(spec).split(':', 3)
+    if len(parts) != 4:
+        raise ValueError(f"zero-observation interval must be side:start:end:reason, got {spec!r}")
+    side, start_s, end_s, reason = parts
+    side = side.strip()
+    if side not in {'left', 'right'}:
+        raise ValueError(f"zero-observation interval side must be left/right, got {side!r}")
+    start = int(start_s)
+    end = int(end_s)
+    if end < start:
+        raise ValueError(f"zero-observation interval end before start: {spec!r}")
+    reason = reason.strip()
+    if not reason:
+        raise ValueError(f"zero-observation interval reason must be nonempty: {spec!r}")
+    return {'hand_side': side, 'start_frame': start, 'end_frame': end, 'reason': reason, 'spec': spec}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--case', required=True)
@@ -29,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--target-entity-id', required=True)
     p.add_argument('--output-root', type=Path, required=True)
     p.add_argument('--joint-observation-weight-multiplier', type=float, default=0.12)
+    p.add_argument('--zero-observation-interval', action='append', default=[], help='Optional durable visual-boundary interval as side:start:end:reason. Emits zero-observation hand_observation_visibility rows from explicit evidence input rather than ownership candidates. Repeatable.')
     return p.parse_args()
 
 
@@ -75,15 +95,52 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 'reason': 'candidate visible-hand/entity overlap came from MANO-seeded prompt without independent visible-hand confirmation',
             },
         })
+    transition_intervals = [parse_zero_observation_interval(spec) for spec in as_list(args.zero_observation_interval)]
+    existing = {(int(r['frame_idx']), str(r['hand_side'])) for r in factor_rows}
+    transition_extension_row_count = 0
+    for interval in transition_intervals:
+        for frame_idx in range(int(interval['start_frame']), int(interval['end_frame']) + 1):
+            key = (frame_idx, str(interval['hand_side']))
+            if key in existing:
+                skipped['zero_observation_interval_duplicate_row'] += 1
+                continue
+            existing.add(key)
+            transition_extension_row_count += 1
+            factor_rows.append({
+                'factor_family': 'hand_observation_visibility',
+                'target_entity_id': str(args.target_entity_id),
+                'frame_idx': int(frame_idx),
+                'hand_side': str(interval['hand_side']),
+                'variable_affected': 'H_t',
+                'observation_type': 'explicit_visual_boundary_invalidates_visible_mano_observation_interval',
+                'residual_or_quarantine_rule': 'set MANO joint/root/pose visible-observation weights to zero for this frame/side; preserve temporal smoothness and eligible visible object first-surface constraints',
+                'rendered_uncertainty_channel': 'latent occluded-hand hypothesis; no contact, object ownership, object pose, nonpenetration, or known hidden-hand pose claim',
+                'state': 'active_hand_observation_visibility',
+                'candidate_px': 0,
+                'hard_non_object_owned_px': 0,
+                'joint_observation_weight_multiplier': 0.0,
+                'source_hard_ownership_state': None,
+                'provenance': {
+                    'ownership_factor_report': str(args.ownership_factor_report),
+                    'visual_boundary_interval_spec': str(interval['spec']),
+                    'reason': str(interval['reason']),
+                },
+            })
+    factor_rows.sort(key=lambda r: (int(r['frame_idx']), str(r['hand_side'])))
     return {
         'method': 'v18_hand_observation_visibility_factor',
         'case': args.case,
         'target_entity_id': args.target_entity_id,
         'claim_scope': 'This factor downweights MANO observation anchoring for frame/side hand hypotheses that conflict with visible object first surfaces without independent visible-hand ownership evidence. It does not claim contact, object pose, or hand-owned object pixels.',
         'inputs': {'ownership_factor_report': str(args.ownership_factor_report)},
-        'parameters': {'joint_observation_weight_multiplier': float(args.joint_observation_weight_multiplier)},
+        'parameters': {
+            'joint_observation_weight_multiplier': float(args.joint_observation_weight_multiplier),
+            'zero_observation_intervals': transition_intervals,
+        },
         'summary': {
             'factor_row_count': int(len(factor_rows)),
+            'transition_extension_row_count': int(transition_extension_row_count),
+            'zero_observation_row_count': int(sum(float(r.get('joint_observation_weight_multiplier', 1.0)) == 0.0 for r in factor_rows)),
             'candidate_px_sum': int(sum(int(r['candidate_px']) for r in factor_rows)),
             'state_counts': dict(Counter(str(r.get('state')) for r in factor_rows)),
             'skipped_counts': dict(skipped),
