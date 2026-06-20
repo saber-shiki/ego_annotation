@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
     p.add_argument("--mesh-stride", type=int, default=18)
     p.add_argument("--vertex-stride", type=int, default=2)
+    p.add_argument("--ownership-uncertainty-overlay", action=argparse.BooleanOptionalAction, default=True, help="Mark corrected MANO samples in magenta when raw all-observed object residual exceeds ownership-trusted residual.")
+    p.add_argument("--ownership-uncertainty-threshold-m", type=float, default=2.0e-4)
     p.add_argument("--padding-m", type=float, default=0.08)
     return p.parse_args()
 
@@ -122,6 +124,17 @@ def colors_for_side(side: str) -> tuple[tuple[int, int, int], tuple[int, int, in
     if side == "left":
         return (255, 80, 0), (255, 255, 0)  # original blue, corrected cyan in BGR
     return (0, 120, 255), (0, 255, 255)  # original orange, corrected yellow in BGR
+
+
+def residual_max_m(st: dict[str, Any], key: str) -> float:
+    val = ((st.get(key) or {}).get("max")) if isinstance(st, dict) else None
+    return float(val) if isinstance(val, (int, float)) else 0.0
+
+
+def has_ownership_uncertainty(st: dict[str, Any], threshold_m: float) -> bool:
+    trusted = residual_max_m(st, "full_observed_surface_penetration_after_solver_m")
+    raw = residual_max_m(st, "full_raw_observed_surface_penetration_after_solver_m")
+    return raw > trusted + float(threshold_m)
 
 
 def draw_skeleton(image: np.ndarray, joints_camera: np.ndarray, intr: tuple[float, float, float, float], color: tuple[int, int, int], width_px: int) -> None:
@@ -217,6 +230,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         world_chunks: list[np.ndarray] = []
         if object_points is not None:
             world_chunks.append(object_points)
+        ownership_uncertain_on_frame = False
         for hand in frame.get("hands", []):
             side = str(hand.get("hand_side"))
             st = states.get((frame_idx, side))
@@ -235,18 +249,28 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             if st is not None:
                 opt_world = np.asarray(st.get("optimized_joints_world_m") or [], dtype=float)
                 opt_verts = np.asarray(st.get("optimized_vertices_world_sample_m") or [], dtype=float)
+                ownership_uncertain = bool(args.ownership_uncertainty_overlay) and has_ownership_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
+                ownership_uncertain_on_frame = ownership_uncertain_on_frame or ownership_uncertain
                 if opt_world.shape == (21, 3):
                     opt_cam = world_to_camera(opt_world, T)
                     draw_skeleton(overlay, opt_cam, intr_tuple, corrected_color, 3)  # optimized trajectory
+                    if ownership_uncertain:
+                        draw_skeleton(overlay, opt_cam, intr_tuple, (255, 0, 255), 1)
                     world_chunks.append(opt_world)
                 if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
                     vc = world_to_camera(opt_verts[:: max(1, int(args.vertex_stride))], T)
                     u, v, valid = project_camera(vc, intr_tuple, width, height)
                     for x, y in zip(u[valid], v[valid]):
                         cv2.circle(overlay, (int(x), int(y)), 1, corrected_color, -1)
+                    if ownership_uncertain:
+                        for x, y in zip(u[valid], v[valid]):
+                            cv2.circle(overlay, (int(x), int(y)), 2, (255, 0, 255), 1)
                     world_chunks.append(opt_verts)
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; corrected left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; corrected left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+        if ownership_uncertain_on_frame:
+            cv2.putText(overlay, "magenta = hand-owned object-depth uncertainty", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 5)
+            cv2.putText(overlay, "magenta = hand-owned object-depth uncertainty", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 255), 2)
         cv2.imwrite(str(overlay_dir / f"{out_i:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
         world = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -256,6 +280,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 q = world_point(p, mn, mx, 1280, 720)
                 if q is not None:
                     cv2.circle(world, q, 1, (40, 210, 60), -1)
+        world_ownership_uncertain = False
         for hand in frame.get("hands", []):
             side = str(hand.get("hand_side"))
             st = states.get((frame_idx, side))
@@ -269,14 +294,22 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             if st is not None:
                 opt_world = np.asarray(st.get("optimized_joints_world_m") or [], dtype=float)
                 opt_verts = np.asarray(st.get("optimized_vertices_world_sample_m") or [], dtype=float)
+                ownership_uncertain = bool(args.ownership_uncertainty_overlay) and has_ownership_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
+                world_ownership_uncertain = world_ownership_uncertain or ownership_uncertain
                 if opt_world.shape == (21, 3):
                     draw_world_skeleton(world, opt_world, mn, mx, corrected_color, 2)
+                    if ownership_uncertain:
+                        draw_world_skeleton(world, opt_world, mn, mx, (255, 0, 255), 1)
                 if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
                     for p in opt_verts[:: max(1, int(args.vertex_stride))]:
                         q = world_point(p, mn, mx, 1280, 720)
                         if q is not None:
                             cv2.circle(world, q, 1, corrected_color, -1)
+                            if ownership_uncertain:
+                                cv2.circle(world, q, 2, (255, 0, 255), 1)
         cv2.putText(world, f"local metric world frame {frame_idx}", (20, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        if world_ownership_uncertain:
+            cv2.putText(world, "magenta = hand-owned object-depth uncertainty", (20, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
         cv2.imwrite(str(world_dir / f"{out_i:06d}.jpg"), world, [cv2.IMWRITE_JPEG_QUALITY, 90])
         rendered += 1
     stem = "joint_mano_full_video_correction" if bool(args.full_video) else "joint_mano_interval_correction"
