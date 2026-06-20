@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS)
     p.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT)
     p.add_argument("--completed-mesh", type=Path, default=DEFAULT_MESH)
-    p.add_argument("--depth-npz", type=Path, action="append", default=[DEFAULT_DEPTH])
+    p.add_argument("--depth-npz", type=Path, action="append", default=None, help="Depth NPZ path(s). Defaults to the task5 complete-depth source only when omitted; explicit paths replace that default for other cases.")
     p.add_argument("--hand-depth-repair-graph", type=Path, default=None, help="Optional prior source with per-frame hand_ray_shift_m camera-ray observations from the V17 hand-depth repair graph.")
     p.add_argument("--use-hand-ray-shift-prior", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--initialize-hand-ray-shift", action=argparse.BooleanOptionalAction, default=False, help="Initialize MANO translation deltas from the hand-ray depth repair observation for a discriminating repair test.")
@@ -443,7 +443,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     faces = np.asarray(mesh.faces, dtype=np.int64)
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.core.Tensor(vertices_object.astype(np.float32)), o3d.core.Tensor(faces.astype(np.uint32)))
-    depth_rows = load_depth_sources(args.depth_npz)
+    depth_paths = list(args.depth_npz or [DEFAULT_DEPTH])
+    depth_rows = load_depth_sources(depth_paths)
     hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
     bridge_cache: dict[Path, Any] = {}
     source_cache: dict[Path, Any] = {}
@@ -1088,7 +1089,7 @@ def main() -> None:
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface.",
-        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in args.depth_npz]},
+        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])]},
         "parameters": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k not in {"depth_npz"}},
         "build_meta": build_meta,
         "summary": {"interval_count": int(len(intervals)), "per_frame_state_count": int(len(per_frame_states)), "frame_span": [int(args.start_frame), int(args.end_frame)], "sides": list(args.sides)},
