@@ -30,17 +30,103 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_v18_owlv2_sam2_part_tracks import import_sam2  # noqa: E402
 from build_v18_part_visible_surfaces import load_metric_depth, resize_bool_mask  # noqa: E402
-from build_v18_temporal_mano_articulated_interval_state import (  # noqa: E402
-    bridge_vertices_and_joints,
-    project_world,
-    world_to_camera,
-)
-from build_v18_temporal_mano_translation_interval_state import as_list, load_json, numeric_summary, write_json  # noqa: E402
 
 DEFAULT_SAM2_CHECKPOINT = Path("/data2/ego_annotation_outputs/checkpoints/sam2.1_hiera_small.pt")
 DEFAULT_SAM2_REPO = Path("third_party/sam2")
 DEFAULT_SAM2_CFG = "configs/sam2.1/sam2.1_hiera_s.yaml"
 DEFAULT_OUTPUT = Path("/data2/ego_annotation_outputs/v18_visible_ownership_factor_v1")
+
+
+def load_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def numeric_summary(values: np.ndarray) -> dict[str, Any]:
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return {"count": 0, "median": None, "p90": None, "p95": None, "max": None, "mean": None}
+    return {
+        "count": int(arr.size),
+        "median": float(np.median(arr)),
+        "p90": float(np.percentile(arr, 90)),
+        "p95": float(np.percentile(arr, 95)),
+        "max": float(np.max(arr)),
+        "mean": float(np.mean(arr)),
+    }
+
+
+def frame_intrinsics(frame: dict[str, Any], side: str) -> list[float] | None:
+    for hand in as_list(frame.get("hands")):
+        if isinstance(hand, dict) and str(hand.get("hand_side")) == side:
+            metric_state = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+            intr = hand.get("current_v18_camera_intrinsics_fx_fy_cx_cy") or metric_state.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
+            if isinstance(intr, list) and len(intr) == 4:
+                return [float(x) for x in intr]
+    return None
+
+
+def frame_camera_pose(frame: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    transform = np.asarray(camera.get("T_world_camera_metric") or [], dtype=float)
+    if transform.shape != (4, 4):
+        raise RuntimeError(f"frame {frame.get('frame_idx')} lacks T_world_camera_metric")
+    return transform[:3, :3], transform[:3, 3]
+
+
+def project(points_world: np.ndarray, r_c2w: np.ndarray, t_c2w: np.ndarray, intr: list[float]) -> np.ndarray:
+    fx, fy, cx, cy = [float(x) for x in intr]
+    cam = (np.asarray(points_world, dtype=float) - t_c2w[None, :]) @ r_c2w
+    z = np.maximum(cam[:, 2], 1.0e-9)
+    return np.stack([fx * cam[:, 0] / z + cx, fy * cam[:, 1] / z + cy], axis=1)
+
+
+def project_world(points_world: np.ndarray, frame: dict[str, Any], side: str) -> np.ndarray | None:
+    intr = frame_intrinsics(frame, side)
+    if intr is None:
+        return None
+    r_c2w, t_c2w = frame_camera_pose(frame)
+    return project(points_world, r_c2w, t_c2w, intr)
+
+
+def world_to_camera(points_world: np.ndarray, frame: dict[str, Any]) -> np.ndarray:
+    r_c2w, t_c2w = frame_camera_pose(frame)
+    return (np.asarray(points_world, dtype=float) - t_c2w[None, :]) @ r_c2w
+
+
+def load_bridge_array(cache: dict[Path, Any], bridge_path: Path, array_name: str, row_index: int) -> np.ndarray:
+    if bridge_path not in cache:
+        cache[bridge_path] = np.load(bridge_path, allow_pickle=True)
+    return np.asarray(cache[bridge_path][array_name][row_index], dtype=float)
+
+
+def bridge_vertices_and_joints(hand: dict[str, Any], bridge_cache: dict[Path, Any]) -> tuple[np.ndarray, np.ndarray] | None:
+    metric_raw = hand.get("metric_mano_state")
+    metric: dict[str, Any] = metric_raw if isinstance(metric_raw, dict) else {}
+    reference_raw = metric.get("vertices_reference")
+    reference: dict[str, Any] = reference_raw if isinstance(reference_raw, dict) else {}
+    bridge_path_raw = reference.get("bridge_npz")
+    vertices_array = reference.get("bridge_vertices_world_array")
+    row_index_raw = reference.get("bridge_row_index")
+    if not isinstance(bridge_path_raw, str) or not isinstance(vertices_array, str) or row_index_raw is None:
+        return None
+    bridge_path = Path(bridge_path_raw)
+    if not bridge_path.exists():
+        return None
+    row_index = int(row_index_raw)
+    vertices_world = load_bridge_array(bridge_cache, bridge_path, vertices_array, row_index)
+    joints_world = load_bridge_array(bridge_cache, bridge_path, "joints_current_v18_world_from_hawor_projection_relift_m", row_index)
+    return vertices_world, joints_world
 
 
 def parse_spans(values: list[list[int]] | None) -> list[tuple[int, int]]:
@@ -208,6 +294,36 @@ def load_mask(path: Path, shape_hw: tuple[int, int] | None = None) -> np.ndarray
     return arr
 
 
+def path_prefix_pairs(args: argparse.Namespace) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for pair in as_list(getattr(args, "path_prefix_map", None)):
+        if len(pair) != 2:
+            raise ValueError(f"invalid --path-prefix-map pair: {pair}")
+        pairs.append((str(pair[0]), str(pair[1])))
+    return pairs
+
+
+def remap_path_string(value: str, pairs: list[tuple[str, str]]) -> str:
+    for src, dst in pairs:
+        if value == src:
+            return dst
+        if value.startswith(src.rstrip("/") + "/"):
+            return dst.rstrip("/") + value[len(src.rstrip("/")):]
+    return value
+
+
+def remap_paths_in_payload(value: Any, pairs: list[tuple[str, str]]) -> Any:
+    if not pairs:
+        return value
+    if isinstance(value, str):
+        return remap_path_string(value, pairs)
+    if isinstance(value, list):
+        return [remap_paths_in_payload(v, pairs) for v in value]
+    if isinstance(value, dict):
+        return {k: remap_paths_in_payload(v, pairs) for k, v in value.items()}
+    return value
+
+
 def run_sam2_hand_masks(args: argparse.Namespace, annotations: dict[str, Any], prompts: dict[str, list[dict[str, Any]]], spans: list[tuple[int, int]], output_case: Path) -> dict[tuple[int, str], Path]:
     if args.reuse_hand_mask_root is not None:
         out: dict[tuple[int, str], Path] = {}
@@ -235,11 +351,18 @@ def run_sam2_hand_masks(args: argparse.Namespace, annotations: dict[str, Any], p
     for side, rows in prompts.items():
         obj_id = obj_id_by_side[side]
         for row in rows:
+            box = row.get("bbox_xyxy")
+            points = row.get("points_xy")
+            labels = row.get("point_labels")
+            if box is None and not points:
+                continue
             predictor.add_new_points_or_box(
                 state,
                 frame_idx=int(row["frame_idx"]),
                 obj_id=obj_id,
-                box=np.asarray(row["bbox_xyxy"], dtype=np.float32),
+                box=None if box is None else np.asarray(box, dtype=np.float32),
+                points=None if not points else np.asarray(points, dtype=np.float32),
+                labels=None if not labels else np.asarray(labels, dtype=np.int32),
             )
     target_frames = frame_set_from_spans(spans)
     masks: dict[tuple[int, str], np.ndarray] = {}
@@ -279,10 +402,10 @@ def annotation_entity_mask_paths(frames: dict[int, dict[str, Any]], target_entit
     return out
 
 
-def report_entity_mask_paths(path: Path | None) -> dict[int, Path]:
+def report_entity_mask_paths(path: Path | None, path_pairs: list[tuple[str, str]] | None = None) -> dict[int, Path]:
     if path is None:
         return {}
-    payload = load_json(path)
+    payload = remap_paths_in_payload(load_json(path), list(path_pairs or []))
     rows = []
     for key in ("saved_mask_rows_after_start", "target_mask_rows", "mask_rows", "track_rows"):
         value = payload.get(key)
@@ -370,6 +493,120 @@ def dilate_bool_mask(mask: np.ndarray, radius_px: int) -> np.ndarray:
     return cv2.dilate(mask.astype(np.uint8), kernel, iterations=1).astype(bool)
 
 
+def sample_mask_points(mask: np.ndarray, max_points: int) -> list[list[float]]:
+    coords = np.argwhere(mask.astype(bool))
+    if coords.size == 0 or int(max_points) <= 0:
+        return []
+    if len(coords) > int(max_points):
+        coords = coords[np.linspace(0, len(coords) - 1, int(max_points), dtype=np.int64)]
+    return [[float(x), float(y)] for y, x in coords]
+
+
+def merge_prompt_sources(
+    box_prompts: dict[str, list[dict[str, Any]]],
+    support_prompts: dict[str, list[dict[str, Any]]],
+    *,
+    source: str,
+) -> dict[str, list[dict[str, Any]]]:
+    if source == "annotation_box":
+        return box_prompts
+    if source == "mano_depth_support":
+        return support_prompts
+    if source != "annotation_box_and_mano_depth_support":
+        raise ValueError(f"unknown hand prompt source: {source}")
+    merged: dict[str, list[dict[str, Any]]] = {side: [] for side in box_prompts.keys() | support_prompts.keys()}
+    for side in merged:
+        by_frame: dict[int, dict[str, Any]] = {}
+        for row in box_prompts.get(side, []):
+            item = dict(row)
+            item["prompt_sources"] = ["annotation_box"]
+            by_frame[int(row["frame_idx"])] = item
+        for row in support_prompts.get(side, []):
+            frame_idx = int(row["frame_idx"])
+            item = by_frame.setdefault(frame_idx, {"frame_idx": frame_idx, "hand_side": side, "prompt_sources": []})
+            item.setdefault("prompt_sources", [])
+            if "mano_depth_support" not in item["prompt_sources"]:
+                item["prompt_sources"].append("mano_depth_support")
+            item["points_xy"] = list(row.get("points_xy") or [])
+            item["point_labels"] = list(row.get("point_labels") or [])
+            item["mano_prompt_diagnostics"] = row.get("mano_prompt_diagnostics")
+        merged[side] = [by_frame[idx] for idx in sorted(by_frame)]
+    return merged
+
+
+def collect_mano_depth_support_prompts(
+    args: argparse.Namespace,
+    annotations: dict[str, Any],
+    frames: dict[int, dict[str, Any]],
+    spans: list[tuple[int, int]],
+    depth: dict[str, Any],
+    entity_mask_paths: dict[int, Path],
+) -> dict[str, list[dict[str, Any]]]:
+    del annotations
+    target_frames = sorted(frame_set_from_spans(spans))
+    selected_frames: set[int] = {idx for idx in target_frames if idx % max(1, int(args.hand_prompt_stride)) == 0}
+    for start, end in spans:
+        candidates = [idx for idx in target_frames if start <= idx <= end]
+        if candidates:
+            selected_frames.add(candidates[0])
+            selected_frames.add(candidates[-1])
+    prompts: dict[str, list[dict[str, Any]]] = {side: [] for side in args.sides}
+    bridge_cache: dict[Path, Any] = {}
+    mask_cache: dict[Path, np.ndarray] = {}
+    for frame_idx in sorted(selected_frames):
+        frame = frames.get(frame_idx)
+        if frame is None:
+            continue
+        frame_image_size = Image.open(frame["raw_frame_path"]).size
+        shape_hw = (frame_image_size[1], frame_image_size[0])
+        entity_mask = np.zeros(shape_hw, dtype=bool)
+        entity_path = entity_mask_paths.get(frame_idx)
+        if entity_path is not None:
+            if entity_path not in mask_cache:
+                mask_cache[entity_path] = load_mask(entity_path)
+            entity_mask = resize_bool_mask(mask_cache[entity_path], shape_hw)
+        drow = depth_row_for(depth, frame_idx)
+        for side in args.sides:
+            hand = hand_by_side(frame, side)
+            if hand is None:
+                continue
+            mano_support, mano_diag = rasterize_mano_support(
+                frame=frame,
+                side=side,
+                hand=hand,
+                depth_row=drow,
+                shape_hw=shape_hw,
+                bridge_cache=bridge_cache,
+                radius_px=int(args.mano_prompt_support_dilation_px),
+                depth_support_m=float(args.mano_prompt_depth_support_m),
+            )
+            if int(mano_support.sum()) < int(args.min_mano_prompt_support_px):
+                continue
+            negative_exclusion = dilate_bool_mask(mano_support, int(args.mano_prompt_negative_exclusion_dilation_px))
+            negative_mask = entity_mask & ~negative_exclusion
+            positive_points = sample_mask_points(mano_support, int(args.mano_prompt_max_positive_points))
+            negative_points = sample_mask_points(negative_mask, int(args.mano_prompt_max_negative_points))
+            if not positive_points:
+                continue
+            prompts[side].append(
+                {
+                    "frame_idx": int(frame_idx),
+                    "hand_side": side,
+                    "points_xy": positive_points + negative_points,
+                    "point_labels": [1] * len(positive_points) + [0] * len(negative_points),
+                    "prompt_sources": ["mano_depth_support"],
+                    "mano_prompt_diagnostics": {
+                        "positive_point_count": int(len(positive_points)),
+                        "negative_point_count": int(len(negative_points)),
+                        "mano_support_px": int(mano_support.sum()),
+                        "entity_negative_candidate_px": int(negative_mask.sum()),
+                        "mano_projection_support": mano_diag,
+                    },
+                }
+            )
+    return prompts
+
+
 def render_review_panel(
     *,
     frame_path: Path,
@@ -415,7 +652,8 @@ def render_review_panel(
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
     spans = parse_spans(args.frame_span)
-    annotations = load_json(args.annotations)
+    prefix_pairs = path_prefix_pairs(args)
+    annotations = remap_paths_in_payload(load_json(args.annotations), prefix_pairs)
     frames = load_frames(annotations)
     target_frames = sorted(frame_set_from_spans(spans))
     missing_frames = [idx for idx in target_frames if idx not in frames]
@@ -423,11 +661,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"annotations missing target frames: {missing_frames[:8]}")
     output_case = args.output_root / args.case
     output_case.mkdir(parents=True, exist_ok=True)
-    prompts = collect_hand_prompts(args, annotations, frames, spans)
-    hand_mask_paths = run_sam2_hand_masks(args, annotations, prompts, spans, output_case)
     annotation_masks = annotation_entity_mask_paths(frames, args.target_entity_id)
-    report_masks = report_entity_mask_paths(args.visible_entity_mask_report)
+    report_masks = report_entity_mask_paths(args.visible_entity_mask_report, prefix_pairs)
+    entity_prompt_masks = {**annotation_masks, **report_masks}
     depth = load_metric_depth(args.depth_npz)
+    box_prompts = collect_hand_prompts(args, annotations, frames, spans)
+    support_prompts = collect_mano_depth_support_prompts(args, annotations, frames, spans, depth, entity_prompt_masks)
+    prompts = merge_prompt_sources(box_prompts, support_prompts, source=str(args.hand_prompt_source))
+    hand_mask_paths = run_sam2_hand_masks(args, annotations, prompts, spans, output_case)
     mask_cache: dict[Path, np.ndarray] = {}
     bridge_cache: dict[Path, Any] = {}
     ownership_rows: list[dict[str, Any]] = []
@@ -595,13 +836,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_npz": str(args.depth_npz),
             "visible_entity_mask_report": None if args.visible_entity_mask_report is None else str(args.visible_entity_mask_report),
             "reuse_hand_mask_root": None if args.reuse_hand_mask_root is None else str(args.reuse_hand_mask_root),
+            "path_prefix_map": [[src, dst] for src, dst in prefix_pairs],
         },
         "parameters": {
             "frame_spans": [[int(a), int(b)] for a, b in spans],
             "sides": list(args.sides),
+            "hand_prompt_source": str(args.hand_prompt_source),
             "hand_prompt_stride": int(args.hand_prompt_stride),
             "hand_box_source_size": [int(args.hand_box_source_width), int(args.hand_box_source_height)],
             "hand_box_margin_ratio": float(args.hand_box_margin_ratio),
+            "mano_prompt_support_dilation_px": int(args.mano_prompt_support_dilation_px),
+            "mano_prompt_depth_support_m": float(args.mano_prompt_depth_support_m),
+            "mano_prompt_max_positive_points": int(args.mano_prompt_max_positive_points),
+            "mano_prompt_max_negative_points": int(args.mano_prompt_max_negative_points),
+            "mano_prompt_negative_exclusion_dilation_px": int(args.mano_prompt_negative_exclusion_dilation_px),
+            "min_mano_prompt_support_px": int(args.min_mano_prompt_support_px),
             "mano_projection_dilation_px": int(args.mano_projection_dilation_px),
             "mano_depth_support_m": float(args.mano_depth_support_m),
             "hand_mask_mano_alignment_dilation_px": int(args.hand_mask_mano_alignment_dilation_px),
@@ -661,6 +910,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--frame-span", nargs=2, type=int, action="append", metavar=("START", "END"), required=True)
     p.add_argument("--sides", nargs="+", choices=("left", "right"), default=["left", "right"])
     p.add_argument("--visible-entity-mask-report", type=Path, default=None, help="Optional report containing saved visible object/part mask paths. If absent, annotation object masks for --target-entity-id are used.")
+    p.add_argument("--path-prefix-map", nargs=2, action="append", metavar=("FROM", "TO"), default=None, help="Rewrite embedded artifact paths while reading annotations/reports, e.g. /data2/ego_annotation_outputs to a remote NAS mirror.")
     p.add_argument("--reuse-hand-mask-root", type=Path, default=None, help="Optional root with side/frame hand masks to reuse instead of running SAM2.")
     p.add_argument("--sam2-repo", type=Path, default=DEFAULT_SAM2_REPO)
     p.add_argument("--sam2-model-cfg", default=DEFAULT_SAM2_CFG)
@@ -669,7 +919,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vos-optimized", action="store_true")
     p.add_argument("--offload-video-to-cpu", action="store_true", default=True)
     p.add_argument("--offload-state-to-cpu", action="store_true")
+    p.add_argument("--hand-prompt-source", choices=("annotation_box", "mano_depth_support", "annotation_box_and_mano_depth_support"), default="annotation_box", help="SAM2 visible-hand prompt source. MANO-depth support prompts use side-specific depth-supported MANO projection points plus visible-entity negative points; downstream ownership still requires SAM2/MANO alignment.")
     p.add_argument("--hand-prompt-stride", type=int, default=12)
+    p.add_argument("--mano-prompt-support-dilation-px", type=int, default=6)
+    p.add_argument("--mano-prompt-depth-support-m", type=float, default=0.050)
+    p.add_argument("--mano-prompt-max-positive-points", type=int, default=8)
+    p.add_argument("--mano-prompt-max-negative-points", type=int, default=8)
+    p.add_argument("--mano-prompt-negative-exclusion-dilation-px", type=int, default=22)
+    p.add_argument("--min-mano-prompt-support-px", type=int, default=24)
     p.add_argument("--hand-box-source-width", type=int, default=1280)
     p.add_argument("--hand-box-source-height", type=int, default=720)
     p.add_argument("--hand-box-margin-ratio", type=float, default=0.04)

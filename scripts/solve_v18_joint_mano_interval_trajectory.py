@@ -915,8 +915,6 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         )
         visible_mask_path = visible_mask_paths.get(frame_idx)
         visible_mask = None if visible_mask_path is None else load_binary_mask(visible_mask_path, visible_mask_cache)
-        if ownership_object_owned_mask is not None:
-            visible_mask = ownership_object_owned_mask if visible_mask is None else (visible_mask & ownership_object_owned_mask)
         visible_surface_row = visible_surface_track_rows.get((frame_idx, side))
         if (args.visible_surface_track_factor_report is not None or generic_factor_rows["visible_surface_track"]) and visible_surface_row is None:
             raise ValueError(f"visible-surface track factor missing row for frame={frame_idx} side={side}")
@@ -925,6 +923,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         if visible_surface_active:
             visible_mask = visible_surface_mask
             visible_mask_path = Path(str(visible_surface_diag.get("surface_mask_path")))
+        if ownership_object_owned_mask is not None:
+            visible_mask = ownership_object_owned_mask if visible_mask is None else (visible_mask & ownership_object_owned_mask)
         strict, visible_mask_face_count_raw, visible_mask_face_count = visible_object_mask_face_gate(
             frame=frame,
             side=side,
