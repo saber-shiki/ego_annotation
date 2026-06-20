@@ -109,7 +109,13 @@ class FrameHandRow:
     observed_constraint_count: int
     object_rotation_world_from_object: np.ndarray
     object_translation_world_m: np.ndarray
+    face_strict_observed_raw: np.ndarray
     face_strict_observed: np.ndarray
+    hand_owned_quarantined_face_count: int
+    joint_visibility_weights: np.ndarray
+    joint_depth_residual_m: np.ndarray
+    hand_ray_shift_prior_world_m: np.ndarray
+    hand_ray_shift_prior_source_m: float | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -120,6 +126,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT)
     p.add_argument("--completed-mesh", type=Path, default=DEFAULT_MESH)
     p.add_argument("--depth-npz", type=Path, action="append", default=[DEFAULT_DEPTH])
+    p.add_argument("--hand-depth-repair-graph", type=Path, default=None, help="Optional prior source with per-frame hand_ray_shift_m camera-ray observations from the V17 hand-depth repair graph.")
+    p.add_argument("--use-hand-ray-shift-prior", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--initialize-hand-ray-shift", action=argparse.BooleanOptionalAction, default=False, help="Initialize MANO translation deltas from the hand-ray depth repair observation for a discriminating repair test.")
+    p.add_argument("--hand-ray-shift-prior-weight", type=float, default=2.5e3)
     p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     p.add_argument("--wilor-root", type=Path, default=DEFAULT_WILOR_ROOT)
     p.add_argument("--wilor-mano-right", type=Path, default=None)
@@ -149,9 +159,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dense-observed-surface-barrier", action=argparse.BooleanOptionalAction, default=True, help="Apply a tangent-plane nonpenetration barrier to every MANO vertex whose nearest object face is observed-supported, not only the current active penetrating subset.")
     p.add_argument("--dense-observed-penetration-weight", type=float, default=3.0e5)
     p.add_argument("--optimize-object-translation", action=argparse.BooleanOptionalAction, default=False, help="Jointly solve a small per-frame object translation delta so hand/object residual can expose tomato pose-depth alignment error instead of forcing all correction into MANO.")
+    p.add_argument("--hand-owned-object-depth-quarantine", action=argparse.BooleanOptionalAction, default=False, help="Do not treat object faces as trusted observed-surface constraints when their projected depth is plausibly owned by the visible/current hand surface.")
+    p.add_argument("--hand-owned-quarantine-radius-px", type=float, default=3.0)
+    p.add_argument("--hand-owned-quarantine-depth-margin-m", type=float, default=0.005, help="Required camera-depth foreground separation for hand-owned object-depth quarantine.")
+    p.add_argument("--hand-owned-quarantine-hand-depth-support-m", type=float, default=0.030)
     p.add_argument("--max-object-translation-m", type=float, default=0.015, help="Object translation uncertainty bound; default equals the observed-depth support margin scale.")
     p.add_argument("--object-translation-prior-weight", type=float, default=4.0e3)
     p.add_argument("--object-smooth-weight", type=float, default=8.0e3)
+    p.add_argument("--visibility-weighted-hand-observation", action=argparse.BooleanOptionalAction, default=False, help="Use metric depth support to reduce HaWoR joint/articulation anchoring for occluded or depth-inconsistent fingers while preserving visible joints.")
+    p.add_argument("--visible-joint-depth-margin-m", type=float, default=0.030)
+    p.add_argument("--occluded-joint-observation-weight", type=float, default=0.12)
+    p.add_argument("--front-inconsistent-joint-observation-weight", type=float, default=0.35)
+    p.add_argument("--invalid-joint-observation-weight", type=float, default=0.35)
     p.add_argument("--visible-hinge-weight", type=float, default=8.0e2)
     p.add_argument("--depth-hinge-weight", type=float, default=2.0e4)
     p.add_argument("--bound-hinge-weight", type=float, default=3.0e3)
@@ -179,6 +198,121 @@ def sample_ids(n: int, count: int) -> np.ndarray:
     return np.linspace(0, n - 1, count, dtype=np.int64)
 
 
+def joint_visibility_from_metric_depth(
+    row_frame: dict[str, Any],
+    side: str,
+    joints_world: np.ndarray,
+    depth_row: dict[str, Any] | None,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-openpose-joint observation weights from first-surface depth.
+
+    A joint close to the observed depth surface keeps full HaWoR anchoring.  A
+    joint behind the observed first surface is treated as occluded by foreground
+    geometry; a joint far in front of the observed depth is depth-inconsistent.
+    Both cases reduce the zero-state observation force without removing temporal
+    coherence or object nonpenetration.
+    """
+    weights = np.ones((21,), dtype=float)
+    residual = np.full((21,), np.nan, dtype=float)
+    if depth_row is None:
+        weights[:] = float(args.invalid_joint_observation_weight)
+        return weights, residual
+    uv = project_world(joints_world, row_frame, side)
+    if uv is None:
+        weights[:] = float(args.invalid_joint_observation_weight)
+        return weights, residual
+    depth = np.asarray(depth_row.get("depth"), dtype=np.float32)
+    if depth.ndim != 2:
+        weights[:] = float(args.invalid_joint_observation_weight)
+        return weights, residual
+    height, width = depth.shape
+    cam = world_to_camera(joints_world, row_frame)
+    u = np.rint(uv[:, 0]).astype(int)
+    v = np.rint(uv[:, 1]).astype(int)
+    valid = (cam[:, 2] > 1.0e-5) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    valid_depth = np.zeros((21,), dtype=bool)
+    valid_depth[valid] = np.isfinite(depth[v[valid], u[valid]]) & (depth[v[valid], u[valid]] > 1.0e-5)
+    valid = valid & valid_depth
+    weights[~valid] = float(args.invalid_joint_observation_weight)
+    if np.any(valid):
+        residual[valid] = cam[valid, 2] - depth[v[valid], u[valid]].astype(float)
+        margin = float(args.visible_joint_depth_margin_m)
+        behind = valid & (residual > margin)
+        in_front = valid & (residual < -margin)
+        weights[behind] = float(args.occluded_joint_observation_weight)
+        weights[in_front] = float(args.front_inconsistent_joint_observation_weight)
+    return np.clip(weights, 0.0, 1.0), residual
+
+
+def hand_owned_object_depth_quarantine(
+    *,
+    frame: dict[str, Any],
+    side: str,
+    object_vertices: np.ndarray,
+    object_faces: np.ndarray,
+    object_pose: tuple[np.ndarray, np.ndarray],
+    hand_vertices_world: np.ndarray,
+    face_strict_observed: np.ndarray,
+    depth_row: dict[str, Any] | None,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, int]:
+    """Quarantine object faces whose first-surface depth is plausibly hand-owned.
+
+    Object-depth classification alone assumes a projected first surface belongs
+    to the object.  During a grasp, a depth-supported hand surface can occupy the
+    same pixels and be in front of, or at the same depth as, the object face. In
+    that case the face is an occlusion/ownership uncertainty and should not push
+    MANO as a trusted observed-object nonpenetration constraint.
+    """
+    strict = np.asarray(face_strict_observed, dtype=bool).copy()
+    if not bool(args.hand_owned_object_depth_quarantine) or depth_row is None or not np.any(strict):
+        return strict, 0
+    depth = np.asarray(depth_row.get("depth"), dtype=np.float32)
+    if depth.ndim != 2:
+        return strict, 0
+    height, width = depth.shape
+    r_obj, t_obj = object_pose
+    face_centers_world = object_vertices[object_faces].mean(axis=1) @ np.asarray(r_obj, dtype=float).T + np.asarray(t_obj, dtype=float)[None, :]
+    uv_face = project_world(face_centers_world, frame, side)
+    uv_hand = project_world(hand_vertices_world, frame, side)
+    if uv_face is None or uv_hand is None:
+        return strict, 0
+    cam_face = world_to_camera(face_centers_world, frame)
+    cam_hand = world_to_camera(hand_vertices_world, frame)
+    uh = np.rint(uv_hand[:, 0]).astype(int)
+    vh = np.rint(uv_hand[:, 1]).astype(int)
+    hand_valid = (cam_hand[:, 2] > 1.0e-5) & (uh >= 0) & (uh < width) & (vh >= 0) & (vh < height)
+    hand_ids = np.where(hand_valid)[0]
+    if hand_ids.size == 0:
+        return strict, 0
+    uf = np.rint(uv_face[:, 0]).astype(int)
+    vf = np.rint(uv_face[:, 1]).astype(int)
+    face_valid = strict & (cam_face[:, 2] > 1.0e-5) & (uf >= 0) & (uf < width) & (vf >= 0) & (vf < height)
+    if np.any(face_valid):
+        face_depth = depth[vf[face_valid], uf[face_valid]].astype(float)
+        tmp = np.zeros((len(face_valid),), dtype=bool)
+        tmp[face_valid] = np.isfinite(face_depth) & (face_depth > 1.0e-5)
+        face_valid = face_valid & tmp
+    face_ids = np.where(face_valid)[0]
+    if face_ids.size == 0:
+        return strict, 0
+    face_uv = uv_face[face_ids]
+    face_z = cam_face[face_ids, 2]
+    face_observed_depth = depth[vf[face_ids], uf[face_ids]].astype(float)
+    q = np.zeros((face_ids.size,), dtype=bool)
+    radius2 = float(args.hand_owned_quarantine_radius_px) ** 2
+    z_margin = float(args.hand_owned_quarantine_depth_margin_m)
+    support = float(args.hand_owned_quarantine_hand_depth_support_m)
+    for hid in hand_ids.astype(int):
+        d2 = np.sum((face_uv - uv_hand[hid]) ** 2, axis=1)
+        hand_matches_face_depth = np.abs(float(cam_hand[hid, 2]) - face_observed_depth) <= support
+        q |= (d2 <= radius2) & hand_matches_face_depth & (cam_hand[hid, 2] <= face_z - z_margin)
+    quarantined_ids = face_ids[q]
+    strict[quarantined_ids] = False
+    return strict, int(quarantined_ids.size)
+
+
 def load_models(args: argparse.Namespace, device: torch.device) -> dict[str, Any]:
     patch_legacy_mano_loader()
     mano_cls = load_wilor_mano_class(args.wilor_root)
@@ -200,6 +334,39 @@ def load_models(args: argparse.Namespace, device: torch.device) -> dict[str, Any
     for m in models.values():
         m.eval()
     return models
+
+
+OPENPOSE_FINGER_GROUPS = [
+    np.arange(1, 5, dtype=np.int64),
+    np.arange(5, 9, dtype=np.int64),
+    np.arange(9, 13, dtype=np.int64),
+    np.arange(13, 17, dtype=np.int64),
+    np.arange(17, 21, dtype=np.int64),
+]
+
+
+def infer_pose_joint_finger_groups(model: Any, base_root_mat: torch.Tensor, base_pose_mat: torch.Tensor, betas: torch.Tensor, trans: torch.Tensor) -> np.ndarray:
+    """Map each MANO internal pose joint to the output finger group it moves most.
+
+    The WiLoR wrapper returns OpenPose-ordered 21 hand joints, while MANO's 15
+    hand_pose rotations use MANO's internal kinematic order.  A small local
+    perturbation gives a model-specific mapping without relying on undocumented
+    joint-name assumptions.
+    """
+    device = base_pose_mat.device
+    out_groups: list[int] = []
+    with torch.no_grad():
+        base = model(global_orient=base_root_mat[:1], hand_pose=base_pose_mat[:1], betas=betas[:1], transl=trans[:1], return_verts=True, pose2rot=False)
+        base_j = base.joints[0, :21]
+        for pose_i in range(15):
+            delta = torch.zeros((1, 15, 3), dtype=torch.float32, device=device)
+            delta[0, pose_i, 0] = 0.08
+            posed = rotvec_to_matrix(delta) @ base_pose_mat[:1]
+            hyp = model(global_orient=base_root_mat[:1], hand_pose=posed, betas=betas[:1], transl=trans[:1], return_verts=True, pose2rot=False)
+            disp = torch.linalg.norm(hyp.joints[0, :21] - base_j, dim=1).detach().cpu().numpy().astype(float)
+            scores = [float(np.mean(disp[g])) for g in OPENPOSE_FINGER_GROUPS]
+            out_groups.append(int(np.argmax(scores)))
+    return np.asarray(out_groups, dtype=np.int64)
 
 
 def observed_constraints_for_hand(
@@ -254,6 +421,17 @@ def observed_constraints_for_hand(
     return obs_idx.astype(np.int64), normals_world.astype(float), depths.astype(float), measure
 
 
+def load_hand_ray_shift_priors(path: Path | None) -> dict[tuple[int, str], float]:
+    if path is None or not path.exists():
+        return {}
+    payload = load_json(path)
+    out: dict[tuple[int, str], float] = {}
+    for row in payload.get("rows", []) if isinstance(payload, dict) else []:
+        if isinstance(row, dict) and isinstance(row.get("hand_ray_shift_m"), (int, float)):
+            out[(int(row["frame_idx"]), str(row["hand_side"]))] = float(row["hand_ray_shift_m"])
+    return out
+
+
 def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow], dict[str, Any], Any]:
     annotations = load_json(args.annotations)
     frames = [f for f in as_list(annotations.get("frames")) if isinstance(f, dict)]
@@ -266,6 +444,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.core.Tensor(vertices_object.astype(np.float32)), o3d.core.Tensor(faces.astype(np.uint32)))
     depth_rows = load_depth_sources(args.depth_npz)
+    hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
     bridge_cache: dict[Path, Any] = {}
     source_cache: dict[Path, Any] = {}
     rows: list[FrameHandRow] = []
@@ -287,7 +466,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         )
         object_depth_summaries.append(obj_summary)
         prov = face_provenance(vertex_classes, faces)
-        strict = np.asarray(prov["observed_supported_strict"], dtype=bool)
+        strict_raw = np.asarray(prov["observed_supported_strict"], dtype=bool)
         hand = None
         for h in as_list(frame.get("hands")):
             if isinstance(h, dict) and str(h.get("hand_side")) == side:
@@ -302,6 +481,17 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             skipped.append({"frame_idx": frame_idx, "side": side, "reason": "missing_bridge_or_source"})
             continue
         current_vertices, current_joints = arrays
+        strict, hand_owned_quarantined = hand_owned_object_depth_quarantine(
+            frame=frame,
+            side=side,
+            object_vertices=vertices_object,
+            object_faces=faces,
+            object_pose=pose,
+            hand_vertices_world=current_vertices,
+            face_strict_observed=strict_raw,
+            depth_row=depth_rows.get(frame_idx),
+            args=args,
+        )
         source_path, source_frame = source_info
         source = load_source_arrays(source_cache, source_path)
         required = [
@@ -328,7 +518,20 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             max_constraints=int(args.max_constraints_per_frame),
             eps=float(args.penetration_epsilon_m),
         )
+        if bool(args.visibility_weighted_hand_observation):
+            joint_visibility_weights, joint_depth_residual = joint_visibility_from_metric_depth(frame, side, current_joints, depth_rows.get(frame_idx), args)
+        else:
+            joint_visibility_weights = np.ones((21,), dtype=float)
+            joint_depth_residual = np.full((21,), np.nan, dtype=float)
         r_obj, t_obj = pose
+        ray_shift = hand_ray_shift_priors.get((frame_idx, side))
+        r_c2w_frame, _t_c2w_frame = frame_camera_pose(frame)
+        # V17 hand_ray_shift_m is a camera-ray depth repair observation.  The
+        # direction that reduced current observed-surface residual in the
+        # workbench probe is the negative camera-z shift.
+        ray_prior_world = np.zeros(3, dtype=float) if ray_shift is None else (-float(ray_shift) * np.asarray(r_c2w_frame[:, 2], dtype=float))
+        if not bool(args.use_hand_ray_shift_prior):
+            ray_prior_world = np.zeros(3, dtype=float)
         rows.append(
             FrameHandRow(
                 frame_idx=frame_idx,
@@ -354,7 +557,13 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 observed_constraint_count=int(len(depths)),
                 object_rotation_world_from_object=np.asarray(r_obj, dtype=float),
                 object_translation_world_m=np.asarray(t_obj, dtype=float),
+                face_strict_observed_raw=strict_raw.astype(bool),
                 face_strict_observed=strict.astype(bool),
+                hand_owned_quarantined_face_count=int(hand_owned_quarantined),
+                joint_visibility_weights=joint_visibility_weights.astype(float),
+                joint_depth_residual_m=joint_depth_residual.astype(float),
+                hand_ray_shift_prior_world_m=ray_prior_world.astype(float),
+                hand_ray_shift_prior_source_m=None if ray_shift is None else float(ray_shift),
             )
         )
     meta = {
@@ -457,8 +666,9 @@ def merge_constraints(base_idx: np.ndarray, base_normals: np.ndarray, base_depth
     return idx, normals, depths
 
 
-def full_observed_surface_measure(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, eps: float, object_translation_delta_world: np.ndarray | None = None) -> dict[str, Any]:
+def full_observed_surface_measure(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, eps: float, object_translation_delta_world: np.ndarray | None = None, face_strict_observed: np.ndarray | None = None) -> dict[str, Any]:
     obj_delta = np.zeros(3, dtype=float) if object_translation_delta_world is None else np.asarray(object_translation_delta_world, dtype=float)
+    face_mask = row.face_strict_observed if face_strict_observed is None else np.asarray(face_strict_observed, dtype=bool)
     vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m + obj_delta)
     signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
     penetrating = np.where(signed > float(eps))[0]
@@ -470,9 +680,9 @@ def full_observed_surface_measure(vertices_world: np.ndarray, row: FrameHandRow,
         }
     closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object[penetrating], dtype=np.float32)))
     primitive_ids = closest["primitive_ids"].numpy().astype(np.int64)
-    valid = (primitive_ids >= 0) & (primitive_ids < len(row.face_strict_observed))
+    valid = (primitive_ids >= 0) & (primitive_ids < len(face_mask))
     observed = np.zeros_like(valid, dtype=bool)
-    observed[valid] = row.face_strict_observed[primitive_ids[valid]]
+    observed[valid] = face_mask[primitive_ids[valid]]
     observed_depths = signed[penetrating][observed]
     return {
         "penetrating_vertex_count": int(penetrating.size),
@@ -501,8 +711,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
 
     root_delta = torch.zeros((b, 1, 3), dtype=torch.float32, device=device, requires_grad=True)
     pose_delta = torch.zeros((b, 15, 3), dtype=torch.float32, device=device, requires_grad=True)
-    trans_delta = torch.zeros((b, 3), dtype=torch.float32, device=device, requires_grad=True)
+    hand_ray_shift_prior_t = torch.tensor(np.stack([r.hand_ray_shift_prior_world_m for r in rows]), dtype=torch.float32, device=device)
+    trans_init = hand_ray_shift_prior_t.detach().clone() if bool(args.initialize_hand_ray_shift) else torch.zeros((b, 3), dtype=torch.float32, device=device)
+    trans_delta = trans_init.clone().detach().requires_grad_(True)
     object_trans_delta = torch.zeros((b, 3), dtype=torch.float32, device=device, requires_grad=bool(args.optimize_object_translation))
+    hand_ray_shift_prior_active = torch.linalg.norm(hand_ray_shift_prior_t, dim=1) > 1.0e-9
     optim_params = [root_delta, pose_delta, trans_delta]
     if bool(args.optimize_object_translation):
         optim_params.append(object_trans_delta)
@@ -533,6 +746,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     dense_constraint_normals: list[np.ndarray] = []
     dense_constraint_depths: list[np.ndarray] = []
     reference_observed_measures: list[dict[str, Any]] = []
+    reference_raw_observed_measures: list[dict[str, Any]] = []
     for i, r in enumerate(rows):
         c_idx, c_normals, c_depths = active_constraints_from_vertices(
             reference_vertices_np[i], r, scene, int(args.max_constraints_per_frame), float(args.penetration_epsilon_m), reference_vertices_np[i]
@@ -550,6 +764,14 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         dense_constraint_normals.append(d_normals)
         dense_constraint_depths.append(d_depths)
         reference_observed_measures.append(full_observed_surface_measure(reference_vertices_np[i], r, scene, float(args.penetration_epsilon_m)))
+        reference_raw_observed_measures.append(full_observed_surface_measure(reference_vertices_np[i], r, scene, float(args.penetration_epsilon_m), face_strict_observed=r.face_strict_observed_raw))
+    pose_joint_finger_groups = infer_pose_joint_finger_groups(model, base_root_mat, base_pose_mat, betas, trans)
+    joint_visibility_weights_np = np.stack([r.joint_visibility_weights for r in rows]).astype(float)
+    pose_visibility_weights_np = np.ones((b, 15), dtype=float)
+    for pose_i, group_i in enumerate(pose_joint_finger_groups.astype(int)):
+        pose_visibility_weights_np[:, pose_i] = np.mean(joint_visibility_weights_np[:, OPENPOSE_FINGER_GROUPS[group_i]], axis=1)
+    joint_visibility_weights_t = torch.tensor(joint_visibility_weights_np, dtype=torch.float32, device=device)
+    pose_visibility_weights_t = torch.tensor(pose_visibility_weights_np, dtype=torch.float32, device=device)
     intr_t: list[torch.Tensor | None] = []
     base_uv: list[torch.Tensor | None] = []
     r_c2w_t: list[torch.Tensor] = []
@@ -608,13 +830,18 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         loss = torch.tensor(0.0, dtype=torch.float32, device=device)
         loss = loss + float(args.translation_prior_weight) * torch.mean(trans_delta * trans_delta)
         loss = loss + float(args.root_prior_weight) * torch.mean(root_delta * root_delta)
-        loss = loss + float(args.pose_prior_weight) * torch.mean(pose_delta * pose_delta)
+        pose_prior_num = torch.sum(pose_visibility_weights_t[:, :, None] * pose_delta * pose_delta)
+        pose_prior_den = torch.clamp(torch.sum(pose_visibility_weights_t) * 3.0, min=1.0)
+        loss = loss + float(args.pose_prior_weight) * pose_prior_num / pose_prior_den
         loss = loss + temporal_terms(trans_delta, float(args.smooth_weight))
         loss = loss + temporal_terms(root_delta, float(args.smooth_weight))
         loss = loss + temporal_terms(pose_delta, float(args.smooth_weight))
         if bool(args.optimize_object_translation):
             loss = loss + float(args.object_translation_prior_weight) * torch.mean(object_trans_delta * object_trans_delta)
             loss = loss + temporal_terms(object_trans_delta, float(args.object_smooth_weight))
+        if bool(args.use_hand_ray_shift_prior) and torch.any(hand_ray_shift_prior_active):
+            diff = trans_delta[hand_ray_shift_prior_active] - hand_ray_shift_prior_t[hand_ray_shift_prior_active]
+            loss = loss + float(args.hand_ray_shift_prior_weight) * torch.mean(diff * diff)
         trans_norm = torch.linalg.norm(trans_delta, dim=1)
         object_trans_norm = torch.linalg.norm(object_trans_delta, dim=1)
         root_norm = torch.linalg.norm(root_delta.reshape(b, 3), dim=1)
@@ -640,12 +867,16 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
                 loss = loss + float(args.dense_observed_penetration_weight) * torch.sum(residual * residual) / active_count
             uv = project_torch(hyp_joints[i], i)
+            obs_w = joint_visibility_weights_t[i]
+            obs_den = torch.clamp(torch.sum(obs_w), min=1.0)
             if uv is not None and base_uv[i] is not None:
                 shift = torch.linalg.norm(uv - base_uv[i], dim=1)
-                loss = loss + float(args.visible_hinge_weight) * torch.mean(torch.relu(shift - float(args.visible_shift_limit_px)) ** 2)
+                visible_hinge = torch.relu(shift - float(args.visible_shift_limit_px)) ** 2
+                loss = loss + float(args.visible_hinge_weight) * torch.sum(obs_w * visible_hinge) / obs_den
             cam = torch.matmul(hyp_joints[i] - t_c2w_t[i].reshape(1, 3), r_c2w_t[i])
             depth_shift = torch.abs(cam[:, 2] - base_depth[i])
-            loss = loss + float(args.depth_hinge_weight) * torch.mean(torch.relu(depth_shift - float(args.depth_shift_limit_m)) ** 2)
+            depth_hinge = torch.relu(depth_shift - float(args.depth_shift_limit_m)) ** 2
+            loss = loss + float(args.depth_hinge_weight) * torch.sum(obs_w * depth_hinge) / obs_den
         loss.backward()
         return loss
 
@@ -707,6 +938,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     initial_obs_max: list[float] = []
     final_linear_residual_max: list[float] = []
     final_full_observed_max: list[float] = []
+    final_raw_observed_max: list[float] = []
     visible_max: list[float] = []
     depth_max: list[float] = []
     trans_max: list[float] = []
@@ -721,10 +953,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         else:
             residual = np.zeros((0,), dtype=float)
         init_measure = reference_observed_measures[i]
+        init_raw_measure = reference_raw_observed_measures[i]
         init_max = float((init_measure.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         final_max = float(np.max(residual)) if residual.size else 0.0
         full_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i])
+        full_raw_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i], face_strict_observed=row.face_strict_observed_raw)
         full_post_max = float((full_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
+        full_raw_post_max = float((full_raw_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         uv0 = project_world(row.current_joints_world, row.frame, row.side)
         uv1 = project_world(hyp_joints[i], row.frame, row.side)
         if uv0 is not None and uv1 is not None:
@@ -748,6 +983,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         initial_obs_max.append(init_max)
         final_linear_residual_max.append(final_max)
         final_full_observed_max.append(full_post_max)
+        final_raw_observed_max.append(full_raw_post_max)
         if np.isfinite(shift_max):
             visible_max.append(shift_max)
         depth_max.append(float(np.max(dshift)))
@@ -763,16 +999,24 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "source_hawor_npz": str(row.source_hawor_npz),
                 "source_frame_index": int(row.source_frame_index),
                 "optimized_translation_world_m": trans_np[i].astype(float).tolist(),
+                "hand_ray_shift_prior_translation_world_m": row.hand_ray_shift_prior_world_m.astype(float).tolist(),
+                "hand_ray_shift_prior_source_m": row.hand_ray_shift_prior_source_m,
                 "optimized_object_translation_world_m": object_trans_np[i].astype(float).tolist(),
+                "joint_visibility_weights": row.joint_visibility_weights.astype(float).tolist(),
+                "joint_depth_residual_m": [None if not np.isfinite(x) else float(x) for x in row.joint_depth_residual_m],
+                "pose_visibility_weights": pose_visibility_weights_np[i].astype(float).tolist(),
                 "optimized_root_delta_axis_angle_rad": root_np[i].astype(float).tolist(),
                 "optimized_hand_pose_delta_axis_angle_rad": pose_np[i].reshape(-1).astype(float).tolist(),
                 "optimized_joints_world_m": hyp_joints[i].astype(float).tolist(),
                 "optimized_vertices_world_sample_m": hyp_vertices[i, render_ids].astype(float).tolist(),
                 "optimized_vertices_sample_ids": render_ids.astype(int).tolist(),
                 "initial_observed_surface_penetration_m": init_measure.get("observed_supported_penetration_m"),
+                "initial_raw_observed_surface_penetration_m": init_raw_measure.get("observed_supported_penetration_m"),
                 "current_bridge_observed_surface_penetration_m": row.observed_initial_measure.get("observed_supported_penetration_m"),
+                "hand_owned_quarantined_face_count": int(row.hand_owned_quarantined_face_count),
                 "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
+                "full_raw_observed_surface_penetration_after_solver_m": full_raw_post.get("observed_supported_penetration_m"),
                 "full_observed_supported_penetrating_vertex_count_after_solver": int(full_post.get("observed_supported_penetrating_vertex_count", 0)),
                 "visible_joint_shift_px": {"count": int(len(shift)), "median": shift_med, "max": shift_max},
                 "joint_camera_depth_shift_m": {"count": int(len(dshift)), "median": float(np.median(dshift)), "max": float(np.max(dshift))},
@@ -794,6 +1038,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "initial_observed_surface_penetration_max_m": numeric_summary(np.asarray(initial_obs_max, dtype=float)),
         "final_active_constraint_residual_after_solver_max_m": numeric_summary(np.asarray(final_linear_residual_max, dtype=float)),
         "full_observed_surface_penetration_after_solver_max_m": numeric_summary(np.asarray(final_full_observed_max, dtype=float)),
+        "full_raw_observed_surface_penetration_after_solver_max_m": numeric_summary(np.asarray(final_raw_observed_max, dtype=float)),
+        "hand_owned_quarantined_face_count": numeric_summary(np.asarray([r.hand_owned_quarantined_face_count for r in rows], dtype=float)),
         "visible_joint_shift_max_px": numeric_summary(np.asarray(visible_max, dtype=float)),
         "joint_camera_depth_shift_max_m": numeric_summary(np.asarray(depth_max, dtype=float)),
         "translation_delta_norm_m": numeric_summary(np.asarray(trans_max, dtype=float)),
@@ -804,7 +1050,14 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "active_set_pass_count": int(active_set_pass_count),
         "active_set_closed": bool(active_set_closed),
         "active_constraint_count_final": numeric_summary(np.asarray([len(x) for x in active_constraint_indices], dtype=float)),
+        "visibility_weighted_hand_observation_enabled": bool(args.visibility_weighted_hand_observation),
+        "joint_visibility_weight": numeric_summary(joint_visibility_weights_np.reshape(-1)),
+        "pose_visibility_weight": numeric_summary(pose_visibility_weights_np.reshape(-1)),
+        "pose_joint_finger_groups": pose_joint_finger_groups.astype(int).tolist(),
+        "hand_ray_shift_prior_enabled": bool(args.use_hand_ray_shift_prior),
+        "hand_ray_shift_prior_count": int(sum(np.linalg.norm(r.hand_ray_shift_prior_world_m) > 1.0e-9 for r in rows)),
         "object_translation_optimized": bool(args.optimize_object_translation),
+        "hand_owned_object_depth_quarantine_enabled": bool(args.hand_owned_object_depth_quarantine),
         "dense_observed_surface_barrier_enabled": bool(args.dense_observed_surface_barrier),
         "dense_observed_constraint_count_final": numeric_summary(np.asarray([len(x) for x in dense_constraint_indices], dtype=float)),
     }
