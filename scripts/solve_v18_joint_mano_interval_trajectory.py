@@ -148,7 +148,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--depth-hinge-weight", type=float, default=2.0e4)
     p.add_argument("--bound-hinge-weight", type=float, default=3.0e3)
     p.add_argument("--sample-vertex-count-for-render", type=int, default=160)
-    p.add_argument("--active-set-iterations", type=int, default=2, help="Recompute observed-surface penetrating MANO vertices after a solve and re-optimize with the expanded active set.")
+    p.add_argument("--active-set-iterations", type=int, default=6, help="Maximum active-set passes. Each pass optimizes, remeasures full observed-surface penetration, and expands constraints. A closed pass adds zero constraints.")
     return p.parse_args()
 
 
@@ -543,13 +543,14 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         return loss
 
     active_set_added_counts: list[int] = []
+    active_set_closed = False
+    active_set_pass_count = 0
     if replay_ok:
         for active_iter in range(max(1, int(args.active_set_iterations))):
+            active_set_pass_count = active_iter + 1
             if active_iter > 0:
                 optimizer = torch.optim.LBFGS([root_delta, pose_delta, trans_delta], lr=0.25, max_iter=int(args.max_optimizer_iterations), line_search_fn="strong_wolfe")
             optimizer.step(closure)
-            if active_iter >= max(1, int(args.active_set_iterations)) - 1:
-                break
             with torch.no_grad():
                 hyp_vertices_t, _hyp_joints_t = hypothesis()
                 hyp_vertices_np = hyp_vertices_t.detach().cpu().numpy().astype(float)
@@ -575,6 +576,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 active_constraint_indices[i], active_constraint_normals[i], active_constraint_depths[i] = merged
                 added_total += max(0, len(active_constraint_indices[i]) - before)
             active_set_added_counts.append(int(added_total))
+            if added_total == 0:
+                active_set_closed = True
+                break
     with torch.no_grad():
         hyp_vertices_t, hyp_joints_t = hypothesis()
         hyp_vertices = hyp_vertices_t.detach().cpu().numpy().astype(float)
@@ -595,9 +599,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     pose_max: list[float] = []
     corrected_frames = 0
     for i, row in enumerate(rows):
-        if len(row.constraint_indices):
-            moved = hyp_vertices[i, row.constraint_indices] - row.current_vertices_world[row.constraint_indices]
-            residual = np.maximum(0.0, row.constraint_depths_m - np.sum(row.constraint_normals_world * moved, axis=1))
+        if len(active_constraint_indices[i]):
+            moved = hyp_vertices[i, active_constraint_indices[i]] - row.current_vertices_world[active_constraint_indices[i]]
+            residual = np.maximum(0.0, active_constraint_depths[i] - np.sum(active_constraint_normals[i] * moved, axis=1))
         else:
             residual = np.zeros((0,), dtype=float)
         init_max = float((row.observed_initial_measure.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
@@ -646,7 +650,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "optimized_vertices_world_sample_m": hyp_vertices[i, render_ids].astype(float).tolist(),
                 "optimized_vertices_sample_ids": render_ids.astype(int).tolist(),
                 "initial_observed_surface_penetration_m": row.observed_initial_measure.get("observed_supported_penetration_m"),
-                "linearized_observed_surface_residual_after_solver_m": numeric_summary(residual),
+                "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
                 "full_observed_supported_penetrating_vertex_count_after_solver": int(full_post.get("observed_supported_penetrating_vertex_count", 0)),
                 "visible_joint_shift_px": {"count": int(len(shift)), "median": shift_med, "max": shift_max},
@@ -666,7 +670,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "raw_replay_joint_error_median_m": numeric_summary(np.asarray([float(np.median(e)) for e in replay_joint_err], dtype=float)),
         "corrected_frame_count": int(corrected_frames),
         "initial_observed_surface_penetration_max_m": numeric_summary(np.asarray(initial_obs_max, dtype=float)),
-        "linearized_observed_surface_residual_after_solver_max_m": numeric_summary(np.asarray(final_linear_residual_max, dtype=float)),
+        "final_active_constraint_residual_after_solver_max_m": numeric_summary(np.asarray(final_linear_residual_max, dtype=float)),
         "full_observed_surface_penetration_after_solver_max_m": numeric_summary(np.asarray(final_full_observed_max, dtype=float)),
         "visible_joint_shift_max_px": numeric_summary(np.asarray(visible_max, dtype=float)),
         "joint_camera_depth_shift_max_m": numeric_summary(np.asarray(depth_max, dtype=float)),
@@ -674,6 +678,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "root_delta_norm_rad": numeric_summary(np.asarray(root_max, dtype=float)),
         "pose_delta_max_joint_norm_rad": numeric_summary(np.asarray(pose_max, dtype=float)),
         "active_set_added_constraint_counts": active_set_added_counts,
+        "active_set_pass_count": int(active_set_pass_count),
+        "active_set_closed": bool(active_set_closed),
         "active_constraint_count_final": numeric_summary(np.asarray([len(x) for x in active_constraint_indices], dtype=float)),
     }
     return interval, states
