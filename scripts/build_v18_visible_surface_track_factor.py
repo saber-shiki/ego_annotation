@@ -65,14 +65,33 @@ def load_frames(annotations: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {int(f["frame_idx"]): f for f in as_list(annotations.get("frames")) if isinstance(f, dict) and f.get("frame_idx") is not None}
 
 
-def load_mask_rows(report_path: Path) -> dict[int, dict[str, Any]]:
+def entity_tokens(entity_id: str) -> set[str]:
+    raw = str(entity_id)
+    tokens = {raw}
+    if raw.startswith("object:"):
+        tokens.add(raw.split(":", 1)[1])
+    else:
+        tokens.add(f"object:{raw}")
+    return tokens
+
+
+def row_matches_target(row: dict[str, Any], target_entity_id: str) -> bool:
+    tokens = entity_tokens(target_entity_id)
+    for key in ("target_entity_id", "object_id", "entity_id", "track_id"):
+        value = row.get(key)
+        if isinstance(value, str):
+            return value in tokens
+    return True
+
+
+def load_mask_rows(report_path: Path, target_entity_id: str) -> dict[int, dict[str, Any]]:
     if not report_path.exists():
         raise FileNotFoundError(f"missing visible mask report: {report_path}")
     payload = load_json(report_path)
     rows: list[dict[str, Any]] = []
     if isinstance(payload, dict):
         for key in ("saved_mask_rows_after_start", "target_mask_rows", "surface_rows"):
-            rows.extend([r for r in as_list(payload.get(key)) if isinstance(r, dict)])
+            rows.extend([r for r in as_list(payload.get(key)) if isinstance(r, dict) and row_matches_target(r, target_entity_id)])
             if rows:
                 break
     out: dict[int, dict[str, Any]] = {}
@@ -84,7 +103,10 @@ def load_mask_rows(report_path: Path) -> dict[int, dict[str, Any]]:
             continue
         path = Path(raw)
         if path.exists():
-            out[int(row["frame_idx"])] = dict(row)
+            frame_idx = int(row["frame_idx"])
+            if frame_idx in out:
+                raise RuntimeError(f"duplicate visible mask row for target {target_entity_id} frame {frame_idx} in {report_path}")
+            out[frame_idx] = dict(row)
     return out
 
 
@@ -93,6 +115,23 @@ def load_mask(path: Path) -> np.ndarray:
     if arr is None:
         raise RuntimeError(f"could not decode visible surface mask: {path}")
     return arr > 0
+
+
+def load_ownership_rows(report_path: Path | None, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    if report_path is None:
+        return {}
+    payload = load_json(report_path)
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in as_list(payload.get("ownership_rows") if isinstance(payload, dict) else None):
+        if not isinstance(row, dict) or not row_matches_target(row, target_entity_id):
+            continue
+        if row.get("frame_idx") is None or row.get("hand_side") is None:
+            continue
+        key = (int(row["frame_idx"]), str(row["hand_side"]))
+        if key in out:
+            raise RuntimeError(f"duplicate ownership row for target {target_entity_id} frame/side {key} in {report_path}")
+        out[key] = dict(row)
+    return out
 
 
 def lift_mask_depth_samples(
@@ -204,7 +243,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     frame_ids = frame_ids_from_spans(spans)
     annotations = load_json(args.annotations)
     frames = load_frames(annotations)
-    mask_rows = load_mask_rows(args.visible_mask_report)
+    mask_rows = load_mask_rows(args.visible_mask_report, str(args.target_entity_id))
+    ownership_rows = load_ownership_rows(args.visible_ownership_factor_report, str(args.target_entity_id))
     depth_rows = load_depth_sources(list(args.depth_npz))
     case_root = args.output_root / args.case
     sample_dir = case_root / "visible_surface_samples"
@@ -272,7 +312,52 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         state_counts[str(frame_surface.get("surface_state"))] += 1
         frame_surface_rows.append(frame_surface)
         for side in sides:
-            active = frame_surface.get("surface_state") == STATE_ACTIVE
+            factor_surface = dict(frame_surface)
+            ownership_row = ownership_rows.get((int(frame_idx), str(side)))
+            ownership_mask_path = None
+            if (
+                frame is not None
+                and depth_row is not None
+                and ownership_row is not None
+                and isinstance(ownership_row.get("adjusted_entity_mask_path"), str)
+                and Path(str(ownership_row.get("adjusted_entity_mask_path"))).exists()
+            ):
+                ownership_mask_path = Path(str(ownership_row["adjusted_entity_mask_path"]))
+                ownership_mask = load_mask(ownership_mask_path)
+                if np.any(ownership_mask):
+                    ownership_samples, ownership_summary = lift_mask_depth_samples(
+                        frame=frame,
+                        frame_idx=frame_idx,
+                        mask=ownership_mask,
+                        depth_row=depth_row,
+                        stride=int(args.sample_stride),
+                        max_samples=int(args.max_samples_per_frame),
+                    )
+                    factor_surface = {"frame_idx": int(frame_idx), "surface_mask_path": str(ownership_mask_path), **ownership_summary}
+                    if factor_surface["surface_state"] == STATE_ACTIVE:
+                        side_npz_path = sample_dir / f"{frame_idx:06d}_{side}_ownership_filtered_visible_surface_samples.npz"
+                        np.savez_compressed(
+                            side_npz_path,
+                            **ownership_samples,
+                            metadata_json=json.dumps({
+                                "frame_idx": int(frame_idx),
+                                "hand_side": str(side),
+                                "surface_mask_path": str(ownership_mask_path),
+                                "visible_ownership_factor_report": str(args.visible_ownership_factor_report),
+                                "claim": "visible first-surface samples after side-specific hand-owned-pixel quarantine; no hidden geometry or object pose",
+                            }),
+                        )
+                        factor_surface["visible_surface_npz_path"] = str(side_npz_path)
+                        if frame_idx in review_frames:
+                            review_path = review_dir / f"{frame_idx:06d}_{side}_ownership_filtered_visible_surface_track.jpg"
+                            ok = render_review(frame=frame, frame_idx=frame_idx, mask=ownership_mask, samples=ownership_samples, output_path=review_path, title=f"ownership-filtered visible surface f{frame_idx} {side}")
+                            if ok:
+                                factor_surface["review_path"] = str(review_path)
+                    else:
+                        factor_surface["visible_surface_npz_path"] = None
+                else:
+                    factor_surface = {"frame_idx": int(frame_idx), "surface_state": STATE_EMPTY_MASK, "surface_mask_path": str(ownership_mask_path), "mask_area_px_raw": 0, "valid_depth_pixels": 0, "sample_count": 0, "visible_surface_npz_path": None}
+            active = factor_surface.get("surface_state") == STATE_ACTIVE
             factor_rows.append(
                 {
                     "factor_family": "visible_surface_track",
@@ -280,21 +365,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "frame_idx": int(frame_idx),
                     "hand_side": side,
                     "variable_affected": "H_t_and_constraint_eligibility",
-                    "observation_type": "model_mask_metric_depth_visible_first_surface",
-                    "surface_state": str(frame_surface.get("surface_state")),
+                    "observation_type": "model_mask_metric_depth_visible_first_surface" if ownership_mask_path is None else "ownership_filtered_model_mask_metric_depth_visible_first_surface",
+                    "surface_state": str(factor_surface.get("surface_state")),
                     "residual_or_quarantine_rule": "if active, MANO vertices projecting into the visible first-surface mask are constrained by one-sided depth order; hidden signed-volume nonpenetration is quarantined for this target/frame",
                     "quarantine_hidden_volume": bool(active and args.quarantine_hidden_volume),
-                    "surface_mask_path": frame_surface.get("surface_mask_path"),
-                    "visible_surface_npz_path": frame_surface.get("visible_surface_npz_path"),
-                    "valid_depth_pixels": int(frame_surface.get("valid_depth_pixels", 0) or 0),
-                    "sample_count": int(frame_surface.get("sample_count", 0) or 0),
-                    "mask_area_px_raw": int(frame_surface.get("mask_area_px_raw", 0) or 0),
+                    "surface_mask_path": factor_surface.get("surface_mask_path"),
+                    "visible_surface_npz_path": factor_surface.get("visible_surface_npz_path"),
+                    "valid_depth_pixels": int(factor_surface.get("valid_depth_pixels", 0) or 0),
+                    "sample_count": int(factor_surface.get("sample_count", 0) or 0),
+                    "mask_area_px_raw": int(factor_surface.get("mask_area_px_raw", 0) or 0),
                     "depth_order_margin_m": float(args.depth_order_margin_m),
                     "provenance": {
                         "annotations": str(args.annotations),
                         "visible_mask_report": str(args.visible_mask_report),
+                        "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report),
                         "depth_npz": [str(p) for p in args.depth_npz],
                         "mask_source_row": mask_row if mask_row is not None else None,
+                        "ownership_source_row": ownership_row if ownership_row is not None else None,
                     },
                     "rendered_uncertainty_channel": "visible first-surface mask/depth and MANO depth-order residual; no hidden volume accepted",
                 }
@@ -343,6 +430,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target-entity-id", required=True)
     p.add_argument("--annotations", type=Path, required=True)
     p.add_argument("--visible-mask-report", type=Path, required=True)
+    p.add_argument("--visible-ownership-factor-report", type=Path, default=None, help="Optional visible ownership factor report. When a frame/side has adjusted_entity_mask_path, build side-specific visible surface samples from object-owned pixels only.")
     p.add_argument("--depth-npz", type=Path, action="append", required=True)
     p.add_argument("--frame-span", nargs=2, type=int, action="append", required=True)
     p.add_argument("--sides", nargs="+", choices=("left", "right"), default=["left", "right"])
