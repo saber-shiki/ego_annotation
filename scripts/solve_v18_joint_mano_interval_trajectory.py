@@ -135,6 +135,9 @@ class FrameHandRow:
     visible_surface_depth_order_depth_m: np.ndarray
     visible_surface_depth_order_initial_delta_m: np.ndarray
     visible_surface_depth_order_initial_measure: dict[str, Any]
+    hand_observation_visibility_factor_state: str | None
+    hand_observation_visibility_candidate_px: int
+    hand_observation_visibility_weight_multiplier: float
     joint_visibility_weights: np.ndarray
     joint_depth_residual_m: np.ndarray
     hand_ray_shift_prior_world_m: np.ndarray
@@ -300,6 +303,7 @@ def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entit
         "visible_ownership": {},
         "surface_eligibility": {},
         "visible_surface_track": {},
+        "hand_observation_visibility": {},
     }
     required_fields = (
         "factor_family",
@@ -410,6 +414,20 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
         "non_object_owned_px": int(counts.get("non_object_owned_px", int(non_object_mask.sum()) if non_object_mask is not None else 0)),
         "visible_object_owned_px": int(counts.get("visible_object_owned_px", int(object_owned_mask.sum()) if object_owned_mask is not None else 0)),
     }
+
+
+def hand_observation_visibility_for_row(row: dict[str, Any] | None, args: argparse.Namespace) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {"state": "missing_hand_observation_visibility_row", "candidate_px": 0, "weight_multiplier": 1.0}
+    state = str(row.get("state") or row.get("visibility_state") or "active_hand_observation_visibility")
+    candidate_px = int(row.get("candidate_px") or row.get("candidate_non_object_owned_px") or 0)
+    raw_mult = row.get("joint_observation_weight_multiplier", row.get("weight_multiplier", args.occluded_joint_observation_weight))
+    try:
+        multiplier = float(raw_mult)
+    except Exception:
+        multiplier = float(args.occluded_joint_observation_weight)
+    multiplier = float(np.clip(multiplier, 0.0, 1.0))
+    return {"state": state, "candidate_px": candidate_px, "weight_multiplier": multiplier}
 
 
 def visible_ownership_quarantine_faces(
@@ -851,6 +869,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     visible_ownership_rows = merge_factor_row_maps("visible_ownership", load_visible_ownership_rows(args.visible_ownership_factor_report), generic_factor_rows["visible_ownership"])
     surface_eligibility_rows = merge_factor_row_maps("surface_eligibility", load_surface_eligibility_rows(args.surface_eligibility_factor_report), generic_factor_rows["surface_eligibility"])
     visible_surface_track_rows = merge_factor_row_maps("visible_surface_track", load_visible_surface_track_rows(args.visible_surface_track_factor_report), generic_factor_rows["visible_surface_track"])
+    hand_observation_visibility_rows = generic_factor_rows["hand_observation_visibility"]
     visible_mask_cache: dict[Path, np.ndarray] = {}
     surface_eligibility_cache: dict[Path, np.ndarray] = {}
     hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
@@ -983,6 +1002,9 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         else:
             joint_visibility_weights = np.ones((21,), dtype=float)
             joint_depth_residual = np.full((21,), np.nan, dtype=float)
+        hand_visibility_diag = hand_observation_visibility_for_row(hand_observation_visibility_rows.get((frame_idx, side)), args)
+        if hand_visibility_diag.get("state") == "active_hand_observation_visibility":
+            joint_visibility_weights = np.minimum(joint_visibility_weights, float(hand_visibility_diag.get("weight_multiplier", 1.0)))
         surface_depth_idx, surface_depth_m, surface_depth_delta, surface_depth_measure = visible_surface_depth_order_constraints(
             frame=frame,
             side=side,
@@ -1051,6 +1073,9 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 visible_surface_depth_order_depth_m=surface_depth_m.astype(float),
                 visible_surface_depth_order_initial_delta_m=surface_depth_delta.astype(float),
                 visible_surface_depth_order_initial_measure=surface_depth_measure,
+                hand_observation_visibility_factor_state=hand_visibility_diag.get("state") if hand_visibility_diag.get("state") != "missing_hand_observation_visibility_row" else None,
+                hand_observation_visibility_candidate_px=int(hand_visibility_diag.get("candidate_px", 0)),
+                hand_observation_visibility_weight_multiplier=float(hand_visibility_diag.get("weight_multiplier", 1.0)),
                 joint_visibility_weights=joint_visibility_weights.astype(float),
                 joint_depth_residual_m=joint_depth_residual.astype(float),
                 hand_ray_shift_prior_world_m=ray_prior_world.astype(float),
@@ -1562,6 +1587,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "visible_surface_depth_order_selected_initial_in_front_count": int(surface_initial_in_front),
                 "visible_surface_depth_order_selected_final_in_front_count": int(surface_final_in_front),
                 "visible_surface_depth_order_selected_final_delta_hand_minus_surface_m": surface_final_summary,
+                "hand_observation_visibility_factor_state": row.hand_observation_visibility_factor_state,
+                "hand_observation_visibility_candidate_px": int(row.hand_observation_visibility_candidate_px),
+                "hand_observation_visibility_weight_multiplier": float(row.hand_observation_visibility_weight_multiplier),
                 "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
                 "full_raw_observed_surface_penetration_after_solver_m": full_raw_post.get("observed_supported_penetration_m"),
@@ -1607,6 +1635,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "active_set_closed": bool(active_set_closed),
         "active_constraint_count_final": numeric_summary(np.asarray([len(x) for x in active_constraint_indices], dtype=float)),
         "visibility_weighted_hand_observation_enabled": bool(args.visibility_weighted_hand_observation),
+        "hand_observation_visibility_factor_active_row_count": int(sum(r.hand_observation_visibility_factor_state == "active_hand_observation_visibility" for r in rows)),
+        "hand_observation_visibility_candidate_px": numeric_summary(np.asarray([r.hand_observation_visibility_candidate_px for r in rows], dtype=float)),
         "joint_visibility_weight": numeric_summary(joint_visibility_weights_np.reshape(-1)),
         "pose_visibility_weight": numeric_summary(pose_visibility_weights_np.reshape(-1)),
         "pose_joint_finger_groups": pose_joint_finger_groups.astype(int).tolist(),
