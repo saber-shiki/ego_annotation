@@ -396,12 +396,12 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
         return None, None, {"state": "missing_visible_ownership_row"}
     non_object_raw = row.get("non_object_owned_mask_path")
     object_owned_raw = row.get("visible_object_owned_mask_path") or row.get("adjusted_entity_mask_path")
-    non_object_mask = None
-    object_owned_mask = None
-    if isinstance(non_object_raw, str) and Path(non_object_raw).exists():
-        non_object_mask = load_binary_mask(Path(non_object_raw), cache)
-    if isinstance(object_owned_raw, str) and Path(object_owned_raw).exists():
-        object_owned_mask = load_binary_mask(Path(object_owned_raw), cache)
+    if not isinstance(non_object_raw, str) or not Path(non_object_raw).exists():
+        raise FileNotFoundError(f"visible ownership row has no readable non_object_owned_mask_path: {non_object_raw}")
+    if not isinstance(object_owned_raw, str) or not Path(object_owned_raw).exists():
+        raise FileNotFoundError(f"visible ownership row has no readable visible_object_owned/adjusted_entity mask path: {object_owned_raw}")
+    non_object_mask = load_binary_mask(Path(non_object_raw), cache)
+    object_owned_mask = load_binary_mask(Path(object_owned_raw), cache)
     counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
     return non_object_mask, object_owned_mask, {
         "state": "ok",
