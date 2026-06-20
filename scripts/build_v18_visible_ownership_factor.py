@@ -28,13 +28,19 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_v18_owlv2_sam2_part_tracks import import_sam2  # noqa: E402
-from build_v18_part_visible_surfaces import load_metric_depth, resize_bool_mask  # noqa: E402
-
 DEFAULT_SAM2_CHECKPOINT = Path("/data2/ego_annotation_outputs/checkpoints/sam2.1_hiera_small.pt")
 DEFAULT_SAM2_REPO = Path("third_party/sam2")
 DEFAULT_SAM2_CFG = "configs/sam2.1/sam2.1_hiera_s.yaml"
 DEFAULT_OUTPUT = Path("/data2/ego_annotation_outputs/v18_visible_ownership_factor_v1")
+
+
+def import_sam2(args: argparse.Namespace) -> Any:
+    sam2_path = Path(args.sam2_repo)
+    if str(sam2_path) not in sys.path:
+        sys.path.insert(0, str(sam2_path))
+    from sam2.build_sam import build_sam2_video_predictor  # type: ignore[import-not-found]
+
+    return build_sam2_video_predictor(args.sam2_model_cfg, str(args.sam2_checkpoint), device=args.device, vos_optimized=bool(args.vos_optimized))
 
 
 def load_json(path: Path) -> Any:
@@ -127,6 +133,33 @@ def bridge_vertices_and_joints(hand: dict[str, Any], bridge_cache: dict[Path, An
     vertices_world = load_bridge_array(bridge_cache, bridge_path, vertices_array, row_index)
     joints_world = load_bridge_array(bridge_cache, bridge_path, "joints_current_v18_world_from_hawor_projection_relift_m", row_index)
     return vertices_world, joints_world
+
+
+def load_metric_depth(path: Path) -> dict[str, Any]:
+    blob = np.load(path)
+    required = {"frame_idx", "depth", "intrinsics_fx_fy_cx_cy"}
+    missing = sorted(required.difference(blob.files))
+    if missing:
+        raise RuntimeError(f"{path} missing keys {missing}")
+    frame_idx = blob["frame_idx"].astype(np.int32)
+    depth = blob["depth"].astype(np.float32)
+    intrinsics = blob["intrinsics_fx_fy_cx_cy"].astype(np.float64)
+    if len(frame_idx) != depth.shape[0] or len(frame_idx) != intrinsics.shape[0]:
+        raise RuntimeError(f"{path} inconsistent depth rows")
+    return {
+        "frame_idx": frame_idx,
+        "depth": depth,
+        "intrinsics": intrinsics,
+        "frame_to_i": {int(v): int(i) for i, v in enumerate(frame_idx)},
+    }
+
+
+def resize_bool_mask(mask: np.ndarray, shape_hw: tuple[int, int]) -> np.ndarray:
+    if mask.shape == shape_hw:
+        return mask
+    image = Image.fromarray(mask.astype(np.uint8) * 255)
+    resized = image.resize((shape_hw[1], shape_hw[0]), Image.Resampling.NEAREST)
+    return np.asarray(resized) > 0
 
 
 def parse_spans(values: list[list[int]] | None) -> list[tuple[int, int]]:
