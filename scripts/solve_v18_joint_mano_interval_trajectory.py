@@ -186,6 +186,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--active-set-iterations", type=int, default=6, help="Maximum active-set passes. Each pass optimizes, remeasures full observed-surface penetration, and expands constraints. A closed pass adds zero constraints.")
     p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Optional SAM2/OWLv2 visible object/lid mask report. When enabled, masks gate observed mesh faces and/or add depth-order terms for MANO vertices under visible object pixels.")
     p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Trust observed object mesh faces only when their projected center lies inside the model-produced visible object mask for that frame.")
+    p.add_argument("--visible-mask-quarantine-signed-mesh", action=argparse.BooleanOptionalAction, default=False, help="On frames with a visible object mask, do not use compact-mesh signed nonpenetration as a trusted force; rely on visible mask/depth-order terms instead.")
     p.add_argument("--visible-object-mask-dilation-px", type=int, default=2)
     p.add_argument("--visible-lid-depth-order-term", action=argparse.BooleanOptionalAction, default=False, help="Penalize MANO vertices that project inside the visible lid/object mask but remain in front of the observed lid depth beyond a margin.")
     p.add_argument("--visible-lid-depth-order-margin-m", type=float, default=0.010)
@@ -279,7 +280,12 @@ def visible_object_mask_face_gate(
 ) -> tuple[np.ndarray, int, int]:
     strict = np.asarray(face_strict_observed, dtype=bool).copy()
     raw_count = int(np.count_nonzero(strict))
-    if mask is None or raw_count == 0 or not bool(args.visible_object_mask_gate):
+    if mask is None or raw_count == 0:
+        return strict, raw_count, raw_count
+    if bool(args.visible_mask_quarantine_signed_mesh):
+        strict[:] = False
+        return strict, raw_count, 0
+    if not bool(args.visible_object_mask_gate):
         return strict, raw_count, raw_count
     r_obj, t_obj = object_pose
     face_centers_world = object_vertices[object_faces].mean(axis=1) @ np.asarray(r_obj, dtype=float).T + np.asarray(t_obj, dtype=float)[None, :]
@@ -1316,6 +1322,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "object_translation_optimized": bool(args.optimize_object_translation),
         "hand_owned_object_depth_quarantine_enabled": bool(args.hand_owned_object_depth_quarantine),
         "visible_object_mask_gate_enabled": bool(args.visible_object_mask_gate),
+        "visible_mask_quarantine_signed_mesh_enabled": bool(args.visible_mask_quarantine_signed_mesh),
         "visible_lid_depth_order_term_enabled": bool(args.visible_lid_depth_order_term),
         "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report),
         "dense_observed_surface_barrier_enabled": bool(args.dense_observed_surface_barrier),
