@@ -203,6 +203,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--surface-eligibility-factor-report", type=Path, default=None, help="Optional reusable surface eligibility factor report. Its eligible_hard_observed face masks define which object faces may exert hard MANO constraints.")
     p.add_argument("--surface-eligibility-mode", choices=("replace", "intersect"), default="intersect", help="How to apply surface eligibility to the current trusted face set when a factor report is supplied. Default intersects to preserve existing ownership/visibility quarantines unless replacement is explicitly justified.")
     p.add_argument("--visible-surface-track-factor-report", type=Path, default=None, help="Optional reusable visible-surface track factor report. Active rows provide model-mask/metric-depth first-surface observations for MANO depth-order and hidden-volume quarantine.")
+    p.add_argument("--factor-report", type=Path, action="append", default=None, help="Generic reusable factor report(s). Rows are dispatched by factor_family, enabling ownership, surface_eligibility, and visible_surface_track factors through one interface.")
     p.add_argument("--visible-ownership-face-overlap-dilation-px", type=int, default=2, help="Pixel dilation for deciding whether any projected face support sample overlaps non-object-owned ownership pixels.")
     p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Optional SAM2/OWLv2 visible object/lid mask report. When enabled, masks gate observed mesh faces and/or add depth-order terms for MANO vertices under visible object pixels.")
     p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Trust observed object mesh faces only when their projected center lies inside the model-produced visible object mask for that frame.")
@@ -288,6 +289,42 @@ def load_surface_eligibility_rows(report_path: Path | None) -> dict[tuple[int, s
 
 def load_visible_surface_track_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
     return load_factor_rows(report_path, "factor_rows")
+
+
+def load_generic_factor_reports(report_paths: list[Path] | None) -> dict[str, dict[tuple[int, str], dict[str, Any]]]:
+    out: dict[str, dict[tuple[int, str], dict[str, Any]]] = {
+        "visible_ownership": {},
+        "surface_eligibility": {},
+        "visible_surface_track": {},
+    }
+    for report_path in list(report_paths or []):
+        if not report_path.exists():
+            raise FileNotFoundError(f"missing generic factor report: {report_path}")
+        payload = load_json(report_path)
+        rows: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            rows.extend([r for r in as_list(payload.get("ownership_rows")) if isinstance(r, dict)])
+            rows.extend([r for r in as_list(payload.get("factor_rows")) if isinstance(r, dict)])
+        for row in rows:
+            family = str(row.get("factor_family") or "")
+            if family not in out:
+                continue
+            if row.get("frame_idx") is None or row.get("hand_side") is None:
+                raise ValueError(f"generic factor row lacks frame_idx/hand_side in {report_path}: {row}")
+            key = (int(row["frame_idx"]), str(row["hand_side"]))
+            if key in out[family]:
+                raise ValueError(f"duplicate generic {family} factor row for {key} while reading {report_path}")
+            out[family][key] = row
+    return out
+
+
+def merge_factor_row_maps(family: str, specific: dict[tuple[int, str], dict[str, Any]], generic: dict[tuple[int, str], dict[str, Any]]) -> dict[tuple[int, str], dict[str, Any]]:
+    merged = dict(generic)
+    overlap = sorted(set(merged) & set(specific))
+    if overlap:
+        raise ValueError(f"factor family {family} supplied by both generic and family-specific reports for keys: {overlap[:5]}")
+    merged.update(specific)
+    return merged
 
 
 def visible_surface_track_mask_for_row(row: dict[str, Any] | None, cache: dict[Path, np.ndarray]) -> tuple[np.ndarray | None, dict[str, Any]]:
@@ -789,9 +826,10 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     depth_paths = list(args.depth_npz or [DEFAULT_DEPTH])
     depth_rows = load_depth_sources(depth_paths)
     visible_mask_paths = load_visible_object_mask_paths(args.visible_object_mask_report)
-    visible_ownership_rows = load_visible_ownership_rows(args.visible_ownership_factor_report)
-    surface_eligibility_rows = load_surface_eligibility_rows(args.surface_eligibility_factor_report)
-    visible_surface_track_rows = load_visible_surface_track_rows(args.visible_surface_track_factor_report)
+    generic_factor_rows = load_generic_factor_reports(args.factor_report)
+    visible_ownership_rows = merge_factor_row_maps("visible_ownership", load_visible_ownership_rows(args.visible_ownership_factor_report), generic_factor_rows["visible_ownership"])
+    surface_eligibility_rows = merge_factor_row_maps("surface_eligibility", load_surface_eligibility_rows(args.surface_eligibility_factor_report), generic_factor_rows["surface_eligibility"])
+    visible_surface_track_rows = merge_factor_row_maps("visible_surface_track", load_visible_surface_track_rows(args.visible_surface_track_factor_report), generic_factor_rows["visible_surface_track"])
     visible_mask_cache: dict[Path, np.ndarray] = {}
     surface_eligibility_cache: dict[Path, np.ndarray] = {}
     hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
@@ -859,7 +897,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         if ownership_object_owned_mask is not None:
             visible_mask = ownership_object_owned_mask if visible_mask is None else (visible_mask & ownership_object_owned_mask)
         visible_surface_row = visible_surface_track_rows.get((frame_idx, side))
-        if args.visible_surface_track_factor_report is not None and visible_surface_row is None:
+        if (args.visible_surface_track_factor_report is not None or generic_factor_rows["visible_surface_track"]) and visible_surface_row is None:
             raise ValueError(f"visible-surface track factor missing row for frame={frame_idx} side={side}")
         visible_surface_mask, visible_surface_diag = visible_surface_track_mask_for_row(visible_surface_row, visible_mask_cache)
         visible_surface_active = visible_surface_diag.get("state") == "active_visible_surface" and visible_surface_mask is not None
@@ -983,7 +1021,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 visible_object_mask_path=None if visible_mask_path is None else str(visible_mask_path),
                 visible_object_mask_face_count_raw=int(visible_mask_face_count_raw),
                 visible_object_mask_face_count=int(visible_mask_face_count),
-                visible_surface_track_factor_state=visible_surface_diag.get("state") if args.visible_surface_track_factor_report is not None else None,
+                visible_surface_track_factor_state=visible_surface_diag.get("state") if (args.visible_surface_track_factor_report is not None or generic_factor_rows["visible_surface_track"]) else None,
                 visible_surface_track_mask_path=visible_surface_diag.get("surface_mask_path"),
                 visible_surface_track_npz_path=visible_surface_diag.get("visible_surface_npz_path"),
                 visible_surface_track_valid_depth_pixels=int(visible_surface_diag.get("valid_depth_pixels", 0) or 0),
@@ -1555,10 +1593,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "hand_ray_shift_prior_count": int(sum(np.linalg.norm(r.hand_ray_shift_prior_world_m) > 1.0e-9 for r in rows)),
         "object_translation_optimized": bool(args.optimize_object_translation),
         "hand_owned_object_depth_quarantine_enabled": bool(args.hand_owned_object_depth_quarantine),
-        "surface_eligibility_factor_enabled": args.surface_eligibility_factor_report is not None,
+        "surface_eligibility_factor_enabled": args.surface_eligibility_factor_report is not None or any(r.surface_eligibility_mode is not None for r in rows),
         "surface_eligibility_mode": str(args.surface_eligibility_mode),
-        "visible_ownership_factor_enabled": args.visible_ownership_factor_report is not None,
-        "visible_surface_track_factor_enabled": args.visible_surface_track_factor_report is not None,
+        "visible_ownership_factor_enabled": args.visible_ownership_factor_report is not None or any(r.visible_ownership_non_object_mask_path is not None or r.visible_ownership_object_owned_mask_path is not None for r in rows),
+        "visible_surface_track_factor_enabled": args.visible_surface_track_factor_report is not None or any(r.visible_surface_track_factor_state is not None for r in rows),
         "visible_object_mask_gate_enabled": bool(args.visible_object_mask_gate),
         "visible_mask_quarantine_signed_mesh_enabled": bool(args.visible_mask_quarantine_signed_mesh),
         "visible_lid_depth_order_term_enabled": bool(args.visible_lid_depth_order_term),
@@ -1595,8 +1633,8 @@ def main() -> None:
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface.",
-        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report), "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report)},
-        "parameters": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k not in {"depth_npz"}},
+        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report), "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report), "factor_report": None if args.factor_report is None else [str(p) for p in args.factor_report]},
+        "parameters": {k: ([str(x) for x in v] if k == "factor_report" and v is not None else (str(v) if isinstance(v, Path) else v)) for k, v in vars(args).items() if k not in {"depth_npz"}},
         "build_meta": build_meta,
         "summary": {"interval_count": int(len(intervals)), "per_frame_state_count": int(len(per_frame_states)), "frame_span": [int(args.start_frame), int(args.end_frame)], "sides": list(args.sides)},
         "intervals": intervals,
