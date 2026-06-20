@@ -53,7 +53,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS)
     p.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT)
     p.add_argument("--completed-mesh", type=Path, default=DEFAULT_MESH)
-    p.add_argument("--joint-mano-state", type=Path, default=DEFAULT_STATE)
+    p.add_argument("--joint-mano-state", type=Path, action="append", default=None)
+    p.add_argument("--full-video", action="store_true", help="Render every raw video frame; frames without optimized interval state show only the original MANO/object context.")
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
     p.add_argument("--mesh-stride", type=int, default=18)
     p.add_argument("--vertex-stride", type=int, default=2)
@@ -93,6 +94,13 @@ def state_map(state: dict[str, Any]) -> dict[tuple[int, str], dict[str, Any]]:
     for row in state.get("per_frame_states", []) if isinstance(state, dict) else []:
         if isinstance(row, dict):
             out[(int(row["frame_idx"]), str(row["hand_side"]))] = row
+    return out
+
+
+def load_state_maps(paths: list[Path]) -> dict[tuple[int, str], dict[str, Any]]:
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for path in paths:
+        out.update(state_map(load_json(path)))
     return out
 
 
@@ -166,13 +174,13 @@ def encode(frame_dir: Path, out: Path, fps: float) -> None:
 
 def render(args: argparse.Namespace) -> dict[str, Any]:
     annotations = load_json(args.annotations)
-    state = load_json(args.joint_mano_state)
+    state_paths = list(args.joint_mano_state or [DEFAULT_STATE])
     poses = pose_map(load_json(args.pose_report))
     mesh = load_mesh_vertices(args.completed_mesh)
-    states = state_map(state)
+    states = load_state_maps(state_paths)
     frames = [f for f in annotations.get("frames", []) if isinstance(f, dict)]
     frames_by_idx = {int(f["frame_idx"]): f for f in frames}
-    frame_ids = sorted({k[0] for k in states})
+    frame_ids = sorted(frames_by_idx) if bool(args.full_video) else sorted({k[0] for k in states})
     if not frame_ids:
         raise RuntimeError("joint state has no per-frame states")
     case_dir = args.output_root / str(args.case)
@@ -212,30 +220,31 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         for hand in frame.get("hands", []):
             side = str(hand.get("hand_side"))
             st = states.get((frame_idx, side))
-            if st is None:
+            if st is None and not bool(args.full_video):
                 continue
             metric = hand.get("metric_mano_state") or {}
             joints_cam = np.asarray(metric.get("joints_current_v18_camera_m") or [], dtype=float)
             joints_world = np.asarray(metric.get("joints_current_v18_world_m") or [], dtype=float)
-            opt_world = np.asarray(st.get("optimized_joints_world_m") or [], dtype=float)
-            opt_verts = np.asarray(st.get("optimized_vertices_world_sample_m") or [], dtype=float)
             intr = metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
-            if not (isinstance(intr, list) and len(intr) == 4 and joints_cam.shape == (21, 3) and joints_world.shape == (21, 3) and opt_world.shape == (21, 3)):
+            if not (isinstance(intr, list) and len(intr) == 4 and joints_cam.shape == (21, 3) and joints_world.shape == (21, 3)):
                 continue
             intr_tuple = tuple(float(x) for x in intr)
             original_color, corrected_color = colors_for_side(side)
             draw_skeleton(overlay, joints_cam, intr_tuple, original_color, 4)  # original current MANO
-            opt_cam = world_to_camera(opt_world, T)
-            draw_skeleton(overlay, opt_cam, intr_tuple, corrected_color, 3)  # optimized trajectory
-            if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
-                vc = world_to_camera(opt_verts[:: max(1, int(args.vertex_stride))], T)
-                u, v, valid = project_camera(vc, intr_tuple, width, height)
-                for x, y in zip(u[valid], v[valid]):
-                    cv2.circle(overlay, (int(x), int(y)), 1, corrected_color, -1)
             world_chunks.append(joints_world)
-            world_chunks.append(opt_world)
-            if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
-                world_chunks.append(opt_verts)
+            if st is not None:
+                opt_world = np.asarray(st.get("optimized_joints_world_m") or [], dtype=float)
+                opt_verts = np.asarray(st.get("optimized_vertices_world_sample_m") or [], dtype=float)
+                if opt_world.shape == (21, 3):
+                    opt_cam = world_to_camera(opt_world, T)
+                    draw_skeleton(overlay, opt_cam, intr_tuple, corrected_color, 3)  # optimized trajectory
+                    world_chunks.append(opt_world)
+                if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
+                    vc = world_to_camera(opt_verts[:: max(1, int(args.vertex_stride))], T)
+                    u, v, valid = project_camera(vc, intr_tuple, width, height)
+                    for x, y in zip(u[valid], v[valid]):
+                        cv2.circle(overlay, (int(x), int(y)), 1, corrected_color, -1)
+                    world_chunks.append(opt_verts)
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; corrected left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; corrected left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
         cv2.imwrite(str(overlay_dir / f"{out_i:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
@@ -250,28 +259,30 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         for hand in frame.get("hands", []):
             side = str(hand.get("hand_side"))
             st = states.get((frame_idx, side))
-            if st is None:
+            if st is None and not bool(args.full_video):
                 continue
             metric = hand.get("metric_mano_state") or {}
             joints_world = np.asarray(metric.get("joints_current_v18_world_m") or [], dtype=float)
-            opt_world = np.asarray(st.get("optimized_joints_world_m") or [], dtype=float)
-            opt_verts = np.asarray(st.get("optimized_vertices_world_sample_m") or [], dtype=float)
             original_color, corrected_color = colors_for_side(side)
             if joints_world.shape == (21, 3):
                 draw_world_skeleton(world, joints_world, mn, mx, original_color, 3)
-            if opt_world.shape == (21, 3):
-                draw_world_skeleton(world, opt_world, mn, mx, corrected_color, 2)
-            if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
-                for p in opt_verts[:: max(1, int(args.vertex_stride))]:
-                    q = world_point(p, mn, mx, 1280, 720)
-                    if q is not None:
-                        cv2.circle(world, q, 1, corrected_color, -1)
+            if st is not None:
+                opt_world = np.asarray(st.get("optimized_joints_world_m") or [], dtype=float)
+                opt_verts = np.asarray(st.get("optimized_vertices_world_sample_m") or [], dtype=float)
+                if opt_world.shape == (21, 3):
+                    draw_world_skeleton(world, opt_world, mn, mx, corrected_color, 2)
+                if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
+                    for p in opt_verts[:: max(1, int(args.vertex_stride))]:
+                        q = world_point(p, mn, mx, 1280, 720)
+                        if q is not None:
+                            cv2.circle(world, q, 1, corrected_color, -1)
         cv2.putText(world, f"local metric world frame {frame_idx}", (20, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         cv2.imwrite(str(world_dir / f"{out_i:06d}.jpg"), world, [cv2.IMWRITE_JPEG_QUALITY, 90])
         rendered += 1
-    overlay_video = case_dir / "v18_overlay_joint_mano_interval_correction.mp4"
-    world_video = case_dir / "v18_world_joint_mano_interval_correction.mp4"
-    side_video = case_dir / "v18_side_by_side_joint_mano_interval_correction.mp4"
+    stem = "joint_mano_full_video_correction" if bool(args.full_video) else "joint_mano_interval_correction"
+    overlay_video = case_dir / f"v18_overlay_{stem}.mp4"
+    world_video = case_dir / f"v18_world_{stem}.mp4"
+    side_video = case_dir / f"v18_side_by_side_{stem}.mp4"
     encode(overlay_dir, overlay_video, fps)
     encode(world_dir, world_video, fps)
     subprocess.run([
@@ -279,7 +290,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         "-filter_complex", "[0:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[l];[1:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[r];[l][r]hstack=inputs=2[v]",
         "-map", "[v]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", str(side_video)
     ], check=True)
-    manifest = {"case": args.case, "frame_count": rendered, "frame_ids": frame_ids, "overlay_video": str(overlay_video), "world_video": str(world_video), "side_by_side_video": str(side_video)}
+    manifest = {"case": args.case, "full_video": bool(args.full_video), "state_paths": [str(p) for p in state_paths], "optimized_state_count": int(len(states)), "frame_count": rendered, "frame_ids": frame_ids, "overlay_video": str(overlay_video), "world_video": str(world_video), "side_by_side_video": str(side_video)}
     (case_dir / "v18_joint_mano_interval_correction_render_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 

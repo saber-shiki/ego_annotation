@@ -99,6 +99,7 @@ class FrameHandRow:
     trans_world_m: np.ndarray
     similarity_scale: float
     similarity_rotation_raw_to_current: np.ndarray
+    similarity_translation_raw_to_current: np.ndarray
     source_hawor_npz: Path
     source_frame_index: int
     constraint_indices: np.ndarray
@@ -144,6 +145,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--smooth-weight", type=float, default=5.0e3)
     p.add_argument("--accel-weight", type=float, default=1.0e4)
     p.add_argument("--observed-penetration-weight", type=float, default=3.0e5)
+    p.add_argument("--zero-surface-mode", choices=("bridge_delta", "similarity_mapped_raw"), default="bridge_delta", help="bridge_delta uses the current V18 bridge as the zero surface and maps MANO deltas onto it; similarity_mapped_raw optimizes the similarity-transformed MANO surface directly.")
+    p.add_argument("--dense-observed-surface-barrier", action=argparse.BooleanOptionalAction, default=True, help="Apply a tangent-plane nonpenetration barrier to every MANO vertex whose nearest object face is observed-supported, not only the current active penetrating subset.")
+    p.add_argument("--dense-observed-penetration-weight", type=float, default=3.0e5)
+    p.add_argument("--optimize-object-translation", action=argparse.BooleanOptionalAction, default=False, help="Jointly solve a small per-frame object translation delta so hand/object residual can expose tomato pose-depth alignment error instead of forcing all correction into MANO.")
+    p.add_argument("--max-object-translation-m", type=float, default=0.015, help="Object translation uncertainty bound; default equals the observed-depth support margin scale.")
+    p.add_argument("--object-translation-prior-weight", type=float, default=4.0e3)
+    p.add_argument("--object-smooth-weight", type=float, default=8.0e3)
     p.add_argument("--visible-hinge-weight", type=float, default=8.0e2)
     p.add_argument("--depth-hinge-weight", type=float, default=2.0e4)
     p.add_argument("--bound-hinge-weight", type=float, default=3.0e3)
@@ -310,7 +318,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             continue
         raw_vertices = np.asarray(source[f"{side}_vertices_world_m"][source_frame], dtype=float)
         raw_joints = np.asarray(source[f"{side}_joints_world_m"][source_frame], dtype=float)
-        scale, rot, _trans, _err = similarity_from_to(raw_vertices, current_vertices)
+        scale, rot, sim_trans, _err = similarity_from_to(raw_vertices, current_vertices)
         cidx, normals, depths, measure = observed_constraints_for_hand(
             vertices_world=current_vertices,
             pose=pose,
@@ -336,6 +344,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 trans_world_m=np.asarray(source[f"{side}_trans_world_m"][source_frame], dtype=float),
                 similarity_scale=float(scale),
                 similarity_rotation_raw_to_current=rot.astype(float),
+                similarity_translation_raw_to_current=np.asarray(sim_trans, dtype=float),
                 source_hawor_npz=source_path,
                 source_frame_index=int(source_frame),
                 constraint_indices=cidx,
@@ -359,8 +368,9 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     return rows, meta, scene
 
 
-def active_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, max_constraints: int, eps: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m)
+def active_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, max_constraints: int, eps: float, reference_vertices_world: np.ndarray | None = None, object_translation_delta_world: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    obj_delta = np.zeros(3, dtype=float) if object_translation_delta_world is None else np.asarray(object_translation_delta_world, dtype=float)
+    vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m + obj_delta)
     signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
     penetrating = np.where(signed > float(eps))[0]
     if penetrating.size == 0:
@@ -382,12 +392,52 @@ def active_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandR
         return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float)
     normals_world = object_vec_to_world(disp[good] / norms[good, None], row.object_rotation_world_from_object)
     depths = signed[idx]
-    current_to_query = vertices_world[idx] - row.current_vertices_world[idx]
-    required = np.sum(normals_world * current_to_query, axis=1) + depths
+    reference = row.current_vertices_world if reference_vertices_world is None else reference_vertices_world
+    reference_to_query = vertices_world[idx] - reference[idx] - obj_delta[None, :]
+    required = np.sum(normals_world * reference_to_query, axis=1) + depths
     order = np.argsort(required)[::-1]
     if len(order) > int(max_constraints):
         order = order[: int(max_constraints)]
     return idx[order].astype(np.int64), normals_world[order].astype(float), required[order].astype(float)
+
+
+def dense_observed_surface_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, reference_vertices_world: np.ndarray | None = None, object_translation_delta_world: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Linearized observed-surface barrier for every MANO vertex near a trusted face.
+
+    The active set only constrains vertices already known to penetrate.  This
+    dense barrier adds tangent-plane inequalities for all vertices whose nearest
+    object face is depth-observed.  A vertex currently outside the object gets a
+    negative required displacement, so it contributes zero loss unless the
+    optimizer moves it inward across that observed surface.  A vertex currently
+    inside gets a positive required displacement along the outward normal.
+    """
+    obj_delta = np.zeros(3, dtype=float) if object_translation_delta_world is None else np.asarray(object_translation_delta_world, dtype=float)
+    vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m + obj_delta)
+    signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
+    closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32)))
+    primitive_ids = closest["primitive_ids"].numpy().astype(np.int64)
+    valid = (primitive_ids >= 0) & (primitive_ids < len(row.face_strict_observed))
+    observed = np.zeros_like(valid, dtype=bool)
+    observed[valid] = row.face_strict_observed[primitive_ids[valid]]
+    idx = np.where(observed)[0].astype(np.int64)
+    if idx.size == 0:
+        return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float)
+    closest_obj = closest["points"].numpy().astype(float)[idx]
+    disp = closest_obj - vertices_object[idx]
+    norms = np.linalg.norm(disp, axis=1)
+    good = norms > 1.0e-12
+    idx = idx[good]
+    if idx.size == 0:
+        return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float)
+    signed_idx = signed[idx]
+    normal_obj = disp[good] / norms[good, None]
+    outside = signed_idx < 0.0
+    normal_obj[outside] *= -1.0
+    normals_world = object_vec_to_world(normal_obj, row.object_rotation_world_from_object)
+    reference = row.current_vertices_world if reference_vertices_world is None else reference_vertices_world
+    reference_to_query = vertices_world[idx] - reference[idx] - obj_delta[None, :]
+    required = np.sum(normals_world * reference_to_query, axis=1) + signed_idx
+    return idx.astype(np.int64), normals_world.astype(float), required.astype(float)
 
 
 def merge_constraints(base_idx: np.ndarray, base_normals: np.ndarray, base_depths: np.ndarray, new_idx: np.ndarray, new_normals: np.ndarray, new_depths: np.ndarray, cap: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -407,8 +457,9 @@ def merge_constraints(base_idx: np.ndarray, base_normals: np.ndarray, base_depth
     return idx, normals, depths
 
 
-def full_observed_surface_measure(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, eps: float) -> dict[str, Any]:
-    vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m)
+def full_observed_surface_measure(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, eps: float, object_translation_delta_world: np.ndarray | None = None) -> dict[str, Any]:
+    obj_delta = np.zeros(3, dtype=float) if object_translation_delta_world is None else np.asarray(object_translation_delta_world, dtype=float)
+    vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m + obj_delta)
     signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
     penetrating = np.where(signed > float(eps))[0]
     if penetrating.size == 0:
@@ -451,17 +502,54 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     root_delta = torch.zeros((b, 1, 3), dtype=torch.float32, device=device, requires_grad=True)
     pose_delta = torch.zeros((b, 15, 3), dtype=torch.float32, device=device, requires_grad=True)
     trans_delta = torch.zeros((b, 3), dtype=torch.float32, device=device, requires_grad=True)
-    optimizer = torch.optim.LBFGS([root_delta, pose_delta, trans_delta], lr=0.35, max_iter=int(args.max_optimizer_iterations), line_search_fn="strong_wolfe")
+    object_trans_delta = torch.zeros((b, 3), dtype=torch.float32, device=device, requires_grad=bool(args.optimize_object_translation))
+    optim_params = [root_delta, pose_delta, trans_delta]
+    if bool(args.optimize_object_translation):
+        optim_params.append(object_trans_delta)
+    optimizer = torch.optim.LBFGS(optim_params, lr=0.35, max_iter=int(args.max_optimizer_iterations), line_search_fn="strong_wolfe")
 
-    active_constraint_indices = [r.constraint_indices.copy() for r in rows]
-    active_constraint_normals = [r.constraint_normals_world.copy() for r in rows]
-    active_constraint_depths = [r.constraint_depths_m.copy() for r in rows]
     current_vertices_t = [torch.tensor(r.current_vertices_world, dtype=torch.float32, device=device) for r in rows]
     current_joints_t = [torch.tensor(r.current_joints_world, dtype=torch.float32, device=device) for r in rows]
     raw_base_vertices_t = torch.tensor(raw_base_vertices, dtype=torch.float32, device=device)
     raw_base_joints_t = torch.tensor(raw_base_joints, dtype=torch.float32, device=device)
-    sim_scale_t = torch.tensor([r.similarity_scale for r in rows], dtype=torch.float32, device=device).reshape(b, 1, 1)
-    sim_rot_t = torch.tensor(np.stack([r.similarity_rotation_raw_to_current for r in rows]), dtype=torch.float32, device=device)
+    sim_scale_np = np.asarray([r.similarity_scale for r in rows], dtype=float).reshape(b, 1, 1)
+    sim_rot_np = np.stack([r.similarity_rotation_raw_to_current for r in rows]).astype(float)
+    sim_trans_np = np.stack([r.similarity_translation_raw_to_current for r in rows]).astype(float)
+    sim_scale_t = torch.tensor(sim_scale_np, dtype=torch.float32, device=device)
+    sim_rot_t = torch.tensor(sim_rot_np, dtype=torch.float32, device=device)
+    sim_trans_t = torch.tensor(sim_trans_np, dtype=torch.float32, device=device).reshape(b, 1, 3)
+    zero_surface_mode = str(args.zero_surface_mode)
+    if zero_surface_mode == "similarity_mapped_raw":
+        reference_vertices_np = sim_scale_np * np.matmul(raw_base_vertices, np.transpose(sim_rot_np, (0, 2, 1))) + sim_trans_np[:, None, :]
+        reference_joints_np = sim_scale_np * np.matmul(raw_base_joints, np.transpose(sim_rot_np, (0, 2, 1))) + sim_trans_np[:, None, :]
+    else:
+        reference_vertices_np = np.stack([r.current_vertices_world for r in rows]).astype(float)
+        reference_joints_np = np.stack([r.current_joints_world for r in rows]).astype(float)
+    reference_vertices_t = [torch.tensor(reference_vertices_np[i], dtype=torch.float32, device=device) for i in range(b)]
+    active_constraint_indices: list[np.ndarray] = []
+    active_constraint_normals: list[np.ndarray] = []
+    active_constraint_depths: list[np.ndarray] = []
+    dense_constraint_indices: list[np.ndarray] = []
+    dense_constraint_normals: list[np.ndarray] = []
+    dense_constraint_depths: list[np.ndarray] = []
+    reference_observed_measures: list[dict[str, Any]] = []
+    for i, r in enumerate(rows):
+        c_idx, c_normals, c_depths = active_constraints_from_vertices(
+            reference_vertices_np[i], r, scene, int(args.max_constraints_per_frame), float(args.penetration_epsilon_m), reference_vertices_np[i]
+        )
+        active_constraint_indices.append(c_idx)
+        active_constraint_normals.append(c_normals)
+        active_constraint_depths.append(c_depths)
+        if bool(args.dense_observed_surface_barrier):
+            d_idx, d_normals, d_depths = dense_observed_surface_constraints_from_vertices(reference_vertices_np[i], r, scene, reference_vertices_np[i])
+        else:
+            d_idx = np.zeros((0,), dtype=np.int64)
+            d_normals = np.zeros((0, 3), dtype=float)
+            d_depths = np.zeros((0,), dtype=float)
+        dense_constraint_indices.append(d_idx)
+        dense_constraint_normals.append(d_normals)
+        dense_constraint_depths.append(d_depths)
+        reference_observed_measures.append(full_observed_surface_measure(reference_vertices_np[i], r, scene, float(args.penetration_epsilon_m)))
     intr_t: list[torch.Tensor | None] = []
     base_uv: list[torch.Tensor | None] = []
     r_c2w_t: list[torch.Tensor] = []
@@ -481,12 +569,18 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         new_root = rotvec_to_matrix(root_delta) @ base_root_mat
         new_pose = rotvec_to_matrix(pose_delta) @ base_pose_mat
         out = model(global_orient=new_root, hand_pose=new_pose, betas=betas, transl=trans, return_verts=True, pose2rot=False)
-        raw_delta_vertices = out.vertices - raw_base_vertices_t
-        raw_delta_joints = out.joints - raw_base_joints_t
-        mapped_vertices = sim_scale_t * torch.matmul(raw_delta_vertices, sim_rot_t.transpose(1, 2))
-        mapped_joints = sim_scale_t * torch.matmul(raw_delta_joints, sim_rot_t.transpose(1, 2))
-        verts = torch.stack(current_vertices_t, dim=0) + mapped_vertices + trans_delta[:, None, :]
-        joints = torch.stack(current_joints_t, dim=0) + mapped_joints + trans_delta[:, None, :]
+        if zero_surface_mode == "similarity_mapped_raw":
+            mapped_vertices = sim_scale_t * torch.matmul(out.vertices, sim_rot_t.transpose(1, 2)) + sim_trans_t
+            mapped_joints = sim_scale_t * torch.matmul(out.joints, sim_rot_t.transpose(1, 2)) + sim_trans_t
+            verts = mapped_vertices + trans_delta[:, None, :]
+            joints = mapped_joints + trans_delta[:, None, :]
+        else:
+            raw_delta_vertices = out.vertices - raw_base_vertices_t
+            raw_delta_joints = out.joints - raw_base_joints_t
+            mapped_vertices = sim_scale_t * torch.matmul(raw_delta_vertices, sim_rot_t.transpose(1, 2))
+            mapped_joints = sim_scale_t * torch.matmul(raw_delta_joints, sim_rot_t.transpose(1, 2))
+            verts = torch.stack(current_vertices_t, dim=0) + mapped_vertices + trans_delta[:, None, :]
+            joints = torch.stack(current_joints_t, dim=0) + mapped_joints + trans_delta[:, None, :]
         return verts, joints
 
     def project_torch(points_world: torch.Tensor, i: int) -> torch.Tensor | None:
@@ -518,10 +612,15 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         loss = loss + temporal_terms(trans_delta, float(args.smooth_weight))
         loss = loss + temporal_terms(root_delta, float(args.smooth_weight))
         loss = loss + temporal_terms(pose_delta, float(args.smooth_weight))
+        if bool(args.optimize_object_translation):
+            loss = loss + float(args.object_translation_prior_weight) * torch.mean(object_trans_delta * object_trans_delta)
+            loss = loss + temporal_terms(object_trans_delta, float(args.object_smooth_weight))
         trans_norm = torch.linalg.norm(trans_delta, dim=1)
+        object_trans_norm = torch.linalg.norm(object_trans_delta, dim=1)
         root_norm = torch.linalg.norm(root_delta.reshape(b, 3), dim=1)
         pose_norm = torch.linalg.norm(pose_delta, dim=2)
         loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(trans_norm - float(args.max_translation_m)) ** 2)
+        loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(object_trans_norm - float(args.max_object_translation_m)) ** 2)
         loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(root_norm - float(args.max_root_delta_rad)) ** 2)
         loss = loss + float(args.bound_hinge_weight) * torch.mean(torch.relu(pose_norm - float(args.max_pose_delta_rad)) ** 2)
         for i, row in enumerate(rows):
@@ -529,9 +628,17 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 ids = torch.tensor(active_constraint_indices[i], dtype=torch.long, device=device)
                 normals = torch.tensor(active_constraint_normals[i], dtype=torch.float32, device=device)
                 depths = torch.tensor(active_constraint_depths[i], dtype=torch.float32, device=device)
-                moved = hyp_vertices[i, ids] - current_vertices_t[i][ids]
+                moved = hyp_vertices[i, ids] - reference_vertices_t[i][ids] - object_trans_delta[i].reshape(1, 3)
                 residual = torch.relu(depths - torch.sum(normals * moved, dim=1))
                 loss = loss + float(args.observed_penetration_weight) * torch.mean(residual * residual)
+            if len(dense_constraint_indices[i]):
+                ids = torch.tensor(dense_constraint_indices[i], dtype=torch.long, device=device)
+                normals = torch.tensor(dense_constraint_normals[i], dtype=torch.float32, device=device)
+                depths = torch.tensor(dense_constraint_depths[i], dtype=torch.float32, device=device)
+                moved = hyp_vertices[i, ids] - reference_vertices_t[i][ids] - object_trans_delta[i].reshape(1, 3)
+                residual = torch.relu(depths - torch.sum(normals * moved, dim=1))
+                active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
+                loss = loss + float(args.dense_observed_penetration_weight) * torch.sum(residual * residual) / active_count
             uv = project_torch(hyp_joints[i], i)
             if uv is not None and base_uv[i] is not None:
                 shift = torch.linalg.norm(uv - base_uv[i], dim=1)
@@ -549,11 +656,12 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         for active_iter in range(max(1, int(args.active_set_iterations))):
             active_set_pass_count = active_iter + 1
             if active_iter > 0:
-                optimizer = torch.optim.LBFGS([root_delta, pose_delta, trans_delta], lr=0.25, max_iter=int(args.max_optimizer_iterations), line_search_fn="strong_wolfe")
+                optimizer = torch.optim.LBFGS(optim_params, lr=0.25, max_iter=int(args.max_optimizer_iterations), line_search_fn="strong_wolfe")
             optimizer.step(closure)
             with torch.no_grad():
                 hyp_vertices_t, _hyp_joints_t = hypothesis()
                 hyp_vertices_np = hyp_vertices_t.detach().cpu().numpy().astype(float)
+                object_trans_np_active = object_trans_delta.detach().cpu().numpy().astype(float)
             added_total = 0
             for i, row in enumerate(rows):
                 new_idx, new_normals, new_depths = active_constraints_from_vertices(
@@ -562,6 +670,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                     scene,
                     int(args.max_constraints_per_frame),
                     float(args.penetration_epsilon_m),
+                    reference_vertices_np[i],
+                    object_trans_np_active[i],
                 )
                 before = len(active_constraint_indices[i])
                 merged = merge_constraints(
@@ -575,6 +685,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 )
                 active_constraint_indices[i], active_constraint_normals[i], active_constraint_depths[i] = merged
                 added_total += max(0, len(active_constraint_indices[i]) - before)
+                if bool(args.dense_observed_surface_barrier):
+                    dense_constraint_indices[i], dense_constraint_normals[i], dense_constraint_depths[i] = dense_observed_surface_constraints_from_vertices(
+                        hyp_vertices_np[i], row, scene, reference_vertices_np[i], object_trans_np_active[i]
+                    )
             active_set_added_counts.append(int(added_total))
             if added_total == 0:
                 active_set_closed = True
@@ -584,6 +698,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         hyp_vertices = hyp_vertices_t.detach().cpu().numpy().astype(float)
         hyp_joints = hyp_joints_t.detach().cpu().numpy().astype(float)
         trans_np = trans_delta.detach().cpu().numpy().astype(float)
+        object_trans_np = object_trans_delta.detach().cpu().numpy().astype(float)
         root_np = root_delta.detach().cpu().numpy().reshape(b, 3).astype(float)
         pose_np = pose_delta.detach().cpu().numpy().astype(float)
 
@@ -595,18 +710,20 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     visible_max: list[float] = []
     depth_max: list[float] = []
     trans_max: list[float] = []
+    object_trans_max: list[float] = []
     root_max: list[float] = []
     pose_max: list[float] = []
     corrected_frames = 0
     for i, row in enumerate(rows):
         if len(active_constraint_indices[i]):
-            moved = hyp_vertices[i, active_constraint_indices[i]] - row.current_vertices_world[active_constraint_indices[i]]
+            moved = hyp_vertices[i, active_constraint_indices[i]] - reference_vertices_np[i, active_constraint_indices[i]] - object_trans_np[i][None, :]
             residual = np.maximum(0.0, active_constraint_depths[i] - np.sum(active_constraint_normals[i] * moved, axis=1))
         else:
             residual = np.zeros((0,), dtype=float)
-        init_max = float((row.observed_initial_measure.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
+        init_measure = reference_observed_measures[i]
+        init_max = float((init_measure.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         final_max = float(np.max(residual)) if residual.size else 0.0
-        full_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m))
+        full_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i])
         full_post_max = float((full_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         uv0 = project_world(row.current_joints_world, row.frame, row.side)
         uv1 = project_world(hyp_joints[i], row.frame, row.side)
@@ -622,6 +739,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         cam1 = world_to_camera(hyp_joints[i], row.frame)
         dshift = np.abs(cam1[:, 2] - cam0[:, 2])
         tnorm = float(np.linalg.norm(trans_np[i]))
+        otnorm = float(np.linalg.norm(object_trans_np[i]))
         rnorm = float(np.linalg.norm(root_np[i]))
         pnorm = float(np.max(np.linalg.norm(pose_np[i], axis=1)))
         changed = tnorm > 1.0e-4 or rnorm > 1.0e-4 or pnorm > 1.0e-4
@@ -634,6 +752,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
             visible_max.append(shift_max)
         depth_max.append(float(np.max(dshift)))
         trans_max.append(tnorm)
+        object_trans_max.append(otnorm)
         root_max.append(rnorm)
         pose_max.append(pnorm)
         states.append(
@@ -644,18 +763,20 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "source_hawor_npz": str(row.source_hawor_npz),
                 "source_frame_index": int(row.source_frame_index),
                 "optimized_translation_world_m": trans_np[i].astype(float).tolist(),
+                "optimized_object_translation_world_m": object_trans_np[i].astype(float).tolist(),
                 "optimized_root_delta_axis_angle_rad": root_np[i].astype(float).tolist(),
                 "optimized_hand_pose_delta_axis_angle_rad": pose_np[i].reshape(-1).astype(float).tolist(),
                 "optimized_joints_world_m": hyp_joints[i].astype(float).tolist(),
                 "optimized_vertices_world_sample_m": hyp_vertices[i, render_ids].astype(float).tolist(),
                 "optimized_vertices_sample_ids": render_ids.astype(int).tolist(),
-                "initial_observed_surface_penetration_m": row.observed_initial_measure.get("observed_supported_penetration_m"),
+                "initial_observed_surface_penetration_m": init_measure.get("observed_supported_penetration_m"),
+                "current_bridge_observed_surface_penetration_m": row.observed_initial_measure.get("observed_supported_penetration_m"),
                 "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
                 "full_observed_supported_penetrating_vertex_count_after_solver": int(full_post.get("observed_supported_penetrating_vertex_count", 0)),
                 "visible_joint_shift_px": {"count": int(len(shift)), "median": shift_med, "max": shift_max},
                 "joint_camera_depth_shift_m": {"count": int(len(dshift)), "median": float(np.median(dshift)), "max": float(np.max(dshift))},
-                "delta_norms": {"translation_m": tnorm, "root_rad": rnorm, "max_pose_joint_rad": pnorm},
+                "delta_norms": {"translation_m": tnorm, "object_translation_m": otnorm, "root_rad": rnorm, "max_pose_joint_rad": pnorm},
             }
         )
     interval = {
@@ -664,6 +785,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "end_frame": int(rows[-1].frame_idx),
         "frame_count": int(len(rows)),
         "solver": "joint_root_translation_root_orientation_and_articulation",
+        "zero_surface_mode": zero_surface_mode,
         "optimizer_ran": bool(replay_ok),
         "replay_ok": bool(replay_ok),
         "raw_replay_vertex_error_median_m": numeric_summary(np.asarray([float(np.median(e)) for e in replay_vertex_err], dtype=float)),
@@ -675,12 +797,16 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visible_joint_shift_max_px": numeric_summary(np.asarray(visible_max, dtype=float)),
         "joint_camera_depth_shift_max_m": numeric_summary(np.asarray(depth_max, dtype=float)),
         "translation_delta_norm_m": numeric_summary(np.asarray(trans_max, dtype=float)),
+        "object_translation_delta_norm_m": numeric_summary(np.asarray(object_trans_max, dtype=float)),
         "root_delta_norm_rad": numeric_summary(np.asarray(root_max, dtype=float)),
         "pose_delta_max_joint_norm_rad": numeric_summary(np.asarray(pose_max, dtype=float)),
         "active_set_added_constraint_counts": active_set_added_counts,
         "active_set_pass_count": int(active_set_pass_count),
         "active_set_closed": bool(active_set_closed),
         "active_constraint_count_final": numeric_summary(np.asarray([len(x) for x in active_constraint_indices], dtype=float)),
+        "object_translation_optimized": bool(args.optimize_object_translation),
+        "dense_observed_surface_barrier_enabled": bool(args.dense_observed_surface_barrier),
+        "dense_observed_constraint_count_final": numeric_summary(np.asarray([len(x) for x in dense_constraint_indices], dtype=float)),
     }
     return interval, states
 
