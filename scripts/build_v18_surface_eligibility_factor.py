@@ -162,6 +162,31 @@ def classify_faces_against_depth(
     return masks, summary
 
 
+def nested_get(row: dict[str, Any], dotted: str) -> Any:
+    cur: Any = row
+    for key in dotted.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def load_pose_support_uncertainty(pose_report: dict[str, Any], *, stat: str, default_m: float) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for row in as_list(pose_report.get("pose_rows")) if isinstance(pose_report, dict) else []:
+        if not isinstance(row, dict) or row.get("frame_idx") is None:
+            continue
+        raw = nested_get(row, stat)
+        if raw is None:
+            raw = default_m
+        try:
+            val = float(raw)
+        except Exception:
+            val = float(default_m)
+        out[int(row["frame_idx"])] = max(0.0, val)
+    return out
+
+
 def load_visible_ownership_rows(path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
     if path is None or not path.exists():
         return {}
@@ -247,6 +272,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     frames = load_frames(annotations)
     pose_report = load_json(args.pose_report)
     poses = pose_map(pose_report)
+    support_uncertainty_by_frame = load_pose_support_uncertainty(
+        pose_report,
+        stat=str(args.surface_support_uncertainty_stat),
+        default_m=float(args.default_surface_support_uncertainty_m),
+    )
     mesh = load_mesh(args.completed_mesh)
     vertices_object = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int64)
@@ -275,6 +305,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             min_supported_samples=int(args.min_supported_samples),
         )
         frame_summaries.append(summary)
+        surface_support_uncertainty_m = float(support_uncertainty_by_frame.get(frame_idx, float(args.default_surface_support_uncertainty_m)))
         for side in args.sides:
             hand_owned = ownership_face_quarantine(
                 frame=frame,
@@ -304,7 +335,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "hand_side": side,
                     "variable_affected": "constraint_eligibility",
                     "observation_type": "posed_mesh_face_support_samples_x_metric_depth",
-                    "residual_or_quarantine_rule": "only eligible_hard_observed faces may produce hard MANO nonpenetration; free-space, hidden, outside-view, unresolved, and hand-owned faces are not hard constraints",
+                    "residual_or_quarantine_rule": "only eligible_hard_observed faces may produce MANO nonpenetration; observed-surface residuals are hard only beyond observed_surface_support_uncertainty_m, while free-space, hidden, outside-view, unresolved, and hand-owned faces are not hard constraints",
                     "provenance": {
                         "annotations": str(args.annotations),
                         "pose_report": str(args.pose_report),
@@ -312,8 +343,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                         "depth_npz": [str(p) for p in args.depth_npz],
                         "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report),
                     },
-                    "rendered_uncertainty_channel": "surface eligibility should render eligible observed faces separately from free-space rejected, hidden, outside-view, unresolved, and hand-owned faces",
+                    "rendered_uncertainty_channel": "surface eligibility should render eligible observed faces separately from free-space rejected, hidden, outside-view, unresolved, hand-owned, and support-uncertain faces",
                     "face_state_npz_path": str(mask_path),
+                    "observed_surface_support_uncertainty_m": float(surface_support_uncertainty_m),
+                    "surface_support_uncertainty_m": float(surface_support_uncertainty_m),
+                    "surface_support_uncertainty_stat": str(args.surface_support_uncertainty_stat),
                     "face_count": int(len(faces)),
                     "counts": counts,
                 }
@@ -340,6 +374,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "free_space_margin_m": float(args.free_space_margin_m),
             "min_supported_samples": int(args.min_supported_samples),
             "ownership_face_overlap_dilation_px": int(args.ownership_face_overlap_dilation_px),
+            "surface_support_uncertainty_stat": str(args.surface_support_uncertainty_stat),
+            "default_surface_support_uncertainty_m": float(args.default_surface_support_uncertainty_m),
         },
         "summary": {
             "frame_count_requested": int(len(frame_ids)),
@@ -349,6 +385,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 key: numeric_summary(np.asarray([s.get("face_state_counts", {}).get(key, 0) for s in frame_summaries], dtype=float))
                 for key in [STATE_OBSERVED, STATE_FREE, STATE_HIDDEN, STATE_OUTSIDE, STATE_UNRESOLVED]
             },
+            "observed_surface_support_uncertainty_m": numeric_summary(np.asarray([float(r.get("observed_surface_support_uncertainty_m", 0.0)) for r in factor_rows], dtype=float)),
         },
         "frame_summaries": frame_summaries,
         "factor_rows": factor_rows,
@@ -375,6 +412,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--free-space-margin-m", type=float, default=0.025)
     p.add_argument("--min-supported-samples", type=int, default=2)
     p.add_argument("--ownership-face-overlap-dilation-px", type=int, default=2)
+    p.add_argument("--surface-support-uncertainty-stat", default="observed_to_mesh_final.p95_m", help="Dotted pose_rows[] field emitted as observed_surface_support_uncertainty_m for solver nonpenetration slack.")
+    p.add_argument("--default-surface-support-uncertainty-m", type=float, default=0.0)
     return p.parse_args()
 
 

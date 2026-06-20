@@ -115,6 +115,7 @@ class FrameHandRow:
     hand_owned_quarantined_face_count: int
     surface_eligibility_npz_path: str | None
     surface_eligibility_mode: str | None
+    observed_surface_support_uncertainty_m: float
     surface_eligible_face_count: int
     surface_input_face_count: int
     surface_applied_face_delta: int
@@ -214,6 +215,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--visible-ownership-factor-report", type=Path, default=None, help="Optional reusable visible ownership factor report. Its non_object_owned masks quarantine hard object constraints; its visible_object_owned masks replace visible-object masks for depth-order/gating when present.")
     p.add_argument("--surface-eligibility-factor-report", type=Path, default=None, help="Optional reusable surface eligibility factor report. Its eligible_hard_observed face masks define which object faces may exert hard MANO constraints.")
     p.add_argument("--surface-eligibility-mode", choices=("replace", "intersect"), default="intersect", help="How to apply surface eligibility to the current trusted face set when a factor report is supplied. Default intersects to preserve existing ownership/visibility quarantines unless replacement is explicitly justified.")
+    p.add_argument("--observed-surface-support-uncertainty-m", type=float, default=0.0, help="Default support uncertainty slack for observed object surface nonpenetration. Row-level surface_support_uncertainty_m / observed_surface_support_uncertainty_m from surface_eligibility factors overrides this value.")
     p.add_argument("--visible-surface-track-factor-report", type=Path, default=None, help="Optional reusable visible-surface track factor report. Active rows provide model-mask/metric-depth first-surface observations for MANO depth-order and hidden-volume quarantine.")
     p.add_argument("--factor-report", type=Path, action="append", default=None, help="Generic reusable factor report(s). Rows are dispatched by factor_family, enabling ownership, surface_eligibility, visible_surface_track, hand_observation_visibility, hand_depth_shift_prior, and contact_patch factors through one interface.")
     p.add_argument("--contact-patch-weight", type=float, default=0.0, help="Default weight for active contact_patch factor rows. A row-level weight overrides this value. The residual keeps selected MANO vertices near an observed object surface patch; existing nonpenetration prevents crossing.")
@@ -408,7 +410,11 @@ def surface_eligibility_mask_for_row(row: dict[str, Any] | None, expected_count:
     mask = cache[path]
     if mask.shape != (int(expected_count),):
         return None, {"state": "surface_eligibility_shape_mismatch", "face_state_npz_path": str(path), "mask_count": int(mask.size), "expected_count": int(expected_count)}
-    return mask.copy(), {"state": "ok", "face_state_npz_path": str(path), "eligible_hard_observed_count": int(np.count_nonzero(mask))}
+    try:
+        support_uncertainty_m = float(row.get("observed_surface_support_uncertainty_m", row.get("surface_support_uncertainty_m", row.get("object_support_uncertainty_m", 0.0))) or 0.0)
+    except Exception:
+        support_uncertainty_m = 0.0
+    return mask.copy(), {"state": "ok", "face_state_npz_path": str(path), "eligible_hard_observed_count": int(np.count_nonzero(mask)), "observed_surface_support_uncertainty_m": max(0.0, support_uncertainty_m)}
 
 
 def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path, np.ndarray]) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
@@ -865,17 +871,20 @@ def observed_constraints_for_hand(
     frame_idx: int,
     max_constraints: int,
     eps: float,
+    support_uncertainty_m: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
     r_obj, t_obj = pose
     vertices_object = inverse_object(vertices_world, r_obj, t_obj)
     signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
-    penetrating = np.where(signed > float(eps))[0]
+    hard_eps = float(eps) + max(0.0, float(support_uncertainty_m))
+    penetrating = np.where(signed > hard_eps)[0]
     if penetrating.size == 0:
         measure = {
             "frame_idx": frame_idx,
             "penetrating_vertex_count": 0,
             "observed_supported_penetrating_vertex_count": 0,
             "observed_supported_penetration_m": numeric_summary(np.asarray([], dtype=float)),
+            "observed_surface_support_uncertainty_m": max(0.0, float(support_uncertainty_m)),
         }
         return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float), measure
     closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object[penetrating], dtype=np.float32)))
@@ -904,6 +913,7 @@ def observed_constraints_for_hand(
         "penetrating_vertex_count": int(penetrating.size),
         "observed_supported_penetrating_vertex_count": int(len(obs_idx)),
         "observed_supported_penetration_m": numeric_summary(depths),
+        "observed_surface_support_uncertainty_m": max(0.0, float(support_uncertainty_m)),
     }
     return obs_idx.astype(np.int64), normals_world.astype(float), depths.astype(float), measure
 
@@ -1047,6 +1057,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 strict = strict & surface_mask.astype(bool)
         surface_eligible_face_count = int(np.count_nonzero(surface_mask)) if surface_mask is not None else 0
         surface_applied_face_delta = int(np.count_nonzero(strict)) - surface_input_face_count
+        observed_surface_support_uncertainty_m = float(surface_diag.get("observed_surface_support_uncertainty_m", args.observed_surface_support_uncertainty_m) or 0.0)
         source_path, source_frame = source_info
         source = load_source_arrays(source_cache, source_path)
         required = [
@@ -1072,6 +1083,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             frame_idx=frame_idx,
             max_constraints=int(args.max_constraints_per_frame),
             eps=float(args.penetration_epsilon_m),
+            support_uncertainty_m=observed_surface_support_uncertainty_m,
         )
         if bool(args.visibility_weighted_hand_observation):
             joint_visibility_weights, joint_depth_residual = joint_visibility_from_metric_depth(frame, side, current_joints, depth_rows.get(frame_idx), args)
@@ -1153,7 +1165,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 face_strict_observed=strict.astype(bool),
                 hand_owned_quarantined_face_count=int(hand_owned_quarantined),
                 surface_eligibility_npz_path=surface_diag.get("face_state_npz_path"),
-                surface_eligibility_mode=str(args.surface_eligibility_mode) if args.surface_eligibility_factor_report is not None else None,
+                surface_eligibility_mode=(str(args.surface_eligibility_mode) if surface_mask is not None else None),
+                observed_surface_support_uncertainty_m=float(observed_surface_support_uncertainty_m),
                 surface_eligible_face_count=int(surface_eligible_face_count),
                 surface_input_face_count=int(surface_input_face_count),
                 surface_applied_face_delta=int(surface_applied_face_delta),
@@ -1207,7 +1220,8 @@ def active_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandR
     obj_delta = np.zeros(3, dtype=float) if object_translation_delta_world is None else np.asarray(object_translation_delta_world, dtype=float)
     vertices_object = inverse_object(vertices_world, row.object_rotation_world_from_object, row.object_translation_world_m + obj_delta)
     signed = -scene.compute_signed_distance(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))).numpy().astype(float)
-    penetrating = np.where(signed > float(eps))[0]
+    hard_eps = float(eps) + max(0.0, float(row.observed_surface_support_uncertainty_m))
+    penetrating = np.where(signed > hard_eps)[0]
     if penetrating.size == 0:
         return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float)
     closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object[penetrating], dtype=np.float32)))
@@ -1550,14 +1564,14 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 normals = torch.tensor(active_constraint_normals[i], dtype=torch.float32, device=device)
                 depths = torch.tensor(active_constraint_depths[i], dtype=torch.float32, device=device)
                 moved = hyp_vertices[i, ids] - reference_vertices_t[i][ids] - object_trans_delta[i].reshape(1, 3)
-                residual = torch.relu(depths - torch.sum(normals * moved, dim=1))
+                residual = torch.relu(depths - float(rows[i].observed_surface_support_uncertainty_m) - torch.sum(normals * moved, dim=1))
                 loss = loss + float(args.observed_penetration_weight) * torch.mean(residual * residual)
             if len(dense_constraint_indices[i]):
                 ids = torch.tensor(dense_constraint_indices[i], dtype=torch.long, device=device)
                 normals = torch.tensor(dense_constraint_normals[i], dtype=torch.float32, device=device)
                 depths = torch.tensor(dense_constraint_depths[i], dtype=torch.float32, device=device)
                 moved = hyp_vertices[i, ids] - reference_vertices_t[i][ids] - object_trans_delta[i].reshape(1, 3)
-                residual = torch.relu(depths - torch.sum(normals * moved, dim=1))
+                residual = torch.relu(depths - float(rows[i].observed_surface_support_uncertainty_m) - torch.sum(normals * moved, dim=1))
                 active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
                 loss = loss + float(args.dense_observed_penetration_weight) * torch.sum(residual * residual) / active_count
             uv = project_torch(hyp_joints[i], i)
@@ -1746,6 +1760,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "hand_owned_quarantined_face_count": int(row.hand_owned_quarantined_face_count),
                 "surface_eligibility_npz_path": row.surface_eligibility_npz_path,
                 "surface_eligibility_mode": row.surface_eligibility_mode,
+                "observed_surface_support_uncertainty_m": float(row.observed_surface_support_uncertainty_m),
                 "surface_eligible_face_count": int(row.surface_eligible_face_count),
                 "surface_input_face_count": int(row.surface_input_face_count),
                 "surface_applied_face_delta": int(row.surface_applied_face_delta),
@@ -1839,6 +1854,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "hand_owned_object_depth_quarantine_enabled": bool(args.hand_owned_object_depth_quarantine),
         "surface_eligibility_factor_enabled": args.surface_eligibility_factor_report is not None or any(r.surface_eligibility_mode is not None for r in rows),
         "surface_eligibility_mode": str(args.surface_eligibility_mode),
+        "observed_surface_support_uncertainty_m": numeric_summary(np.asarray([r.observed_surface_support_uncertainty_m for r in rows], dtype=float)),
         "visible_ownership_factor_enabled": args.visible_ownership_factor_report is not None or any(r.visible_ownership_non_object_mask_path is not None or r.visible_ownership_object_owned_mask_path is not None for r in rows),
         "visible_surface_track_factor_enabled": args.visible_surface_track_factor_report is not None or any(r.visible_surface_track_factor_state is not None for r in rows),
         "visible_object_mask_gate_enabled": bool(args.visible_object_mask_gate),
