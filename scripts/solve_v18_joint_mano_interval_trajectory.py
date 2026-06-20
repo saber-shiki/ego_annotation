@@ -138,6 +138,14 @@ class FrameHandRow:
     hand_observation_visibility_factor_state: str | None
     hand_observation_visibility_candidate_px: int
     hand_observation_visibility_weight_multiplier: float
+    contact_patch_factor_state: str | None
+    contact_patch_vertex_indices: np.ndarray
+    contact_patch_target_world_m: np.ndarray
+    contact_patch_normal_world: np.ndarray
+    contact_patch_initial_distance_m: np.ndarray
+    contact_patch_weight: float
+    contact_patch_band_m: float
+    contact_patch_target_margin_m: float
     joint_visibility_weights: np.ndarray
     joint_depth_residual_m: np.ndarray
     hand_ray_shift_prior_world_m: np.ndarray
@@ -206,7 +214,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--surface-eligibility-factor-report", type=Path, default=None, help="Optional reusable surface eligibility factor report. Its eligible_hard_observed face masks define which object faces may exert hard MANO constraints.")
     p.add_argument("--surface-eligibility-mode", choices=("replace", "intersect"), default="intersect", help="How to apply surface eligibility to the current trusted face set when a factor report is supplied. Default intersects to preserve existing ownership/visibility quarantines unless replacement is explicitly justified.")
     p.add_argument("--visible-surface-track-factor-report", type=Path, default=None, help="Optional reusable visible-surface track factor report. Active rows provide model-mask/metric-depth first-surface observations for MANO depth-order and hidden-volume quarantine.")
-    p.add_argument("--factor-report", type=Path, action="append", default=None, help="Generic reusable factor report(s). Rows are dispatched by factor_family, enabling ownership, surface_eligibility, and visible_surface_track factors through one interface.")
+    p.add_argument("--factor-report", type=Path, action="append", default=None, help="Generic reusable factor report(s). Rows are dispatched by factor_family, enabling ownership, surface_eligibility, visible_surface_track, hand_observation_visibility, hand_depth_shift_prior, and contact_patch factors through one interface.")
+    p.add_argument("--contact-patch-weight", type=float, default=0.0, help="Default weight for active contact_patch factor rows. A row-level weight overrides this value. The residual keeps selected MANO vertices near an observed object surface patch; existing nonpenetration prevents crossing.")
+    p.add_argument("--contact-patch-band-m", type=float, default=0.020, help="Current-state max distance for selecting MANO vertices that define the local contact patch.")
+    p.add_argument("--contact-patch-target-margin-m", type=float, default=0.0025, help="Allowed hand-to-patch distance before the two-sided contact residual is active.")
+    p.add_argument("--max-contact-patch-vertices", type=int, default=96, help="Maximum MANO vertices selected for each contact_patch factor row.")
     p.add_argument("--visible-ownership-face-overlap-dilation-px", type=int, default=2, help="Pixel dilation for deciding whether any projected face support sample overlaps non-object-owned ownership pixels.")
     p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Legacy visible entity mask report. Prefer --factor-report with factor_family=visible_surface_track; this path remains only for reproducing earlier mask/depth ablations.")
     p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Legacy gate: trust observed object mesh faces only when their projected center lies inside the model-produced visible entity mask.")
@@ -305,6 +317,7 @@ def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entit
         "visible_surface_track": {},
         "hand_observation_visibility": {},
         "hand_depth_shift_prior": {},
+        "contact_patch": {},
     }
     required_fields = (
         "factor_family",
@@ -440,6 +453,41 @@ def hand_observation_visibility_for_row(row: dict[str, Any] | None, args: argpar
         multiplier = float(args.occluded_joint_observation_weight)
     multiplier = float(np.clip(multiplier, 0.0, 1.0))
     return {"state": state, "candidate_px": candidate_px, "weight_multiplier": multiplier}
+
+
+def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {
+            "state": "missing_contact_patch_row",
+            "weight": 0.0,
+            "band_m": float(args.contact_patch_band_m),
+            "target_margin_m": float(args.contact_patch_target_margin_m),
+            "max_vertices": int(args.max_contact_patch_vertices),
+        }
+    state = str(row.get("state") or "active_contact_patch")
+    try:
+        weight = float(row.get("weight", args.contact_patch_weight) or 0.0)
+    except Exception:
+        weight = float(args.contact_patch_weight)
+    try:
+        band_m = float(row.get("contact_patch_band_m", row.get("band_m", args.contact_patch_band_m)) or args.contact_patch_band_m)
+    except Exception:
+        band_m = float(args.contact_patch_band_m)
+    try:
+        target_margin_m = float(row.get("contact_patch_target_margin_m", row.get("target_margin_m", args.contact_patch_target_margin_m)) or args.contact_patch_target_margin_m)
+    except Exception:
+        target_margin_m = float(args.contact_patch_target_margin_m)
+    try:
+        max_vertices = int(row.get("max_vertices", args.max_contact_patch_vertices) or args.max_contact_patch_vertices)
+    except Exception:
+        max_vertices = int(args.max_contact_patch_vertices)
+    return {
+        "state": state,
+        "weight": max(0.0, weight),
+        "band_m": max(0.0, band_m),
+        "target_margin_m": max(0.0, target_margin_m),
+        "max_vertices": max(0, max_vertices),
+    }
 
 
 def visible_ownership_quarantine_faces(
@@ -883,6 +931,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     visible_surface_track_rows = merge_factor_row_maps("visible_surface_track", load_visible_surface_track_rows(args.visible_surface_track_factor_report), generic_factor_rows["visible_surface_track"])
     hand_observation_visibility_rows = generic_factor_rows["hand_observation_visibility"]
     hand_depth_shift_prior_rows = generic_factor_rows["hand_depth_shift_prior"]
+    contact_patch_rows = generic_factor_rows["contact_patch"]
     visible_mask_cache: dict[Path, np.ndarray] = {}
     surface_eligibility_cache: dict[Path, np.ndarray] = {}
     hand_ray_shift_priors = load_hand_ray_shift_priors(args.hand_depth_repair_graph)
@@ -1030,6 +1079,21 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         r_obj, t_obj = pose
         ray_shift = hand_ray_shift_priors.get((frame_idx, side))
         hand_depth_shift_diag = hand_depth_shift_prior_for_row(hand_depth_shift_prior_rows.get((frame_idx, side)))
+        contact_patch_diag = contact_patch_for_row(contact_patch_rows.get((frame_idx, side)), args)
+        contact_patch_idx = np.zeros((0,), dtype=np.int64)
+        contact_patch_targets = np.zeros((0, 3), dtype=float)
+        contact_patch_normals = np.zeros((0, 3), dtype=float)
+        contact_patch_distances = np.zeros((0,), dtype=float)
+        if contact_patch_diag.get("state") == "active_contact_patch" and float(contact_patch_diag.get("weight", 0.0)) > 0.0:
+            contact_patch_idx, contact_patch_targets, contact_patch_normals, contact_patch_distances = contact_patch_targets_from_vertices(
+                current_vertices,
+                scene,
+                np.asarray(r_obj, dtype=float),
+                np.asarray(t_obj, dtype=float),
+                strict.astype(bool),
+                max_vertices=int(contact_patch_diag.get("max_vertices", args.max_contact_patch_vertices)),
+                band_m=float(contact_patch_diag.get("band_m", args.contact_patch_band_m)),
+            )
         r_c2w_frame, _t_c2w_frame = frame_camera_pose(frame)
         # V17 hand_ray_shift_m is a camera-ray depth repair observation.  The
         # direction that reduced current observed-surface residual in the
@@ -1098,6 +1162,14 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 hand_observation_visibility_factor_state=hand_visibility_diag.get("state") if hand_visibility_diag.get("state") != "missing_hand_observation_visibility_row" else None,
                 hand_observation_visibility_candidate_px=int(hand_visibility_diag.get("candidate_px", 0)),
                 hand_observation_visibility_weight_multiplier=float(hand_visibility_diag.get("weight_multiplier", 1.0)),
+                contact_patch_factor_state=contact_patch_diag.get("state") if contact_patch_diag.get("state") != "missing_contact_patch_row" else None,
+                contact_patch_vertex_indices=contact_patch_idx.astype(np.int64),
+                contact_patch_target_world_m=contact_patch_targets.astype(float),
+                contact_patch_normal_world=contact_patch_normals.astype(float),
+                contact_patch_initial_distance_m=contact_patch_distances.astype(float),
+                contact_patch_weight=float(contact_patch_diag.get("weight", 0.0)),
+                contact_patch_band_m=float(contact_patch_diag.get("band_m", args.contact_patch_band_m)),
+                contact_patch_target_margin_m=float(contact_patch_diag.get("target_margin_m", args.contact_patch_target_margin_m)),
                 joint_visibility_weights=joint_visibility_weights.astype(float),
                 joint_depth_residual_m=joint_depth_residual.astype(float),
                 hand_ray_shift_prior_world_m=ray_prior_world.astype(float),
@@ -1146,6 +1218,43 @@ def active_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandR
     if len(order) > int(max_constraints):
         order = order[: int(max_constraints)]
     return idx[order].astype(np.int64), normals_world[order].astype(float), required[order].astype(float)
+
+
+def contact_patch_targets_from_vertices(
+    vertices_world: np.ndarray,
+    scene: Any,
+    object_rotation_world_from_object: np.ndarray,
+    object_translation_world_m: np.ndarray,
+    face_strict_observed: np.ndarray,
+    *,
+    max_vertices: int,
+    band_m: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if int(max_vertices) <= 0 or float(band_m) <= 0.0 or not np.any(face_strict_observed):
+        return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float)
+    vertices_object = inverse_object(vertices_world, object_rotation_world_from_object, object_translation_world_m)
+    closest = scene.compute_closest_points(o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32)))
+    primitive_ids = closest["primitive_ids"].numpy().astype(np.int64)
+    valid = (primitive_ids >= 0) & (primitive_ids < len(face_strict_observed))
+    observed = np.zeros_like(valid, dtype=bool)
+    observed[valid] = np.asarray(face_strict_observed, dtype=bool)[primitive_ids[valid]]
+    closest_obj = closest["points"].numpy().astype(float)
+    closest_world = closest_obj @ np.asarray(object_rotation_world_from_object, dtype=float).T + np.asarray(object_translation_world_m, dtype=float)[None, :]
+    distances = np.linalg.norm(np.asarray(vertices_world, dtype=float) - closest_world, axis=1)
+    candidate = observed & np.isfinite(distances) & (distances <= float(band_m))
+    idx = np.where(candidate)[0].astype(np.int64)
+    if idx.size == 0:
+        return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float)
+    order = np.argsort(distances[idx])[: int(max_vertices)]
+    idx = idx[order]
+    disp = np.asarray(vertices_world, dtype=float)[idx] - closest_world[idx]
+    norms = np.linalg.norm(disp, axis=1)
+    good = norms > 1.0e-9
+    idx = idx[good]
+    if idx.size == 0:
+        return np.zeros((0,), dtype=np.int64), np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=float), np.zeros((0,), dtype=float)
+    normals = disp[good] / norms[good, None]
+    return idx.astype(np.int64), closest_world[idx].astype(float), normals.astype(float), distances[idx].astype(float)
 
 
 def dense_observed_surface_constraints_from_vertices(vertices_world: np.ndarray, row: FrameHandRow, scene: Any, reference_vertices_world: np.ndarray | None = None, object_translation_delta_world: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1320,6 +1429,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     visible_surface_depth_order_indices_t: list[torch.Tensor] = []
     visible_surface_depth_order_depth_t: list[torch.Tensor] = []
     visible_surface_depth_order_initial_counts: list[int] = []
+    contact_patch_indices_t: list[torch.Tensor] = []
+    contact_patch_targets_t: list[torch.Tensor] = []
+    contact_patch_normals_t: list[torch.Tensor] = []
+    contact_patch_weights_t: list[torch.Tensor] = []
+    contact_patch_margins_t: list[torch.Tensor] = []
     for row in rows:
         intr = frame_intrinsics(row.frame, row.side)
         intr_t.append(None if intr is None else torch.tensor(intr, dtype=torch.float32, device=device))
@@ -1332,6 +1446,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         visible_surface_depth_order_indices_t.append(torch.tensor(row.visible_surface_depth_order_vertex_indices, dtype=torch.long, device=device))
         visible_surface_depth_order_depth_t.append(torch.tensor(row.visible_surface_depth_order_depth_m, dtype=torch.float32, device=device))
         visible_surface_depth_order_initial_counts.append(int((row.visible_surface_depth_order_initial_measure or {}).get("finite_inside_count", 0)))
+        contact_patch_indices_t.append(torch.tensor(row.contact_patch_vertex_indices, dtype=torch.long, device=device))
+        contact_patch_targets_t.append(torch.tensor(row.contact_patch_target_world_m, dtype=torch.float32, device=device))
+        contact_patch_normals_t.append(torch.tensor(row.contact_patch_normal_world, dtype=torch.float32, device=device))
+        contact_patch_weights_t.append(torch.tensor(float(row.contact_patch_weight), dtype=torch.float32, device=device))
+        contact_patch_margins_t.append(torch.tensor(float(row.contact_patch_target_margin_m), dtype=torch.float32, device=device))
 
     def hypothesis() -> tuple[torch.Tensor, torch.Tensor]:
         new_root = rotvec_to_matrix(root_delta) @ base_root_mat
@@ -1436,6 +1555,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 residual = torch.relu((surface_depth - float(args.visible_surface_depth_order_margin_m)) - cam_v[:, 2])
                 active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
                 loss = loss + float(args.visible_surface_depth_order_weight) * torch.sum(residual * residual) / active_count
+            if rows[i].contact_patch_factor_state == "active_contact_patch" and len(contact_patch_indices_t[i]) and float(rows[i].contact_patch_weight) > 0.0:
+                ids = contact_patch_indices_t[i]
+                targets = contact_patch_targets_t[i] + object_trans_delta[i].reshape(1, 3)
+                normals = contact_patch_normals_t[i]
+                normal_gap = torch.sum((hyp_vertices[i, ids] - targets) * normals, dim=1)
+                residual = torch.relu(torch.abs(normal_gap) - contact_patch_margins_t[i])
+                loss = loss + contact_patch_weights_t[i] * torch.mean(residual * residual)
         loss.backward()
         return loss
 
@@ -1619,6 +1745,12 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "hand_observation_visibility_factor_state": row.hand_observation_visibility_factor_state,
                 "hand_observation_visibility_candidate_px": int(row.hand_observation_visibility_candidate_px),
                 "hand_observation_visibility_weight_multiplier": float(row.hand_observation_visibility_weight_multiplier),
+                "contact_patch_factor_state": row.contact_patch_factor_state,
+                "contact_patch_vertex_count": int(len(row.contact_patch_vertex_indices)),
+                "contact_patch_initial_distance_m": numeric_summary(row.contact_patch_initial_distance_m),
+                "contact_patch_weight": float(row.contact_patch_weight),
+                "contact_patch_band_m": float(row.contact_patch_band_m),
+                "contact_patch_target_margin_m": float(row.contact_patch_target_margin_m),
                 "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
                 "full_raw_observed_surface_penetration_after_solver_m": full_raw_post.get("observed_supported_penetration_m"),
@@ -1666,6 +1798,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visibility_weighted_hand_observation_enabled": bool(args.visibility_weighted_hand_observation),
         "hand_observation_visibility_factor_active_row_count": int(sum(r.hand_observation_visibility_factor_state == "active_hand_observation_visibility" for r in rows)),
         "hand_observation_visibility_candidate_px": numeric_summary(np.asarray([r.hand_observation_visibility_candidate_px for r in rows], dtype=float)),
+        "contact_patch_factor_active_row_count": int(sum(r.contact_patch_factor_state == "active_contact_patch" for r in rows)),
+        "contact_patch_vertex_count": numeric_summary(np.asarray([len(r.contact_patch_vertex_indices) for r in rows], dtype=float)),
+        "contact_patch_initial_distance_m": numeric_summary(np.concatenate([r.contact_patch_initial_distance_m for r in rows if len(r.contact_patch_initial_distance_m)]).astype(float) if any(len(r.contact_patch_initial_distance_m) for r in rows) else np.asarray([], dtype=float)),
         "hand_observation_weight_multiplier": numeric_summary(hand_observation_weight_multiplier_np),
         "joint_visibility_weight": numeric_summary(joint_visibility_weights_np.reshape(-1)),
         "pose_visibility_weight": numeric_summary(pose_visibility_weights_np.reshape(-1)),
