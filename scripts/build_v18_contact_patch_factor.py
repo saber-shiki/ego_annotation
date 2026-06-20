@@ -4,8 +4,11 @@
 This script does not infer contact from labels alone. It promotes only supported
 active contact hypotheses into a solver input that can affect H_t: the solver
 will select current MANO vertices near eligible observed object surface and add
-a near-contact patch residual. The factor is object-agnostic; target differences
-are data fields, not code branches.
+a near-contact patch residual. When an independent object-pose support report is
+provided, the emitted residual is bounded by that support uncertainty so contact
+acts as a latent/sliding patch likelihood rather than a hard current-surface
+anchor. The factor is object-agnostic; target differences are data fields, not
+code branches.
 """
 from __future__ import annotations
 
@@ -24,6 +27,56 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def numeric_summary(vals: list[float]) -> dict[str, Any]:
+    finite = sorted(float(v) for v in vals if isinstance(v, (int, float)))
+    if not finite:
+        return {"count": 0}
+    def q(frac: float) -> float:
+        idx = min(len(finite) - 1, max(0, int(round(frac * (len(finite) - 1)))))
+        return finite[idx]
+    return {
+        "count": len(finite),
+        "min": finite[0],
+        "median": q(0.5),
+        "p90": q(0.9),
+        "p95": q(0.95),
+        "max": finite[-1],
+    }
+
+
+def nested_get(row: dict[str, Any], dotted: str) -> Any:
+    cur: Any = row
+    for key in dotted.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def load_object_support_uncertainty(path: Path | None, *, stat: str, default_m: float) -> dict[int, float]:
+    if path is None:
+        return {}
+    payload = load_json(path)
+    pose_rows = payload.get("pose_rows")
+    if not isinstance(pose_rows, list):
+        raise ValueError(f"object pose fit report has no pose_rows list: {path}")
+    out: dict[int, float] = {}
+    for row in pose_rows:
+        if not isinstance(row, dict) or "frame_idx" not in row:
+            continue
+        raw = nested_get(row, stat)
+        if raw is None:
+            raw = default_m
+        try:
+            val = float(raw)
+        except Exception:
+            val = float(default_m)
+        if val < 0.0:
+            val = float(default_m)
+        out[int(row["frame_idx"])] = val
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--annotations", type=Path, required=True)
@@ -36,6 +89,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--contact-patch-band-m", type=float, default=0.020)
     p.add_argument("--contact-patch-target-margin-m", type=float, default=0.0025)
     p.add_argument("--max-vertices", type=int, default=96)
+    p.add_argument("--object-pose-fit-report", type=Path, default=None, help="Optional independent object pose/support report. When supplied, per-frame support uncertainty is added to the contact deadband so the factor cannot force sub-support-scale MANO motion.")
+    p.add_argument("--object-support-uncertainty-stat", default="observed_to_mesh_final.p95_m", help="Dotted field in pose_rows[] used as object_support_uncertainty_m. Default uses visible-depth-to-mesh p95 support.")
+    p.add_argument("--default-object-support-uncertainty-m", type=float, default=0.0, help="Fallback support uncertainty when the pose report is absent or lacks the selected stat.")
     p.add_argument("--include-unsupported-near", action="store_true", help="Include raw near-contact proposals without final support. Default is false because unsupported proposals should not constrain H_t.")
     return p.parse_args()
 
@@ -56,6 +112,11 @@ def main() -> None:
     frames = payload.get("frames")
     if not isinstance(frames, list):
         raise ValueError(f"annotations file has no frames list: {args.annotations}")
+    support_by_frame = load_object_support_uncertainty(
+        args.object_pose_fit_report,
+        stat=str(args.object_support_uncertainty_stat),
+        default_m=float(args.default_object_support_uncertainty_m),
+    )
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for frame in frames:
@@ -77,6 +138,8 @@ def main() -> None:
                 skipped.append({"frame_idx": frame_idx, "hand_side": side, "reason": "contact_not_supported", "state": hyp.get("state"), "physical_contact_claim_supported": hyp.get("physical_contact_claim_supported")})
                 continue
             evidence = hyp.get("final_metric_contact_evidence") if isinstance(hyp.get("final_metric_contact_evidence"), dict) else {}
+            support_uncertainty_m = float(support_by_frame.get(frame_idx, float(args.default_object_support_uncertainty_m)))
+            contact_deadband_m = float(args.contact_patch_target_margin_m) + max(0.0, support_uncertainty_m)
             rows.append(
                 {
                     "factor_family": "contact_patch",
@@ -84,18 +147,23 @@ def main() -> None:
                     "frame_idx": frame_idx,
                     "hand_side": side,
                     "variable_affected": "H_t",
-                    "observation_type": "supported_active_contact_to_observed_visible_surface_patch",
-                    "residual_or_quarantine_rule": "select current MANO vertices near eligible observed object surface and penalize surface-normal distance beyond contact_patch_target_margin_m while allowing tangential sliding; existing nonpenetration handles crossing",
-                    "rendered_uncertainty_channel": "normal-contact-patch-constrained MANO hypothesis; no object pose or hidden geometry claim",
+                    "observation_type": "supported_active_contact_to_uncertain_observed_visible_surface_patch",
+                    "residual_or_quarantine_rule": "select current MANO vertices near eligible observed object surface and penalize surface-normal distance only beyond contact_patch_target_margin_m + object_support_uncertainty_m while allowing tangential sliding; existing nonpenetration handles crossing",
+                    "rendered_uncertainty_channel": "bounded latent/sliding contact patch MANO hypothesis; no object pose or hidden geometry claim",
                     "state": "active_contact_patch",
                     "weight": float(args.weight),
                     "contact_patch_band_m": float(args.contact_patch_band_m),
                     "contact_patch_target_margin_m": float(args.contact_patch_target_margin_m),
+                    "object_support_uncertainty_m": max(0.0, support_uncertainty_m),
+                    "contact_patch_support_uncertainty_m": max(0.0, support_uncertainty_m),
+                    "contact_patch_deadband_m": contact_deadband_m,
                     "max_vertices": int(args.max_vertices),
                     "source_contact_state": hyp.get("state"),
                     "source_contact_owner_hypothesis": hyp.get("contact_owner_hypothesis"),
                     "source_min_distance_m": evidence.get("min_distance_m"),
                     "source_near_contact_band_m": evidence.get("near_contact_band_m"),
+                    "source_object_support_uncertainty_stat": str(args.object_support_uncertainty_stat),
+                    "source_object_pose_fit_report": str(args.object_pose_fit_report) if args.object_pose_fit_report else None,
                     "source_contact_coupling_state": (hyp.get("active_contact_coupling_state") or {}).get("coupling_state") if isinstance(hyp.get("active_contact_coupling_state"), dict) else None,
                     "source_stable_contact_pose_anchor_factor_emitted": (hyp.get("active_contact_coupling_state") or {}).get("stable_contact_pose_anchor_factor_emitted") if isinstance(hyp.get("active_contact_coupling_state"), dict) else None,
                     "provenance": {
@@ -123,7 +191,10 @@ def main() -> None:
         "case": str(args.case),
         "target_entity_id": str(args.target_entity_id),
         "claim_scope": "Generic H_t contact patch residual input. It can constrain MANO hand state near observed eligible surface patches; it does not by itself prove object pose, hidden geometry, contact closure, or nonpenetration.",
-        "inputs": {"annotations": str(args.annotations)},
+        "inputs": {
+            "annotations": str(args.annotations),
+            "object_pose_fit_report": str(args.object_pose_fit_report) if args.object_pose_fit_report else None,
+        },
         "parameters": {
             "start_frame": int(args.start_frame),
             "end_frame": int(args.end_frame),
@@ -131,6 +202,8 @@ def main() -> None:
             "contact_patch_band_m": float(args.contact_patch_band_m),
             "contact_patch_target_margin_m": float(args.contact_patch_target_margin_m),
             "max_vertices": int(args.max_vertices),
+            "object_support_uncertainty_stat": str(args.object_support_uncertainty_stat),
+            "default_object_support_uncertainty_m": float(args.default_object_support_uncertainty_m),
             "include_unsupported_near": bool(args.include_unsupported_near),
         },
         "summary": {
@@ -138,6 +211,8 @@ def main() -> None:
             "skipped_count": len(skipped),
             "frames": sorted({int(r["frame_idx"]) for r in deduped}),
             "sides": sorted({str(r["hand_side"]) for r in deduped}),
+            "object_support_uncertainty_m": numeric_summary([float(r.get("object_support_uncertainty_m", 0.0)) for r in deduped]),
+            "contact_patch_deadband_m": numeric_summary([float(r.get("contact_patch_deadband_m", 0.0)) for r in deduped]),
         },
         "factor_rows": deduped,
         "skipped_rows_sample": skipped[:50],
