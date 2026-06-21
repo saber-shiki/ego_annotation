@@ -103,18 +103,22 @@ def parse_review_frames(items: list[str]) -> dict[str, list[int]]:
     return out
 
 
-def link_or_copy(src: Path, dst: Path) -> dict[str, Any]:
+def copy_or_hardlink(src: Path, dst: Path, *, prefer_hardlink: bool = False) -> dict[str, Any]:
     if not src.exists():
         raise FileNotFoundError(src)
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
         dst.unlink()
-    method = "hardlink"
-    try:
-        os.link(src, dst)
-    except OSError:
+    method = "copy"
+    if prefer_hardlink:
+        try:
+            os.link(src, dst)
+            method = "hardlink"
+        except OSError:
+            shutil.copy2(src, dst)
+            method = "copy"
+    else:
         shutil.copy2(src, dst)
-        method = "copy"
     return {"source": str(src), "path": str(dst), "method": method, "bytes": int(dst.stat().st_size)}
 
 
@@ -292,7 +296,7 @@ def make_review_sheet(case: str, case_dir: Path, frames: list[int]) -> dict[str,
     return {"path": str(out_path), "frames": [int(x) for x in frames], "views": views, "failures": failures}
 
 
-def build_case(case: str, render_root: Path, output_root: Path, review_frames: list[int]) -> dict[str, Any]:
+def build_case(case: str, render_root: Path, output_root: Path, review_frames: list[int], *, prefer_hardlink: bool) -> dict[str, Any]:
     if not render_root.exists():
         raise FileNotFoundError(render_root)
     render_manifest_path = render_root / "v18_joint_mano_interval_correction_render_manifest.json"
@@ -311,10 +315,10 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
     for view, src_name in EXPECTED_VIDEO_NAMES.items():
         src = render_root / src_name
         dst = case_dir / STANDARD_VIDEO_NAMES[view]
-        linked_videos[view] = link_or_copy(src, dst)
+        linked_videos[view] = copy_or_hardlink(src, dst, prefer_hardlink=prefer_hardlink)
         video_probe[view] = ffprobe_video(dst)
 
-    linked_manifest = link_or_copy(render_manifest_path, case_dir / "source_render_manifest.json")
+    linked_manifest = copy_or_hardlink(render_manifest_path, case_dir / "source_render_manifest.json", prefer_hardlink=prefer_hardlink)
     merged_rows, state_summary = summarize_states(case, state_paths)
     backing_path = case_dir / "frontier_interval_mano_states.json"
     write_json(backing_path, {
@@ -348,6 +352,7 @@ def main() -> None:
     ap.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     ap.add_argument("--case-render-root", action="append", default=[], help="CASE=render_root. Defaults to current task5/trash frontier roots.")
     ap.add_argument("--review-frames", action="append", default=[], help="CASE=f0,f1,... for review sheet frames.")
+    ap.add_argument("--hardlink-existing-files", action="store_true", help="Use hardlinks for existing videos/manifests. Default copies to freeze the artifact against later in-place source overwrites.")
     args = ap.parse_args()
 
     output_root = args.output_root
@@ -357,7 +362,7 @@ def main() -> None:
 
     cases: dict[str, Any] = {}
     for case, root in case_roots.items():
-        cases[case] = build_case(case, root, output_root, review_frames.get(case, []))
+        cases[case] = build_case(case, root, output_root, review_frames.get(case, []), prefer_hardlink=bool(args.hardlink_existing_files))
 
     artifact_manifest = {
         "method": "build_v18_current_frontier_interval_artifact",
