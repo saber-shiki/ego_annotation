@@ -40,6 +40,16 @@ Distinguish these states explicitly:
 
 Every complete pipeline version should be run end-to-end, rendered, inspected, and compared to the previous version using subjective judgment when ground truth is absent. Intensive reasoning/research belongs after seeing the delivered pipeline output and should inform the next pipeline version or patch.
 
+## Research Discipline
+
+Do not run sequential guesses. Before spending runtime on an experiment, write the causal account that makes the intervention necessary: the concrete defect in the final artifact, the physical variable that is wrong, the mechanism that could have produced it, why the proposed observation/intervention couples to that variable, and what each possible outcome would imply for the next implementation step.
+
+Do not frame work as “try a branch” or “kill a branch.” A negative result is not a stopping state and not a reason to hop to an unrelated mechanism. It must either revise the causal model, expose that the experiment did not actually test the mechanism, reveal a missing coupling between measurement and solver/render, or identify the next stronger intervention. If no outcome of an experiment would change the model or force a next action, the experiment is not worth running.
+
+An experiment must be designed so that every result is informative. “It works” and “it does not work” are not interpretations. State the discriminating predictions before execution: what would be observed if the suspected mechanism is dominant, what would be observed if the measurement is weak or miscoupled, what would be observed if another uncertainty dominates, and how each case changes the artifact-building plan.
+
+Never abandon a mechanism because one implementation was inert. First decide whether the causal idea was wrong, the measurement was too weak, the solver ignored it, the render failed to expose it, the intervention attacked a proxy, or another variable dominated. Continue by correcting the model or experiment until the related facts are understood well enough to justify the next artifact-changing mechanism.
+
 ## Integrity And Monotonicity
 
 Do not cheat by substituting a convenient proxy for a named pipeline mechanism. Approximate measurements are expected; approximate implementation of the spec is not allowed. If the design names a variable family, factor family, reconstruction stage, render layer, or model branch, the code and final artifact must contain that mechanism explicitly. A centroid is not object pose; a smoother is not a factor graph; mask overlap is not contact ownership; an abstract panel is not a metric 3D render; a status field is not an implemented module.
