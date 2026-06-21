@@ -154,6 +154,13 @@ class FrameHandRow:
     contact_patch_band_m: float
     contact_patch_target_margin_m: float
     contact_patch_support_uncertainty_m: float
+    contact_patch_support_uncertainty_source: str | None
+    local_patch_support_state: str | None
+    local_patch_support_consumed: bool
+    local_patch_support_uncertainty_m: float | None
+    global_object_support_uncertainty_m: float | None
+    local_patch_sample_count: int
+    local_patch_temporal_sample_count: int
     contact_anchor_state: str | None
     contact_anchor_residual_allowed: bool
     contact_anchor_blockers: list[str]
@@ -516,6 +523,13 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
             "band_m": float(args.contact_patch_band_m),
             "target_margin_m": float(args.contact_patch_target_margin_m),
             "support_uncertainty_m": float(args.contact_patch_support_uncertainty_m),
+            "support_uncertainty_source": "default_arg_missing_contact_patch_row",
+            "local_patch_support_state": None,
+            "local_patch_support_consumed": False,
+            "local_patch_support_uncertainty_m": None,
+            "global_object_support_uncertainty_m": None,
+            "local_patch_sample_count": 0,
+            "local_patch_temporal_sample_count": 0,
             "max_vertices": int(args.max_contact_patch_vertices),
             "prior_probability": 0.0,
             "contact_anchor_state": None,
@@ -554,7 +568,24 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
         prior_probability = float(raw_prior) if raw_prior is not None else (1.0 if max(0.0, weight) > 0.0 and state == "active_contact_patch" else 0.0)
     except Exception:
         prior_probability = 1.0 if max(0.0, weight) > 0.0 and state == "active_contact_patch" else 0.0
+    def optional_float(raw: Any) -> float | None:
+        try:
+            val = float(raw)
+        except Exception:
+            return None
+        return val if np.isfinite(val) else None
+
     blockers = row.get("contact_anchor_blockers")
+    local_unc = optional_float(row.get("local_patch_support_uncertainty_m"))
+    global_unc = optional_float(row.get("global_object_support_uncertainty_m"))
+    try:
+        local_count = int(row.get("local_patch_sample_count", 0) or 0)
+    except Exception:
+        local_count = 0
+    try:
+        temporal_count = int(row.get("local_patch_temporal_sample_count", 0) or 0)
+    except Exception:
+        temporal_count = 0
     return {
         "state": state,
         "weight": max(0.0, weight),
@@ -562,6 +593,13 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
         "band_m": max(0.0, band_m),
         "target_margin_m": max(0.0, target_margin_m),
         "support_uncertainty_m": max(0.0, support_uncertainty_m),
+        "support_uncertainty_source": row.get("contact_patch_support_uncertainty_source") if isinstance(row.get("contact_patch_support_uncertainty_source"), str) else None,
+        "local_patch_support_state": row.get("local_patch_support_state") if isinstance(row.get("local_patch_support_state"), str) else None,
+        "local_patch_support_consumed": bool(row.get("local_patch_support_consumed")),
+        "local_patch_support_uncertainty_m": local_unc,
+        "global_object_support_uncertainty_m": global_unc,
+        "local_patch_sample_count": max(0, local_count),
+        "local_patch_temporal_sample_count": max(0, temporal_count),
         "max_vertices": max(0, max_vertices),
         "contact_anchor_state": row.get("contact_anchor_state"),
         "contact_anchor_residual_allowed": bool(row.get("contact_anchor_residual_allowed")),
@@ -1276,6 +1314,13 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 contact_patch_band_m=float(contact_patch_diag.get("band_m", args.contact_patch_band_m)),
                 contact_patch_target_margin_m=float(contact_patch_diag.get("target_margin_m", args.contact_patch_target_margin_m)),
                 contact_patch_support_uncertainty_m=float(contact_patch_diag.get("support_uncertainty_m", args.contact_patch_support_uncertainty_m)),
+                contact_patch_support_uncertainty_source=contact_patch_diag.get("support_uncertainty_source"),
+                local_patch_support_state=contact_patch_diag.get("local_patch_support_state"),
+                local_patch_support_consumed=bool(contact_patch_diag.get("local_patch_support_consumed")),
+                local_patch_support_uncertainty_m=contact_patch_diag.get("local_patch_support_uncertainty_m"),
+                global_object_support_uncertainty_m=contact_patch_diag.get("global_object_support_uncertainty_m"),
+                local_patch_sample_count=int(contact_patch_diag.get("local_patch_sample_count", 0)),
+                local_patch_temporal_sample_count=int(contact_patch_diag.get("local_patch_temporal_sample_count", 0)),
                 contact_anchor_state=contact_patch_diag.get("contact_anchor_state"),
                 contact_anchor_residual_allowed=bool(contact_patch_diag.get("contact_anchor_residual_allowed")),
                 contact_anchor_blockers=list(contact_patch_diag.get("contact_anchor_blockers", [])),
@@ -2010,6 +2055,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "hand_observation_visibility_weight_multiplier": float(row.hand_observation_visibility_weight_multiplier),
                 "contact_patch_factor_state": row.contact_patch_factor_state,
                 "contact_patch_vertex_count": int(len(row.contact_patch_vertex_indices)),
+                "contact_patch_vertex_ids": row.contact_patch_vertex_indices.astype(int).tolist(),
+                "contact_patch_target_world_m": row.contact_patch_target_world_m.astype(float).tolist(),
+                "contact_patch_normal_world": row.contact_patch_normal_world.astype(float).tolist(),
+                "contact_patch_initial_distance_values_m": row.contact_patch_initial_distance_m.astype(float).tolist(),
                 "contact_patch_initial_distance_m": numeric_summary(row.contact_patch_initial_distance_m),
                 "contact_patch_weight": float(row.contact_patch_weight),
                 "contact_patch_prior_probability": float(row.contact_patch_prior_probability),
@@ -2019,6 +2068,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "contact_patch_band_m": float(row.contact_patch_band_m),
                 "contact_patch_target_margin_m": float(row.contact_patch_target_margin_m),
                 "contact_patch_support_uncertainty_m": float(row.contact_patch_support_uncertainty_m),
+                "contact_patch_support_uncertainty_source": row.contact_patch_support_uncertainty_source,
+                "local_patch_support_state": row.local_patch_support_state,
+                "local_patch_support_consumed": bool(row.local_patch_support_consumed),
+                "local_patch_support_uncertainty_m": row.local_patch_support_uncertainty_m,
+                "global_object_support_uncertainty_m": row.global_object_support_uncertainty_m,
+                "local_patch_sample_count": int(row.local_patch_sample_count),
+                "local_patch_temporal_sample_count": int(row.local_patch_temporal_sample_count),
                 "contact_patch_deadband_m": float(row.contact_patch_target_margin_m + row.contact_patch_support_uncertainty_m),
                 "contact_patch_residual_mode": str(args.contact_patch_residual_mode),
                 "contact_anchor_state": row.contact_anchor_state,
@@ -2085,6 +2141,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "contact_patch_initial_distance_m": numeric_summary(np.concatenate([r.contact_patch_initial_distance_m for r in rows if len(r.contact_patch_initial_distance_m)]).astype(float) if any(len(r.contact_patch_initial_distance_m) for r in rows) else np.asarray([], dtype=float)),
         "contact_patch_final_abs_normal_gap_m": numeric_summary(np.asarray(contact_patch_final_abs_normal_gap, dtype=float)),
         "contact_patch_support_uncertainty_m": numeric_summary(np.asarray([r.contact_patch_support_uncertainty_m for r in rows if r.contact_patch_factor_state == "active_contact_patch"], dtype=float)),
+        "contact_patch_support_uncertainty_source_counts": dict(Counter(str(r.contact_patch_support_uncertainty_source) for r in rows if r.contact_patch_factor_state == "active_contact_patch")),
+        "local_patch_support_state_counts": dict(Counter(str(r.local_patch_support_state) for r in rows if r.contact_patch_factor_state == "active_contact_patch")),
+        "local_patch_support_consumed_count": int(sum(bool(r.local_patch_support_consumed) for r in rows if r.contact_patch_factor_state == "active_contact_patch")),
+        "local_patch_support_uncertainty_m": numeric_summary(np.asarray([r.local_patch_support_uncertainty_m for r in rows if r.contact_patch_factor_state == "active_contact_patch" and r.local_patch_support_uncertainty_m is not None], dtype=float)),
+        "global_object_support_uncertainty_m": numeric_summary(np.asarray([r.global_object_support_uncertainty_m for r in rows if r.contact_patch_factor_state == "active_contact_patch" and r.global_object_support_uncertainty_m is not None], dtype=float)),
+        "local_patch_sample_count": numeric_summary(np.asarray([r.local_patch_sample_count for r in rows if r.contact_patch_factor_state == "active_contact_patch"], dtype=float)),
+        "local_patch_temporal_sample_count": numeric_summary(np.asarray([r.local_patch_temporal_sample_count for r in rows if r.contact_patch_factor_state == "active_contact_patch"], dtype=float)),
         "contact_patch_anchor_coherence": contact_patch_anchor_coherence(rows),
         "hand_observation_weight_multiplier": numeric_summary(hand_observation_weight_multiplier_np),
         "joint_visibility_weight": numeric_summary(joint_visibility_weights_np.reshape(-1)),
