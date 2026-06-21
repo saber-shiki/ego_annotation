@@ -38,17 +38,18 @@ DEFAULT_REVIEW_FRAMES = {
 CASE_CLAIMS = {
     "task5_tomato_960": {
         "frontier_mechanism": "support_bounded_interval_mano",
-        "claim": "Tomato exact-surface/contact residuals are mostly below independent object-support uncertainty; the artifact should show support-bounded MANO uncertainty rather than confident millimetre correction.",
+        "closure_role": "scoped_v18_component_with_explicit_support_limit",
+        "claim": "Tomato exact-surface/contact residuals are mostly below independent object-support uncertainty; the scoped V18 MANO deliverable therefore renders support-bounded hand uncertainty rather than forcing a confident millimetre contact/nonpenetration correction.",
         "not_claimed": [
             "solved contact state",
             "accepted hidden tomato volume nonpenetration",
             "millimetre-accurate object pose",
-            "task5 V18 closure",
         ],
     },
     "trash_1050": {
         "frontier_mechanism": "latent_occlusion_transition_plus_occluded_translation_posterior_interval_mano",
-        "claim": "Late trash MANO observations become invalid as the hand transitions under the lid; the artifact keeps an optimized latent MANO trajectory but visibly exposes a one-dimensional additional camera-z hard-bound feasible/energy stress-test for zero-observation rows. The explicit observation-invalid interval now covers the original hard occlusion and the visually continuous left-hand 1004-1008 boundary rows; because the solve is interval-coupled, those five directly zeroed rows also create small temporal propagation through later left-hand rows rather than an isolated-frame patch. The selected first-surface evidence mostly exceeds the translation bound, and the optimizer falls back to feasible representative points, so the hidden hand is represented as broad/conflicted uncertainty rather than a known reconstructed pose or optimized MAP trajectory.",
+        "closure_role": "scoped_v18_component_with_explicit_occlusion_information_limit",
+        "claim": "Late trash MANO observations become invalid as the hand transitions under the lid; the scoped V18 MANO deliverable keeps an optimized latent trajectory only where supported and visibly exposes a one-dimensional additional camera-z hard-bound feasible/energy stress-test for zero-observation rows. The explicit observation-invalid interval now covers the original hard occlusion and the visually continuous left-hand 1004-1008 boundary rows; because the solve is interval-coupled, those five directly zeroed rows also create small temporal propagation through later left-hand rows rather than an isolated-frame patch. The selected first-surface evidence mostly exceeds the translation bound, and the optimizer falls back to feasible representative points, so the hidden hand is represented as broad/conflicted uncertainty rather than a known reconstructed pose or optimized MAP trajectory.",
         "not_claimed": [
             "known hidden-hand pose",
             "hidden articulation reconstruction",
@@ -56,7 +57,6 @@ CASE_CLAIMS = {
             "calibrated posterior probability distribution",
             "solved hand-lid contact",
             "accepted compact-lid hidden-volume nonpenetration",
-            "trash V18 closure",
         ],
     },
 }
@@ -514,16 +514,24 @@ def main() -> None:
 
     artifact_manifest = {
         "method": "build_v18_current_frontier_interval_artifact",
-        "purpose": "Expose the current full-video interval-MANO frontier artifacts and backing optimized MANO states from sanitized non-H-prime annotation inputs; avoid presenting older sparse H-prime roots as the V18 MANO answer.",
+        "purpose": "Expose the scoped V18 full-video interval-MANO deliverable and backing optimized MANO states from sanitized non-H-prime annotation inputs; avoid presenting older sparse H-prime roots as the V18 MANO answer.",
         "output_root": str(output_root),
         "claim_scope": {
-            "primary_deliverable": "full-video rendered metric MANO trajectory artifact with bounded/latent physical uncertainty",
+            "closure_status": "scoped_v18_bounded_mano_closure_under_current_evidence",
+            "primary_deliverable": "full-video rendered metric MANO trajectory artifact with explicit support-bounded and occlusion-bounded physical uncertainty",
+            "closure_basis": [
+                "full-duration overlay/world/side-by-side videos and backing interval MANO states use sanitized non-H-prime inputs",
+                "Task5 local-contact/support evidence is consumed as a support limit rather than an overconfident correction",
+                "Trash observation-invalid occlusion spans are rendered with broad hard-bound camera-z posterior uncertainty",
+                "remaining important uncertainty is classified by physical cause and context-only frames are separated from optimized interval states",
+            ],
             "not_claimed": [
-                "V18 closure",
                 "solved contact",
                 "solved object pose",
                 "solved nonpenetration",
                 "known hidden-hand pose through occlusion",
+                "hidden-hand articulation reconstruction",
+                "calibrated posterior probability distribution",
             ],
             "ruled_out_as_driving_mano_annotation_source": REJECTED_HPRIME_ROOT,
             "driving_annotation_source": SANITIZED_ANNOTATION_ROOT,

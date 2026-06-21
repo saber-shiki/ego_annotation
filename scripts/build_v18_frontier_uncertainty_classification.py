@@ -286,7 +286,9 @@ def main() -> None:
         "claim_scope": {
             "not_a_validator": True,
             "does_not_change_H_t": True,
-            "does_not_claim_V18_closure_by_itself": True,
+            "supports_scoped_v18_bounded_mano_closure": True,
+            "closure_support_role": "causal classification of the rendered support and occlusion uncertainty that remains after the reusable workbench mechanisms have been consumed by the final MANO artifact",
+            "does_not_claim_solved_contact_object_pose_nonpenetration_or_hidden_hand": True,
         },
         "visual_consumption_evidence": {
             "task5_sheet": "/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/task5_tomato_960/current_frontier_interval_mano_review.jpg",
