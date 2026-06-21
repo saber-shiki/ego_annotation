@@ -20,14 +20,17 @@ from typing import Any
 import cv2
 import numpy as np
 
-DEFAULT_OUTPUT_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v1")
+DEFAULT_OUTPUT_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v2")
 DEFAULT_CASE_RENDER_ROOTS = {
-    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_task5_joint_mano_surface_support_uncertain_full_video_v1/task5_tomato_960"),
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_joint_mano_latent_coherent_transition_v2_contract_repro_full_video_v1/trash_1050"),
+    "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_task5_joint_mano_surface_support_uncertain_sanitized_base_full_video_v1/task5_tomato_960"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_joint_mano_latent_transition_sanitized_base_full_video_v1/trash_1050"),
 }
+SANITIZED_ANNOTATION_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_sanitized_base_for_hprime"
+REJECTED_HPRIME_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard"
+
 DEFAULT_REVIEW_FRAMES = {
-    "task5_tomato_960": [481, 499, 525, 690, 720, 780, 902],
-    "trash_1050": [958, 970, 972, 982, 988, 999, 1000, 1002],
+    "task5_tomato_960": [481, 499, 525, 648, 690, 720, 780, 873, 902],
+    "trash_1050": [720, 735, 779, 824, 830, 869, 893, 958, 972, 988, 1002, 1006, 1027],
 }
 CASE_CLAIMS = {
     "task5_tomato_960": {
@@ -186,17 +189,34 @@ def optional_float(raw: Any) -> float | None:
     return value
 
 
-def summarize_states(case: str, state_paths: list[Path]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def require_sanitized_annotation_input(state: dict[str, Any], path: Path) -> str:
+    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+    parameters = state.get("parameters") if isinstance(state.get("parameters"), dict) else {}
+    annotation_input = inputs.get("annotations") or parameters.get("annotations")
+    if annotation_input is None:
+        raise ValueError(f"{path} does not declare the annotation input used to solve H_t")
+    annotation_input_str = str(annotation_input)
+    if REJECTED_HPRIME_ROOT in annotation_input_str:
+        raise ValueError(f"{path} uses rejected final-v7/H-prime annotation input: {annotation_input_str}")
+    if SANITIZED_ANNOTATION_ROOT not in annotation_input_str:
+        raise ValueError(f"{path} is not solved from sanitized non-H-prime annotations: {annotation_input_str}")
+    return annotation_input_str
+
+
+def summarize_states(case: str, state_paths: list[Path], artifact_state_copies: list[Path] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     intervals: list[dict[str, Any]] = []
-    for path in state_paths:
+    for state_i, path in enumerate(state_paths):
         state = load_json(path)
         rows = state.get("per_frame_states")
         if not isinstance(rows, list):
             raise ValueError(f"{path} has no per_frame_states list")
         summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
+        annotation_input = require_sanitized_annotation_input(state, path)
         interval = {
             "state_path": str(path),
+            "annotation_input": annotation_input,
+            "artifact_state_copy": str(artifact_state_copies[state_i]) if artifact_state_copies is not None else None,
             "method": state.get("method"),
             "case": state.get("case"),
             "object_id": state.get("object_id"),
@@ -204,6 +224,8 @@ def summarize_states(case: str, state_paths: list[Path]) -> tuple[list[dict[str,
             "summary": summary,
             "claim_scope": state.get("claim_scope"),
             "scientific_test": state.get("scientific_test"),
+            "inputs": state.get("inputs") if isinstance(state.get("inputs"), dict) else None,
+            "parameters": state.get("parameters") if isinstance(state.get("parameters"), dict) else None,
         }
         intervals.append(interval)
         for row in rows:
@@ -296,6 +318,12 @@ def make_review_sheet(case: str, case_dir: Path, frames: list[int]) -> dict[str,
     return {"path": str(out_path), "frames": [int(x) for x in frames], "views": views, "failures": failures}
 
 
+def safe_state_copy_name(index: int, path: Path) -> str:
+    parts = [p for p in path.parts[-5:] if p not in {"", "/"}]
+    stem = "__".join(parts).replace(os.sep, "__").replace(":", "_")
+    return f"{index:02d}__{stem}"
+
+
 def build_case(case: str, render_root: Path, output_root: Path, review_frames: list[int], *, prefer_hardlink: bool) -> dict[str, Any]:
     if not render_root.exists():
         raise FileNotFoundError(render_root)
@@ -319,7 +347,15 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
         video_probe[view] = ffprobe_video(dst)
 
     linked_manifest = copy_or_hardlink(render_manifest_path, case_dir / "source_render_manifest.json", prefer_hardlink=prefer_hardlink)
-    merged_rows, state_summary = summarize_states(case, state_paths)
+    state_copy_dir = case_dir / "source_interval_states"
+    if state_copy_dir.exists():
+        shutil.rmtree(state_copy_dir)
+    artifact_state_copies: list[Path] = []
+    for i, state_path in enumerate(state_paths):
+        artifact_copy = state_copy_dir / safe_state_copy_name(i, state_path)
+        copy_or_hardlink(state_path, artifact_copy, prefer_hardlink=prefer_hardlink)
+        artifact_state_copies.append(artifact_copy)
+    merged_rows, state_summary = summarize_states(case, state_paths, artifact_state_copies)
     frame_count = render_manifest.get("frame_count")
     try:
         frame_count_int = int(frame_count)
@@ -379,7 +415,7 @@ def main() -> None:
 
     artifact_manifest = {
         "method": "build_v18_current_frontier_interval_artifact",
-        "purpose": "Expose the current full-video interval-MANO frontier artifacts and backing optimized MANO states; avoid presenting older sparse H-prime roots as the V18 MANO answer.",
+        "purpose": "Expose the current full-video interval-MANO frontier artifacts and backing optimized MANO states from sanitized non-H-prime annotation inputs; avoid presenting older sparse H-prime roots as the V18 MANO answer.",
         "output_root": str(output_root),
         "claim_scope": {
             "primary_deliverable": "full-video rendered metric MANO trajectory artifact with bounded/latent physical uncertainty",
@@ -390,7 +426,8 @@ def main() -> None:
                 "solved nonpenetration",
                 "known hidden-hand pose through occlusion",
             ],
-            "ruled_out_as_source": "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard",
+            "ruled_out_as_driving_mano_annotation_source": REJECTED_HPRIME_ROOT,
+            "driving_annotation_source": SANITIZED_ANNOTATION_ROOT,
         },
         "cases": cases,
     }

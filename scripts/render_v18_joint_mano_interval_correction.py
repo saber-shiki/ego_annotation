@@ -28,8 +28,10 @@ HAND_EDGES = [
     (0, 17), (17, 18), (18, 19), (19, 20),
 ]
 
+REJECTED_HPRIME_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard"
+
 DEFAULT_ANNOTATIONS = Path(
-    "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard/"
+    "/data2/ego_annotation_outputs/v18_full_pipeline_sanitized_base_for_hprime/"
     "task5_tomato_960/annotations_v18_full.json"
 )
 DEFAULT_POSE_REPORT = Path(
@@ -220,6 +222,8 @@ def encode(frame_dir: Path, out: Path, fps: float) -> None:
 
 
 def render(args: argparse.Namespace) -> dict[str, Any]:
+    if REJECTED_HPRIME_ROOT in str(args.annotations):
+        raise ValueError(f"render input uses rejected final-v7/H-prime annotations: {args.annotations}")
     annotations = load_json(args.annotations)
     state_paths = list(args.joint_mano_state or [DEFAULT_STATE])
     poses = pose_map(load_json(args.pose_report))
@@ -304,8 +308,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                         for x, y in zip(u[valid], v[valid]):
                             cv2.circle(overlay, (int(x), int(y)), 2, uncertainty_color, 1)
                     world_chunks.append(opt_verts)
-        cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; corrected left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
-        cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; corrected left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+        cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; interval H_t hypothesis left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
+        cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; interval H_t hypothesis left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
         if ownership_uncertain_on_frame:
             cv2.putText(overlay, "magenta = unresolved ownership, support-bounded surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 5)
             cv2.putText(overlay, "magenta = unresolved ownership, support-bounded surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 255), 2)
