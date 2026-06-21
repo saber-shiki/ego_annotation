@@ -145,6 +145,7 @@ class FrameHandRow:
     contact_patch_normal_world: np.ndarray
     contact_patch_initial_distance_m: np.ndarray
     contact_patch_weight: float
+    contact_patch_prior_probability: float
     contact_patch_band_m: float
     contact_patch_target_margin_m: float
     contact_patch_support_uncertainty_m: float
@@ -224,6 +225,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--contact-patch-target-margin-m", type=float, default=0.0025, help="Allowed hand-to-patch distance before the two-sided contact residual is active.")
     p.add_argument("--contact-patch-support-uncertainty-m", type=float, default=0.0, help="Independent object/patch support uncertainty added to the contact_patch deadband. Row-level object_support_uncertainty_m overrides this value. Use this to represent latent/sliding contact support rather than hard current-surface anchoring.")
     p.add_argument("--max-contact-patch-vertices", type=int, default=96, help="Maximum MANO vertices selected for each contact_patch factor row.")
+    p.add_argument("--optimize-contact-state", action=argparse.BooleanOptionalAction, default=False, help="Optimize a per-row latent contact probability C_t for contact_patch rows. The contact residual is weighted by posterior C_t, while observation priors and temporal continuity keep plausible contacts active.")
+    p.add_argument("--contact-state-prior-residual-scale-m", type=float, default=0.010, help="Physical residual scale used to convert contact row weights into contact-state prior strength. Deviating C_t from its observation prior by 1 costs the same as this many metres of contact residual.")
+    p.add_argument("--contact-state-temporal-strength", type=float, default=1.0, help="Multiplier on same-side adjacent-frame C_t smoothness, using the same physical weight scale as the contact-state prior.")
     p.add_argument("--visible-ownership-face-overlap-dilation-px", type=int, default=2, help="Pixel dilation for deciding whether any projected face support sample overlaps non-object-owned ownership pixels.")
     p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Legacy visible entity mask report. Prefer --factor-report with factor_family=visible_surface_track; this path remains only for reproducing earlier mask/depth ablations.")
     p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Legacy gate: trust observed object mesh faces only when their projected center lies inside the model-produced visible entity mask.")
@@ -429,7 +433,8 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
         raise FileNotFoundError(f"visible ownership row has no readable visible_object_owned/adjusted_entity mask path: {object_owned_raw}")
     non_object_mask = load_binary_mask(Path(non_object_raw), cache)
     object_owned_mask = load_binary_mask(Path(object_owned_raw), cache)
-    counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
+    raw_counts = row.get("counts")
+    counts = raw_counts if isinstance(raw_counts, dict) else {}
     return non_object_mask, object_owned_mask, {
         "state": "ok",
         "non_object_owned_mask_path": non_object_raw if isinstance(non_object_raw, str) else None,
@@ -484,12 +489,18 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
             "target_margin_m": float(args.contact_patch_target_margin_m),
             "support_uncertainty_m": float(args.contact_patch_support_uncertainty_m),
             "max_vertices": int(args.max_contact_patch_vertices),
+            "prior_probability": 0.0,
         }
     state = str(row.get("state") or "active_contact_patch")
     try:
-        weight = float(row.get("weight", args.contact_patch_weight) or 0.0)
+        raw_weight = float(row.get("weight", args.contact_patch_weight) or 0.0)
     except Exception:
-        weight = float(args.contact_patch_weight)
+        raw_weight = float(args.contact_patch_weight)
+    try:
+        base_weight = float(row.get("contact_patch_base_weight", row.get("base_weight", raw_weight)) or raw_weight)
+    except Exception:
+        base_weight = raw_weight
+    weight = base_weight if bool(args.optimize_contact_state) else raw_weight
     try:
         band_m = float(row.get("contact_patch_band_m", row.get("band_m", args.contact_patch_band_m)) or args.contact_patch_band_m)
     except Exception:
@@ -506,9 +517,15 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
         support_uncertainty_m = float(row.get("object_support_uncertainty_m", row.get("contact_patch_support_uncertainty_m", row.get("support_uncertainty_m", args.contact_patch_support_uncertainty_m))) or args.contact_patch_support_uncertainty_m)
     except Exception:
         support_uncertainty_m = float(args.contact_patch_support_uncertainty_m)
+    raw_prior = row.get("contact_state_prior_probability", row.get("contact_patch_prior_probability", row.get("latent_contact_confidence", None)))
+    try:
+        prior_probability = float(raw_prior) if raw_prior is not None else (1.0 if max(0.0, weight) > 0.0 and state == "active_contact_patch" else 0.0)
+    except Exception:
+        prior_probability = 1.0 if max(0.0, weight) > 0.0 and state == "active_contact_patch" else 0.0
     return {
         "state": state,
         "weight": max(0.0, weight),
+        "prior_probability": float(np.clip(prior_probability, 0.0, 1.0)),
         "band_m": max(0.0, band_m),
         "target_margin_m": max(0.0, target_margin_m),
         "support_uncertainty_m": max(0.0, support_uncertainty_m),
@@ -1211,6 +1228,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 contact_patch_normal_world=contact_patch_normals.astype(float),
                 contact_patch_initial_distance_m=contact_patch_distances.astype(float),
                 contact_patch_weight=float(contact_patch_diag.get("weight", 0.0)),
+                contact_patch_prior_probability=float(contact_patch_diag.get("prior_probability", 0.0)),
                 contact_patch_band_m=float(contact_patch_diag.get("band_m", args.contact_patch_band_m)),
                 contact_patch_target_margin_m=float(contact_patch_diag.get("target_margin_m", args.contact_patch_target_margin_m)),
                 contact_patch_support_uncertainty_m=float(contact_patch_diag.get("support_uncertainty_m", args.contact_patch_support_uncertainty_m)),
@@ -1415,10 +1433,16 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     trans_init = hand_ray_shift_prior_t.detach().clone() if bool(args.initialize_hand_ray_shift) else torch.zeros((b, 3), dtype=torch.float32, device=device)
     trans_delta = trans_init.clone().detach().requires_grad_(True)
     object_trans_delta = torch.zeros((b, 3), dtype=torch.float32, device=device, requires_grad=bool(args.optimize_object_translation))
+    contact_prior_np = np.asarray([float(np.clip(r.contact_patch_prior_probability, 0.0, 1.0)) for r in rows], dtype=float)
+    contact_prior_t = torch.tensor(contact_prior_np, dtype=torch.float32, device=device)
+    contact_logit_init = torch.logit(torch.tensor(np.clip(contact_prior_np, 1.0e-4, 1.0 - 1.0e-4), dtype=torch.float32, device=device))
+    contact_logit = contact_logit_init.clone().detach().requires_grad_(bool(args.optimize_contact_state))
     hand_ray_shift_prior_active = (torch.linalg.norm(hand_ray_shift_prior_t, dim=1) > 1.0e-9) & (hand_ray_shift_prior_weight_t > 0.0)
     optim_params = [root_delta, pose_delta, trans_delta]
     if bool(args.optimize_object_translation):
         optim_params.append(object_trans_delta)
+    if bool(args.optimize_contact_state):
+        optim_params.append(contact_logit)
     optimizer = torch.optim.LBFGS(optim_params, lr=0.35, max_iter=int(args.max_optimizer_iterations), line_search_fn="strong_wolfe")
 
     current_vertices_t = [torch.tensor(r.current_vertices_world, dtype=torch.float32, device=device) for r in rows]
@@ -1506,6 +1530,24 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         contact_patch_weights_t.append(torch.tensor(float(row.contact_patch_weight), dtype=torch.float32, device=device))
         contact_patch_margins_t.append(torch.tensor(float(row.contact_patch_target_margin_m), dtype=torch.float32, device=device))
         contact_patch_support_uncertainty_t.append(torch.tensor(float(row.contact_patch_support_uncertainty_m), dtype=torch.float32, device=device))
+    contact_active_np = np.asarray([
+        bool(r.contact_patch_factor_state == "active_contact_patch" and len(r.contact_patch_vertex_indices) and float(r.contact_patch_weight) > 0.0)
+        for r in rows
+    ], dtype=bool)
+    contact_active_t = torch.tensor(contact_active_np, dtype=torch.bool, device=device)
+    contact_weight_np = np.asarray([float(r.contact_patch_weight) for r in rows], dtype=float)
+    contact_prior_strength_np = contact_weight_np * float(args.contact_state_prior_residual_scale_m) ** 2
+    contact_prior_strength_t = torch.tensor(contact_prior_strength_np, dtype=torch.float32, device=device)
+    contact_temporal_pairs: list[tuple[int, int]] = []
+    by_side: dict[str, list[tuple[int, int]]] = {}
+    for i, r in enumerate(rows):
+        by_side.setdefault(str(r.side), []).append((int(r.frame_idx), i))
+    for items in by_side.values():
+        items = sorted(items)
+        for (f0, i0), (f1, i1) in zip(items[:-1], items[1:]):
+            if f1 == f0 + 1 and contact_active_np[i0] and contact_active_np[i1]:
+                contact_temporal_pairs.append((i0, i1))
+    contact_temporal_pairs_t = torch.tensor(contact_temporal_pairs, dtype=torch.long, device=device) if contact_temporal_pairs else torch.zeros((0, 2), dtype=torch.long, device=device)
 
     def hypothesis() -> tuple[torch.Tensor, torch.Tensor]:
         new_root = rotvec_to_matrix(root_delta) @ base_root_mat
@@ -1548,6 +1590,17 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         optimizer.zero_grad(set_to_none=True)
         hyp_vertices, hyp_joints = hypothesis()
         loss = torch.tensor(0.0, dtype=torch.float32, device=device)
+        contact_prob = torch.sigmoid(contact_logit) if bool(args.optimize_contact_state) else torch.ones((b,), dtype=torch.float32, device=device)
+        if bool(args.optimize_contact_state) and torch.any(contact_active_t):
+            contact_delta = contact_prob - contact_prior_t
+            active_count = torch.clamp(torch.sum(contact_active_t.to(torch.float32)), min=1.0)
+            loss = loss + torch.sum(contact_prior_strength_t[contact_active_t] * contact_delta[contact_active_t] * contact_delta[contact_active_t]) / active_count
+            if contact_temporal_pairs_t.numel() > 0:
+                i0 = contact_temporal_pairs_t[:, 0]
+                i1 = contact_temporal_pairs_t[:, 1]
+                pair_strength = 0.5 * (contact_prior_strength_t[i0] + contact_prior_strength_t[i1]) * float(args.contact_state_temporal_strength)
+                pair_delta = contact_prob[i1] - contact_prob[i0]
+                loss = loss + torch.mean(pair_strength * pair_delta * pair_delta)
         obs_mult = hand_observation_weight_multiplier_t
         trans_prior_num = torch.sum(obs_mult[:, None] * trans_delta * trans_delta)
         trans_prior_den = torch.clamp(torch.sum(obs_mult) * 3.0, min=1.0)
@@ -1594,10 +1647,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 active_count = torch.clamp(torch.sum((residual > 0.0).to(torch.float32)), min=1.0)
                 loss = loss + float(args.dense_observed_penetration_weight) * torch.sum(residual * residual) / active_count
             uv = project_torch(hyp_joints[i], i)
+            base_uv_i = base_uv[i]
             obs_w = joint_visibility_weights_t[i]
             obs_den = torch.clamp(torch.sum(obs_w), min=1.0)
-            if uv is not None and base_uv[i] is not None:
-                shift = torch.linalg.norm(uv - base_uv[i], dim=1)
+            if uv is not None and base_uv_i is not None:
+                shift = torch.linalg.norm(uv - base_uv_i, dim=1)
                 visible_hinge = torch.relu(shift - float(args.visible_shift_limit_px)) ** 2
                 loss = loss + float(args.visible_hinge_weight) * torch.sum(obs_w * visible_hinge) / obs_den
             cam = torch.matmul(hyp_joints[i] - t_c2w_t[i].reshape(1, 3), r_c2w_t[i])
@@ -1619,7 +1673,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 normal_gap = torch.sum((hyp_vertices[i, ids] - targets) * normals, dim=1)
                 deadband = contact_patch_margins_t[i] + contact_patch_support_uncertainty_t[i]
                 residual = torch.relu(torch.abs(normal_gap) - deadband)
-                loss = loss + contact_patch_weights_t[i] * torch.mean(residual * residual)
+                loss = loss + contact_patch_weights_t[i] * contact_prob[i] * torch.mean(residual * residual)
         loss.backward()
         return loss
 
@@ -1673,6 +1727,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         hyp_joints = hyp_joints_t.detach().cpu().numpy().astype(float)
         trans_np = trans_delta.detach().cpu().numpy().astype(float)
         object_trans_np = object_trans_delta.detach().cpu().numpy().astype(float)
+        contact_posterior_np = (torch.sigmoid(contact_logit) if bool(args.optimize_contact_state) else contact_prior_t).detach().cpu().numpy().astype(float)
         root_np = root_delta.detach().cpu().numpy().reshape(b, 3).astype(float)
         pose_np = pose_delta.detach().cpu().numpy().astype(float)
 
@@ -1809,6 +1864,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "contact_patch_vertex_count": int(len(row.contact_patch_vertex_indices)),
                 "contact_patch_initial_distance_m": numeric_summary(row.contact_patch_initial_distance_m),
                 "contact_patch_weight": float(row.contact_patch_weight),
+                "contact_patch_prior_probability": float(row.contact_patch_prior_probability),
+                "contact_patch_posterior_probability": float(contact_posterior_np[i]),
+                "contact_patch_state_optimized": bool(args.optimize_contact_state),
                 "contact_patch_band_m": float(row.contact_patch_band_m),
                 "contact_patch_target_margin_m": float(row.contact_patch_target_margin_m),
                 "contact_patch_support_uncertainty_m": float(row.contact_patch_support_uncertainty_m),
@@ -1861,6 +1919,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "hand_observation_visibility_factor_active_row_count": int(sum(r.hand_observation_visibility_factor_state == "active_hand_observation_visibility" for r in rows)),
         "hand_observation_visibility_candidate_px": numeric_summary(np.asarray([r.hand_observation_visibility_candidate_px for r in rows], dtype=float)),
         "contact_patch_factor_active_row_count": int(sum(r.contact_patch_factor_state == "active_contact_patch" for r in rows)),
+        "contact_patch_state_optimized": bool(args.optimize_contact_state),
+        "contact_patch_prior_probability": numeric_summary(np.asarray([r.contact_patch_prior_probability for r in rows if r.contact_patch_factor_state == "active_contact_patch"], dtype=float)),
+        "contact_patch_posterior_probability": numeric_summary(contact_posterior_np[[i for i, r in enumerate(rows) if r.contact_patch_factor_state == "active_contact_patch"]].astype(float) if any(r.contact_patch_factor_state == "active_contact_patch" for r in rows) else np.asarray([], dtype=float)),
+        "contact_patch_posterior_minus_prior": numeric_summary(np.asarray([float(contact_posterior_np[i]) - float(r.contact_patch_prior_probability) for i, r in enumerate(rows) if r.contact_patch_factor_state == "active_contact_patch"], dtype=float)),
+        "contact_patch_temporal_pair_count": int(contact_temporal_pairs_t.shape[0]),
         "contact_patch_vertex_count": numeric_summary(np.asarray([len(r.contact_patch_vertex_indices) for r in rows], dtype=float)),
         "contact_patch_initial_distance_m": numeric_summary(np.concatenate([r.contact_patch_initial_distance_m for r in rows if len(r.contact_patch_initial_distance_m)]).astype(float) if any(len(r.contact_patch_initial_distance_m) for r in rows) else np.asarray([], dtype=float)),
         "contact_patch_support_uncertainty_m": numeric_summary(np.asarray([r.contact_patch_support_uncertainty_m for r in rows if r.contact_patch_factor_state == "active_contact_patch"], dtype=float)),

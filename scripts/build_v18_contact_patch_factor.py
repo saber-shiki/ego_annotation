@@ -355,6 +355,7 @@ def main() -> None:
                     "rendered_uncertainty_channel": "bounded latent/sliding contact patch MANO hypothesis; no object pose or hidden geometry claim",
                     "state": "active_contact_patch",
                     "weight": float(row_weight),
+                    "contact_patch_base_weight": float(args.weight),
                     "contact_patch_band_m": float(args.contact_patch_band_m),
                     "contact_patch_target_margin_m": float(args.contact_patch_target_margin_m),
                     "object_support_uncertainty_m": max(0.0, support_uncertainty_m),
