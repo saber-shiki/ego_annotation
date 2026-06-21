@@ -1883,10 +1883,22 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
             visible_surface_depth_order_initial_in_front_count.append(float(surface_initial_in_front))
             visible_surface_depth_order_final_in_front_count.append(float(surface_final_in_front))
             visible_surface_depth_order_final_delta_min.append(float(np.min(surface_final_delta)))
+            additional_camera_z_to_clear = float(max(0.0, -float(args.visible_surface_depth_order_margin_m) - float(np.min(surface_final_delta))))
         else:
+            surface_initial_delta = np.zeros((0,), dtype=float)
+            surface_final_delta = np.zeros((0,), dtype=float)
             surface_initial_in_front = 0
             surface_final_in_front = 0
             surface_final_summary = numeric_summary(np.zeros((0,), dtype=float))
+            additional_camera_z_to_clear = 0.0
+        r_c2w_frame, _t_c2w_frame = frame_camera_pose(row.frame)
+        camera_z_axis_world = np.asarray(r_c2w_frame[:, 2], dtype=float)
+        optimized_camera_z_shift_m = float(np.dot(trans_np[i], camera_z_axis_world))
+        lateral_translation = trans_np[i] - optimized_camera_z_shift_m * camera_z_axis_world
+        lateral_norm = float(np.linalg.norm(lateral_translation))
+        max_translation = max(0.0, float(args.max_translation_m))
+        max_camera_z_inside_translation_bound = math.sqrt(max(0.0, max_translation * max_translation - lateral_norm * lateral_norm))
+        translation_bound_remaining_camera_z_m = float(max_camera_z_inside_translation_bound - optimized_camera_z_shift_m)
         if len(row.contact_patch_vertex_indices):
             cp_targets = row.contact_patch_target_world_m + object_trans_np[i][None, :]
             cp_gap = np.sum((hyp_vertices[i, row.contact_patch_vertex_indices.astype(int)] - cp_targets) * row.contact_patch_normal_world, axis=1)
@@ -1957,9 +1969,17 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "visible_surface_track_quarantined_face_count": int(row.visible_surface_track_quarantined_face_count),
                 "visible_surface_depth_order_initial": row.visible_surface_depth_order_initial_measure,
                 "visible_surface_depth_order_selected_vertex_count": int(surface_ids.size),
-                "visible_surface_depth_order_selected_initial_in_front_count": int(surface_initial_in_front),
+                "visible_surface_depth_order_selected_vertex_ids": surface_ids.astype(int).tolist(),
+                "visible_surface_depth_order_selected_surface_depth_m": row.visible_surface_depth_order_depth_m.astype(float).tolist(),
+                "visible_surface_depth_order_selected_initial_delta_hand_minus_surface_m": surface_initial_delta.astype(float).tolist(),
                 "visible_surface_depth_order_selected_final_in_front_count": int(surface_final_in_front),
+                "visible_surface_depth_order_selected_initial_in_front_count": int(surface_initial_in_front),
                 "visible_surface_depth_order_selected_final_delta_hand_minus_surface_m": surface_final_summary,
+                "visible_surface_depth_order_selected_final_delta_values_m": surface_final_delta.astype(float).tolist(),
+                "visible_surface_depth_order_additional_camera_z_to_clear_selected_m": float(additional_camera_z_to_clear),
+                "optimized_translation_camera_z_m": float(optimized_camera_z_shift_m),
+                "optimized_translation_lateral_norm_m": float(lateral_norm),
+                "translation_bound_remaining_camera_z_m": float(translation_bound_remaining_camera_z_m),
                 "hand_observation_visibility_factor_state": row.hand_observation_visibility_factor_state,
                 "hand_observation_visibility_candidate_px": int(row.hand_observation_visibility_candidate_px),
                 "hand_observation_visibility_weight_multiplier": float(row.hand_observation_visibility_weight_multiplier),
