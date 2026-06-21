@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Build generic V18 contact_patch factor records from existing contact hypotheses.
 
-This script does not infer contact from labels alone. It promotes only supported
-active contact hypotheses into a solver input that can affect H_t: the solver
-will select current MANO vertices near eligible observed object surface and add
-a near-contact patch residual. When an independent object-pose support report is
-provided, the emitted residual is bounded by that support uncertainty so contact
-acts as a latent/sliding patch likelihood rather than a hard current-surface
-anchor. The factor is object-agnostic; target differences are data fields, not
-code branches.
+This script does not infer contact from labels alone. It promotes contact
+hypotheses into solver inputs that can affect H_t: the solver will select
+current MANO vertices near eligible observed object surface and add a
+near-contact patch residual. In latent weighting mode, supported contacts and
+raw near-contact proposals both survive as false-positive-tolerant candidates;
+their row weights are derived from current annotation evidence such as visual
+association, object-owned contact-patch depth compatibility, latent contact
+state support, temporal ownership, and metric proximity. When an independent
+object-pose support report is provided, the emitted residual is bounded by that
+support uncertainty so contact acts as a latent/sliding patch likelihood rather
+than a hard current-surface anchor. The factor is object-agnostic; target
+differences are data fields, not code branches.
 """
 from __future__ import annotations
 
@@ -42,6 +46,10 @@ def numeric_summary(vals: list[float]) -> dict[str, Any]:
         "p95": q(0.95),
         "max": finite[-1],
     }
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def nested_get(row: dict[str, Any], dotted: str) -> Any:
@@ -92,9 +100,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--object-pose-fit-report", type=Path, default=None, help="Optional independent object pose/support report. When supplied, per-frame support uncertainty is added to the contact deadband so the factor cannot force sub-support-scale MANO motion.")
     p.add_argument("--object-support-uncertainty-stat", default="observed_to_mesh_final.p95_m", help="Dotted field in pose_rows[] used as object_support_uncertainty_m. Default uses visible-depth-to-mesh p95 support.")
     p.add_argument("--default-object-support-uncertainty-m", type=float, default=0.0, help="Fallback support uncertainty when the pose report is absent or lacks the selected stat.")
-    p.add_argument("--contact-evidence-report", type=Path, default=None, help="Optional independent contact evidence report. With --require-independent-contact-evidence, contact_patch rows are emitted only when the report has matching visual association plus metric-depth compatibility or an accepted contact owner.")
-    p.add_argument("--require-independent-contact-evidence", action="store_true", help="Reject annotation-only/proximity-only contact hypotheses unless --contact-evidence-report has independent visual+metric support for the same target/frame/side.")
-    p.add_argument("--include-unsupported-near", action="store_true", help="Include raw near-contact proposals without final support. Default is false because unsupported proposals should not constrain H_t.")
+    p.add_argument("--contact-evidence-report", type=Path, default=None, help="Optional external contact evidence report for diagnostics. Current annotation evidence remains the primary V18 contact source.")
+    p.add_argument("--require-independent-contact-evidence", action="store_true", help="Diagnostic strict mode: reject rows unless the external/current evidence has matching visual association plus metric-depth compatibility or an accepted contact owner. Do not use as the default latent-contact method.")
+    p.add_argument("--include-unsupported-near", action="store_true", help="Include raw near-contact proposals without final support as candidate latent contacts. In latent weighting mode these receive lower weights instead of hard acceptance.")
+    p.add_argument("--latent-contact-weighting", action="store_true", help="Use current annotation evidence to emit evidence-weighted latent contact candidates rather than uniform-weight supported-contact rows.")
+    p.add_argument("--raw-proposal-weight-factor", type=float, default=0.35, help="Weight multiplier for raw near-contact proposals in latent-contact mode.")
+    p.add_argument("--depth-conflict-weight-factor", type=float, default=0.10, help="Weight multiplier when current annotation evidence marks a depth contradiction in latent-contact mode; rows are downweighted, not automatically deleted.")
+    p.add_argument("--min-latent-contact-weight-fraction", type=float, default=0.05, help="Minimum nonzero weight fraction for emitted latent contact candidates.")
     return p.parse_args()
 
 
@@ -124,8 +136,8 @@ def load_contact_evidence(path: Path | None, target_entity_id: str) -> dict[tupl
 def independent_contact_evidence_supported(row: dict[str, Any] | None) -> tuple[bool, str]:
     if not isinstance(row, dict):
         return False, "missing_independent_contact_evidence_row"
-    ev = row.get("source_contact_evidence") if isinstance(row.get("source_contact_evidence"), dict) else {}
-    graph = ev.get("contact_ownership_graph") if isinstance(ev.get("contact_ownership_graph"), dict) else {}
+    ev = as_dict(row.get("source_contact_evidence"))
+    graph = as_dict(ev.get("contact_ownership_graph"))
     accepted_owner = bool(graph.get("accepted_contact_owner")) or str(row.get("contact_owner_claim") or "").startswith("accepted")
     image_supported = bool(ev.get("image_overlap_candidate") or ev.get("pair_contact_image_candidate"))
     metric_supported = bool(ev.get("metric_depth_compatible_candidate"))
@@ -144,14 +156,120 @@ def independent_contact_evidence_supported(row: dict[str, Any] | None) -> tuple[
     return False, "no_independent_visual_metric_contact_support"
 
 
+def current_annotation_contact_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    evidence = as_dict(row.get("evidence"))
+    final_switch = as_dict(row.get("final_contact_switch"))
+    coupling = as_dict(row.get("active_contact_coupling_state"))
+    metric = as_dict(row.get("final_metric_contact_evidence"))
+    raw_depth = as_dict(evidence.get("raw_depth_conflict_strength"))
+    local_support = as_dict(coupling.get("local_rigid_visible_surface_contact_state_support"))
+    return {
+        "evidence": evidence,
+        "final_switch": final_switch,
+        "coupling": coupling,
+        "metric": metric,
+        "raw_depth": raw_depth,
+        "local_support": local_support,
+    }
+
+
+def current_contact_evidence_supported(row: dict[str, Any]) -> tuple[bool, str]:
+    parts = current_annotation_contact_evidence(row)
+    evidence = as_dict(parts.get("evidence"))
+    final_switch = as_dict(parts.get("final_switch"))
+    coupling = as_dict(parts.get("coupling"))
+    local_support = as_dict(parts.get("local_support"))
+    depth_state = str(evidence.get("pair_depth_gap_state") or "")
+    image_supported = bool(evidence.get("image_overlap_candidate") or evidence.get("pair_contact_image_candidate"))
+    metric_supported = bool(evidence.get("metric_depth_compatible_candidate")) or depth_state.endswith("depth_compatible")
+    accepted_owner = bool(as_dict(evidence.get("contact_ownership_graph")).get("accepted_contact_owner"))
+    latent_supported = bool(final_switch.get("post_graph_latent_rigid_contact_supported") or coupling.get("contact_state_affects_latent_contact_state") or local_support.get("supported"))
+    if image_supported and metric_supported:
+        return True, "current_annotation_visual_and_object_owned_depth_compatible"
+    if accepted_owner and metric_supported:
+        return True, "current_annotation_owner_and_depth_compatible"
+    if latent_supported and metric_supported:
+        return True, "current_annotation_latent_contact_and_depth_compatible"
+    return False, "current_annotation_lacks_visual_metric_latent_contact_support"
+
+
 def contact_supported(row: dict[str, Any], *, include_unsupported_near: bool) -> bool:
     if row.get("physical_contact_claim_supported") is True:
         return True
     if not include_unsupported_near:
         return False
     state = str(row.get("state") or row.get("contact_physical_mode") or "")
-    evidence = row.get("final_metric_contact_evidence") if isinstance(row.get("final_metric_contact_evidence"), dict) else {}
+    evidence = as_dict(row.get("final_metric_contact_evidence"))
     return state == "raw_contact_proposal_without_final_validated_physical_support" and evidence.get("contact_switch_observation") == "near"
+
+
+def clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def latent_contact_score(row: dict[str, Any], *, raw_proposal_weight_factor: float, depth_conflict_weight_factor: float, min_weight_fraction: float) -> dict[str, Any]:
+    parts = current_annotation_contact_evidence(row)
+    evidence = as_dict(parts.get("evidence"))
+    final_switch = as_dict(parts.get("final_switch"))
+    coupling = as_dict(parts.get("coupling"))
+    metric = as_dict(parts.get("metric"))
+    raw_depth = as_dict(parts.get("raw_depth"))
+    local_support = as_dict(parts.get("local_support"))
+    reasons: list[str] = []
+    score = 0.0
+    state = str(row.get("state") or "")
+    if row.get("physical_contact_claim_supported") is True:
+        score += 0.25
+        reasons.append("supported_physical_contact_claim")
+    if final_switch.get("post_graph_latent_rigid_contact_supported") is True:
+        score += 0.20
+        reasons.append("post_graph_latent_rigid_contact_supported")
+    if coupling.get("contact_state_affects_latent_contact_state") is True:
+        score += 0.15
+        reasons.append("contact_state_affects_latent_contact_state")
+    if local_support.get("supported") is True:
+        score += 0.15
+        reasons.append("local_visible_surface_contact_state_supported")
+    depth_state = str(evidence.get("pair_depth_gap_state") or raw_depth.get("raw_pair_depth_gap_state") or "")
+    if bool(evidence.get("metric_depth_compatible_candidate")) or depth_state.endswith("depth_compatible"):
+        score += 0.15
+        reasons.append("object_owned_contact_patch_depth_compatible")
+    if bool(evidence.get("pair_contact_image_candidate") or evidence.get("image_overlap_candidate")):
+        score += 0.10
+        reasons.append("visual_contact_or_overlap_candidate")
+    try:
+        raw_min_distance = metric.get("min_distance_m")
+        raw_near_band = metric.get("near_contact_band_m")
+        min_distance = float(raw_min_distance) if raw_min_distance is not None else float("nan")
+        near_band = float(raw_near_band) if raw_near_band is not None else 0.0
+    except Exception:
+        min_distance = float("nan")
+        near_band = 0.0
+    if near_band > 0.0 and min_distance == min_distance:
+        proximity = clamp01(1.0 - min_distance / near_band)
+        score += 0.10 * proximity
+        reasons.append("metric_near_contact_distance")
+    raw_candidate = state == "raw_contact_proposal_without_final_validated_physical_support"
+    if raw_candidate:
+        score *= max(0.0, float(raw_proposal_weight_factor))
+        reasons.append("raw_near_contact_proposal_downweighted")
+    current_depth_conflict = bool(raw_depth.get("raw_depth_contradiction")) or "depth_contradicted" in state or ("incompatible" in depth_state and not depth_state.endswith("depth_compatible"))
+    if current_depth_conflict:
+        score *= max(0.0, float(depth_conflict_weight_factor))
+        reasons.append("current_depth_conflict_downweighted_not_deleted")
+    score = clamp01(score)
+    if score > 0.0:
+        score = max(score, max(0.0, float(min_weight_fraction)))
+    return {
+        "latent_contact_confidence": score,
+        "latent_contact_weight_fraction": score,
+        "latent_contact_reasons": reasons,
+        "latent_contact_depth_state": depth_state or None,
+        "latent_contact_raw_candidate": raw_candidate,
+        "latent_contact_current_depth_conflict": current_depth_conflict,
+        "latent_contact_variable_id": coupling.get("latent_contact_state_variable_id") or final_switch.get("latent_contact_state_variable_id"),
+        "local_contact_patch_variable_id": coupling.get("local_rigid_visible_contact_patch_variable_id"),
+    }
 
 
 def main() -> None:
@@ -189,7 +307,10 @@ def main() -> None:
                 skipped.append({"frame_idx": frame_idx, "hand_side": side, "reason": "contact_not_supported", "state": hyp.get("state"), "physical_contact_claim_supported": hyp.get("physical_contact_claim_supported")})
                 continue
             independent_evidence_row = contact_evidence.get((frame_idx, side)) if contact_evidence else None
-            independent_supported, independent_reason = independent_contact_evidence_supported(independent_evidence_row)
+            external_supported, external_reason = independent_contact_evidence_supported(independent_evidence_row)
+            current_supported, current_reason = current_contact_evidence_supported(hyp)
+            independent_supported = bool(current_supported or external_supported)
+            independent_reason = current_reason if current_supported else external_reason
             if bool(args.require_independent_contact_evidence) and not independent_supported:
                 skipped.append({
                     "frame_idx": frame_idx,
@@ -200,9 +321,28 @@ def main() -> None:
                     "annotation_contact_owner_hypothesis": hyp.get("contact_owner_hypothesis"),
                 })
                 continue
-            evidence = hyp.get("final_metric_contact_evidence") if isinstance(hyp.get("final_metric_contact_evidence"), dict) else {}
+            latent = latent_contact_score(
+                hyp,
+                raw_proposal_weight_factor=float(args.raw_proposal_weight_factor),
+                depth_conflict_weight_factor=float(args.depth_conflict_weight_factor),
+                min_weight_fraction=float(args.min_latent_contact_weight_fraction),
+            ) if bool(args.latent_contact_weighting) else {
+                "latent_contact_confidence": 1.0,
+                "latent_contact_weight_fraction": 1.0,
+                "latent_contact_reasons": ["uniform_supported_contact_weight"],
+                "latent_contact_depth_state": None,
+                "latent_contact_raw_candidate": False,
+                "latent_contact_current_depth_conflict": False,
+                "latent_contact_variable_id": None,
+                "local_contact_patch_variable_id": None,
+            }
+            if bool(args.latent_contact_weighting) and float(latent.get("latent_contact_weight_fraction", 0.0)) <= 0.0:
+                skipped.append({"frame_idx": frame_idx, "hand_side": side, "reason": "latent_contact_zero_weight", "state": hyp.get("state")})
+                continue
+            evidence = as_dict(hyp.get("final_metric_contact_evidence"))
             support_uncertainty_m = float(support_by_frame.get(frame_idx, float(args.default_object_support_uncertainty_m)))
             contact_deadband_m = float(args.contact_patch_target_margin_m) + max(0.0, support_uncertainty_m)
+            row_weight = float(args.weight) * float(latent.get("latent_contact_weight_fraction", 1.0))
             rows.append(
                 {
                     "factor_family": "contact_patch",
@@ -210,11 +350,11 @@ def main() -> None:
                     "frame_idx": frame_idx,
                     "hand_side": side,
                     "variable_affected": "H_t",
-                    "observation_type": "supported_active_contact_to_uncertain_observed_visible_surface_patch",
+                    "observation_type": "evidence_weighted_latent_contact_to_uncertain_observed_visible_surface_patch" if bool(args.latent_contact_weighting) else "supported_active_contact_to_uncertain_observed_visible_surface_patch",
                     "residual_or_quarantine_rule": "select current MANO vertices near eligible observed object surface and penalize surface-normal distance only beyond contact_patch_target_margin_m + object_support_uncertainty_m while allowing tangential sliding; existing nonpenetration handles crossing",
                     "rendered_uncertainty_channel": "bounded latent/sliding contact patch MANO hypothesis; no object pose or hidden geometry claim",
                     "state": "active_contact_patch",
-                    "weight": float(args.weight),
+                    "weight": float(row_weight),
                     "contact_patch_band_m": float(args.contact_patch_band_m),
                     "contact_patch_target_margin_m": float(args.contact_patch_target_margin_m),
                     "object_support_uncertainty_m": max(0.0, support_uncertainty_m),
@@ -227,15 +367,20 @@ def main() -> None:
                     "source_near_contact_band_m": evidence.get("near_contact_band_m"),
                     "source_object_support_uncertainty_stat": str(args.object_support_uncertainty_stat),
                     "source_object_pose_fit_report": str(args.object_pose_fit_report) if args.object_pose_fit_report else None,
-                    "source_contact_coupling_state": (hyp.get("active_contact_coupling_state") or {}).get("coupling_state") if isinstance(hyp.get("active_contact_coupling_state"), dict) else None,
-                    "source_stable_contact_pose_anchor_factor_emitted": (hyp.get("active_contact_coupling_state") or {}).get("stable_contact_pose_anchor_factor_emitted") if isinstance(hyp.get("active_contact_coupling_state"), dict) else None,
+                    "source_contact_coupling_state": as_dict(hyp.get("active_contact_coupling_state")).get("coupling_state"),
+                    "source_stable_contact_pose_anchor_factor_emitted": as_dict(hyp.get("active_contact_coupling_state")).get("stable_contact_pose_anchor_factor_emitted"),
                     "independent_contact_evidence_supported": bool(independent_supported),
                     "independent_contact_evidence_reason": independent_reason,
+                    "current_annotation_contact_evidence_supported": bool(current_supported),
+                    "current_annotation_contact_evidence_reason": current_reason,
+                    "external_contact_evidence_supported": bool(external_supported),
+                    "external_contact_evidence_reason": external_reason,
                     "source_contact_evidence_report": str(args.contact_evidence_report) if args.contact_evidence_report else None,
+                    **latent,
                     "provenance": {
                         "annotations": str(args.annotations),
                         "frame_contact_hypothesis_key": "frames[].contact_hypotheses[]",
-                        "selection_rule": "target object, supported active physical contact, side in left/right, and independent contact evidence when required",
+                        "selection_rule": "target object, supported active or included raw near-contact candidate, side in left/right, evidence-weighted latent contact when requested, strict independent evidence only in diagnostic mode",
                         "final_metric_contact_evidence": evidence,
                         "independent_contact_evidence_row": independent_evidence_row,
                     },
@@ -274,6 +419,10 @@ def main() -> None:
             "default_object_support_uncertainty_m": float(args.default_object_support_uncertainty_m),
             "include_unsupported_near": bool(args.include_unsupported_near),
             "require_independent_contact_evidence": bool(args.require_independent_contact_evidence),
+            "latent_contact_weighting": bool(args.latent_contact_weighting),
+            "raw_proposal_weight_factor": float(args.raw_proposal_weight_factor),
+            "depth_conflict_weight_factor": float(args.depth_conflict_weight_factor),
+            "min_latent_contact_weight_fraction": float(args.min_latent_contact_weight_fraction),
         },
         "summary": {
             "factor_row_count": len(deduped),
@@ -282,6 +431,11 @@ def main() -> None:
             "sides": sorted({str(r["hand_side"]) for r in deduped}),
             "object_support_uncertainty_m": numeric_summary([float(r.get("object_support_uncertainty_m", 0.0)) for r in deduped]),
             "contact_patch_deadband_m": numeric_summary([float(r.get("contact_patch_deadband_m", 0.0)) for r in deduped]),
+            "latent_contact_confidence": numeric_summary([float(r.get("latent_contact_confidence", 0.0)) for r in deduped]),
+            "row_weight": numeric_summary([float(r.get("weight", 0.0)) for r in deduped]),
+            "latent_raw_candidate_count": sum(1 for r in deduped if r.get("latent_contact_raw_candidate") is True),
+            "latent_current_depth_conflict_count": sum(1 for r in deduped if r.get("latent_contact_current_depth_conflict") is True),
+            "current_annotation_contact_evidence_supported_count": sum(1 for r in deduped if r.get("current_annotation_contact_evidence_supported") is True),
             "independent_contact_evidence_rejected_count": sum(1 for r in skipped if r.get("reason") == "independent_contact_evidence_rejected"),
         },
         "factor_rows": deduped,
