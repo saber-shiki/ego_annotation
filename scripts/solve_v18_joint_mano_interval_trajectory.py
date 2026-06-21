@@ -64,10 +64,13 @@ from build_v18_temporal_mano_translation_interval_state import (  # noqa: E402
     write_json,
 )
 
-DEFAULT_ANNOTATIONS = Path(
-    "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard/"
-    "task5_tomato_960/annotations_v18_full.json"
+SANITIZED_ANNOTATION_ROOT = Path("/data2/ego_annotation_outputs/v18_full_pipeline_sanitized_base_for_hprime")
+REJECTED_ANNOTATION_PATH_MARKERS = (
+    "v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard",
+    "verified_hprime_final",
+    "hprime_final",
 )
+DEFAULT_ANNOTATIONS = SANITIZED_ANNOTATION_ROOT / "task5_tomato_960/annotations_v18_full.json"
 DEFAULT_POSE_REPORT = Path(
     "/data2/ego_annotation_outputs/v18_scale_sane_tomato_completion_v1/task5_tomato_960/object_obj_tomato/"
     "pose_fit_frame929prior_frame806scale_v1_from_tracked/v18_compact_rigid_object_pose_fit_report.json"
@@ -121,8 +124,10 @@ class FrameHandRow:
     surface_applied_face_delta: int
     visible_ownership_non_object_mask_path: str | None
     visible_ownership_object_owned_mask_path: str | None
+    visible_ownership_constraint_eligible_mask_path: str | None
     visible_ownership_non_object_owned_px: int
     visible_ownership_object_owned_px: int
+    visible_ownership_constraint_eligible_px: int
     visible_ownership_quarantined_face_count: int
     visible_object_mask_path: str | None
     visible_object_mask_face_count_raw: int
@@ -299,31 +304,63 @@ def load_binary_mask(mask_path: Path, cache: dict[Path, np.ndarray]) -> np.ndarr
     return mask
 
 
-def load_factor_rows(report_path: Path | None, row_key: str) -> dict[tuple[int, str], dict[str, Any]]:
+FACTOR_REQUIRED_FIELDS = (
+    "factor_family",
+    "target_entity_id",
+    "frame_idx",
+    "hand_side",
+    "variable_affected",
+    "observation_type",
+    "residual_or_quarantine_rule",
+    "provenance",
+    "rendered_uncertainty_channel",
+)
+
+
+def validate_factor_row_contract(row: dict[str, Any], *, expected_family: str, target_entity_id: str, report_path: Path) -> tuple[int, str]:
+    missing = [field for field in FACTOR_REQUIRED_FIELDS if row.get(field) in (None, "")]
+    if missing:
+        raise ValueError(f"{expected_family} factor row lacks required fields {missing} in {report_path}: {row}")
+    family = str(row.get("factor_family") or "")
+    if family != expected_family:
+        raise ValueError(f"factor row family {family!r} does not match expected {expected_family!r} in {report_path}: {row}")
+    if str(row.get("target_entity_id")) != str(target_entity_id):
+        raise ValueError(f"{expected_family} factor target {row.get('target_entity_id')} does not match solver target {target_entity_id} in {report_path}")
+    provenance = row.get("provenance")
+    if not isinstance(provenance, dict) or not provenance:
+        raise ValueError(f"{expected_family} factor row has empty/non-dict provenance in {report_path}: {row}")
+    return int(row["frame_idx"]), str(row["hand_side"])
+
+
+def load_factor_rows(report_path: Path | None, row_key: str, *, expected_family: str, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
     if report_path is None:
         return {}
     if not report_path.exists():
-        raise FileNotFoundError(f"missing factor report: {report_path}")
+        raise FileNotFoundError(f"missing {expected_family} factor report: {report_path}")
     payload = load_json(report_path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{expected_family} factor report is not a JSON object: {report_path}")
     out: dict[tuple[int, str], dict[str, Any]] = {}
-    for row in as_list(payload.get(row_key)) if isinstance(payload, dict) else []:
-        if not isinstance(row, dict) or row.get("frame_idx") is None or row.get("hand_side") is None:
+    for row in as_list(payload.get(row_key)):
+        if not isinstance(row, dict):
             continue
-        key = (int(row["frame_idx"]), str(row["hand_side"]))
+        key = validate_factor_row_contract(row, expected_family=expected_family, target_entity_id=target_entity_id, report_path=report_path)
+        if key in out:
+            raise ValueError(f"duplicate {expected_family} factor row for {key} while reading {report_path}")
         out[key] = row
     return out
 
 
-def load_visible_ownership_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
-    return load_factor_rows(report_path, "ownership_rows")
+def load_visible_ownership_rows(report_path: Path | None, *, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    return load_factor_rows(report_path, "ownership_rows", expected_family="visible_ownership", target_entity_id=target_entity_id)
 
 
-def load_surface_eligibility_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
-    return load_factor_rows(report_path, "factor_rows")
+def load_surface_eligibility_rows(report_path: Path | None, *, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    return load_factor_rows(report_path, "factor_rows", expected_family="surface_eligibility", target_entity_id=target_entity_id)
 
 
-def load_visible_surface_track_rows(report_path: Path | None) -> dict[tuple[int, str], dict[str, Any]]:
-    return load_factor_rows(report_path, "factor_rows")
+def load_visible_surface_track_rows(report_path: Path | None, *, target_entity_id: str) -> dict[tuple[int, str], dict[str, Any]]:
+    return load_factor_rows(report_path, "factor_rows", expected_family="visible_surface_track", target_entity_id=target_entity_id)
 
 
 def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entity_id: str) -> dict[str, dict[tuple[int, str], dict[str, Any]]]:
@@ -335,17 +372,6 @@ def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entit
         "hand_depth_shift_prior": {},
         "contact_patch": {},
     }
-    required_fields = (
-        "factor_family",
-        "target_entity_id",
-        "frame_idx",
-        "hand_side",
-        "variable_affected",
-        "observation_type",
-        "residual_or_quarantine_rule",
-        "provenance",
-        "rendered_uncertainty_channel",
-    )
     for report_path in list(report_paths or []):
         if not report_path.exists():
             raise FileNotFoundError(f"missing generic factor report: {report_path}")
@@ -358,15 +384,7 @@ def load_generic_factor_reports(report_paths: list[Path] | None, *, target_entit
             family = str(row.get("factor_family") or "")
             if family not in out:
                 continue
-            missing = [field for field in required_fields if row.get(field) in (None, "")]
-            if missing:
-                raise ValueError(f"generic {family} factor row lacks required fields {missing} in {report_path}: {row}")
-            if str(row.get("target_entity_id")) != str(target_entity_id):
-                raise ValueError(f"generic {family} factor target {row.get('target_entity_id')} does not match solver target {target_entity_id} in {report_path}")
-            provenance = row.get("provenance")
-            if not isinstance(provenance, dict) or not provenance:
-                raise ValueError(f"generic {family} factor row has empty/non-dict provenance in {report_path}: {row}")
-            key = (int(row["frame_idx"]), str(row["hand_side"]))
+            key = validate_factor_row_contract(row, expected_family=family, target_entity_id=target_entity_id, report_path=report_path)
             if key in out[family]:
                 raise ValueError(f"duplicate generic {family} factor row for {key} while reading {report_path}")
             out[family][key] = row
@@ -433,21 +451,24 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
     if not isinstance(row, dict):
         return None, None, {"state": "missing_visible_ownership_row"}
     non_object_raw = row.get("non_object_owned_mask_path")
-    object_owned_raw = row.get("visible_object_owned_mask_path") or row.get("adjusted_entity_mask_path")
+    constraint_raw = row.get("constraint_eligible_entity_mask_path") or row.get("adjusted_entity_mask_path") or row.get("visible_object_owned_mask_path")
+    visible_object_raw = row.get("visible_object_owned_mask_path")
     if not isinstance(non_object_raw, str) or not Path(non_object_raw).exists():
         raise FileNotFoundError(f"visible ownership row has no readable non_object_owned_mask_path: {non_object_raw}")
-    if not isinstance(object_owned_raw, str) or not Path(object_owned_raw).exists():
-        raise FileNotFoundError(f"visible ownership row has no readable visible_object_owned/adjusted_entity mask path: {object_owned_raw}")
+    if not isinstance(constraint_raw, str) or not Path(constraint_raw).exists():
+        raise FileNotFoundError(f"visible ownership row has no readable constraint_eligible_entity/adjusted_entity mask path: {constraint_raw}")
     non_object_mask = load_binary_mask(Path(non_object_raw), cache)
-    object_owned_mask = load_binary_mask(Path(object_owned_raw), cache)
+    constraint_mask = load_binary_mask(Path(constraint_raw), cache)
     raw_counts = row.get("counts")
     counts = raw_counts if isinstance(raw_counts, dict) else {}
-    return non_object_mask, object_owned_mask, {
+    return non_object_mask, constraint_mask, {
         "state": "ok",
         "non_object_owned_mask_path": non_object_raw if isinstance(non_object_raw, str) else None,
-        "visible_object_owned_mask_path": object_owned_raw if isinstance(object_owned_raw, str) else None,
+        "constraint_eligible_entity_mask_path": constraint_raw if isinstance(constraint_raw, str) else None,
+        "visible_object_owned_mask_path": visible_object_raw if isinstance(visible_object_raw, str) else None,
         "non_object_owned_px": int(counts.get("non_object_owned_px", int(non_object_mask.sum()) if non_object_mask is not None else 0)),
-        "visible_object_owned_px": int(counts.get("visible_object_owned_px", int(object_owned_mask.sum()) if object_owned_mask is not None else 0)),
+        "visible_object_owned_px": int(counts.get("visible_object_owned_px", 0)),
+        "constraint_eligible_entity_px": int(counts.get("constraint_eligible_entity_px", int(constraint_mask.sum()) if constraint_mask is not None else 0)),
     }
 
 
@@ -995,9 +1016,9 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     depth_rows = load_depth_sources(depth_paths)
     visible_mask_paths = load_visible_object_mask_paths(args.visible_object_mask_report)
     generic_factor_rows = load_generic_factor_reports(args.factor_report, target_entity_id=str(args.object_id))
-    visible_ownership_rows = merge_factor_row_maps("visible_ownership", load_visible_ownership_rows(args.visible_ownership_factor_report), generic_factor_rows["visible_ownership"])
-    surface_eligibility_rows = merge_factor_row_maps("surface_eligibility", load_surface_eligibility_rows(args.surface_eligibility_factor_report), generic_factor_rows["surface_eligibility"])
-    visible_surface_track_rows = merge_factor_row_maps("visible_surface_track", load_visible_surface_track_rows(args.visible_surface_track_factor_report), generic_factor_rows["visible_surface_track"])
+    visible_ownership_rows = merge_factor_row_maps("visible_ownership", load_visible_ownership_rows(args.visible_ownership_factor_report, target_entity_id=str(args.object_id)), generic_factor_rows["visible_ownership"])
+    surface_eligibility_rows = merge_factor_row_maps("surface_eligibility", load_surface_eligibility_rows(args.surface_eligibility_factor_report, target_entity_id=str(args.object_id)), generic_factor_rows["surface_eligibility"])
+    visible_surface_track_rows = merge_factor_row_maps("visible_surface_track", load_visible_surface_track_rows(args.visible_surface_track_factor_report, target_entity_id=str(args.object_id)), generic_factor_rows["visible_surface_track"])
     hand_observation_visibility_rows = generic_factor_rows["hand_observation_visibility"]
     hand_depth_shift_prior_rows = generic_factor_rows["hand_depth_shift_prior"]
     contact_patch_rows = generic_factor_rows["contact_patch"]
@@ -1052,7 +1073,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             args=args,
         )
         ownership_row = visible_ownership_rows.get((frame_idx, side))
-        ownership_non_object_mask, ownership_object_owned_mask, ownership_diag = visible_ownership_masks_for_row(ownership_row, visible_mask_cache)
+        ownership_non_object_mask, ownership_constraint_eligible_mask, ownership_diag = visible_ownership_masks_for_row(ownership_row, visible_mask_cache)
         strict, visible_ownership_quarantined = visible_ownership_quarantine_faces(
             frame=frame,
             side=side,
@@ -1073,8 +1094,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         if visible_surface_active:
             visible_mask = visible_surface_mask
             visible_mask_path = Path(str(visible_surface_diag.get("surface_mask_path")))
-        if ownership_object_owned_mask is not None:
-            visible_mask = ownership_object_owned_mask if visible_mask is None else (visible_mask & ownership_object_owned_mask)
+        if ownership_constraint_eligible_mask is not None:
+            visible_mask = ownership_constraint_eligible_mask if visible_mask is None else (visible_mask & ownership_constraint_eligible_mask)
         strict, visible_mask_face_count_raw, visible_mask_face_count = visible_object_mask_face_gate(
             frame=frame,
             side=side,
@@ -1225,8 +1246,10 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 surface_applied_face_delta=int(surface_applied_face_delta),
                 visible_ownership_non_object_mask_path=ownership_diag.get("non_object_owned_mask_path"),
                 visible_ownership_object_owned_mask_path=ownership_diag.get("visible_object_owned_mask_path"),
+                visible_ownership_constraint_eligible_mask_path=ownership_diag.get("constraint_eligible_entity_mask_path"),
                 visible_ownership_non_object_owned_px=int(ownership_diag.get("non_object_owned_px", 0)),
                 visible_ownership_object_owned_px=int(ownership_diag.get("visible_object_owned_px", 0)),
+                visible_ownership_constraint_eligible_px=int(ownership_diag.get("constraint_eligible_entity_px", 0)),
                 visible_ownership_quarantined_face_count=int(visible_ownership_quarantined),
                 visible_object_mask_path=None if visible_mask_path is None else str(visible_mask_path),
                 visible_object_mask_face_count_raw=int(visible_mask_face_count_raw),
@@ -1956,8 +1979,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "surface_applied_face_delta": int(row.surface_applied_face_delta),
                 "visible_ownership_non_object_mask_path": row.visible_ownership_non_object_mask_path,
                 "visible_ownership_object_owned_mask_path": row.visible_ownership_object_owned_mask_path,
+                "visible_ownership_constraint_eligible_mask_path": row.visible_ownership_constraint_eligible_mask_path,
                 "visible_ownership_non_object_owned_px": int(row.visible_ownership_non_object_owned_px),
                 "visible_ownership_object_owned_px": int(row.visible_ownership_object_owned_px),
+                "visible_ownership_constraint_eligible_px": int(row.visible_ownership_constraint_eligible_px),
                 "visible_ownership_quarantined_face_count": int(row.visible_ownership_quarantined_face_count),
                 "visible_object_mask_path": row.visible_object_mask_path,
                 "visible_object_mask_face_count_raw": int(row.visible_object_mask_face_count_raw),
@@ -2072,7 +2097,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "surface_eligibility_factor_enabled": args.surface_eligibility_factor_report is not None or any(r.surface_eligibility_mode is not None for r in rows),
         "surface_eligibility_mode": str(args.surface_eligibility_mode),
         "observed_surface_support_uncertainty_m": numeric_summary(np.asarray([r.observed_surface_support_uncertainty_m for r in rows], dtype=float)),
-        "visible_ownership_factor_enabled": args.visible_ownership_factor_report is not None or any(r.visible_ownership_non_object_mask_path is not None or r.visible_ownership_object_owned_mask_path is not None for r in rows),
+        "visible_ownership_factor_enabled": args.visible_ownership_factor_report is not None or any(r.visible_ownership_non_object_mask_path is not None or r.visible_ownership_object_owned_mask_path is not None or r.visible_ownership_constraint_eligible_mask_path is not None for r in rows),
         "visible_surface_track_factor_enabled": args.visible_surface_track_factor_report is not None or any(r.visible_surface_track_factor_state is not None for r in rows),
         "visible_object_mask_gate_enabled": bool(args.visible_object_mask_gate),
         "visible_mask_quarantine_signed_mesh_enabled": bool(args.visible_mask_quarantine_signed_mesh),
@@ -2084,8 +2109,19 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     return interval, states
 
 
+def reject_rejected_annotation_path(path: Path) -> None:
+    raw = str(path)
+    hits = [marker for marker in REJECTED_ANNOTATION_PATH_MARKERS if marker in raw]
+    if hits:
+        raise ValueError(
+            "rejected H-prime/final-v7 annotation source supplied to interval MANO solver: "
+            f"{path}. Use sanitized non-H-prime annotations under {SANITIZED_ANNOTATION_ROOT}."
+        )
+
+
 def main() -> None:
     args = parse_args()
+    reject_rejected_annotation_path(args.annotations)
     if (bool(args.visible_object_mask_gate) or bool(args.visible_surface_depth_order_term)) and args.visible_object_mask_report is None:
         raise ValueError("visible object mask terms require --visible-object-mask-report")
     device = torch.device(args.device)
