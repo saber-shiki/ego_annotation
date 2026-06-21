@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false
 """Assemble the current V18 interval-MANO frontier artifact.
 
 This is not a new physical factor.  It is the artifact-consumption step for the
@@ -10,6 +11,7 @@ older sparse H-prime final roots that have been ruled out for the MANO objective
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -20,17 +22,17 @@ from typing import Any
 import cv2
 import numpy as np
 
-DEFAULT_OUTPUT_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v2")
+DEFAULT_OUTPUT_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v4")
 DEFAULT_CASE_RENDER_ROOTS = {
     "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_task5_joint_mano_surface_support_uncertain_sanitized_base_full_video_v1/task5_tomato_960"),
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_joint_mano_latent_transition_sanitized_base_full_video_v1/trash_1050"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_occluded_translation_posterior_full_video_v1/trash_1050"),
 }
 SANITIZED_ANNOTATION_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_sanitized_base_for_hprime"
 REJECTED_HPRIME_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard"
 
 DEFAULT_REVIEW_FRAMES = {
     "task5_tomato_960": [481, 499, 525, 648, 690, 720, 780, 873, 902],
-    "trash_1050": [720, 735, 779, 824, 830, 869, 893, 958, 972, 988, 1002, 1006, 1027],
+    "trash_1050": [720, 735, 779, 824, 830, 869, 893, 958, 972, 988, 998, 1000, 1002, 1006, 1020, 1027],
 }
 CASE_CLAIMS = {
     "task5_tomato_960": {
@@ -44,10 +46,13 @@ CASE_CLAIMS = {
         ],
     },
     "trash_1050": {
-        "frontier_mechanism": "latent_occlusion_transition_interval_mano",
-        "claim": "Late trash left-hand MANO observations become invalid when the hand transitions under the lid; the artifact should show bounded latent occluded-hand hypotheses driven by visible first-surface/observation-validity factors.",
+        "frontier_mechanism": "latent_occlusion_transition_plus_occluded_translation_posterior_interval_mano",
+        "claim": "Late trash MANO observations become invalid as the hand transitions under the lid; the artifact keeps the optimized latent MANO trajectory but visibly exposes a one-dimensional additional camera-z hard-bound feasible/energy stress-test for zero-observation rows. The selected first-surface evidence mostly exceeds the translation bound, and the optimizer falls back to feasible representative points, so the hidden hand is represented as broad/conflicted uncertainty rather than a known reconstructed pose or optimized MAP trajectory.",
         "not_claimed": [
             "known hidden-hand pose",
+            "hidden articulation reconstruction",
+            "optimized MAP trajectory through failed optimizer rows",
+            "calibrated posterior probability distribution",
             "solved hand-lid contact",
             "accepted compact-lid hidden-volume nonpenetration",
             "trash V18 closure",
@@ -141,13 +146,29 @@ def ffprobe_video(path: Path) -> dict[str, Any]:
     try:
         proc = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         raw = json.loads(proc.stdout)
-        stream = (raw.get("streams") or [{}])[0]
+        streams = raw.get("streams") if isinstance(raw, dict) else None
+        stream_raw = streams[0] if isinstance(streams, list) and streams and isinstance(streams[0], dict) else {}
+        width_raw = stream_raw.get("width")
+        height_raw = stream_raw.get("height")
+        nb_frames_raw = stream_raw.get("nb_frames")
+        duration_raw = stream_raw.get("duration")
+        width = int(width_raw) if width_raw is not None else None
+        height = int(height_raw) if height_raw is not None else None
+        if isinstance(nb_frames_raw, str) and nb_frames_raw.isdigit():
+            nb_frames: int | str | None = int(nb_frames_raw)
+        elif isinstance(nb_frames_raw, int):
+            nb_frames = nb_frames_raw
+        elif nb_frames_raw is None:
+            nb_frames = None
+        else:
+            nb_frames = str(nb_frames_raw)
+        duration_s = float(duration_raw) if duration_raw is not None else None
         return {
-            "width": int(stream.get("width")) if stream.get("width") is not None else None,
-            "height": int(stream.get("height")) if stream.get("height") is not None else None,
-            "nb_frames": int(stream.get("nb_frames")) if str(stream.get("nb_frames") or "").isdigit() else stream.get("nb_frames"),
-            "r_frame_rate": stream.get("r_frame_rate"),
-            "duration_s": float(stream.get("duration")) if stream.get("duration") is not None else None,
+            "width": width,
+            "height": height,
+            "nb_frames": nb_frames,
+            "r_frame_rate": stream_raw.get("r_frame_rate"),
+            "duration_s": duration_s,
         }
     except Exception as exc:  # ffprobe is evidence, not the artifact source.
         return {"ffprobe_error": repr(exc)}
@@ -190,8 +211,10 @@ def optional_float(raw: Any) -> float | None:
 
 
 def require_sanitized_annotation_input(state: dict[str, Any], path: Path) -> str:
-    inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
-    parameters = state.get("parameters") if isinstance(state.get("parameters"), dict) else {}
+    inputs_raw = state.get("inputs")
+    parameters_raw = state.get("parameters")
+    inputs: dict[str, Any] = inputs_raw if isinstance(inputs_raw, dict) else {}
+    parameters: dict[str, Any] = parameters_raw if isinstance(parameters_raw, dict) else {}
     annotation_input = inputs.get("annotations") or parameters.get("annotations")
     if annotation_input is None:
         raise ValueError(f"{path} does not declare the annotation input used to solve H_t")
@@ -242,11 +265,11 @@ def summarize_states(case: str, state_paths: list[Path], artifact_state_copies: 
     visible_surface_final = [float(r.get("visible_surface_depth_order_selected_final_in_front_count") or 0.0) for r in merged]
     support_uncertainty = [float(r.get("observed_surface_support_uncertainty_m") or 0.0) for r in merged]
     contact_rows = [r for r in merged if r.get("contact_patch_factor_state") == "active_contact_patch"]
-    hand_obs_zeroed = [
-        r for r in merged
-        if (optional_float(r.get("hand_observation_visibility_weight_multiplier")) is not None)
-        and (optional_float(r.get("hand_observation_visibility_weight_multiplier")) <= 1e-9)
-    ]
+    hand_obs_zeroed = []
+    for r in merged:
+        multiplier = optional_float(r.get("hand_observation_visibility_weight_multiplier"))
+        if multiplier is not None and multiplier <= 1e-9:
+            hand_obs_zeroed.append(r)
     summary = {
         "case": case,
         "optimized_state_count": int(len(merged)),
@@ -321,7 +344,62 @@ def make_review_sheet(case: str, case_dir: Path, frames: list[int]) -> dict[str,
 def safe_state_copy_name(index: int, path: Path) -> str:
     parts = [p for p in path.parts[-5:] if p not in {"", "/"}]
     stem = "__".join(parts).replace(os.sep, "__").replace(":", "_")
-    return f"{index:02d}__{stem}"
+    digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+    max_stem_len = 150
+    if len(stem) > max_stem_len:
+        stem = stem[:max_stem_len].rstrip("_")
+    return f"{index:02d}__{digest}__{stem}"
+
+
+def summarize_occluded_translation_posterior(report: dict[str, Any]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    optimizer_fallback_sides: list[str] = []
+    optimizer_failed_sides: list[str] = []
+    for side_report in report.get("side_reports") or []:
+        if not isinstance(side_report, dict):
+            continue
+        side = str(side_report.get("hand_side"))
+        opt_raw = side_report.get("optimization")
+        opt: dict[str, Any] = opt_raw if isinstance(opt_raw, dict) else {}
+        if bool(opt.get("used_feasible_start_fallback")):
+            optimizer_fallback_sides.append(side)
+        if opt.get("success") is False:
+            optimizer_failed_sides.append(side)
+        rows.extend([r for r in side_report.get("rows") or [] if isinstance(r, dict)])
+    zero_rows = [r for r in rows if str(r.get("posterior_state")) != "visible_or_nonzero_observation_row_fixed"]
+    missing_delta_rows = [r for r in zero_rows if not isinstance(r.get("selected_depth_order_final_delta_values_m"), list)]
+    missing_fingerprint_rows = [r for r in zero_rows if not isinstance(r.get("base_state_fingerprint_sha256"), str)]
+    out_of_bound_map_rows = []
+    for r in zero_rows:
+        s = optional_float(r.get("additional_camera_z_shift_map_m"))
+        lo = optional_float(r.get("additional_camera_z_shift_lower_bound_m"))
+        hi = optional_float(r.get("additional_camera_z_shift_upper_bound_m"))
+        if s is None or lo is None or hi is None or s < lo - 1.0e-9 or s > hi + 1.0e-9:
+            out_of_bound_map_rows.append({"frame_idx": r.get("frame_idx"), "hand_side": r.get("hand_side"), "map": s, "lower": lo, "upper": hi})
+    if missing_delta_rows:
+        raise ValueError(f"occluded translation posterior missing per-vertex deltas on {len(missing_delta_rows)} zero-observation rows")
+    if missing_fingerprint_rows:
+        raise ValueError(f"occluded translation posterior missing state fingerprints on {len(missing_fingerprint_rows)} zero-observation rows")
+    if out_of_bound_map_rows:
+        raise ValueError(f"occluded translation posterior has out-of-bound MAP rows: {out_of_bound_map_rows[:5]}")
+    return {
+        "method": report.get("method"),
+        "claim_scope": report.get("claim_scope"),
+        "inputs": report.get("inputs"),
+        "parameters": report.get("parameters"),
+        "summary": report.get("summary") if isinstance(report.get("summary"), dict) else {},
+        "row_count": int(len(rows)),
+        "zero_observation_row_count": int(len(zero_rows)),
+        "optimizer_failed_sides": sorted(set(optimizer_failed_sides)),
+        "optimizer_feasible_start_fallback_sides": sorted(set(optimizer_fallback_sides)),
+        "map_in_translation_bounds": True,
+        "all_zero_rows_preserve_selected_depth_deltas": True,
+        "all_zero_rows_preserve_base_state_fingerprints": True,
+        "artifact_interpretation": (
+            "The rendered magenta skeletons are lower/upper additional camera-z translation interval endpoints for zero-observation rows. "
+            "They do not certify the MAP as a hidden-hand reconstruction; optimizer fallback rows are explicit conflict/feasible-set evidence."
+        ),
+    }
 
 
 def build_case(case: str, render_root: Path, output_root: Path, review_frames: list[int], *, prefer_hardlink: bool) -> dict[str, Any]:
@@ -347,6 +425,21 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
         video_probe[view] = ffprobe_video(dst)
 
     linked_manifest = copy_or_hardlink(render_manifest_path, case_dir / "source_render_manifest.json", prefer_hardlink=prefer_hardlink)
+    posterior_artifact: dict[str, Any] | None = None
+    posterior_report_raw = render_manifest.get("occluded_translation_posterior_report")
+    if posterior_report_raw is not None:
+        posterior_report_path = Path(str(posterior_report_raw))
+        if not posterior_report_path.exists():
+            raise FileNotFoundError(posterior_report_path)
+        posterior_report = load_json(posterior_report_path)
+        posterior_summary = summarize_occluded_translation_posterior(posterior_report)
+        posterior_copy = case_dir / "source_occluded_translation_posterior_report.json"
+        linked_posterior = copy_or_hardlink(posterior_report_path, posterior_copy, prefer_hardlink=prefer_hardlink)
+        posterior_artifact = {
+            "source_report": str(posterior_report_path),
+            "artifact_report_copy": linked_posterior,
+            "summary": posterior_summary,
+        }
     state_copy_dir = case_dir / "source_interval_states"
     if state_copy_dir.exists():
         shutil.rmtree(state_copy_dir)
@@ -370,6 +463,8 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
         "Frames with interval solver states are rendered from optimized MANO variables; "
         "frames without interval solver states are full-video context/passthrough frames and do not claim a new MANO correction."
     )
+    if posterior_artifact is not None:
+        state_summary["occluded_translation_posterior"] = posterior_artifact["summary"]
     backing_path = case_dir / "frontier_interval_mano_states.json"
     write_json(backing_path, {
         "method": "build_v18_current_frontier_interval_artifact.merge_interval_mano_states",
@@ -377,6 +472,7 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
         "source_render_manifest": str(render_manifest_path),
         "frontier_claim_scope": CASE_CLAIMS.get(case, {}),
         "state_summary": state_summary,
+        "occluded_translation_posterior_report": posterior_artifact,
         "per_frame_states": merged_rows,
     })
     review = make_review_sheet(case, case_dir, review_frames)
@@ -390,6 +486,7 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
         "source_render_manifest": linked_manifest,
         "backing_interval_mano_states": str(backing_path),
         "state_summary": state_summary,
+        "occluded_translation_posterior_report": posterior_artifact,
         "review_sheet": review,
         "frame_count_from_source_render_manifest": frame_count,
         "full_video_from_source_render_manifest": render_manifest.get("full_video"),

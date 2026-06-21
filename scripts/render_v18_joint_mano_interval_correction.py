@@ -11,6 +11,7 @@ pipeline containers.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -29,6 +30,18 @@ HAND_EDGES = [
 ]
 
 REJECTED_HPRIME_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard"
+REJECTED_ANNOTATION_PATH_MARKERS = (
+    REJECTED_HPRIME_ROOT,
+    "verified_hprime_final",
+    "hprime_final",
+)
+
+
+def reject_rejected_annotation_path(path_or_payload: Any, *, context: str) -> None:
+    text = str(path_or_payload)
+    hits = [marker for marker in REJECTED_ANNOTATION_PATH_MARKERS if marker in text]
+    if hits:
+        raise ValueError(f"{context} contains rejected H-prime/final-v7 annotation marker(s) {hits}; use sanitized non-H-prime sources")
 
 DEFAULT_ANNOTATIONS = Path(
     "/data2/ego_annotation_outputs/v18_full_pipeline_sanitized_base_for_hprime/"
@@ -62,6 +75,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vertex-stride", type=int, default=2)
     p.add_argument("--ownership-uncertainty-overlay", action=argparse.BooleanOptionalAction, default=True, help="Mark corrected MANO samples in magenta when raw all-observed object residual exceeds ownership-trusted residual.")
     p.add_argument("--ownership-uncertainty-threshold-m", type=float, default=2.0e-4)
+    p.add_argument("--occluded-translation-posterior-report", type=Path, default=None, help="Optional report from build_v18_occluded_hand_translation_posterior.py. Draws camera-z lower/upper posterior skeletons for zero-observation occluded MANO rows.")
     p.add_argument("--padding-m", type=float, default=0.08)
     return p.parse_args()
 
@@ -117,11 +131,179 @@ def state_map(state: dict[str, Any]) -> dict[tuple[int, str], dict[str, Any]]:
     return out
 
 
+POSTERIOR_FINGERPRINT_FIELDS = (
+    "optimized_joints_world_m",
+    "optimized_translation_world_m",
+    "optimized_root_delta_axis_angle_rad",
+    "optimized_hand_pose_delta_axis_angle_rad",
+)
+
+
+def state_fingerprint(row: dict[str, Any]) -> str:
+    payload = {field: row.get(field) for field in POSTERIOR_FINGERPRINT_FIELDS}
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def load_state_maps(paths: list[Path]) -> dict[tuple[int, str], dict[str, Any]]:
     out: dict[tuple[int, str], dict[str, Any]] = {}
     for path in paths:
         out.update(state_map(load_json(path)))
     return out
+
+
+def load_posterior_report(path: Path | None) -> tuple[dict[str, Any] | None, dict[tuple[int, str], dict[str, Any]]]:
+    if path is None:
+        return None, {}
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"occluded translation posterior report is not a JSON object: {path}")
+    reject_rejected_annotation_path(payload, context="occluded translation posterior report")
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    for side_report in payload.get("side_reports", []):
+        if not isinstance(side_report, dict):
+            continue
+        for row in side_report.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            out[(int(row["frame_idx"]), str(row["hand_side"]))] = row
+    return payload, out
+
+
+def resolved_path_equal(a: Any, b: Path) -> bool:
+    if not isinstance(a, str) or not a:
+        return False
+    pa = Path(a)
+    try:
+        return pa.resolve() == b.resolve()
+    except Exception:
+        return str(pa) == str(b)
+
+
+def frame_camera_z_axis_world(frame: dict[str, Any]) -> np.ndarray:
+    camera_raw = frame.get("camera")
+    camera: dict[str, Any] = camera_raw if isinstance(camera_raw, dict) else {}
+    T = np.asarray(camera.get("T_world_camera_metric") or np.eye(4), dtype=float)
+    if T.shape != (4, 4) or not np.isfinite(T).all():
+        raise ValueError(f"frame {frame.get('frame_idx')} has invalid T_world_camera_metric")
+    axis = T[:3, :3] @ np.asarray([0.0, 0.0, 1.0], dtype=float)
+    norm = float(np.linalg.norm(axis))
+    if norm <= 1.0e-12:
+        raise ValueError(f"frame {frame.get('frame_idx')} has degenerate camera z axis")
+    return axis / norm
+
+
+def validate_posterior_matches_states(
+    posterior_report: dict[str, Any] | None,
+    posteriors: dict[tuple[int, str], dict[str, Any]],
+    states: dict[tuple[int, str], dict[str, Any]],
+    frames_by_idx: dict[int, dict[str, Any]],
+    annotations_path: Path,
+) -> None:
+    if not posteriors:
+        return
+    if posterior_report is None:
+        raise ValueError("posterior rows were loaded without a posterior report payload")
+    inputs_raw = posterior_report.get("inputs")
+    inputs: dict[str, Any] = inputs_raw if isinstance(inputs_raw, dict) else {}
+    posterior_annotations = inputs.get("annotations")
+    if not resolved_path_equal(posterior_annotations, annotations_path):
+        raise ValueError(
+            "occluded translation posterior annotations do not match render annotations: "
+            f"posterior={posterior_annotations} render={annotations_path}"
+        )
+    params_raw = posterior_report.get("parameters")
+    params: dict[str, Any] = params_raw if isinstance(params_raw, dict) else {}
+    max_translation_raw = params.get("max_translation_m")
+    max_translation = 0.045 if max_translation_raw is None else float(max_translation_raw)
+    for key, posterior in posteriors.items():
+        frame_idx, _side = key
+        frame = frames_by_idx.get(frame_idx)
+        if frame is None:
+            raise ValueError(f"occluded translation posterior row {key} has no matching annotation frame")
+        state = states.get(key)
+        if state is None:
+            raise ValueError(f"occluded translation posterior row {key} has no matching rendered MANO state")
+        expected = posterior.get("base_state_fingerprint_sha256")
+        if not isinstance(expected, str) or not expected:
+            raise ValueError(f"occluded translation posterior row {key} lacks base_state_fingerprint_sha256; refusing stale overlay")
+        actual = state_fingerprint(state)
+        if actual != expected:
+            raise ValueError(
+                f"occluded translation posterior row {key} does not match rendered MANO state: "
+                f"posterior fingerprint {expected} != state fingerprint {actual}"
+            )
+        state_name = str(posterior.get("posterior_state") or "")
+        if state_name == "visible_or_nonzero_observation_row_fixed":
+            continue
+        deltas = posterior.get("selected_depth_order_final_delta_values_m")
+        grid_raw = posterior.get("grid_profile")
+        grid: dict[str, Any] = grid_raw if isinstance(grid_raw, dict) else {}
+        if not isinstance(deltas, list):
+            raise ValueError(f"occluded translation posterior row {key} lacks selected per-vertex deltas")
+        if not isinstance(grid.get("selected_residual_energy_unweighted_m2"), list):
+            raise ValueError(f"occluded translation posterior row {key} lacks grid residual energies")
+        ids = posterior.get("selected_depth_order_selected_vertex_ids")
+        depths = posterior.get("selected_depth_order_selected_surface_depth_m")
+        if ids is not None and (not isinstance(ids, list) or len(ids) != len(deltas)):
+            raise ValueError(f"occluded translation posterior row {key} has selected id/delta length mismatch")
+        if depths is not None and (not isinstance(depths, list) or len(depths) != len(deltas)):
+            raise ValueError(f"occluded translation posterior row {key} has selected depth/delta length mismatch")
+        report_axis = posterior_axis(posterior)
+        frame_axis = frame_camera_z_axis_world(frame)
+        if report_axis is None or float(np.linalg.norm(report_axis - frame_axis)) > 1.0e-6:
+            raise ValueError(f"occluded translation posterior row {key} camera-z axis does not match render annotations")
+        trans = np.asarray(posterior.get("optimized_translation_world_m") or [], dtype=float)
+        if trans.shape != (3,) or not np.isfinite(trans).all():
+            raise ValueError(f"occluded translation posterior row {key} has invalid optimized translation")
+        shifts: list[float] = []
+        for shift_key in (
+            "additional_camera_z_shift_lower_bound_m",
+            "additional_camera_z_shift_upper_bound_m",
+            "additional_camera_z_shift_representative_m",
+            "additional_camera_z_shift_map_m",
+        ):
+            raw_shift = posterior.get(shift_key)
+            if raw_shift is not None:
+                shifts.append(float(raw_shift))
+        for s in shifts:
+            shifted_norm = float(np.linalg.norm(trans + s * report_axis))
+            if shifted_norm > max_translation + 1.0e-6:
+                raise ValueError(
+                    f"occluded translation posterior row {key} shift {s} exceeds max translation sphere: "
+                    f"norm={shifted_norm} max={max_translation}"
+                )
+
+
+def posterior_axis(row: dict[str, Any] | None) -> np.ndarray | None:
+    if not isinstance(row, dict):
+        return None
+    axis = np.asarray(row.get("camera_z_axis_world") or [], dtype=float)
+    if axis.shape != (3,):
+        return None
+    norm = float(np.linalg.norm(axis))
+    if norm <= 1.0e-12:
+        return None
+    return axis / norm
+
+
+def posterior_shift_values(row: dict[str, Any] | None) -> tuple[float, float] | None:
+    if not isinstance(row, dict):
+        return None
+    if str(row.get("posterior_state") or "") == "visible_or_nonzero_observation_row_fixed":
+        return None
+    raw_lo = row.get("additional_camera_z_shift_lower_bound_m")
+    raw_hi = row.get("additional_camera_z_shift_upper_bound_m")
+    if raw_lo is None or raw_hi is None:
+        return None
+    try:
+        lo = float(raw_lo)
+        hi = float(raw_hi)
+    except Exception:
+        return None
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return None
+    return lo, hi
 
 
 def project_camera(points_camera: np.ndarray, intr: tuple[float, float, float, float], width: int, height: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -157,8 +339,9 @@ def has_ownership_uncertainty(st: dict[str, Any], threshold_m: float) -> bool:
 
 def has_latent_occlusion_uncertainty(st: dict[str, Any]) -> bool:
     state = str(st.get("hand_observation_visibility_factor_state") or "")
+    raw_multiplier = st.get("hand_observation_visibility_weight_multiplier")
     try:
-        multiplier = float(st.get("hand_observation_visibility_weight_multiplier"))
+        multiplier = 1.0 if raw_multiplier is None else float(raw_multiplier)
     except Exception:
         multiplier = 1.0
     return state == "active_hand_observation_visibility" and multiplier <= 1.0e-6
@@ -182,7 +365,7 @@ def has_contact_patch_uncertainty(st: dict[str, Any], threshold_m: float) -> boo
         support_unc = 0.0
     posterior = st.get("contact_patch_posterior_probability")
     try:
-        posterior_f = float(posterior)
+        posterior_f = 1.0 if posterior is None else float(posterior)
     except Exception:
         posterior_f = 1.0
     return bool(st.get("contact_patch_state_optimized")) or support_unc > float(threshold_m) or posterior_f < 1.0 - 1.0e-6
@@ -237,15 +420,21 @@ def encode(frame_dir: Path, out: Path, fps: float) -> None:
 
 
 def render(args: argparse.Namespace) -> dict[str, Any]:
-    if REJECTED_HPRIME_ROOT in str(args.annotations):
-        raise ValueError(f"render input uses rejected final-v7/H-prime annotations: {args.annotations}")
-    annotations = load_json(args.annotations)
+    reject_rejected_annotation_path(args.annotations, context="render annotations")
+    reject_rejected_annotation_path(args.pose_report, context="render pose report")
+    reject_rejected_annotation_path(args.completed_mesh, context="render completed mesh")
     state_paths = list(args.joint_mano_state or [DEFAULT_STATE])
+    for state_path in state_paths:
+        reject_rejected_annotation_path(state_path, context="render joint MANO state path")
+    annotations = load_json(args.annotations)
+    reject_rejected_annotation_path(annotations, context="render annotations payload")
     poses = pose_map(load_json(args.pose_report))
     mesh = load_mesh_vertices(args.completed_mesh)
     states = load_state_maps(state_paths)
+    posterior_report, posteriors = load_posterior_report(args.occluded_translation_posterior_report)
     frames = [f for f in annotations.get("frames", []) if isinstance(f, dict)]
     frames_by_idx = {int(f["frame_idx"]): f for f in frames}
+    validate_posterior_matches_states(posterior_report, posteriors, states, frames_by_idx, args.annotations)
     frame_ids = sorted(frames_by_idx) if bool(args.full_video) else sorted({k[0] for k in states})
     if not frame_ids:
         raise RuntimeError("joint state has no per-frame states")
@@ -274,7 +463,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             for hand in frame.get("hands", []):
                 intr = ((hand.get("metric_mano_state") or {}).get("current_v18_camera_intrinsics_fx_fy_cx_cy"))
                 if isinstance(intr, list) and len(intr) == 4:
-                    intr_any = tuple(float(x) for x in intr)
+                    intr_any = (float(intr[0]), float(intr[1]), float(intr[2]), float(intr[3]))
                     break
             if intr_any is not None:
                 u, v, valid = project_camera(cam, intr_any, width, height)
@@ -295,7 +484,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             intr = metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
             if not (isinstance(intr, list) and len(intr) == 4 and joints_cam.shape == (21, 3) and joints_world.shape == (21, 3)):
                 continue
-            intr_tuple = tuple(float(x) for x in intr)
+            intr_tuple = (float(intr[0]), float(intr[1]), float(intr[2]), float(intr[3]))
             original_color, corrected_color = colors_for_side(side)
             draw_skeleton(overlay, joints_cam, intr_tuple, original_color, 4)  # original current MANO
             world_chunks.append(joints_world)
@@ -306,14 +495,26 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 latent_occlusion_uncertain = has_latent_occlusion_uncertainty(st)
                 surface_support_uncertain = has_surface_support_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
                 contact_patch_uncertain = has_contact_patch_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
+                posterior_row = posteriors.get((frame_idx, side))
+                posterior_shifts = posterior_shift_values(posterior_row)
+                posterior_uncertain = posterior_shifts is not None
                 uncertainty_color = (255, 0, 255)
-                any_uncertain = ownership_uncertain or latent_occlusion_uncertain or surface_support_uncertain or contact_patch_uncertain
+                any_uncertain = ownership_uncertain or latent_occlusion_uncertain or surface_support_uncertain or contact_patch_uncertain or posterior_uncertain
                 ownership_uncertain_on_frame = ownership_uncertain_on_frame or any_uncertain
                 if opt_world.shape == (21, 3):
                     opt_cam = world_to_camera(opt_world, T)
                     draw_skeleton(overlay, opt_cam, intr_tuple, corrected_color, 3)  # optimized trajectory
+                    if posterior_uncertain:
+                        axis = posterior_axis(posterior_row)
+                        if axis is not None and posterior_shifts is not None:
+                            lo, hi = posterior_shifts
+                            for shift in (lo, hi):
+                                shifted_cam = world_to_camera(opt_world + shift * axis[None, :], T)
+                                draw_skeleton(overlay, shifted_cam, intr_tuple, uncertainty_color, 1)
+                            world_chunks.append(opt_world + lo * axis[None, :])
+                            world_chunks.append(opt_world + hi * axis[None, :])
                     if any_uncertain:
-                        draw_skeleton(overlay, opt_cam, intr_tuple, uncertainty_color, 1 if ownership_uncertain and not (latent_occlusion_uncertain or surface_support_uncertain) else 2)
+                        draw_skeleton(overlay, opt_cam, intr_tuple, uncertainty_color, 1 if ownership_uncertain and not (latent_occlusion_uncertain or surface_support_uncertain or posterior_uncertain) else 2)
                     world_chunks.append(opt_world)
                 if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
                     vc = world_to_camera(opt_verts[:: max(1, int(args.vertex_stride))], T)
@@ -327,8 +528,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; interval H_t hypothesis left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; interval H_t hypothesis left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
         if ownership_uncertain_on_frame:
-            cv2.putText(overlay, "magenta = unresolved ownership, support-bounded/contact surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 5)
-            cv2.putText(overlay, "magenta = unresolved ownership, support-bounded/contact surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 255), 2)
+            cv2.putText(overlay, "magenta = unresolved ownership/support/contact or occluded-hand posterior interval", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 5)
+            cv2.putText(overlay, "magenta = unresolved ownership/support/contact or occluded-hand posterior interval", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 255), 2)
         cv2.imwrite(str(overlay_dir / f"{out_i:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
         world = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -355,12 +556,21 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 ownership_uncertain = bool(args.ownership_uncertainty_overlay) and has_ownership_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
                 latent_occlusion_uncertain = has_latent_occlusion_uncertainty(st)
                 surface_support_uncertain = has_surface_support_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
-                any_uncertain = ownership_uncertain or latent_occlusion_uncertain or surface_support_uncertain
+                posterior_row = posteriors.get((frame_idx, side))
+                posterior_shifts = posterior_shift_values(posterior_row)
+                posterior_uncertain = posterior_shifts is not None
+                any_uncertain = ownership_uncertain or latent_occlusion_uncertain or surface_support_uncertain or posterior_uncertain
                 world_ownership_uncertain = world_ownership_uncertain or any_uncertain
                 if opt_world.shape == (21, 3):
                     draw_world_skeleton(world, opt_world, mn, mx, corrected_color, 2)
+                    if posterior_uncertain:
+                        axis = posterior_axis(posterior_row)
+                        if axis is not None and posterior_shifts is not None:
+                            lo, hi = posterior_shifts
+                            draw_world_skeleton(world, opt_world + lo * axis[None, :], mn, mx, (255, 0, 255), 1)
+                            draw_world_skeleton(world, opt_world + hi * axis[None, :], mn, mx, (255, 0, 255), 1)
                     if any_uncertain:
-                        draw_world_skeleton(world, opt_world, mn, mx, (255, 0, 255), 1 if ownership_uncertain and not (latent_occlusion_uncertain or surface_support_uncertain) else 2)
+                        draw_world_skeleton(world, opt_world, mn, mx, (255, 0, 255), 1 if ownership_uncertain and not (latent_occlusion_uncertain or surface_support_uncertain or posterior_uncertain) else 2)
                 if opt_verts.ndim == 2 and opt_verts.shape[1] == 3:
                     for p in opt_verts[:: max(1, int(args.vertex_stride))]:
                         q = world_point(p, mn, mx, 1280, 720)
@@ -370,7 +580,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                                 cv2.circle(world, q, 2, (255, 0, 255), 1)
         cv2.putText(world, f"local metric world frame {frame_idx}", (20, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         if world_ownership_uncertain:
-            cv2.putText(world, "magenta = unresolved ownership, support-bounded surface, or latent occluded-hand hypothesis", (20, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            cv2.putText(world, "magenta = unresolved ownership/support or occluded-hand posterior interval", (20, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
         cv2.imwrite(str(world_dir / f"{out_i:06d}.jpg"), world, [cv2.IMWRITE_JPEG_QUALITY, 90])
         rendered += 1
     stem = "joint_mano_full_video_correction" if bool(args.full_video) else "joint_mano_interval_correction"
@@ -384,7 +594,23 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         "-filter_complex", "[0:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[l];[1:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[r];[l][r]hstack=inputs=2[v]",
         "-map", "[v]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", str(side_video)
     ], check=True)
-    manifest = {"case": args.case, "full_video": bool(args.full_video), "state_paths": [str(p) for p in state_paths], "optimized_state_count": int(len(states)), "frame_count": rendered, "frame_ids": frame_ids, "overlay_video": str(overlay_video), "world_video": str(world_video), "side_by_side_video": str(side_video)}
+    manifest = {
+        "case": args.case,
+        "full_video": bool(args.full_video),
+        "annotations": str(args.annotations),
+        "pose_report": str(args.pose_report),
+        "completed_mesh": str(args.completed_mesh),
+        "state_paths": [str(p) for p in state_paths],
+        "occluded_translation_posterior_report": None if args.occluded_translation_posterior_report is None else str(args.occluded_translation_posterior_report),
+        "posterior_state_count": int(len(posteriors)),
+        "posterior_render_semantics": "magenta posterior endpoints are hard additional camera-z translation-bound endpoints for zero-observation rows; they are a bounded/conflicted uncertainty envelope, not a calibrated credible interval or hidden-hand reconstruction",
+        "optimized_state_count": int(len(states)),
+        "frame_count": rendered,
+        "frame_ids": frame_ids,
+        "overlay_video": str(overlay_video),
+        "world_video": str(world_video),
+        "side_by_side_video": str(side_video),
+    }
     (case_dir / "v18_joint_mano_interval_correction_render_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
