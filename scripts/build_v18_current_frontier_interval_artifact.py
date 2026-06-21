@@ -23,17 +23,17 @@ from typing import Any
 import cv2
 import numpy as np
 
-DEFAULT_OUTPUT_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v4")
+DEFAULT_OUTPUT_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5")
 DEFAULT_CASE_RENDER_ROOTS = {
     "task5_tomato_960": Path("/data2/ego_annotation_outputs/v18_task5_joint_mano_surface_support_uncertain_sanitized_base_full_video_v1/task5_tomato_960"),
-    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_occluded_translation_posterior_full_video_v1/trash_1050"),
+    "trash_1050": Path("/data2/ego_annotation_outputs/v18_trash_handobs_extend_1004_1008_posterior_full_video_v1/trash_1050"),
 }
 SANITIZED_ANNOTATION_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_sanitized_base_for_hprime"
 REJECTED_HPRIME_ROOT = "/data2/ego_annotation_outputs/v18_full_pipeline_verified_hprime_final_v7_full_signed_temporal_guard"
 
 DEFAULT_REVIEW_FRAMES = {
     "task5_tomato_960": [481, 499, 525, 648, 690, 720, 780, 873, 902],
-    "trash_1050": [720, 735, 779, 824, 830, 869, 893, 958, 972, 988, 998, 1000, 1002, 1006, 1020, 1027],
+    "trash_1050": [720, 735, 779, 824, 830, 869, 893, 958, 970, 971, 972, 988, 1000, 1002, 1004, 1006, 1008, 1009, 1020, 1027],
 }
 CASE_CLAIMS = {
     "task5_tomato_960": {
@@ -48,7 +48,7 @@ CASE_CLAIMS = {
     },
     "trash_1050": {
         "frontier_mechanism": "latent_occlusion_transition_plus_occluded_translation_posterior_interval_mano",
-        "claim": "Late trash MANO observations become invalid as the hand transitions under the lid; the artifact keeps the optimized latent MANO trajectory but visibly exposes a one-dimensional additional camera-z hard-bound feasible/energy stress-test for zero-observation rows. The selected first-surface evidence mostly exceeds the translation bound, and the optimizer falls back to feasible representative points, so the hidden hand is represented as broad/conflicted uncertainty rather than a known reconstructed pose or optimized MAP trajectory.",
+        "claim": "Late trash MANO observations become invalid as the hand transitions under the lid; the artifact keeps an optimized latent MANO trajectory but visibly exposes a one-dimensional additional camera-z hard-bound feasible/energy stress-test for zero-observation rows. The explicit observation-invalid interval now covers the original hard occlusion and the visually continuous left-hand 1004-1008 boundary rows; because the solve is interval-coupled, those five directly zeroed rows also create small temporal propagation through later left-hand rows rather than an isolated-frame patch. The selected first-surface evidence mostly exceeds the translation bound, and the optimizer falls back to feasible representative points, so the hidden hand is represented as broad/conflicted uncertainty rather than a known reconstructed pose or optimized MAP trajectory.",
         "not_claimed": [
             "known hidden-hand pose",
             "hidden articulation reconstruction",

@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-DEFAULT_FRONTIER_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v4")
+DEFAULT_FRONTIER_ROOT = Path("/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5")
 
 
 def load_json(path: Path) -> Any:
@@ -186,7 +186,7 @@ def classify_case(case: str, case_dir: Path, manifest_case: dict[str, Any]) -> d
             "frame_spans_by_hand_side": frame_spans_by_hand_side(zero_obs_rows),
             "hand_sides": sides(zero_obs_rows),
             "state_count": len(zero_obs_rows),
-            "rendered_consequence": "Latent/occluded MANO hypothesis rendered with magenta uncertainty; in Trash v4 this includes hard-bound camera-z posterior endpoints where available.",
+            "rendered_consequence": "Latent/occluded MANO hypothesis rendered with magenta uncertainty; in the current Trash frontier this includes hard-bound camera-z posterior endpoints where available.",
             "would_be_falsified_by": "Visible hand evidence through the alleged occlusion, an independent depth-order/contact observation that narrows the hidden trajectory, or a render showing a confident hidden pose without uncertainty.",
         })
     if visible_depth_order_rows:
@@ -209,7 +209,7 @@ def classify_case(case: str, case_dir: Path, manifest_case: dict[str, Any]) -> d
         classifications.append({
             "cause_class": "physical_information_limit_from_saturated_fixed_base_camera_z_posterior",
             "phenomenon": "For zero-observation occluded-hand rows, shifting the current solved MANO along camera z usually cannot clear selected visible first-surface conflicts within the solver translation bound. The available evidence supports broad/conflicted uncertainty, not hidden-hand reconstruction.",
-            "frame_spans": "see source_occluded_translation_posterior_report.json side rows; summarized over the 931-1003 interval",
+            "frame_spans": "see source_occluded_translation_posterior_report.json side rows; summarized over all zero-observation rows in the current posterior report, which may span multiple interval state files",
             "posterior_state_counts": summary.get("posterior_state_counts"),
             "zero_observation_row_count": summary.get("zero_observation_row_count"),
             "cannot_clear_inside_translation_bound_count": summary.get("cannot_clear_inside_translation_bound_count"),
@@ -252,7 +252,7 @@ def classify_case(case: str, case_dir: Path, manifest_case: dict[str, Any]) -> d
         "implementation_dataflow_defect_assessment": {
             "defects_found_in_inspected_scope": [],
             "basis": [
-                "Final-v4 representative overlay/world/side-by-side sheets were consumed as annotation.",
+                "Representative current-frontier overlay/world/side-by-side sheets were consumed as annotation.",
                 "The current frontier manifest and render manifests preserve sanitized annotation roots and posterior provenance.",
                 "The classification is descriptive; this field is not an exhaustive proof that no possible dataflow defect exists.",
             ],
@@ -289,9 +289,9 @@ def main() -> None:
             "does_not_claim_V18_closure_by_itself": True,
         },
         "visual_consumption_evidence": {
-            "task5_sheet": "/tmp/v18_v4_task5_closure_inspection.jpg",
-            "trash_sheet": "/tmp/v18_v4_trash_transition_closure_inspection.jpg",
-            "observation": "Representative v4 overlay/world/side-by-side frames were consumed as annotation. Task5 support spans show plausible visible hand/object alignment with magenta support uncertainty; Trash 970-971 remain visible, 972 transitions to latent uncertainty, 988-1002 show broad hard-bound posterior endpoints, and 1020 returns to ordinary context.",
+            "task5_sheet": "/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/task5_tomato_960/current_frontier_interval_mano_review.jpg",
+            "trash_sheet": "/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/trash_1050/current_frontier_interval_mano_review.jpg",
+            "observation": "Representative v5 overlay/world/side-by-side frames were consumed as annotation. Task5 support spans show plausible visible hand/object alignment with magenta support uncertainty; Trash 970-971 remain visible, 972 transitions to latent uncertainty, 988-1002 show broad hard-bound posterior endpoints, left 1004-1008 continue as bounded observation-invalid/posterior rows, and 1009/1020 return to ordinary visible/context behavior.",
         },
         "cases": cases,
     }

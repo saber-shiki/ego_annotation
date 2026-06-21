@@ -46,7 +46,7 @@ def reject_rejected_annotation_path(path_or_payload: Any, *, context: str) -> No
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--state", type=Path, default=DEFAULT_STATE)
+    p.add_argument("--state", type=Path, action="append", default=None, help="Interval solver state JSON. Repeat to build one posterior across adjacent interval-state files; frame/side rows must be unique.")
     p.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS)
     p.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     p.add_argument("--zero-observation-weight", type=float, default=0.0)
@@ -334,12 +334,68 @@ def side_report(rows: list[PosteriorRow], x: np.ndarray, opt_diag: dict[str, Any
     }
 
 
+POSTERIOR_PARAM_KEYS = (
+    "max_translation_m",
+    "visible_surface_depth_order_margin_m",
+    "visible_surface_depth_order_weight",
+    "smooth_weight",
+    "accel_weight",
+)
+
+
+def state_paths_from_args(args: argparse.Namespace) -> list[Path]:
+    paths = list(args.state or [])
+    return paths if paths else [DEFAULT_STATE]
+
+
+def merge_state_payloads(state_paths: list[Path]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    payloads: list[dict[str, Any]] = []
+    seen: dict[tuple[int, str], Path] = {}
+    merged_rows: list[dict[str, Any]] = []
+    param_ref: dict[str, Any] | None = None
+    for path in state_paths:
+        reject_rejected_annotation_path(path, context="state path")
+        payload = load_json(path)
+        reject_rejected_annotation_path(payload.get("inputs", {}).get("annotations", ""), context=f"state annotation input {path}")
+        params = payload.get("parameters", {}) if isinstance(payload.get("parameters"), dict) else {}
+        if param_ref is None:
+            param_ref = dict(params)
+        else:
+            for key in POSTERIOR_PARAM_KEYS:
+                a = float(param_ref.get(key, 0.0) or 0.0)
+                b = float(params.get(key, 0.0) or 0.0)
+                if not np.isclose(a, b, rtol=0.0, atol=1.0e-12):
+                    raise ValueError(f"posterior parameter {key} differs across state files: {a} vs {b} at {path}")
+        payloads.append(payload)
+        for row in as_list(payload.get("per_frame_states")):
+            if not isinstance(row, dict):
+                continue
+            key = (int(row["frame_idx"]), str(row["hand_side"]))
+            if key in seen:
+                raise ValueError(f"duplicate posterior state row {key} in {path}; already seen in {seen[key]}")
+            seen[key] = path
+            merged_rows.append(row)
+    merged_rows.sort(key=lambda r: (int(r["frame_idx"]), str(r["hand_side"])))
+    if not payloads:
+        raise ValueError("no state payloads were loaded")
+    merged = dict(payloads[0])
+    merged["per_frame_states"] = merged_rows
+    raw_inputs = merged.get("inputs")
+    base_inputs: dict[str, Any] = dict(raw_inputs) if isinstance(raw_inputs, dict) else {}
+    merged["inputs"] = {
+        **base_inputs,
+        "state_paths": [str(p) for p in state_paths],
+    }
+    if param_ref is not None:
+        merged["parameters"] = param_ref
+    return merged, payloads
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
-    reject_rejected_annotation_path(args.state, context="state path")
+    state_paths = state_paths_from_args(args)
     reject_rejected_annotation_path(args.annotations, context="annotations path")
-    state = load_json(args.state)
+    state, _payloads = merge_state_payloads(state_paths)
     annotations = load_json(args.annotations)
-    reject_rejected_annotation_path(state.get("inputs", {}).get("annotations", ""), context="state annotation input")
     reject_rejected_annotation_path(annotations.get("source_annotations") or "", context="annotations source metadata")
     frames_by_idx = load_frames_by_idx(annotations)
     params = state.get("parameters", {}) if isinstance(state.get("parameters"), dict) else {}
@@ -353,7 +409,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "case": "trash_1050",
         "claim_scope": "One-dimensional additional camera-z translation posterior/feasible-set profile for zero-observation MANO rows. It uses the current solved MANO state as the base trajectory and reuses selected visible-surface depth-order residuals, translation bounds, and temporal smoothness/acceleration terms. It is not hidden-hand articulation reconstruction, contact proof, object pose proof, or a calibrated probability distribution.",
         "inputs": {
-            "state": str(args.state),
+            "state": str(state_paths[0]) if len(state_paths) == 1 else None,
+            "state_paths": [str(p) for p in state_paths],
             "annotations": str(args.annotations),
         },
         "parameters": {
