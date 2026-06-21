@@ -173,6 +173,21 @@ def has_surface_support_uncertainty(st: dict[str, Any], threshold_m: float) -> b
     return support_unc > 0.0 and trusted > float(threshold_m) and trusted <= support_unc + float(threshold_m)
 
 
+def has_contact_patch_uncertainty(st: dict[str, Any], threshold_m: float) -> bool:
+    if str(st.get("contact_patch_factor_state") or "") != "active_contact_patch":
+        return False
+    try:
+        support_unc = float(st.get("contact_patch_support_uncertainty_m") or 0.0)
+    except Exception:
+        support_unc = 0.0
+    posterior = st.get("contact_patch_posterior_probability")
+    try:
+        posterior_f = float(posterior)
+    except Exception:
+        posterior_f = 1.0
+    return bool(st.get("contact_patch_state_optimized")) or support_unc > float(threshold_m) or posterior_f < 1.0 - 1.0e-6
+
+
 def draw_skeleton(image: np.ndarray, joints_camera: np.ndarray, intr: tuple[float, float, float, float], color: tuple[int, int, int], width_px: int) -> None:
     h, w = image.shape[:2]
     u, v, valid = project_camera(joints_camera, intr, w, h)
@@ -290,8 +305,9 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 ownership_uncertain = bool(args.ownership_uncertainty_overlay) and has_ownership_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
                 latent_occlusion_uncertain = has_latent_occlusion_uncertainty(st)
                 surface_support_uncertain = has_surface_support_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
+                contact_patch_uncertain = has_contact_patch_uncertainty(st, float(args.ownership_uncertainty_threshold_m))
                 uncertainty_color = (255, 0, 255)
-                any_uncertain = ownership_uncertain or latent_occlusion_uncertain or surface_support_uncertain
+                any_uncertain = ownership_uncertain or latent_occlusion_uncertain or surface_support_uncertain or contact_patch_uncertain
                 ownership_uncertain_on_frame = ownership_uncertain_on_frame or any_uncertain
                 if opt_world.shape == (21, 3):
                     opt_cam = world_to_camera(opt_world, T)
@@ -311,8 +327,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; interval H_t hypothesis left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
         cv2.putText(overlay, f"frame {frame_idx}: original left/right = blue/orange; interval H_t hypothesis left/right = cyan/yellow", (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
         if ownership_uncertain_on_frame:
-            cv2.putText(overlay, "magenta = unresolved ownership, support-bounded surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 5)
-            cv2.putText(overlay, "magenta = unresolved ownership, support-bounded surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 255), 2)
+            cv2.putText(overlay, "magenta = unresolved ownership, support-bounded/contact surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 5)
+            cv2.putText(overlay, "magenta = unresolved ownership, support-bounded/contact surface, or latent occluded-hand hypothesis", (20, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 255), 2)
         cv2.imwrite(str(overlay_dir / f"{out_i:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
         world = np.zeros((720, 1280, 3), dtype=np.uint8)
