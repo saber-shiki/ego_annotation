@@ -149,6 +149,10 @@ class FrameHandRow:
     contact_patch_band_m: float
     contact_patch_target_margin_m: float
     contact_patch_support_uncertainty_m: float
+    contact_anchor_state: str | None
+    contact_anchor_residual_allowed: bool
+    contact_anchor_blockers: list[str]
+    contact_pose_anchor_key: str | None
     joint_visibility_weights: np.ndarray
     joint_depth_residual_m: np.ndarray
     hand_ray_shift_prior_world_m: np.ndarray
@@ -230,6 +234,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--contact-state-prior-residual-scale-m", type=float, default=0.010, help="Physical residual scale used to convert contact row weights into contact-state prior strength. Deviating C_t from its observation prior by 1 costs the same as this many metres of contact residual.")
     p.add_argument("--contact-state-temporal-strength", type=float, default=1.0, help="Multiplier on same-side adjacent-frame C_t smoothness, using the same physical weight scale as the contact-state prior.")
     p.add_argument("--contact-state-geometry-likelihood", action=argparse.BooleanOptionalAction, default=False, help="Add a metric contact-compatibility observation on C_t from the selected current MANO-to-patch distance relative to the row's target margin plus object/patch support uncertainty. This makes C_t an evidence-updated switch instead of only a prior/temporal scalar.")
+    p.add_argument("--require-contact-patch-pose-anchor", action=argparse.BooleanOptionalAction, default=False, help="Fail loudly if an active contact_patch row is consumed without explicit stable contact-anchor support. Use only to test a persistent object-frame A_t/pose-anchor mechanism; local visible-surface contact rows must not be silently upgraded to point anchors.")
     p.add_argument("--visible-ownership-face-overlap-dilation-px", type=int, default=2, help="Pixel dilation for deciding whether any projected face support sample overlaps non-object-owned ownership pixels.")
     p.add_argument("--visible-object-mask-report", type=Path, default=None, help="Legacy visible entity mask report. Prefer --factor-report with factor_family=visible_surface_track; this path remains only for reproducing earlier mask/depth ablations.")
     p.add_argument("--visible-object-mask-gate", action=argparse.BooleanOptionalAction, default=False, help="Legacy gate: trust observed object mesh faces only when their projected center lies inside the model-produced visible entity mask.")
@@ -492,6 +497,10 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
             "support_uncertainty_m": float(args.contact_patch_support_uncertainty_m),
             "max_vertices": int(args.max_contact_patch_vertices),
             "prior_probability": 0.0,
+            "contact_anchor_state": None,
+            "contact_anchor_residual_allowed": False,
+            "contact_anchor_blockers": [],
+            "contact_pose_anchor_key": None,
         }
     state = str(row.get("state") or "active_contact_patch")
     try:
@@ -524,6 +533,7 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
         prior_probability = float(raw_prior) if raw_prior is not None else (1.0 if max(0.0, weight) > 0.0 and state == "active_contact_patch" else 0.0)
     except Exception:
         prior_probability = 1.0 if max(0.0, weight) > 0.0 and state == "active_contact_patch" else 0.0
+    blockers = row.get("contact_anchor_blockers")
     return {
         "state": state,
         "weight": max(0.0, weight),
@@ -532,6 +542,10 @@ def contact_patch_for_row(row: dict[str, Any] | None, args: argparse.Namespace) 
         "target_margin_m": max(0.0, target_margin_m),
         "support_uncertainty_m": max(0.0, support_uncertainty_m),
         "max_vertices": max(0, max_vertices),
+        "contact_anchor_state": row.get("contact_anchor_state"),
+        "contact_anchor_residual_allowed": bool(row.get("contact_anchor_residual_allowed")),
+        "contact_anchor_blockers": blockers if isinstance(blockers, list) else [],
+        "contact_pose_anchor_key": row.get("contact_pose_anchor_key") if isinstance(row.get("contact_pose_anchor_key"), str) else None,
     }
 
 
@@ -1142,6 +1156,11 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         contact_patch_normals = np.zeros((0, 3), dtype=float)
         contact_patch_distances = np.zeros((0,), dtype=float)
         if contact_patch_diag.get("state") == "active_contact_patch" and float(contact_patch_diag.get("weight", 0.0)) > 0.0:
+            if bool(args.require_contact_patch_pose_anchor) and not bool(contact_patch_diag.get("contact_anchor_residual_allowed")):
+                raise ValueError(
+                    "active contact_patch row lacks stable contact-anchor support; refusing to upgrade local visible-surface contact to persistent A_t pose anchor "
+                    f"for frame={frame_idx} side={side} state={contact_patch_diag.get('contact_anchor_state')} blockers={contact_patch_diag.get('contact_anchor_blockers')}"
+                )
             contact_patch_idx, contact_patch_targets, contact_patch_normals, contact_patch_distances = contact_patch_targets_from_vertices(
                 current_vertices,
                 scene,
@@ -1234,6 +1253,10 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 contact_patch_band_m=float(contact_patch_diag.get("band_m", args.contact_patch_band_m)),
                 contact_patch_target_margin_m=float(contact_patch_diag.get("target_margin_m", args.contact_patch_target_margin_m)),
                 contact_patch_support_uncertainty_m=float(contact_patch_diag.get("support_uncertainty_m", args.contact_patch_support_uncertainty_m)),
+                contact_anchor_state=contact_patch_diag.get("contact_anchor_state"),
+                contact_anchor_residual_allowed=bool(contact_patch_diag.get("contact_anchor_residual_allowed")),
+                contact_anchor_blockers=list(contact_patch_diag.get("contact_anchor_blockers", [])),
+                contact_pose_anchor_key=contact_patch_diag.get("contact_pose_anchor_key"),
                 joint_visibility_weights=joint_visibility_weights.astype(float),
                 joint_depth_residual_m=joint_depth_residual.astype(float),
                 hand_ray_shift_prior_world_m=ray_prior_world.astype(float),
@@ -1407,6 +1430,57 @@ def full_observed_surface_measure(vertices_world: np.ndarray, row: FrameHandRow,
         "penetrating_vertex_count": int(penetrating.size),
         "observed_supported_penetrating_vertex_count": int(np.count_nonzero(observed)),
         "observed_supported_penetration_m": numeric_summary(observed_depths),
+    }
+
+
+def contact_patch_anchor_coherence(rows: list[FrameHandRow]) -> dict[str, Any]:
+    centroids_object: list[np.ndarray] = []
+    row_spreads: list[float] = []
+    support_uncertainties: list[float] = []
+    anchor_states: Counter[str] = Counter()
+    allowed_count = 0
+    active_count = 0
+    for row in rows:
+        if row.contact_anchor_state:
+            anchor_states[str(row.contact_anchor_state)] += 1
+        if row.contact_anchor_residual_allowed:
+            allowed_count += 1
+        if row.contact_patch_factor_state != "active_contact_patch" or len(row.contact_patch_target_world_m) == 0:
+            continue
+        active_count += 1
+        targets_object = inverse_object(
+            row.contact_patch_target_world_m,
+            row.object_rotation_world_from_object,
+            row.object_translation_world_m,
+        )
+        centroid = np.median(targets_object, axis=0)
+        centroids_object.append(centroid.astype(float))
+        spread = np.linalg.norm(targets_object - centroid[None, :], axis=1)
+        row_spreads.extend(spread.astype(float).tolist())
+        support_uncertainties.append(float(row.contact_patch_support_uncertainty_m))
+    if centroids_object:
+        centroid_arr = np.asarray(centroids_object, dtype=float)
+        median_centroid = np.median(centroid_arr, axis=0)
+        centroid_dispersion = np.linalg.norm(centroid_arr - median_centroid[None, :], axis=1)
+    else:
+        median_centroid = np.zeros((3,), dtype=float)
+        centroid_dispersion = np.asarray([], dtype=float)
+    centroid_summary = numeric_summary(np.asarray(centroid_dispersion, dtype=float))
+    support_summary = numeric_summary(np.asarray(support_uncertainties, dtype=float))
+    dispersion_p95 = centroid_summary.get("p95") if isinstance(centroid_summary, dict) else None
+    support_p95 = support_summary.get("p95") if isinstance(support_summary, dict) else None
+    return {
+        "active_contact_patch_rows_with_targets": int(active_count),
+        "contact_anchor_state_counts": dict(sorted(anchor_states.items())),
+        "contact_anchor_residual_allowed_count": int(allowed_count),
+        "object_frame_contact_centroid_median": median_centroid.astype(float).tolist(),
+        "object_frame_centroid_dispersion_m": centroid_summary,
+        "row_patch_spread_m": numeric_summary(np.asarray(row_spreads, dtype=float)),
+        "support_uncertainty_m": support_summary,
+        "centroid_dispersion_p95_exceeds_support_p95": bool(
+            dispersion_p95 is not None and support_p95 is not None and float(dispersion_p95) > float(support_p95)
+        ),
+        "claim_scope": "Diagnostic support for a persistent object-frame A_t contact anchor. If stable anchor rows are absent or dispersion exceeds support, local contact must remain a sliding/bounded visible-surface hypothesis rather than a point-anchor force on H_t.",
     }
 
 
@@ -1902,6 +1976,10 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "contact_patch_support_uncertainty_m": float(row.contact_patch_support_uncertainty_m),
                 "contact_patch_deadband_m": float(row.contact_patch_target_margin_m + row.contact_patch_support_uncertainty_m),
                 "contact_patch_residual_mode": str(args.contact_patch_residual_mode),
+                "contact_anchor_state": row.contact_anchor_state,
+                "contact_anchor_residual_allowed": bool(row.contact_anchor_residual_allowed),
+                "contact_anchor_blockers": list(row.contact_anchor_blockers),
+                "contact_pose_anchor_key": row.contact_pose_anchor_key,
                 "contact_patch_final_normal_gap_m": cp_gap_summary,
                 "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
@@ -1962,6 +2040,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "contact_patch_initial_distance_m": numeric_summary(np.concatenate([r.contact_patch_initial_distance_m for r in rows if len(r.contact_patch_initial_distance_m)]).astype(float) if any(len(r.contact_patch_initial_distance_m) for r in rows) else np.asarray([], dtype=float)),
         "contact_patch_final_abs_normal_gap_m": numeric_summary(np.asarray(contact_patch_final_abs_normal_gap, dtype=float)),
         "contact_patch_support_uncertainty_m": numeric_summary(np.asarray([r.contact_patch_support_uncertainty_m for r in rows if r.contact_patch_factor_state == "active_contact_patch"], dtype=float)),
+        "contact_patch_anchor_coherence": contact_patch_anchor_coherence(rows),
         "hand_observation_weight_multiplier": numeric_summary(hand_observation_weight_multiplier_np),
         "joint_visibility_weight": numeric_summary(joint_visibility_weights_np.reshape(-1)),
         "pose_visibility_weight": numeric_summary(pose_visibility_weights_np.reshape(-1)),

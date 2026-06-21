@@ -340,6 +340,14 @@ def main() -> None:
                 skipped.append({"frame_idx": frame_idx, "hand_side": side, "reason": "latent_contact_zero_weight", "state": hyp.get("state")})
                 continue
             evidence = as_dict(hyp.get("final_metric_contact_evidence"))
+            coupling = as_dict(hyp.get("active_contact_coupling_state"))
+            stable_anchor_candidate = bool(coupling.get("stable_contact_pose_anchor_candidate"))
+            stable_anchor_emitted = bool(coupling.get("stable_contact_pose_anchor_factor_emitted"))
+            contact_anchor_state = (
+                "stable_pose_anchor_emitted"
+                if stable_anchor_emitted
+                else ("stable_pose_anchor_candidate_not_emitted" if stable_anchor_candidate else "local_visible_surface_contact_only_no_stable_pose_anchor")
+            )
             support_uncertainty_m = float(support_by_frame.get(frame_idx, float(args.default_object_support_uncertainty_m)))
             contact_deadband_m = float(args.contact_patch_target_margin_m) + max(0.0, support_uncertainty_m)
             row_weight = float(args.weight) * float(latent.get("latent_contact_weight_fraction", 1.0))
@@ -351,8 +359,8 @@ def main() -> None:
                     "hand_side": side,
                     "variable_affected": "H_t",
                     "observation_type": "evidence_weighted_latent_contact_to_uncertain_observed_visible_surface_patch" if bool(args.latent_contact_weighting) else "supported_active_contact_to_uncertain_observed_visible_surface_patch",
-                    "residual_or_quarantine_rule": "select current MANO vertices near eligible observed object surface and penalize surface-normal distance only beyond contact_patch_target_margin_m + object_support_uncertainty_m while allowing tangential sliding; existing nonpenetration handles crossing",
-                    "rendered_uncertainty_channel": "bounded latent/sliding contact patch MANO hypothesis; no object pose or hidden geometry claim",
+                    "residual_or_quarantine_rule": "select current MANO vertices near eligible observed object surface and penalize surface-normal distance only beyond contact_patch_target_margin_m + object_support_uncertainty_m while allowing tangential sliding; do not consume as a persistent object-frame A_t pose anchor unless contact_anchor_residual_allowed is true",
+                    "rendered_uncertainty_channel": "bounded latent/sliding contact patch MANO hypothesis; no object pose, hidden geometry, or persistent point-anchor claim unless stable anchor fields explicitly allow it",
                     "state": "active_contact_patch",
                     "weight": float(row_weight),
                     "contact_patch_base_weight": float(args.weight),
@@ -361,6 +369,10 @@ def main() -> None:
                     "object_support_uncertainty_m": max(0.0, support_uncertainty_m),
                     "contact_patch_support_uncertainty_m": max(0.0, support_uncertainty_m),
                     "contact_patch_deadband_m": contact_deadband_m,
+                    "contact_anchor_state": contact_anchor_state,
+                    "contact_anchor_residual_allowed": bool(stable_anchor_emitted),
+                    "contact_anchor_blockers": coupling.get("blockers") if isinstance(coupling.get("blockers"), list) else [],
+                    "contact_pose_anchor_key": coupling.get("contact_pose_anchor_key"),
                     "max_vertices": int(args.max_vertices),
                     "source_contact_state": hyp.get("state"),
                     "source_contact_owner_hypothesis": hyp.get("contact_owner_hypothesis"),
@@ -368,8 +380,9 @@ def main() -> None:
                     "source_near_contact_band_m": evidence.get("near_contact_band_m"),
                     "source_object_support_uncertainty_stat": str(args.object_support_uncertainty_stat),
                     "source_object_pose_fit_report": str(args.object_pose_fit_report) if args.object_pose_fit_report else None,
-                    "source_contact_coupling_state": as_dict(hyp.get("active_contact_coupling_state")).get("coupling_state"),
-                    "source_stable_contact_pose_anchor_factor_emitted": as_dict(hyp.get("active_contact_coupling_state")).get("stable_contact_pose_anchor_factor_emitted"),
+                    "source_contact_coupling_state": coupling.get("coupling_state"),
+                    "source_stable_contact_pose_anchor_candidate": stable_anchor_candidate,
+                    "source_stable_contact_pose_anchor_factor_emitted": stable_anchor_emitted,
                     "independent_contact_evidence_supported": bool(independent_supported),
                     "independent_contact_evidence_reason": independent_reason,
                     "current_annotation_contact_evidence_supported": bool(current_supported),
@@ -383,6 +396,7 @@ def main() -> None:
                         "frame_contact_hypothesis_key": "frames[].contact_hypotheses[]",
                         "selection_rule": "target object, supported active or included raw near-contact candidate, side in left/right, evidence-weighted latent contact when requested, strict independent evidence only in diagnostic mode",
                         "final_metric_contact_evidence": evidence,
+                        "active_contact_coupling_state": coupling,
                         "independent_contact_evidence_row": independent_evidence_row,
                     },
                 }
@@ -436,6 +450,8 @@ def main() -> None:
             "row_weight": numeric_summary([float(r.get("weight", 0.0)) for r in deduped]),
             "latent_raw_candidate_count": sum(1 for r in deduped if r.get("latent_contact_raw_candidate") is True),
             "latent_current_depth_conflict_count": sum(1 for r in deduped if r.get("latent_contact_current_depth_conflict") is True),
+            "contact_anchor_state_counts": {state: sum(1 for r in deduped if str(r.get("contact_anchor_state")) == state) for state in sorted({str(r.get("contact_anchor_state")) for r in deduped})},
+            "contact_anchor_residual_allowed_count": sum(1 for r in deduped if r.get("contact_anchor_residual_allowed") is True),
             "current_annotation_contact_evidence_supported_count": sum(1 for r in deduped if r.get("current_annotation_contact_evidence_supported") is True),
             "independent_contact_evidence_rejected_count": sum(1 for r in skipped if r.get("reason") == "independent_contact_evidence_rejected"),
         },
