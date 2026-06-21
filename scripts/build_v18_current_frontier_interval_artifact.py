@@ -320,6 +320,20 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
 
     linked_manifest = copy_or_hardlink(render_manifest_path, case_dir / "source_render_manifest.json", prefer_hardlink=prefer_hardlink)
     merged_rows, state_summary = summarize_states(case, state_paths)
+    frame_count = render_manifest.get("frame_count")
+    try:
+        frame_count_int = int(frame_count)
+    except (TypeError, ValueError):
+        frame_count_int = None
+    optimized_unique_count = int(state_summary.get("unique_optimized_frame_count", 0) or 0)
+    state_summary["full_video_frame_count"] = frame_count_int
+    state_summary["context_passthrough_frame_count"] = (
+        max(0, frame_count_int - optimized_unique_count) if frame_count_int is not None else None
+    )
+    state_summary["frame_policy"] = (
+        "Frames with interval solver states are rendered from optimized MANO variables; "
+        "frames without interval solver states are full-video context/passthrough frames and do not claim a new MANO correction."
+    )
     backing_path = case_dir / "frontier_interval_mano_states.json"
     write_json(backing_path, {
         "method": "build_v18_current_frontier_interval_artifact.merge_interval_mano_states",
@@ -330,7 +344,6 @@ def build_case(case: str, render_root: Path, output_root: Path, review_frames: l
         "per_frame_states": merged_rows,
     })
     review = make_review_sheet(case, case_dir, review_frames)
-    frame_count = render_manifest.get("frame_count")
     return {
         "case": case,
         "render_root_source": str(render_root),
