@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -499,6 +500,7 @@ def main() -> None:
     ap.add_argument("--case-render-root", action="append", default=[], help="CASE=render_root. Defaults to current task5/trash frontier roots.")
     ap.add_argument("--review-frames", action="append", default=[], help="CASE=f0,f1,... for review sheet frames.")
     ap.add_argument("--hardlink-existing-files", action="store_true", help="Use hardlinks for existing videos/manifests. Default copies to freeze the artifact against later in-place source overwrites.")
+    ap.add_argument("--skip-uncertainty-classification", action="store_true", help="Do not attach the final physical-cause uncertainty classification. Default builds it so the frontier artifact remains self-explaining.")
     args = ap.parse_args()
 
     output_root = args.output_root
@@ -528,7 +530,14 @@ def main() -> None:
         },
         "cases": cases,
     }
-    write_json(output_root / "v18_current_frontier_interval_mano_artifact_manifest.json", artifact_manifest)
+    manifest_path = output_root / "v18_current_frontier_interval_mano_artifact_manifest.json"
+    write_json(manifest_path, artifact_manifest)
+    if not bool(args.skip_uncertainty_classification):
+        classifier = Path(__file__).resolve().parent / "build_v18_frontier_uncertainty_classification.py"
+        if not classifier.exists():
+            raise FileNotFoundError(classifier)
+        subprocess.run([sys.executable, str(classifier), "--frontier-root", str(output_root)], check=True)
+        artifact_manifest = load_json(manifest_path)
     print(json.dumps({
         "status": "ok",
         "output_root": str(output_root),
