@@ -98,7 +98,7 @@ This design keeps model judgment auditable: the agent must cite the visual/geome
 
 ### 3.5 Runtime and compute placement
 
-V19 must keep runtime as a design invariant, not a post-hoc metric. The default path should run in the same order of magnitude as the input video duration; for planning, the target is a first complete full-video artifact within roughly `10x` input duration on the designated server-class compute target, excluding optional benchmark-suite runs. Any per-instance training, NeRF/BundleSDF-style optimization, exhaustive mesh search, or long autoresearch sweep is an offline research branch and cannot be the default path.
+V19 must keep runtime as a design invariant, not a post-hoc metric. The default path should run in the same order of magnitude as the input video duration; for planning, the target is a first complete full-video artifact within roughly `10x` input duration on the designated server-class compute target, excluding optional external-evaluation runs. Any per-instance training, NeRF/BundleSDF-style optimization, exhaustive mesh search, or long autoresearch sweep is an offline research branch and cannot be the default path.
 
 Heavy inference must not run on the local workstation by accident. The harness should declare a compute target for every expensive tool invocation:
 
@@ -224,37 +224,31 @@ V19 should build an object roster before solving physical state:
 
 The downstream path must be uniform. A tomato, bowl, pot, lid, tool, or support surface should all enter the same object-instance schema. Object-specific Python branches for color/category/action phrases are not a V19 perception strategy.
 
-### 6.3 Object posterior
+### 6.3 Object state-type decision and posterior
 
-Each object instance should maintain multiple hypotheses rather than one forced representation:
+Each object instance should maintain candidate state types until the physical-state decision is made:
 
-- **Visible surface hypothesis:** observed depth/mask-derived point or surfel support.
-- **Rigid mesh hypothesis:** reconstructed or instance-adapted mesh with SE(3)/Sim(3) trajectory. Retrieved or dataset meshes are priors unless video/depth/dataset-instance evidence aligns them to the actual object.
-- **Articulated/part hypothesis:** linked rigid parts when motion evidence supports part motion.
-- **Deformable/uncertain hypothesis:** uncertainty volume or low-rank deformation when rigid residuals are too high.
-- **Out-of-frame/occluded hypothesis:** temporal carry with explicit visibility and uncertainty.
+- **Visible surface measurement:** observed depth/mask-derived point or surfel support used as evidence and metric anchor.
+- **Rigid object branch:** reconstructed or instance-adapted mesh with SE(3)/Sim(3) trajectory. Retrieved or TRELLIS/category/dataset meshes are priors until aligned to the observed instance.
+- **Articulated/part branch:** linked rigid parts when motion evidence supports part motion.
+- **Deformable/uncertain branch:** uncertainty volume or deformation model when the object is not judged rigid.
+- **Out-of-frame/occluded state:** temporal carry with explicit visibility and uncertainty.
 
-The renderer chooses the best-supported hypothesis for presentation, but the state keeps alternatives and residuals.
+The important control-flow rule is that the VLM/agent physical-state decision selects the branch. Once an object is classified as rigid, visible surfaces are no longer an alternate deliverable replacing pose; they are measurements used to complete, fit, and correct the rigid mesh trajectory. Residuals can widen uncertainty, trigger another measurement, or mark a frame for repair, but they must not silently demote a rigid-object annotation to a point cloud or status label.
 
-## 7. V18 tomato rigid-body scope
+## 7. Rigid-object pipeline for tomato/task5
 
-V18 must be described as a two-layer result. It **did** treat the tomato as a compact/rigid object in several branches: compact-rigid completion, visible-frame SE(3) pose fitting, and temporal rigid-tomato renders. For example, `/data2/ego_annotation_outputs/v18_temporal_rigid_tomato_artifact_v2/task5_tomato_960/v18_temporal_rigid_tomato_manifest.json` records a rendered state in which the `tomato_object` is a `compact-rigid completed mesh with per-frame visible-depth pose fit`, with rigid-tomato overlay/world/side-by-side videos. That fact should not be erased.
+The tomato logic should be stated as a mechanism, not as a claim-retreat. When the V18 VLM physical-state path, or the V19 agent harness, judges an object to be rigid, the pipeline must execute the rigid-object branch and render the resulting object state. The branch is:
 
-The narrower V18 limitation is that those rigid-tomato artifacts were not the final accepted V18 closure claim. The same V18 temporal-rigid manifest scopes itself as a `diagnostic integrated rigid-tomato/temporal-MANO-uncertainty artifact, not final V18 delivery`, and says a temporal MANO trajectory or bounded uncertainty sequence over conflict intervals remained required. The final V18 v5 closure artifact at `/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/` scopes its primary deliverable as full-video bounded interval MANO with explicit support/occlusion uncertainty, not as solved full-video metric tomato object pose.
+1. **Rigidity decision.** The VLM/agent-harness declares that a specific object instance is rigid over a frame span. This decision selects the rigid-object pipeline; it is not a category/name-specific Python branch.
+2. **TRELLIS mesh completion.** Use TRELLIS — the local V18 code names this stage through `remote_run_trellis_shape_v3.py`, `build_v18_compact_rigid_trellis_completion.py`, and `microsoft/TRELLIS-image-large` — to complete a per-instance mesh from object crops/masks. Align the TRELLIS prior to observed depth/mask evidence; observed depth-fused visible surfaces remain the metric anchor and TRELLIS supplies hidden-surface completion.
+3. **Visible-frame pose estimation.** Fit the completed mesh SE(3)/Sim(3) pose for every frame in which the object is visible and has mask/depth support. V18 reports such as `v18_compact_rigid_object_pose_fit_report.json` are the right stage type: they initialize from the graph/object state and refit against current visible depth samples.
+4. **Factor-graph correction.** Put the object pose trajectory into the temporal factor graph with camera/depth corrections, MANO hand state, contact, occlusion, and nonpenetration terms. The graph corrects the object pose and hand/object relation jointly; residuals and uncertainty are carried in the state, not used to demote a rigid object back to a point cloud.
+5. **Canonical render consumption.** The overlay/world/side-by-side renderer consumes the corrected rigid mesh pose as the object annotation. If a frame is occluded or out of view, the state should show the temporal/occlusion uncertainty for that rigid object, not replace the object with an unrelated visible-surface-only story.
 
-The precise historical claim is therefore: V18 implemented, rendered, and used rigid-tomato hypotheses as evidence; V18 did not promote a solved full-video rigid tomato pose/object state as the final v5 deliverable. Any unqualified statement that “V18 solved rigid tomato” overstates the final closure; any statement implying “V18 never treated tomato as rigid” is also false.
+For task5, this means the correct tomato story is: rigid decision -> TRELLIS completion -> pose on visible frames -> factor-graph pose correction -> rendered rigid tomato state. The design should not use claim-scope language as an escape hatch from this mechanism. The remaining engineering question is whether the harness consistently runs and renders that branch from raw video and whether evaluation quantifies pose/contact quality; the branch itself is the object-pose mechanism.
 
-The mechanism is not “tomatoes cannot be rigid.” A tomato is often close enough to rigid for a useful presentation. The V18 mechanism was weaker: segmentation, depth, occlusion, hand contact, and candidate shape/pose evidence did not converge into a final source-consistent full-video rigid trajectory that could safely constrain MANO and object pose without false precision.
-
-V19 should fix this by making object representation an explicit posterior:
-
-1. Reconstruct candidate object geometry from multiple visible frames, or adapt a retrieved/dataset mesh to the observed instance using masks, depth, silhouettes, and scale evidence.
-2. Fit a temporal SE(3)/Sim(3) trajectory against masks, depth, hand contact, and nonpenetration only after the geometry is instance-supported.
-3. Compare against visible-surface-only and deformable/uncertain hypotheses.
-4. Promote the rigid mesh to the audience render only if residuals, silhouette, depth, contact, and temporal continuity support it.
-5. If rigid support remains weak, render a translucent uncertainty volume/visible surface rather than a false rigid body.
-
-This gives the audience a better object visualization when evidence supports it, without violating the project rule that object pose means reconstructed object geometry, not a centroid, primitive, or label.
+This gives the audience a real manipulated-object visualization when the object is rigid, without violating the project rule that object pose means reconstructed/adapted object geometry, not a centroid, primitive, or label.
 
 ## 8. Hand state and physical consistency
 
@@ -306,7 +300,7 @@ The overlay should use short audience-facing labels. These examples are task5-st
 ```text
 right hand grasping tomato (uncertain contact)
 left hand partially occluded by bowl
-object pose: rigid hypothesis supported / unresolved / visible surface only
+object pose: rigid tomato mesh, corrected pose, residual uncertainty
 ```
 
 Internal details such as factor names, residual thresholds, schema states, and validator names belong in the evidence report, not in the main video.
@@ -323,36 +317,32 @@ An optional HTML/GLB/USD viewer should allow rotating the scene and inspecting o
 
 ## 10. Quantitative evaluation plan
 
-V19 needs a benchmark matrix because no single open dataset validates the whole claim. Each dataset constrains a different part of the physical annotation.
+V19 needs an executable benchmark slice, not a survey. The active evaluation budget is one primary dataset and at most one secondary dataset, with a few clips each. Any additional dataset belongs in future-work notes or a later design amendment; adding it to the V19 acceptance gate without running it would dilute the evaluation to zero.
 
-### 10.1 Dataset roles
+### 10.1 Active benchmark scope
 
-| Dataset/source | Useful ground truth | V19 claim it can test | Limits |
-|---|---|---|---|
-| HOT3D | Egocentric multi-view recordings, MANO/UmeTrack hands, rigid object meshes/poses, headset pose, curated clips, visibility/QA mask files where available | Joint egocentric hand/object/head/world tracking; object pose; hand shape/pose; visibility-aware evaluation | Rigid object set and controlled capture; not arbitrary internet video |
-| H2O | Synchronized RGB-D, left/right 3D hand poses, 6D object poses, camera poses, object meshes, interaction labels | RGB-D hand-object pose, two-hand manipulation, object pose/contact-adjacent evaluation | Smaller controlled setting; markerless annotations, not universal object coverage |
-| DexYCB | RGB-D grasping, MANO parameters, object poses, object/hand segmentation, official COCO/BOP/HPE/grasp evaluations | Hand pose, object pose, segmentation, grasp/contact-adjacent metrics | YCB objects and right-hand-heavy grasp settings; not full open-world videos |
-| HO3D v3 | Hand-object sequences with improved hand/object pose and contact-region estimates | Hand-object pose and contact-region sanity on YCB-style objects | Narrow object/domain coverage |
-| Ego-Exo4D EgoHandPose | Egocentric 3D hand keypoints; MPJPE/PA-MPJPE benchmark | Egocentric hand pose robustness under skilled activities | Does not evaluate object geometry/contact |
-| AssemblyHands | 3.0M annotated hand images, 490K egocentric; accurate 3D hand pose | Egocentric hand-pose generalization in manipulation-heavy assembly | Hand pose only; object state not ground truth for V19 physics |
-| FreiHAND | Multi-view hand pose/shape benchmark | Compatibility with WiLoR/HaMeR standard hand reconstruction evaluation | Single-image hand benchmark; weak for egocentric full-video physics |
-| HInt | 2D hand keypoints and per-keypoint occlusion labels on interaction-heavy images from Hands23, EPIC-KITCHENS VISOR, and Ego4D-derived frames | 2D projection sanity, occlusion-label stress tests, and HaMeR-compatible in-the-wild hand evaluation | 2D/occlusion only; not metric 3D hand or object pose closure |
-| Ego4D Hands & Objects | PNR/state-change labels, object boxes in pre/PNR/post frames, hand/tool/object boxes | Manipulated-object roster recall, state-change object detection, temporal state-change localization | Semantic/2D benchmark; not metric 3D hand/object/contact closure |
+| Slot | Dataset | Clip budget | Why it is in scope | What it tests |
+|---|---|---:|---|---|
+| Primary | HOT3D | 3-5 curated clips | Best single anchor for V19's joint egocentric hand/object/head/world claim; also matches the HaWoR evaluation ecosystem | MANO/UmeTrack hands, rigid object meshes/poses, headset/camera pose, visibility-aware render/metric checks |
+| Secondary, optional | H2O | 2-3 clips | Egocentric RGB-D hand-object sequences with two-hand interaction and 6D object poses | RGB-D hand-object pose, object trajectory, two-hand manipulation, contact-adjacent sanity |
+
+If H2O access/tooling blocks implementation, V19 may substitute DexYCB for the secondary slot because it has RGB-D, MANO, object pose, segmentation, and official evaluation tooling. H2O and DexYCB must not both be active in the initial V19 gate. No additional hand-only, 2D occlusion, state-change, or HOI dataset is part of V19 acceptance.
+
+The selected HOT3D/H2O clips must be named before tuning. Clip selection should cover only a few phenomena: visible rigid-object manipulation, partial occlusion, two-hand interaction when available, and a failure-prone object/contact span. A large external evaluation is explicitly out of scope for V19.
 
 ### 10.2 Baselines
 
-V19 should compare against:
+V19 should compare against only baselines that will actually run on the selected clips:
 
-- **V18 v5** on the project videos, for monotonic qualitative comparison.
-- **HaWoR** for world-space egocentric hand motion, especially HOT3D/DexYCB-style evaluation where its code path applies.
-- **WiLoR** for multi-hand localization/reconstruction from monocular frames.
-- **HaMeR** for transformer-based monocular hand mesh recovery and HInt/FreiHAND/HO3D compatibility.
-- **Dataset baselines** such as Ego-Exo4D hand-pose baselines and DexYCB BOP/HPE examples where official tooling exists.
-- **Object-pose baselines** from dataset challenge tooling when available, especially BOP-style metrics for HOT3D/DexYCB.
+- **V18 v5** on `task5_tomato_960` and `trash_1050`, for project-video monotonic comparison.
+- **HaWoR** on HOT3D clips, for world-space egocentric hand motion and camera/head-aware hand reconstruction.
+- **Dataset official/reference tracks** for the active HOT3D and optional H2O/DexYCB clips where the provided evaluator supports object pose or hand metrics.
+
+WiLoR and HaMeR can remain measurement components or later ablation candidates, but V19 should not claim comparison against their full paper evaluation sets unless a later release allocates a separate benchmark budget.
 
 ### 10.3 Metrics
 
-V19 should report metrics by claim family:
+V19 should report metrics only where the active clips provide ground truth or official evaluation support:
 
 **Hand pose / MANO**
 - MPJPE and PA-MPJPE in mm.
@@ -370,7 +360,7 @@ V19 should report metrics by claim family:
 - BOP metrics: VSD, MSSD, MSPD where official object meshes and poses exist.
 - Mask IoU/silhouette error as diagnostic evidence unless paired with geometry/depth support.
 - Depth residual distribution on visible object surfaces.
-- Rigid-vs-nonrigid residual evidence for object posterior selection.
+- Rigid-vs-nonrigid residual evidence for physical-state selection before branch commitment; after rigid commitment, residuals measure pose quality and repair needs.
 
 **Contact/occlusion**
 - Contact patch precision/recall where contact/contact-region annotations exist.
@@ -379,9 +369,9 @@ V19 should report metrics by claim family:
 - Calibration of uncertainty: do high-uncertainty spans contain more errors?
 
 **Object roster and state change**
-- Manipulated-object recall on Ego4D/HOT3D/H2O-style labels.
-- Track continuity and identity switches.
-- State-change object detection AP where Ego4D FHO applies.
+- Manipulated-object recall on the selected project videos and active HOT3D/H2O clips.
+- Track continuity and identity switches on those clips.
+- State-change AP is not a V19 metric unless a later design amendment replaces the secondary slot with a state-change task.
 
 **Runtime and usability**
 - Wall-clock runtime per video minute.
@@ -396,7 +386,7 @@ Required V19 ablations:
 1. Agent harness vs fixed script ordering.
 2. Agent-native visual judgment vs isolated VLM JSON calls.
 3. Full object roster vs primary-object-only detection.
-4. Object posterior with mesh/rigid/uncertain alternatives vs visible-surface-only object support.
+4. Rigid-object branch enabled vs visible-surface-only ablation after a rigid physical-state decision.
 5. Occlusion-aware MANO intervals vs direct framewise hand predictions.
 6. World/camera trajectory enabled vs camera-frame-only hand reconstruction.
 7. Contact/nonpenetration terms enabled vs hand-only temporal smoothing.
@@ -408,7 +398,7 @@ Each ablation should specify the claim it can falsify before it is run. A result
 
 The user’s proposed autoresearch direction is appropriate only if benchmark discipline is built in first. V19 should define an autoresearch harness with these rules:
 
-1. **Fixed benchmark registry.** Datasets, splits, metrics, and hidden/held-out partitions are declared before tuning.
+1. **Fixed benchmark registry.** The small active clip list, metrics, and any held-out clips are declared before tuning. V19 starts with HOT3D plus at most one secondary dataset; expanding the dataset list requires a new design amendment.
 2. **Prediction before run.** The agent writes what a proposed change should improve and what failure would falsify the mechanism.
 3. **Atomic interventions.** One mechanism change per run: e.g. object roster expansion, occlusion factor, depth scale correction, renderer clarity.
 4. **Automatic evaluation.** Every run produces metrics, rendered samples, and failure clusters.
@@ -430,7 +420,7 @@ The project-regression representatives are:
 
 The future V19 implementation must record the exact raw video file path, decoded frame count, FPS, duration, and any calibration/depth side inputs in each run's `input/input_manifest.json`. If only an existing raw-frame manifest is available, V19 may use it as a development input, but a release claim must still identify the raw-video source or explicitly mark raw-video provenance as unresolved.
 
-Benchmark representatives are selected by claim family: HOT3D-Clips first for joint hand/object/head tracking, H2O or DexYCB for RGB-D hand-object/object-pose metrics, and Ego-Exo4D/AssemblyHands/FreiHAND/HO3D/HInt for hand-pose and occlusion stress tests.
+Benchmark representatives are not a broad matrix. V19 uses 3-5 HOT3D clips as the primary external benchmark and, only if budget permits, 2-3 H2O clips as the secondary hand-object benchmark. DexYCB is a fallback for the secondary slot if H2O access/tooling blocks implementation. No other dataset is part of V19 closure.
 
 ### 12.2 Expected failure modes
 
@@ -440,7 +430,7 @@ V19 should expect and render these failure modes instead of hiding them:
 - **SLAM/head-pose failure:** fast ego motion, blur, low texture, or moving foreground can break camera trajectory estimates.
 - **Hand measurement failure:** severe occlusion, out-of-frame hands, motion blur, left/right swaps, and hand-object overlap can corrupt framewise hand models.
 - **Object roster misses:** open-vocabulary detection can miss transparent, reflective, small, deformable, or partially occluded manipulated objects.
-- **Object geometry underconstraint:** visible surfaces may not support a unique rigid mesh/pose; V19 must then render uncertainty rather than a confident object pose.
+- **Object geometry underconstraint:** visible surfaces may weakly constrain a rigid mesh/pose; if the physical-state decision is rigid, V19 keeps the rigid branch active, renders residual/pose uncertainty, and marks repair targets rather than falling back to a point-cloud-only deliverable.
 - **Contact ambiguity:** mask/depth overlap can look like contact without metric surface support; signed distances can look separated when depth is biased.
 - **Occlusion ownership ambiguity:** hidden hands or objects may be plausible under several depth-order hypotheses.
 - **Runtime overrun:** a branch may exceed the default runtime budget and must be demoted to offline research.
@@ -449,7 +439,7 @@ V19 should expect and render these failure modes instead of hiding them:
 
 ### 12.3 Acceptance checks
 
-A future V19 implementation should not close until these checks pass for both representative project videos and for the selected benchmark suite:
+A future V19 implementation should not close until these checks pass for both representative project videos and for the selected small benchmark slice:
 
 1. **Full-duration render check:** overlay/world/side-by-side videos match input frame count, FPS, and duration.
 2. **State-to-render check:** every visible annotation layer is driven by `state/` variables, not private measurement files or status text.
@@ -470,10 +460,10 @@ V19 can be called implemented only when all of the following are true:
 2. The harness uses GPT-5.5 through the `occ` provider or a documented equivalent route, with a V19 system prompt replacing the generic Pi prompt for the annotation session.
 3. The pipeline builds an object roster that includes all visibly manipulated or physically relevant objects in the representative project videos, not only the named target object.
 4. The renderer shows MANO hand meshes, camera/head trajectory, manipulated object hypotheses, contact/occlusion cues, and uncertainty in audience-readable form.
-5. The artifact can run on a benchmark suite with claim-specific metrics: HOT3D as the first joint hand/object/head anchor, plus at least one supplementary hand-pose benchmark and one RGB-D hand-object/object-pose benchmark unless dataset access blocks are explicitly documented.
-6. V19 reports ablations against V18 v5 and modern baselines including HaWoR, WiLoR, and HaMeR where applicable.
-7. Tomato/task5 presentation no longer splits between diagnostic rigid-tomato branches and a final bounded-MANO-scoped closure that keeps object evidence as support/uncertainty rather than solved tomato object pose: when evidence supports a rigid object hypothesis, it is promoted into the canonical state/render; if evidence does not support it, the artifact clearly renders uncertainty rather than false rigidity.
-8. Every closure claim is scoped to benchmark and project-video evidence; unsolved object pose/contact/nonpenetration cases remain visible uncertainty, not hidden omissions.
+5. The artifact runs on the bounded benchmark slice: 3-5 HOT3D clips, plus optionally 2-3 H2O clips or a DexYCB fallback occupying the same secondary slot. No extra dataset is required for V19 closure.
+6. V19 reports ablations against V18 v5 and HaWoR on the selected clips. WiLoR/HaMeR may appear only as internal component ablations if they are actually used in the V19 run, not as separate external-evaluation claims.
+7. Tomato/task5 presentation follows the rigid-object branch when the VLM/agent-harness classifies tomato as rigid: TRELLIS completion, visible-frame pose estimation, factor-graph pose correction, and canonical overlay/world/side-by-side rendering of the corrected rigid object state.
+8. Every closure claim is scoped to benchmark and project-video evidence; pose/contact/nonpenetration failures remain visible residuals, uncertainty, and repair targets, not hidden omissions or scope-retreat language.
 
 ## 14. Proposed implementation phases for later work
 
@@ -493,10 +483,10 @@ No phase below is implemented by this design document.
 - Depth/SLAM/camera trajectory measurement path.
 - Open-vocabulary object roster and SAM/video-mask tracking path.
 
-### Phase C — Physical state posterior
+### Phase C — Physical state and branch commitment
 
 - Interval MANO state writer.
-- Object posterior writer with visible-surface, rigid mesh, articulated/part, and uncertain/deformable hypotheses.
+- Object state-type decision writer and branch-specific state writers: rigid mesh/pose trajectory, articulated/part state, deformable/uncertain state, and visible-surface measurements as evidence.
 - Contact/occlusion/nonpenetration uncertainty state.
 
 ### Phase D — Audience renderer
@@ -506,11 +496,11 @@ No phase below is implemented by this design document.
 - Mesh/uncertainty styling.
 - Narrative review sheets.
 
-### Phase E — Benchmark adapters
+### Phase E — Bounded benchmark adapters
 
-- HOT3D first because it tests the broadest hand/object/head claim.
-- H2O/DexYCB for RGB-D hand-object and official object/hand metrics.
-- Ego-Exo4D/AssemblyHands/FreiHAND/HO3D/HInt for hand and occlusion stress tests.
+- HOT3D adapter for the primary 3-5 clip benchmark slice.
+- H2O adapter for the optional 2-3 clip secondary slice, or DexYCB adapter only as a replacement if H2O access/tooling blocks the secondary slot.
+- No adapters for additional hand-only, 2D occlusion, state-change, or HOI datasets in V19.
 
 ### Phase F — Autoresearch
 
@@ -525,14 +515,9 @@ The design relies on these current source observations:
 
 - V18 baseline evidence: `/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/`, especially `v18_current_frontier_interval_mano_artifact_manifest.json` and `v18_frontier_uncertainty_classification.json`, is the scoped bounded-MANO baseline that V19 should compare against.
 - Pi docs: installed package files `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/usage.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/sdk.md`, and `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/examples/sdk/03-custom-prompt.ts` document custom models in `~/.pi/agent/models.json`, CLI `--provider`/`--model`/`--system-prompt`, and SDK `createAgentSession()`/`DefaultResourceLoader.systemPromptOverride`.
-- [HaWoR](https://arxiv.org/abs/2501.02973), [official repo](https://github.com/ThunderVVV/HaWoR): world-space egocentric hand reconstruction combines camera-frame hand reconstruction, world camera trajectory estimation, and motion infilling; the repo includes HOT3D evaluation and DexYCB evaluation reference.
-- [WiLoR](https://arxiv.org/abs/2409.12259), [official repo](https://github.com/rolpotamias/WiLoR): CVPR 2025 multi-hand localization/reconstruction pipeline with real-time localization and transformer 3D reconstruction; relevant to FreiHAND/HO3D-style benchmark comparisons.
-- [HaMeR](https://arxiv.org/abs/2312.05251), [official repo](https://github.com/geopavlakos/hamer), [HInt](https://github.com/ddshan/hint): CVPR 2024 transformer hand mesh recovery with evaluation on FreiHAND, HO3D, and HInt splits; HInt adds 2D keypoints and occlusion labels on interaction-heavy datasets.
-- [HOT3D](https://facebookresearch.github.io/hot3d/), [toolkit](https://github.com/facebookresearch/hot3d): egocentric hand/object tracking dataset with 833 minutes, 19 subjects, 33 rigid objects, MANO/UmeTrack hands, object meshes/poses, headset devices, and public challenge/toolkit support.
-- [H2O](https://taeinkwon.com/projects/h2o/), [arXiv](https://arxiv.org/abs/2104.11181): egocentric RGB-D hand-object dataset with two-hand 3D poses, 6D object poses, camera poses, object meshes, scene point clouds, and interaction labels.
-- [DexYCB toolkit](https://github.com/NVlabs/dex-ycb-toolkit): RGB-D hand grasping toolkit with object pose, MANO hand parameters, segmentation, and official COCO/BOP/HPE/grasp evaluations.
-- [HO3D v3](https://arxiv.org/abs/2107.00887): hand-object dataset with improved 3D hand/object annotations and contact-region estimates.
-- [Ego-Exo4D EgoHandPose](https://docs.ego-exo4d-data.org/benchmarks/ego_pose/ego_hand_pose/), [benchmark repo](https://github.com/EGO4D/ego-exo4d-egopose): egocentric 3D hand-pose benchmark evaluated by MPJPE and PA-MPJPE.
-- [AssemblyHands](https://assemblyhands.github.io/), [arXiv](https://arxiv.org/abs/2304.12301): large-scale egocentric/exocentric hand-pose benchmark with 3.0M annotated images and 490K egocentric images.
-- [FreiHAND](https://lmb.informatik.uni-freiburg.de/projects/freihand/), [arXiv](https://arxiv.org/abs/1909.04349): multi-view hand pose/shape benchmark useful for hand reconstruction compatibility but insufficient alone for full-video egocentric physics.
-- [Ego4D Hands & Objects](https://ego4d-data.org/docs/benchmarks/hands-and-objects/), [benchmark repo](https://github.com/EGO4D/hands-and-objects): state-change and object-box benchmark useful for object roster/state-change evaluation, not metric 3D pose closure.
+- [HaWoR](https://arxiv.org/abs/2501.02973), [official repo](https://github.com/ThunderVVV/HaWoR): world-space egocentric hand reconstruction baseline/component for HOT3D-style clips.
+- [WiLoR](https://arxiv.org/abs/2409.12259), [official repo](https://github.com/rolpotamias/WiLoR): multi-hand localization/reconstruction component candidate; not an active V19 full-paper benchmark target.
+- [HaMeR](https://arxiv.org/abs/2312.05251), [official repo](https://github.com/geopavlakos/hamer): transformer hand mesh recovery component candidate; not an active V19 full-paper benchmark target.
+- [HOT3D](https://facebookresearch.github.io/hot3d/), [toolkit](https://github.com/facebookresearch/hot3d): primary V19 external benchmark slice, limited to 3-5 selected clips.
+- [H2O](https://taeinkwon.com/projects/h2o/), [arXiv](https://arxiv.org/abs/2104.11181): optional secondary benchmark slice, limited to 2-3 selected clips if access/tooling permits.
+- [DexYCB toolkit](https://github.com/NVlabs/dex-ycb-toolkit): fallback for the secondary benchmark slot only if H2O is blocked; not an additional V19 dataset.
