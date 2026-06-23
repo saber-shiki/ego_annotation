@@ -236,11 +236,15 @@ Each object instance should maintain multiple hypotheses rather than one forced 
 
 The renderer chooses the best-supported hypothesis for presentation, but the state keeps alternatives and residuals.
 
-## 7. Tomato rigid-body issue
+## 7. V18 tomato rigid-body scope
 
-V18 should be described honestly: the tomato was not promoted to a confident rigid object trajectory because the accepted V18 evidence did not justify that claim. V18’s primary deliverable became bounded interval MANO. Its object evidence for task5 was useful as support/visible-surface constraint, but prior rigid/compact-object attempts were not strong enough to claim solved metric object pose across the full sequence.
+V18 must be described as a two-layer result. It **did** treat the tomato as a compact/rigid object in several branches: compact-rigid completion, visible-frame SE(3) pose fitting, and temporal rigid-tomato renders. For example, `/data2/ego_annotation_outputs/v18_temporal_rigid_tomato_artifact_v2/task5_tomato_960/v18_temporal_rigid_tomato_manifest.json` records a rendered state in which the `tomato_object` is a `compact-rigid completed mesh with per-frame visible-depth pose fit`, with rigid-tomato overlay/world/side-by-side videos. That fact should not be erased.
 
-The mechanism is not “tomatoes cannot be rigid.” A tomato is often close enough to rigid for a useful presentation. The V18 mechanism was weaker: segmentation, depth, occlusion, hand contact, and candidate shape/pose evidence did not converge into a clean, source-consistent full-video rigid trajectory that could safely constrain MANO without false precision.
+The narrower V18 limitation is that those rigid-tomato artifacts were not the final accepted V18 closure claim. The same V18 temporal-rigid manifest scopes itself as a `diagnostic integrated rigid-tomato/temporal-MANO-uncertainty artifact, not final V18 delivery`, and says a temporal MANO trajectory or bounded uncertainty sequence over conflict intervals remained required. The final V18 v5 closure artifact at `/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/` scopes its primary deliverable as full-video bounded interval MANO with explicit support/occlusion uncertainty, not as solved full-video metric tomato object pose.
+
+The precise historical claim is therefore: V18 implemented, rendered, and used rigid-tomato hypotheses as evidence; V18 did not promote a solved full-video rigid tomato pose/object state as the final v5 deliverable. Any unqualified statement that “V18 solved rigid tomato” overstates the final closure; any statement implying “V18 never treated tomato as rigid” is also false.
+
+The mechanism is not “tomatoes cannot be rigid.” A tomato is often close enough to rigid for a useful presentation. The V18 mechanism was weaker: segmentation, depth, occlusion, hand contact, and candidate shape/pose evidence did not converge into a final source-consistent full-video rigid trajectory that could safely constrain MANO and object pose without false precision.
 
 V19 should fix this by making object representation an explicit posterior:
 
@@ -468,7 +472,7 @@ V19 can be called implemented only when all of the following are true:
 4. The renderer shows MANO hand meshes, camera/head trajectory, manipulated object hypotheses, contact/occlusion cues, and uncertainty in audience-readable form.
 5. The artifact can run on a benchmark suite with claim-specific metrics: HOT3D as the first joint hand/object/head anchor, plus at least one supplementary hand-pose benchmark and one RGB-D hand-object/object-pose benchmark unless dataset access blocks are explicitly documented.
 6. V19 reports ablations against V18 v5 and modern baselines including HaWoR, WiLoR, and HaMeR where applicable.
-7. Tomato/task5 presentation is no longer a raw point-cloud-only story when evidence supports a rigid object hypothesis; if evidence does not support it, the artifact clearly renders uncertainty rather than false rigidity.
+7. Tomato/task5 presentation no longer splits between diagnostic rigid-tomato branches and a final bounded-MANO-scoped closure that keeps object evidence as support/uncertainty rather than solved tomato object pose: when evidence supports a rigid object hypothesis, it is promoted into the canonical state/render; if evidence does not support it, the artifact clearly renders uncertainty rather than false rigidity.
 8. Every closure claim is scoped to benchmark and project-video evidence; unsolved object pose/contact/nonpenetration cases remain visible uncertainty, not hidden omissions.
 
 ## 14. Proposed implementation phases for later work
