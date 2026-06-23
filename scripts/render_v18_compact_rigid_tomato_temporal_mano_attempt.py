@@ -102,10 +102,17 @@ def load_mesh_vertices(path: Path) -> np.ndarray:
     return np.asarray(mesh_geom.vertices, dtype=np.float64)
 
 
+ACCEPTED_RIGID_POSE_STATUSES = {
+    "fit_to_visible_depth_samples",
+    "fit_to_visible_depth_archive_vertices",
+    "corrected_temporal_rigid_pose_graph",
+}
+
+
 def pose_map(pose_data: dict[str, Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
     out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for row in pose_data.get("pose_rows", []):
-        if row.get("status") != "fit_to_visible_depth_samples":
+        if row.get("status") not in ACCEPTED_RIGID_POSE_STATUSES:
             continue
         out[int(row["frame_idx"])] = (
             np.asarray(row["rotation_world_from_completed_canonical_matrix"], dtype=np.float64),
@@ -417,9 +424,14 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             label_y = 80 + hand_idx * 132
             if temporal is not None:
                 temporal_state = str(temporal.get("temporal_mano_state", "interval_uncertainty"))
-                residual = (temporal.get("residual_penetration_after_translation_m") or {}).get("max")
+                residual_report = temporal.get("full_observed_surface_penetration_after_solver_m") or temporal.get("final_active_constraint_residual_after_solver_m") or {}
+                residual = residual_report.get("max") if isinstance(residual_report, dict) else None
+                shift_report = temporal.get("visible_joint_shift_px") or {}
+                shift_px = shift_report.get("max") if isinstance(shift_report, dict) else None
                 text = f"{side} INTERVAL MANO UNCERTAIN | {temporal_state[:44]}"
-                text2 = f"residual={residual if residual is not None else '?'} m penverts={penetrating}"
+                residual_txt = "?" if residual is None else f"{float(residual) * 1000.0:.1f}mm"
+                shift_txt = "?" if shift_px is None else f"{float(shift_px):.1f}px"
+                text2 = f"pen_res={residual_txt} joint_shift={shift_txt} penverts={penetrating}"
                 text_color = (0, 180, 255)
             else:
                 text = f"{side} {state_label} | {state[:50]}"

@@ -115,6 +115,7 @@ def frame_camera_pose(frame: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
 ACCEPTED_VISIBLE_DEPTH_POSE_STATUSES = {
     "fit_to_visible_depth_samples",
     "fit_to_visible_depth_archive_vertices",
+    "corrected_temporal_rigid_pose_graph",
 }
 
 

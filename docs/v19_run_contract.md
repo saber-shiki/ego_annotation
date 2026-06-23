@@ -1,6 +1,6 @@
 # V19 Pi Run Contract
 
-This contract defines how to start and govern a V19 annotation run. It is not a wrapper design. Pi is the harness; scripts are callable tools.
+This contract defines how to start and govern a V19 annotation run. It is not a wrapper design. Pi is the harness; scripts are callable tools. The concrete English orchestration over existing components is `docs/v19_english_orchestration.md`; the runtime prompt must follow that runbook rather than fake numbered pipeline scripts.
 
 ## Launch model
 
@@ -154,6 +154,9 @@ Before measurement tools run, Pi should create unresolved physical state rather 
 Unresolved state is not progress by itself. It is the starting point that prevents silent success when physical variables have not been measured.
 
 ## Physical state requirements
+
+The current executable command truth is recorded in `docs/v19_english_orchestration.md`. If that runbook marks a required component as missing, a V19 run must stop with the named missing implementation and blocked physical variable rather than authoring placeholder outputs during annotation.
+
 
 A V19 state claim must specify the physical variable, evidence, uncertainty, and renderer consumption path.
 

@@ -16,14 +16,14 @@ Use the active V19 system prompt from `configs/v19_agent_system_prompt.md`. If t
 
 ## First actions
 
-1. Read `.memory/tasks/2026-06-23-pipeline-v19/PROMPT.md`, `.memory/tasks/2026-06-23-pipeline-v19/EPISTEMIC.md`, `.memory/tasks/2026-06-23-pipeline-v19/OPS.md`, and `docs/v19_run_contract.md`.
+1. Read `.memory/tasks/2026-06-23-pipeline-v19/PROMPT.md`, `.memory/tasks/2026-06-23-pipeline-v19/EPISTEMIC.md`, `.memory/tasks/2026-06-23-pipeline-v19/OPS.md`, `docs/v19_component_extraction.md`, `docs/v19_english_orchestration.md`, and `docs/v19_run_contract.md`.
 2. Inspect `git status --short`; identify unrelated dirty files and do not stage or modify them.
 3. Verify the input video exists and identify frame count, FPS, resolution, and duration without changing the video.
 4. Verify local/Pi route and current A800/server target state before any heavy tool call.
 5. Create the run root only after confirming it does not overwrite an existing V19 run.
 6. Declare `max_evidence_cycles` before measurement work. Use 6 cycles for a project representative unless the user set a different budget.
 7. Write `input/input_manifest.json`, `logs/harness_events.jsonl`, and unresolved initial `state/` files before launching measurement tools.
-8. Continue through the Workbench in `.memory/tasks/2026-06-23-pipeline-v19/PROMPT.md`.
+8. Continue through the Workbench in `.memory/tasks/2026-06-23-pipeline-v19/PROMPT.md`; for the current orchestration step, follow `docs/v19_english_orchestration.md` and do not invent missing scripts.
 
 ## Physical goal
 

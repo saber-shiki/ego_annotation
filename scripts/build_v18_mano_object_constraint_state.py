@@ -219,7 +219,12 @@ def main() -> None:
     frame_pos_by_idx = {int(f): i for i, f in enumerate(frame_indices)}
     frames_by_idx = {int(f.get("frame_idx")): f for f in annotations.get("frames", [])}
     raw_video_meta = annotations.get("raw_video") if isinstance(annotations.get("raw_video"), dict) else {}
-    pose_by_idx = {int(row["frame_idx"]): row for row in pose_report.get("pose_rows", []) if row.get("status") == "fit_to_visible_depth_samples"}
+    accepted_pose_statuses = {
+        "fit_to_visible_depth_samples",
+        "fit_to_visible_depth_archive_vertices",
+        "corrected_temporal_rigid_pose_graph",
+    }
+    pose_by_idx = {int(row["frame_idx"]): row for row in pose_report.get("pose_rows", []) if row.get("status") in accepted_pose_statuses}
 
     rows = []
     corrective_rows = []
