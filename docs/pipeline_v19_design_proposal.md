@@ -1,13 +1,534 @@
-# V19 Design Proposal: Pi-Harness Physical Annotation
+# V19 Design Proposal: Agent-Harness Physical Annotation and Evaluation
 
-V19 changes the annotation authority, not just the model stack.
+**Status:** design only. This document does not start V19 implementation and does not supersede the current V18 v5 scoped bounded-MANO deliverable.
 
-The core shift is from a compiled outer pipeline to a Pi-harness annotation process. Scripts may still produce measurements, renders, masks, depth maps, MANO states, geometry candidates, residuals, and review artifacts, but they are instruments. They do not own the final physical-state decision.
+## 1. Thesis
 
-The Pi agent owns the decision loop: inspect visual and geometric evidence, form competing explanations, request targeted measurements, revise beliefs when evidence conflicts, and write the renderable hand/object/contact/occlusion/pose state with explicit uncertainty. This makes the decision procedure open-world and context-sensitive rather than limited to branches anticipated in an outer script.
+V19 should be a pipeline/evaluation release whose primary change is **where annotation authority lives**. V18 proved that a script stack can produce a bounded interval-MANO artifact, but it also exposed three structural weaknesses: the entry point is not agent-native, the object and visualization story is not audience-ready, and the result is not benchmarked strongly enough to guide future work.
 
-Native visual understanding is a side benefit, not the main design point. In V19, visual reasoning is part of the agent's cognition while inspecting videos/renders/artifacts; it is not a separate script that emits a `vlm_contact=true` field. This avoids laundering visual judgment through another brittle JSON channel that can be mis-weighted by fixed gates.
+V19 therefore makes the Pi agent harness the annotation engine. Scripts may still extract frames, run hand models, run depth/SLAM, track masks, fit object hypotheses, solve factors, render videos, and compute metrics. They are instruments. The agent owns the loop that turns those measurements into a physical-state claim: it inspects evidence, keeps competing mechanisms alive, requests targeted measurements, rejects invalid measurements, assigns uncertainty, and writes the final renderable state.
 
-The practical implication is that cases like task5 tomato contact should not be decided by a hard-coded depth veto. The agent should weigh visible manipulation, temporal continuity, metric geometry, depth reliability, occlusion, and nonpenetration evidence together, then record the supported claim and its uncertainty.
+The release goal is not “more V18 patches.” The release goal is a self-contained system that can take an egocentric video, produce visible physical annotations, and report quantitative evidence against open benchmarks. The V18 evidence base referenced here is the current v5 artifact at `/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/`, with its manifest and uncertainty classification as the scoped bounded-MANO baseline.
 
-V18 remains the current executable script-based pipeline. V19 is a different orchestration paradigm: Pi harness as annotation engine; scripts as evidence instruments.
+## 2. Non-negotiable V19 outputs
+
+A completed V19 run must produce a directory with these artifacts for the full input video duration:
+
+1. **Audience-facing videos**
+   - `v19_overlay.mp4`: raw video with hand meshes, manipulated object render, contact/occlusion cues, and minimal explanatory labels.
+   - `v19_world.mp4`: 3D scene view with camera/head trajectory, MANO hand meshes, manipulated object geometry/hypotheses, and uncertainty.
+   - `v19_side_by_side.mp4`: raw, overlay, and world views synchronized.
+   - Optional `v19_story.mp4`: a concise demo video with the key physical message of the sequence.
+2. **Renderable state**
+   - Per-frame MANO state with camera/world-frame semantics, visibility, provenance, and uncertainty.
+   - Per-object instance/part tracks, mesh or surface hypotheses, pose hypotheses, visibility, contact/occlusion state, and uncertainty.
+   - Camera/head trajectory and intrinsics/metric-scale provenance.
+3. **Evaluation bundle**
+   - Dataset-normalized metrics for any benchmark run.
+   - Ablation table and configuration manifest.
+   - Failure clusters with frame ranges and causal interpretation.
+4. **Agent evidence ledger**
+   - The harness records what the agent observed, what explanation it accepted or rejected, and which uncertainty remains.
+
+A JSON row count, schema pass, or internal status overlay is not a V19 deliverable unless it drives the rendered annotation and is consumed by the viewer/evaluator.
+
+## 3. Harness entry point
+
+### 3.1 Agent first, not script first
+
+The V19 entry point should be a Pi agent harness, not a top-level `run_v19_full_pipeline.py` script. The harness creates a Pi session, gives it the V19 task contract, grants a narrow set of measurement/render/evaluation tools, and asks it to produce a physical annotation artifact.
+
+Scripts remain reusable tool implementations. The difference is ownership:
+
+| Layer | V18 pattern | V19 pattern |
+|---|---|---|
+| Outer control | Python script decides stages and gates | Pi agent decides evidence needs and state claims |
+| Visual judgment | Separate VLM calls produce JSON fields | Agent inspects visual/geometric evidence directly and records scoped claims |
+| Failure handling | Validators/status manifests often dominate | Failed measurements revise the causal model and next measurement |
+| Output authority | Script artifacts imply completion | Rendered physical annotation plus benchmark evidence imply completion |
+
+### 3.2 Practical Pi route
+
+Installed Pi documentation supports the route needed by the user request:
+
+- `~/.pi/agent/models.json` can define custom providers and models. The current config already defines provider `occ` with model `gpt-5.5`, image input, reasoning, and `openai-responses`.
+- Pi CLI supports selecting a provider/model via `--provider <name>` and `--model <pattern>`, and replacing the default prompt via `--system-prompt <text>`.
+- Pi SDK supports `createAgentSession()` and `DefaultResourceLoader.systemPromptOverride`, allowing a harness to replace the default prompt for the V19 annotation session.
+
+The future implementation route should therefore be:
+
+```text
+create V19 custom system prompt
+  -> create Pi SDK AgentSession with provider `occ`, model `gpt-5.5`, and high/xhigh thinking
+  -> restrict tools to V19 measurement/render/evaluation tools
+  -> prompt session with input-video contract
+  -> agent runs a bounded evidence/revision loop until renderable state + videos + evaluation bundle exist, or until the declared uncertainty stop condition is reached
+```
+
+For smoke testing the model route before implementing the harness, the intended manual test is equivalent to:
+
+```bash
+pi -p --no-tools --no-session --no-context-files --no-skills --no-extensions \
+  --provider occ \
+  --model gpt-5.5:xhigh \
+  --system-prompt "$(cat path/to/v19_system_prompt.md)" \
+  "Smoke test only: report the active model route and do not perform annotation work."
+```
+
+This is a design route, not a command executed by this document. The smoke form is intentionally non-interactive, tool-disabled, session-disabled, and isolated from discovered context/skills/extensions so it checks model/prompt routing without starting implementation or allowing file/system mutation.
+
+### 3.3 Harness responsibilities
+
+The harness should enforce what a normal chat session cannot reliably enforce:
+
+1. **Input contract:** one video path plus optional calibration/depth/known-object hints.
+2. **Artifact root:** every output is under one immutable run directory.
+3. **Prompt contract:** the V19 system prompt defines physical annotation standards, no-proxy rules, benchmark discipline, and stop conditions.
+4. **Tool contract:** the agent can call measurement/render/evaluation tools, not arbitrary ad hoc scripts as final authority.
+5. **State contract:** every accepted physical claim is written to a state file consumed by the renderer.
+6. **Evidence contract:** every uncertain or rejected mechanism is recorded with frame ranges and artifacts.
+7. **Benchmark contract:** if a benchmark dataset is selected, output conversion and metric computation are part of the run.
+8. **Loop budget:** each run has a declared maximum number of agent evidence cycles. A cycle is valid only if it names the physical blocker it reduces. If the budget is exhausted, the harness must render the current uncertain state and report the unresolved blocker rather than continuing indefinitely.
+
+### 3.4 Agent-native visual judgment
+
+Replacing VLM calls does not mean removing visual evidence. It means the harness exposes frames, crops, render sheets, depth overlays, 3D snapshots, and benchmark comparison images directly to the Pi session, and the same agent that owns the physical claim inspects them. The output of that judgment is not a standalone `vlm_contact=true` field. It is a scoped state update with frame ranges, visual observations, competing explanations, and uncertainty.
+
+This design keeps model judgment auditable: the agent must cite the visual/geometric artifact that changed its belief, and any downstream state must still be rendered and evaluated. If the agent cannot see enough evidence to decide whether a rigid object, contact, or occlusion claim is supported, V19 carries an uncertainty hypothesis rather than inventing a confident state.
+
+### 3.5 Runtime and compute placement
+
+V19 must keep runtime as a design invariant, not a post-hoc metric. The default path should run in the same order of magnitude as the input video duration; for planning, the target is a first complete full-video artifact within roughly `10x` input duration on the designated server-class compute target, excluding optional benchmark-suite runs. Any per-instance training, NeRF/BundleSDF-style optimization, exhaustive mesh search, or long autoresearch sweep is an offline research branch and cannot be the default path.
+
+Heavy inference must not run on the local workstation by accident. The harness should declare a compute target for every expensive tool invocation:
+
+- local machine: light orchestration, file inspection, prompt/session control, small metadata transforms, and final commit work;
+- server/A800 or other explicitly configured remote target: HaWoR/WiLoR/HaMeR inference, depth/SLAM, SAM/video-mask tracking, open-vocabulary detection, mesh reconstruction, rendering batches, and benchmark runs;
+- offline research branch: long per-instance reconstruction, training, large sweeps, or methods whose expected runtime is more than the default budget.
+
+Every run manifest must record wall-clock time by phase, GPU target, model versions, and any budget overrun. If the default runtime budget is exceeded, V19 should render the best current uncertain state and mark the overrun as a design failure to be addressed, not continue until the artifact merely looks finished.
+
+## 4. Self-contained video input/output
+
+### 4.1 Input modes
+
+V19 should accept these input modes, in order of evidential strength:
+
+1. **Raw video only**
+   - Required minimum contract.
+   - V19 estimates intrinsics, camera motion, metric depth, hand/object tracks, and uncertainty.
+   - Metric claims are explicitly weaker when scale/camera evidence is inferred.
+2. **Raw video + calibration**
+   - Known intrinsics/extrinsics reduce projection ambiguity.
+3. **Raw video + depth/SLAM/camera trajectory**
+   - External geometry is treated as a measurement with provenance, not as unquestioned truth.
+4. **Benchmark dataset sample**
+   - Dataset loader supplies ground truth, masks, poses, and official evaluation format.
+
+Self-contained does not mean pretending all videos contain enough information for solved 3D physics. It means the pipeline can run from the video, produce the best supported annotation, and expose uncertainty instead of omitting modules or silently substituting proxies.
+
+### 4.2 Output layout
+
+A V19 run should have a stable layout:
+
+```text
+v19_runs/<run_id>/
+  input/
+    input_manifest.json
+    frames/
+  measurements/
+    hand_candidates/
+    object_candidates/
+    depth_slam/
+    masks_tracks/
+  state/
+    v19_physical_state.json
+    v19_uncertainty_state.json
+    v19_agent_evidence.md
+  renders/
+    v19_overlay.mp4
+    v19_world.mp4
+    v19_side_by_side.mp4
+    review_frames/
+  evaluation/
+    metrics.json
+    ablations.json
+    benchmark_export/
+  logs/
+    harness_events.jsonl
+    agent_session_link_or_export.html
+```
+
+The renderer consumes `state/`, not private measurement files. This prevents a familiar V18 failure mode where a source file changed but the final artifact did not.
+
+## 5. Full-timeline state variables and optimization objective
+
+V19 must define physical annotation as a solved state, not as agent prose. The agent can choose evidence, hypotheses, and interventions, but the renderable artifact should be produced from explicit state variables and an explicit robust objective.
+
+### 5.1 State variables
+
+For each frame `t`, hand side `s`, and object/part instance `i`, V19 should maintain:
+
+- `H_{s,t}`: MANO pose, shape, global transform, camera-frame transform, world-frame transform, visibility state, and uncertainty.
+- `K_t`, `T_world_cam,t`: intrinsics, camera/head pose, metric scale provenance, and camera-pose uncertainty.
+- `G_i`: per-instance object geometry hypothesis set: reconstructed visible surface, video/depth-adapted mesh prior, dataset-provided instance mesh, articulated part graph, or uncertainty volume. A generic retrieved/category mesh is only a prior until it is fitted and adapted to the observed instance.
+- `O_{i,t}`: object or part pose/posterior in camera and world coordinates.
+- `M_{i,t}`, `D_t`: image masks/tracks, depth observations, visible-surface samples, and their provenance.
+- `V_{s,t}`, `V_{i,t}`: hand/object visibility and occlusion ownership states.
+- `C_{s,i,t}`: contact/near-contact/non-contact hypothesis with contact-patch support and uncertainty.
+- `U_t`: residual and uncertainty summary consumed by the renderer and evaluator.
+
+These variables are full-timeline variables. A single-frame correction can be a measurement, but it cannot be the final V19 state unless it is propagated through the timeline state and rendered in the full-video artifact.
+
+### 5.2 Robust objective
+
+The default V19 solver should minimize a robust objective over the full timeline:
+
+```text
+min over H, O, G, C, V, T_world_cam
+  E_hand_image(H)              # 2D/mesh/keypoint hand evidence
++ E_hand_metric_depth(H, D)    # metric depth/order consistency
++ E_hand_prior(H)              # MANO pose/shape and motion priors
++ E_camera(T_world_cam)        # SLAM/head trajectory and scale evidence
++ E_object_mask_depth(O, G, M, D)
++ E_object_rigidity_or_articulation(O, G)
++ E_contact(C, H, O, G)
++ E_occlusion(V, H, O, G, D)
++ E_nonpenetration(H, O, G)
++ E_temporal(H, O, C, V)
++ E_uncertainty_calibration(U)
+```
+
+All terms must use robust losses and preserve residuals. A failed or weak term should downweight or widen uncertainty; it should not silently delete the variable family or replace it with a proxy. Weights may be benchmark-tuned inside the autoresearch loop, but the tuned configuration and split must be recorded.
+
+### 5.3 Agent authority versus solver authority
+
+The agent owns hypothesis management and acceptance judgment; the solver owns numerical consistency. The agent may decide that a measurement is invalid, that an object hypothesis should be tested, or that a rendered contradiction requires another intervention. It may not replace the objective with an unsupported statement. A state claim becomes accepted only when it is written into the state variables, consumed by the renderer, and either evaluated quantitatively or reviewed visually with residual uncertainty preserved.
+
+## 6. Object discovery and object state
+
+### 6.1 Why V18 under-detected objects
+
+V18 frequently focused on the object named by the immediate task, e.g. tomato in `task5_tomato_960`. That made sense for a rescue effort centered on interval MANO, but it is not sufficient for V19. In task5 the visible manipulation context includes tomato, bowl, pot, and supporting surfaces. If V19 only detects tomato, it cannot explain occlusion, support, contact alternatives, or audience-visible scene semantics.
+
+### 6.2 Category-agnostic object roster
+
+V19 should build an object roster before solving physical state:
+
+1. Sample frames across the full video and around high hand motion/contact likelihood.
+2. Agent proposes a candidate roster from visual evidence: manipulated objects, containers, tools, supporting surfaces, and likely occluders.
+3. Open-vocabulary detection and segmentation gather masks/tracks for the roster.
+4. Video object segmentation maintains temporal tracks.
+5. Depth/SLAM builds visible surfaces and candidate 3D supports.
+6. Agent reviews coverage failures and requests more prompts/tracks only where they can change the physical state.
+
+The downstream path must be uniform. A tomato, bowl, pot, lid, tool, or support surface should all enter the same object-instance schema. Object-specific Python branches for color/category/action phrases are not a V19 perception strategy.
+
+### 6.3 Object posterior
+
+Each object instance should maintain multiple hypotheses rather than one forced representation:
+
+- **Visible surface hypothesis:** observed depth/mask-derived point or surfel support.
+- **Rigid mesh hypothesis:** reconstructed or instance-adapted mesh with SE(3)/Sim(3) trajectory. Retrieved or dataset meshes are priors unless video/depth/dataset-instance evidence aligns them to the actual object.
+- **Articulated/part hypothesis:** linked rigid parts when motion evidence supports part motion.
+- **Deformable/uncertain hypothesis:** uncertainty volume or low-rank deformation when rigid residuals are too high.
+- **Out-of-frame/occluded hypothesis:** temporal carry with explicit visibility and uncertainty.
+
+The renderer chooses the best-supported hypothesis for presentation, but the state keeps alternatives and residuals.
+
+## 7. Tomato rigid-body issue
+
+V18 should be described honestly: the tomato was not promoted to a confident rigid object trajectory because the accepted V18 evidence did not justify that claim. V18’s primary deliverable became bounded interval MANO. Its object evidence for task5 was useful as support/visible-surface constraint, but prior rigid/compact-object attempts were not strong enough to claim solved metric object pose across the full sequence.
+
+The mechanism is not “tomatoes cannot be rigid.” A tomato is often close enough to rigid for a useful presentation. The V18 mechanism was weaker: segmentation, depth, occlusion, hand contact, and candidate shape/pose evidence did not converge into a clean, source-consistent full-video rigid trajectory that could safely constrain MANO without false precision.
+
+V19 should fix this by making object representation an explicit posterior:
+
+1. Reconstruct candidate object geometry from multiple visible frames, or adapt a retrieved/dataset mesh to the observed instance using masks, depth, silhouettes, and scale evidence.
+2. Fit a temporal SE(3)/Sim(3) trajectory against masks, depth, hand contact, and nonpenetration only after the geometry is instance-supported.
+3. Compare against visible-surface-only and deformable/uncertain hypotheses.
+4. Promote the rigid mesh to the audience render only if residuals, silhouette, depth, contact, and temporal continuity support it.
+5. If rigid support remains weak, render a translucent uncertainty volume/visible surface rather than a false rigid body.
+
+This gives the audience a better object visualization when evidence supports it, without violating the project rule that object pose means reconstructed object geometry, not a centroid, primitive, or label.
+
+## 8. Hand state and physical consistency
+
+V19 should preserve V18’s strongest contribution: interval-level metric MANO rather than isolated-frame keypoints. The agent harness should treat WiLoR/HaMeR/HaWoR-style hand reconstructions as measurements, not final answers.
+
+The V19 hand state should include:
+
+- MANO pose/shape/global transform per hand and frame.
+- Camera-frame and world-frame semantics.
+- Visibility state: visible, partially visible, occluded, out-of-frame, unresolved.
+- Observation provenance: model prediction, depth support, temporal infill, contact support, benchmark ground truth if applicable.
+- Uncertainty intervals or samples over translation/pose where evidence is ambiguous.
+- Temporal consistency terms that smooth without hiding occlusion or missing observations.
+
+Physical consistency terms should remain approximate but explicit:
+
+- hand depth/order consistency;
+- object surface support;
+- contact likelihood;
+- occlusion ownership;
+- nonpenetration as a soft/uncertain constraint;
+- temporal motion priors;
+- camera/head trajectory consistency.
+
+A weak local measurement should continue downstream with uncertainty. It should not block the pipeline from producing an approximate artifact.
+
+## 9. Visualization and audience presentation
+
+V19 visualization should be designed for an external viewer, not for a developer reading residual fields.
+
+### 9.1 Visual style
+
+The reference style should be closer to the HaWoR website/demo world-view aesthetic: clean 3D hand meshes moving in a world coordinate frame, visible camera/head motion, and minimal text. V19 extends that style to manipulated objects and physical uncertainty.
+
+The default world view should show:
+
+- camera/head trajectory as a smooth path with current camera frustum;
+- left/right MANO meshes with stable colors;
+- manipulated object mesh or uncertainty volume;
+- supporting surfaces/containers only when relevant;
+- contact glyphs at likely contact patches;
+- occlusion as translucent depth-order bands or hidden-hand ghost meshes;
+- uncertainty as opacity/halo/interval envelope, not as dense text.
+
+### 9.2 Key message panel
+
+The overlay should use short audience-facing labels. These examples are task5-style illustrations, not category templates or object-specific branches:
+
+```text
+right hand grasping tomato (uncertain contact)
+left hand partially occluded by bowl
+object pose: rigid hypothesis supported / unresolved / visible surface only
+```
+
+Internal details such as factor names, residual thresholds, schema states, and validator names belong in the evidence report, not in the main video.
+
+### 9.3 Deliverable views
+
+V19 should ship three default views:
+
+1. **Overlay view** for frame-local correctness.
+2. **World view** for metric motion, head/camera path, and object/hand relationships.
+3. **Narrative side-by-side** for demos and reviews: raw, overlay, world, and a small timeline strip.
+
+An optional HTML/GLB/USD viewer should allow rotating the scene and inspecting object/hand uncertainty interactively, but MP4 videos remain the required artifact.
+
+## 10. Quantitative evaluation plan
+
+V19 needs a benchmark matrix because no single open dataset validates the whole claim. Each dataset constrains a different part of the physical annotation.
+
+### 10.1 Dataset roles
+
+| Dataset/source | Useful ground truth | V19 claim it can test | Limits |
+|---|---|---|---|
+| HOT3D | Egocentric multi-view recordings, MANO/UmeTrack hands, rigid object meshes/poses, headset pose, curated clips, visibility/QA mask files where available | Joint egocentric hand/object/head/world tracking; object pose; hand shape/pose; visibility-aware evaluation | Rigid object set and controlled capture; not arbitrary internet video |
+| H2O | Synchronized RGB-D, left/right 3D hand poses, 6D object poses, camera poses, object meshes, interaction labels | RGB-D hand-object pose, two-hand manipulation, object pose/contact-adjacent evaluation | Smaller controlled setting; markerless annotations, not universal object coverage |
+| DexYCB | RGB-D grasping, MANO parameters, object poses, object/hand segmentation, official COCO/BOP/HPE/grasp evaluations | Hand pose, object pose, segmentation, grasp/contact-adjacent metrics | YCB objects and right-hand-heavy grasp settings; not full open-world videos |
+| HO3D v3 | Hand-object sequences with improved hand/object pose and contact-region estimates | Hand-object pose and contact-region sanity on YCB-style objects | Narrow object/domain coverage |
+| Ego-Exo4D EgoHandPose | Egocentric 3D hand keypoints; MPJPE/PA-MPJPE benchmark | Egocentric hand pose robustness under skilled activities | Does not evaluate object geometry/contact |
+| AssemblyHands | 3.0M annotated hand images, 490K egocentric; accurate 3D hand pose | Egocentric hand-pose generalization in manipulation-heavy assembly | Hand pose only; object state not ground truth for V19 physics |
+| FreiHAND | Multi-view hand pose/shape benchmark | Compatibility with WiLoR/HaMeR standard hand reconstruction evaluation | Single-image hand benchmark; weak for egocentric full-video physics |
+| HInt | 2D hand keypoints and per-keypoint occlusion labels on interaction-heavy images from Hands23, EPIC-KITCHENS VISOR, and Ego4D-derived frames | 2D projection sanity, occlusion-label stress tests, and HaMeR-compatible in-the-wild hand evaluation | 2D/occlusion only; not metric 3D hand or object pose closure |
+| Ego4D Hands & Objects | PNR/state-change labels, object boxes in pre/PNR/post frames, hand/tool/object boxes | Manipulated-object roster recall, state-change object detection, temporal state-change localization | Semantic/2D benchmark; not metric 3D hand/object/contact closure |
+
+### 10.2 Baselines
+
+V19 should compare against:
+
+- **V18 v5** on the project videos, for monotonic qualitative comparison.
+- **HaWoR** for world-space egocentric hand motion, especially HOT3D/DexYCB-style evaluation where its code path applies.
+- **WiLoR** for multi-hand localization/reconstruction from monocular frames.
+- **HaMeR** for transformer-based monocular hand mesh recovery and HInt/FreiHAND/HO3D compatibility.
+- **Dataset baselines** such as Ego-Exo4D hand-pose baselines and DexYCB BOP/HPE examples where official tooling exists.
+- **Object-pose baselines** from dataset challenge tooling when available, especially BOP-style metrics for HOT3D/DexYCB.
+
+### 10.3 Metrics
+
+V19 should report metrics by claim family:
+
+**Hand pose / MANO**
+- MPJPE and PA-MPJPE in mm.
+- MANO vertex error where ground-truth mesh/parameters exist.
+- Wrist/global translation error where camera-frame/world-frame pose is evaluated.
+- Temporal jitter/acceleration error on video sequences.
+- Visibility-stratified errors: visible, partially visible, occluded, out-of-frame.
+
+**World/camera/head motion**
+- Absolute and relative trajectory error where headset/camera pose is available.
+- Reprojection consistency against camera intrinsics.
+- Scale error when metric depth/SLAM estimates scale.
+
+**Object pose/geometry**
+- BOP metrics: VSD, MSSD, MSPD where official object meshes and poses exist.
+- Mask IoU/silhouette error as diagnostic evidence unless paired with geometry/depth support.
+- Depth residual distribution on visible object surfaces.
+- Rigid-vs-nonrigid residual evidence for object posterior selection.
+
+**Contact/occlusion**
+- Contact patch precision/recall where contact/contact-region annotations exist.
+- Signed hand-object distance distribution, stratified by claimed contact/no-contact, as diagnostic evidence unless paired with geometry/depth/contact support.
+- Occlusion ownership accuracy where ground truth exists; proxy agreement with visibility masks is diagnostic only and cannot ground an acceptance claim by itself.
+- Calibration of uncertainty: do high-uncertainty spans contain more errors?
+
+**Object roster and state change**
+- Manipulated-object recall on Ego4D/HOT3D/H2O-style labels.
+- Track continuity and identity switches.
+- State-change object detection AP where Ego4D FHO applies.
+
+**Runtime and usability**
+- Wall-clock runtime per video minute.
+- GPU memory peak.
+- Fraction of run time spent in agent reasoning, model inference, rendering, and evaluation.
+- Failure rate by input mode.
+
+### 10.4 Ablations
+
+Required V19 ablations:
+
+1. Agent harness vs fixed script ordering.
+2. Agent-native visual judgment vs isolated VLM JSON calls.
+3. Full object roster vs primary-object-only detection.
+4. Object posterior with mesh/rigid/uncertain alternatives vs visible-surface-only object support.
+5. Occlusion-aware MANO intervals vs direct framewise hand predictions.
+6. World/camera trajectory enabled vs camera-frame-only hand reconstruction.
+7. Contact/nonpenetration terms enabled vs hand-only temporal smoothing.
+8. Audience renderer enabled vs developer/status renderer.
+
+Each ablation should specify the claim it can falsify before it is run. A result that can be explained by several mechanisms without changing the next intervention is bookkeeping, not research.
+
+## 11. Autoresearch loop
+
+The user’s proposed autoresearch direction is appropriate only if benchmark discipline is built in first. V19 should define an autoresearch harness with these rules:
+
+1. **Fixed benchmark registry.** Datasets, splits, metrics, and hidden/held-out partitions are declared before tuning.
+2. **Prediction before run.** The agent writes what a proposed change should improve and what failure would falsify the mechanism.
+3. **Atomic interventions.** One mechanism change per run: e.g. object roster expansion, occlusion factor, depth scale correction, renderer clarity.
+4. **Automatic evaluation.** Every run produces metrics, rendered samples, and failure clusters.
+5. **Adversarial review.** A clean-room or separate agent reviews whether the metric improvement corresponds to visible physical improvement.
+6. **No overfitting path.** The harness keeps a lockbox set and reports validation/test separately.
+7. **No category hacks.** Improvements cannot be hand-written for tomato/bowl/pot or benchmark-specific object IDs unless the split explicitly studies a domain-specific model.
+8. **Commit and provenance.** Each accepted improvement is tied to code/config commits and benchmark artifacts.
+
+The autoresearch loop should optimize benchmark performance, but it should not replace physical judgment. If a benchmark metric improves while the rendered annotation becomes physically less coherent, the run is a failure requiring explanation.
+
+## 12. Representative videos, expected failure modes, and acceptance checks
+
+### 12.1 Representative video set
+
+The project-regression representatives are:
+
+1. `task5_tomato_960`: tomato/bowl/pot/support-surface manipulation; stresses object roster completeness, tomato rigid-vs-uncertain presentation, two-hand MANO continuity, support/contact uncertainty, and audience-facing visualization. Current verified raw clip from the V16 raw-frame manifest: `/data2/egoscale_demo_30h/egoscale_tasks/20260118_1257_Rec3db6_P0_Sc6ab88_task_5/20260118_1257_Rec3db6_P0_Sc6ab88_task_5.mp4` (`960` frames, `30fps`, `1920x1080`).
+2. `trash_1050`: trash-can/lid/occlusion sequence; stresses occluded-hand intervals, lid/object occlusion ownership, late hand visibility transitions, world/camera rendering, and uncertainty communication. Current verified raw clip from the V16 raw-frame manifest: `/data2/egoscale_demo_30h/egoscale_tasks/20260108_1057_Recf94e_P0_S994da4_task_9/20260108_1057_Recf94e_P0_S994da4_task_9.mp4` (`1050` frames, `30fps`, `1920x1080`).
+
+The future V19 implementation must record the exact raw video file path, decoded frame count, FPS, duration, and any calibration/depth side inputs in each run's `input/input_manifest.json`. If only an existing raw-frame manifest is available, V19 may use it as a development input, but a release claim must still identify the raw-video source or explicitly mark raw-video provenance as unresolved.
+
+Benchmark representatives are selected by claim family: HOT3D-Clips first for joint hand/object/head tracking, H2O or DexYCB for RGB-D hand-object/object-pose metrics, and Ego-Exo4D/AssemblyHands/FreiHAND/HO3D/HInt for hand-pose and occlusion stress tests.
+
+### 12.2 Expected failure modes
+
+V19 should expect and render these failure modes instead of hiding them:
+
+- **Metric-scale ambiguity:** raw-video-only inputs may not support strong metric scale without depth/camera evidence.
+- **SLAM/head-pose failure:** fast ego motion, blur, low texture, or moving foreground can break camera trajectory estimates.
+- **Hand measurement failure:** severe occlusion, out-of-frame hands, motion blur, left/right swaps, and hand-object overlap can corrupt framewise hand models.
+- **Object roster misses:** open-vocabulary detection can miss transparent, reflective, small, deformable, or partially occluded manipulated objects.
+- **Object geometry underconstraint:** visible surfaces may not support a unique rigid mesh/pose; V19 must then render uncertainty rather than a confident object pose.
+- **Contact ambiguity:** mask/depth overlap can look like contact without metric surface support; signed distances can look separated when depth is biased.
+- **Occlusion ownership ambiguity:** hidden hands or objects may be plausible under several depth-order hypotheses.
+- **Runtime overrun:** a branch may exceed the default runtime budget and must be demoted to offline research.
+- **Benchmark/domain mismatch:** a metric may improve on a narrow object set while project-video visual coherence degrades.
+- **Agent overconfidence:** the harness may propose a plausible physical narrative not supported by state variables or rendered evidence; clean-room review must catch this.
+
+### 12.3 Acceptance checks
+
+A future V19 implementation should not close until these checks pass for both representative project videos and for the selected benchmark suite:
+
+1. **Full-duration render check:** overlay/world/side-by-side videos match input frame count, FPS, and duration.
+2. **State-to-render check:** every visible annotation layer is driven by `state/` variables, not private measurement files or status text.
+3. **Object roster check:** manipulated objects, containers, tools, supports, and occluders visible in representative review frames are either tracked or explicitly marked unresolved.
+4. **Geometry identity check:** every object-pose claim points to per-instance reconstructed/adapted/dataset-instance geometry evidence; category priors alone cannot satisfy object pose.
+5. **MANO provenance check:** every hand state has camera/world semantics, visibility, provenance, and uncertainty.
+6. **Contact/occlusion check:** contact and occlusion claims carry supporting depth/geometry/temporal evidence or visible uncertainty.
+7. **Runtime/compute check:** heavy tools ran on the declared server-class target, local execution stayed light, and the default path stayed within its runtime budget.
+8. **Benchmark check:** each reported metric is tied to a dataset that actually annotates the corresponding claim family.
+9. **Ablation check:** every accepted improvement has an ablation that changes a physical artifact or a claim-specific metric, not only a schema/report.
+10. **Clean-room review check:** an independent review consumes the rendered videos and benchmark bundle as a user would and records any first-glance physical contradiction.
+
+## 13. Acceptance criteria for a future V19 implementation
+
+V19 can be called implemented only when all of the following are true:
+
+1. A Pi agent-harness entry point accepts an arbitrary input video path, produces a full-duration artifact directory, and exposes uncertainty when the video cannot support strong metric hand/object/contact claims.
+2. The harness uses GPT-5.5 through the `occ` provider or a documented equivalent route, with a V19 system prompt replacing the generic Pi prompt for the annotation session.
+3. The pipeline builds an object roster that includes all visibly manipulated or physically relevant objects in the representative project videos, not only the named target object.
+4. The renderer shows MANO hand meshes, camera/head trajectory, manipulated object hypotheses, contact/occlusion cues, and uncertainty in audience-readable form.
+5. The artifact can run on a benchmark suite with claim-specific metrics: HOT3D as the first joint hand/object/head anchor, plus at least one supplementary hand-pose benchmark and one RGB-D hand-object/object-pose benchmark unless dataset access blocks are explicitly documented.
+6. V19 reports ablations against V18 v5 and modern baselines including HaWoR, WiLoR, and HaMeR where applicable.
+7. Tomato/task5 presentation is no longer a raw point-cloud-only story when evidence supports a rigid object hypothesis; if evidence does not support it, the artifact clearly renders uncertainty rather than false rigidity.
+8. Every closure claim is scoped to benchmark and project-video evidence; unsolved object pose/contact/nonpenetration cases remain visible uncertainty, not hidden omissions.
+
+## 14. Proposed implementation phases for later work
+
+No phase below is implemented by this design document.
+
+### Phase A — Harness skeleton
+
+- Create V19 system prompt.
+- Create Pi SDK harness session using provider `occ` and model `gpt-5.5`.
+- Define tool allowlist and artifact-root contract.
+- Run on a tiny video only to prove input/output plumbing.
+
+### Phase B — Self-contained measurement instruments
+
+- Frame extraction, video manifest, optional calibration ingest.
+- Hand model adapters for WiLoR/HaMeR/HaWoR-style measurements.
+- Depth/SLAM/camera trajectory measurement path.
+- Open-vocabulary object roster and SAM/video-mask tracking path.
+
+### Phase C — Physical state posterior
+
+- Interval MANO state writer.
+- Object posterior writer with visible-surface, rigid mesh, articulated/part, and uncertain/deformable hypotheses.
+- Contact/occlusion/nonpenetration uncertainty state.
+
+### Phase D — Audience renderer
+
+- Overlay/world/side-by-side videos.
+- Camera/head trajectory visualization.
+- Mesh/uncertainty styling.
+- Narrative review sheets.
+
+### Phase E — Benchmark adapters
+
+- HOT3D first because it tests the broadest hand/object/head claim.
+- H2O/DexYCB for RGB-D hand-object and official object/hand metrics.
+- Ego-Exo4D/AssemblyHands/FreiHAND/HO3D/HInt for hand and occlusion stress tests.
+
+### Phase F — Autoresearch
+
+- Fixed benchmark registry.
+- Atomic intervention queue.
+- Prediction/evaluation/review ledger.
+- Held-out lockbox and clean-room review.
+
+## 15. Source anchors
+
+The design relies on these current source observations:
+
+- V18 baseline evidence: `/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/`, especially `v18_current_frontier_interval_mano_artifact_manifest.json` and `v18_frontier_uncertainty_classification.json`, is the scoped bounded-MANO baseline that V19 should compare against.
+- Pi docs: installed package files `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/usage.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/sdk.md`, and `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/examples/sdk/03-custom-prompt.ts` document custom models in `~/.pi/agent/models.json`, CLI `--provider`/`--model`/`--system-prompt`, and SDK `createAgentSession()`/`DefaultResourceLoader.systemPromptOverride`.
+- [HaWoR](https://arxiv.org/abs/2501.02973), [official repo](https://github.com/ThunderVVV/HaWoR): world-space egocentric hand reconstruction combines camera-frame hand reconstruction, world camera trajectory estimation, and motion infilling; the repo includes HOT3D evaluation and DexYCB evaluation reference.
+- [WiLoR](https://arxiv.org/abs/2409.12259), [official repo](https://github.com/rolpotamias/WiLoR): CVPR 2025 multi-hand localization/reconstruction pipeline with real-time localization and transformer 3D reconstruction; relevant to FreiHAND/HO3D-style benchmark comparisons.
+- [HaMeR](https://arxiv.org/abs/2312.05251), [official repo](https://github.com/geopavlakos/hamer), [HInt](https://github.com/ddshan/hint): CVPR 2024 transformer hand mesh recovery with evaluation on FreiHAND, HO3D, and HInt splits; HInt adds 2D keypoints and occlusion labels on interaction-heavy datasets.
+- [HOT3D](https://facebookresearch.github.io/hot3d/), [toolkit](https://github.com/facebookresearch/hot3d): egocentric hand/object tracking dataset with 833 minutes, 19 subjects, 33 rigid objects, MANO/UmeTrack hands, object meshes/poses, headset devices, and public challenge/toolkit support.
+- [H2O](https://taeinkwon.com/projects/h2o/), [arXiv](https://arxiv.org/abs/2104.11181): egocentric RGB-D hand-object dataset with two-hand 3D poses, 6D object poses, camera poses, object meshes, scene point clouds, and interaction labels.
+- [DexYCB toolkit](https://github.com/NVlabs/dex-ycb-toolkit): RGB-D hand grasping toolkit with object pose, MANO hand parameters, segmentation, and official COCO/BOP/HPE/grasp evaluations.
+- [HO3D v3](https://arxiv.org/abs/2107.00887): hand-object dataset with improved 3D hand/object annotations and contact-region estimates.
+- [Ego-Exo4D EgoHandPose](https://docs.ego-exo4d-data.org/benchmarks/ego_pose/ego_hand_pose/), [benchmark repo](https://github.com/EGO4D/ego-exo4d-egopose): egocentric 3D hand-pose benchmark evaluated by MPJPE and PA-MPJPE.
+- [AssemblyHands](https://assemblyhands.github.io/), [arXiv](https://arxiv.org/abs/2304.12301): large-scale egocentric/exocentric hand-pose benchmark with 3.0M annotated images and 490K egocentric images.
+- [FreiHAND](https://lmb.informatik.uni-freiburg.de/projects/freihand/), [arXiv](https://arxiv.org/abs/1909.04349): multi-view hand pose/shape benchmark useful for hand reconstruction compatibility but insufficient alone for full-video egocentric physics.
+- [Ego4D Hands & Objects](https://ego4d-data.org/docs/benchmarks/hands-and-objects/), [benchmark repo](https://github.com/EGO4D/hands-and-objects): state-change and object-box benchmark useful for object roster/state-change evaluation, not metric 3D pose closure.
