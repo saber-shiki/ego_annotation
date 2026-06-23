@@ -21,7 +21,7 @@ A completed V19 run must produce a directory with these artifacts for the full i
    - Optional `v19_story.mp4`: a concise demo video with the key physical message of the sequence.
 2. **Renderable state**
    - Per-frame MANO state with camera/world-frame semantics, visibility, provenance, and uncertainty.
-   - Per-object instance/part tracks, mesh or surface hypotheses, pose hypotheses, visibility, contact/occlusion state, and uncertainty.
+   - Per-object state-type decisions, visible-surface measurements, branch-specific geometry, corrected pose trajectories where the branch is rigid/articulated, visibility, contact/occlusion state, and uncertainty.
    - Camera/head trajectory and intrinsics/metric-scale provenance.
 3. **Evaluation bundle**
    - Dataset-normalized metrics for any benchmark run.
@@ -171,8 +171,8 @@ For each frame `t`, hand side `s`, and object/part instance `i`, V19 should main
 
 - `H_{s,t}`: MANO pose, shape, global transform, camera-frame transform, world-frame transform, visibility state, and uncertainty.
 - `K_t`, `T_world_cam,t`: intrinsics, camera/head pose, metric scale provenance, and camera-pose uncertainty.
-- `G_i`: per-instance object geometry hypothesis set: reconstructed visible surface, video/depth-adapted mesh prior, dataset-provided instance mesh, articulated part graph, or uncertainty volume. A generic retrieved/category mesh is only a prior until it is fitted and adapted to the observed instance.
-- `O_{i,t}`: object or part pose/posterior in camera and world coordinates.
+- `G_i`: per-instance object geometry state selected by the physical-state branch: visible-surface measurements as metric evidence, video/depth-adapted rigid mesh when the object is rigid, dataset-provided instance mesh when available, articulated part graph, or deformation/uncertainty volume. A generic retrieved/category/TRELLIS mesh is only a prior until it is fitted and adapted to the observed instance.
+- `O_{i,t}`: object or part pose trajectory/posterior in camera and world coordinates for rigid/articulated branches; residual uncertainty remains attached to the trajectory rather than replacing it with a surface-only proxy.
 - `M_{i,t}`, `D_t`: image masks/tracks, depth observations, visible-surface samples, and their provenance.
 - `V_{s,t}`, `V_{i,t}`: hand/object visibility and occlusion ownership states.
 - `C_{s,i,t}`: contact/near-contact/non-contact hypothesis with contact-patch support and uncertainty.
@@ -246,7 +246,7 @@ The tomato logic should be stated as a mechanism, not as a claim-retreat. When t
 4. **Factor-graph correction.** Put the object pose trajectory into the temporal factor graph with camera/depth corrections, MANO hand state, contact, occlusion, and nonpenetration terms. The graph corrects the object pose and hand/object relation jointly; residuals and uncertainty are carried in the state, not used to demote a rigid object back to a point cloud.
 5. **Canonical render consumption.** The overlay/world/side-by-side renderer consumes the corrected rigid mesh pose as the object annotation. If a frame is occluded or out of view, the state should show the temporal/occlusion uncertainty for that rigid object, not replace the object with an unrelated visible-surface-only story.
 
-For task5, this means the correct tomato story is: rigid decision -> TRELLIS completion -> pose on visible frames -> factor-graph pose correction -> rendered rigid tomato state. The design should not use claim-scope language as an escape hatch from this mechanism. The remaining engineering question is whether the harness consistently runs and renders that branch from raw video and whether evaluation quantifies pose/contact quality; the branch itself is the object-pose mechanism.
+For task5, this means the correct tomato story is: rigid decision -> TRELLIS completion -> pose on visible frames -> factor-graph pose correction -> rendered rigid tomato state. The harness must treat this chain as the object-pose mechanism and evaluate whether it ran, rendered, and produced acceptable pose/contact quality on the selected clips.
 
 This gives the audience a real manipulated-object visualization when the object is rigid, without violating the project rule that object pose means reconstructed/adapted object geometry, not a centroid, primitive, or label.
 
@@ -328,7 +328,7 @@ V19 needs an executable benchmark slice, not a survey. The active evaluation bud
 
 If H2O access/tooling blocks implementation, V19 may substitute DexYCB for the secondary slot because it has RGB-D, MANO, object pose, segmentation, and official evaluation tooling. H2O and DexYCB must not both be active in the initial V19 gate. No additional hand-only, 2D occlusion, state-change, or HOI dataset is part of V19 acceptance.
 
-The selected HOT3D/H2O clips must be named before tuning. Clip selection should cover only a few phenomena: visible rigid-object manipulation, partial occlusion, two-hand interaction when available, and a failure-prone object/contact span. A large external evaluation is explicitly out of scope for V19.
+The selected primary and optional secondary clips must be named before tuning. Clip selection should cover only a few phenomena: visible rigid-object manipulation, partial occlusion, two-hand interaction when available, and a failure-prone object/contact span. A large external evaluation is explicitly out of scope for V19.
 
 ### 10.2 Baselines
 
@@ -338,7 +338,7 @@ V19 should compare against only baselines that will actually run on the selected
 - **HaWoR** on HOT3D clips, for world-space egocentric hand motion and camera/head-aware hand reconstruction.
 - **Dataset official/reference tracks** for the active HOT3D and optional H2O/DexYCB clips where the provided evaluator supports object pose or hand metrics.
 
-WiLoR and HaMeR can remain measurement components or later ablation candidates, but V19 should not claim comparison against their full paper evaluation sets unless a later release allocates a separate benchmark budget.
+WiLoR and HaMeR can remain measurement components or later ablation candidates. V19 comparison scope is limited to the selected clips unless a later release allocates a separate benchmark budget.
 
 ### 10.3 Metrics
 
@@ -463,7 +463,7 @@ V19 can be called implemented only when all of the following are true:
 5. The artifact runs on the bounded benchmark slice: 3-5 HOT3D clips, plus optionally 2-3 H2O clips or a DexYCB fallback occupying the same secondary slot. No extra dataset is required for V19 closure.
 6. V19 reports ablations against V18 v5 and HaWoR on the selected clips. WiLoR/HaMeR may appear only as internal component ablations if they are actually used in the V19 run, not as separate external-evaluation claims.
 7. Tomato/task5 presentation follows the rigid-object branch when the VLM/agent-harness classifies tomato as rigid: TRELLIS completion, visible-frame pose estimation, factor-graph pose correction, and canonical overlay/world/side-by-side rendering of the corrected rigid object state.
-8. Every closure claim is scoped to benchmark and project-video evidence; pose/contact/nonpenetration failures remain visible residuals, uncertainty, and repair targets, not hidden omissions or scope-retreat language.
+8. Every final report ties claims to project-video and selected-clip evidence; pose/contact/nonpenetration failures are rendered as residuals, uncertainty, and repair targets in the artifact and evaluation report.
 
 ## 14. Proposed implementation phases for later work
 
@@ -516,8 +516,8 @@ The design relies on these current source observations:
 - V18 baseline evidence: `/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/`, especially `v18_current_frontier_interval_mano_artifact_manifest.json` and `v18_frontier_uncertainty_classification.json`, is the scoped bounded-MANO baseline that V19 should compare against.
 - Pi docs: installed package files `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/usage.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/sdk.md`, and `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/examples/sdk/03-custom-prompt.ts` document custom models in `~/.pi/agent/models.json`, CLI `--provider`/`--model`/`--system-prompt`, and SDK `createAgentSession()`/`DefaultResourceLoader.systemPromptOverride`.
 - [HaWoR](https://arxiv.org/abs/2501.02973), [official repo](https://github.com/ThunderVVV/HaWoR): world-space egocentric hand reconstruction baseline/component for HOT3D-style clips.
-- [WiLoR](https://arxiv.org/abs/2409.12259), [official repo](https://github.com/rolpotamias/WiLoR): multi-hand localization/reconstruction component candidate; not an active V19 full-paper benchmark target.
-- [HaMeR](https://arxiv.org/abs/2312.05251), [official repo](https://github.com/geopavlakos/hamer): transformer hand mesh recovery component candidate; not an active V19 full-paper benchmark target.
+- [WiLoR](https://arxiv.org/abs/2409.12259), [official repo](https://github.com/rolpotamias/WiLoR): multi-hand localization/reconstruction component candidate for selected-clip ablations.
+- [HaMeR](https://arxiv.org/abs/2312.05251), [official repo](https://github.com/geopavlakos/hamer): transformer hand mesh recovery component candidate for selected-clip ablations.
 - [HOT3D](https://facebookresearch.github.io/hot3d/), [toolkit](https://github.com/facebookresearch/hot3d): primary V19 external benchmark slice, limited to 3-5 selected clips.
 - [H2O](https://taeinkwon.com/projects/h2o/), [arXiv](https://arxiv.org/abs/2104.11181): optional secondary benchmark slice, limited to 2-3 selected clips if access/tooling permits.
 - [DexYCB toolkit](https://github.com/NVlabs/dex-ycb-toolkit): fallback for the secondary benchmark slot only if H2O is blocked; not an additional V19 dataset.
