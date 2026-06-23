@@ -36,7 +36,7 @@ A JSON row count, schema pass, or internal status overlay is not a V19 deliverab
 
 ### 3.1 Agent first, not script first
 
-The V19 entry point should be a Pi agent harness, not a top-level `run_v19_full_pipeline.py` script. The harness creates a Pi session, gives it the V19 task contract, grants a narrow set of measurement/render/evaluation tools, and asks it to produce a physical annotation artifact.
+The V19 entry point should be a Pi command/session with the V19 system prompt loaded, not a top-level `run_v19_full_pipeline.py` script and not an external program that creates or controls a Pi session. The Pi session receives the V19 task contract and a narrow set of measurement/render/evaluation tools, then owns the evidence loop that produces a physical annotation artifact.
 
 Scripts remain reusable tool implementations. The difference is ownership:
 
@@ -49,33 +49,27 @@ Scripts remain reusable tool implementations. The difference is ownership:
 
 ### 3.2 Practical Pi route
 
+The implementation route is now Pi-native. Pi itself is the V19 harness: a Pi command/session with the V19 system prompt loaded owns the evidence loop, physical-state decisions, uncertainty, and renderer handoff. Do not implement an outer Python, TypeScript, shell, or SDK wrapper that creates or controls a Pi session. Scripts are callable measurement, optimization, rendering, export, and evaluation tools only.
+
 Installed Pi documentation supports the route needed by the user request:
 
 - `~/.pi/agent/models.json` can define custom providers and models. The current config already defines provider `occ` with model `gpt-5.5`, image input, reasoning, and `openai-responses`.
 - Pi CLI supports selecting a provider/model via `--provider <name>` and `--model <pattern>`, and replacing the default prompt via `--system-prompt <text>`.
-- Pi SDK supports `createAgentSession()` and `DefaultResourceLoader.systemPromptOverride`, allowing a harness to replace the default prompt for the V19 annotation session.
+- Pi project prompt templates under `.pi/prompts/*.md` provide native slash-command entry prompts for repeatable runs.
 
-The future implementation route should therefore be:
+The governing implementation route is defined by `docs/v19_run_contract.md` and supersedes any earlier SDK-created-session route. The route is:
 
 ```text
-create V19 custom system prompt
-  -> create Pi SDK AgentSession with provider `occ`, model `gpt-5.5`, and high/xhigh thinking
-  -> restrict tools to V19 measurement/render/evaluation tools
-  -> prompt session with input-video contract
-  -> agent runs a bounded evidence/revision loop until renderable state + videos + evaluation bundle exist, or until the declared uncertainty stop condition is reached
+load configs/v19_agent_system_prompt.md through `pi --system-prompt`
+  -> start Pi directly with provider `occ`, model `gpt-5.5:xhigh`, and the V19 project prompt template
+  -> Pi verifies input, compute target, worktree ownership, run root, and loop budget
+  -> Pi calls measurement/render/evaluation scripts as tools when they reduce a named physical blocker
+  -> Pi writes accepted physical claims into render-consumed state
+  -> Pi renders/inspects full-duration artifacts and bounded benchmark evidence
+  -> Pi stops when deliverables are produced or the declared evidence-cycle/uncertainty budget is exhausted
 ```
 
-For smoke testing the model route before implementing the harness, the intended manual test is equivalent to:
-
-```bash
-pi -p --no-tools --no-session --no-context-files --no-skills --no-extensions \
-  --provider occ \
-  --model gpt-5.5:xhigh \
-  --system-prompt "$(cat path/to/v19_system_prompt.md)" \
-  "Smoke test only: report the active model route and do not perform annotation work."
-```
-
-This is a design route, not a command executed by this document. The smoke form is intentionally non-interactive, tool-disabled, session-disabled, and isolated from discovered context/skills/extensions so it checks model/prompt routing without starting implementation or allowing file/system mutation.
+For smoke testing the model route, use the isolated command in `docs/v19_run_contract.md`. The smoke form is intentionally non-interactive, tool-disabled, session-disabled, and isolated from discovered context/skills/extensions so it checks model/prompt routing without starting implementation or allowing file/system mutation.
 
 ### 3.3 Harness responsibilities
 
@@ -469,12 +463,12 @@ V19 can be called implemented only when all of the following are true:
 
 No phase below is implemented by this design document.
 
-### Phase A — Harness skeleton
+### Phase A — Pi-native harness entry
 
 - Create V19 system prompt.
-- Create Pi SDK harness session using provider `occ` and model `gpt-5.5`.
-- Define tool allowlist and artifact-root contract.
-- Run on a tiny video only to prove input/output plumbing.
+- Create the Pi-native project entry prompt and run contract using provider `occ` and model `gpt-5.5:xhigh` through the Pi CLI/session.
+- Define tool allowlist, artifact-root contract, and evidence-cycle budget.
+- Run through the Pi entry prompt on a tiny or representative input only to prove input/state/render plumbing; do not create an outer SDK/script wrapper around Pi.
 
 ### Phase B — Self-contained measurement instruments
 
@@ -514,7 +508,7 @@ No phase below is implemented by this design document.
 The design relies on these current source observations:
 
 - V18 baseline evidence: `/data2/ego_annotation_outputs/v18_current_frontier_interval_mano_artifact_v5/`, especially `v18_current_frontier_interval_mano_artifact_manifest.json` and `v18_frontier_uncertainty_classification.json`, is the scoped bounded-MANO baseline that V19 should compare against.
-- Pi docs: installed package files `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/usage.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/sdk.md`, and `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/examples/sdk/03-custom-prompt.ts` document custom models in `~/.pi/agent/models.json`, CLI `--provider`/`--model`/`--system-prompt`, and SDK `createAgentSession()`/`DefaultResourceLoader.systemPromptOverride`.
+- Pi docs: installed package files `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md`, `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/usage.md`, and `/home/yiwen/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/docs/prompt-templates.md` document custom models in `~/.pi/agent/models.json`, CLI `--provider`/`--model`/`--system-prompt`, and project prompt templates under `.pi/prompts/*.md`. The earlier SDK-created-session idea is not the V19 implementation route.
 - [HaWoR](https://arxiv.org/abs/2501.02973), [official repo](https://github.com/ThunderVVV/HaWoR): world-space egocentric hand reconstruction baseline/component for HOT3D-style clips.
 - [WiLoR](https://arxiv.org/abs/2409.12259), [official repo](https://github.com/rolpotamias/WiLoR): multi-hand localization/reconstruction component candidate for selected-clip ablations.
 - [HaMeR](https://arxiv.org/abs/2312.05251), [official repo](https://github.com/geopavlakos/hamer): transformer hand mesh recovery component candidate for selected-clip ablations.
