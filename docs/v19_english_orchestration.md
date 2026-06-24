@@ -198,6 +198,31 @@ python "$REPO_ROOT/scripts/export_hawor_world.py" \
 
 The `--img_focal` value must come from `$CALIBRATION_CONTRACT` unless a recorded design amendment chooses a different calibrated hypothesis. Omitting it lets HaWoR choose an internal/default focal and breaks the shared metric backbone. HaWoR's sequence folder caches motion chunks, rendered masks, and SLAM under the video pathname, so the V19 wrapper refuses to reuse focal-dependent cache artifacts when their recorded focal differs from `--img_focal`; use a fresh focal-specific video path or the explicit `--force-focal-cache-refresh` flag when rerunning the same sequence under a new calibration.
 
+Hand-owned surface evidence for MANO refit is acquired as a mask/depth measurement, not as a MANO label. When RTMLib is unavailable or when HaWoR is the calibrated hand source, generate SAM2 prompt files from calibrated HaWoR projections and run the same SAM2 point-prompt tracker on the interval:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_hawor_hand_sam2_prompts.py" \
+  --hawor-npz "$RUN_ROOT/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
+  --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
+  --calibration-contract "$CALIBRATION_CONTRACT" \
+  --output-root "$RUN_ROOT/measurements/hand_candidates/hawor_hand_sam2_prompts" \
+  --frame-start "$INTERVAL_START" \
+  --frame-end "$INTERVAL_END" \
+  --prompt-frames "$INTERVAL_START" "$INTERVAL_MID" "$INTERVAL_END"
+
+python "$REPO_ROOT/scripts/run_sam2_vlm_points_multiobject.py" \
+  --clip "$INPUT_VIDEO" \
+  --point-root "$RUN_ROOT/measurements/hand_candidates/hawor_hand_sam2_prompts" \
+  --output-root "$RUN_ROOT/measurements/hand_candidates/hawor_hand_sam2_masks" \
+  --frame-start "$INTERVAL_START" \
+  --frame-end "$INTERVAL_END" \
+  --checkpoint "$SAM2_CHECKPOINT" \
+  --model-cfg "$SAM2_MODEL_CFG" \
+  --sam2-image-width 960
+```
+
+The HaWoR projections are prompt seeds only; the resulting SAM2 masks plus metric depth are the hand-owned surface observation. If the projections do not land on the visible hand, prompt generation or SAM2 prompt-contract reports must fail or mark uncertainty rather than accepting the mask as hand state.
+
 HaMeR from RTMLib boxes requires a base annotation stream and a frame manifest:
 
 ```bash
