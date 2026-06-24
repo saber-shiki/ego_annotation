@@ -4,12 +4,14 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+import open3d as o3d
 
 
 def load_json(path: Path) -> Any:
@@ -22,8 +24,119 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "object"
+
+
 def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def export_anchor_visible_surface_mesh(
+    *,
+    output_dir: Path,
+    object_id: str,
+    anchor_frame: int,
+    anchor_centroid_world_m: np.ndarray,
+    anchor_points_world_m: np.ndarray,
+    min_voxel_m: float,
+    voxel_divisor: float,
+    poisson_depth: int,
+    poisson_density_quantile: float,
+) -> dict[str, Any]:
+    """Export the selected anchor's visible surfels in object-canonical coordinates.
+
+    The downstream rigid completion/pose components assume the completed mesh is
+    in an object-canonical frame and per-frame pose rows map that canonical mesh
+    into world coordinates.  Therefore the anchor point cloud is centered at the
+    anchor-frame visible centroid rather than written in world coordinates.
+    """
+    points_world = np.asarray(anchor_points_world_m, dtype=np.float64)
+    centroid = np.asarray(anchor_centroid_world_m, dtype=np.float64)
+    if points_world.ndim != 2 or points_world.shape[1] != 3 or len(points_world) < 30:
+        return {
+            "status": "too_few_anchor_visible_points_for_mesh_export",
+            "anchor_frame_idx": int(anchor_frame),
+            "point_count_input": int(len(points_world)) if points_world.ndim == 2 else 0,
+            "blockers": ["anchor visible surfels missing or below 30 points"],
+        }
+    if centroid.shape != (3,) or not np.isfinite(centroid).all() or not np.isfinite(points_world).all():
+        raise RuntimeError("anchor visible surface contains invalid coordinates")
+
+    points_canonical = points_world - centroid[None, :]
+    object_dir = output_dir / "anchor_visible_surface_mesh" / safe_name(object_id.replace("object:", "object_"))
+    object_dir.mkdir(parents=True, exist_ok=True)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points_canonical.astype(np.float64))
+    bbox = pcd.get_axis_aligned_bounding_box()
+    extent = np.asarray(bbox.get_extent(), dtype=np.float64)
+    diag = float(np.linalg.norm(extent))
+    voxel_size = max(float(min_voxel_m), diag / max(float(voxel_divisor), 1.0)) if diag > 0.0 else float(min_voxel_m)
+    if voxel_size > 0.0:
+        pcd = pcd.voxel_down_sample(voxel_size)
+    down_points = np.asarray(pcd.points, dtype=np.float64)
+    out: dict[str, Any] = {
+        "status": "anchor_visible_surface_mesh_exported",
+        "coordinate_frame": "object_canonical_anchor_centroid_frame",
+        "canonical_coordinate_source": "selected_anchor_frame_visible_surfels_minus_anchor_centroid_world_m",
+        "anchor_frame_idx": int(anchor_frame),
+        "anchor_centroid_world_m": centroid.astype(float).tolist(),
+        "point_count_input": int(points_canonical.shape[0]),
+        "point_count_downsampled": int(down_points.shape[0]),
+        "voxel_size_m": float(voxel_size),
+        "canonical_bbox_min_m": down_points.min(axis=0).astype(float).tolist() if len(down_points) else None,
+        "canonical_bbox_max_m": down_points.max(axis=0).astype(float).tolist() if len(down_points) else None,
+        "fused_point_cloud_path": None,
+        "poisson_mesh_path": None,
+        "convex_hull_mesh_path": None,
+        "blockers": [],
+        "claim_scope": "selected-frame metric visible surface for TRELLIS alignment; not complete hidden object geometry",
+    }
+    pcd_path = object_dir / f"frame_{anchor_frame:06d}_{safe_name(object_id)}_anchor_visible_points_canonical.ply"
+    if not o3d.io.write_point_cloud(str(pcd_path), pcd, write_ascii=False, compressed=False):
+        raise RuntimeError(f"failed to write anchor visible point cloud: {pcd_path}")
+    out["fused_point_cloud_path"] = str(pcd_path)
+    if down_points.shape[0] < 30:
+        out["status"] = "too_few_downsampled_anchor_points_for_mesh"
+        out["blockers"].append("too_few_downsampled_anchor_points_for_mesh")
+        return out
+    try:
+        hull, _ = pcd.compute_convex_hull()
+        hull.compute_vertex_normals()
+        hull_path = object_dir / f"frame_{anchor_frame:06d}_{safe_name(object_id)}_anchor_convex_hull_visible_candidate.ply"
+        if o3d.io.write_triangle_mesh(str(hull_path), hull, write_ascii=False, compressed=False):
+            out["convex_hull_mesh_path"] = str(hull_path)
+            out["convex_hull_vertices"] = int(np.asarray(hull.vertices).shape[0])
+            out["convex_hull_faces"] = int(np.asarray(hull.triangles).shape[0])
+    except Exception as exc:
+        out["blockers"].append(f"convex_hull_failed:{type(exc).__name__}:{exc}")
+    try:
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=max(voxel_size * 4.0, float(min_voxel_m) * 4.0), max_nn=30))
+        pcd.orient_normals_consistent_tangent_plane(20)
+        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=int(poisson_depth))
+        mesh = mesh.crop(bbox)
+        densities_np = np.asarray(densities)
+        if densities_np.size and np.asarray(mesh.vertices).shape[0] == densities_np.shape[0]:
+            keep_threshold = float(np.quantile(densities_np, float(poisson_density_quantile)))
+            mesh.remove_vertices_by_mask(densities_np < keep_threshold)
+        mesh.remove_degenerate_triangles()
+        mesh.remove_duplicated_triangles()
+        mesh.remove_duplicated_vertices()
+        mesh.remove_non_manifold_edges()
+        mesh.compute_vertex_normals()
+        poisson_path = object_dir / f"frame_{anchor_frame:06d}_{safe_name(object_id)}_anchor_poisson_visible_mesh.ply"
+        if not o3d.io.write_triangle_mesh(str(poisson_path), mesh, write_ascii=False, compressed=False):
+            raise RuntimeError("Open3D write_triangle_mesh returned false")
+        out["poisson_mesh_path"] = str(poisson_path)
+        out["poisson_vertices"] = int(np.asarray(mesh.vertices).shape[0])
+        out["poisson_faces"] = int(np.asarray(mesh.triangles).shape[0])
+    except Exception as exc:
+        out["blockers"].append(f"poisson_reconstruction_failed:{type(exc).__name__}:{exc}")
+        if not out.get("convex_hull_mesh_path"):
+            out["status"] = "anchor_visible_surface_point_cloud_only_mesh_failed"
+        else:
+            out["status"] = "anchor_visible_surface_hull_only_poisson_failed"
+    return out
 
 
 def raw_frame_map(manifest_path: Path) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
@@ -66,6 +179,27 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
         "source_size": source_size,
         "frame_to_i": {int(idx): int(i) for i, idx in enumerate(frame_idx)},
     }
+
+
+def load_calibration_contract(path: Path | None) -> tuple[np.ndarray | None, str | None, dict[str, Any] | None]:
+    if path is None:
+        return None, None, None
+    if not path.exists():
+        raise FileNotFoundError(f"missing calibration contract: {path}")
+    payload = load_json(path)
+    intr = np.asarray(payload.get("intrinsics_fx_fy_cx_cy"), dtype=float).reshape(-1)
+    if intr.shape != (4,) or not np.isfinite(intr).all() or float(intr[0]) <= 0.0 or float(intr[1]) <= 0.0:
+        raise RuntimeError(f"calibration contract has invalid intrinsics_fx_fy_cx_cy: {path}")
+    source = str(payload.get("intrinsics_source") or payload.get("method") or "v19_calibration_contract")
+    source = f"calibration_contract:{source}"
+    summary = {
+        "path": str(path),
+        "intrinsics_fx_fy_cx_cy": [float(v) for v in intr.tolist()],
+        "intrinsics_source": source,
+        "fov_degrees": payload.get("fov_degrees"),
+        "aggregation": payload.get("aggregation"),
+    }
+    return intr.astype(float), source, summary
 
 
 def load_camera_npz(path: Path | None) -> dict[int, tuple[np.ndarray, str]]:
@@ -182,6 +316,16 @@ def base_camera_pose(frame: dict[str, Any]) -> tuple[np.ndarray, str] | None:
         arr = np.asarray(value if value is not None else [], dtype=float)
         if arr.shape == (4, 4) and np.isfinite(arr).all():
             return arr, f"base_annotations_camera_{key}"
+    return None
+
+
+def base_camera_intrinsics(frame: dict[str, Any]) -> tuple[np.ndarray, str] | None:
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    value = camera.get("intrinsics_fx_fy_cx_cy")
+    arr = np.asarray(value if value is not None else [], dtype=float).reshape(-1)
+    if arr.shape == (4,) and np.isfinite(arr).all() and float(arr[0]) > 0.0 and float(arr[1]) > 0.0:
+        source = str(camera.get("intrinsics_source") or "base_annotations_camera_intrinsics_fx_fy_cx_cy")
+        return arr.astype(float), f"base_annotations:{source}"
     return None
 
 
@@ -321,6 +465,7 @@ def remove_existing_object(objects: list[Any], object_id: str, track_id: str) ->
 def build(args: argparse.Namespace) -> dict[str, Any]:
     raw_frames, raw_payload = raw_frame_map(args.raw_frame_manifest)
     depth = load_depth_npz(args.depth_npz)
+    calibration_intrinsics, calibration_source, calibration_summary = load_calibration_contract(args.calibration_contract)
     camera_poses = load_camera_npz(args.camera_npz)
     base_frames = load_base_annotations(args.base_annotations)
     sam2, sam2_path = load_sam2_track(args)
@@ -349,13 +494,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             mask_depth = cv2.resize(mask.astype(np.uint8), (depth_m.shape[1], depth_m.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
         else:
             mask_depth = mask
-        intr = scaled_intrinsics_for_depth(depth["intrinsics"][depth_i], depth_m.shape, depth["source_size"])
+        raw_row = raw_frames[idx]
+        base_frame = copy.deepcopy(base_frames.get(idx, {"frame_idx": idx}))
+        if calibration_intrinsics is not None:
+            raw_intrinsics = calibration_intrinsics
+            intrinsics_source = calibration_source or "calibration_contract"
+        else:
+            base_intr = base_camera_intrinsics(base_frame)
+            if base_intr is not None:
+                raw_intrinsics, intrinsics_source = base_intr
+            else:
+                raw_intrinsics = depth["intrinsics"][depth_i]
+                intrinsics_source = "depth_npz_intrinsics_fx_fy_cx_cy"
+        intr = scaled_intrinsics_for_depth(raw_intrinsics, depth_m.shape, depth["source_size"])
         valid = mask_depth & np.isfinite(depth_m) & (depth_m >= float(args.min_depth_m)) & (depth_m <= float(args.max_depth_m))
         if int(valid.sum()) < int(args.min_valid_points):
             skipped_rows.append({"frame_idx": idx, "status": "too_few_valid_mask_depth_pixels", "valid_pixels": int(valid.sum())})
             continue
-        raw_row = raw_frames[idx]
-        base_frame = copy.deepcopy(base_frames.get(idx, {"frame_idx": idx}))
         T_world_camera, camera_source = resolve_camera_pose(idx, base_frame, camera_poses, bool(args.allow_camera_frame_world))
         camera_points, world_points, sample_summary = choose_visible_points(
             valid,
@@ -377,6 +532,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "camera_points": camera_points,
             "world_points": world_points,
             "intrinsics": intr,
+            "intrinsics_source": intrinsics_source,
             "T_world_camera": T_world_camera,
             "camera_source": camera_source,
             "sample_summary": sample_summary,
@@ -399,7 +555,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError(f"--anchor-frame {anchor} has no visible metric geometry")
     else:
         anchor = max(visible_data, key=lambda idx: len(visible_data[idx]["world_points"]))
-    anchor_centroid = visible_data[anchor]["world_points"].mean(axis=0)
+    anchor_points = np.asarray(visible_data[anchor]["world_points"], dtype=float)
+    anchor_centroid = anchor_points.mean(axis=0)
+    anchor_extent_m = anchor_points.max(axis=0) - anchor_points.min(axis=0)
+    anchor_diag_m = float(np.linalg.norm(anchor_extent_m))
+    if anchor_diag_m <= 0.0 or not np.isfinite(anchor_diag_m):
+        raise RuntimeError(f"anchor frame {anchor} has invalid metric extent")
+    anchor_mesh_reconstruction = export_anchor_visible_surface_mesh(
+        output_dir=args.output_dir,
+        object_id=object_id,
+        anchor_frame=int(anchor),
+        anchor_centroid_world_m=anchor_centroid,
+        anchor_points_world_m=anchor_points,
+        min_voxel_m=float(args.anchor_mesh_min_voxel_m),
+        voxel_divisor=float(args.anchor_mesh_voxel_divisor),
+        poisson_depth=int(args.anchor_mesh_poisson_depth),
+        poisson_density_quantile=float(args.anchor_mesh_poisson_density_quantile),
+    )
 
     last_pose: dict[str, Any] | None = None
     output_frames: list[dict[str, Any]] = []
@@ -450,6 +622,26 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         world_points = np.asarray(vis["world_points"], dtype=float)
         cam_points = np.asarray(vis["camera_points"], dtype=float)
         centroid = world_points.mean(axis=0)
+        world_extent_m = world_points.max(axis=0) - world_points.min(axis=0)
+        extent_ratio_diag = float(np.linalg.norm(world_extent_m) / max(anchor_diag_m, 1.0e-9))
+        extent_ratio_axis = np.divide(
+            world_extent_m,
+            np.maximum(anchor_extent_m, 1.0e-6),
+            out=np.full(3, np.inf, dtype=float),
+            where=np.maximum(anchor_extent_m, 1.0e-6) > 0,
+        )
+        max_extent_ratio_axis = float(np.max(extent_ratio_axis))
+        rigid_pose_observation_eligible = bool(
+            np.isfinite(extent_ratio_diag)
+            and np.isfinite(max_extent_ratio_axis)
+            and extent_ratio_diag <= float(args.rigid_extent_ratio_max)
+            and max_extent_ratio_axis <= float(args.rigid_extent_axis_ratio_max)
+        )
+        rigid_pose_observation_reason = (
+            "metric_extent_consistent_with_selected_anchor_rigid_object"
+            if rigid_pose_observation_eligible
+            else "systematic_mask_extent_inconsistent_with_selected_anchor_rigid_object_probable_hand_background_leakage"
+        )
         raw_mask = read_mask(Path(vis["mask_path"]))
         bbox = vis["track_row"].get("bbox_xyxy")
         if not isinstance(bbox, list) or len(bbox) < 4:
@@ -475,11 +667,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_frame_index": int(idx),
             "camera_pose_source": vis["camera_source"],
             "intrinsics_fx_fy_cx_cy": np.asarray(vis["intrinsics"], dtype=float).tolist(),
+            "intrinsics_source": vis.get("intrinsics_source"),
             "vertex_count": int(len(world_points)),
             "world_vertices_sample_m": world_points.astype(float).tolist(),
             "camera_vertices_sample_m": cam_points.astype(float).tolist(),
             "centroid_world_m": centroid.astype(float).tolist(),
-            "world_extent_m": (world_points.max(axis=0) - world_points.min(axis=0)).astype(float).tolist(),
+            "world_extent_m": world_extent_m.astype(float).tolist(),
+            "anchor_extent_world_m": anchor_extent_m.astype(float).tolist(),
+            "extent_ratio_to_anchor_diag": extent_ratio_diag,
+            "extent_ratio_to_anchor_axis": extent_ratio_axis.astype(float).tolist(),
+            "rigid_pose_observation_eligible": rigid_pose_observation_eligible,
+            "rigid_pose_observation_reason": rigid_pose_observation_reason,
             "depth_median_m": float(vis["depth_median_m"]),
             "depth_p05_m": float(vis["depth_p05_m"]),
             "depth_p95_m": float(vis["depth_p95_m"]),
@@ -500,6 +698,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "visible_geometry_candidate": geom,
             "reconstructed_geometry_pose": pose,
             "v19_physical_model": (object_plan_record or {}).get("physical_model"),
+            "rigid_pose_observation_eligible": rigid_pose_observation_eligible,
+            "rigid_pose_observation_reason": rigid_pose_observation_reason,
         }
         objects.append(row_obj)
         frame["objects"] = objects
@@ -512,7 +712,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "mask_path": str(vis["mask_path"]),
                 "depth_median_m": float(vis["depth_median_m"]),
                 "centroid_world_m": centroid.astype(float).tolist(),
+                "world_extent_m": world_extent_m.astype(float).tolist(),
+                "extent_ratio_to_anchor_diag": extent_ratio_diag,
+                "extent_ratio_to_anchor_axis_max": max_extent_ratio_axis,
+                "rigid_pose_observation_eligible": rigid_pose_observation_eligible,
+                "rigid_pose_observation_reason": rigid_pose_observation_reason,
                 "camera_pose_source": vis["camera_source"],
+                "intrinsics_source": vis.get("intrinsics_source"),
             }
         )
 
@@ -528,6 +734,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_npz": str(args.depth_npz),
             "base_annotations": str(args.base_annotations) if args.base_annotations else None,
             "camera_npz": str(args.camera_npz) if args.camera_npz else None,
+            "calibration_contract": str(args.calibration_contract) if args.calibration_contract else None,
             "anchor_frame_idx": int(anchor),
             "claim_scope": "visible metric surfel and initial-pose adapter for rigid branch; downstream completion/pose/interval solvers must produce the physical object pose claim",
         },
@@ -590,6 +797,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "annotations": str(annotations_path),
             "depth_fused_report": str(args.output_dir / "v19_visible_geometry_depth_fused_report.json"),
             "visible_mask_report": str(visible_mask_report_path),
+            "anchor_visible_surface_mesh": anchor_mesh_reconstruction.get("poisson_mesh_path") or anchor_mesh_reconstruction.get("convex_hull_mesh_path") or anchor_mesh_reconstruction.get("fused_point_cloud_path"),
         },
         "requested_frame_start": int(indices[0]),
         "requested_frame_end": int(indices[-1]),
@@ -599,7 +807,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "visible_metric_frame_count": int(sum(1 for row in rows if row.get("status") == "visible_metric_surface_measurement")),
         "anchor_frame_idx": int(anchor),
         "anchor_centroid_world_m": anchor_centroid.astype(float).tolist(),
+        "anchor_extent_world_m": anchor_extent_m.astype(float).tolist(),
+        "anchor_visible_surface_mesh_reconstruction": anchor_mesh_reconstruction,
         "camera_pose_source_counts": dict(camera_source_counts),
+        "intrinsics_source_counts": dict(Counter(str(vis.get("intrinsics_source")) for vis in visible_data.values())),
+        "calibration_contract": calibration_summary,
         "parameters": {
             "pixel_stride": int(args.pixel_stride),
             "max_points": int(args.max_points),
@@ -609,6 +821,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "allow_camera_frame_world": bool(args.allow_camera_frame_world),
             "carry_invisible_pose": bool(args.carry_invisible_pose),
             "preserve_source_index": bool(args.preserve_source_index),
+            "rigid_extent_ratio_max": float(args.rigid_extent_ratio_max),
+            "rigid_extent_axis_ratio_max": float(args.rigid_extent_axis_ratio_max),
         },
         "rows": rows,
         "skipped_rows_preview": skipped_rows[:200],
@@ -629,7 +843,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "visible_geometry_adapter_report": str(report_path),
                 "visible_mask_report": str(visible_mask_report_path),
                 "annotations": str(annotations_path),
-                "mesh_reconstruction": {},
+                "mesh_reconstruction": anchor_mesh_reconstruction,
                 "object_geometry_complete": False,
                 "hidden_geometry_reconstructed": False,
                 "complete_object_pose_ready": False,
@@ -652,6 +866,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--base-annotations", type=Path, default=None)
     parser.add_argument("--camera-npz", type=Path, default=None)
+    parser.add_argument("--calibration-contract", type=Path, default=None, help="V19 camera calibration contract JSON. When supplied, its constant intrinsics override base/depth per-frame intrinsics for mask-depth lifting.")
     parser.add_argument("--object-plan", type=Path, default=None)
     parser.add_argument("--remote-root", type=Path, default=None, help="Remote path prefix to localize mask/raw paths from server-produced manifests")
     parser.add_argument("--local-root", type=Path, default=None, help="Local path prefix corresponding to --remote-root")
@@ -667,6 +882,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--carry-invisible-pose", action="store_true", help="Carry the nearest visible centroid pose into invisible frames as an uncertain initialization only.")
     parser.add_argument("--preserve-source-index", action=argparse.BooleanOptionalAction, default=True, help="Write one output frame row per raw source frame so annotations['frames'][frame_idx] remains valid for V18 rigid tools.")
     parser.add_argument("--seed", type=int, default=1901)
+    parser.add_argument("--anchor-mesh-min-voxel-m", type=float, default=0.002)
+    parser.add_argument("--anchor-mesh-voxel-divisor", type=float, default=80.0)
+    parser.add_argument("--anchor-mesh-poisson-depth", type=int, default=7)
+    parser.add_argument("--anchor-mesh-poisson-density-quantile", type=float, default=0.02)
+    parser.add_argument("--rigid-extent-ratio-max", type=float, default=2.75, help="Mark visible surfaces with diagonal extent more than this multiple of the selected anchor as ineligible for rigid pose fitting; they remain mask/depth measurements with systematic leakage uncertainty.")
+    parser.add_argument("--rigid-extent-axis-ratio-max", type=float, default=3.25, help="Axis-wise companion to --rigid-extent-ratio-max for detecting elongated hand/background leakage.")
     return parser.parse_args()
 
 

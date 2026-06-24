@@ -135,6 +135,28 @@ def load_depth_intrinsics(path: Path | None) -> dict[int, tuple[list[float], str
     return out
 
 
+def load_calibration_contract(path: Path | None, frame_ids: list[int]) -> tuple[dict[int, tuple[list[float], str]], dict[str, Any] | None]:
+    if path is None:
+        return {}, None
+    if not path.exists():
+        raise FileNotFoundError(f"missing calibration contract: {path}")
+    payload = load_json(path)
+    intr = np.asarray(payload.get("intrinsics_fx_fy_cx_cy"), dtype=float).reshape(-1)
+    if intr.shape != (4,) or not np.isfinite(intr).all() or float(intr[0]) <= 0.0 or float(intr[1]) <= 0.0:
+        raise RuntimeError(f"calibration contract has invalid intrinsics_fx_fy_cx_cy: {path}")
+    source = str(payload.get("intrinsics_source") or payload.get("method") or "v19_calibration_contract")
+    source = f"calibration_contract:{source}"
+    rows = {int(idx): ([float(v) for v in intr.tolist()], source) for idx in frame_ids}
+    summary = {
+        "path": str(path),
+        "intrinsics_fx_fy_cx_cy": [float(v) for v in intr.tolist()],
+        "intrinsics_source": source,
+        "fov_degrees": payload.get("fov_degrees"),
+        "aggregation": payload.get("aggregation"),
+    }
+    return rows, summary
+
+
 def load_hawor_npz(path: Path | None) -> tuple[dict[str, np.ndarray], str | None]:
     if path is None:
         return {}, None
@@ -340,7 +362,31 @@ def interval_active(obj: dict[str, Any], frame_idx: int) -> bool:
     return False
 
 
-def object_row(track_id: str, object_plan: dict[str, Any] | None, sam2_row: dict[str, Any] | None, frame_idx: int) -> dict[str, Any] | None:
+def localize_path(path: str | Path, remote_root: Path | None, local_root: Path | None) -> Path:
+    direct = Path(path)
+    if direct.exists():
+        return direct
+    if remote_root is not None and local_root is not None:
+        for src, dst in ((remote_root, local_root), (local_root, remote_root)):
+            try:
+                rel = direct.relative_to(src)
+            except ValueError:
+                continue
+            candidate = dst / rel
+            if candidate.exists():
+                return candidate
+    raise FileNotFoundError(str(path))
+
+
+def object_row(
+    track_id: str,
+    object_plan: dict[str, Any] | None,
+    sam2_row: dict[str, Any] | None,
+    frame_idx: int,
+    *,
+    remote_root: Path | None = None,
+    local_root: Path | None = None,
+) -> dict[str, Any] | None:
     plan = object_plan or {}
     active = interval_active(plan, frame_idx) if plan else sam2_row is not None
     visible = bool(sam2_row and sam2_row.get("visible") and sam2_row.get("mask_path"))
@@ -358,12 +404,15 @@ def object_row(track_id: str, object_plan: dict[str, Any] | None, sam2_row: dict
         "claim_scope": "object roster/mask measurement only; geometry and pose are produced by later V19 components",
     }
     if visible and sam2_row is not None:
-        mask_path = Path(str(sam2_row.get("mask_path")))
-        if not mask_path.exists():
-            raise FileNotFoundError(f"SAM2 mask path for {track_id} frame {frame_idx} does not exist: {mask_path}")
+        raw_mask_path = Path(str(sam2_row.get("mask_path")))
+        try:
+            mask_path = localize_path(raw_mask_path, remote_root, local_root)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"SAM2 mask path for {track_id} frame {frame_idx} does not exist locally or via remote/local root mapping: {raw_mask_path}") from exc
         row.update(
             {
                 "mask_path": str(mask_path),
+                "mask_path_original": str(raw_mask_path),
                 "bbox_xyxy": sam2_row.get("bbox_xyxy"),
                 "center_xy": sam2_row.get("center_xy"),
                 "area_px": sam2_row.get("area_px"),
@@ -486,12 +535,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     raw_by_idx = {int(f["frame_idx"]): f for f in raw_frames}
     camera_poses, camera_intr, camera_path = load_camera_npz(args.camera_npz)
     depth_intr = load_depth_intrinsics(args.depth_npz)
+    calibration_intr, calibration_summary = load_calibration_contract(args.calibration_contract, [int(f["frame_idx"]) for f in raw_frames])
     hawor_arrays, hawor_path = load_hawor_npz(args.hawor_npz)
     hawor_camera = camera_from_hawor(hawor_arrays)
-    # Explicit priority: dedicated camera trajectory, then HaWoR camera. Depth
-    # supplies intrinsics but not poses.
-    poses = dict(hawor_camera)
-    poses.update(camera_poses)
+    # Camera/world poses and HaWoR MANO vertices must live in the same world
+    # frame. DROID/SLAM and HaWoR each define their own arbitrary world unless
+    # an explicit alignment has been estimated. Default to HaWoR camera when
+    # HaWoR MANO is present so hand surfaces and camera transforms stay in one
+    # coordinate system; use --prefer-camera-npz only for an aligned camera NPZ.
+    if hawor_camera and camera_poses and not args.prefer_camera_npz:
+        poses = dict(camera_poses)
+        poses.update(hawor_camera)
+    else:
+        poses = dict(hawor_camera)
+        poses.update(camera_poses)
     if not poses:
         raise RuntimeError("V19 base annotations require a real camera/world pose source: provide --camera-npz or --hawor-npz")
     hawor_frame_pos = {int(v): i for i, v in enumerate(np.asarray(hawor_arrays.get("frame_idx", []), dtype=int).tolist())} if hawor_arrays else {}
@@ -518,7 +575,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             missing_camera.append(idx)
             continue
         T_world_camera, camera_source = pose
-        intr_pair = depth_intr.get(idx) or camera_intr.get(idx) or default_intrinsics_from_raw(raw, hawor_focal, "hawor_img_focal_center_prior")
+        intr_pair = calibration_intr.get(idx) or depth_intr.get(idx) or camera_intr.get(idx) or default_intrinsics_from_raw(raw, hawor_focal, "hawor_img_focal_center_prior")
         intrinsics = intr_pair[0] if intr_pair is not None else None
         intr_source = intr_pair[1] if intr_pair is not None else None
         camera = {
@@ -550,7 +607,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         objects = []
         for track_id, plan in sorted(object_plan.items()):
             sam2_row = sam2_tracks.get(track_id, {}).get(idx)
-            row = object_row(track_id, plan, sam2_row, idx)
+            row = object_row(
+                track_id,
+                plan,
+                sam2_row,
+                idx,
+                remote_root=args.remote_root,
+                local_root=args.local_root,
+            )
             if row is not None:
                 objects.append(row)
                 counts[f"object::{track_id}::{row.get('status')}"] += 1
@@ -593,6 +657,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "raw_frame_manifest": str(args.raw_frame_manifest),
             "camera_npz": camera_path,
             "depth_npz": str(args.depth_npz) if args.depth_npz else None,
+            "calibration_contract": str(args.calibration_contract) if args.calibration_contract else None,
             "hawor_npz": hawor_path,
             "object_plan": str(args.object_plan) if args.object_plan else None,
             "sam2_tracks": {track_id: "loaded" for track_id in sam2_tracks},
@@ -609,6 +674,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "annotations": str(annotations_path),
         "raw_frame_manifest": str(args.raw_frame_manifest),
         "camera_source_count": dict(Counter(frame["camera"]["v19_camera_pose_source"] for frame in output_frames)),
+        "intrinsics_source_count": dict(Counter(frame["camera"].get("intrinsics_source") for frame in output_frames)),
+        "calibration_contract": calibration_summary,
         "hand_state_source": "fresh_hawor_world_npz" if hawor_arrays else "none",
         "object_roster": sorted(object_plan),
         "mano_bridge": bridge_report,
@@ -623,6 +690,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "outputs": {"annotations": str(annotations_path), "physical_state": str(state_path), "mano_bridge": bridge_report.get("path")},
         "frame_count": int(len(output_frames)),
         "camera_source_count": physical_state["camera_source_count"],
+        "intrinsics_source_count": physical_state["intrinsics_source_count"],
+        "calibration_contract": calibration_summary,
         "counts": dict(counts),
         "object_track_count": int(len(object_plan)),
         "sam2_track_count": int(len(sam2_tracks)),
@@ -639,10 +708,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--camera-npz", type=Path, default=None, help="DROID or other camera trajectory NPZ with T_world_camera or R_c2w/t_c2w")
     parser.add_argument("--depth-npz", type=Path, default=None, help="Depth NPZ supplying per-frame intrinsics_fx_fy_cx_cy")
+    parser.add_argument("--calibration-contract", type=Path, default=None, help="V19 camera calibration contract JSON. When supplied, its constant intrinsics override per-frame depth/model intrinsics.")
     parser.add_argument("--hawor-npz", type=Path, default=None, help="Fresh HaWoR world MANO export NPZ")
+    parser.add_argument("--prefer-camera-npz", action="store_true", help="Prefer --camera-npz poses over HaWoR camera poses. Use only when the camera NPZ world frame is explicitly aligned to the HaWoR/MANO world frame.")
     parser.add_argument("--object-plan", type=Path, default=None, help="Agent-written object plan JSON")
     parser.add_argument("--sam2-track", action="append", default=[], help="Repeat TRACK_ID=PATH or pass */sam2/sam2_track.json")
     parser.add_argument("--sam2-output-root", type=Path, default=None, help="Root containing <track_id>/sam2/sam2_track.json outputs")
+    parser.add_argument("--remote-root", type=Path, default=None, help="Remote path prefix to localize server-produced SAM2 mask paths")
+    parser.add_argument("--local-root", type=Path, default=None, help="Local path prefix corresponding to --remote-root")
     return parser.parse_args()
 
 
