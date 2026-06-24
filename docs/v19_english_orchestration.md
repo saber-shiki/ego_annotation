@@ -915,7 +915,24 @@ python "$REPO_ROOT/scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt
 
 The filename still says tomato because it came from V18. In V19 it may be used only if the command arguments actually pass the current object mesh/pose/state. Do not rely on tomato defaults.
 
-### 12.3 Canonical V19 render names
+### 12.3 Branch comparison render
+
+When item-4 iteration produces multiple physical branches, render a comparison video/contact sheet from the produced overlay/world frames and interval metrics. This is the preferred way to present quantitative branch tradeoffs without treating a JSON report as the deliverable:
+
+```bash
+python "$REPO_ROOT/scripts/render_v19_interval_branch_comparison.py" \
+  --branch calibrated="$RUN_ROOT/renders/<calibrated_branch>/$CASE_ID:$RUN_ROOT/measurements/interval_mano/<calibrated_branch>/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
+  --branch candidate="$RUN_ROOT/renders/<candidate_branch>/$CASE_ID:$RUN_ROOT/measurements/interval_mano/<candidate_branch>/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
+  --side right \
+  --frame-start "$INTERVAL_START" \
+  --frame-end "$INTERVAL_END" \
+  --output-dir "$RUN_ROOT/renders/review_frames/interval_branch_comparison" \
+  --still-frames "$INTERVAL_START" "$INTERVAL_MID" "$INTERVAL_END"
+```
+
+The comparison renderer consumes state-driven render frames; it must not be used to replace canonical full-duration overlay/world/side-by-side videos.
+
+### 12.4 Canonical V19 render names
 
 Do not use render commands that require prior-version raw-frame roots as pipeline inputs. Until those renderers are extracted, the default V19 render path is the interval/rigid renderer above, fed by V19-generated annotations whose `raw_frame_path` fields point into `$RUN_ROOT/input/raw_frame_manifest/rgb`.
 
