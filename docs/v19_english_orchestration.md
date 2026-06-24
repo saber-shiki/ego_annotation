@@ -221,7 +221,56 @@ python "$REPO_ROOT/scripts/run_sam2_vlm_points_multiobject.py" \
   --sam2-image-width 960
 ```
 
-The HaWoR projections are prompt seeds only; the resulting SAM2 masks plus metric depth are the hand-owned surface observation. If the projections do not land on the visible hand, prompt generation or SAM2 prompt-contract reports must fail or mark uncertainty rather than accepting the mask as hand state.
+The HaWoR projections are prompt seeds only; the resulting SAM2 masks plus metric depth are candidate hand-owned surface observations. A SAM2 hand mask is usable for MANO refit only where it actually covers visible hand/palm/fingers after object-owned pixels and occluders are excluded. Forearm, sleeve, sink, object, or occluder pixels are not hand-owned surface; using them as MANO targets is a false physical mechanism.
+
+When the calibrated HaWoR state still leaves a rendered MANO/object failure, prepare a scale-preserving mask/depth refit branch instead of tuning contact labels. This branch is an uncertain measurement path unless the rendered state and quantitative residuals support promotion:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_mano_mask_depth_refit_inputs.py" \
+  --annotations "$RUN_ROOT/measurements/object_geometry/<visible_geometry_branch>/annotations_v19_visible_geometry.json" \
+  --left-hand-track "$RUN_ROOT/measurements/hand_candidates/hawor_hand_sam2_masks/<left_track>/sam2/sam2_track.json" \
+  --right-hand-track "$RUN_ROOT/measurements/hand_candidates/hawor_hand_sam2_masks/<right_track>/sam2/sam2_track.json" \
+  --object-track "$RUN_ROOT/measurements/object_tracks/<object_track>/sam2/sam2_track.json" \
+  --output-dir "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/prep" \
+  --frame-start "$INTERVAL_START" \
+  --frame-end "$INTERVAL_END" \
+  --remote-root "$REMOTE_RUN_ROOT" \
+  --local-root "$RUN_ROOT"
+
+python "$REPO_ROOT/scripts/refit_mano_articulation_mask_depth_v3.py" \
+  --annotations "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/prep/legacy_mano_refit_input_annotations.json" \
+  --mask-track "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/prep/mask_tracks/<side>/sam2_track.json" \
+  --metric-depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --output-annotations "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/<side>_refit_annotations.json" \
+  --output-qc "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/<side>_refit_qc.json" \
+  --video "$INPUT_VIDEO" \
+  --review-dir "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/review_<side>" \
+  --frame-start "$INTERVAL_START" \
+  --frame-end "$INTERVAL_END" \
+  --track-id "v19_<side>_hand_sam2_mano_filtered" \
+  --side "<side>" \
+  --source-width "$SOURCE_WIDTH" \
+  --source-height "$SOURCE_HEIGHT" \
+  --device cuda \
+  --min-scale 1.0 \
+  --max-scale 1.0
+
+python "$REPO_ROOT/scripts/apply_v19_mano_mask_depth_refit.py" \
+  --v19-annotations "$RUN_ROOT/measurements/object_geometry/<visible_geometry_branch>/annotations_v19_visible_geometry.json" \
+  --source-hawor-npz "$RUN_ROOT/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
+  --left-refit-annotations "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/left_refit_annotations.json" \
+  --left-refit-qc "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/left_refit_qc.json" \
+  --right-refit-annotations "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/right_refit_annotations.json" \
+  --right-refit-qc "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/right_refit_qc.json" \
+  --output-annotations "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/annotations_v19_visible_geometry_mask_depth_refit.json" \
+  --output-bridge-npz "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/v19_mano_bridge_mask_depth_refit.npz" \
+  --output-source-npz "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/hawor_world_hands_mask_depth_refit.npz" \
+  --output-report "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/apply_v19_mano_mask_depth_refit_report.json" \
+  --frame-start "$INTERVAL_START" \
+  --frame-end "$INTERVAL_END"
+```
+
+`build_v19_mano_mask_depth_refit_inputs.py` converts V19 world MANO state to a camera-frame refit contract and filters each SAM2 hand mask by calibrated MANO projection minus object mask. `apply_v19_mano_mask_depth_refit.py` promotes only fits representable as MANO pose plus one translation with no scale change. If a side's mask is forearm/occluder rather than visible hand, do not pass that side to `apply_v19_mano_mask_depth_refit.py`; leave it unresolved/occluded and continue with uncertainty.
 
 HaMeR from RTMLib boxes requires a base annotation stream and a frame manifest:
 
