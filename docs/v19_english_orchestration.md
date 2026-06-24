@@ -611,6 +611,64 @@ python "$REPO_ROOT/scripts/build_v18_full_bridge_mano_object_constraint_state.py
   --output-dir "$RUN_ROOT/measurements/contact_nonpenetration/full_bridge_<track_id>"
 ```
 
+### 9.7.1 Agent-native contact/occlusion judgment for interval MANO
+
+V19 replaces V18-style VLM/API contact/occlusion judgment with an explicit Pi-agent-authored interval artifact. The agent does **not** label pixels. It inspects raw frames, overlays, world views, mask/depth reviews, and prior branch failures, then writes semantic interaction priors that the factor builder must convert into numeric graph rows.
+
+Write one judgment file under the run root:
+
+```text
+$RUN_ROOT/state/agent_interaction_judgments/<track_id>_<start>_<end>_v1.json
+```
+
+Required segment fields consumed by `scripts/build_v19_visible_contact_ownership_factor.py`:
+
+```json
+{
+  "status": "ok",
+  "method": "v19_pi_agent_interaction_judgment_v1",
+  "backend": "Pi agent visual judgment replacing VLM/API contact-occlusion judgment",
+  "case": "<case_id>",
+  "target_entity_id": "<object_id>",
+  "interaction_judgments": [
+    {
+      "judgment_id": "right_700_725_visible_grasp_contact_prior",
+      "frame_start": 700,
+      "frame_end": 725,
+      "hand_side": "right",
+      "contact_state": "likely_contact | possible_contact | no_contact | unresolved",
+      "contact_prior_probability": 0.82,
+      "contact_support_uncertainty_m": 0.055,
+      "contact_weight_multiplier": 1.0,
+      "occlusion_relation": "hand_in_front_of_object | object_in_front_of_hand | object_partially_occluded_by_hand | no_visible_occlusion | unresolved",
+      "depth_reliability": "hand_depth_unreliable | object_depth_reliable | mixed_or_unresolved | not_evaluated",
+      "ownership_quarantine": "hand_projected | none | unresolved | measurement_default",
+      "evidence": "what visible evidence supports the semantic relation",
+      "uncertainty": "what would revise the relation or requires soft graph treatment"
+    }
+  ]
+}
+```
+
+`contact_prior_probability` and `contact_support_uncertainty_m` are required because the factor graph consumes numbers, not prose. Missing values are a broken contract, not defaults. `ownership_quarantine=hand_projected` means projected MANO support may quarantine object hard-surface constraints where the agent judged the hand to be in front or unresolved; `none` keeps the object mask eligible when the agent judged no occlusion/object-in-front. The rigid-extent mask filter still wins: known leaky object masks must stay skipped even when the agent judges contact in that interval.
+
+Build solver-consumed factor rows from the agent judgment plus projected MANO/object support:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_visible_contact_ownership_factor.py" \
+  --annotations "<annotations_with_rigid_extent_eligibility.json>" \
+  --case "$CASE_ID" \
+  --target-entity-id "$OBJECT_ID" \
+  --frame-span "<interval_start>" "<interval_end>" \
+  --sides left right \
+  --agent-interaction-judgment "$RUN_ROOT/state/agent_interaction_judgments/<track_id>_<start>_<end>_v1.json" \
+  --output-root "$RUN_ROOT/measurements/contact_visibility_factors/<track_id>_<start>_<end>_agent_judgment_v1/visible_contact_ownership_agent_v1"
+```
+
+The generated report contains `visible_ownership` rows and `contact_patch` rows. Agent judgment changes solver-consumed `contact_state_prior_probability`, `weight`, `contact_patch_support_uncertainty_m`, `object_support_uncertainty_m`, and ownership quarantine masks. It does not create a persistent object-frame contact anchor or accepted metric contact by itself.
+
+Regenerate dependent visibility factors from the same ownership report before solving; do not mix old ownership reports with new agent priors.
+
 Solve interval MANO with the rigid object and optional factor reports:
 
 ```bash
@@ -631,6 +689,12 @@ python "$REPO_ROOT/scripts/solve_v18_joint_mano_interval_trajectory.py" \
 ```
 
 Add `--factor-report <path>` for visible ownership, visible surface track, surface eligibility, hand-observation visibility, hand-depth shift, or contact-patch factors when those reports are actually produced. Do not add empty factor paths to look rigorous.
+
+V19 interval repair lessons from the fresh task5 run:
+
+- Raw UniDepth sampled at projected MANO joints is not automatically hand-depth evidence. If an optical-axis hand-depth prior reduces object residuals only by producing large image drift, and a root-ray prior preserves image evidence but cannot move, treat the projected-joint depth residual as hand/occlusion ownership uncertainty rather than as a direct hand-depth target.
+- Use `scripts/build_v19_visible_contact_ownership_factor.py` to create the first generic V19 contact/ownership source when annotations lack `contact_hypotheses`. In V19 it should normally consume the Pi-agent interaction judgment JSON above, so true contact/occlusion semantics come from explicit agent visual judgment and projected MANO/object adjacency supplies local support. It skips object masks already marked ineligible by the rigid-extent filter. Its rows are latent/sliding contact and hand-owned visibility quarantine, not persistent contact anchors.
+- If contact rows become active but the rendered MANO remains incoherent, use `scripts/refit_v19_mano_contact_similarity_interval.py` only as a bounded diagnostic: it tests whether a camera-space Sim(3) of the current MANO can satisfy image projection plus rigid-object contact. A solution that saturates the hand-scale bound is negative evidence for acceptance and points to a missing full MANO pose/shape/depth refit, not a successful correction.
 
 The solver's falsifiable claim: if root translation, root orientation, articulation, and bounded object translation cannot make MANO compatible with visible/depth/object constraints under the stated uncertainty, then the remaining failure is a real conflict among hand observation, object pose/geometry, camera/depth alignment, occlusion, or contact evidence. The next action must distinguish those mechanisms.
 

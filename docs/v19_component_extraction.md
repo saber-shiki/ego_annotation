@@ -140,6 +140,7 @@ Policy for V19 rigid enforcement: if the agent decides an object is rigid, the E
 
 - `scripts/solve_v18_joint_mano_interval_trajectory.py` — interval hand/object solver with contact/visual constraints.
 - `scripts/build_v18_mano_object_constraint_state.py`, `scripts/build_v18_full_bridge_mano_object_constraint_state.py` — MANO-object constraint states.
+- `scripts/build_v19_visible_contact_ownership_factor.py` — V19 factor bridge from Pi-agent interval contact/occlusion judgment plus projected MANO/object masks into solver-consumed `visible_ownership` and `contact_patch` rows. It replaces hidden VLM/API contact-judgment use with an explicit run-root judgment artifact and graph numeric priors/uncertainties.
 - `scripts/build_v18_contact_ownership_graph.py`, `scripts/build_v18_contact_patch_factor.py`, `scripts/build_v18_local_contact_patch_support_factor.py` — contact ownership/patch factors.
 - `scripts/build_v18_mesh_contact_evidence.py` — mesh contact evidence.
 - `scripts/build_v18_occlusion_owner_candidates.py`, `scripts/build_v18_occlusion_depth_order_evidence.py`, `scripts/build_v18_occlusion_mesh_owner_evidence.py`, `scripts/build_v18_occlusion_owner_graph.py`, `scripts/build_v18_occlusion_pose_fill_gate.py` — occlusion candidate/evidence/graph components.
@@ -183,5 +184,5 @@ The runbook follows this structure:
 - `scripts/build_v19_base_annotations.py` now covers the base hand/object/camera annotation backbone. Remaining extraction work is to wrap/rename older `v18_*` rigid/contact/render scripts as V19-owned components and to ensure each consumes only V19 run-root outputs.
 - Need to decide whether V19 state should become a new thin schema or continue using the V18 annotation shape as the renderable state backbone until a V19 renderer exists.
 - Need to map exact command templates for the selected hand stack on A800, including env/checkpoint paths.
-- Representative task5 rigid branch now runs through visible-geometry adaptation, scale-sane completion, visible pose fit, temporal rigid-pose graph, MANO/object constraints, interval MANO uncertainty render, and a 690-725 contact-factor ablation. The remaining extraction gap is general V19 generation/adaptation of contact/visibility/occlusion factor reports, not another task5 object-pose run.
+- Representative task5 rigid branch now runs through visible-geometry adaptation, scale-sane completion, visible pose fit, temporal rigid-pose graph, MANO/object constraints, interval MANO uncertainty render, and 690-725 contact-factor ablations. `scripts/build_v19_visible_contact_ownership_factor.py` now covers the V19 agent-judged visible contact/ownership prior path for interval MANO. Remaining extraction gaps are richer hand-owned surface/MANO refit mechanisms, cleaner V19 wrappers for older `v18_*` rigid/contact/render components, state-to-render cleanup, and benchmark adapters.
 - Need to implement HOT3D/H2O-or-DexYCB benchmark adapters before quantitative external claims.
