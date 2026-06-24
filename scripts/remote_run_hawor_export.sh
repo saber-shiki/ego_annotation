@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${EGO_HAWOR_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote/hawor_work}"
 CASE="${EGO_HAWOR_CASE:-trash_1050}"
 IMG_FOCAL="${EGO_HAWOR_IMG_FOCAL:-2304}"
+FORCE_FOCAL_CACHE_REFRESH="${EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH:-0}"
 
 case "$CASE" in
   trash_1050)
@@ -66,7 +67,12 @@ source .venv_hawor/bin/activate
 export PYTHONPATH="$HAWOR_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
-echo "running HaWoR export case=$CASE clip=$CLIP output=$OUTPUT_DIR" >&2
+EXTRA_ARGS=()
+if [ "$FORCE_FOCAL_CACHE_REFRESH" = "1" ] || [ "$FORCE_FOCAL_CACHE_REFRESH" = "true" ]; then
+  EXTRA_ARGS+=(--force-focal-cache-refresh)
+fi
+
+echo "running HaWoR export case=$CASE clip=$CLIP output=$OUTPUT_DIR img_focal=$IMG_FOCAL force_focal_cache_refresh=$FORCE_FOCAL_CACHE_REFRESH" >&2
 python "$SCRIPT_DIR/export_hawor_world.py" \
   --hawor-root "$HAWOR_ROOT" \
   --video_path "$CLIP" \
@@ -74,4 +80,5 @@ python "$SCRIPT_DIR/export_hawor_world.py" \
   --infiller_weight "$INFILLER" \
   --model_config "$CONFIG" \
   --img_focal "$IMG_FOCAL" \
+  "${EXTRA_ARGS[@]}" \
   --output-dir "$OUTPUT_DIR"

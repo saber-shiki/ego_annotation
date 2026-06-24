@@ -192,10 +192,11 @@ python "$REPO_ROOT/scripts/export_hawor_world.py" \
   --video_path "$INPUT_VIDEO" \
   --input_type file \
   --img_focal "$HAWOR_IMG_FOCAL" \
+  --force-focal-cache-refresh \
   --output-dir "$RUN_ROOT/measurements/hand_candidates/hawor_world"
 ```
 
-The `--img_focal` value must come from `$CALIBRATION_CONTRACT` unless a recorded design amendment chooses a different calibrated hypothesis. Omitting it lets HaWoR choose an internal/default focal and breaks the shared metric backbone.
+The `--img_focal` value must come from `$CALIBRATION_CONTRACT` unless a recorded design amendment chooses a different calibrated hypothesis. Omitting it lets HaWoR choose an internal/default focal and breaks the shared metric backbone. HaWoR's sequence folder caches motion chunks, rendered masks, and SLAM under the video pathname, so the V19 wrapper refuses to reuse focal-dependent cache artifacts when their recorded focal differs from `--img_focal`; use a fresh focal-specific video path or the explicit `--force-focal-cache-refresh` flag when rerunning the same sequence under a new calibration.
 
 HaMeR from RTMLib boxes requires a base annotation stream and a frame manifest:
 

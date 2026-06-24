@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -43,6 +44,69 @@ def file_info(path: Path, *, hash_file: bool = False) -> dict:
     if hash_file and path.exists() and path.is_file():
         info["sha256"] = sha256(path)
     return info
+
+
+def prepare_focal_cache_contract(seq_folder: Path, start_idx: int, end_idx: int, img_focal: float | None, *, force_refresh: bool) -> dict:
+    """Prevent silent reuse of focal-dependent HaWoR cache products.
+
+    HaWoR stores motion chunks, rendered hand masks, and SLAM outputs under a
+    sequence folder keyed by the video pathname.  Those artifacts depend on
+    img_focal, but the upstream code does not include focal in the cache key.  A
+    V19 rerun that changes --img_focal must therefore either use a new sequence
+    folder or explicitly invalidate focal-dependent artifacts.
+    """
+    if img_focal is None:
+        return {"enabled": False, "reason": "img_focal_not_explicit"}
+    focal = float(img_focal)
+    tracks_dir = seq_folder / f"tracks_{int(start_idx)}_{int(end_idx)}"
+    contract_path = seq_folder / "v19_hawor_focal_cache_contract.json"
+    focal_artifacts = [
+        tracks_dir / "frame_chunks_all.npy",
+        tracks_dir / "model_masks.npy",
+        seq_folder / "SLAM" / f"hawor_slam_w_scale_{int(start_idx)}_{int(end_idx)}.npz",
+    ]
+    focal_dirs = [seq_folder / "cam_space"]
+    existing = [str(p) for p in focal_artifacts if p.exists()] + [str(p) for p in focal_dirs if p.exists()]
+    previous: dict | None = None
+    if contract_path.exists():
+        try:
+            previous = json.loads(contract_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"invalid HaWoR focal cache contract {contract_path}: {exc}") from exc
+    previous_focal = None
+    if isinstance(previous, dict) and previous.get("img_focal") is not None:
+        previous_focal = float(previous["img_focal"])
+    compatible = previous_focal is not None and abs(previous_focal - focal) <= max(1.0e-3, abs(focal) * 1.0e-6)
+    removed: list[str] = []
+    if existing and not compatible:
+        if not force_refresh:
+            raise RuntimeError(
+                "HaWoR focal-dependent cache exists under the sequence folder but does not match the requested --img_focal. "
+                f"seq_folder={seq_folder} requested={focal} previous={previous_focal} existing={existing[:6]}. "
+                "Use a focal-specific video path/sequence folder or pass --force-focal-cache-refresh to delete motion/SLAM cache artifacts."
+            )
+        for p in focal_artifacts:
+            if p.exists():
+                p.unlink()
+                removed.append(str(p))
+        for p in focal_dirs:
+            if p.exists():
+                shutil.rmtree(p)
+                removed.append(str(p))
+    payload = {
+        "status": "ok",
+        "img_focal": focal,
+        "seq_folder": str(seq_folder),
+        "tracks_range": [int(start_idx), int(end_idx)],
+        "focal_dependent_artifacts_seen_before_refresh": existing,
+        "removed_for_force_refresh": removed,
+        "compatible_previous_contract": bool(compatible),
+        "force_refresh": bool(force_refresh),
+        "claim_scope": "guards HaWoR motion/mask/SLAM cache reuse for focal-dependent V19 metric hand export",
+    }
+    contract_path.parent.mkdir(parents=True, exist_ok=True)
+    contract_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return {**payload, "path": str(contract_path)}
 
 
 def load_track_support(seq_folder: Path, start_idx: int, end_idx: int, frame_count: int) -> tuple[dict[str, dict[str, np.ndarray]], dict]:
@@ -144,6 +208,13 @@ def run(args: argparse.Namespace) -> dict:
         "model_config": file_info(model_config_path, hash_file=True),
     }
     start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
+    focal_cache_contract = prepare_focal_cache_contract(
+        Path(seq_folder),
+        int(start_idx),
+        int(end_idx),
+        args.img_focal,
+        force_refresh=bool(args.force_focal_cache_refresh),
+    )
     frame_chunks_all, img_focal = hawor_motion_estimation(args, start_idx, end_idx, seq_folder)
     slam_path = Path(seq_folder) / "SLAM" / f"hawor_slam_w_scale_{start_idx}_{end_idx}.npz"
     if not slam_path.exists():
@@ -218,6 +289,8 @@ def run(args: argparse.Namespace) -> dict:
         seq_folder=np.asarray([str(seq_folder)]),
         track_support_status=np.asarray([track_support_report.get("status", "unknown")]),
         track_support_path=np.asarray([track_support_report.get("tracks_path", "")]),
+        focal_cache_contract_path=np.asarray([focal_cache_contract.get("path", "")]),
+        focal_cache_contract_status=np.asarray([focal_cache_contract.get("status", "disabled")]),
     )
     valid_counts = {side: int(np.count_nonzero(hands[side]["valid"])) for side in hands}
     detected_counts = {side: int(np.count_nonzero(track_support[side]["detected_same_frame"])) for side in hands}
@@ -233,6 +306,7 @@ def run(args: argparse.Namespace) -> dict:
         "valid_hand_frames": valid_counts,
         "detected_same_frame_hand_frames": detected_counts,
         "track_support": track_support_report,
+        "focal_cache_contract": focal_cache_contract,
         "slam_path": str(slam_path),
     }
     (args.output_dir / "qc_hawor_world_hands.json").write_text(json.dumps(qc, indent=2), encoding="utf-8")
@@ -249,6 +323,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--infiller_weight", type=str, default="./weights/hawor/checkpoints/infiller.pt")
     parser.add_argument("--model_config", type=str, default="./weights/hawor/model_config.yaml")
     parser.add_argument("--img_focal", type=float)
+    parser.add_argument("--force-focal-cache-refresh", action="store_true", help="Delete focal-dependent HaWoR motion/mask/SLAM cache artifacts in the sequence folder when their recorded focal differs from --img_focal. Prefer a fresh focal-specific video path when possible.")
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
