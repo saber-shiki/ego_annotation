@@ -1,6 +1,6 @@
 # V19 Component Extraction From V18
 
-Status: Workbench item 1 artifact. This is not the runtime pipeline. It separates reusable V18 components from V18 god-files and cached-artifact assemblers so the next step can write the English orchestration over real commands.
+Status: Workbench item 1 extraction artifact, revised after the fresh-video standard was clarified. This document now distinguishes two things: (1) V18 mechanisms/contracts mined for V19 and (2) V19-owned executable components that must run from a fresh input video/run root without cached V16/V17/V18 artifact dependencies. Inventory alone is not completion.
 
 ## Key finding
 
@@ -88,7 +88,7 @@ These are candidates for the English V19 orchestration. They should be called di
 - `scripts/build_mask_unidepth_metric_manifest_v3.py`, `scripts/build_mask_vggt_depth_metric_manifest_v3.py` — manifests aligning masks with metric depth.
 - `scripts/diagnose_metric_depth_alignment_v3.py`, `scripts/diagnose_depth_source_hand_scale_v3.py` — diagnostic, not primary progress, but useful for mechanism failures.
 
-Gap: there is no clean V19 `input_video -> frame manifest` component named yet. Existing manifests come from V16/V17 roots. English orchestration must either reuse an existing frame-manifest script if found or define this as the first missing implementation, not fake it.
+Extracted V19 component: `scripts/build_v19_raw_frame_manifest.py` now provides the clean `input_video -> raw_frame_manifest/manifest.json + rgb/` step under the current run root. It writes one row per source frame with `frame_idx`, `time_s`, `rgb`, `raw_frame_path`, and source/manifest dimensions. It has no V16/V17/V18 cached artifact dependency.
 
 ### Hand / MANO
 
@@ -123,6 +123,8 @@ Policy for V19: object discovery must be category-agnostic. Differences between 
 - `scripts/remote_run_trellis_shape_v3.py` — remote TRELLIS mesh completion from an image crop. Reusable as the rigid hidden-surface prior stage.
 - `scripts/build_v18_compact_rigid_trellis_completion.py` — V18 compact-rigid completion builder; needs inspection/use as completion+alignment stage.
 - `scripts/build_v18_compact_rigid_evidence_bundle.py` — evidence bundle/crop preparation for rigid completion.
+- `scripts/build_v19_raw_frame_manifest.py` — V19-owned fresh-video timeline/image extraction into `input/raw_frame_manifest/manifest.json` and `rgb/`.
+- `scripts/build_v19_base_annotations.py` — V19-owned base annotation/state assembly from fresh raw manifest, camera trajectory, depth intrinsics, HaWoR MANO export, agent object plan, and SAM2 tracks. It also writes `v19_mano_bridge_from_hawor_world.npz` with the compatibility arrays required by existing MANO solvers.
 - `scripts/build_v19_visible_geometry_from_sam2_depth.py` — V19 bridge from SAM2 masks plus metric depth/camera poses into V18-compatible `visible_geometry_candidate` and centroid-initialized `reconstructed_geometry_pose` annotation rows for rigid branch input. It is a measurement adapter, not final pose.
 - `scripts/fit_v18_compact_rigid_object_pose.py` — visible-frame object pose fitting against depth/mask samples; core rigid pose measurement component.
 - `scripts/solve_v19_rigid_object_pose_graph.py` — V19 temporal correction graph over visible-frame rigid pose observations with bounded nonpenetration pressure. It outputs corrected pose rows consumed by the rigid renderer/constraint tools; if corrections stay tiny while penetration remains broad, the next mechanism is interval MANO/contact/occlusion, not object-pose smoothing.
@@ -158,7 +160,7 @@ Policy for V19: renderer must be fed from V19 state built by the English pipelin
 
 ## English orchestration artifact for Workbench item 2
 
-The Workbench item 2 artifact now lives at `docs/v19_english_orchestration.md`. It converts this extraction into a natural-language runbook over real components, exact existing commands where available, and explicit missing implementation stops where no fresh-video component exists. It replaces the contaminated fake-script prompt path.
+The Workbench item 2 artifact now lives at `docs/v19_english_orchestration.md`. It is the executable English pipeline control logic, not a decorative plan: the default path starts with `build_v19_raw_frame_manifest.py`, runs fresh measurement components under the run root, assembles `annotations_v19_base.json` with `build_v19_base_annotations.py`, and only then invokes rigid/contact/MANO/render components on V19-generated inputs.
 
 The runbook follows this structure:
 
@@ -178,7 +180,7 @@ The runbook follows this structure:
 ## Immediate gaps exposed by extraction
 
 - Need a clean fresh-video frame-manifest step or identify the existing script that already does it.
-- Need a fuller base annotation/state builder for hand + object + camera streams; the new V19 visible-geometry adapter covers the rigid-object surface bridge but not the complete final state.
+- `scripts/build_v19_base_annotations.py` now covers the base hand/object/camera annotation backbone. Remaining extraction work is to wrap/rename older `v18_*` rigid/contact/render scripts as V19-owned components and to ensure each consumes only V19 run-root outputs.
 - Need to decide whether V19 state should become a new thin schema or continue using the V18 annotation shape as the renderable state backbone until a V19 renderer exists.
 - Need to map exact command templates for the selected hand stack on A800, including env/checkpoint paths.
 - Representative task5 rigid branch now runs through visible-geometry adaptation, scale-sane completion, visible pose fit, temporal rigid-pose graph, MANO/object constraints, interval MANO uncertainty render, and a 690-725 contact-factor ablation. The remaining extraction gap is general V19 generation/adaptation of contact/visibility/occlusion factor reports, not another task5 object-pose run.

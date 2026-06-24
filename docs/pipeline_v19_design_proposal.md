@@ -62,11 +62,11 @@ The governing implementation route is defined by `docs/v19_run_contract.md` and 
 ```text
 load configs/v19_agent_system_prompt.md through `pi --system-prompt`
   -> start Pi directly with provider `occ`, model `gpt-5.5:xhigh`, and the V19 project prompt template
-  -> Pi verifies input, compute target, worktree ownership, run root, and loop budget
+  -> Pi verifies input, compute target, worktree ownership, and run root
   -> Pi calls measurement/render/evaluation scripts as tools when they reduce a named physical blocker
   -> Pi writes accepted physical claims into render-consumed state
   -> Pi renders/inspects full-duration artifacts and bounded benchmark evidence
-  -> Pi stops when deliverables are produced or the declared evidence-cycle/uncertainty budget is exhausted
+  -> Pi stops when deliverables are produced or an explicit uncertainty state is the honest artifact
 ```
 
 For smoke testing the model route, use the isolated command in `docs/v19_run_contract.md`. The smoke form is intentionally non-interactive, tool-disabled, session-disabled, and isolated from discovered context/skills/extensions so it checks model/prompt routing without starting implementation or allowing file/system mutation.
@@ -82,7 +82,7 @@ The harness should enforce what a normal chat session cannot reliably enforce:
 5. **State contract:** every accepted physical claim is written to a state file consumed by the renderer.
 6. **Evidence contract:** every uncertain or rejected mechanism is recorded with frame ranges and artifacts.
 7. **Benchmark contract:** if a benchmark dataset is selected, output conversion and metric computation are part of the run.
-8. **Loop budget:** each run has a declared maximum number of agent evidence cycles. A cycle is valid only if it names the physical blocker it reduces. If the budget is exhausted, the harness must render the current uncertain state and report the unresolved blocker rather than continuing indefinitely.
+8. **Execution stop discipline:** a run proceeds through concrete pipeline components and physical decisions. If available measurements cannot support a stronger claim, the harness must render the current uncertain state and report the unresolved blocker rather than inventing a confident state or looping on proxies.
 
 ### 3.4 Agent-native visual judgment
 
@@ -467,7 +467,7 @@ No phase below is implemented by this design document.
 
 - Create V19 system prompt.
 - Create the Pi-native project entry prompt and run contract using provider `occ` and model `gpt-5.5:xhigh` through the Pi CLI/session.
-- Define tool allowlist, artifact-root contract, and evidence-cycle budget.
+- Define tool allowlist and artifact-root contract.
 - Run through the Pi entry prompt on a tiny or representative input only to prove input/state/render plumbing; do not create an outer SDK/script wrapper around Pi.
 
 ### Phase B — Self-contained measurement instruments

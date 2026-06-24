@@ -39,7 +39,6 @@ At run start:
 2. Inspect `git status --short`; preserve unrelated dirty files.
 3. Verify input video metadata and choose/create the run root only after confirming no completed V19 run will be overwritten.
 4. Probe the A800/server before heavy work; record the selected compute target and GPU.
-5. Declare the evidence-cycle budget before measurement work. For project representatives, default to 6 cycles.
-6. Execute the runbook from the first unresolved physical blocker. If the next runbook step names a missing implementation, stop there with the exact missing component and blocked variable.
+5. Execute the runbook from the first unresolved physical blocker. If the next runbook step names a missing implementation, stop there with the exact missing component and blocked variable.
 
 Report findings, not process. Lead with what physical state changed, what mechanism explains it, what evidence supports it, and what remains uncertain.

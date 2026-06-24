@@ -538,6 +538,37 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     annotations_path = args.output_dir / "annotations_v19_visible_geometry.json"
     write_json(annotations_path, annotations)
 
+    visible_mask_rows = [
+        {
+            "frame_idx": int(row["frame_idx"]),
+            "target_entity_id": object_id,
+            "object_id": object_id,
+            "track_id": args.track_id,
+            "status": "v19_visible_metric_surface_mask",
+            "measurement_type": "sam2_mask_with_metric_depth_support",
+            "mask_path": str(row["mask_path"]),
+            "saved_mask_path": str(row["mask_path"]),
+            "mask_area_px": None if sam2.get(int(row["frame_idx"]), {}).get("area_px") is None else float(sam2[int(row["frame_idx"])] ["area_px"]),
+            "depth_median_m": row.get("depth_median_m"),
+            "visible_vertex_count": row.get("vertex_count"),
+            "coordinate_frame": "source_image_mask_plus_metric_depth",
+            "claim_scope": "visible model mask measurement with metric-depth support; not hidden geometry or object pose",
+        }
+        for row in rows
+        if row.get("status") == "visible_metric_surface_measurement" and row.get("mask_path")
+    ]
+    visible_mask_report_path = args.output_dir / "v19_visible_mask_report.json"
+    visible_mask_report = {
+        "method": "build_v19_visible_geometry_from_sam2_depth_visible_mask_report",
+        "status": "ok",
+        "case": args.case,
+        "target_entity_id": object_id,
+        "track_id": args.track_id,
+        "claim_scope": "SAM2 mask rows with metric depth support for downstream visible-surface/ownership factor builders. This report is a mask measurement index, not object pose.",
+        "surface_rows": visible_mask_rows,
+    }
+    write_json(visible_mask_report_path, visible_mask_report)
+
     report = {
         "method": "build_v19_visible_geometry_from_sam2_depth",
         "status": "ok",
@@ -558,6 +589,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "outputs": {
             "annotations": str(annotations_path),
             "depth_fused_report": str(args.output_dir / "v19_visible_geometry_depth_fused_report.json"),
+            "visible_mask_report": str(visible_mask_report_path),
         },
         "requested_frame_start": int(indices[0]),
         "requested_frame_end": int(indices[-1]),
@@ -595,6 +627,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "track_id": args.track_id,
                 "frame_surface_rows": report["visible_metric_frame_count"],
                 "visible_geometry_adapter_report": str(report_path),
+                "visible_mask_report": str(visible_mask_report_path),
                 "annotations": str(annotations_path),
                 "mesh_reconstruction": {},
                 "object_geometry_complete": False,

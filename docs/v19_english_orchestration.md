@@ -22,26 +22,26 @@ A command is progress only when it measures, optimizes, renders, or falsifies on
 
 These scripts exist and have traced CLIs:
 
-- Timeline/frame extraction exists only as the `raw_frame_manifest()` component inside `scripts/run_v16_full_pipeline.py`.
+- Fresh timeline/frame extraction: `scripts/build_v19_raw_frame_manifest.py`.
 - Camera/depth/SLAM: `scripts/run_droid_full_frame.py`, `scripts/run_unidepth_full_frame_v3.py`, `scripts/run_unidepth_metric_source_v3.py`.
 - Hand measurements: `scripts/run_rtmlib_hand2d_v3.py`, `scripts/run_wilor_full_frame.py`, `scripts/export_hawor_world.py`, `scripts/run_hamer_rtmlib_hand_stream_v3.py`, `scripts/merge_hand_candidate_streams_v7.py`, `scripts/refit_mano_metric_depth_v3.py`.
 - Agent-replaced VLM structures: `scripts/build_object_plan_vlm.py` and `scripts/build_object_point_prompts_vlm.py` define the schemas; the runtime agent writes equivalent files instead of calling the API.
 - Masks/tracks: `scripts/run_sam2_vlm_points_multiobject.py`.
+- Fresh base annotation/state assembly: `scripts/build_v19_base_annotations.py`.
 - SAM2/depth visible-surface bridge for rigid branches: `scripts/build_v19_visible_geometry_from_sam2_depth.py`.
 - Observed object geometry and optimization candidates: `scripts/reconstruct_object_mesh_v2.py`, `scripts/reconstruct_scaled_observed_object_mesh_v3.py`, `scripts/reconstruct_object_visual_hull_depth_carve_v3.py`, `scripts/complete_object_heightfield_from_mask_depth_v3.py`, `scripts/optimize_object_factor_graph_v3.py`, `scripts/optimize_joint_mano_object_graph_v3.py`, `scripts/optimize_joint_camera_object_graph_v3.py`, `scripts/optimize_contact_patch_object_pose_graph_v3.py`.
 - V18 rigid branch components: `scripts/build_v18_compact_rigid_evidence_bundle.py`, `scripts/remote_run_trellis_shape_v3.py`, `scripts/build_v18_compact_rigid_trellis_completion.py`, `scripts/build_v18_scale_sane_compact_rigid_completion.py`, `scripts/fit_v18_compact_rigid_object_pose.py`.
 - MANO/object correction and interval rendering: `scripts/build_v18_mano_object_constraint_state.py`, `scripts/build_v18_full_bridge_mano_object_constraint_state.py`, `scripts/apply_v18_mano_object_constraint_state.py`, `scripts/solve_v18_joint_mano_interval_trajectory.py`, `scripts/build_v18_compact_rigid_hidden_volume_depth_validation.py`, `scripts/render_v18_joint_mano_interval_correction.py`, `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`, `scripts/render_v18_full_pipeline_from_annotations.py`.
 
-### Explicit missing implementation, not to be faked
+### Remaining implementation that is not allowed to be faked
 
-These gaps block a fully fresh arbitrary-video V19 run if no prior V16/V17/V18 annotations are available:
+The default V19 path now has V19-owned commands for raw-frame extraction and base annotation/state assembly. The remaining non-fake gaps are narrower:
 
-1. **Standalone raw-frame manifest command.** The component exists as a function in `scripts/run_v16_full_pipeline.py`, but there is no clean `input_video -> raw_frame_manifest/manifest.json` script.
-2. **Fresh base annotation builder for full hand/object state.** `scripts/build_v19_visible_geometry_from_sam2_depth.py` can create the rigid-object visible-geometry annotation rows from a raw manifest, camera pose, SAM2 masks, and depth, but several hand and final render components still need a fuller one-frame-per-source-frame annotation stream with hand/camera/object fields.
-3. **V19 state-to-render adapter.** The reliable renderers currently consume V18 annotation shapes and interval state files. V19 can use that as the renderable backbone, but a clean V19 `state/` schema renderer is not yet implemented.
-4. **HOT3D/H2O/DexYCB adapters.** No current script names match HOT3D, H2O, DexYCB, benchmark, or evaluation. Workbench item 6 must implement those adapters before quantitative external claims.
+1. **Renderer naming/state cleanup.** Some reliable renderers still have `v18_*` filenames and consume V18-compatible annotation shapes. V19 may use them only as extracted executable components fed by V19-generated inputs, and final outputs must be copied/symlinked to canonical V19 MP4 names.
+2. **V19 wrappers/generalized names for extracted rigid/contact/render components.** Existing `v18_*` scripts can be executed only when all inputs come from the V19 run root; future cleanup should rename/wrap them, but cached V18 roots are not valid pipeline inputs.
+3. **HOT3D/H2O/DexYCB adapters.** No current script names match HOT3D, H2O, DexYCB, benchmark, or evaluation. Workbench item 6 must implement those adapters before quantitative external claims.
 
-If a run reaches one of these gaps, the correct outcome is a named missing implementation with the physical variable blocked. Do not invent a script name or write a placeholder output.
+If a run reaches one of these gaps, the correct outcome is a named missing implementation with the physical variable blocked. Do not invent a script name, use a cached prior-version root, or write a placeholder output.
 
 ## 2. Runtime variables
 
@@ -55,8 +55,8 @@ RUN_ROOT="<run root>"
 CASE_ID="<case id>"
 FRAME_START=0
 FRAME_END="<last source frame index>"
-RAW_FRAME_MANIFEST="<raw_frame_manifest/manifest.json>"
-BASE_ANNOTATIONS="<one-frame-per-source-frame annotations json>"
+RAW_FRAME_MANIFEST="$RUN_ROOT/input/raw_frame_manifest/manifest.json"
+BASE_ANNOTATIONS="$RUN_ROOT/state/base_annotations/annotations_v19_base.json"
 OBJECT_ID="object:<track_id>"
 TRACK_ID="<track_id>"
 GPU_ID="<selected GPU>"
@@ -78,29 +78,24 @@ Heavy commands run on the declared A800/server target after a non-mutating probe
 
 Physical mechanism: every later measurement must refer to the same source frame index and image coordinate convention. A one-frame-per-source-frame manifest prevents time-base drift and hidden frame subsampling.
 
-Current executable paths:
-
-- For an existing V16-backed representative, use the existing manifest:
+Default executable path:
 
 ```bash
-RAW_FRAME_MANIFEST="/data2/ego_annotation_outputs/v16_full_pipeline/$CASE_ID/raw_frame_manifest/manifest.json"
+python "$REPO_ROOT/scripts/build_v19_raw_frame_manifest.py" \
+  --video "$INPUT_VIDEO" \
+  --output-dir "$RUN_ROOT/input/raw_frame_manifest" \
+  --render-width 960
+
+RAW_FRAME_MANIFEST="$RUN_ROOT/input/raw_frame_manifest/manifest.json"
+FRAME_END=$(python - "$RAW_FRAME_MANIFEST" <<'PY'
+import json, sys
+frames=json.load(open(sys.argv[1]))['frames']
+print(max(int(f['frame_idx']) for f in frames))
+PY
+)
 ```
 
-- If full base annotations, WiLoR QC, and object depth are already available, `scripts/run_v16_full_pipeline.py` can regenerate a V16 run and its raw manifest, but this is not a clean fresh-video first step:
-
-```bash
-python "$REPO_ROOT/scripts/run_v16_full_pipeline.py" \
-  --clip "$INPUT_VIDEO" \
-  --annotations "$BASE_ANNOTATIONS" \
-  --wilor-qc "<wilor_qc.json>" \
-  --depth-npz "<masked_object_depth.npz>" \
-  --output-dir "<v16_bootstrap_root>" \
-  --object-plan "<optional_object_plan.json>" \
-  --repo-root "$REPO_ROOT" \
-  --python "$PYTHON"
-```
-
-Fresh arbitrary-video status: missing standalone raw-frame manifest command. Workbench item 3/4 should extract `raw_frame_manifest()` into a real script before claiming arbitrary-video runtime.
+The output manifest is a V19-owned timeline artifact with `frame_idx`, `time_s`, `rgb`, `raw_frame_path`, source dimensions, and manifest dimensions. Do not use V16/V17/V18 raw-frame roots as pipeline inputs.
 
 Systematic errors to rule out: frame index offset, resized-frame coordinate confusion, dropped video frames. Normal measurement error does not apply here; timeline mismatch is a contract error.
 
@@ -338,6 +333,26 @@ Outputs include per-track `sam2/sam2_track.json`, `sam2/sam2_masks/`, `qc_sam2_v
 
 Systematic mask errors: wrong object identity, persistent leakage onto the hand/support, track switch, active interval excluding real manipulation, or non-overlap conflict deleting the target. Normal mask errors: boundary jitter, holes, small missed occluded regions. Systematic errors require prompt/object-plan correction before geometry; normal errors become uncertainty in surface fitting.
 
+## 6.5 Assemble fresh base annotations/state
+
+Physical mechanism: downstream rigid/contact/MANO/render components need a single one-frame-per-source-frame backbone containing raw frame paths, camera/world pose, metric MANO candidates, object roster rows, and mask references. This is now generated from V19 run-root measurement outputs, not copied from V18 annotations.
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_base_annotations.py" \
+  --case "$CASE_ID" \
+  --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
+  --camera-npz "$RUN_ROOT/measurements/depth_slam/droid/droid_dense_trajectory.npz" \
+  --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --hawor-npz "$RUN_ROOT/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
+  --object-plan "$RUN_ROOT/measurements/object_candidates/object_plan_agent.json" \
+  --sam2-output-root "$RUN_ROOT/measurements/masks_tracks/sam2_multiobject" \
+  --output-dir "$RUN_ROOT/state/base_annotations"
+
+BASE_ANNOTATIONS="$RUN_ROOT/state/base_annotations/annotations_v19_base.json"
+```
+
+The script also writes `v19_mano_bridge_from_hawor_world.npz`, `v19_base_physical_state.json`, and `v19_base_annotations_report.json`. It fails if no real camera/world pose source is supplied. The compatibility field names used by existing MANO solvers are present, but their data source is the fresh V19 HaWoR/camera run.
+
 ## 7. Lift masks to visible metric surfaces
 
 Physical mechanism: visible surface points are produced by back-projecting mask pixels with depth through intrinsics into camera/world coordinates. They are metric measurements and anchors. They are not hidden geometry and do not satisfy rigid object pose by themselves.
@@ -350,7 +365,8 @@ python "$REPO_ROOT/scripts/build_v19_visible_geometry_from_sam2_depth.py" \
   --track-id "$TRACK_ID" \
   --object-id "$OBJECT_ID" \
   --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
-  --sam2-root "$RUN_ROOT/measurements/masks_tracks/sam2_multiobject" \
+  --base-annotations "$BASE_ANNOTATIONS" \
+  --sam2-track-json "$RUN_ROOT/measurements/masks_tracks/sam2_multiobject/$TRACK_ID/sam2/sam2_track.json" \
   --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
   --camera-npz "$RUN_ROOT/measurements/depth_slam/droid/droid_dense_trajectory.npz" \
   --object-plan "$RUN_ROOT/measurements/object_candidates/object_plan_agent.json" \
@@ -359,7 +375,7 @@ python "$REPO_ROOT/scripts/build_v19_visible_geometry_from_sam2_depth.py" \
   --frame-end "$FRAME_END"
 ```
 
-Use `--base-annotations <annotations.json>` when a representative case already has a trustworthy full annotation stream with hand/camera fields. The script writes:
+The `--base-annotations` input must be the V19-generated base annotation file above. The script writes:
 
 ```text
 annotations_v19_visible_geometry.json
@@ -371,21 +387,7 @@ The annotation output contains one frame per selected source frame, `raw_frame_p
 
 Additional runnable options depend on available annotation shape:
 
-### 7.1 Existing V18/V17-shaped annotations and roots
-
-When a representative case already has V18/V17 visible-geometry roots, rebuild depth-fused visible geometry with:
-
-```bash
-python "$REPO_ROOT/scripts/build_v18_depth_fused_reconstruction.py" \
-  --visible-geometry-root "<visible_geometry_archive_root>" \
-  --full-pipeline-root "<full_pipeline_root>" \
-  --output-root "$RUN_ROOT/measurements/object_geometry/depth_fused_reconstruction" \
-  --cases "$CASE_ID"
-```
-
-This produces `v18_depth_fused_reconstruction_report.json` with fused point cloud and Poisson/hull mesh paths per object. It is a visible-surface reconstruction, not complete object geometry.
-
-### 7.2 Annotation + DROID/depth route
+### 7.1 Annotation + DROID/depth route
 
 When the current annotation stream contains masks and camera fields, use the existing object mesh reconstruction command:
 
@@ -750,19 +752,11 @@ python "$REPO_ROOT/scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt
 
 The filename still says tomato because it came from V18. In V19 it may be used only if the command arguments actually pass the current object mesh/pose/state. Do not rely on tomato defaults.
 
-### 12.3 Existing annotation renderer
+### 12.3 Canonical V19 render names
 
-If the final annotation JSON already contains all render-consumed physical state:
+Do not use render commands that require prior-version raw-frame roots as pipeline inputs. Until those renderers are extracted, the default V19 render path is the interval/rigid renderer above, fed by V19-generated annotations whose `raw_frame_path` fields point into `$RUN_ROOT/input/raw_frame_manifest/rgb`.
 
-```bash
-python "$REPO_ROOT/scripts/render_v18_full_pipeline_from_annotations.py" \
-  --case "$CASE_ID" \
-  --annotations "$RUN_ROOT/state/annotations_v19_renderable.json" \
-  --output-root "$RUN_ROOT/renders/from_annotations" \
-  --v16-root "<v16_root_with_raw_video_context>"
-```
-
-A standardized V19 run may copy or symlink the chosen rendered videos to:
+A standardized V19 run copies or symlinks the chosen rendered videos to:
 
 ```text
 $RUN_ROOT/renders/v19_overlay.mp4
@@ -801,16 +795,17 @@ If benchmark evaluation is requested before adapters exist, stop with `missing_b
 
 ## 15. Ordered execution summary
 
-1. Establish timeline/manifest and camera pose; use base annotations when available, and stop only if a required downstream component lacks its needed annotation fields.
+1. Build the V19 raw-frame manifest from the input video with `scripts/build_v19_raw_frame_manifest.py`.
 2. Run camera/depth/SLAM measurements.
 3. Run hand candidate measurements and metric/depth refit.
 4. Agent writes object plan and point prompts from visual evidence.
 5. Run SAM2 multi-object masks/tracks.
-6. Lift masks to visible metric surfaces with `scripts/build_v19_visible_geometry_from_sam2_depth.py`; treat its centroid pose as initialization only.
-7. Agent chooses physical branch with falsifiers.
-8. For every rigid object: evidence crop -> TRELLIS -> metric completion/adaptation -> visible-frame pose -> object/MANO correction/factors -> hidden-volume validation.
-9. Solve interval MANO over selected physical intervals with object/camera/depth/contact/visibility factors actually available.
-10. Assemble renderable state from corrected physical variables.
-11. Render full-duration overlay/world/side-by-side.
-12. Visually consume the rendered artifact, identify mechanism failures, repair the causal mechanism, and rerender.
-13. Only after representative renders are coherent, implement/run bounded benchmark adapters and ablations.
+6. Build the V19 base annotation/state backbone with `scripts/build_v19_base_annotations.py` from the fresh run-root measurements.
+7. Lift masks to visible metric surfaces with `scripts/build_v19_visible_geometry_from_sam2_depth.py`; treat its centroid pose as initialization only.
+8. Agent chooses physical branch with falsifiers.
+9. For every rigid object: evidence crop -> TRELLIS -> metric completion/adaptation -> visible-frame pose -> object/MANO correction/factors -> hidden-volume validation.
+10. Solve interval MANO over selected physical intervals with object/camera/depth/contact/visibility factors actually available.
+11. Assemble renderable state from corrected physical variables.
+12. Render full-duration overlay/world/side-by-side.
+13. Visually consume the rendered artifact, identify mechanism failures, repair the causal mechanism, and rerender.
+14. Only after representative renders are coherent, implement/run bounded benchmark adapters and ablations.

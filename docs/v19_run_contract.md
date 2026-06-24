@@ -70,23 +70,11 @@ Current A800 target from the V19 task memory probe:
 
 Probe before heavy work. Record hostname, GPU memory/utilization, storage capacity, repo presence, environment roots, selected `GPU_ID`, and output root in `logs/harness_events.jsonl` and `.memory/tasks/2026-06-23-pipeline-v19/OPS.md`.
 
-## Evidence-cycle budget
+## Execution policy
 
-Each V19 run must declare `max_evidence_cycles` before measurement work starts. The default is:
+A V19 run is a concrete execution of the English runbook over the input video and run root. It is not organized as an artificial evidence-cycle loop. At each step, Pi either runs the next named component, makes the required physical branch/judgment from rendered or geometric evidence, repairs the named mechanism that failed, or writes an explicit uncertainty state when the available measurements cannot support a stronger claim.
 
-- project representative run: `6` cycles;
-- isolated smoke/model-route check: `0` cycles;
-- benchmark evaluation run after the clip list is frozen: `3` cycles per clip unless a design amendment changes the budget.
-
-A valid evidence cycle must contain:
-
-1. the named physical blocker or mechanism uncertainty;
-2. the live mechanisms and discriminating predictions;
-3. the measurement, optimization, render, or review action;
-4. the observation produced;
-5. the revised state/uncertainty and next intervention.
-
-If the cycle budget is exhausted before closure, Pi must render the best current uncertain state, write the unresolved blocker into `state/v19_uncertainty_state.json` and `state/v19_agent_evidence.md`, and stop. The stop state is an honest artifact state, not a successful completion claim.
+Operational settings such as compute target, selected GPU, model/provider route, and benchmark clip list are recorded for reproducibility, but they do not define pipeline progress.
 
 ## Run directory contract
 
