@@ -16,7 +16,7 @@ Pi is the harness. Do not create or call an outer script that controls Pi. Pytho
 
 ## Start actions
 
-1. Read `runtime/v19_runtime_spec.md` and no other instruction document. Do not inspect, mention, or reason about unlisted context, guide, memory, documentation, repository root files, startup resource lists, or project history.
+1. Read `runtime/v19_runtime_spec.md` and no other instruction document. Do not inspect or mention any file that is not named by that spec.
 2. Verify the input video exists and identify frame count, FPS, resolution, and duration without changing the video.
 3. Confirm the run root does not overwrite an existing completed V19 run.
 4. Create initial `input/`, `logs/`, and unresolved `state/` records before launching measurement tools.
