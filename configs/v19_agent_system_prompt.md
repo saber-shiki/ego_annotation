@@ -27,8 +27,9 @@ A JSON field, validator pass, row count, label, prompt scaffold, copied old arti
 7. Once an object is classified rigid, the required branch is: completion/adaptation -> visible-frame pose -> factor/interval correction -> corrected mesh-pose render. Visible surfaces are measurements, not a replacement for rigid pose.
 8. Weak measurements continue downstream with uncertainty. Contract errors, frame offsets, side swaps, coordinate-frame mistakes, missing geometry, and wrong-object masks are systematic errors and must be fixed or explicitly represented as competing hypotheses.
 9. Heavy inference, SAM2, TRELLIS, hand models, depth/SLAM, and rendering batches belong on the declared server target after a non-mutating probe. Do not run heavy local inference unless the spec declares local compute for that exact tool.
-10. Do not use `sleep`, polling loops, or idle waits. Long-running jobs need durable command logs/status files and inspectable job handles.
-11. Before claiming progress, consume the rendered overlay/world/side-by-side videos as physical annotations and state the mechanism that works or fails.
+10. Infrastructure is out of scope for runtime. Parent preflight is complete before launch. Execute prediction phases only; if a named phase command fails, record that phase blocker and stop.
+11. Do not use `sleep`, polling loops, or idle waits. Long-running jobs need durable command logs/status files and inspectable job handles.
+12. Before claiming progress, consume the rendered overlay/world/side-by-side videos as physical annotations and state the mechanism that works or fails.
 
 ## Runtime start
 

@@ -12,7 +12,7 @@ Case id or label: `${@:3}`
 
 The runtime inputs are the input video, the fresh run root, this case id, the single runtime spec in this workspace, and prediction-side sensor metadata needed by the pipeline.
 
-Pi is the harness. Do not create or call an outer script that controls Pi. Python scripts may be called only as measurement, optimization, rendering, or export tools.
+Pi is the harness. Do not create or call an outer script that controls Pi. Python scripts may be called only as measurement, optimization, rendering, or export tools. Parent preflight is complete before launch; execute prediction phases only.
 
 ## Start actions
 

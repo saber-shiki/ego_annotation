@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="${EGO_UNIDEPTH_ROOT:-/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work}"
 REPO="$ROOT/UniDepth"
+MODEL_ENV="${EGO_MODEL_ENV:-/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2}"
 UV_BIN="${UV_BIN:-/mnt/user-home/yiwen/.local/bin/uv}"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3.10}"
 
@@ -26,23 +27,24 @@ else
 fi
 
 cd "$REPO"
-if [ -d .venv ] && [ ! -x .venv/bin/python ]; then
-  rm -rf .venv
+mkdir -p "$(dirname "$MODEL_ENV")"
+if [ -d "$MODEL_ENV" ] && [ ! -x "$MODEL_ENV/bin/python" ]; then
+  rm -rf "$MODEL_ENV"
 fi
-if [ ! -x .venv/bin/python ]; then
-  "$UV_BIN" venv --python "$PYTHON_BIN" .venv
+if [ ! -x "$MODEL_ENV/bin/python" ]; then
+  "$UV_BIN" venv --python "$PYTHON_BIN" "$MODEL_ENV"
 fi
-if [ ! -x .venv/bin/python ]; then
-  echo "UniDepth venv python is not executable after venv creation: $REPO/.venv/bin/python" >&2
+if [ ! -x "$MODEL_ENV/bin/python" ]; then
+  echo "UniDepth/SAM2 model env python is not executable after venv creation: $MODEL_ENV/bin/python" >&2
   exit 1
 fi
 
-"$UV_BIN" pip install --python .venv/bin/python --upgrade pip setuptools wheel
-"$UV_BIN" pip install --python .venv/bin/python torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
-"$UV_BIN" pip install --python .venv/bin/python -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu121
-"$UV_BIN" pip install --python .venv/bin/python opencv-python pillow numpy scipy hydra-core omegaconf iopath tqdm
+"$UV_BIN" pip install --python "$MODEL_ENV/bin/python" --upgrade pip setuptools wheel
+"$UV_BIN" pip install --python "$MODEL_ENV/bin/python" torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+"$UV_BIN" pip install --python "$MODEL_ENV/bin/python" -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu121
+"$UV_BIN" pip install --python "$MODEL_ENV/bin/python" opencv-python pillow numpy scipy hydra-core omegaconf iopath tqdm
 
-.venv/bin/python - <<'PY'
+"$MODEL_ENV/bin/python" - <<'PY'
 import importlib
 import torch
 
