@@ -48,11 +48,19 @@ def member_key_field(name: str) -> tuple[str, str] | None:
     return key, field
 
 
-def read_tar(tar_path: Path) -> dict[str, dict[str, bytes]]:
+def read_tar(tar_path: Path) -> tuple[dict[str, dict[str, bytes]], dict[str, Any] | None]:
     groups: dict[str, dict[str, bytes]] = {}
+    hand_shapes: dict[str, Any] | None = None
     with tarfile.open(tar_path, "r") as tar:
         for member in tar:
             if not member.isfile():
+                continue
+            if Path(member.name).name == "__hand_shapes.json__":
+                f = tar.extractfile(member)
+                if f is not None:
+                    payload = safe_json(f.read(), member.name)
+                    if isinstance(payload, dict):
+                        hand_shapes = payload
                 continue
             parsed = member_key_field(member.name)
             if parsed is None:
@@ -64,7 +72,7 @@ def read_tar(tar_path: Path) -> dict[str, dict[str, bytes]]:
             groups.setdefault(key, {})[field] = f.read()
     if not groups:
         raise RuntimeError(f"no numeric WebDataset samples found in {tar_path}")
-    return groups
+    return groups, hand_shapes
 
 
 def summarize_json_fields(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -76,7 +84,7 @@ def summarize_json_fields(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
-    groups = read_tar(args.tar)
+    groups, hand_shapes = read_tar(args.tar)
     keys = sorted(groups, key=lambda x: int(x))
     image_field = args.image_field
     available_image_fields = sorted({field for g in groups.values() for field in g if field.lower().endswith((".jpg", ".jpeg", ".png"))})
@@ -163,11 +171,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "clip_id": args.clip_id,
         "split": args.split,
         "image_field": image_field,
+        "hand_shapes": hand_shapes,
         "frames": gt_rows,
         **summarize_json_fields(gt_rows),
     }
     write_json(args.output_root / "input" / "raw_frame_manifest" / "manifest.json", manifest)
     write_json(eval_dir / "hot3d_clip_gt_sidecar.json", gt)
+    if hand_shapes is not None:
+        write_json(eval_dir / "hot3d_hand_shapes.json", hand_shapes)
     report = {
         "status": "ok",
         "method": "build_v19_hot3d_clip_adapter",
@@ -181,6 +192,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "height": int(height),
         "available_image_fields": available_image_fields,
         "json_field_counts": gt["json_field_counts"],
+        "hand_shapes_present": hand_shapes is not None,
         "causal_boundary": manifest["causal_boundary"],
     }
     write_json(args.output_root / "evaluation" / "hot3d_adapter_report.json", report)

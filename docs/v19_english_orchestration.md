@@ -989,9 +989,20 @@ python "$REPO_ROOT/scripts/build_v19_hot3d_clip_adapter.py" \
   --image-field image_214-1.jpg
 ```
 
-The adapter's ground-truth sidecar under `evaluation/hot3d_gt/` is scoring-only and must not feed object prompts, hand state, calibration selection, or any V19 perception stage.
+The adapter's HOT3D hand/object/MANO/object-pose annotations under `evaluation/hot3d_gt/` are scoring-only and must not feed object prompts, hand state, contact, occlusion, or physical-state selection. HOT3D `cameras.json` calibration is sensor metadata, not a perception label; it may feed the camera adapter below.
 
 Current fixed HOT3D slice v1 for the initial gate is the first three `train_aria` clip tars in HuggingFace repository path order, selected before scoring clips beyond `clip-001849`: `clip-001849`, `clip-001850`, and `clip-001851`. The run artifact records this at `$BENCH_ROOT/hot3d_clips/evaluation/v19_hot3d_fixed_slice_v1.json`.
+
+Minimal fisheye-to-pinhole camera adaptation command:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_hot3d_pinhole_adapter.py" \
+  --input-root "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849" \
+  --output-root "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849" \
+  --stream-id 214-1
+```
+
+This camera adapter writes a new V19 input video/manifest plus `state/calibration/v19_hot3d_pinhole_camera_calibration_contract.json`. It is not a prediction and does not score 3D state; it only makes later V19/HaWoR runs consume a pinhole camera instead of raw fisheye frames.
 
 Initial HOT3D hand-box comparison command, valid only for 2D localization claims:
 
@@ -1013,7 +1024,22 @@ python "$REPO_ROOT/scripts/aggregate_v19_hot3d_box_evals.py" \
   --output-report "$BENCH_ROOT/hot3d_clips/evaluation/hot3d_hawor_box_eval_aggregate.json"
 ```
 
-This first evaluator and aggregate do not score 3D MANO, object pose, contact, or occlusion. Those claim families require the fisheye/crop-camera adapter and V19 predicted state for the clip.
+After HaWoR has been run on the pinhole input with the pinhole focal from the calibration contract, score 3D MANO hand state in camera coordinates:
+
+```bash
+python "$REPO_ROOT/scripts/evaluate_v19_hot3d_hawor_mano3d.py" \
+  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
+  --hawor-npz "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/measurements/hawor_world_pinhole_f610/hawor_world_hands.npz" \
+  --image-manifest "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/input/raw_frame_manifest/manifest.json" \
+  --output-report "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/evaluation/hot3d_hawor_mano3d_eval.json" \
+  --review-output "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/evaluation/hot3d_hawor_mano3d_review.jpg"
+
+python "$REPO_ROOT/scripts/aggregate_v19_hot3d_mano3d_evals.py" \
+  --reports "$BENCH_ROOT"/hot3d_clips/v19_inputs_pinhole/clip-*/evaluation/hot3d_hawor_mano3d_eval.json \
+  --output-report "$BENCH_ROOT/hot3d_clips/evaluation/hot3d_hawor_mano3d_eval_aggregate.json"
+```
+
+The 3D evaluator must run in an environment with `smplx` and side-specific MANO assets; the current fixed-slice run used the remote HaWoR environment and explicit `--mano-left/--mano-right` paths. It replays HOT3D GT MANO with HaWoR's 21-joint ordering, then compares HOT3D GT and HaWoR predictions in camera coordinates. It reports absolute wrist/joint errors separately from root-aligned errors, and splits same-frame detector-supported rows from infilled rows in the aggregate. It still does not score contact, occlusion, nonpenetration, or object pose.
 
 The runbook still fixes the evaluation discipline now:
 
