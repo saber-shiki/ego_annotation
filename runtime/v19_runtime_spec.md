@@ -14,7 +14,7 @@ The launch provides:
 
 ## Runtime outputs
 
-The runtime output is a prediction run root containing `input/`, `measurements/`, `state/`, `renders/`, and `logs/`. The renderer consumes `state/`. Logs and measurements are provenance, not final annotations.
+The runtime output is a prediction run root containing `input/`, `measurements/`, `state/`, `renders/`, and `logs/`. The renderer consumes `state/`. Logs and measurements are provenance, not final annotations. Treat `{RUN_ROOT}/logs/harness_events.jsonl` as append-only JSONL: append one complete JSON object per event and never overwrite prior events.
 
 ## State ontology
 
