@@ -936,7 +936,21 @@ The comparison renderer consumes state-driven render frames; it must not be used
 
 Do not use render commands that require prior-version raw-frame roots as pipeline inputs. Until those renderers are extracted, the default V19 render path is the interval/rigid renderer above, fed by V19-generated annotations whose `raw_frame_path` fields point into `$RUN_ROOT/input/raw_frame_manifest/rgb`.
 
-A standardized V19 run copies or symlinks the chosen rendered videos to:
+A standardized V19 run publishes the chosen rendered videos to canonical names only after the agent has selected the current physical branch and stated the claim scope. Prefer the publication helper because it adds a stable legend/metric banner and writes the source branch into a report:
+
+```bash
+python "$REPO_ROOT/scripts/publish_v19_render_artifact.py" \
+  --overlay "$RUN_ROOT/renders/<chosen_branch>/$CASE_ID/<overlay_video>.mp4" \
+  --world "$RUN_ROOT/renders/<chosen_branch>/$CASE_ID/<world_video>.mp4" \
+  --side-by-side "$RUN_ROOT/renders/<chosen_branch>/$CASE_ID/<side_by_side_video>.mp4" \
+  --interval-state "$RUN_ROOT/measurements/interval_mano/<chosen_branch>/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
+  --output-dir "$RUN_ROOT/renders/<published_branch>" \
+  --canonical-dir "$RUN_ROOT/renders" \
+  --replace-canonical \
+  --title "V19 <claim-scope>"
+```
+
+The canonical names are:
 
 ```text
 $RUN_ROOT/renders/v19_overlay.mp4
@@ -944,7 +958,7 @@ $RUN_ROOT/renders/v19_world.mp4
 $RUN_ROOT/renders/v19_side_by_side.mp4
 ```
 
-That naming step is not progress; the visible physical content is what matters.
+Publication is not physics progress; the visible physical content and the selected branch's render-consumed state are what matter. The report and banner must not relabel an uncertain MANO interval as accepted closure.
 
 ## 13. Visual consumption and repair loop
 
