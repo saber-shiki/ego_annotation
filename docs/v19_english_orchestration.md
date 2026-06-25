@@ -991,6 +991,8 @@ python "$REPO_ROOT/scripts/build_v19_hot3d_clip_adapter.py" \
 
 The adapter's ground-truth sidecar under `evaluation/hot3d_gt/` is scoring-only and must not feed object prompts, hand state, calibration selection, or any V19 perception stage.
 
+Current fixed HOT3D slice v1 for the initial gate is the first three `train_aria` clip tars in HuggingFace repository path order, selected before scoring clips beyond `clip-001849`: `clip-001849`, `clip-001850`, and `clip-001851`. The run artifact records this at `$BENCH_ROOT/hot3d_clips/evaluation/v19_hot3d_fixed_slice_v1.json`.
+
 Initial HOT3D hand-box comparison command, valid only for 2D localization claims:
 
 ```bash
@@ -1005,9 +1007,13 @@ python "$REPO_ROOT/scripts/render_v19_hot3d_hawor_box_review.py" \
   --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
   --hawor-npz "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/measurements/hawor_world_f609/hawor_world_hands.npz" \
   --output "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_hawor_box_review.jpg"
+
+python "$REPO_ROOT/scripts/aggregate_v19_hot3d_box_evals.py" \
+  --reports "$BENCH_ROOT"/hot3d_clips/v19_inputs/clip-*/evaluation/hot3d_hawor_box_eval.json \
+  --output-report "$BENCH_ROOT/hot3d_clips/evaluation/hot3d_hawor_box_eval_aggregate.json"
 ```
 
-This first evaluator does not score 3D MANO, object pose, contact, or occlusion. Those claim families require the fisheye/crop-camera adapter and V19 predicted state for the clip.
+This first evaluator and aggregate do not score 3D MANO, object pose, contact, or occlusion. Those claim families require the fisheye/crop-camera adapter and V19 predicted state for the clip.
 
 The runbook still fixes the evaluation discipline now:
 

@@ -58,7 +58,10 @@ def draw_box(image: np.ndarray, box: np.ndarray | None, color: tuple[int, int, i
         return
     x1, y1, x2, y2 = [int(round(x)) for x in box]
     cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
-    cv2.putText(image, label, (x1, max(22, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.62, color, 2, cv2.LINE_AA)
+    (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 2)
+    tx = min(max(4, x1), max(4, image.shape[1] - text_w - 4))
+    ty = min(max(text_h + 4, y1 - 6), image.shape[0] - 6)
+    cv2.putText(image, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.62, color, 2, cv2.LINE_AA)
 
 
 def tile_for_frame(frame: dict[str, Any], gt_row: dict[str, Any], npz: Any, stream_id: str, width: int) -> np.ndarray:
