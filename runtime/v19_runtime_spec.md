@@ -41,7 +41,7 @@ The runtime output is a prediction run root containing `input/`, `measurements/`
 3. For an agent-write phase, write only the specified JSON/Markdown artifact and preserve uncertainty.
 4. Bind placeholders from launch arguments, phase outputs, or this spec. If a placeholder cannot be bound without searching outside the bundle, record the unresolved placeholder as a blocker.
 5. Heavy model phases run on the declared server target after probe and bundle sync. Light metadata/state phases may run locally.
-6. Infrastructure is out of scope for runtime. Parent preflight is complete before launch. Execute prediction phases only; if a named phase command fails, record that phase blocker and stop.
+6. Infrastructure is out of scope for runtime. Launch preflight is complete before start. Execute prediction phases only; if a named phase command fails, record that phase blocker and stop.
 7. Do not run scoring or comparisons inside this runtime run.
 8. Do not use sleep, polling loops, or idle waits. Long-running jobs need durable command logs/status files and inspectable job handles.
 
