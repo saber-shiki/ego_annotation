@@ -976,7 +976,38 @@ Repair is allowed only when it targets a named mechanism. Repeating validators o
 
 ## 14. Bounded quantitative comparison
 
-Current command truth: benchmark adapters for HOT3D, H2O, and DexYCB are not implemented in this repo. Workbench item 6 must add real adapters before any external quantitative claim.
+Current command truth: `scripts/build_v19_hot3d_clip_adapter.py` adapts public HOT3D-Clips WebDataset tars into a V19 input video/frame manifest and an evaluation-only HOT3D GT sidecar. H2O and DexYCB adapters are not implemented. Workbench item 6 must run real adapters before any external quantitative claim.
+
+Minimal HOT3D-Clips adaptation command:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_hot3d_clip_adapter.py" \
+  --tar "$BENCH_ROOT/hot3d_clips/raw/train_aria/clip-001849.tar" \
+  --output-root "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849" \
+  --clip-id clip-001849 \
+  --split train_aria \
+  --image-field image_214-1.jpg
+```
+
+The adapter's ground-truth sidecar under `evaluation/hot3d_gt/` is scoring-only and must not feed object prompts, hand state, calibration selection, or any V19 perception stage.
+
+Initial HOT3D hand-box comparison command, valid only for 2D localization claims:
+
+```bash
+python "$REPO_ROOT/scripts/evaluate_v19_hot3d_hawor_boxes.py" \
+  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
+  --hawor-npz "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/measurements/hawor_world_f609/hawor_world_hands.npz" \
+  --output-report "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_hawor_box_eval.json" \
+  --stream-id 214-1
+
+python "$REPO_ROOT/scripts/render_v19_hot3d_hawor_box_review.py" \
+  --manifest "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/input/raw_frame_manifest/manifest.json" \
+  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
+  --hawor-npz "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/measurements/hawor_world_f609/hawor_world_hands.npz" \
+  --output "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_hawor_box_review.jpg"
+```
+
+This first evaluator does not score 3D MANO, object pose, contact, or occlusion. Those claim families require the fisheye/crop-camera adapter and V19 predicted state for the clip.
 
 The runbook still fixes the evaluation discipline now:
 
