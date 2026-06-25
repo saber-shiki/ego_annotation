@@ -10,4 +10,13 @@ outputs/
 .scratch/
 third_party/
 checkpoints/
+# Keep memory private by default, but version the active task prompt that defines
+# the durable V19 role-separation contract.
 .memory/
+!.memory/
+.memory/*
+!.memory/tasks/
+.memory/tasks/*
+!.memory/tasks/2026-06-23-pipeline-v19/
+.memory/tasks/2026-06-23-pipeline-v19/*
+!.memory/tasks/2026-06-23-pipeline-v19/PROMPT.md
