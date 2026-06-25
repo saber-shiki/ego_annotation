@@ -90,7 +90,7 @@ def aggregate(args: argparse.Namespace) -> dict[str, Any]:
     payload = {
         "status": "ok",
         "method": "aggregate_v19_hot3d_mano3d_evals",
-        "claim_scope": "Fixed-slice aggregate of 3D MANO hand localization/articulation against HOT3D MANO in camera coordinates; not contact, occlusion, nonpenetration, or object-pose scoring",
+        "claim_scope": "Fixed-slice aggregate of 3D MANO hand localization/articulation against HOT3D MANO in camera coordinates; root_aligned metrics are wrist-subtracted translation-aligned only; not contact, occlusion, nonpenetration, or object-pose scoring",
         "reports": [str(p) for p in args.reports],
         "clip_count": len(args.reports),
         "clip_summaries": clip_reports,
@@ -101,6 +101,7 @@ def aggregate(args: argparse.Namespace) -> dict[str, Any]:
             "same_frame_detector_supported_rows": len(detected),
             "infilled_or_not_same_frame_rows": len(infilled),
             "same_frame_detector_supported_rate_among_matched": float(len(detected) / max(1, len(matched))),
+            "root_aligned_metric_definition": "Subtract each hand's wrist joint translation before computing joint errors; no rotation or scale alignment is applied.",
             **{key: summarize([float(r[key]) for r in matched if key in r and r[key] is not None]) for key in METRIC_KEYS},
             "by_detection_support": {
                 "same_frame_detector_supported": {

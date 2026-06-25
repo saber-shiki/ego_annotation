@@ -1039,7 +1039,7 @@ python "$REPO_ROOT/scripts/aggregate_v19_hot3d_mano3d_evals.py" \
   --output-report "$BENCH_ROOT/hot3d_clips/evaluation/hot3d_hawor_mano3d_eval_aggregate.json"
 ```
 
-The 3D evaluator must run in an environment with `smplx` and side-specific MANO assets; the current fixed-slice run used the remote HaWoR environment and explicit `--mano-left/--mano-right` paths. It replays HOT3D GT MANO with HaWoR's 21-joint ordering, then compares HOT3D GT and HaWoR predictions in camera coordinates. It reports absolute wrist/joint errors separately from root-aligned errors, and splits same-frame detector-supported rows from infilled rows in the aggregate. It still does not score contact, occlusion, nonpenetration, or object pose.
+The 3D evaluator must run in an environment with `smplx` and side-specific MANO assets; the current fixed-slice run used the remote HaWoR environment and explicit `--mano-left/--mano-right` paths. It replays HOT3D GT MANO with HaWoR's 21-joint ordering, then compares HOT3D GT and HaWoR predictions in camera coordinates. It reports absolute wrist/joint errors separately from wrist-subtracted translation-aligned errors; no rotation or scale Procrustes alignment is applied, so this is not a pure articulation metric. The aggregate also splits same-frame detector-supported rows from infilled rows. It still does not score contact, occlusion, nonpenetration, or object pose.
 
 The runbook still fixes the evaluation discipline now:
 

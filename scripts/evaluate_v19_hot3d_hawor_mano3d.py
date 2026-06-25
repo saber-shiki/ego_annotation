@@ -10,8 +10,9 @@ This evaluator is intentionally narrower than a full HOT3D physical benchmark:
 - It transforms both HOT3D GT and HaWoR predictions into their respective camera
   frames before comparing. This avoids falsely scoring unrelated HOT3D-world and
   HaWoR-SLAM-world origins.
-- It reports absolute wrist/joint errors separately from root-aligned errors so
-  global metric placement errors are not conflated with articulation errors.
+- It reports absolute wrist/joint errors separately from wrist-subtracted
+  translation-aligned errors. This removes wrist translation only; it is not a
+  Procrustes rotation/scale alignment and is not pure articulation error.
 
 The supported claim family is 3D hand/MANO localization on adapted HOT3D RGB
 clips. This is still not a contact, occlusion, nonpenetration, or object-pose
@@ -247,7 +248,7 @@ def render_review(
             draw_points(vis, gt_uv, (0, 255, 0), 4)
             draw_points(vis, pred_uv, color, 3)
             lines.append(
-                f"{side}: wrist {row['wrist_error_m']*1000:.1f}mm, MPJPE {row['joint_mpjpe_m']*1000:.1f}mm, root-align {row['root_aligned_mpjpe_m']*1000:.1f}mm"
+                f"{side}: wrist {row['wrist_error_m']*1000:.1f}mm, MPJPE {row['joint_mpjpe_m']*1000:.1f}mm, wrist-sub {row['root_aligned_mpjpe_m']*1000:.1f}mm"
             )
         banner = np.zeros((74, vis.shape[1], 3), dtype=np.uint8)
         banner[:] = (8, 8, 8)
@@ -356,7 +357,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     report = {
         "status": "ok",
         "method": "evaluate_v19_hot3d_hawor_mano3d",
-        "claim_scope": "3D MANO hand localization/articulation against HOT3D MANO in camera coordinates; not contact, occlusion, nonpenetration, or object-pose scoring",
+        "claim_scope": "3D MANO hand localization/articulation against HOT3D MANO in camera coordinates; root_aligned metrics are wrist-subtracted translation-aligned only; not contact, occlusion, nonpenetration, or object-pose scoring",
         "hot3d_gt": str(args.hot3d_gt),
         "hawor_npz": str(args.hawor_npz),
         "stream_id": args.stream_id,
@@ -368,6 +369,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "measurable_rows": len(measurable),
             "matched_rows": len(matched),
             "match_rate": float(len(matched) / max(1, len(measurable))),
+            "root_aligned_metric_definition": "Subtract each hand's wrist joint translation before computing joint errors; no rotation or scale alignment is applied.",
             "wrist_error_m": summarize([float(r["wrist_error_m"]) for r in matched]),
             "joint_mpjpe_m": summarize([float(r["joint_mpjpe_m"]) for r in matched]),
             "joint_median_error_m": summarize([float(r["joint_median_error_m"]) for r in matched]),
