@@ -1,6 +1,6 @@
 # V19 Runtime Spec
 
-This is the only runtime instruction document. It defines state ontology, execution policy, exact phase order, scripts, command templates, required outputs, and stop conditions. Do not use any other project document as runtime guidance.
+This is the only runtime instruction document. It defines state ontology, execution policy, exact phase order, scripts, command templates, required outputs, and stop conditions. Do not use any other project document as runtime guidance. Do not inspect, mention, or reason about unlisted context, guide, memory, documentation, repository root files, startup resource lists, or project history.
 
 ## Runtime inputs
 
