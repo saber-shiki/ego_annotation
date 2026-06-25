@@ -108,17 +108,18 @@ python scripts/build_v19_raw_frame_manifest.py \
 
 Required output: `{RUN_ROOT}/input/raw_frame_manifest/manifest.json`.
 
-## P02 server probe and bundle sync
+## P02 server probe, bundle sync, and remote input staging
 
 Type: bash command.
 
 ```bash
 ssh -o BatchMode=yes -o ConnectTimeout=10 "{REMOTE}" \
-  "set -euo pipefail; mkdir -p '{REMOTE_BUNDLE}' '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}' '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}'; hostname; df -h '{REMOTE_OUTPUT}'; nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits"
+  "set -euo pipefail; mkdir -p '{REMOTE_BUNDLE}' '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest' '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}'; hostname; df -h '{REMOTE_OUTPUT}'; nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits"
 rsync -a --delete ./ "{REMOTE}:{REMOTE_BUNDLE}/"
+rsync -a --delete "{RUN_ROOT}/input/raw_frame_manifest/" "{REMOTE}:{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest/"
 ```
 
-Required output: log event in `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}` and successful bundle sync.
+Required output: log event in `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}`, successful bundle sync, and successful raw-frame-manifest staging.
 
 ## P03 depth and intrinsics measurement
 
@@ -126,16 +127,19 @@ Script: `scripts/run_unidepth_full_frame_v3.py`
 
 ```bash
 ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_unidepth_full_frame_v3.py \
-  --manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
-  --output-dir '{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame' \
+  --manifest '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest/manifest.json' \
+  --output-dir '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame' \
   --frame-start 0 \
   --frame-end {FRAME_END} \
   --unidepth-repo /mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth \
+  --remote-root '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest' \
+  --local-root '{RUN_ROOT}/input/raw_frame_manifest' \
   --source-width {SOURCE_WIDTH} \
   --source-height {SOURCE_HEIGHT}"
+rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame/" "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/"
 ```
 
-Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json`.
+Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` copied back from the remote prediction output.
 
 ## P03b calibration contract
 
