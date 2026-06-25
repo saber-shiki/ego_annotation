@@ -54,7 +54,7 @@ The runtime output is a prediction run root containing `input/`, `measurements/`
 - HaWoR Python: `/mnt/user-home/yiwen/ego_annotation_remote/hawor_work/.venv_hawor/bin/python`
 - SAM2 checkpoint: `/mnt/user-home/yiwen/ego_annotation_remote/data/sam2.1_hiera_small.pt`
 - UniDepth checkout: `/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth`
-- Remote model Python for UniDepth/SAM2: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`; this is a parent-preflight launch contract.
+- Remote model Python for UniDepth/SAM2: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`; this is a launch-preflighted contract.
 
 ## Stop condition
 
@@ -69,7 +69,7 @@ with phase id, missing component, blocked state variable, evidence, and next req
 - `{FRAME_END}`: last frame index from P01 manifest.
 - `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
 - `{GPU_ID}`: selected server GPU from P02.
-- `{REMOTE_MODEL_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`, a parent-preflighted remote model interpreter used for remote UniDepth/SAM2 Python phases.
+- `{REMOTE_MODEL_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`, a launch-preflighted remote model interpreter used for remote UniDepth/SAM2 Python phases.
 - `{OBJECT_ID}`: object id chosen in P05.
 - `{TRACK_ID}`: SAM2 track id for `{OBJECT_ID}`.
 - `{ANCHOR_FRAME}`: selected clean object evidence frame.
@@ -192,6 +192,7 @@ Minimum fields: object id, prompt frame ids, positive points, negative points, a
 Script: `scripts/run_sam2_vlm_points_multiobject.py`
 
 ```bash
+ssh "{REMOTE}" "set -euo pipefail; mkdir -p '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent' '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_tracks/sam2_agent_points'"
 rsync -a "{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent/" "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent/"
 ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_sam2_vlm_points_multiobject.py \
   --clip '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/input_video.mp4' \
