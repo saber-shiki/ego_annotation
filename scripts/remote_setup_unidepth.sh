@@ -42,7 +42,8 @@ fi
 "$UV_BIN" pip install --python "$MODEL_ENV/bin/python" --upgrade pip setuptools wheel
 "$UV_BIN" pip install --python "$MODEL_ENV/bin/python" torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
 "$UV_BIN" pip install --python "$MODEL_ENV/bin/python" -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu121
-"$UV_BIN" pip install --python "$MODEL_ENV/bin/python" opencv-python pillow numpy scipy hydra-core omegaconf iopath tqdm
+"$UV_BIN" pip install --python "$MODEL_ENV/bin/python" opencv-python pillow numpy scipy tqdm
+"$MODEL_ENV/bin/python" -m pip install hydra-core omegaconf iopath
 
 "$MODEL_ENV/bin/python" - <<'PY'
 import importlib
