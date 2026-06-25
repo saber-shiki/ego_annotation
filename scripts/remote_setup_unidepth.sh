@@ -26,7 +26,7 @@ else
 fi
 
 cd "$REPO"
-if [ -e .venv/bin/python ] && [ ! -x .venv/bin/python ]; then
+if [ -d .venv ] && [ ! -x .venv/bin/python ]; then
   rm -rf .venv
 fi
 if [ ! -x .venv/bin/python ]; then
