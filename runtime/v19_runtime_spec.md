@@ -136,7 +136,9 @@ ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{
   --local-root '{RUN_ROOT}/input/raw_frame_manifest' \
   --source-width {SOURCE_WIDTH} \
   --source-height {SOURCE_HEIGHT}"
-rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame/" "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/"
+mkdir -p "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame"
+rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/"
+rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame/qc_unidepth_full_frame_v3.json" "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/"
 ```
 
 Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` copied back from the remote prediction output.
