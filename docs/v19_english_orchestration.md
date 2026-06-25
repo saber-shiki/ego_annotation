@@ -1,6 +1,6 @@
 # V19 English Orchestration Over Real Components
 
-Status: Workbench item 2 artifact. This is the runtime runbook the Pi agent should follow before Workbench item 3 implementation and item 4 full-pipeline runs. It is intentionally written in English, but every executable action names an existing repository script or states an explicit missing implementation. It does not authorize fake numbered scripts, JSON registries, validator loops, or V18 artifact repackaging as progress.
+Status: Runtime prediction runbook. This is the runbook the Pi runtime agent follows to produce prediction-side physical annotation artifacts from an input video and fresh run root. It is intentionally written in English, but every executable action names an existing repository script or states an explicit missing implementation. It does not authorize fake numbered scripts, JSON registries, validator loops, or prior-version artifact repackaging as progress.
 
 ## 0. Physical objective and state variables
 
@@ -39,7 +39,7 @@ The default V19 path now has V19-owned commands for raw-frame extraction and bas
 
 1. **Renderer naming/state cleanup.** Some reliable renderers still have `v18_*` filenames and consume V18-compatible annotation shapes. V19 may use them only as extracted executable components fed by V19-generated inputs, and final outputs must be copied/symlinked to canonical V19 MP4 names.
 2. **V19 wrappers/generalized names for extracted rigid/contact/render components.** Existing `v18_*` scripts can be executed only when all inputs come from the V19 run root; future cleanup should rename/wrap them, but cached V18 roots are not valid pipeline inputs.
-3. **HOT3D/H2O/DexYCB adapters.** No current script names match HOT3D, H2O, DexYCB, benchmark, or evaluation. Workbench item 6 must implement those adapters before quantitative external claims.
+3. **Post-run comparison adapters.** External scoring adapters are outside this runtime prediction runbook.
 
 If a run reaches one of these gaps, the correct outcome is a named missing implementation with the physical variable blocked. Do not invent a script name, use a cached prior-version root, or write a placeholder output.
 
@@ -974,83 +974,7 @@ The agent must consume the final videos as a physical annotation before claiming
 
 Repair is allowed only when it targets a named mechanism. Repeating validators or writing new status fields is not repair.
 
-## 14. Bounded quantitative comparison
-
-Current command truth: `scripts/build_v19_hot3d_clip_adapter.py` adapts public HOT3D-Clips WebDataset tars into a V19 input video/frame manifest and an evaluation-only HOT3D GT sidecar. H2O and DexYCB adapters are not implemented. Workbench item 6 must run real adapters before any external quantitative claim.
-
-Minimal HOT3D-Clips adaptation command:
-
-```bash
-python "$REPO_ROOT/scripts/build_v19_hot3d_clip_adapter.py" \
-  --tar "$BENCH_ROOT/hot3d_clips/raw/train_aria/clip-001849.tar" \
-  --output-root "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849" \
-  --clip-id clip-001849 \
-  --split train_aria \
-  --image-field image_214-1.jpg
-```
-
-The adapter's HOT3D hand/object/MANO/object-pose annotations under `evaluation/hot3d_gt/` are scoring-only and must not feed object prompts, hand state, contact, occlusion, or physical-state selection. HOT3D `cameras.json` calibration is sensor metadata, not a perception label; it may feed the camera adapter below.
-
-Current fixed HOT3D slice v1 for the initial gate is the first three `train_aria` clip tars in HuggingFace repository path order, selected before scoring clips beyond `clip-001849`: `clip-001849`, `clip-001850`, and `clip-001851`. The run artifact records this at `$BENCH_ROOT/hot3d_clips/evaluation/v19_hot3d_fixed_slice_v1.json`.
-
-Minimal fisheye-to-pinhole camera adaptation command:
-
-```bash
-python "$REPO_ROOT/scripts/build_v19_hot3d_pinhole_adapter.py" \
-  --input-root "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849" \
-  --output-root "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849" \
-  --stream-id 214-1
-```
-
-This camera adapter writes a new V19 input video/manifest plus `state/calibration/v19_hot3d_pinhole_camera_calibration_contract.json`. It is not a prediction and does not score 3D state; it only makes later V19/HaWoR runs consume a pinhole camera instead of raw fisheye frames.
-
-Initial HOT3D hand-box comparison command, valid only for 2D localization claims:
-
-```bash
-python "$REPO_ROOT/scripts/evaluate_v19_hot3d_hawor_boxes.py" \
-  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
-  --hawor-npz "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/measurements/hawor_world_f609/hawor_world_hands.npz" \
-  --output-report "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_hawor_box_eval.json" \
-  --stream-id 214-1
-
-python "$REPO_ROOT/scripts/render_v19_hot3d_hawor_box_review.py" \
-  --manifest "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/input/raw_frame_manifest/manifest.json" \
-  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
-  --hawor-npz "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/measurements/hawor_world_f609/hawor_world_hands.npz" \
-  --output "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_hawor_box_review.jpg"
-
-python "$REPO_ROOT/scripts/aggregate_v19_hot3d_box_evals.py" \
-  --reports "$BENCH_ROOT"/hot3d_clips/v19_inputs/clip-*/evaluation/hot3d_hawor_box_eval.json \
-  --output-report "$BENCH_ROOT/hot3d_clips/evaluation/hot3d_hawor_box_eval_aggregate.json"
-```
-
-After HaWoR has been run on the pinhole input with the pinhole focal from the calibration contract, score 3D MANO hand state in camera coordinates:
-
-```bash
-python "$REPO_ROOT/scripts/evaluate_v19_hot3d_hawor_mano3d.py" \
-  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001849/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
-  --hawor-npz "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/measurements/hawor_world_pinhole_f610/hawor_world_hands.npz" \
-  --image-manifest "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/input/raw_frame_manifest/manifest.json" \
-  --output-report "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/evaluation/hot3d_hawor_mano3d_eval.json" \
-  --review-output "$BENCH_ROOT/hot3d_clips/v19_inputs_pinhole/clip-001849/evaluation/hot3d_hawor_mano3d_review.jpg"
-
-python "$REPO_ROOT/scripts/aggregate_v19_hot3d_mano3d_evals.py" \
-  --reports "$BENCH_ROOT"/hot3d_clips/v19_inputs_pinhole/clip-*/evaluation/hot3d_hawor_mano3d_eval.json \
-  --output-report "$BENCH_ROOT/hot3d_clips/evaluation/hot3d_hawor_mano3d_eval_aggregate.json"
-```
-
-The 3D evaluator must run in an environment with `smplx` and side-specific MANO assets; the current fixed-slice run used the remote HaWoR environment and explicit `--mano-left/--mano-right` paths. It replays HOT3D GT MANO with HaWoR's 21-joint ordering, then compares HOT3D GT and HaWoR predictions in camera coordinates. It reports absolute wrist/joint errors separately from wrist-subtracted translation-aligned errors; no rotation or scale Procrustes alignment is applied, so this is not a pure articulation metric. The aggregate also splits same-frame detector-supported rows from infilled rows. It still does not score contact, occlusion, nonpenetration, or object pose.
-
-The runbook still fixes the evaluation discipline now:
-
-- Primary benchmark: 3-5 HOT3D clips.
-- Optional secondary: 2-3 H2O clips, or DexYCB only if H2O is blocked. Do not run both H2O and DexYCB in the initial V19 gate.
-- Baselines: V18 v5 on project representatives; HaWoR on selected HOT3D clips; official/reference metrics only where the dataset annotates the claim.
-- Required ablations: MANO candidate source/refit, depth/camera source, contact/occlusion/nonpenetration factors, rigid branch enabled versus visible-surface-only after a rigid decision.
-
-If benchmark evaluation is requested before adapters exist, stop with `missing_benchmark_adapter` and name the blocked physical metric family. Do not fabricate `metrics.json`.
-
-## 15. Ordered execution summary
+## 14. Ordered execution summary
 
 1. Build the V19 raw-frame manifest from the input video with `scripts/build_v19_raw_frame_manifest.py`.
 2. Run camera/depth/SLAM measurements.
@@ -1065,4 +989,3 @@ If benchmark evaluation is requested before adapters exist, stop with `missing_b
 11. Assemble renderable state from corrected physical variables.
 12. Render full-duration overlay/world/side-by-side.
 13. Visually consume the rendered artifact, identify mechanism failures, repair the causal mechanism, and rerender.
-14. Only after representative renders are coherent, implement/run bounded benchmark adapters and ablations.
