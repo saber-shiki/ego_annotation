@@ -1,22 +1,82 @@
-# V19 Runtime Phase Graph
+# V19 Runtime Spec
 
-The runtime agent executes this graph in order. Do not search for alternate scripts or project documents. If a phase cannot run because an input, script, model asset, or environment is missing, write the phase id, missing component, and blocked state variable under `state/runtime_blockers/` and stop that branch.
+This is the only runtime instruction document. It defines state ontology, execution policy, exact phase order, scripts, command templates, required outputs, and stop conditions. Do not use any other project document as runtime guidance.
 
-Placeholders:
+## Runtime inputs
 
-- `{INPUT_VIDEO}`: launch input video
-- `{RUN_ROOT}`: launch run root
-- `{CASE_ID}`: launch case id
-- `{FRAME_END}`: last frame index from the raw-frame manifest
-- `{SOURCE_WIDTH}` and `{SOURCE_HEIGHT}`: source video resolution
+The launch provides:
+
+- `{INPUT_VIDEO}`: egocentric input video;
+- `{RUN_ROOT}`: fresh output run root;
+- `{CASE_ID}`: case id;
+- this runtime workspace;
+- prediction-side sensor metadata, if present next to the input.
+
+## Runtime outputs
+
+The runtime output is a prediction run root containing `input/`, `measurements/`, `state/`, `renders/`, and `logs/`. The renderer consumes `state/`. Logs and measurements are provenance, not final annotations.
+
+## State ontology
+
+- `camera`: intrinsics, camera/head pose, depth/scale provenance, frame/time semantics, uncertainty.
+- `hands`: metric 3D MANO state over time, side, camera/world transforms, visibility, provenance, uncertainty.
+- `objects`: object instances, masks/tracks, physical branch, reconstructed or adapted geometry, pose/posterior, provenance, uncertainty.
+- `visibility_occlusion`: visible, partially visible, occluded, out-of-frame, or unresolved state for hands and objects, with occluder ownership when inferable.
+- `contact`: contact, near-contact, non-contact, or unresolved state with patch/distance evidence and uncertainty.
+- `nonpenetration`: hand/object geometry residuals and uncertainty; absence of a valid signed volume is unresolved, not success.
+- `renders`: visible overlay/world/side-by-side annotations caused by state variables.
+
+## Evidence rules
+
+- A detector box, keypoint track, mask, depth map, point cloud, centroid, label, or JSON row is a measurement, not physical state by itself.
+- Object pose requires object geometry adapted or fitted to observed instance evidence and a pose trajectory/posterior.
+- Hand state requires metric MANO surface or reproducible MANO parameters with camera/world semantics.
+- Contact and occlusion require geometric, depth-order, temporal, or explicitly uncertain evidence. Do not make them certain from a semantic label alone.
+- Weak measurements continue downstream with uncertainty. Broken contracts, wrong frame alignment, wrong coordinate frame, wrong object mask, side swap, missing geometry, or invalid units must be fixed or represented as unresolved.
+
+## Execution policy
+
+1. Execute phases in order.
+2. Do not discover or substitute scripts. Each script phase names the script to run.
+3. For an agent-write phase, write only the specified JSON/Markdown artifact and preserve uncertainty.
+4. Bind placeholders from launch arguments, phase outputs, or this spec. If a placeholder cannot be bound without searching outside the bundle, record the unresolved placeholder as a blocker.
+5. Heavy model phases run on the declared server target after probe and bundle sync. Light metadata/state phases may run locally.
+6. Do not run scoring or comparisons inside this runtime run.
+7. Do not use sleep, polling loops, or idle waits. Long-running jobs need durable command logs/status files and inspectable job handles.
+
+## Declared compute and asset targets
+
 - `{REMOTE}`: `yiwen@192.168.11.220`
 - `{REMOTE_BUNDLE}`: `/mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle`
 - `{REMOTE_OUTPUT}`: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs`
-- `{GPU_ID}`: selected server GPU from the non-mutating probe
-- `{OBJECT_ID}`: object id chosen in phase P04
-- `{TRACK_ID}`: SAM2 track id for `{OBJECT_ID}`
-- `{ANCHOR_FRAME}`: selected clean object evidence frame
-- `{INTERVAL_START}` and `{INTERVAL_END}`: selected physical interval for MANO/object correction
+- HaWoR work root: `/mnt/user-home/yiwen/ego_annotation_remote/hawor_work`
+- HaWoR Python: `/mnt/user-home/yiwen/ego_annotation_remote/hawor_work/.venv_hawor/bin/python`
+- SAM2 checkpoint: `/mnt/user-home/yiwen/ego_annotation_remote/data/sam2.1_hiera_small.pt`
+- UniDepth checkout: `/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth`
+
+## Stop condition
+
+If a phase cannot run because an input, script, model asset, or environment is missing, write:
+
+`{RUN_ROOT}/state/runtime_blockers/<PHASE_ID>.json`
+
+with phase id, missing component, blocked state variable, evidence, and next required repair. Stop that branch rather than inventing substitute outputs.
+
+## Placeholders
+
+- `{FRAME_END}`: last frame index from P01 manifest.
+- `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
+- `{GPU_ID}`: selected server GPU from P02.
+- `{OBJECT_ID}`: object id chosen in P05.
+- `{TRACK_ID}`: SAM2 track id for `{OBJECT_ID}`.
+- `{ANCHOR_FRAME}`: selected clean object evidence frame.
+- `{INTERVAL_START}`, `{INTERVAL_END}`: selected physical interval for MANO/object correction.
+- `<calibration_contract>`: chosen calibration contract JSON filename under `{RUN_ROOT}/state/calibration/`.
+- `<completed_mesh_ply>`: completed mesh path from P13.
+- `<visible_contact_ownership_factor_report>`: factor report from P17.
+- `<render_branch_overlay_mp4>`, `<render_branch_world_mp4>`, `<render_branch_side_by_side_mp4>`: P19 render outputs.
+
+# Phase graph
 
 ## P00 startup records
 
@@ -36,8 +96,6 @@ State after phase: unresolved camera, hands, objects, contact, occlusion, and no
 
 Script: `scripts/build_v19_raw_frame_manifest.py`
 
-Command:
-
 ```bash
 python scripts/build_v19_raw_frame_manifest.py \
   --video "{INPUT_VIDEO}" \
@@ -51,21 +109,17 @@ Required output: `{RUN_ROOT}/input/raw_frame_manifest/manifest.json`.
 
 Type: bash command.
 
-Command:
-
 ```bash
 ssh -o BatchMode=yes -o ConnectTimeout=10 "{REMOTE}" \
-  "set -euo pipefail; hostname; df -h '{REMOTE_OUTPUT}'; nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits"
+  "set -euo pipefail; mkdir -p '{REMOTE_BUNDLE}' '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}' '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}'; hostname; df -h '{REMOTE_OUTPUT}'; nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits"
 rsync -a --delete ./ "{REMOTE}:{REMOTE_BUNDLE}/"
 ```
 
-Required output: log event in `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}`.
+Required output: log event in `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}` and successful bundle sync.
 
 ## P03 depth and intrinsics measurement
 
 Script: `scripts/run_unidepth_full_frame_v3.py`
-
-Command template for server execution:
 
 ```bash
 ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' python scripts/run_unidepth_full_frame_v3.py \
@@ -82,7 +136,7 @@ Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidept
 
 ## P03b calibration contract
 
-If sensor calibration metadata is present at `{INPUT_VIDEO}/../.. /state/calibration/v19_hot3d_pinhole_camera_calibration_contract.json` after path normalization, copy it to `{RUN_ROOT}/state/calibration/` and record the source. Otherwise run:
+If prediction-side calibration metadata is present next to the input, copy it to `{RUN_ROOT}/state/calibration/` and record the source. Otherwise run:
 
 Script: `scripts/build_v19_calibration_contract.py`
 
@@ -101,8 +155,6 @@ Required output: one calibration contract JSON under `{RUN_ROOT}/state/calibrati
 ## P04 MANO hand measurement
 
 Script: `scripts/remote_run_hawor_export.sh` (calls `scripts/export_hawor_world.py`)
-
-Command template:
 
 ```bash
 rsync -a "{INPUT_VIDEO}" "{REMOTE}:{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/input_video.mp4"
@@ -132,8 +184,6 @@ Minimum fields: object id, prompt frame ids, positive points, negative points, a
 
 Script: `scripts/run_sam2_vlm_points_multiobject.py`
 
-Command template for server execution:
-
 ```bash
 rsync -a "{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent/" "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent/"
 ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' python scripts/run_sam2_vlm_points_multiobject.py \
@@ -154,8 +204,6 @@ Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_age
 
 Script: `scripts/build_v19_base_annotations.py`
 
-Command:
-
 ```bash
 python scripts/build_v19_base_annotations.py \
   --case "{CASE_ID}" \
@@ -172,8 +220,6 @@ Required output: `{RUN_ROOT}/state/base_annotations/annotations_v19_base.json`, 
 ## P09 visible metric geometry
 
 Script: `scripts/build_v19_visible_geometry_from_sam2_depth.py`
-
-Command:
 
 ```bash
 python scripts/build_v19_visible_geometry_from_sam2_depth.py \
@@ -205,8 +251,6 @@ If branch is not rigid, stop rigid path and render uncertainty from available st
 
 Script: `scripts/build_v18_compact_rigid_evidence_bundle.py`
 
-Command:
-
 ```bash
 python scripts/build_v18_compact_rigid_evidence_bundle.py \
   --case "{CASE_ID}" \
@@ -224,8 +268,6 @@ Required output: evidence bundle report and crop image path.
 
 Script: `scripts/remote_run_trellis_shape_v3.py`
 
-Command template:
-
 ```bash
 python scripts/remote_run_trellis_shape_v3.py \
   --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work \
@@ -234,13 +276,11 @@ python scripts/remote_run_trellis_shape_v3.py \
   --seed 42
 ```
 
-Required output: TRELLIS mesh report and mesh path. If the TRELLIS environment is absent from the bundle/declared server, record missing component for object geometry completion.
+Required output: TRELLIS mesh report and mesh path.
 
 ## P13 mesh adaptation/completion
 
 Script: `scripts/build_v18_compact_rigid_trellis_completion.py`
-
-Command:
 
 ```bash
 python scripts/build_v18_compact_rigid_trellis_completion.py \
@@ -254,8 +294,6 @@ Required output: completion report and completed mesh.
 ## P14 visible-frame pose fit
 
 Script: `scripts/fit_v18_compact_rigid_object_pose.py`
-
-Command:
 
 ```bash
 python scripts/fit_v18_compact_rigid_object_pose.py \
@@ -271,8 +309,6 @@ Required output: object pose fit report.
 
 Script: `scripts/solve_v19_rigid_object_pose_graph.py`
 
-Command:
-
 ```bash
 python scripts/solve_v19_rigid_object_pose_graph.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
@@ -287,8 +323,6 @@ Required output: rigid pose graph report.
 ## P16 MANO/object constraint measurement
 
 Script: `scripts/build_v18_mano_object_constraint_state.py`
-
-Command:
 
 ```bash
 python scripts/build_v18_mano_object_constraint_state.py \
@@ -310,8 +344,6 @@ Agent output: `{RUN_ROOT}/state/agent_interaction_judgments/{OBJECT_ID}_{INTERVA
 
 Script: `scripts/build_v19_visible_contact_ownership_factor.py`
 
-Command:
-
 ```bash
 python scripts/build_v19_visible_contact_ownership_factor.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
@@ -327,8 +359,6 @@ Required output: visible contact/ownership factor report.
 ## P18 interval MANO correction
 
 Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
-
-Command:
 
 ```bash
 python scripts/solve_v18_joint_mano_interval_trajectory.py \
@@ -353,8 +383,6 @@ Required output: interval MANO trajectory state.
 
 Script: `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`
 
-Command:
-
 ```bash
 python scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py \
   --case "{CASE_ID}" \
@@ -371,8 +399,6 @@ Required output: full-duration overlay/world/side-by-side render branch.
 ## P20 publish canonical render names
 
 Script: `scripts/publish_v19_render_artifact.py`
-
-Command:
 
 ```bash
 python scripts/publish_v19_render_artifact.py \

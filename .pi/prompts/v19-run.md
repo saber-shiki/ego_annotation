@@ -10,22 +10,22 @@ Case id or label: `${@:3}`
 
 ## Runtime input contract
 
-The runtime inputs are the input video, the fresh run root, this case id, the runtime ontology/runbook/phase graph in this workspace, and prediction-side sensor metadata needed by the pipeline.
+The runtime inputs are the input video, the fresh run root, this case id, the single runtime spec in this workspace, and prediction-side sensor metadata needed by the pipeline.
 
 Pi is the harness. Do not create or call an outer script that controls Pi. Python scripts may be called only as measurement, optimization, rendering, or export tools.
 
 ## Start actions
 
-1. Read `runtime/v19_runtime_ontology.md`, `runtime/v19_runtime_runbook.md`, and `runtime/v19_runtime_phase_graph.md`.
+1. Read `runtime/v19_runtime_spec.md`.
 2. Verify the input video exists and identify frame count, FPS, resolution, and duration without changing the video.
 3. Confirm the run root does not overwrite an existing completed V19 run.
 4. Create initial `input/`, `logs/`, and unresolved `state/` records before launching measurement tools.
 5. Probe the declared server route before heavy work and record the selected compute target.
-6. Execute `runtime/v19_runtime_phase_graph.md` in order. Do not discover alternate scripts. If a required component is missing, write the concrete missing implementation and blocked physical variable under the run root rather than fabricating outputs.
+6. Execute the phase graph in `runtime/v19_runtime_spec.md` in order. Do not discover alternate scripts. If a required component is missing, write the concrete missing implementation and blocked physical variable under the run root rather than fabricating outputs.
 
 ## Output contract
 
-Produce a V19 prediction run root with render-consumed `state/`, prediction-side `measurements/`, durable `logs/`, and full-duration `renders/v19_overlay.mp4`, `renders/v19_world.mp4`, and `renders/v19_side_by_side.mp4` when the runbook reaches render publication.
+Produce a V19 prediction run root with render-consumed `state/`, prediction-side `measurements/`, durable `logs/`, and full-duration `renders/v19_overlay.mp4`, `renders/v19_world.mp4`, and `renders/v19_side_by_side.mp4` when the spec reaches render publication.
 
 Progress requires a changed physical state, a rendered physical artifact, a physically discriminating measurement, or a concrete mechanism failure that determines the next intervention. Created directories, JSON validity, row counts, validators, or launch commands are not progress by themselves.
 
