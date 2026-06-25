@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${EGO_UNIDEPTH_ROOT:-/mnt/user-home/yiwen/ego_annotation_remote/unidepth_work}"
+ROOT="${EGO_UNIDEPTH_ROOT:-/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work}"
 REPO="$ROOT/UniDepth"
 UV_BIN="${UV_BIN:-/mnt/user-home/yiwen/.local/bin/uv}"
-PYTHON_BIN="${PYTHON_BIN:-python3.10}"
+PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3.10}"
 
 mkdir -p "$ROOT"/{logs,outputs,data}
 cd "$ROOT"
 
 if ! command -v "$UV_BIN" >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+
+if [ -d "$REPO/.git" ]; then
+  git config --global --add safe.directory "$REPO" || true
+  REPO_REALPATH="$(readlink -f "$REPO" 2>/dev/null || printf '%s' "$REPO")"
+  git config --global --add safe.directory "$REPO_REALPATH" || true
 fi
 
 if [ ! -d "$REPO/.git" ]; then
@@ -20,20 +26,27 @@ else
 fi
 
 cd "$REPO"
+if [ -e .venv/bin/python ] && [ ! -x .venv/bin/python ]; then
+  rm -rf .venv
+fi
 if [ ! -x .venv/bin/python ]; then
   "$UV_BIN" venv --python "$PYTHON_BIN" .venv
+fi
+if [ ! -x .venv/bin/python ]; then
+  echo "UniDepth venv python is not executable after venv creation: $REPO/.venv/bin/python" >&2
+  exit 1
 fi
 
 "$UV_BIN" pip install --python .venv/bin/python --upgrade pip setuptools wheel
 "$UV_BIN" pip install --python .venv/bin/python torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
 "$UV_BIN" pip install --python .venv/bin/python -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cu121
-"$UV_BIN" pip install --python .venv/bin/python opencv-python pillow numpy scipy
+"$UV_BIN" pip install --python .venv/bin/python opencv-python pillow numpy scipy hydra-core omegaconf iopath tqdm
 
 .venv/bin/python - <<'PY'
 import importlib
 import torch
 
-for name in ["torch", "cv2", "PIL", "unidepth"]:
+for name in ["torch", "cv2", "PIL", "numpy", "unidepth", "hydra", "omegaconf", "iopath", "tqdm"]:
     importlib.import_module(name)
 if not torch.cuda.is_available():
     raise RuntimeError("UniDepth setup requires CUDA")

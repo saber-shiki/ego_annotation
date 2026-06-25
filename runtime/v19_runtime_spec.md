@@ -67,6 +67,7 @@ with phase id, missing component, blocked state variable, evidence, and next req
 - `{FRAME_END}`: last frame index from P01 manifest.
 - `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
 - `{GPU_ID}`: selected server GPU from P02.
+- `{REMOTE_MODEL_PYTHON}`: `/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth/.venv/bin/python`, provisioned in P02b and used for remote UniDepth/SAM2 Python phases.
 - `{OBJECT_ID}`: object id chosen in P05.
 - `{TRACK_ID}`: SAM2 track id for `{OBJECT_ID}`.
 - `{ANCHOR_FRAME}`: selected clean object evidence frame.
@@ -117,12 +118,22 @@ rsync -a --delete ./ "{REMOTE}:{REMOTE_BUNDLE}/"
 
 Required output: log event in `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}` and successful bundle sync.
 
+## P02b remote model Python provisioning
+
+Script: `scripts/remote_setup_unidepth.sh`
+
+```bash
+ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; EGO_UNIDEPTH_ROOT=/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work PYTHON_BIN=/usr/bin/python3.10 bash scripts/remote_setup_unidepth.sh"
+```
+
+Required output: `{REMOTE_MODEL_PYTHON}` is executable and can import torch, cv2, numpy, UniDepth, hydra, omegaconf, iopath, and tqdm. Record setup logs under `{RUN_ROOT}/logs/`.
+
 ## P03 depth and intrinsics measurement
 
 Script: `scripts/run_unidepth_full_frame_v3.py`
 
 ```bash
-ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' python scripts/run_unidepth_full_frame_v3.py \
+ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_unidepth_full_frame_v3.py \
   --manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
   --output-dir '{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame' \
   --frame-start 0 \
@@ -186,7 +197,7 @@ Script: `scripts/run_sam2_vlm_points_multiobject.py`
 
 ```bash
 rsync -a "{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent/" "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent/"
-ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' python scripts/run_sam2_vlm_points_multiobject.py \
+ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_sam2_vlm_points_multiobject.py \
   --clip '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/input_video.mp4' \
   --point-root '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent' \
   --output-root '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_tracks/sam2_agent_points' \
