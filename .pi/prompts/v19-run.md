@@ -10,18 +10,18 @@ Case id or label: `${@:3}`
 
 ## Runtime input contract
 
-The runtime inputs are the input video, the fresh run root, this case id, repository code/runbook, and prediction-side sensor metadata needed by the pipeline.
+The runtime inputs are the input video, the fresh run root, this case id, the runtime ontology/runbook/phase graph in this workspace, and prediction-side sensor metadata needed by the pipeline.
 
 Pi is the harness. Do not create or call an outer script that controls Pi. Python scripts may be called only as measurement, optimization, rendering, or export tools.
 
 ## Start actions
 
-1. Read `docs/v19_english_orchestration.md`.
+1. Read `runtime/v19_runtime_ontology.md`, `runtime/v19_runtime_runbook.md`, and `runtime/v19_runtime_phase_graph.md`.
 2. Verify the input video exists and identify frame count, FPS, resolution, and duration without changing the video.
 3. Confirm the run root does not overwrite an existing completed V19 run.
 4. Create initial `input/`, `logs/`, and unresolved `state/` records before launching measurement tools.
-5. Probe the declared server/A800 route before heavy work and record the selected compute target.
-6. Execute the runbook using existing repository components. If a required component is missing, write the concrete missing implementation and blocked physical variable under the run root rather than fabricating outputs.
+5. Probe the declared server route before heavy work and record the selected compute target.
+6. Execute `runtime/v19_runtime_phase_graph.md` in order. Do not discover alternate scripts. If a required component is missing, write the concrete missing implementation and blocked physical variable under the run root rather than fabricating outputs.
 
 ## Output contract
 
