@@ -2280,8 +2280,9 @@ def reject_rejected_annotation_path(path: Path) -> None:
 def main() -> None:
     args = parse_args()
     reject_rejected_annotation_path(args.annotations)
-    if (bool(args.visible_object_mask_gate) or bool(args.visible_surface_depth_order_term)) and args.visible_object_mask_report is None:
-        raise ValueError("visible object mask terms require --visible-object-mask-report")
+    visible_surface_factor_supplied = args.visible_surface_track_factor_report is not None or bool(args.factor_report)
+    if (bool(args.visible_object_mask_gate) or bool(args.visible_surface_depth_order_term)) and args.visible_object_mask_report is None and not visible_surface_factor_supplied:
+        raise ValueError("visible object mask terms require --visible-object-mask-report or a visible_surface_track factor report")
     device = torch.device(args.device)
     models = load_models(args, device)
     intervals: list[dict[str, Any]] = []
