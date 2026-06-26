@@ -40,21 +40,21 @@ The runtime output is a prediction run root containing `input/`, `measurements/`
 2. Do not discover or substitute scripts. Each script phase names the script to run.
 3. For an agent-write phase, write only the specified JSON/Markdown artifact and preserve uncertainty.
 4. Bind placeholders from launch arguments, phase outputs, or this spec. If a placeholder cannot be bound without searching outside the bundle, record the unresolved placeholder as a blocker.
-5. Heavy model phases run on the declared server target after probe and bundle sync. Light metadata/state phases may run locally.
+5. The runtime itself runs on the A800 compute host. Heavy model phases and light metadata/state phases both read and write the same A800/truenas run root; do not copy phase outputs to any other machine during prediction.
 6. Infrastructure is out of scope for runtime. Launch preflight is complete before start. Execute prediction phases only; if a named phase command fails, record that phase blocker and stop.
 7. Do not run scoring or comparisons inside this runtime run.
 8. Do not use sleep, polling loops, or idle waits. Long-running jobs need durable command logs/status files and inspectable job handles.
 
 ## Declared compute and asset targets
 
-- `{REMOTE}`: `yiwen@192.168.11.220`
-- `{REMOTE_BUNDLE}`: `/mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle`
-- `{REMOTE_OUTPUT}`: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs`
+- Runtime host: A800 compute host `yiwen@192.168.11.220`; Pi is launched inside a tmux session on this host.
+- Runtime workspace: `/mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle_a800`.
+- Run roots and runtime inputs are A800-local/truenas paths under `/mnt/truenas-user-home/yiwen/ego_annotation_outputs`.
 - HaWoR work root: `/mnt/user-home/yiwen/ego_annotation_remote/hawor_work`
 - HaWoR Python: `/mnt/user-home/yiwen/ego_annotation_remote/hawor_work/.venv_hawor/bin/python`
 - SAM2 checkpoint: `/mnt/user-home/yiwen/ego_annotation_remote/data/sam2.1_hiera_small.pt`
 - UniDepth checkout: `/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth`
-- Remote model Python for UniDepth/SAM2: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`; this is a launch-preflighted contract.
+- Model Python for UniDepth/SAM2 on the A800 host: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`; this is a launch-preflighted contract.
 
 ## Stop condition
 
@@ -68,8 +68,8 @@ with phase id, missing component, blocked state variable, evidence, and next req
 
 - `{FRAME_END}`: last frame index from P01 manifest.
 - `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
-- `{GPU_ID}`: selected server GPU from P02.
-- `{REMOTE_MODEL_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`, a launch-preflighted remote model interpreter used for remote UniDepth/SAM2 Python phases.
+- `{GPU_ID}`: selected A800 GPU from P02.
+- `{REMOTE_MODEL_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`, a launch-preflighted A800 model interpreter used for UniDepth/SAM2 Python phases.
 - `{OBJECT_ID}`: object id chosen in P05.
 - `{TRACK_ID}`: SAM2 track id for `{OBJECT_ID}`.
 - `{ANCHOR_FRAME}`: selected clean object evidence frame.
@@ -108,40 +108,37 @@ python scripts/build_v19_raw_frame_manifest.py \
 
 Required output: `{RUN_ROOT}/input/raw_frame_manifest/manifest.json`.
 
-## P02 server probe, bundle sync, and remote input staging
+## P02 A800 host probe and GPU selection
 
 Type: bash command.
 
 ```bash
-ssh -o BatchMode=yes -o ConnectTimeout=10 "{REMOTE}" \
-  "set -euo pipefail; mkdir -p '{REMOTE_BUNDLE}' '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest' '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}'; hostname; df -h '{REMOTE_OUTPUT}'; nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits"
-rsync -a --delete ./ "{REMOTE}:{REMOTE_BUNDLE}/"
-rsync -a --delete "{RUN_ROOT}/input/raw_frame_manifest/" "{REMOTE}:{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest/"
+set -euo pipefail
+hostname
+df -h "{RUN_ROOT}"
+nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
 ```
 
-Required output: log event in `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}`, successful bundle sync, and successful raw-frame-manifest staging.
+Required output: append a log event to `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}` and successful A800 host probe. There is no per-phase bundle sync or raw-frame-manifest staging because Pi, the input video, and the run root are already on the A800 host.
 
 ## P03 depth and intrinsics measurement
 
 Script: `scripts/run_unidepth_full_frame_v3.py`
 
 ```bash
-ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_unidepth_full_frame_v3.py \
-  --manifest '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest/manifest.json' \
-  --output-dir '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame' \
+CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_unidepth_full_frame_v3.py \
+  --manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
+  --output-dir '{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame' \
   --frame-start 0 \
   --frame-end {FRAME_END} \
   --unidepth-repo /mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth \
-  --remote-root '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/raw_frame_manifest' \
+  --remote-root '{RUN_ROOT}/input/raw_frame_manifest' \
   --local-root '{RUN_ROOT}/input/raw_frame_manifest' \
   --source-width {SOURCE_WIDTH} \
-  --source-height {SOURCE_HEIGHT}"
-mkdir -p "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame"
-rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/"
-rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/depth_slam/unidepth_full_frame/qc_unidepth_full_frame_v3.json" "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/"
+  --source-height {SOURCE_HEIGHT}
 ```
 
-Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` copied back from the remote prediction output.
+Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` written directly under the A800/truenas run root.
 
 ## P03b calibration contract
 
@@ -166,12 +163,16 @@ Required output: one calibration contract JSON under `{RUN_ROOT}/state/calibrati
 Script: `scripts/remote_run_hawor_export.sh` (calls `scripts/export_hawor_world.py`)
 
 ```bash
-rsync -a "{INPUT_VIDEO}" "{REMOTE}:{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/input_video.mp4"
-ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; EGO_HAWOR_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work EGO_HAWOR_CASE='{CASE_ID}' EGO_HAWOR_CLIP='{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/input_video.mp4' EGO_HAWOR_OUTPUT_DIR='{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/hand_candidates/hawor_world' EGO_HAWOR_IMG_FOCAL='<focal_from_calibration_contract>' EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH=1 bash scripts/remote_run_hawor_export.sh"
-rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/hand_candidates/hawor_world/" "{RUN_ROOT}/measurements/hand_candidates/hawor_world/"
+EGO_HAWOR_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work \
+EGO_HAWOR_CASE='{CASE_ID}' \
+EGO_HAWOR_CLIP='{INPUT_VIDEO}' \
+EGO_HAWOR_OUTPUT_DIR='{RUN_ROOT}/measurements/hand_candidates/hawor_world' \
+EGO_HAWOR_IMG_FOCAL='<focal_from_calibration_contract>' \
+EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH=1 \
+bash scripts/remote_run_hawor_export.sh
 ```
 
-Required output: `{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz` and `qc_hawor_world_hands.json`.
+Required output: `{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz` and `qc_hawor_world_hands.json` written directly under the A800/truenas run root.
 
 ## P05 object plan
 
@@ -194,21 +195,19 @@ Minimum fields: object id, prompt frame ids, positive points, negative points, a
 Script: `scripts/run_sam2_vlm_points_multiobject.py`
 
 ```bash
-ssh "{REMOTE}" "set -euo pipefail; mkdir -p '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent' '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_tracks/sam2_agent_points'"
-rsync -a "{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent/" "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent/"
-ssh "{REMOTE}" "set -euo pipefail; cd '{REMOTE_BUNDLE}'; CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_sam2_vlm_points_multiobject.py \
-  --clip '{REMOTE_OUTPUT}/runtime_inputs/{CASE_ID}/input_video.mp4' \
-  --point-root '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_candidates/object_point_prompts_agent' \
-  --output-root '{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_tracks/sam2_agent_points' \
+mkdir -p '{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent' '{RUN_ROOT}/measurements/object_tracks/sam2_agent_points'
+CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_sam2_vlm_points_multiobject.py \
+  --clip '{INPUT_VIDEO}' \
+  --point-root '{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent' \
+  --output-root '{RUN_ROOT}/measurements/object_tracks/sam2_agent_points' \
   --checkpoint /mnt/user-home/yiwen/ego_annotation_remote/data/sam2.1_hiera_small.pt \
   --frame-start 0 \
   --frame-end {FRAME_END} \
   --sam2-image-width 960 \
-  --render-width 960"
-rsync -a "{REMOTE}:{REMOTE_OUTPUT}/v19_runs/{CASE_ID}/measurements/object_tracks/sam2_agent_points/" "{RUN_ROOT}/measurements/object_tracks/sam2_agent_points/"
+  --render-width 960
 ```
 
-Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_agent_points/{TRACK_ID}/sam2/sam2_track.json`.
+Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_agent_points/{TRACK_ID}/sam2/sam2_track.json` written directly under the A800/truenas run root.
 
 ## P08 base annotations
 
