@@ -53,6 +53,8 @@ The runtime output is a prediction run root containing `input/`, `measurements/`
 - HaWoR work root: `/mnt/user-home/yiwen/ego_annotation_remote/hawor_work`
 - HaWoR Python: `/mnt/user-home/yiwen/ego_annotation_remote/hawor_work/.venv_hawor/bin/python`
 - SAM2 checkpoint: `/mnt/user-home/yiwen/ego_annotation_remote/data/sam2.1_hiera_small.pt`
+- OWLv2 Python: `/mnt/user-home/yiwen/ego_annotation_remote/hunyuan3d_v3_env/bin/python`; this interpreter must import `transformers`, `torch`, `PIL`, and `cv2` before P06.
+- OWLv2 model cache: `/home/yiwen/.cache/huggingface/hub/models--google--owlv2-base-patch16-ensemble`; this is a parent-preflighted local cache, not a runtime download.
 - UniDepth checkout: `/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth`
 - Model Python for UniDepth/SAM2 on the A800 host: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`; this is a launch-preflighted contract.
 
@@ -70,6 +72,7 @@ with phase id, missing component, blocked state variable, evidence, and next req
 - `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
 - `{GPU_ID}`: selected A800 GPU from P02.
 - `{REMOTE_MODEL_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`, a launch-preflighted A800 model interpreter used for UniDepth/SAM2 Python phases.
+- `{OWLV2_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/hunyuan3d_v3_env/bin/python`, a launch-preflighted A800 interpreter used only for OWLv2 detector-box prompting.
 - `{OBJECT_ID}`: object id chosen in P05.
 - `{TRACK_ID}`: SAM2 track id for `{OBJECT_ID}`.
 - `{ANCHOR_FRAME}`: selected clean object evidence frame.
@@ -211,24 +214,45 @@ Output: `{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json`.
 
 Minimum fields per object: `object_id`, `description`, `physical_branch_hypotheses`, `evidence_frames`, `expected_visible_intervals`, `uncertainty_notes`.
 
-## P06 object point prompts
+## P06 object grounded detector box prompts
 
-Type: agent writes JSON from visual evidence.
+Script: `scripts/build_v19_owlv2_object_box_prompts.py`
 
-Output for each object: `{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent/{OBJECT_ID}/object_point_prompts_vlm.json`.
+The default P06 source is OWLv2 text-conditioned detection, not VLM/agent pixel clicks. A VLM/agent may name the target object and choose representative frames, but it must not be treated as the source of pixel-accurate click coordinates. For each rigid/manipulated object, run OWLv2 with object text prompts (for this clip, `keyboard.` and `computer keyboard.`) on representative keyframes, then write SAM2 prompt JSON containing `box_xyxy` in the detector image coordinate frame.
 
-Minimum fields: object id, prompt frame ids, positive points, negative points, active intervals, point coordinate frame. When point-only prompts produce broad non-object support, repaired prompts must add `box_xyxy` for the visible object support in the same declared coordinate frame; the box must tightly cover the visible object surface intended for segmentation and exclude hands/table as much as possible. If `point_coordinate_frame` is source-video pixels (for this HOT3D clip, `source_video_pixels_1408x1408`), the point and box coordinates must be source-frame coordinates and the SAM2 runner must scale them from that source coordinate size. Do not mix source-frame points/boxes with a resized prompt-image coordinate declaration.
+```bash
+mkdir -p '{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2' '{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes'
+CUDA_VISIBLE_DEVICES='{GPU_ID}' '{OWLV2_PYTHON}' scripts/build_v19_owlv2_object_box_prompts.py \
+  --raw-frame-manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
+  --output-root '{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2' \
+  --review-dir '{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes' \
+  --case-id '{CASE_ID}' \
+  --object-id keyboard \
+  --track-id keyboard \
+  --description 'dark key grid and immediate silver rim of the rigid keyboard; tabletop and hands are negatives' \
+  --text-prompt 'keyboard.' \
+  --text-prompt 'computer keyboard.' \
+  --prompt-frames '30,32,45,60,75,90,105,120,135,149' \
+  --active-start 30 \
+  --active-end {FRAME_END} \
+  --owlv2-model /home/yiwen/.cache/huggingface/hub/models--google--owlv2-base-patch16-ensemble \
+  --box-threshold 0.03 \
+  --device cuda \
+  --box-only
+```
+
+Required output for each object: `{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2/{OBJECT_ID}/object_point_prompts_vlm.json` and `v19_owlv2_object_box_prompt_report.json`. The prompt JSON must contain `prompt_source=owlv2_text_grounded_detector_boxes`, `box_xyxy` on visible prompt frames, and a coordinate declaration matching the frame images used by the detector. If OWLv2 produces no usable box for the target object, write a P06 blocker and stop; do not replace it with VLM/agent click coordinates as the default path.
 
 ## P07 object masks/tracks
 
 Script: `scripts/run_sam2_vlm_points_multiobject.py`
 
 ```bash
-mkdir -p '{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent' '{RUN_ROOT}/measurements/object_tracks/sam2_agent_points'
+mkdir -p '{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points'
 CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_sam2_vlm_points_multiobject.py \
   --clip '{INPUT_VIDEO}' \
-  --point-root '{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent' \
-  --output-root '{RUN_ROOT}/measurements/object_tracks/sam2_agent_points' \
+  --point-root '{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2' \
+  --output-root '{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points' \
   --checkpoint /mnt/user-home/yiwen/ego_annotation_remote/data/sam2.1_hiera_small.pt \
   --frame-start 0 \
   --frame-end {FRAME_END} \
@@ -239,9 +263,9 @@ CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_sam2_vlm_poi
   --prompt-box-min-pad-px 24
 ```
 
-Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_agent_points/{TRACK_ID}/sam2/sam2_track.json` written directly under the A800/truenas run root.
+Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points/{TRACK_ID}/sam2/sam2_track.json` written directly under the A800/truenas run root.
 
-Required P07 self-check before P08: inspect `qc_sam2_multiobject_points.json`, prompt contract reports, and the SAM2 overlay/mask review for representative prompted frames, visible gaps inside expected active intervals, and any frames later used for rigid fitting/evidence. A mask that tracks a hand/sleeve/table edge while the object is visible is a hard P07 failure, not noisy-but-usable evidence. A mask that contains the target object but also broad hand/table/arm support is still a wrong object-support mask and must not become a rigid pose or geometry-completion observation. If prompted/reviewed frames show wrong object identity or broad non-object support, the runtime agent must write repaired prompts under a new prompt root with tighter `box_xyxy`, positive points on the object surface, and negatives on hands/table, then rerun P07 before continuing. After at least one repaired rerun, remaining local mask gaps or low-confidence frames are not by themselves a stop condition when the accepted masks preserve the object identity on usable evidence frames; record those gaps as missing/uncertain mask observations and continue so the rigid branch can complete the full timeline in P15. The pipeline must not let an obvious wrong object track become a rigid pose observation, and it also must not prevent a rigid object from reaching P15 merely because local SAM2 evidence is missing in some visible frames.
+Required P07 self-check before P08: inspect `qc_sam2_multiobject_points.json`, P06 OWLv2 box review frames, prompt contract reports, and the SAM2 overlay/mask review for representative prompted frames, visible gaps inside expected active intervals, and any frames later used for rigid fitting/evidence. A mask that tracks a hand/sleeve/table edge while the object is visible is a hard P07 failure, not noisy-but-usable evidence. A mask that contains the target object but also broad hand/table/arm support is still a wrong object-support mask and must not become a rigid pose or geometry-completion observation. If OWLv2 boxes are loose or wrong, repair the grounded detector query/frame set/threshold or use another text-grounded detector; do not return to VLM/agent pixel-click prompting as the default. After at least one grounded detector rerun, remaining local mask gaps or low-confidence frames are not by themselves a stop condition when the accepted masks preserve the object identity on usable evidence frames; record those gaps as missing/uncertain mask observations and continue so the rigid branch can complete the full timeline in P15. The pipeline must not let an obvious wrong object track become a rigid pose observation, and it also must not prevent a rigid object from reaching P15 merely because local SAM2 evidence is missing in some visible frames.
 
 ## P08 base annotations
 
@@ -253,7 +277,7 @@ Script: `scripts/build_v19_base_annotations.py`
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
   --hawor-npz "{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
   --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
-  --sam2-output-root "{RUN_ROOT}/measurements/object_tracks/sam2_agent_points" \
+  --sam2-output-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
   --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
   --output-dir "{RUN_ROOT}/state/base_annotations"
 ```

@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -224,6 +225,14 @@ def scaled_box(box_xyxy: Any, prompt_size: tuple[int, int], video_size: tuple[in
     return np.asarray([x1 * scale[0], y1 * scale[1], x2 * scale[0], y2 * scale[1]], dtype=np.float32)
 
 
+def prompt_box_payload(prompt: dict) -> Any:
+    return prompt.get("box_xyxy") or prompt.get("object_box_xyxy") or prompt.get("visible_object_box_xyxy")
+
+
+def prompt_has_spatial_constraint(prompt: dict) -> bool:
+    return bool(prompt.get("positive_points")) or prompt_box_payload(prompt) is not None
+
+
 def prompt_points(
     track: Track,
     source_idx: int,
@@ -234,8 +243,6 @@ def prompt_points(
     prompt = track.prompts[source_idx]
     positives = prompt.get("positive_points", [])
     negatives = prompt.get("negative_points", [])
-    if not positives:
-        raise RuntimeError(f"prompt frame {prompt['frame_idx']} has no positive points")
     own_prompt_size = prompt_sizes[track.track_id]
     pos = scaled_points(positives, own_prompt_size, video_size, f"{track.track_id} frame {source_idx} positive")
     own_neg = scaled_points(negatives, own_prompt_size, video_size, f"{track.track_id} frame {source_idx} negative")
@@ -339,15 +346,15 @@ def add_prompt_frames(
             continue
         for track in tracks:
             prompt = track.prompts.get(source_idx)
-            if not prompt or not prompt.get("target_visible") or not prompt.get("positive_points"):
+            if not prompt or not prompt.get("target_visible") or not prompt_has_spatial_constraint(prompt):
                 continue
-            points, labels, positive_points = prompt_points(track, source_idx, tracks, prompt_sizes, video_size)
             prompt_box = scaled_box(
-                prompt.get("box_xyxy") or prompt.get("object_box_xyxy") or prompt.get("visible_object_box_xyxy"),
+                prompt_box_payload(prompt),
                 prompt_sizes[track.track_id],
                 video_size,
                 f"{track.track_id} frame {source_idx}",
             )
+            points, labels, positive_points = prompt_points(track, source_idx, tracks, prompt_sizes, video_size)
             box = prompt_box
             if box is None and use_positive_prompt_box:
                 box = positive_prompt_box(
@@ -360,8 +367,8 @@ def add_prompt_frames(
                 inference_state=state,
                 frame_idx=local_by_source[source_idx],
                 obj_id=track.obj_id,
-                points=points,
-                labels=labels,
+                points=None if len(points) == 0 else points,
+                labels=None if len(labels) == 0 else labels,
                 box=box,
             )
             ids = [int(v) for v in out_obj_ids]
@@ -448,7 +455,7 @@ def write_track_results(
         track_reports = [row for row in prompt_reports if row["track_id"] == track.track_id]
         qc = {
             "status": "ok",
-            "backend": "SAM2 multi-object propagation from VLM point prompts",
+            "backend": "SAM2 multi-object propagation from spatial prompts",
             "clip": str(args.clip),
             "point_prompts": str(track.prompt_path),
             "track_id": track.track_id,
@@ -536,7 +543,7 @@ def run(args: argparse.Namespace) -> dict:
             frame_idx
             for track in tracks
             for frame_idx, prompt in track.prompts.items()
-            if frame_idx in selected and prompt.get("target_visible") and prompt.get("positive_points")
+            if frame_idx in selected and prompt.get("target_visible") and prompt_has_spatial_constraint(prompt)
         }
     )
     if not prompt_frames:
@@ -578,7 +585,7 @@ def run(args: argparse.Namespace) -> dict:
     overlay = render_combined(args, tracks, frames, all_results)
     summary = {
         "status": "ok",
-        "backend": "SAM2 multi-object propagation from VLM point prompts",
+        "backend": "SAM2 multi-object propagation from spatial prompts",
         "clip": str(args.clip),
         "point_root": str(args.point_root),
         "output_root": str(args.output_root),
