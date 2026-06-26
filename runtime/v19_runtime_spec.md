@@ -517,7 +517,7 @@ Script: `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`
   --output-root "{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime"
 ```
 
-Required output: full-duration overlay/world/side-by-side render branch, normally listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime/{CASE_ID}/v18_temporal_rigid_object_manifest.json` as `videos.overlay`, `videos.world`, and `videos.side_by_side`. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v18_overlay_keyboard.mp4`, `v18_world_keyboard.mp4`, and `v18_side_by_side_keyboard.mp4` under that case directory.
+Required output: full-duration overlay/world/side-by-side render branch, normally listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime/{CASE_ID}/v18_temporal_rigid_object_manifest.json` as `outputs.overlay`, `outputs.world`, and `outputs.side_by_side`. Older verifier snippets that read `videos.*` are invalid for this renderer. A missing or empty manifest value must be treated as a P19 failure; do not allow `Path("")` to resolve to the current directory. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v18_overlay_keyboard.mp4`, `v18_world_keyboard.mp4`, and `v18_side_by_side_keyboard.mp4` under that case directory.
 
 ## P20 publish canonical render names
 
@@ -525,9 +525,9 @@ Script: `scripts/publish_v19_render_artifact.py`
 
 ```bash
 "{REMOTE_MODEL_PYTHON}" scripts/publish_v19_render_artifact.py \
-  --overlay "<render_branch_overlay_mp4>" \
-  --world "<render_branch_world_mp4>" \
-  --side-by-side "<render_branch_side_by_side_mp4>" \
+  --overlay "<render_manifest.outputs.overlay>" \
+  --world "<render_manifest.outputs.world>" \
+  --side-by-side "<render_manifest.outputs.side_by_side>" \
   --interval-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
   --output-dir "{RUN_ROOT}/renders/v19_published_runtime" \
   --canonical-dir "{RUN_ROOT}/renders" \
@@ -541,7 +541,7 @@ Required output:
 - non-empty `{RUN_ROOT}/renders/v19_world.mp4`
 - non-empty `{RUN_ROOT}/renders/v19_side_by_side.mp4`
 
-On filesystems that do not preserve POSIX symlinks, `publish_v19_render_artifact.py` must publish real canonical copies rather than zero-byte placeholder files. Treat a zero-byte canonical render as a P20 failure even if the published-runtime copy is valid.
+On filesystems that do not preserve POSIX symlinks, `publish_v19_render_artifact.py` must publish real canonical copies rather than zero-byte placeholder files. Treat a zero-byte canonical render as a P20 failure even if the published-runtime copy is valid. Treat an empty P19 manifest field as a P19/P20 contract failure before publication, not as a directory path.
 
 ## P21 visual consumption
 
