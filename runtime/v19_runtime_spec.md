@@ -394,6 +394,8 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
   --completed-mesh "<completed_mesh_ply>" \
   --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --wilor-root third_party/WiLoR \
+  --wilor-mano-left third_party/WiLoR/mano_data/MANO_LEFT.pkl \
   --output-dir "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}" \
   --start-frame "{INTERVAL_START}" \
   --end-frame "{INTERVAL_END}" \
