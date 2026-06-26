@@ -443,9 +443,11 @@ Script: `scripts/publish_v19_render_artifact.py`
 
 Required output:
 
-- `{RUN_ROOT}/renders/v19_overlay.mp4`
-- `{RUN_ROOT}/renders/v19_world.mp4`
-- `{RUN_ROOT}/renders/v19_side_by_side.mp4`
+- non-empty `{RUN_ROOT}/renders/v19_overlay.mp4`
+- non-empty `{RUN_ROOT}/renders/v19_world.mp4`
+- non-empty `{RUN_ROOT}/renders/v19_side_by_side.mp4`
+
+On filesystems that do not preserve POSIX symlinks, `publish_v19_render_artifact.py` must publish real canonical copies rather than zero-byte placeholder files. Treat a zero-byte canonical render as a P20 failure even if the published-runtime copy is valid.
 
 ## P21 visual consumption
 

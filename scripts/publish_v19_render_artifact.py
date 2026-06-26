@@ -4,13 +4,15 @@
 The script does not change physical state.  It consumes existing state-driven
 render videos, adds a stable explanatory legend/metric banner, writes a
 publication report, optional review stills, and can atomically update canonical
-``v19_overlay.mp4``, ``v19_world.mp4``, and ``v19_side_by_side.mp4`` symlinks.
+``v19_overlay.mp4``, ``v19_world.mp4``, and ``v19_side_by_side.mp4`` paths,
+using symlinks when the filesystem preserves them and real copies otherwise.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -164,13 +166,43 @@ def write_video_with_banner(
     }
 
 
-def atomic_symlink(target: Path, link: Path) -> None:
+def atomic_symlink(target: Path, link: Path) -> str:
+    """Publish a canonical render path atomically.
+
+    Prefer a symlink, but some mounted filesystems used for runtime delivery do
+    not preserve POSIX symlink semantics and materialize `os.symlink` as a
+    zero-byte regular file.  A zero-byte canonical video is a broken user-facing
+    artifact, so validate the symlink result and fall back to an atomic copy.
+    """
     link.parent.mkdir(parents=True, exist_ok=True)
+    target = target.resolve()
     tmp = link.with_name(f".{link.name}.tmp")
     if tmp.exists() or tmp.is_symlink():
         tmp.unlink()
-    os.symlink(target, tmp)
-    os.replace(tmp, link)
+    try:
+        os.symlink(target, tmp)
+        os.replace(tmp, link)
+        if link.is_symlink() and link.exists():
+            return "symlink"
+        # Unsupported/degraded symlink semantics can leave a zero-byte regular
+        # file at the canonical path. Remove it and publish a real copy instead.
+        if link.exists() or link.is_symlink():
+            link.unlink()
+    except OSError:
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink()
+
+    copy_tmp = link.with_name(f".{link.name}.tmpcopy")
+    if copy_tmp.exists() or copy_tmp.is_symlink():
+        copy_tmp.unlink()
+    shutil.copy2(target, copy_tmp)
+    if copy_tmp.stat().st_size <= 0:
+        copy_tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"canonical copy for {link} is empty after copying {target}")
+    os.replace(copy_tmp, link)
+    if not link.exists() or link.stat().st_size <= 0:
+        raise RuntimeError(f"canonical render {link} is missing or empty after publication")
+    return "copy"
 
 
 def publish(args: argparse.Namespace) -> dict[str, Any]:
@@ -198,14 +230,15 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
             still_dir=still_dir,
             banner_h=int(args.banner_height),
         )
-    canonical_updates: dict[str, str] = {}
+    canonical_updates: dict[str, Any] = {}
     if args.canonical_dir is not None:
         for kind, name in VIDEO_NAMES.items():
             target = (out_dir / name).resolve()
             link = args.canonical_dir / name
+            mode = "not_replaced"
             if args.replace_canonical:
-                atomic_symlink(target, link)
-            canonical_updates[str(link)] = str(target)
+                mode = atomic_symlink(target, link)
+            canonical_updates[str(link)] = {"target": str(target), "mode": mode}
     report = {
         "status": "ok",
         "method": "publish_v19_render_artifact",
