@@ -14,7 +14,7 @@ import trimesh
 from scipy import sparse
 from scipy.optimize import least_squares
 from scipy.spatial import cKDTree
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 
 
 POSE_MEASUREMENT_STATUSES = {
@@ -22,6 +22,7 @@ POSE_MEASUREMENT_STATUSES = {
     "fit_to_visible_depth_archive_vertices",
 }
 CORRECTED_POSE_STATUS = "corrected_temporal_rigid_pose_graph"
+COMPLETED_POSE_STATUS = "completed_temporal_rigid_pose_uncertain"
 
 
 @dataclass(frozen=True)
@@ -353,23 +354,32 @@ def surface_metrics(observations: list[PoseObservation], mesh_samples: np.ndarra
     }
 
 
-def build_pose_rows(original_pose_rows: list[dict[str, Any]], observations: list[PoseObservation], x: np.ndarray) -> list[dict[str, Any]]:
+def build_pose_rows(
+    original_pose_rows: list[dict[str, Any]],
+    observations: list[PoseObservation],
+    x: np.ndarray,
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     obs_by_idx = {obs.frame_idx: i for i, obs in enumerate(observations)}
     rot_delta, trans_delta = unpack(x, len(observations))
+    corrected_by_idx: dict[int, tuple[np.ndarray, np.ndarray, PoseObservation, np.ndarray, np.ndarray]] = {}
     out: list[dict[str, Any]] = []
     for row in original_pose_rows:
-        if int(row.get("frame_idx", -1)) not in obs_by_idx:
+        idx = int(row.get("frame_idx", -1))
+        if idx not in obs_by_idx:
             out.append(dict(row))
             continue
-        i = obs_by_idx[int(row["frame_idx"])]
+        i = obs_by_idx[idx]
         obs = observations[i]
         r, t = corrected_pose(obs, rot_delta[i], trans_delta[i])
+        corrected_by_idx[idx] = (r, t, obs, rot_delta[i], trans_delta[i])
         new_row = dict(row)
         new_row["status"] = CORRECTED_POSE_STATUS
         new_row["pose_measurement_status"] = row.get("status")
         new_row["rotation_world_from_completed_canonical_matrix"] = r.astype(float).tolist()
         new_row["translation_world_m"] = t.astype(float).tolist()
         new_row["temporal_pose_graph"] = {
+            "pose_source": "direct_visible_pose_observation_corrected",
             "rotation_delta_rotvec_rad": rot_delta[i].astype(float).tolist(),
             "translation_delta_world_m": trans_delta[i].astype(float).tolist(),
             "translation_prior_sigma_m": float(obs.translation_sigma_m),
@@ -379,7 +389,76 @@ def build_pose_rows(original_pose_rows: list[dict[str, Any]], observations: list
             "nonpenetration_source_rows": int(obs.nonpenetration_source_rows),
         }
         out.append(new_row)
-    return out
+
+    summary: dict[str, Any] = {
+        "enabled": bool(args.complete_full_timeline_rigid_pose),
+        "completed_row_count": 0,
+        "direct_row_count": int(len(corrected_by_idx)),
+        "mode_counts": {},
+        "max_interpolation_gap_frames": int(args.max_rigid_pose_interpolation_gap_frames),
+        "max_extrapolation_gap_frames": int(args.max_rigid_pose_extrapolation_gap_frames),
+    }
+    if not args.complete_full_timeline_rigid_pose or not corrected_by_idx:
+        return out, summary
+
+    key_frames = sorted(corrected_by_idx)
+    key_rots = Rotation.from_matrix([corrected_by_idx[idx][0] for idx in key_frames])
+    slerp = Slerp(np.asarray(key_frames, dtype=float), key_rots)
+    key_trans = np.asarray([corrected_by_idx[idx][1] for idx in key_frames], dtype=float)
+
+    def add_mode(mode: str) -> None:
+        counts = summary.setdefault("mode_counts", {})
+        counts[mode] = int(counts.get(mode, 0)) + 1
+
+    for row in out:
+        idx = int(row.get("frame_idx", -1))
+        if idx in corrected_by_idx or idx < 0:
+            continue
+        before = [f for f in key_frames if f < idx]
+        after = [f for f in key_frames if f > idx]
+        mode: str | None = None
+        r_fill: np.ndarray | None = None
+        t_fill: np.ndarray | None = None
+        gap_frames: int | None = None
+        bracket: list[int] | None = None
+        if before and after:
+            lo = before[-1]
+            hi = after[0]
+            gap_frames = int(hi - lo)
+            if gap_frames <= int(args.max_rigid_pose_interpolation_gap_frames):
+                alpha = float(idx - lo) / float(max(1, hi - lo))
+                r_fill = slerp([float(idx)]).as_matrix()[0]
+                t_lo = key_trans[key_frames.index(lo)]
+                t_hi = key_trans[key_frames.index(hi)]
+                t_fill = (1.0 - alpha) * t_lo + alpha * t_hi
+                mode = "interpolated_between_visible_pose_observations"
+                bracket = [int(lo), int(hi)]
+        if mode is None:
+            nearest = min(key_frames, key=lambda f: abs(f - idx))
+            dist = abs(nearest - idx)
+            if dist <= int(args.max_rigid_pose_extrapolation_gap_frames):
+                r_fill = corrected_by_idx[nearest][0]
+                t_fill = corrected_by_idx[nearest][1]
+                gap_frames = int(dist)
+                mode = "nearest_visible_pose_hold"
+                bracket = [int(nearest)]
+        if mode is None or r_fill is None or t_fill is None:
+            continue
+        old_status = row.get("status")
+        row["status"] = COMPLETED_POSE_STATUS
+        row["pose_measurement_status"] = old_status
+        row["rotation_world_from_completed_canonical_matrix"] = r_fill.astype(float).tolist()
+        row["translation_world_m"] = t_fill.astype(float).tolist()
+        row["temporal_pose_graph"] = {
+            "pose_source": mode,
+            "bracket_visible_pose_frames": bracket,
+            "gap_frames": gap_frames,
+            "direct_visible_measurement": False,
+            "uncertainty": "rigid-body temporal completion; not a direct object mask/depth observation",
+        }
+        summary["completed_row_count"] = int(summary["completed_row_count"]) + 1
+        add_mode(mode)
+    return out, summary
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -413,7 +492,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     after_surface = surface_metrics(observations, mesh_samples, result.x)
     before_target = target_residual_summary(x0, observations)
     after_target = target_residual_summary(result.x, observations)
-    pose_rows = build_pose_rows(pose_report.get("pose_rows", []), observations, result.x)
+    pose_rows, full_timeline_completion = build_pose_rows(pose_report.get("pose_rows", []), observations, result.x, args)
     surface_before_med = before_surface["observed_to_mesh_median_m"]["median"]
     surface_after_med = after_surface["observed_to_mesh_median_m"]["median"]
     target_before_med = before_target["target_residual_norm_m"]["median"]
@@ -458,6 +537,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "sigma_rotation_delta_accel_rad": float(args.sigma_rotation_delta_accel_rad),
             "max_surface_median_degradation_m": float(args.max_surface_median_degradation_m),
             "nonpenetration_states": list(args.nonpenetration_states),
+            "complete_full_timeline_rigid_pose": bool(args.complete_full_timeline_rigid_pose),
+            "max_rigid_pose_interpolation_gap_frames": int(args.max_rigid_pose_interpolation_gap_frames),
+            "max_rigid_pose_extrapolation_gap_frames": int(args.max_rigid_pose_extrapolation_gap_frames),
         },
         "optimizer": {
             "success": bool(result.success),
@@ -473,6 +555,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "surface_before": before_surface,
         "surface_after": after_surface,
         "surface_observed_to_mesh_median_degradation_m": surface_degraded_m,
+        "full_timeline_rigid_pose_completion": full_timeline_completion,
         "pose_rows": pose_rows,
         "outputs": {
             "pose_graph_report": str(args.output_dir / "v19_rigid_object_pose_graph_report.json"),
@@ -484,7 +567,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     write_json(args.output_dir / "v19_rigid_object_pose_graph_report.json", report)
     # Same payload under the legacy name lets existing V18 render/constraint tools consume corrected rows.
     write_json(args.output_dir / "v18_compact_rigid_object_pose_fit_report.json", report)
-    print(json.dumps({k: report[k] for k in ["status", "annotation_ready", "graph_frame_count", "nonpenetration_target_frame_count", "optimizer", "correction_summary", "nonpenetration_target_before", "nonpenetration_target_after", "surface_observed_to_mesh_median_degradation_m"]}, indent=2))
+    print(json.dumps({k: report[k] for k in ["status", "annotation_ready", "graph_frame_count", "nonpenetration_target_frame_count", "optimizer", "correction_summary", "full_timeline_rigid_pose_completion", "nonpenetration_target_before", "nonpenetration_target_after", "surface_observed_to_mesh_median_degradation_m"]}, indent=2))
     return report
 
 
@@ -514,6 +597,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sigma-translation-delta-accel-m", type=float, default=0.006)
     p.add_argument("--sigma-rotation-delta-accel-rad", type=float, default=0.050)
     p.add_argument("--max-surface-median-degradation-m", type=float, default=0.003)
+    p.add_argument("--complete-full-timeline-rigid-pose", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--max-rigid-pose-interpolation-gap-frames", type=int, default=240)
+    p.add_argument("--max-rigid-pose-extrapolation-gap-frames", type=int, default=240)
     p.add_argument("--surface-metric-sample-count", type=int, default=2500)
     p.add_argument("--max-nfev", type=int, default=80)
     p.add_argument("--seed", type=int, default=1907)

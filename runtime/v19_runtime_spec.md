@@ -188,7 +188,7 @@ Type: agent writes JSON from visual evidence.
 
 Output for each object: `{RUN_ROOT}/measurements/object_candidates/object_point_prompts_agent/{OBJECT_ID}/object_point_prompts_vlm.json`.
 
-Minimum fields: object id, prompt frame ids, positive points, negative points, active intervals, point coordinate frame.
+Minimum fields: object id, prompt frame ids, positive points, negative points, active intervals, point coordinate frame. If `point_coordinate_frame` is source-video pixels (for this HOT3D clip, `source_video_pixels_1408x1408`), the point coordinates must be source-frame coordinates and the SAM2 runner must scale them from that source coordinate size. Do not mix source-frame points with a resized prompt-image coordinate declaration.
 
 ## P07 object masks/tracks
 
@@ -208,6 +208,8 @@ CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_sam2_vlm_poi
 ```
 
 Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_agent_points/{TRACK_ID}/sam2/sam2_track.json` written directly under the A800/truenas run root.
+
+Required P07 self-check before P08: inspect `qc_sam2_multiobject_points.json`, prompt contract reports, and the SAM2 overlay/mask review for representative prompted frames, visible gaps inside expected active intervals, and any frames later used for rigid fitting/evidence. A mask that tracks a hand/sleeve/table edge while the object is visible is a hard P07 failure, not noisy-but-usable evidence. If the object is visibly present but untracked or wrongly tracked, the runtime agent must write repaired point prompts under a new prompt root and rerun P07 before continuing. The pipeline must not let an obvious wrong object track become a rigid pose observation.
 
 ## P08 base annotations
 
@@ -325,10 +327,11 @@ Script: `scripts/solve_v19_rigid_object_pose_graph.py`
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit/v18_compact_rigid_object_pose_fit_report.json" \
   --completion-report "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json" \
   --object-id "{OBJECT_ID}" \
+  --complete-full-timeline-rigid-pose \
   --output-dir "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph"
 ```
 
-Required output: rigid pose graph report.
+Required output: rigid pose graph report with `full_timeline_rigid_pose_completion.enabled: true`. For a rigid branch, all frames in the raw video must have either a direct corrected pose (`corrected_temporal_rigid_pose_graph`) or an explicit uncertain rigid trajectory completion (`completed_temporal_rigid_pose_uncertain`). A rigid object must not disappear from frames merely because the local mask/depth observation is missing; missing local observations become uncertainty/provenance, not omitted object pose.
 
 ## P16 MANO/object constraint measurement
 

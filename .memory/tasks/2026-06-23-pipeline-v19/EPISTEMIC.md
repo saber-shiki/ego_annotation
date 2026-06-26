@@ -2,20 +2,18 @@
 
 ## Current supported claim
 
-HOT3D `clip-001850` pinhole V19 has a frozen A800-native prediction through full physical-state generation and full-duration user-facing renders. The freeze is anchored by remote and local run root `20260626_hot3d_clip001850_pinhole_a800_native_v3`, canonical videos `renders/v19_overlay.mp4`, `renders/v19_world.mp4`, and `renders/v19_side_by_side.mp4`, and `state/v19_prediction_freeze_manifest.json`. The freeze manifest records non-empty 150-frame / 5.0 s / 30 FPS canonical renders and hashes for key state artifacts. HOT3D scoring has not been run and remains outside this prediction freeze. Provenance: OPS 2026-06-26T14:03.
+The previously frozen HOT3D `clip-001850` pinhole V19 artifact is an immutable rejected snapshot, not an acceptable prediction. `Frozen` means the run root and key outputs were hashed so later evaluation could have a fixed boundary; it did not mean the physical annotation content was correct. User inspection of frames 0032 and 0074 exposed mechanism-level failures, so the pipeline must be iterated and rerun self-contained. Provenance: OPS 2026-06-26T14:45.
 
-## Mechanism that produced the artifact
+## Live failure mechanisms
 
-The delivered render is driven by the V19 runtime chain: raw frame/depth/calibration, HaWoR MANO candidates, keyboard object plan/prompts, SAM2 visible-surface track, metric visible geometry, rigid branch decision, TRELLIS prior mesh, compact rigid completion, visible-frame and temporal rigid pose graph, MANO/object constraint state, visible contact/ownership factor, interval MANO correction, and canonical publication. P21 visual consumption confirmed the overlay/world/side-by-side samples show the same keyboard geometry and hand hypotheses rather than empty containers.
+1. **Object prompt coordinate contract bug.** Runtime P06 wrote keyboard prompts in source-video coordinates (`source_video_pixels_1408x1408`) while also storing `prompt_image_width=960`. P07 SAM2 previously scaled points as if they were already in 960-pixel prompt coordinates. Source-frame points such as x=975..1223 were therefore outside/near the SAM2 frame edge, causing SAM2 to track the right sleeve/table edge instead of the keyboard. Frame 0032 confirms this: the raw keyboard is visible, but the local SAM2 mask is mostly right image edge/sleeve/table, and the rigid mesh fit follows that wrong measurement.
 
-## Important caveats
+2. **Rigid branch not enforced full-timeline.** The keyboard was classified rigid, but P15 only rewrote frames with accepted visible pose observations. Missing/ineligible frames remained `missing_initial_graph_pose`; frame 0074 confirms this by rendering no keyboard even though the raw keyboard is visible. A rigid object must carry an explicit uncertain pose through local mask failures; disappearing is an implementation bug, not uncertainty.
 
-The frozen prediction is not a hard-contact proof. P21 evidence and interval metrics show both hand intervals are still labeled `INTERVAL MANO UNCERTAIN`; left active-set closure failed, right closed, and median contact normal gaps are about 21 mm. Treat contact, occlusion, and nonpenetration as uncertain physical annotations, not final ground-truth contact closure. P13 event metadata still has a stale `completed_mesh` field pointing at raw TRELLIS, but the actual compact mesh used downstream is `measurements/geometry_completion/compact_keyboard_seed42/keyboard_compact_rigid_completed_mesh_labeled.ply`.
+## Repairs in source/spec
 
-## Ruled out / repaired failure mechanisms
+`run_sam2_vlm_points_multiobject.py` now infers prompt coordinate size from `point_coordinate_frame`, validates points within the declared frame, and records prompt/source/SAM2 coordinate sizes. `solve_v19_rigid_object_pose_graph.py` now supports full-timeline rigid completion with status `completed_temporal_rigid_pose_uncertain` for interpolated/held poses; render/constraint helpers accept that explicit uncertain rigid pose status. `runtime/v19_runtime_spec.md` now requires P07 object-track self-check/repair before P08 and requires P15 full-timeline rigid pose completion. These are pipeline repairs, not manual output edits.
 
-P12 did not fail physically after the TRELLIS bridge; the failure was an output-contract bug that globbed for `*report*.json` and risked selecting the Gaussian `.ply`. The correct P12 outputs are `qc_trellis_shape_v3.json` and `trellis_mesh.ply`. P17 failure was schema mismatch in agent interaction judgments, repaired by requiring non-empty `interaction_judgments` rows. P18 failure was dependency/bundle closure for WiLoR MANO assets and helper scripts, repaired with bundle-local WiLoR/MANO paths. P19 failure was a stale renderer default constraint-report path, repaired by passing the P16 constraint state. P20 false success was caused by truenas symlink semantics creating zero-byte canonical files, repaired by copying valid published MP4s and patching the publisher to fall back to copies.
+## Next required intervention
 
-## Next decision point
-
-If evaluation is desired, use the frozen manifest and canonical videos as the immutable prediction boundary before running any HOT3D scoring. Do not mutate the frozen prediction while evaluating.
+Commit and sync the repairs into the curated runtime bundle, then launch a runtime-owned rerun or patch run from P07 onward (preferably fresh run root) so SAM2 masks, visible geometry, rigid completion/pose, MANO/contact, and canonical renders are regenerated by the pipeline itself. Validate regenerated frame 0032 mask/pose and frame 0074 rigid visibility from rendered videos before any new freeze/evaluation claim.

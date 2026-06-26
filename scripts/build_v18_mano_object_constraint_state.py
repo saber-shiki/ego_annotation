@@ -223,6 +223,7 @@ def main() -> None:
         "fit_to_visible_depth_samples",
         "fit_to_visible_depth_archive_vertices",
         "corrected_temporal_rigid_pose_graph",
+        "completed_temporal_rigid_pose_uncertain",
     }
     pose_by_idx = {int(row["frame_idx"]): row for row in pose_report.get("pose_rows", []) if row.get("status") in accepted_pose_statuses}
 

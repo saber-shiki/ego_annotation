@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -172,28 +173,74 @@ def extract_frames(clip: Path, frames: list[dict], output_dir: Path, image_width
     return frame_dir
 
 
-def scaled_points(points: list[dict], prompt_size: tuple[int, int], video_size: tuple[int, int]) -> np.ndarray:
+def infer_prompt_size(payload: dict, source_size: tuple[int, int]) -> tuple[int, int]:
+    """Return the coordinate size in which prompt points are expressed.
+
+    Runtime agents may provide source-video pixel points while also storing a
+    smaller prompt-image width for review images. SAM2 must scale from the actual
+    point coordinate frame; otherwise source-frame keyboard points outside a
+    review-sized frame are pushed to the image edge and produce false masks.
+    """
+    frame = str(payload.get("point_coordinate_frame") or payload.get("coordinate_frame") or "")
+    match = re.search(r"source_video_pixels[_:](\d+)x(\d+)", frame)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    if frame in {"source_video_pixels", "source_pixels", "raw_video_pixels"}:
+        return int(source_size[0]), int(source_size[1])
+    if "source_video_pixels" in frame and not match:
+        return int(source_size[0]), int(source_size[1])
+    if payload.get("prompt_image_width") is None:
+        raise RuntimeError("prompt payload missing prompt_image_width and point_coordinate_frame is not source pixels")
+    width = int(payload["prompt_image_width"])
+    height = int(payload.get("prompt_image_height") or round(width * source_size[1] / source_size[0]))
+    return width, height
+
+
+def validate_points_in_frame(points: list[dict], prompt_size: tuple[int, int], context: str) -> None:
+    for point in points:
+        x = float(point.get("x"))
+        y = float(point.get("y"))
+        if not (0.0 <= x < float(prompt_size[0]) and 0.0 <= y < float(prompt_size[1])):
+            raise RuntimeError(f"{context} point ({x:.1f},{y:.1f}) outside declared coordinate frame {prompt_size}")
+
+
+def scaled_points(points: list[dict], prompt_size: tuple[int, int], video_size: tuple[int, int], context: str) -> np.ndarray:
     if not points:
         return np.zeros((0, 2), dtype=np.float32)
+    validate_points_in_frame(points, prompt_size, context)
     scale = np.asarray([video_size[0] / prompt_size[0], video_size[1] / prompt_size[1]], dtype=np.float32)
     return np.asarray([[float(point["x"]) * scale[0], float(point["y"]) * scale[1]] for point in points], dtype=np.float32)
 
 
-def prompt_points(track: Track, source_idx: int, tracks: list[Track], prompt_size: tuple[int, int], video_size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+def prompt_points(
+    track: Track,
+    source_idx: int,
+    tracks: list[Track],
+    prompt_sizes: dict[str, tuple[int, int]],
+    video_size: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray]:
     prompt = track.prompts[source_idx]
     positives = prompt.get("positive_points", [])
     negatives = prompt.get("negative_points", [])
     if not positives:
         raise RuntimeError(f"prompt frame {prompt['frame_idx']} has no positive points")
-    pos = scaled_points(positives, prompt_size, video_size)
-    own_neg = scaled_points(negatives, prompt_size, video_size)
+    own_prompt_size = prompt_sizes[track.track_id]
+    pos = scaled_points(positives, own_prompt_size, video_size, f"{track.track_id} frame {source_idx} positive")
+    own_neg = scaled_points(negatives, own_prompt_size, video_size, f"{track.track_id} frame {source_idx} negative")
     competing_pos = []
     for other in tracks:
         if other.track_id == track.track_id:
             continue
         other_prompt = other.prompts.get(source_idx)
         if other_prompt and other_prompt.get("target_visible") and other_prompt.get("positive_points"):
-            competing_pos.append(scaled_points(other_prompt["positive_points"], prompt_size, video_size))
+            competing_pos.append(
+                scaled_points(
+                    other_prompt["positive_points"],
+                    prompt_sizes[other.track_id],
+                    video_size,
+                    f"{other.track_id} frame {source_idx} competing positive",
+                )
+            )
     extra_neg = np.vstack(competing_pos).astype(np.float32) if competing_pos else np.zeros((0, 2), dtype=np.float32)
     neg = np.vstack([own_neg, extra_neg]).astype(np.float32) if len(own_neg) or len(extra_neg) else np.zeros((0, 2), dtype=np.float32)
     points = np.vstack([pos, neg]).astype(np.float32)
@@ -236,7 +283,7 @@ def add_prompt_frames(
     tracks: list[Track],
     frames: list[dict],
     prompt_frames: list[int],
-    prompt_size: tuple[int, int],
+    prompt_sizes: dict[str, tuple[int, int]],
     video_size: tuple[int, int],
 ) -> list[dict]:
     selected = [int(frame["frame_idx"]) for frame in frames]
@@ -249,7 +296,7 @@ def add_prompt_frames(
             prompt = track.prompts.get(source_idx)
             if not prompt or not prompt.get("target_visible") or not prompt.get("positive_points"):
                 continue
-            points, labels = prompt_points(track, source_idx, tracks, prompt_size, video_size)
+            points, labels = prompt_points(track, source_idx, tracks, prompt_sizes, video_size)
             out_frame_idx, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
                 inference_state=state,
                 frame_idx=local_by_source[source_idx],
@@ -264,6 +311,9 @@ def add_prompt_frames(
                 "obj_id": int(track.obj_id),
                 "sam2_out_frame_idx": int(out_frame_idx),
                 "object_ids_after_prompt": ids,
+                "point_coordinate_frame": str(track.payload.get("point_coordinate_frame") or track.payload.get("coordinate_frame") or ""),
+                "prompt_coordinate_size": list(prompt_sizes[track.track_id]),
+                "sam2_video_size": list(video_size),
             }
             if track.obj_id in ids:
                 obj_pos = ids.index(track.obj_id)
@@ -404,10 +454,16 @@ def run(args: argparse.Namespace) -> dict:
     cap.release()
     video_height = int(round(info.height * int(args.sam2_image_width) / info.width))
     video_size = (int(args.sam2_image_width), video_height)
-    prompt_size = (int(tracks[0].payload["prompt_image_width"]), int(round(int(tracks[0].payload["prompt_image_width"]) * info.height / info.width)))
+    source_size = (int(info.width), int(info.height))
+    prompt_sizes = {track.track_id: infer_prompt_size(track.payload, source_size) for track in tracks}
     for track in tracks:
-        if int(track.payload["prompt_image_width"]) != prompt_size[0]:
-            raise RuntimeError("all prompt files must use the same prompt image width")
+        for prompt in track.prompts.values():
+            if prompt.get("target_visible"):
+                validate_points_in_frame(
+                    list(prompt.get("positive_points", [])) + list(prompt.get("negative_points", [])),
+                    prompt_sizes[track.track_id],
+                    f"{track.track_id} frame {prompt.get('frame_idx')} prompt",
+                )
     frame_dir = extract_frames(args.clip, frames, args.output_root, int(args.sam2_image_width))
     selected = {int(frame["frame_idx"]) for frame in frames}
     prompt_frames = sorted(
@@ -431,7 +487,7 @@ def run(args: argparse.Namespace) -> dict:
     propagated: dict[int, dict[int, np.ndarray]] = {}
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         state = predictor.init_state(video_path=str(frame_dir), offload_video_to_cpu=True, offload_state_to_cpu=True)
-        prompt_reports = add_prompt_frames(predictor, state, tracks, frames, prompt_frames, prompt_size, video_size)
+        prompt_reports = add_prompt_frames(predictor, state, tracks, frames, prompt_frames, prompt_sizes, video_size)
         selected_frames_list = [int(frame["frame_idx"]) for frame in frames]
         for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(state):
             source_idx = selected_frames_list[int(out_frame_idx)]
@@ -464,6 +520,9 @@ def run(args: argparse.Namespace) -> dict:
         },
         "prompt_contract_satisfied": int(sum(1 for row in prompt_reports if row.get("satisfies_prompt_contract"))),
         "prompt_contract_reports": len(prompt_reports),
+        "prompt_coordinate_sizes_by_track": {track_id: list(size) for track_id, size in prompt_sizes.items()},
+        "source_video_size": list(source_size),
+        "sam2_video_size": list(video_size),
         "checkpoint": str(args.checkpoint),
         "model_cfg": args.model_cfg,
         "non_overlap_masks": True,
