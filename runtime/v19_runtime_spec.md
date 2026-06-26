@@ -286,7 +286,7 @@ PYTHONPATH="/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remot
   --seed 42
 ```
 
-Required output: TRELLIS mesh report and mesh path.
+Required output: `{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42/qc_trellis_shape_v3.json` with `status: ok` and `mesh` equal to `{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42/trellis_mesh.ply`. Do not search for `*report*.json`, and do not use `trellis_gaussian.ply` as the mesh input for P13.
 
 ## P13 mesh adaptation/completion
 
