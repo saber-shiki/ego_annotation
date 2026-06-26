@@ -158,16 +158,45 @@ Script: `scripts/build_v19_calibration_contract.py`
 
 Required output: one calibration contract JSON under `{RUN_ROOT}/state/calibration/`.
 
+The canonical runtime-generated filename is `{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json`. If a copied prediction-side contract uses another filename, record that path and use that same copied contract for P04/P08/P09.
+
 ## P04 MANO hand measurement
 
 Script: `scripts/remote_run_hawor_export.sh` (calls `scripts/export_hawor_world.py`)
 
+Extract the HaWoR focal only from the chosen calibration value, never from diagnostics, outlier tables, review statistics, or `largest_selected_focal_deviations`. Use this exact extraction priority: top-level `focal_px`, top-level `focal_geom_px`, top-level `intrinsics_fx_fy_cx_cy[0]`, then `intrinsics.fx`. If none exists, stop with a P04 blocker before running HaWoR.
+
 ```bash
+CONTRACT='{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json'
+FOCAL=$("{REMOTE_MODEL_PYTHON}" - "$CONTRACT" <<'PY'
+import json
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+value = None
+for key in ("focal_px", "focal_geom_px"):
+    if isinstance(data.get(key), (int, float)):
+        value = float(data[key])
+        break
+if value is None:
+    intr = data.get("intrinsics_fx_fy_cx_cy")
+    if isinstance(intr, list) and intr and isinstance(intr[0], (int, float)):
+        value = float(intr[0])
+if value is None:
+    intr = data.get("intrinsics")
+    if isinstance(intr, dict) and isinstance(intr.get("fx"), (int, float)):
+        value = float(intr["fx"])
+if value is None:
+    raise SystemExit(f"missing canonical focal in {path}; do not scan diagnostics")
+print(value)
+PY
+)
 EGO_HAWOR_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work \
 EGO_HAWOR_CASE='{CASE_ID}' \
 EGO_HAWOR_CLIP='{INPUT_VIDEO}' \
 EGO_HAWOR_OUTPUT_DIR='{RUN_ROOT}/measurements/hand_candidates/hawor_world' \
-EGO_HAWOR_IMG_FOCAL='<focal_from_calibration_contract>' \
+EGO_HAWOR_IMG_FOCAL="$FOCAL" \
 EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH=1 \
 bash scripts/remote_run_hawor_export.sh
 ```
