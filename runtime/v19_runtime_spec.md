@@ -332,22 +332,30 @@ Script: `scripts/build_v18_compact_rigid_evidence_bundle.py`
   --selection-note "runtime selected clean object evidence frame"
 ```
 
-Required output: evidence bundle report and crop image path.
+Required output: evidence bundle report and object crop image path. The TRELLIS conditioning image is `selected.trellis_conditioning_crop.crop_rgba` in the evidence-bundle report. Do not use `selected.raw_frame_path`, the full raw frame, or the binary mask as TRELLIS input; those substitute a scene/mask prior for per-instance object mesh reconstruction.
 
 ## P12 mesh prior
 
-Script: `scripts/remote_run_trellis_shape_v3.py`
+Scripts: `scripts/resolve_v19_trellis_conditioning_image.py`, `scripts/remote_run_trellis_shape_v3.py`
+
+Resolve the object-isolated conditioning crop from P11 before running TRELLIS:
+
+```bash
+EVIDENCE_REPORT="{RUN_ROOT}/measurements/geometry_completion/rigid_evidence/{CASE_ID}/{OBJECT_ID}/evidence_bundle/evidence_bundle_report.json"
+EVIDENCE_CROP_RGBA=$("{REMOTE_MODEL_PYTHON}" scripts/resolve_v19_trellis_conditioning_image.py \
+  --evidence-report "$EVIDENCE_REPORT")
+```
 
 ```bash
 PYTHONPATH="/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/trellis_work/.venv_trellis/lib/python3.10/site-packages:${PYTHONPATH:-}" \
 "{REMOTE_MODEL_PYTHON}" scripts/remote_run_trellis_shape_v3.py \
   --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work/TRELLIS \
-  --image "<evidence_crop_rgba>" \
+  --image "$EVIDENCE_CROP_RGBA" \
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42" \
   --seed 42
 ```
 
-Required output: `{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42/qc_trellis_shape_v3.json` with `status: ok` and `mesh` equal to `{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42/trellis_mesh.ply`. Do not search for `*report*.json`, and do not use `trellis_gaussian.ply` as the mesh input for P13.
+Required output: `{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42/qc_trellis_shape_v3.json` with `status: ok` and `mesh` equal to `{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42/trellis_mesh.ply`. Do not search for `*report*.json`, do not use `trellis_gaussian.ply` as the mesh input for P13, and do not continue if `EVIDENCE_CROP_RGBA` is missing or resolves to the raw frame.
 
 ## P13 mesh adaptation/completion
 
