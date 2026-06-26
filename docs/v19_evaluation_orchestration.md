@@ -82,7 +82,18 @@ python "$REPO_ROOT/scripts/evaluate_v19_hot3d_hawor_mano3d.py" \
   --mano-right "$BUNDLE_ROOT/third_party/WiLoR/mano_data/MANO_RIGHT.pkl"
 ```
 
-Interval-state mode evaluates `optimized_joints_world_m` only. It obtains camera trajectory from the row `source_hawor_npz`, and it must not report full-vertex MANO metrics unless a future interval state stores full predicted vertices. The comparison to the HaWoR NPZ baseline must be interpreted mechanistically: if MPJPE worsens while wrist-subtracted MPJPE is unchanged, the correction changed global wrist/root placement more than articulation, so the next intervention should gate translation/contact constraints rather than treat the interval correction as a hand-accuracy improvement.
+Interval-state mode evaluates `optimized_joints_world_m` only. It obtains camera trajectory from the row `source_hawor_npz`, and it must not report full-vertex MANO metrics unless a future interval state stores full predicted vertices. Compare the HaWoR baseline report and frozen interval-state report with the reusable evaluator-phase comparator rather than an ad hoc JSON wrapper:
+
+```bash
+python "$REPO_ROOT/scripts/compare_v19_hot3d_mano3d_reports.py" \
+  --baseline-report "$RUN_ROOT/evaluation/hot3d_mano3d_support_gated/hot3d_hawor_runtime_baseline_mano3d_eval.json" \
+  --candidate-report "$RUN_ROOT/evaluation/hot3d_mano3d_support_gated/hot3d_v19_support_gated_runtime_mano3d_eval.json" \
+  --baseline-label hawor_runtime_baseline \
+  --candidate-label support_gated_runtime \
+  --output-report "$RUN_ROOT/evaluation/hot3d_mano3d_support_gated/hot3d_baseline_vs_support_gated_runtime_comparison.json"
+```
+
+The comparison to the HaWoR NPZ baseline must be interpreted mechanistically: if MPJPE worsens while wrist-subtracted MPJPE is unchanged, the correction changed global wrist/root placement more than articulation, so the next intervention should gate translation/contact constraints rather than treat the interval correction as a hand-accuracy improvement.
 
 Workbench item 7 autoresearch compares MANO correction mechanisms against that baseline, not camera-adapter variants. The first supported correction target is low-support/occluded intervals where HaWoR keeps plausible boxes but hallucinates MANO articulation. Build a prediction-side repaired NPZ or interval state, then score it with the same evaluator:
 
