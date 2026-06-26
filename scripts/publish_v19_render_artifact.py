@@ -169,39 +169,25 @@ def write_video_with_banner(
 def atomic_symlink(target: Path, link: Path) -> str:
     """Publish a canonical render path atomically.
 
-    Prefer a symlink, but some mounted filesystems used for runtime delivery do
-    not preserve POSIX symlink semantics and materialize `os.symlink` as a
-    zero-byte regular file.  A zero-byte canonical video is a broken user-facing
-    artifact, so validate the symlink result and fall back to an atomic copy.
+    Runtime delivery filesystems used for A800/truenas runs have shown degraded
+    POSIX symlink behavior: a Python-visible symlink can later appear to normal
+    file consumers as a zero-byte regular file.  Canonical render paths are the
+    user-facing artifact, so publish them as real copies instead of symlinks.
     """
     link.parent.mkdir(parents=True, exist_ok=True)
     target = target.resolve()
+    if not target.exists() or target.stat().st_size <= 0:
+        raise RuntimeError(f"canonical render source {target} is missing or empty")
     tmp = link.with_name(f".{link.name}.tmp")
     if tmp.exists() or tmp.is_symlink():
         tmp.unlink()
-    try:
-        os.symlink(target, tmp)
-        os.replace(tmp, link)
-        if link.is_symlink() and link.exists():
-            return "symlink"
-        # Unsupported/degraded symlink semantics can leave a zero-byte regular
-        # file at the canonical path. Remove it and publish a real copy instead.
-        if link.exists() or link.is_symlink():
-            link.unlink()
-    except OSError:
-        if tmp.exists() or tmp.is_symlink():
-            tmp.unlink()
-
-    copy_tmp = link.with_name(f".{link.name}.tmpcopy")
-    if copy_tmp.exists() or copy_tmp.is_symlink():
-        copy_tmp.unlink()
-    shutil.copy2(target, copy_tmp)
-    if copy_tmp.stat().st_size <= 0:
-        copy_tmp.unlink(missing_ok=True)
+    shutil.copy2(target, tmp)
+    if tmp.stat().st_size <= 0:
+        tmp.unlink(missing_ok=True)
         raise RuntimeError(f"canonical copy for {link} is empty after copying {target}")
-    os.replace(copy_tmp, link)
-    if not link.exists() or link.stat().st_size <= 0:
-        raise RuntimeError(f"canonical render {link} is missing or empty after publication")
+    os.replace(tmp, link)
+    if link.is_symlink() or not link.exists() or link.stat().st_size <= 0:
+        raise RuntimeError(f"canonical render {link} is not a non-empty regular file after publication")
     return "copy"
 
 
