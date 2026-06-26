@@ -69,7 +69,22 @@ python "$REPO_ROOT/scripts/aggregate_v19_hot3d_mano3d_evals.py" \
 
 The 3D evaluator must run in an environment with `smplx` and side-specific MANO assets; the current fixed-slice run used the remote HaWoR environment and explicit `--mano-left/--mano-right` paths. It replays HOT3D GT MANO with HaWoR's 21-joint ordering, then compares HOT3D GT and HaWoR predictions in camera coordinates. It reports absolute wrist/joint errors separately from wrist-subtracted translation-aligned errors; no rotation or scale Procrustes alignment is applied, so this is not a pure articulation metric. The aggregate also splits same-frame detector-supported rows from infilled rows. It still does not score contact, occlusion, nonpenetration, or object pose.
 
-Workbench item 7 autoresearch compares MANO correction mechanisms against that baseline, not camera-adapter variants. The first supported correction target is low-support/occluded left-hand intervals where HaWoR keeps plausible boxes but hallucinates MANO articulation. Build a prediction-side repaired NPZ, then score it with the same evaluator:
+After a V19 runtime prediction boundary is frozen, the same evaluator may score a P18 interval-state JSON directly:
+
+```bash
+python "$REPO_ROOT/scripts/evaluate_v19_hot3d_hawor_mano3d.py" \
+  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001850/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
+  --interval-state "$RUN_ROOT/measurements/mano_interval_correction/keyboard_0_149/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
+  --output-report "$RUN_ROOT/evaluation/hot3d_mano3d_interval/hot3d_v19_interval_mano3d_eval.json" \
+  --image-manifest "$RUN_ROOT/evaluation/hot3d_mano3d_interval/review_frames_1408/manifest.json" \
+  --review-output "$RUN_ROOT/evaluation/hot3d_mano3d_interval/hot3d_v19_interval_mano3d_review.jpg" \
+  --mano-left "$BUNDLE_ROOT/third_party/WiLoR/mano_data/MANO_LEFT.pkl" \
+  --mano-right "$BUNDLE_ROOT/third_party/WiLoR/mano_data/MANO_RIGHT.pkl"
+```
+
+Interval-state mode evaluates `optimized_joints_world_m` only. It obtains camera trajectory from the row `source_hawor_npz`, and it must not report full-vertex MANO metrics unless a future interval state stores full predicted vertices. The comparison to the HaWoR NPZ baseline must be interpreted mechanistically: if MPJPE worsens while wrist-subtracted MPJPE is unchanged, the correction changed global wrist/root placement more than articulation, so the next intervention should gate translation/contact constraints rather than treat the interval correction as a hand-accuracy improvement.
+
+Workbench item 7 autoresearch compares MANO correction mechanisms against that baseline, not camera-adapter variants. The first supported correction target is low-support/occluded intervals where HaWoR keeps plausible boxes but hallucinates MANO articulation. Build a prediction-side repaired NPZ or interval state, then score it with the same evaluator:
 
 ```bash
 python "$REPO_ROOT/scripts/repair_v19_mano_support_temporal.py" \

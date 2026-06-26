@@ -13,6 +13,10 @@ This evaluator is intentionally narrower than a full HOT3D physical benchmark:
 - It reports absolute wrist/joint errors separately from wrist-subtracted
   translation-aligned errors. This removes wrist translation only; it is not a
   Procrustes rotation/scale alignment and is not pure articulation error.
+- It can evaluate either the HaWoR NPZ baseline or a V19 interval-state JSON.
+  Interval-state mode evaluates optimized 21-joint MANO positions and does not
+  report full-vertex metrics because the interval state stores sampled vertices,
+  not the full predicted MANO surface.
 
 The supported claim family is 3D hand/MANO localization on adapted HOT3D RGB
 clips. This is still not a contact, occlusion, nonpenetration, or object-pose
@@ -213,6 +217,131 @@ def draw_points(image: np.ndarray, pts: np.ndarray, color: tuple[int, int, int],
             cv2.circle(image, (x, y), radius, color, -1, lineType=cv2.LINE_AA)
 
 
+def localize_prediction_path(path: str | Path, args: argparse.Namespace) -> Path:
+    direct = Path(path).expanduser()
+    if direct.exists():
+        return direct
+    remote_root = getattr(args, "remote_root", None)
+    local_root = getattr(args, "local_root", None)
+    if remote_root is not None and local_root is not None:
+        remote_root = Path(remote_root)
+        local_root = Path(local_root)
+        for src, dst in ((remote_root, local_root), (local_root, remote_root)):
+            try:
+                rel = direct.relative_to(src)
+            except ValueError:
+                continue
+            candidate = dst / rel
+            if candidate.exists():
+                return candidate
+    raise FileNotFoundError(str(path))
+
+
+def load_hawor_prediction(args: argparse.Namespace, frames_list: list[dict[str, Any]]) -> dict[str, Any]:
+    if args.hawor_npz is None:
+        raise RuntimeError("--hawor-npz is required unless --interval-state is supplied")
+    npz_path = localize_prediction_path(args.hawor_npz, args)
+    npz = np.load(npz_path, allow_pickle=True)
+    frame_idx = np.asarray(npz["frame_idx"], dtype=int) if "frame_idx" in npz.files else np.arange(len(frames_list), dtype=int)
+    sides: dict[str, dict[str, Any]] = {}
+    for side in ("left", "right"):
+        sides[side] = {
+            "valid": np.asarray(npz[f"{side}_valid"]).astype(bool) if f"{side}_valid" in npz.files else np.ones(frame_idx.shape[0], dtype=bool),
+            "joints_world_m": np.asarray(npz[f"{side}_joints_world_m"], dtype=np.float64),
+            "vertices_world_m": np.asarray(npz[f"{side}_vertices_world_m"], dtype=np.float64),
+            "detected_same_frame": np.asarray(npz[f"{side}_detected_same_frame"]).astype(bool) if f"{side}_detected_same_frame" in npz.files else None,
+            "row_meta": [None] * int(frame_idx.shape[0]),
+        }
+    return {
+        "kind": "hawor_npz",
+        "path": str(npz_path),
+        "frame_idx": frame_idx,
+        "R_c2w": np.asarray(npz["R_c2w"], dtype=np.float64),
+        "t_c2w": np.asarray(npz["t_c2w"], dtype=np.float64),
+        "sides": sides,
+        "full_vertices_available": True,
+        "source_hawor_npz": str(npz_path),
+    }
+
+
+def load_interval_state_prediction(args: argparse.Namespace, frames_list: list[dict[str, Any]]) -> dict[str, Any]:
+    if args.interval_state is None:
+        raise RuntimeError("internal error: interval-state path missing")
+    interval_path = localize_prediction_path(args.interval_state, args)
+    state = load_json(interval_path)
+    rows = state.get("per_frame_states")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"{interval_path} lacks nonempty per_frame_states")
+    source_candidates = [r.get("source_hawor_npz") for r in rows if isinstance(r, dict) and r.get("source_hawor_npz")]
+    if not source_candidates:
+        raise RuntimeError(f"{interval_path} lacks source_hawor_npz in per-frame states; camera trajectory is required")
+    source_npz_path = localize_prediction_path(source_candidates[0], args)
+    npz = np.load(source_npz_path, allow_pickle=True)
+    frame_idx = np.asarray(npz["frame_idx"], dtype=int) if "frame_idx" in npz.files else np.arange(len(frames_list), dtype=int)
+    frame_to_i = {int(f): i for i, f in enumerate(frame_idx.tolist())}
+    sides: dict[str, dict[str, Any]] = {}
+    for side in ("left", "right"):
+        sides[side] = {
+            "valid": np.zeros(frame_idx.shape[0], dtype=bool),
+            "joints_world_m": np.full((frame_idx.shape[0], 21, 3), np.nan, dtype=np.float64),
+            "vertices_world_m": None,
+            "detected_same_frame": np.asarray(npz[f"{side}_detected_same_frame"]).astype(bool) if f"{side}_detected_same_frame" in npz.files else None,
+            "row_meta": [None] * int(frame_idx.shape[0]),
+        }
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        side = str(row.get("hand_side"))
+        if side not in sides:
+            continue
+        frame = int(row.get("frame_idx"))
+        if frame not in frame_to_i:
+            continue
+        joints = np.asarray(row.get("optimized_joints_world_m") if row.get("optimized_joints_world_m") is not None else [], dtype=np.float64)
+        if joints.shape != (21, 3) or not np.isfinite(joints).all():
+            continue
+        i = frame_to_i[frame]
+        sides[side]["joints_world_m"][i] = joints
+        sides[side]["valid"][i] = True
+        sides[side]["row_meta"][i] = {
+            "temporal_mano_state": row.get("temporal_mano_state"),
+            "contact_patch_state_optimized": row.get("contact_patch_state_optimized"),
+            "visible_surface_depth_order_selected_vertex_count": row.get("visible_surface_depth_order_selected_vertex_count"),
+            "optimized_vertices_world_sample_count": len(row.get("optimized_vertices_world_sample_m") or []),
+            "source_frame_index": row.get("source_frame_index"),
+        }
+    return {
+        "kind": "interval_state_optimized_joints",
+        "path": str(interval_path),
+        "frame_idx": frame_idx,
+        "R_c2w": np.asarray(npz["R_c2w"], dtype=np.float64),
+        "t_c2w": np.asarray(npz["t_c2w"], dtype=np.float64),
+        "sides": sides,
+        "full_vertices_available": False,
+        "source_hawor_npz": str(source_npz_path),
+        "interval_summary": state.get("summary"),
+    }
+
+
+def load_prediction(args: argparse.Namespace, frames_list: list[dict[str, Any]]) -> dict[str, Any]:
+    if args.interval_state is not None and args.hawor_npz is not None:
+        raise RuntimeError("supply exactly one prediction source: --hawor-npz or --interval-state")
+    if args.interval_state is not None:
+        return load_interval_state_prediction(args, frames_list)
+    return load_hawor_prediction(args, frames_list)
+
+
+def row_metric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        if key not in row or row[key] is None:
+            continue
+        value = float(row[key])
+        if np.isfinite(value):
+            values.append(value)
+    return values
+
+
 def render_review(
     args: argparse.Namespace,
     rows: list[dict[str, Any]],
@@ -278,14 +407,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("HOT3D GT sidecar has no frames")
     gt_frames = {int(row["frame_idx"]): row for row in frames_list if isinstance(row, dict)}
     beta, hand_shape_source = load_hand_shape(gt, args.hot3d_gt)
-    npz = np.load(args.hawor_npz, allow_pickle=True)
+    prediction = load_prediction(args, frames_list)
     layers = load_smplx_mano(args)
     device = torch.device(args.device)
     for layer in layers.values():
         layer.to(device)
         layer.eval()
 
-    frame_idx = np.asarray(npz["frame_idx"], dtype=int) if "frame_idx" in npz.files else np.arange(len(frames_list), dtype=int)
+    frame_idx = np.asarray(prediction["frame_idx"], dtype=int)
     rows: list[dict[str, Any]] = []
     pred_cache: dict[tuple[int, str], tuple[np.ndarray, np.ndarray]] = {}
     for local_i, frame in enumerate(frame_idx.tolist()):
@@ -296,45 +425,57 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         if not isinstance(hot3d_cam, dict):
             continue
         R_hot3d_c2w, t_hot3d_c2w = se3_from_hot3d_dict(hot3d_cam["T_world_from_camera"])
-        R_pred_c2w = np.asarray(npz["R_c2w"][local_i], dtype=np.float64)
-        t_pred_c2w = np.asarray(npz["t_c2w"][local_i], dtype=np.float64)
+        R_pred_c2w = np.asarray(prediction["R_c2w"][local_i], dtype=np.float64)
+        t_pred_c2w = np.asarray(prediction["t_c2w"][local_i], dtype=np.float64)
         for side in ("left", "right"):
             hand = gt_row.get("json", {}).get("hands.json", {}).get(side)
             if not isinstance(hand, dict) or "mano_pose" not in hand:
                 rows.append({"frame_idx": int(frame), "side": side, "measurable": False, "matched": False, "reason": "missing_hot3d_mano_pose"})
                 continue
-            pred_valid = bool(npz[f"{side}_valid"][local_i]) if f"{side}_valid" in npz.files else True
+            side_pred = prediction["sides"][side]
+            pred_valid = bool(side_pred["valid"][local_i])
             if not pred_valid:
-                rows.append({"frame_idx": int(frame), "side": side, "measurable": True, "matched": False, "reason": "missing_hawor_prediction"})
+                rows.append({"frame_idx": int(frame), "side": side, "measurable": True, "matched": False, "reason": f"missing_{prediction['kind']}_prediction"})
                 continue
             mano = hand["mano_pose"]
             theta = np.asarray(mano["thetas"], dtype=np.float32)
             wrist_xform = np.asarray(mano["wrist_xform"], dtype=np.float32)
             gt_verts_w, gt_joints_raw_w, _ = replay_hot3d_mano(layers[side], beta, theta, wrist_xform, device)
-            pred_joints_w = np.asarray(npz[f"{side}_joints_world_m"][local_i], dtype=np.float64)
-            pred_verts_w = np.asarray(npz[f"{side}_vertices_world_m"][local_i], dtype=np.float64)
+            pred_joints_w = np.asarray(side_pred["joints_world_m"][local_i], dtype=np.float64)
             gt_joints_raw_cam = world_to_camera(gt_joints_raw_w, R_hot3d_c2w, t_hot3d_c2w)
             gt_joints_hawor_order_cam = gt_joints_raw_cam[np.asarray(HAWOR_MANO_TO_OPENPOSE_MAPPING, dtype=int)]
             pred_joints_cam = world_to_camera(pred_joints_w, R_pred_c2w, t_pred_c2w)
-            pred_verts_cam = world_to_camera(pred_verts_w, R_pred_c2w, t_pred_c2w)
             wrist, mpjpe, med, rel_mpjpe, rel_med, rel_p95 = per_joint_errors(pred_joints_cam, gt_joints_hawor_order_cam)
-            vertex_centroid_err = float(np.linalg.norm(np.mean(pred_verts_cam, axis=0) - np.mean(world_to_camera(gt_verts_w, R_hot3d_c2w, t_hot3d_c2w), axis=0)))
+            vertex_centroid_err = None
+            pred_vertices = side_pred.get("vertices_world_m")
+            if pred_vertices is not None:
+                pred_verts_w = np.asarray(pred_vertices[local_i], dtype=np.float64)
+                pred_verts_cam = world_to_camera(pred_verts_w, R_pred_c2w, t_pred_c2w)
+                vertex_centroid_err = float(
+                    np.linalg.norm(np.mean(pred_verts_cam, axis=0) - np.mean(world_to_camera(gt_verts_w, R_hot3d_c2w, t_hot3d_c2w), axis=0))
+                )
+            detected_same = side_pred.get("detected_same_frame")
+            row_meta = side_pred.get("row_meta", [None] * len(frame_idx))[local_i]
             row = {
                 "frame_idx": int(frame),
                 "side": side,
                 "measurable": True,
                 "matched": True,
                 "gt_visibility_modeled": hand.get("visibilities_modeled", {}).get(args.stream_id) if isinstance(hand.get("visibilities_modeled"), dict) else None,
-                "pred_detected_same_frame": bool(npz[f"{side}_detected_same_frame"][local_i]) if f"{side}_detected_same_frame" in npz.files else None,
+                "pred_detected_same_frame": bool(detected_same[local_i]) if detected_same is not None else None,
                 "wrist_error_m": wrist,
                 "joint_mpjpe_m": mpjpe,
                 "joint_median_error_m": med,
                 "root_aligned_mpjpe_m": rel_mpjpe,
                 "root_aligned_median_error_m": rel_med,
                 "root_aligned_p95_error_m": rel_p95,
-                "vertex_centroid_error_m": vertex_centroid_err,
                 "joint_order": "HaWoR 21-joint export order: MANO joints plus fingertips reordered by [0,13,14,15,16,1,2,3,17,4,5,6,18,10,11,12,19,7,8,9,20]",
+                "prediction_source_kind": prediction["kind"],
             }
+            if vertex_centroid_err is not None:
+                row["vertex_centroid_error_m"] = vertex_centroid_err
+            if row_meta is not None:
+                row["prediction_row_meta"] = row_meta
             rows.append(row)
             if int(frame) in args.review_frames:
                 pred_cache[(int(frame), side)] = (gt_joints_hawor_order_cam, pred_joints_cam)
@@ -348,18 +489,27 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "measurable_rows": len(sr),
             "matched_rows": len(sm),
             "match_rate": float(len(sm) / max(1, len(sr))),
-            "wrist_error_m": summarize([float(r["wrist_error_m"]) for r in sm]),
-            "joint_mpjpe_m": summarize([float(r["joint_mpjpe_m"]) for r in sm]),
-            "root_aligned_mpjpe_m": summarize([float(r["root_aligned_mpjpe_m"]) for r in sm]),
-            "vertex_centroid_error_m": summarize([float(r["vertex_centroid_error_m"]) for r in sm]),
+            "wrist_error_m": summarize(row_metric_values(sm, "wrist_error_m")),
+            "joint_mpjpe_m": summarize(row_metric_values(sm, "joint_mpjpe_m")),
+            "root_aligned_mpjpe_m": summarize(row_metric_values(sm, "root_aligned_mpjpe_m")),
+            "vertex_centroid_error_m": summarize(row_metric_values(sm, "vertex_centroid_error_m")),
         }
     review = render_review(args, rows, gt_frames, pred_cache)
+    vertex_metric_scope = "full predicted MANO vertices" if prediction.get("full_vertices_available") else "not reported: interval state stores optimized joints and sampled vertices, not full predicted MANO vertices"
     report = {
         "status": "ok",
         "method": "evaluate_v19_hot3d_hawor_mano3d",
-        "claim_scope": "3D MANO hand localization/articulation against HOT3D MANO in camera coordinates; root_aligned metrics are wrist-subtracted translation-aligned only; not contact, occlusion, nonpenetration, or object-pose scoring",
+        "claim_scope": "3D MANO hand joint localization/articulation against HOT3D MANO in camera coordinates; root_aligned metrics are wrist-subtracted translation-aligned only; not contact, occlusion, nonpenetration, or object-pose scoring",
         "hot3d_gt": str(args.hot3d_gt),
-        "hawor_npz": str(args.hawor_npz),
+        "prediction_source": {
+            "kind": prediction["kind"],
+            "path": prediction["path"],
+            "source_hawor_npz": prediction.get("source_hawor_npz"),
+            "full_vertices_available": bool(prediction.get("full_vertices_available")),
+            "vertex_metric_scope": vertex_metric_scope,
+        },
+        "hawor_npz": str(args.hawor_npz) if args.hawor_npz is not None else None,
+        "interval_state": str(args.interval_state) if args.interval_state is not None else None,
         "stream_id": args.stream_id,
         "mano_left": str(args.mano_left),
         "mano_right": str(args.mano_right),
@@ -370,12 +520,12 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "matched_rows": len(matched),
             "match_rate": float(len(matched) / max(1, len(measurable))),
             "root_aligned_metric_definition": "Subtract each hand's wrist joint translation before computing joint errors; no rotation or scale alignment is applied.",
-            "wrist_error_m": summarize([float(r["wrist_error_m"]) for r in matched]),
-            "joint_mpjpe_m": summarize([float(r["joint_mpjpe_m"]) for r in matched]),
-            "joint_median_error_m": summarize([float(r["joint_median_error_m"]) for r in matched]),
-            "root_aligned_mpjpe_m": summarize([float(r["root_aligned_mpjpe_m"]) for r in matched]),
-            "root_aligned_median_error_m": summarize([float(r["root_aligned_median_error_m"]) for r in matched]),
-            "vertex_centroid_error_m": summarize([float(r["vertex_centroid_error_m"]) for r in matched]),
+            "wrist_error_m": summarize(row_metric_values(matched, "wrist_error_m")),
+            "joint_mpjpe_m": summarize(row_metric_values(matched, "joint_mpjpe_m")),
+            "joint_median_error_m": summarize(row_metric_values(matched, "joint_median_error_m")),
+            "root_aligned_mpjpe_m": summarize(row_metric_values(matched, "root_aligned_mpjpe_m")),
+            "root_aligned_median_error_m": summarize(row_metric_values(matched, "root_aligned_median_error_m")),
+            "vertex_centroid_error_m": summarize(row_metric_values(matched, "vertex_centroid_error_m")),
             "by_side": by_side,
         },
         "rows": rows,
@@ -388,7 +538,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hot3d-gt", type=Path, required=True)
-    parser.add_argument("--hawor-npz", type=Path, required=True)
+    parser.add_argument("--hawor-npz", type=Path, default=None, help="HaWoR-like prediction NPZ baseline. Mutually exclusive with --interval-state.")
+    parser.add_argument("--interval-state", type=Path, default=None, help="V19 interval MANO correction state JSON; evaluates optimized joints only.")
     parser.add_argument("--output-report", type=Path, required=True)
     parser.add_argument("--stream-id", default="214-1")
     parser.add_argument("--image-manifest", type=Path, default=None)
@@ -397,7 +548,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mano-left", type=Path, default=Path("/data/dex_home/yiwen/mano_assets/mano/models/MANO_LEFT.pkl"))
     parser.add_argument("--mano-right", type=Path, default=Path("/data/dex_home/yiwen/mano_assets/mano/models/MANO_RIGHT.pkl"))
     parser.add_argument("--device", default="cpu")
-    return parser.parse_args()
+    parser.add_argument("--remote-root", type=Path, default=None, help="Optional path prefix remapping source root for copied prediction artifacts.")
+    parser.add_argument("--local-root", type=Path, default=None, help="Optional path prefix remapping destination root for copied prediction artifacts.")
+    args = parser.parse_args()
+    if (args.hawor_npz is None) == (args.interval_state is None):
+        parser.error("supply exactly one prediction source: --hawor-npz or --interval-state")
+    return args
 
 
 def main() -> None:
