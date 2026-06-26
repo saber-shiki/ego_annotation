@@ -212,6 +212,18 @@ def scaled_points(points: list[dict], prompt_size: tuple[int, int], video_size: 
     return np.asarray([[float(point["x"]) * scale[0], float(point["y"]) * scale[1]] for point in points], dtype=np.float32)
 
 
+def scaled_box(box_xyxy: Any, prompt_size: tuple[int, int], video_size: tuple[int, int], context: str) -> np.ndarray | None:
+    if box_xyxy is None:
+        return None
+    if not isinstance(box_xyxy, list) or len(box_xyxy) != 4:
+        raise RuntimeError(f"{context} box_xyxy must be a 4-number list")
+    x1, y1, x2, y2 = [float(v) for v in box_xyxy]
+    if not (0.0 <= x1 < x2 <= float(prompt_size[0]) and 0.0 <= y1 < y2 <= float(prompt_size[1])):
+        raise RuntimeError(f"{context} box {box_xyxy} outside declared coordinate frame {prompt_size}")
+    scale = np.asarray([video_size[0] / prompt_size[0], video_size[1] / prompt_size[1]], dtype=np.float32)
+    return np.asarray([x1 * scale[0], y1 * scale[1], x2 * scale[0], y2 * scale[1]], dtype=np.float32)
+
+
 def prompt_points(
     track: Track,
     source_idx: int,
@@ -330,16 +342,20 @@ def add_prompt_frames(
             if not prompt or not prompt.get("target_visible") or not prompt.get("positive_points"):
                 continue
             points, labels, positive_points = prompt_points(track, source_idx, tracks, prompt_sizes, video_size)
-            box = (
-                positive_prompt_box(
+            prompt_box = scaled_box(
+                prompt.get("box_xyxy") or prompt.get("object_box_xyxy") or prompt.get("visible_object_box_xyxy"),
+                prompt_sizes[track.track_id],
+                video_size,
+                f"{track.track_id} frame {source_idx}",
+            )
+            box = prompt_box
+            if box is None and use_positive_prompt_box:
+                box = positive_prompt_box(
                     positive_points,
                     video_size,
                     pad_ratio=float(prompt_box_pad_ratio),
                     min_pad_px=float(prompt_box_min_pad_px),
                 )
-                if use_positive_prompt_box
-                else None
-            )
             out_frame_idx, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
                 inference_state=state,
                 frame_idx=local_by_source[source_idx],
@@ -358,6 +374,7 @@ def add_prompt_frames(
                 "point_coordinate_frame": str(track.payload.get("point_coordinate_frame") or track.payload.get("coordinate_frame") or ""),
                 "prompt_coordinate_size": list(prompt_sizes[track.track_id]),
                 "sam2_video_size": list(video_size),
+                "prompt_box_source": "prompt_json_box_xyxy" if prompt_box is not None else ("positive_points_derived_box" if box is not None else None),
                 "positive_prompt_box_enabled": bool(use_positive_prompt_box),
                 "positive_prompt_box_xyxy": None if box is None else [float(v) for v in box.tolist()],
                 "positive_prompt_box_pad_ratio": float(prompt_box_pad_ratio),
