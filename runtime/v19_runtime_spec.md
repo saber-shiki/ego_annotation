@@ -279,7 +279,7 @@ Script: `scripts/remote_run_trellis_shape_v3.py`
 
 ```bash
 "{REMOTE_MODEL_PYTHON}" scripts/remote_run_trellis_shape_v3.py \
-  --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work \
+  --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work/TRELLIS \
   --image "<evidence_crop_rgba>" \
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42" \
   --seed 42
