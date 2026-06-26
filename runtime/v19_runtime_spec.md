@@ -330,7 +330,27 @@ Script: `scripts/build_v18_compact_rigid_trellis_completion.py`
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42"
 ```
 
-Required output: completion report and completed mesh.
+Required output: completion report and completed mesh. The completed mesh used by all downstream pose/contact/render stages is exactly `outputs.completed_mesh_labeled` in `{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json`. Do not substitute the P12 raw TRELLIS mesh (`trellis_mesh.ply`) for `<completed_mesh_ply>`; P14/P15 poses are in the P13 completed-canonical frame, not the raw TRELLIS model frame.
+
+Resolve the downstream mesh path with the completion report as source of truth:
+
+```bash
+COMPLETION_REPORT="{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json"
+COMPLETED_MESH_PLY=$("{REMOTE_MODEL_PYTHON}" - "$COMPLETION_REPORT" <<'PY'
+import json, sys
+from pathlib import Path
+report = Path(sys.argv[1])
+data = json.loads(report.read_text())
+mesh = (data.get("outputs") or {}).get("completed_mesh_labeled")
+if not mesh:
+    raise SystemExit(f"missing outputs.completed_mesh_labeled in {report}")
+path = Path(mesh)
+if not path.exists() or path.stat().st_size <= 0:
+    raise SystemExit(f"completed mesh from {report} is missing or empty: {path}")
+print(path)
+PY
+)
+```
 
 ## P14 visible-frame pose fit
 
@@ -424,7 +444,8 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --object-id "object:{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
-  --completed-mesh "<completed_mesh_ply>" \
+  --completed-mesh "$COMPLETED_MESH_PLY" \
+  --completion-report "$COMPLETION_REPORT" \
   --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
   --wilor-root third_party/WiLoR \
   --wilor-mano-left third_party/WiLoR/mano_data/MANO_LEFT.pkl \
@@ -449,7 +470,8 @@ Script: `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`
   --object-label "{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
-  --completed-mesh "<completed_mesh_ply>" \
+  --completed-mesh "$COMPLETED_MESH_PLY" \
+  --completion-report "$COMPLETION_REPORT" \
   --constraint-report "{RUN_ROOT}/measurements/contact_nonpenetration/{OBJECT_ID}_mano_object_constraint/v18_mano_object_constraint_state.json" \
   --temporal-mano-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
   --output-root "{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime"

@@ -73,6 +73,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS_PATH)
     parser.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT_PATH)
     parser.add_argument("--completed-mesh", type=Path, default=DEFAULT_COMPLETED_MESH_PLY)
+    parser.add_argument(
+        "--completion-report",
+        type=Path,
+        default=None,
+        help="Optional P13 compact-rigid completion report. When supplied, --completed-mesh must equal outputs.completed_mesh_labeled.",
+    )
     parser.add_argument("--constraint-report", type=Path, default=DEFAULT_CONSTRAINT_REPORT_PATH)
     parser.add_argument("--temporal-mano-state", type=Path, default=None)
     parser.add_argument("--hidden-volume-validation", type=Path, default=None)
@@ -88,6 +94,43 @@ def parse_args() -> argparse.Namespace:
 def load_json(path: Path) -> Any:
     with path.open("r") as f:
         return json.load(f)
+
+
+def completion_report_completed_mesh(path: Path) -> Path:
+    data = load_json(path)
+    outputs = data.get("outputs") if isinstance(data, dict) else None
+    if not isinstance(outputs, dict):
+        raise RuntimeError(f"completion report {path} has no outputs object")
+    value = outputs.get("completed_mesh_labeled") or outputs.get("completed_mesh")
+    if not value:
+        raise RuntimeError(f"completion report {path} has no completed mesh output")
+    return Path(str(value))
+
+
+def same_mesh_path(a: Path, b: Path) -> bool:
+    try:
+        return a.exists() and b.exists() and a.samefile(b)
+    except OSError:
+        return False
+
+
+def validate_completed_mesh_contract(completed_mesh: Path, completion_report: Path | None) -> Path | None:
+    if completed_mesh.name == "trellis_mesh.ply" or any(part.startswith("trellis_") for part in completed_mesh.parts):
+        raise RuntimeError(
+            "completed mesh frame mismatch: this renderer consumes a P13 completed-canonical mesh, "
+            f"not raw TRELLIS model output ({completed_mesh})"
+        )
+    if completion_report is None:
+        return None
+    expected = completion_report_completed_mesh(completion_report)
+    if not same_mesh_path(completed_mesh, expected) and completed_mesh.resolve(strict=False) != expected.resolve(strict=False):
+        raise RuntimeError(
+            "completed mesh frame mismatch: pose rows are in the P13 completed-canonical frame, "
+            f"but --completed-mesh={completed_mesh} differs from {completion_report} outputs.completed_mesh_labeled={expected}"
+        )
+    if not completed_mesh.exists() or completed_mesh.stat().st_size <= 0:
+        raise RuntimeError(f"completed mesh {completed_mesh} is missing or empty")
+    return expected
 
 
 def load_mesh_vertices(path: Path) -> np.ndarray:
@@ -360,6 +403,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     annotations = load_json(args.annotations)
     pose_data = load_json(args.pose_report)
     constraint_data = load_json(args.constraint_report)
+    expected_completed_mesh = validate_completed_mesh_contract(args.completed_mesh, args.completion_report)
     object_vertices = load_mesh_vertices(args.completed_mesh)
     poses = pose_map(pose_data)
     constraints = constraint_map(constraint_data)
@@ -577,6 +621,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "annotations": str(args.annotations),
             "pose_report": str(args.pose_report),
             "completed_mesh": str(args.completed_mesh),
+            "completion_report": str(args.completion_report) if args.completion_report is not None else None,
+            "completion_report_completed_mesh_labeled": str(expected_completed_mesh) if expected_completed_mesh is not None else None,
             "constraint_report": str(args.constraint_report),
         },
         "outputs": {

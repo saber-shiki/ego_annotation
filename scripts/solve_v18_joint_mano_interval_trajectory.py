@@ -179,6 +179,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS)
     p.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT)
     p.add_argument("--completed-mesh", type=Path, default=DEFAULT_MESH)
+    p.add_argument(
+        "--completion-report",
+        type=Path,
+        default=None,
+        help="Optional P13 compact-rigid completion report. When supplied, --completed-mesh must equal outputs.completed_mesh_labeled.",
+    )
     p.add_argument("--depth-npz", type=Path, action="append", default=None, help="Depth NPZ path(s). Defaults to the task5 complete-depth source only when omitted; explicit paths replace that default for other cases.")
     p.add_argument("--hand-depth-repair-graph", type=Path, default=None, help="Optional prior source with per-frame hand_ray_shift_m camera-ray observations from the V17 hand-depth repair graph.")
     p.add_argument("--use-hand-ray-shift-prior", action=argparse.BooleanOptionalAction, default=False)
@@ -261,6 +267,43 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--visible-lid-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p.add_argument("--max-visible-lid-depth-vertices", dest="max_visible_surface_depth_vertices", type=int, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     return p.parse_args()
+
+
+def completion_report_completed_mesh(path: Path) -> Path:
+    data = load_json(path)
+    outputs = data.get("outputs") if isinstance(data, dict) else None
+    if not isinstance(outputs, dict):
+        raise RuntimeError(f"completion report {path} has no outputs object")
+    value = outputs.get("completed_mesh_labeled") or outputs.get("completed_mesh")
+    if not value:
+        raise RuntimeError(f"completion report {path} has no completed mesh output")
+    return Path(str(value))
+
+
+def same_mesh_path(a: Path, b: Path) -> bool:
+    try:
+        return a.exists() and b.exists() and a.samefile(b)
+    except OSError:
+        return False
+
+
+def validate_completed_mesh_contract(completed_mesh: Path, completion_report: Path | None) -> Path | None:
+    if completed_mesh.name == "trellis_mesh.ply" or any(part.startswith("trellis_") for part in completed_mesh.parts):
+        raise RuntimeError(
+            "completed mesh frame mismatch: this solver consumes a P13 completed-canonical mesh, "
+            f"not raw TRELLIS model output ({completed_mesh})"
+        )
+    if completion_report is None:
+        return None
+    expected = completion_report_completed_mesh(completion_report)
+    if not same_mesh_path(completed_mesh, expected) and completed_mesh.resolve(strict=False) != expected.resolve(strict=False):
+        raise RuntimeError(
+            "completed mesh frame mismatch: pose rows and object-contact constraints are in the P13 completed-canonical frame, "
+            f"but --completed-mesh={completed_mesh} differs from {completion_report} outputs.completed_mesh_labeled={expected}"
+        )
+    if not completed_mesh.exists() or completed_mesh.stat().st_size <= 0:
+        raise RuntimeError(f"completed mesh {completed_mesh} is missing or empty")
+    return expected
 
 
 def project_world(points_world: np.ndarray, frame: dict[str, Any], side: str) -> np.ndarray | None:
@@ -1039,6 +1082,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     frames_by_idx = {int(f["frame_idx"]): f for f in frames}
     pose_report = load_json(args.pose_report)
     poses = pose_map(pose_report)
+    validate_completed_mesh_contract(args.completed_mesh, args.completion_report)
     mesh = load_mesh(args.completed_mesh)
     vertices_object = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int64)
@@ -2209,7 +2253,7 @@ def main() -> None:
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface.",
-        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report), "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report), "factor_report": None if args.factor_report is None else [str(p) for p in args.factor_report]},
+        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "completion_report": None if args.completion_report is None else str(args.completion_report), "completion_report_completed_mesh_labeled": None if args.completion_report is None else str(completion_report_completed_mesh(args.completion_report)), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report), "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report), "factor_report": None if args.factor_report is None else [str(p) for p in args.factor_report]},
         "parameters": {k: ([str(x) for x in v] if k == "factor_report" and v is not None else (str(v) if isinstance(v, Path) else v)) for k, v in vars(args).items() if k not in {"depth_npz"}},
         "build_meta": build_meta,
         "summary": {"interval_count": int(len(intervals)), "per_frame_state_count": int(len(per_frame_states)), "frame_span": [int(args.start_frame), int(args.end_frame)], "sides": list(args.sides)},
