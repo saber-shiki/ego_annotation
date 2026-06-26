@@ -470,7 +470,7 @@ Script: `scripts/build_v19_visible_contact_ownership_factor.py`
   --agent-interaction-judgment "{RUN_ROOT}/state/agent_interaction_judgments/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}.json"
 ```
 
-Required output: visible contact/ownership factor report.
+Required output: visible contact/ownership factor report at `{RUN_ROOT}/measurements/contact_visibility_factors/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v19_visible_contact_ownership_factor_report.json`. Because the script nests outputs under `--case`, bind P18 `--factor-report` to this concrete path; do not guess `{output-root}/v19_visible_contact_ownership_factor_report.json`.
 
 ## P18 interval MANO correction
 
@@ -491,7 +491,7 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --start-frame "{INTERVAL_START}" \
   --end-frame "{INTERVAL_END}" \
   --sides left right \
-  --factor-report "<visible_contact_ownership_factor_report>" \
+  --factor-report "{RUN_ROOT}/measurements/contact_visibility_factors/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v19_visible_contact_ownership_factor_report.json" \
   --optimize-contact-state \
   --visible-surface-depth-order-term \
   --gate-translation-with-visible-surface-support \
