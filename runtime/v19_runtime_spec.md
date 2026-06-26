@@ -418,11 +418,12 @@ Script: `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
   --completed-mesh "<completed_mesh_ply>" \
+  --constraint-report "{RUN_ROOT}/measurements/contact_nonpenetration/{OBJECT_ID}_mano_object_constraint/v18_mano_object_constraint_state.json" \
   --temporal-mano-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
   --output-root "{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime"
 ```
 
-Required output: full-duration overlay/world/side-by-side render branch.
+Required output: full-duration overlay/world/side-by-side render branch, normally listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime/{CASE_ID}/v18_temporal_rigid_object_manifest.json` as `videos.overlay`, `videos.world`, and `videos.side_by_side`. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v18_overlay_keyboard.mp4`, `v18_world_keyboard.mp4`, and `v18_side_by_side_keyboard.mp4` under that case directory.
 
 ## P20 publish canonical render names
 
