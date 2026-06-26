@@ -131,6 +131,10 @@ python "$REPO_ROOT/scripts/build_v19_interval_mano_translation_gate.py" \
 
 This gate uses no GT: when selected visible-surface support is absent, it preserves the source HaWoR wrist/root translation and keeps interval wrist-relative articulation. If that restores absolute MPJPE while leaving root-aligned MPJPE unchanged, the next runtime solver must enable `--gate-translation-with-visible-surface-support` rather than relying on ungated contact/temporal translation.
 
+Integrated `clip-001850` result: after the runtime solver/spec enabled `--gate-translation-with-visible-surface-support`, P18-P21 regenerated prediction artifacts and froze manifest SHA256 `06c8ff45a955421b341ceafb0548b27d2d791e9ea6495f1fc6d17ee4db67c594` before any GT scoring. The frozen support-gated runtime state scored 300 HOT3D hand/frame rows with HaWoR baseline median wrist error `0.033586475 m` and support-gated wrist error `0.033586475 m`; baseline median joint MPJPE `0.047187152 m` and support-gated `0.046050225 m`; baseline median root-aligned MPJPE `0.022665785 m` and support-gated `0.022970178 m`. Comparison artifact: `evaluation/hot3d_mano3d_owlv2_support_gated_runtime/hot3d_baseline_vs_support_gated_runtime_comparison.json`, SHA256 `c35c49dc966ffb24a77b78b0d54c926ad21ba46bd90199b83c1af16367df45b5`. The evaluator review sheet projects GT and predicted joints onto visible hands, so the metric result is not a gross camera/review artifact. Scope: this is one HOT3D clip, 21-joint MANO only; it does not score object pose, contact, occlusion, nonpenetration, or full MANO vertices.
+
+The next Workbench item-6 test is a new fixed HOT3D clip, not more threshold tuning on `clip-001850`. A falsifying result would be: zero-support rows on another clip still show absolute MPJPE regression after gating, or positive-support rows require translation corrections that the current gate wrongly blocks.
+
 The runbook still fixes the evaluation discipline now:
 
 - Primary benchmark: 3-5 HOT3D clips.
