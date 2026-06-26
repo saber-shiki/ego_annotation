@@ -218,7 +218,7 @@ def prompt_points(
     tracks: list[Track],
     prompt_sizes: dict[str, tuple[int, int]],
     video_size: tuple[int, int],
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     prompt = track.prompts[source_idx]
     positives = prompt.get("positive_points", [])
     negatives = prompt.get("negative_points", [])
@@ -245,7 +245,36 @@ def prompt_points(
     neg = np.vstack([own_neg, extra_neg]).astype(np.float32) if len(own_neg) or len(extra_neg) else np.zeros((0, 2), dtype=np.float32)
     points = np.vstack([pos, neg]).astype(np.float32)
     labels = np.concatenate([np.ones(len(pos), dtype=np.int32), np.zeros(len(neg), dtype=np.int32)])
-    return points, labels
+    return points, labels, pos
+
+
+def positive_prompt_box(
+    positive_points: np.ndarray,
+    video_size: tuple[int, int],
+    *,
+    pad_ratio: float,
+    min_pad_px: float,
+) -> np.ndarray | None:
+    """Build a generic SAM2 box from model/agent-produced positive surface clicks.
+
+    The box is not category-specific. It constrains SAM2 to the local surface
+    supported by the positive clicks while negative clicks still suppress hands,
+    table, and competing objects. Without this, sparse points can let the video
+    predictor choose a broad connected support region and contaminate geometry.
+    """
+    if positive_points.ndim != 2 or positive_points.shape[0] < 2 or positive_points.shape[1] != 2:
+        return None
+    xy_min = positive_points.min(axis=0)
+    xy_max = positive_points.max(axis=0)
+    diag = float(np.linalg.norm(xy_max - xy_min))
+    pad = max(float(min_pad_px), float(pad_ratio) * diag)
+    x1 = max(0.0, float(xy_min[0] - pad))
+    y1 = max(0.0, float(xy_min[1] - pad))
+    x2 = min(float(video_size[0] - 1), float(xy_max[0] + pad))
+    y2 = min(float(video_size[1] - 1), float(xy_max[1] + pad))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return np.asarray([x1, y1, x2, y2], dtype=np.float32)
 
 
 def mask_box(mask: np.ndarray) -> tuple[list[float] | None, float, np.ndarray | None]:
@@ -285,6 +314,10 @@ def add_prompt_frames(
     prompt_frames: list[int],
     prompt_sizes: dict[str, tuple[int, int]],
     video_size: tuple[int, int],
+    *,
+    use_positive_prompt_box: bool,
+    prompt_box_pad_ratio: float,
+    prompt_box_min_pad_px: float,
 ) -> list[dict]:
     selected = [int(frame["frame_idx"]) for frame in frames]
     local_by_source = {source_idx: local for local, source_idx in enumerate(selected)}
@@ -296,13 +329,24 @@ def add_prompt_frames(
             prompt = track.prompts.get(source_idx)
             if not prompt or not prompt.get("target_visible") or not prompt.get("positive_points"):
                 continue
-            points, labels = prompt_points(track, source_idx, tracks, prompt_sizes, video_size)
+            points, labels, positive_points = prompt_points(track, source_idx, tracks, prompt_sizes, video_size)
+            box = (
+                positive_prompt_box(
+                    positive_points,
+                    video_size,
+                    pad_ratio=float(prompt_box_pad_ratio),
+                    min_pad_px=float(prompt_box_min_pad_px),
+                )
+                if use_positive_prompt_box
+                else None
+            )
             out_frame_idx, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
                 inference_state=state,
                 frame_idx=local_by_source[source_idx],
                 obj_id=track.obj_id,
                 points=points,
                 labels=labels,
+                box=box,
             )
             ids = [int(v) for v in out_obj_ids]
             report = {
@@ -314,6 +358,10 @@ def add_prompt_frames(
                 "point_coordinate_frame": str(track.payload.get("point_coordinate_frame") or track.payload.get("coordinate_frame") or ""),
                 "prompt_coordinate_size": list(prompt_sizes[track.track_id]),
                 "sam2_video_size": list(video_size),
+                "positive_prompt_box_enabled": bool(use_positive_prompt_box),
+                "positive_prompt_box_xyxy": None if box is None else [float(v) for v in box.tolist()],
+                "positive_prompt_box_pad_ratio": float(prompt_box_pad_ratio),
+                "positive_prompt_box_min_pad_px": float(prompt_box_min_pad_px),
             }
             if track.obj_id in ids:
                 obj_pos = ids.index(track.obj_id)
@@ -487,7 +535,18 @@ def run(args: argparse.Namespace) -> dict:
     propagated: dict[int, dict[int, np.ndarray]] = {}
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         state = predictor.init_state(video_path=str(frame_dir), offload_video_to_cpu=True, offload_state_to_cpu=True)
-        prompt_reports = add_prompt_frames(predictor, state, tracks, frames, prompt_frames, prompt_sizes, video_size)
+        prompt_reports = add_prompt_frames(
+            predictor,
+            state,
+            tracks,
+            frames,
+            prompt_frames,
+            prompt_sizes,
+            video_size,
+            use_positive_prompt_box=bool(args.use_positive_prompt_box),
+            prompt_box_pad_ratio=float(args.prompt_box_pad_ratio),
+            prompt_box_min_pad_px=float(args.prompt_box_min_pad_px),
+        )
         selected_frames_list = [int(frame["frame_idx"]) for frame in frames]
         for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(state):
             source_idx = selected_frames_list[int(out_frame_idx)]
@@ -526,6 +585,9 @@ def run(args: argparse.Namespace) -> dict:
         "checkpoint": str(args.checkpoint),
         "model_cfg": args.model_cfg,
         "non_overlap_masks": True,
+        "positive_prompt_box_enabled": bool(args.use_positive_prompt_box),
+        "prompt_box_pad_ratio": float(args.prompt_box_pad_ratio),
+        "prompt_box_min_pad_px": float(args.prompt_box_min_pad_px),
         "overlay": str(overlay),
         "elapsed_s": time.time() - started,
     }
@@ -545,6 +607,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int, required=True)
     parser.add_argument("--sam2-image-width", type=int, default=960)
     parser.add_argument("--render-width", type=int, default=960)
+    parser.add_argument(
+        "--use-positive-prompt-box",
+        action="store_true",
+        help="Constrain each SAM2 conditioning frame with a box derived from positive prompt points, while still applying positive/negative clicks.",
+    )
+    parser.add_argument("--prompt-box-pad-ratio", type=float, default=0.18)
+    parser.add_argument("--prompt-box-min-pad-px", type=float, default=24.0)
     return parser.parse_args()
 
 
