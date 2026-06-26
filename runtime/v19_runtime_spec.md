@@ -100,7 +100,7 @@ State after phase: unresolved camera, hands, objects, contact, occlusion, and no
 Script: `scripts/build_v19_raw_frame_manifest.py`
 
 ```bash
-python scripts/build_v19_raw_frame_manifest.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_raw_frame_manifest.py \
   --video "{INPUT_VIDEO}" \
   --output-dir "{RUN_ROOT}/input/raw_frame_manifest" \
   --render-width 960
@@ -147,7 +147,7 @@ If prediction-side calibration metadata is present next to the input, copy it to
 Script: `scripts/build_v19_calibration_contract.py`
 
 ```bash
-python scripts/build_v19_calibration_contract.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_calibration_contract.py \
   --case "{CASE_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
   --unidepth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
@@ -214,7 +214,7 @@ Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_age
 Script: `scripts/build_v19_base_annotations.py`
 
 ```bash
-python scripts/build_v19_base_annotations.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_base_annotations.py \
   --case "{CASE_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
   --hawor-npz "{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
@@ -231,7 +231,7 @@ Required output: `{RUN_ROOT}/state/base_annotations/annotations_v19_base.json`, 
 Script: `scripts/build_v19_visible_geometry_from_sam2_depth.py`
 
 ```bash
-python scripts/build_v19_visible_geometry_from_sam2_depth.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_visible_geometry_from_sam2_depth.py \
   --case "{CASE_ID}" \
   --track-id "{TRACK_ID}" \
   --object-id "{OBJECT_ID}" \
@@ -261,7 +261,7 @@ If branch is not rigid, stop rigid path and render uncertainty from available st
 Script: `scripts/build_v18_compact_rigid_evidence_bundle.py`
 
 ```bash
-python scripts/build_v18_compact_rigid_evidence_bundle.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v18_compact_rigid_evidence_bundle.py \
   --case "{CASE_ID}" \
   --object-id "{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
@@ -278,7 +278,7 @@ Required output: evidence bundle report and crop image path.
 Script: `scripts/remote_run_trellis_shape_v3.py`
 
 ```bash
-python scripts/remote_run_trellis_shape_v3.py \
+"{REMOTE_MODEL_PYTHON}" scripts/remote_run_trellis_shape_v3.py \
   --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work \
   --image "<evidence_crop_rgba>" \
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42" \
@@ -292,7 +292,7 @@ Required output: TRELLIS mesh report and mesh path.
 Script: `scripts/build_v18_compact_rigid_trellis_completion.py`
 
 ```bash
-python scripts/build_v18_compact_rigid_trellis_completion.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v18_compact_rigid_trellis_completion.py \
   --evidence-report "<evidence_bundle_report>" \
   --trellis-report "<trellis_report>" \
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42"
@@ -305,7 +305,7 @@ Required output: completion report and completed mesh.
 Script: `scripts/fit_v18_compact_rigid_object_pose.py`
 
 ```bash
-python scripts/fit_v18_compact_rigid_object_pose.py \
+"{REMOTE_MODEL_PYTHON}" scripts/fit_v18_compact_rigid_object_pose.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --completion-report "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json" \
   --object-id "{OBJECT_ID}" \
@@ -319,7 +319,7 @@ Required output: object pose fit report.
 Script: `scripts/solve_v19_rigid_object_pose_graph.py`
 
 ```bash
-python scripts/solve_v19_rigid_object_pose_graph.py \
+"{REMOTE_MODEL_PYTHON}" scripts/solve_v19_rigid_object_pose_graph.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit/v18_compact_rigid_object_pose_fit_report.json" \
   --completion-report "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json" \
@@ -334,7 +334,7 @@ Required output: rigid pose graph report.
 Script: `scripts/build_v18_mano_object_constraint_state.py`
 
 ```bash
-python scripts/build_v18_mano_object_constraint_state.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v18_mano_object_constraint_state.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --hawor-npz "{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
@@ -354,7 +354,7 @@ Agent output: `{RUN_ROOT}/state/agent_interaction_judgments/{OBJECT_ID}_{INTERVA
 Script: `scripts/build_v19_visible_contact_ownership_factor.py`
 
 ```bash
-python scripts/build_v19_visible_contact_ownership_factor.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_visible_contact_ownership_factor.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --case "{CASE_ID}" \
   --target-entity-id "object:{OBJECT_ID}" \
@@ -370,7 +370,7 @@ Required output: visible contact/ownership factor report.
 Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
 
 ```bash
-python scripts/solve_v18_joint_mano_interval_trajectory.py \
+"{REMOTE_MODEL_PYTHON}" scripts/solve_v18_joint_mano_interval_trajectory.py \
   --case "{CASE_ID}" \
   --object-id "object:{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
@@ -393,7 +393,7 @@ Required output: interval MANO trajectory state.
 Script: `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`
 
 ```bash
-python scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py \
+"{REMOTE_MODEL_PYTHON}" scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py \
   --case "{CASE_ID}" \
   --object-label "{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
@@ -410,7 +410,7 @@ Required output: full-duration overlay/world/side-by-side render branch.
 Script: `scripts/publish_v19_render_artifact.py`
 
 ```bash
-python scripts/publish_v19_render_artifact.py \
+"{REMOTE_MODEL_PYTHON}" scripts/publish_v19_render_artifact.py \
   --overlay "<render_branch_overlay_mp4>" \
   --world "<render_branch_world_mp4>" \
   --side-by-side "<render_branch_side_by_side_mp4>" \
