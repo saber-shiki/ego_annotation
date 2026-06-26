@@ -14,7 +14,9 @@ The P12 raw TRELLIS-vs-P13 completed-mesh mismatch was real, and commit `1b0aa0f
 
 ## Current root mechanism
 
-P07/P09 accepted wrong object support. The SAM2 masks for representative frames already include non-object regions: keyboard plus hands/table/arm. P09 lifted those mask pixels with depth into visible surfels; P13 completed geometry and P14/P15 pose fitting then used that contaminated surface. Renderer-equivalent projection of P13/P15 reproduces the bad canonical overlay, so P19 publication/projection is not the primary root.
+The rejected v5 freeze failed because P07/P09 accepted wrong object support. The earlier SAM2 masks for representative frames included non-object regions: keyboard plus hands/table/arm. P09 lifted those mask pixels with depth into visible surfels; P13 completed geometry and P14/P15 pose fitting then used that contaminated surface. Renderer-equivalent projection of P13/P15 reproduced the bad canonical overlay, so P19 publication/projection was not the primary root.
+
+The first repaired mask mechanism using positive-click-derived or agent-authored boxes was also rejected: it still selected tabletop/hand support. The current replacement mechanism is OWLv2 text-grounded detection (`keyboard.` / `computer keyboard.`) producing object boxes that seed SAM2. Runtime-owned OWLv2 P06/P07 now produces masks visually localized to the keyboard footprint on inspected frames, with only small disconnected mask noise rather than broad table/hand/arm support. This supports continuing P08-P21 from `sam2_owlv2_box_points`, but does not yet prove final geometry/pose correctness.
 
 Evidence:
 - `/tmp/v19_wrong_registration_diagnostics/renderer_equiv_projection_sheet.jpg`: red SAM2 masks include non-object support; blue P09 surfels follow that contaminated support; green P13/P15 mesh follows the same contaminated support.
@@ -23,7 +25,7 @@ Evidence:
 
 ## Strict blocker
 
-The final canonical overlay/world/side-by-side must render object geometry that coincides with the physical keyboard/key field. A mask, mesh, or pose that includes tabletop/hand/sleeve support is a hard failure, not an uncertainty label.
+The final canonical overlay/world/side-by-side must render object geometry that coincides with the physical keyboard/key field. A mask, mesh, or pose that includes broad tabletop/hand/sleeve support is a hard failure, not an uncertainty label. Small disconnected mask noise may be carried or filtered as measurement uncertainty only if it does not determine the rigid geometry/pose.
 
 ## Live repair mechanisms
 
@@ -33,4 +35,4 @@ The final canonical overlay/world/side-by-side must render object geometry that 
 
 ## Next action
 
-Do not run HOT3D scoring and do not claim any freeze accepted. The next artifact-changing attempt must rerun/refine P07/P09 before P13/P14/P19. P18/P19 mesh-frame provenance is already repaired; further work there will not fix the visible contradiction.
+Do not run HOT3D scoring and do not claim any freeze accepted. Runtime must rerun P08-P21 from the accepted OWLv2/SAM2 mask branch and then consume the canonical overlay/world/side-by-side as physical annotations. The decisive falsifiable claim is: if broad mask-support contamination was the dominant mechanism, the new render should move the keyboard geometry onto the physical key field; if it remains stretched/displaced, the remaining systematic error lies downstream in P09 surfel lifting, P13 completion/adaptation, P14/P15 pose fitting, camera conventions, or P19 rendering.
