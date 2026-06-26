@@ -262,6 +262,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--visible-surface-depth-order-margin-m", dest="visible_surface_depth_order_margin_m", type=float, default=0.010)
     p.add_argument("--visible-surface-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=2.0e4)
     p.add_argument("--max-visible-surface-depth-vertices", dest="max_visible_surface_depth_vertices", type=int, default=160)
+    p.add_argument("--gate-translation-with-visible-surface-support", action=argparse.BooleanOptionalAction, default=False, help="Output gate: when selected visible-surface depth-order support is at or below the threshold, preserve the source HaWoR wrist/root translation while keeping optimized wrist-relative MANO articulation. This prevents ungrounded contact/temporal terms from moving the global hand state.")
+    p.add_argument("--translation-gate-min-visible-surface-depth-vertices", type=int, default=0, help="Rows with selected visible-surface depth-order vertex count <= this value are translation-gated when --gate-translation-with-visible-surface-support is enabled.")
     p.add_argument("--visible-lid-depth-order-term", dest="visible_surface_depth_order_term", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p.add_argument("--visible-lid-depth-order-margin-m", dest="visible_surface_depth_order_margin_m", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p.add_argument("--visible-lid-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
@@ -1955,6 +1957,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     visible_surface_depth_order_final_in_front_count: list[float] = []
     visible_surface_depth_order_final_delta_min: list[float] = []
     contact_patch_final_abs_normal_gap: list[float] = []
+    output_translation_gate_applied_count = 0
+    output_translation_gate_shift_norm: list[float] = []
+    output_translation_gate_support_count: list[float] = []
     corrected_frames = 0
     for i, row in enumerate(rows):
         if len(active_constraint_indices[i]):
@@ -2036,6 +2041,42 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         object_trans_max.append(otnorm)
         root_max.append(rnorm)
         pose_max.append(pnorm)
+        state_joints_world = hyp_joints[i].astype(float).copy()
+        state_vertices_world = hyp_vertices[i].astype(float).copy()
+        state_translation_world = trans_np[i].astype(float).copy()
+        output_translation_gate = {
+            "enabled": bool(args.gate_translation_with_visible_surface_support),
+            "applied": False,
+            "reason": "disabled" if not bool(args.gate_translation_with_visible_surface_support) else "support_count_above_threshold",
+            "min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
+            "selected_visible_surface_depth_vertices": int(surface_ids.size),
+            "articulation_policy": "raw optimizer output",
+        }
+        if bool(args.gate_translation_with_visible_surface_support) and int(surface_ids.size) <= int(args.translation_gate_min_visible_surface_depth_vertices):
+            gate_shift = row.current_joints_world[0].astype(float) - state_joints_world[0].astype(float)
+            state_joints_world = state_joints_world + gate_shift[None, :]
+            state_vertices_world = state_vertices_world + gate_shift[None, :]
+            state_translation_world = state_translation_world + gate_shift
+            output_translation_gate_applied_count += 1
+            output_translation_gate_shift_norm.append(float(np.linalg.norm(gate_shift)))
+            output_translation_gate_support_count.append(float(surface_ids.size))
+            output_translation_gate = {
+                "enabled": True,
+                "applied": True,
+                "reason": "visible_surface_support_at_or_below_threshold",
+                "min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
+                "selected_visible_surface_depth_vertices": int(surface_ids.size),
+                "baseline_wrist_world_m": row.current_joints_world[0].astype(float).tolist(),
+                "raw_optimizer_wrist_world_m": hyp_joints[i, 0].astype(float).tolist(),
+                "applied_world_shift_m": gate_shift.astype(float).tolist(),
+                "applied_world_shift_norm_m": float(np.linalg.norm(gate_shift)),
+                "articulation_policy": "preserve optimized wrist-relative MANO articulation; preserve source HaWoR wrist/root translation",
+            }
+        state_camera_z_shift_m = float(np.dot(state_translation_world, camera_z_axis_world))
+        state_lateral_translation = state_translation_world - state_camera_z_shift_m * camera_z_axis_world
+        state_lateral_norm = float(np.linalg.norm(state_lateral_translation))
+        state_max_camera_z_inside_translation_bound = math.sqrt(max(0.0, max_translation * max_translation - state_lateral_norm * state_lateral_norm))
+        state_translation_bound_remaining_camera_z_m = float(state_max_camera_z_inside_translation_bound - state_camera_z_shift_m)
         states.append(
             {
                 "frame_idx": int(row.frame_idx),
@@ -2043,7 +2084,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "temporal_mano_state": "joint_continuous_mano_trajectory_correction",
                 "source_hawor_npz": str(row.source_hawor_npz),
                 "source_frame_index": int(row.source_frame_index),
-                "optimized_translation_world_m": trans_np[i].astype(float).tolist(),
+                "optimized_translation_world_m": state_translation_world.astype(float).tolist(),
+                "raw_optimizer_translation_world_m": trans_np[i].astype(float).tolist(),
+                "output_translation_gate": output_translation_gate,
                 "hand_ray_shift_prior_translation_world_m": row.hand_ray_shift_prior_world_m.astype(float).tolist(),
                 "hand_ray_shift_prior_source_m": row.hand_ray_shift_prior_source_m,
                 "hand_ray_shift_prior_weight": float(row.hand_ray_shift_prior_weight),
@@ -2053,8 +2096,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "pose_visibility_weights": pose_visibility_weights_np[i].astype(float).tolist(),
                 "optimized_root_delta_axis_angle_rad": root_np[i].astype(float).tolist(),
                 "optimized_hand_pose_delta_axis_angle_rad": pose_np[i].reshape(-1).astype(float).tolist(),
-                "optimized_joints_world_m": hyp_joints[i].astype(float).tolist(),
-                "optimized_vertices_world_sample_m": hyp_vertices[i, render_ids].astype(float).tolist(),
+                "optimized_joints_world_m": state_joints_world.astype(float).tolist(),
+                "optimized_vertices_world_sample_m": state_vertices_world[render_ids].astype(float).tolist(),
                 "optimized_vertices_sample_ids": render_ids.astype(int).tolist(),
                 "initial_observed_surface_penetration_m": init_measure.get("observed_supported_penetration_m"),
                 "initial_raw_observed_surface_penetration_m": init_raw_measure.get("observed_supported_penetration_m"),
@@ -2091,9 +2134,12 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "visible_surface_depth_order_selected_final_delta_hand_minus_surface_m": surface_final_summary,
                 "visible_surface_depth_order_selected_final_delta_values_m": surface_final_delta.astype(float).tolist(),
                 "visible_surface_depth_order_additional_camera_z_to_clear_selected_m": float(additional_camera_z_to_clear),
-                "optimized_translation_camera_z_m": float(optimized_camera_z_shift_m),
-                "optimized_translation_lateral_norm_m": float(lateral_norm),
-                "translation_bound_remaining_camera_z_m": float(translation_bound_remaining_camera_z_m),
+                "optimized_translation_camera_z_m": float(state_camera_z_shift_m),
+                "optimized_translation_lateral_norm_m": float(state_lateral_norm),
+                "translation_bound_remaining_camera_z_m": float(state_translation_bound_remaining_camera_z_m),
+                "raw_optimizer_translation_camera_z_m": float(optimized_camera_z_shift_m),
+                "raw_optimizer_translation_lateral_norm_m": float(lateral_norm),
+                "raw_optimizer_translation_bound_remaining_camera_z_m": float(translation_bound_remaining_camera_z_m),
                 "hand_observation_visibility_factor_state": row.hand_observation_visibility_factor_state,
                 "hand_observation_visibility_candidate_px": int(row.hand_observation_visibility_candidate_px),
                 "hand_observation_visibility_weight_multiplier": float(row.hand_observation_visibility_weight_multiplier),
@@ -2163,6 +2209,11 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visible_joint_shift_max_px": numeric_summary(np.asarray(visible_max, dtype=float)),
         "joint_camera_depth_shift_max_m": numeric_summary(np.asarray(depth_max, dtype=float)),
         "translation_delta_norm_m": numeric_summary(np.asarray(trans_max, dtype=float)),
+        "output_translation_gate_enabled": bool(args.gate_translation_with_visible_surface_support),
+        "output_translation_gate_min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
+        "output_translation_gate_applied_count": int(output_translation_gate_applied_count),
+        "output_translation_gate_shift_norm_m": numeric_summary(np.asarray(output_translation_gate_shift_norm, dtype=float)),
+        "output_translation_gate_selected_support_count": numeric_summary(np.asarray(output_translation_gate_support_count, dtype=float)),
         "object_translation_delta_norm_m": numeric_summary(np.asarray(object_trans_max, dtype=float)),
         "root_delta_norm_rad": numeric_summary(np.asarray(root_max, dtype=float)),
         "pose_delta_max_joint_norm_rad": numeric_summary(np.asarray(pose_max, dtype=float)),

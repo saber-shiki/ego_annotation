@@ -105,6 +105,32 @@ python "$REPO_ROOT/scripts/evaluate_v19_hot3d_hawor_mano3d.py" \
 
 This repair consumes no HOT3D hand labels. It uses prediction-side support signals only: same-frame support, detector score/area, hand-pose magnitude, and temporal continuity. Its necessary comparison is HaWoR pinhole baseline versus repaired MANO on the fixed slice, with target-interval metrics and review sheets preserved. If it improves only wrist-subtracted error but not MPJPE, the mechanism supports an articulation-prior component but does not close MANO state; the next intervention must use stronger hand-owned visible-surface/mask-depth evidence rather than more temporal smoothing.
 
+For interval-state autoresearch, first decompose the error before changing the solver:
+
+```bash
+python "$REPO_ROOT/scripts/analyze_v19_hot3d_interval_mano_delta.py" \
+  --hot3d-gt "$BENCH_ROOT/hot3d_clips/v19_inputs/clip-001850/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json" \
+  --hawor-npz "$RUN_ROOT/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
+  --interval-state "$RUN_ROOT/measurements/mano_interval_correction/keyboard_0_149/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
+  --output-json "$RUN_ROOT/evaluation/hot3d_mano3d_interval/hot3d_interval_mano_error_decomposition.json" \
+  --output-review "$RUN_ROOT/evaluation/hot3d_mano3d_interval/hot3d_interval_mano_error_decomposition_timeline.jpg" \
+  --mano-left "$BUNDLE_ROOT/third_party/WiLoR/mano_data/MANO_LEFT.pkl" \
+  --mano-right "$BUNDLE_ROOT/third_party/WiLoR/mano_data/MANO_RIGHT.pkl"
+```
+
+If MPJPE regresses while root-aligned MPJPE stays nearly fixed, inspect wrist correction direction. A high fraction of wrist corrections moving along the baseline error direction supports a systematic root-translation failure, not normal joint noise. In that case the prediction-side ablation is support-gated translation:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_interval_mano_translation_gate.py" \
+  --interval-state "$RUN_ROOT/measurements/mano_interval_correction/keyboard_0_149/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
+  --output-state "$RUN_ROOT/evaluation/hot3d_mano3d_interval/support_gated/v19_interval_mano_support_gated_state.json" \
+  --output-report "$RUN_ROOT/evaluation/hot3d_mano3d_interval/support_gated/v19_interval_mano_support_gate_report.json" \
+  --min-support-vertices 0 \
+  --require-support-count
+```
+
+This gate uses no GT: when selected visible-surface support is absent, it preserves the source HaWoR wrist/root translation and keeps interval wrist-relative articulation. If that restores absolute MPJPE while leaving root-aligned MPJPE unchanged, the next runtime solver must enable `--gate-translation-with-visible-surface-support` rather than relying on ungated contact/temporal translation.
+
 The runbook still fixes the evaluation discipline now:
 
 - Primary benchmark: 3-5 HOT3D clips.

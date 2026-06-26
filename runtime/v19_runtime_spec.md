@@ -482,10 +482,12 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --sides left right \
   --factor-report "<visible_contact_ownership_factor_report>" \
   --optimize-contact-state \
-  --visible-surface-depth-order-term
+  --visible-surface-depth-order-term \
+  --gate-translation-with-visible-surface-support \
+  --translation-gate-min-visible-surface-depth-vertices 0
 ```
 
-Required output: interval MANO trajectory state.
+Required output: interval MANO trajectory state. The translation gate preserves source HaWoR wrist/root translation when no selected visible-surface support vertices exist, while keeping optimized wrist-relative articulation; this prevents contact/temporal terms from moving global hand pose without direct support evidence.
 
 ## P19 full-duration render
 
