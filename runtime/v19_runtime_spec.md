@@ -212,36 +212,39 @@ Type: agent writes JSON from visual evidence.
 
 Output: `{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json`.
 
-Minimum fields per object: `object_id`, `description`, `physical_branch_hypotheses`, `evidence_frames`, `expected_visible_intervals`, `uncertainty_notes`.
+Minimum fields per object: `object_id`, `description`, `physical_branch_hypotheses`, `evidence_frames`, `expected_visible_intervals`, `uncertainty_notes`, `detector_text_prompts`, `detector_prompt_frames`, and `detector_active_interval`. `detector_text_prompts` are open-vocabulary object queries such as `keyboard.` / `computer keyboard.`; they are not pixel coordinates. `detector_prompt_frames` must be representative visible frames selected from the raw video, and `detector_active_interval` must be a frame span over which the object is expected to be physically present or uncertain.
 
 ## P06 object grounded detector box prompts
 
 Script: `scripts/build_v19_owlv2_object_box_prompts.py`
 
-The default P06 source is OWLv2 text-conditioned detection, not VLM/agent pixel clicks. A VLM/agent may name the target object and choose representative frames, but it must not be treated as the source of pixel-accurate click coordinates. For each rigid/manipulated object, run OWLv2 with object text prompts (for this clip, `keyboard.` and `computer keyboard.`) on representative keyframes, then write SAM2 prompt JSON containing `box_xyxy` in the detector image coordinate frame.
+The default P06 source is OWLv2 text-conditioned detection, not VLM/agent pixel clicks. A VLM/agent may name the target object, write open-vocabulary text prompts, and choose representative frames in P05, but it must not be treated as the source of pixel-accurate click coordinates. For each rigid/manipulated object selected in P05, run OWLv2 with the object's `detector_text_prompts` on `detector_prompt_frames`, then write SAM2 prompt JSON containing `box_xyxy` in the detector image coordinate frame. Do not hard-code a category-specific object id, prompt string, or active interval in the runtime command; keyboard prompts are an example P05 object-plan value, not the P06 contract.
 
 ```bash
-mkdir -p '{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2' '{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes'
-CUDA_VISIBLE_DEVICES='{GPU_ID}' '{OWLV2_PYTHON}' scripts/build_v19_owlv2_object_box_prompts.py \
-  --raw-frame-manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
-  --output-root '{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2' \
-  --review-dir '{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes' \
-  --case-id '{CASE_ID}' \
-  --object-id keyboard \
-  --track-id keyboard \
-  --description 'dark key grid and immediate silver rim of the rigid keyboard; tabletop and hands are negatives' \
-  --text-prompt 'keyboard.' \
-  --text-prompt 'computer keyboard.' \
-  --prompt-frames '30,32,45,60,75,90,105,120,135,149' \
-  --active-start 30 \
-  --active-end {FRAME_END} \
+mkdir -p "{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2" "{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes"
+TEXT_PROMPT_ARGS=()
+for PROMPT in "${DETECTOR_TEXT_PROMPTS[@]}"; do
+  TEXT_PROMPT_ARGS+=(--text-prompt "$PROMPT")
+done
+CUDA_VISIBLE_DEVICES="{GPU_ID}" "{OWLV2_PYTHON}" scripts/build_v19_owlv2_object_box_prompts.py \
+  --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
+  --output-root "{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2" \
+  --review-dir "{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes" \
+  --case-id "{CASE_ID}" \
+  --object-id "{OBJECT_ID}" \
+  --track-id "{TRACK_ID}" \
+  --description "{OBJECT_DESCRIPTION}" \
+  "${TEXT_PROMPT_ARGS[@]}" \
+  --prompt-frames "{DETECTOR_PROMPT_FRAMES_CSV}" \
+  --active-start "{DETECTOR_ACTIVE_START}" \
+  --active-end "{DETECTOR_ACTIVE_END}" \
   --owlv2-model /home/yiwen/.cache/huggingface/hub/models--google--owlv2-base-patch16-ensemble \
   --box-threshold 0.03 \
   --device cuda \
   --box-only
 ```
 
-Required output for each object: `{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2/{OBJECT_ID}/object_point_prompts_vlm.json` and `v19_owlv2_object_box_prompt_report.json`. The prompt JSON must contain `prompt_source=owlv2_text_grounded_detector_boxes`, `box_xyxy` on visible prompt frames, and a coordinate declaration matching the frame images used by the detector. If OWLv2 produces no usable box for the target object, write a P06 blocker and stop; do not replace it with VLM/agent click coordinates as the default path.
+Required output for each object: `{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2/{OBJECT_ID}/object_point_prompts_vlm.json` and `v19_owlv2_object_box_prompt_report.json`. The prompt JSON must contain `prompt_source=owlv2_text_grounded_detector_boxes`, `box_xyxy` on visible prompt frames, and a coordinate declaration matching the frame images used by the detector. If OWLv2 produces no usable box for the target object, write a P06 blocker and stop; do not replace it with VLM/agent click coordinates as the default path. For the current fixed HOT3D keyboard clips, a valid P05 object plan may set `{OBJECT_ID}=keyboard`, `{TRACK_ID}=keyboard`, `{DETECTOR_TEXT_PROMPTS}=["keyboard.", "computer keyboard."]`, and prompt frames such as `30,32,45,60,75,90,105,120,135,149` only after the runtime visually confirms those frames contain the keyboard.
 
 ## P07 object masks/tracks
 
