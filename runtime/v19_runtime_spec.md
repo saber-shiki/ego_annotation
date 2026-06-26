@@ -278,6 +278,7 @@ Required output: evidence bundle report and crop image path.
 Script: `scripts/remote_run_trellis_shape_v3.py`
 
 ```bash
+PYTHONPATH="/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/trellis_work/.venv_trellis/lib/python3.10/site-packages:${PYTHONPATH:-}" \
 "{REMOTE_MODEL_PYTHON}" scripts/remote_run_trellis_shape_v3.py \
   --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work/TRELLIS \
   --image "<evidence_crop_rgba>" \
