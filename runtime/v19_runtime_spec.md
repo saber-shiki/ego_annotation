@@ -294,7 +294,7 @@ Script: `scripts/build_v19_visible_geometry_from_sam2_depth.py`
   --track-id "{TRACK_ID}" \
   --object-id "{OBJECT_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
-  --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_agent_points" \
+  --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
   --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
   --output-dir "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}" \
   --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
