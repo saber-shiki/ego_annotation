@@ -352,6 +352,22 @@ Type: agent writes interval judgment JSON, then script consumes it.
 
 Agent output: `{RUN_ROOT}/state/agent_interaction_judgments/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}.json`.
 
+The JSON must be a single object with `status: "ok"` (or no status), `case: "{CASE_ID}"` (or no case), and a non-empty `interaction_judgments` list. Each segment in that list must target the object and a single hand side, with fields:
+
+- `judgment_id`: stable segment id.
+- `target_entity_id`: `object:{OBJECT_ID}`.
+- `hand_side`: `left` or `right`; use separate segments for both hands.
+- `frame_start`, `frame_end`: inclusive frame interval.
+- `contact_state`: one of `likely_contact`, `possible_contact`, `no_contact`, `unresolved`.
+- `occlusion_relation`: one of `hand_in_front_of_object`, `object_in_front_of_hand`, `object_partially_occluded_by_hand`, `no_visible_occlusion`, `unresolved`.
+- `depth_reliability`: one of `hand_depth_unreliable`, `object_depth_reliable`, `mixed_or_unresolved`, `not_evaluated`.
+- `contact_prior_probability`: numeric in `[0, 1]`.
+- `contact_support_uncertainty_m`: non-negative numeric, usually `0.03`–`0.08` for uncertain hand/keyboard contact.
+- `contact_weight_multiplier`: non-negative numeric, usually `1.0` unless downweighting uncertain intervals.
+- Optional `evidence`, `uncertainty`, `ownership_quarantine` / `object_surface_policy`; use `hand_projected` when hands occlude the object.
+
+Do not write only narrative `contact_intervals` or `occlusion_ownership`; those are not consumed by the factor builder unless converted into `interaction_judgments`.
+
 Script: `scripts/build_v19_visible_contact_ownership_factor.py`
 
 ```bash
