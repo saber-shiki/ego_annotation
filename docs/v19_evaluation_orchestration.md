@@ -154,3 +154,9 @@ The runbook still fixes the evaluation discipline now:
 - Required ablations: MANO candidate source/refit, depth/camera source, contact/occlusion/nonpenetration factors, rigid branch enabled versus visible-surface-only after a rigid decision.
 
 If benchmark evaluation is requested before adapters exist, stop with `missing_benchmark_adapter` and name the blocked physical metric family. Do not fabricate `metrics.json`.
+
+## Fixed HOT3D slice v1 outcome
+
+The first Workbench item-6 fixed slice is now complete for HOT3D `clip-001849`, `clip-001850`, and `clip-001851`. The supported result is documented in `docs/v19_hot3d_fixed_slice_v1_results.md`.
+
+Mechanism-level conclusion: support-gated V19 interval MANO preserves runtime HaWoR wrist/root translation on all three clips when selected visible-surface depth-order support is zero. It does not yet establish a general MANO-accuracy improvement. The next Workbench item-7 research target is physically supported correction beyond this safety gate: either in-solver translation freezing if latent unsupported translation contaminates articulation, or a nearby/latent visible-surface support mechanism if exact visible-mask overlap is too narrow for occluded keyboard contact.

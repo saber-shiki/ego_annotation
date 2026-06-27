@@ -263,7 +263,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--visible-surface-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=2.0e4)
     p.add_argument("--max-visible-surface-depth-vertices", dest="max_visible_surface_depth_vertices", type=int, default=160)
     p.add_argument("--gate-translation-with-visible-surface-support", action=argparse.BooleanOptionalAction, default=False, help="Output gate: when selected visible-surface depth-order support is at or below the threshold, preserve the source HaWoR wrist/root translation while keeping optimized wrist-relative MANO articulation. This prevents ungrounded contact/temporal terms from moving the global hand state.")
-    p.add_argument("--translation-gate-min-visible-surface-depth-vertices", type=int, default=0, help="Rows with selected visible-surface depth-order vertex count <= this value are translation-gated when --gate-translation-with-visible-surface-support is enabled.")
+    p.add_argument("--freeze-translation-without-visible-surface-support", action=argparse.BooleanOptionalAction, default=False, help="In-solver gate: rows whose selected visible-surface depth-order support count is at or below --translation-gate-min-visible-surface-depth-vertices cannot use global MANO translation during optimization. This tests whether unsupported latent translation contaminates wrist-relative articulation before the output gate projects the wrist/root back to HaWoR.")
+    p.add_argument("--translation-gate-min-visible-surface-depth-vertices", type=int, default=0, help="Rows with selected visible-surface depth-order vertex count <= this value are translation-gated when --gate-translation-with-visible-surface-support is enabled, and translation-frozen during optimization when --freeze-translation-without-visible-surface-support is enabled.")
     p.add_argument("--visible-lid-depth-order-term", dest="visible_surface_depth_order_term", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p.add_argument("--visible-lid-depth-order-margin-m", dest="visible_surface_depth_order_margin_m", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p.add_argument("--visible-lid-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
@@ -1622,6 +1623,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     hand_ray_shift_prior_weight_t = torch.tensor(np.asarray([float(r.hand_ray_shift_prior_weight) for r in rows], dtype=float), dtype=torch.float32, device=device)
     trans_init = hand_ray_shift_prior_t.detach().clone() if bool(args.initialize_hand_ray_shift) else torch.zeros((b, 3), dtype=torch.float32, device=device)
     trans_delta = trans_init.clone().detach().requires_grad_(True)
+    translation_support_count_np = np.asarray([len(r.visible_surface_depth_order_vertex_indices) for r in rows], dtype=int)
+    if bool(args.freeze_translation_without_visible_surface_support):
+        translation_allowed_np = translation_support_count_np > int(args.translation_gate_min_visible_surface_depth_vertices)
+    else:
+        translation_allowed_np = np.ones((b,), dtype=bool)
+    translation_allowed_t = torch.tensor(translation_allowed_np.astype(np.float32), dtype=torch.float32, device=device).reshape(b, 1)
+    translation_allowed_bool_t = torch.tensor(translation_allowed_np, dtype=torch.bool, device=device)
     object_trans_delta = torch.zeros((b, 3), dtype=torch.float32, device=device, requires_grad=bool(args.optimize_object_translation))
     contact_prior_np = np.asarray([float(np.clip(r.contact_patch_prior_probability, 0.0, 1.0)) for r in rows], dtype=float)
     contact_geometry_target_np = []
@@ -1750,22 +1758,26 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 contact_temporal_pairs.append((i0, i1))
     contact_temporal_pairs_t = torch.tensor(contact_temporal_pairs, dtype=torch.long, device=device) if contact_temporal_pairs else torch.zeros((0, 2), dtype=torch.long, device=device)
 
+    def effective_trans_delta() -> torch.Tensor:
+        return trans_delta * translation_allowed_t
+
     def hypothesis() -> tuple[torch.Tensor, torch.Tensor]:
         new_root = rotvec_to_matrix(root_delta) @ base_root_mat
         new_pose = rotvec_to_matrix(pose_delta) @ base_pose_mat
         out = model(global_orient=new_root, hand_pose=new_pose, betas=betas, transl=trans, return_verts=True, pose2rot=False)
+        eff_trans_delta = effective_trans_delta()
         if zero_surface_mode == "similarity_mapped_raw":
             mapped_vertices = sim_scale_t * torch.matmul(out.vertices, sim_rot_t.transpose(1, 2)) + sim_trans_t
             mapped_joints = sim_scale_t * torch.matmul(out.joints, sim_rot_t.transpose(1, 2)) + sim_trans_t
-            verts = mapped_vertices + trans_delta[:, None, :]
-            joints = mapped_joints + trans_delta[:, None, :]
+            verts = mapped_vertices + eff_trans_delta[:, None, :]
+            joints = mapped_joints + eff_trans_delta[:, None, :]
         else:
             raw_delta_vertices = out.vertices - raw_base_vertices_t
             raw_delta_joints = out.joints - raw_base_joints_t
             mapped_vertices = sim_scale_t * torch.matmul(raw_delta_vertices, sim_rot_t.transpose(1, 2))
             mapped_joints = sim_scale_t * torch.matmul(raw_delta_joints, sim_rot_t.transpose(1, 2))
-            verts = torch.stack(current_vertices_t, dim=0) + mapped_vertices + trans_delta[:, None, :]
-            joints = torch.stack(current_joints_t, dim=0) + mapped_joints + trans_delta[:, None, :]
+            verts = torch.stack(current_vertices_t, dim=0) + mapped_vertices + eff_trans_delta[:, None, :]
+            joints = torch.stack(current_joints_t, dim=0) + mapped_joints + eff_trans_delta[:, None, :]
         return verts, joints
 
     def project_torch(points_world: torch.Tensor, i: int) -> torch.Tensor | None:
@@ -1806,7 +1818,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 pair_delta = contact_prob[i1] - contact_prob[i0]
                 loss = loss + torch.mean(pair_strength * pair_delta * pair_delta)
         obs_mult = hand_observation_weight_multiplier_t
-        trans_prior_num = torch.sum(obs_mult[:, None] * trans_delta * trans_delta)
+        eff_trans_delta = effective_trans_delta()
+        trans_prior_num = torch.sum(obs_mult[:, None] * eff_trans_delta * eff_trans_delta)
         trans_prior_den = torch.clamp(torch.sum(obs_mult) * 3.0, min=1.0)
         loss = loss + float(args.translation_prior_weight) * trans_prior_num / trans_prior_den
         root_prior_num = torch.sum(obs_mult[:, None, None] * root_delta * root_delta)
@@ -1815,18 +1828,19 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         pose_prior_num = torch.sum(pose_visibility_weights_t[:, :, None] * pose_delta * pose_delta)
         pose_prior_den = torch.clamp(torch.sum(pose_visibility_weights_t) * 3.0, min=1.0)
         loss = loss + float(args.pose_prior_weight) * pose_prior_num / pose_prior_den
-        loss = loss + temporal_terms(trans_delta, float(args.smooth_weight))
+        loss = loss + temporal_terms(eff_trans_delta, float(args.smooth_weight))
         loss = loss + temporal_terms(root_delta, float(args.smooth_weight))
         loss = loss + temporal_terms(pose_delta, float(args.smooth_weight))
         if bool(args.optimize_object_translation):
             loss = loss + float(args.object_translation_prior_weight) * torch.mean(object_trans_delta * object_trans_delta)
             loss = loss + temporal_terms(object_trans_delta, float(args.object_smooth_weight))
-        if torch.any(hand_ray_shift_prior_active):
-            diff = trans_delta[hand_ray_shift_prior_active] - hand_ray_shift_prior_t[hand_ray_shift_prior_active]
-            weights = hand_ray_shift_prior_weight_t[hand_ray_shift_prior_active].reshape(-1, 1)
+        hand_ray_shift_prior_active_supported = hand_ray_shift_prior_active & translation_allowed_bool_t
+        if torch.any(hand_ray_shift_prior_active_supported):
+            diff = eff_trans_delta[hand_ray_shift_prior_active_supported] - hand_ray_shift_prior_t[hand_ray_shift_prior_active_supported]
+            weights = hand_ray_shift_prior_weight_t[hand_ray_shift_prior_active_supported].reshape(-1, 1)
             denom = torch.clamp(torch.tensor(float(diff.numel()), dtype=torch.float32, device=device), min=1.0)
             loss = loss + torch.sum(weights * diff * diff) / denom
-        trans_norm = torch.linalg.norm(trans_delta, dim=1)
+        trans_norm = torch.linalg.norm(eff_trans_delta, dim=1)
         object_trans_norm = torch.linalg.norm(object_trans_delta, dim=1)
         root_norm = torch.linalg.norm(root_delta.reshape(b, 3), dim=1)
         pose_norm = torch.linalg.norm(pose_delta, dim=2)
@@ -1934,7 +1948,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         hyp_vertices_t, hyp_joints_t = hypothesis()
         hyp_vertices = hyp_vertices_t.detach().cpu().numpy().astype(float)
         hyp_joints = hyp_joints_t.detach().cpu().numpy().astype(float)
-        trans_np = trans_delta.detach().cpu().numpy().astype(float)
+        trans_np = effective_trans_delta().detach().cpu().numpy().astype(float)
+        latent_trans_np = trans_delta.detach().cpu().numpy().astype(float)
         object_trans_np = object_trans_delta.detach().cpu().numpy().astype(float)
         contact_posterior_np = (torch.sigmoid(contact_logit) if bool(args.optimize_contact_state) else contact_prior_t).detach().cpu().numpy().astype(float)
         root_np = root_delta.detach().cpu().numpy().reshape(b, 3).astype(float)
@@ -2044,6 +2059,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         state_joints_world = hyp_joints[i].astype(float).copy()
         state_vertices_world = hyp_vertices[i].astype(float).copy()
         state_translation_world = trans_np[i].astype(float).copy()
+        optimizer_translation_support_gate = {
+            "enabled": bool(args.freeze_translation_without_visible_surface_support),
+            "frozen": bool(args.freeze_translation_without_visible_surface_support) and int(surface_ids.size) <= int(args.translation_gate_min_visible_surface_depth_vertices),
+            "min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
+            "selected_visible_surface_depth_vertices": int(surface_ids.size),
+            "policy": "global MANO translation optimized only for rows with visible-surface support above threshold" if bool(args.freeze_translation_without_visible_surface_support) else "global MANO translation optimized normally",
+        }
         output_translation_gate = {
             "enabled": bool(args.gate_translation_with_visible_surface_support),
             "applied": False,
@@ -2086,6 +2108,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "source_frame_index": int(row.source_frame_index),
                 "optimized_translation_world_m": state_translation_world.astype(float).tolist(),
                 "raw_optimizer_translation_world_m": trans_np[i].astype(float).tolist(),
+                "latent_optimizer_translation_world_m": latent_trans_np[i].astype(float).tolist(),
+                "optimizer_translation_support_gate": optimizer_translation_support_gate,
                 "output_translation_gate": output_translation_gate,
                 "hand_ray_shift_prior_translation_world_m": row.hand_ray_shift_prior_world_m.astype(float).tolist(),
                 "hand_ray_shift_prior_source_m": row.hand_ray_shift_prior_source_m,
@@ -2203,6 +2227,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visible_surface_track_active_row_count": int(sum(r.visible_surface_track_factor_state == "active_visible_surface" for r in rows)),
         "visible_surface_track_quarantined_face_count": numeric_summary(np.asarray([r.visible_surface_track_quarantined_face_count for r in rows], dtype=float)),
         "visible_surface_depth_order_selected_vertex_count": numeric_summary(np.asarray(visible_surface_depth_order_selected_count, dtype=float)),
+        "translation_optimization_support_gate_enabled": bool(args.freeze_translation_without_visible_surface_support),
+        "translation_optimization_support_gate_min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
+        "translation_optimization_support_gate_frozen_count": int(np.count_nonzero(~translation_allowed_np)) if bool(args.freeze_translation_without_visible_surface_support) else 0,
         "visible_surface_depth_order_selected_initial_in_front_count": numeric_summary(np.asarray(visible_surface_depth_order_initial_in_front_count, dtype=float)),
         "visible_surface_depth_order_selected_final_in_front_count": numeric_summary(np.asarray(visible_surface_depth_order_final_in_front_count, dtype=float)),
         "visible_surface_depth_order_selected_final_delta_min_m": numeric_summary(np.asarray(visible_surface_depth_order_final_delta_min, dtype=float)),
