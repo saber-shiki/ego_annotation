@@ -57,8 +57,22 @@ Prediction:
 - If in-solver translation freeze materially changes root-aligned/articulation metrics while wrist remains unchanged, the current output gate is only a partial physical repair because latent unsupported translation affects the root/pose solution.
 - If in-solver translation freeze leaves the metrics essentially unchanged, the mixed articulation effects come from root/pose/contact terms rather than latent translation, and the next mechanism should be nearby/latent visible-surface support from adjacent rigid object geometry.
 
-The first item-7 ablation is running on `clip-001851` under:
+The first item-7 ablation tested this on `clip-001851` under:
 
 `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/in_solver_translation_freeze_v1/`
 
-It uses the same frozen prediction inputs, writes outside the frozen prediction branch, and evaluates only after the ablation interval state exists.
+It used the same frozen prediction inputs, wrote outside the frozen prediction branch, and evaluated only after the ablation interval state existed. The result is recorded below.
+
+## Workbench item 7 ablation: in-solver zero-support translation freeze
+
+First controlled autoresearch branch: `clip-001851` was rerun from the frozen prediction inputs with `--freeze-translation-without-visible-surface-support` and the existing output gate. The branch wrote outside frozen prediction state under:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/in_solver_translation_freeze_v1/`
+
+State SHA256: `31004d0367fedf05a3f17c9b3f2bdf051f258a8b0d7ca4d92bf4770541ffeaa3`.
+
+Result: all 300 rows froze in-solver global translation and all 300 rows still preserved wrist/root. The mechanism was therefore tested as intended. It failed as an improvement: compared with the accepted output-gated candidate, translation-freeze worsened median joint MPJPE by `+0.006670432 m` and median root-aligned MPJPE by `+0.006031273 m` while wrist error stayed unchanged. Compared with runtime HaWoR, it worsened median joint MPJPE by `+0.005670470 m` and median root-aligned MPJPE by `+0.006883813 m`.
+
+Interpretation: freezing zero-support translation inside the optimizer overconstrains the hand configuration, especially for the right hand, and degrades wrist-relative articulation. The output gate is the better current safety mechanism because it lets the optimizer use translation as an internal slack variable but projects unsupported global wrist/root motion back to HaWoR before emitting state. This ablation is rejected as a V19 improvement.
+
+The next item-7 mechanism should not be stricter zero-support translation gating. It should construct a physically justified nearby/latent rigid-surface support posterior for occluded keyboard contact, because exact visible-mask overlap has no support rows and current contact-patch anchors are broad/sliding rather than stable.

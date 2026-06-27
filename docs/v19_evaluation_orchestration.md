@@ -160,3 +160,6 @@ If benchmark evaluation is requested before adapters exist, stop with `missing_b
 The first Workbench item-6 fixed slice is now complete for HOT3D `clip-001849`, `clip-001850`, and `clip-001851`. The supported result is documented in `docs/v19_hot3d_fixed_slice_v1_results.md`.
 
 Mechanism-level conclusion: support-gated V19 interval MANO preserves runtime HaWoR wrist/root translation on all three clips when selected visible-surface depth-order support is zero. It does not yet establish a general MANO-accuracy improvement. The next Workbench item-7 research target is physically supported correction beyond this safety gate: either in-solver translation freezing if latent unsupported translation contaminates articulation, or a nearby/latent visible-surface support mechanism if exact visible-mask overlap is too narrow for occluded keyboard contact.
+
+
+Translation-freeze item-7 result: the `clip-001851` in-solver zero-support translation-freeze ablation preserved wrist/root but worsened median joint MPJPE by `+0.006670432 m` versus the accepted output-gated candidate. Do not integrate stricter zero-support translation freeze as the next V19 mechanism; pursue nearby/latent rigid-surface support evidence instead.
