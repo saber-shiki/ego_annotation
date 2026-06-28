@@ -2,40 +2,38 @@
 
 ## Current supported claim
 
-Workbench item 3 is still active. Renderer/projection repair and supportrepair_v2 upstream object-support repair have advanced the runtime to fresh post-P18/P19a state, but no V19 milestone is accepted until a fresh supportrepair_v2 P19b overlay/world/side-by-side artifact is visually consumed as an annotation.
+Workbench item 3 is accepted for the fresh Pi-runtime `supportrepair_v2` P19b artifact on `hot3d_clip001851_pinhole_a800_native_v2_renderstate_rerun`. The claim is scoped to subjective physical sanity of the runtime-rendered keyboard/MANO artifact, not to render polish, quantitative accuracy, or general benchmark performance.
 
-The rejected counterfactual is the old runtime P19 artifact: its green keyboard body rendered as a large vertical sheet/curtain over the hand/table, not as a keyboard-scale body. That failure was not caused primarily by P19 projection; it came from upstream object-support/anchor contamination exposed by the repaired face renderer.
+The evidence is visual and causal, not container-level: the old rejected P19 rendered the keyboard as a large green sheet/curtain over the hand/table; the fresh P19b overlay/world/side-by-side videos keep the object as a compact keyboard-scale rigid body across early, middle, late, anchor, and terminal frames. The guarded fetch also proved the inspected videos/manifest were fresh post-P18/P19b `supportrepair_v2` runtime outputs, but freshness is supporting evidence only.
+
+The next unfinished Workbench item is item 4: improve render quality according to existing instructions. P20/P21/HOT3D metrics and autoresearch remain blocked until item 4 has produced an audience-readable artifact or a deliberate Workbench decision advances to item 5.
 
 ## Current causal model
 
-1. P19 renderer/projection mechanics are capable of rendering mesh faces from explicit render state with scaled source intrinsics. Therefore P19 output is diagnostic of the render-consumed physical state rather than just a point-cloud/projection bug.
-2. supportrepair_v1 proved object-owned mask paths alone are insufficient: the frame-60 anchor still had implausible metric extent `[0.389, 1.134, 0.746]` m.
-3. supportrepair_v2 changed the causal evidence source by anchoring P09/P11 at frame 140. The repaired anchor extent is compact for the keyboard case (`~[0.124, 0.388, 0.208]` m), P11 conditions TRELLIS on an object-owned keyboard crop showing key-grid/body, P12/P13 are fresh from that crop, P14 has 150 pose rows with 146 fitted frames, and P15 has full 150-frame rigid pose completion. This supports the mechanism that evidence-frame selection, not just mask-path provenance, was the dominant object-body failure.
-4. P16/P17 reintroduced hand/object/contact evidence on top of the repaired object. The P17 judgments are intentionally weak possible-contact priors with hand-projected pixels quarantined from object support, so P18 should not be interpreted as a force that must snap MANO hands onto the keyboard. It should preserve uncertainty unless visible-surface support exists.
-5. P18 supportrepair_v2 completed fresh before timeout and wrote a 150-frame / 300 hand-row interval state from the repaired object pose/mesh and weak contact/visibility factor. Direct code inspection ruled out false left/right temporal coupling because the solver optimizes each hand side separately.
-6. P19a supportrepair_v2 completed fresh and built render-consumed state with the repaired completed mesh, 150-frame rigid pose, 300 constraint-like rows, and 150 MANO frames. The next live mechanism is P19b face-rasterized full-duration rendering from that state.
-7. The local P19 fetch/review path has an explicit freshness guard: it refuses to copy videos unless fresh supportrepair_v2 P18 exists and P19 videos are newer than that state. This guard already refused the stale Jun 28 videos, preventing the rejected artifact from entering the review path.
-8. Fresh partial P19b early frames 0/16/17 support the repair mechanism: overlay/world show a compact keyboard-scale rectangular slab over the key-grid region rather than the old off-table sheet/curtain. This is not acceptance evidence for the full artifact because full videos and side-by-side are still pending.
+1. P19 renderer/projection mechanics render mesh faces from explicit render state with scaled source intrinsics. Therefore P19 output reveals the render-consumed physical state rather than a point-cloud/projection proxy.
+2. The old curtain failure was caused primarily by upstream object-support/anchor contamination. Evidence: the repaired renderer exposed broad sheet geometry in the stale branch; `supportrepair_v1` object-owned mask paths alone still chose frame 60 with implausible extent; `supportrepair_v2` changed the evidence anchor to frame 140, where the object-owned crop shows a keyboard/key-grid and compact metric extent.
+3. `supportrepair_v2` propagated causally through P12/P13/P14/P15/P18/P19: fresh TRELLIS/crop provenance from frame 140, compact completed mesh, full 150-frame object pose completion, fresh interval MANO state, and fresh render-consumed state. The decisive observation is that P19b video content changed from curtain to compact keyboard body.
+4. Contact/MANO remains weak and uncertain by design. P17 judgments used possible-contact priors with hand-projected ownership quarantine; P18 should not be expected to snap both hands onto the keyboard. The fresh renders show near/offset/intersecting hand skeletons in some world-view intervals but label the MANO state as uncertain rather than accepted contact.
+5. The remaining visible gap is not item-3 object-support sanity. It is item-4 presentation/legibility and uncertainty rendering: the keyboard appears as a coarse filled green slab/mesh, text overlays clutter the video, world view does not yet communicate contact/occlusion/depth order cleanly, and audience-readable uncertainty semantics are absent.
 
 ## Rejected mechanisms and claims
 
-- Rejected: “P19 output existence means V19 artifact sanity.” The old artifact was visibly wrong.
+- Rejected: “P19 output existence means V19 artifact sanity.” The old P19 existed and was visibly wrong.
 - Rejected: “rerun only P19 fixes the failure.” P19 exposed bad upstream object state.
 - Rejected: “object-owned mask path contract alone fixes object support.” v1 wrote object-owned masks but kept an invalid frame-60 anchor.
 - Rejected: “raw SAM2 provenance in `source_mask_path` is itself a failure.” Operative P11/P09 mask paths matter; provenance can preserve raw evidence.
 - Rejected: “old P17/P18/P19 events without `marker=supportrepair_v2` are current completion evidence.” They belong to the rejected pre-repair branch.
 - Rejected: “P18 runtime length indicates a left/right temporal coupling bug.” The solver calls `build_rows`/`optimize_rows` separately per side.
 - Rejected: metrics/autoresearch before subjective runtime artifact sanity.
+- Rejected: “the fresh P19b artifact is fully polished or quantitatively validated.” It only closes Workbench item 3’s physical sanity gate.
 
 ## Live uncertainties
 
-1. Whether P19b supportrepair_v2 finishes and overwrites the stale Jun 28 render manifest/videos with fresh post-P18 render outputs.
-2. Whether the early-frame compact-slab repair holds across the full duration and in side-by-side, especially later frames 120/140/149.
-3. Whether MANO state remains visually coherent relative to the repaired keyboard, or remains separated/penetrating/floating with honest uncertainty.
-4. What open-ended anomaly appears in visual review beyond the predeclared dimensions.
+1. How to make item-4 renders audience-readable while preserving honest uncertainty and not hiding the coarse/uncertain physics.
+2. Whether render-quality changes can be made without weakening the now-correct object-support/body mechanism.
+3. How the repaired prediction will score on fixed HOT3D/open-source metrics after a render-quality freeze.
+4. Whether the MANO/contact uncertainty is normal measurement uncertainty for this clip or a systematic hand/world alignment error that must be repaired before item 5.
 
 ## Next action
 
-Let the single runtime tmux continue while P19b is CPU-active. When P19b completes, run the guarded fetch, copy the P19b videos locally, build review sheets, and inspect overlay/world/side-by-side frames as physical annotation. The primary falsifier is the old rejection cause: if any of the three fresh views still shows the keyboard as a large green sheet/curtain over the hand/table, Workbench item 3 remains failed regardless of solver status, row counts, or metrics.
-
-If P19b is killed by timeout or Pi stalls without fresh videos, do not inspect stale P19 and do not parent-assemble prediction artifacts. The next intervention should steer the same tmux runtime to complete P19b from the fresh P19a state. If the repaired artifact passes subjective physical sanity, proceed to Workbench item 4 render-quality polish; if it fails, localize the mechanism from visual evidence before any metrics or publication.
+Proceed to Workbench item 4 only. The first item-4 target should be render readability and honest uncertainty display for the already fresh P19b branch: reduce clutter/overpaint, make overlay/world/side-by-side interpretable to a stakeholder, preserve full-duration videos, preserve the compact keyboard body, and expose weak MANO/contact as uncertainty rather than pretending closure. Do not run P20/P21/metrics/autoresearch until item 4 has produced and visually passed an audience-readable artifact or the Workbench is explicitly advanced to item 5.
