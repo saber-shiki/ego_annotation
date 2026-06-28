@@ -502,11 +502,16 @@ Required output: interval MANO trajectory state. The translation gate preserves 
 
 ## P19 full-duration render
 
-Script: `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`
+P19 has two required substeps. First materialize the render-consumed state under `state/`; then render from that state. Do not use `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py` as the final P19 renderer. That script is a legacy diagnostic point/vertex renderer and cannot close the rigid-body artifact requirement.
+
+### P19a build rigid render state
+
+Script: `scripts/build_v19_rigid_render_state.py`
 
 ```bash
-"{REMOTE_MODEL_PYTHON}" scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py \
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_rigid_render_state.py \
   --case "{CASE_ID}" \
+  --object-id "{OBJECT_ID}" \
   --object-label "{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
@@ -514,10 +519,23 @@ Script: `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`
   --completion-report "$COMPLETION_REPORT" \
   --constraint-report "{RUN_ROOT}/measurements/contact_nonpenetration/{OBJECT_ID}_mano_object_constraint/v18_mano_object_constraint_state.json" \
   --temporal-mano-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
-  --output-root "{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime"
+  --output "{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json"
 ```
 
-Required output: full-duration overlay/world/side-by-side render branch, normally listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_mano_runtime/{CASE_ID}/v18_temporal_rigid_object_manifest.json` as `outputs.overlay`, `outputs.world`, and `outputs.side_by_side`. Older verifier snippets that read `videos.*` are invalid for this renderer. A missing or empty manifest value must be treated as a P19 failure; do not allow `Path("")` to resolve to the current directory. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v18_overlay_keyboard.mp4`, `v18_world_keyboard.mp4`, and `v18_side_by_side_keyboard.mp4` under that case directory.
+Required output: `{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json`. This file is the P19 renderer boundary: it must explicitly contain the completed mesh path, accepted full-timeline rigid pose rows, MANO/object constraint rows, temporal MANO state when present, and the projection contract. For a rigid branch, missing pose frames are a P19a failure unless the state explicitly records them as missing-pose uncertainty via `--allow-missing-poses`; the default runtime path must not omit rigid object poses for unobserved frames.
+
+### P19b render rigid body from state
+
+Script: `scripts/render_v19_rigid_state_artifact.py`
+
+```bash
+"{REMOTE_MODEL_PYTHON}" scripts/render_v19_rigid_state_artifact.py \
+  --render-state "{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json" \
+  --output-root "{RUN_ROOT}/renders/{OBJECT_ID}_rigid_state_runtime" \
+  --world-view local
+```
+
+Required output: full-duration overlay/world/side-by-side render branch listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_state_runtime/{CASE_ID}/v19_rigid_state_render_manifest.json` as `outputs.overlay`, `outputs.world`, and `outputs.side_by_side`. The renderer must rasterize mesh faces as a visible rigid body, not draw sampled vertices as a point cloud. The manifest must record the projection rule that scales source-coordinate intrinsics to the decoded render frame size; a 960x960 render of 1408x1408 source intrinsics must show `scale_xy` near `[960/1408, 960/1408]`. A missing or empty manifest value is a P19 failure. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v19_overlay_keyboard.mp4`, `v19_world_keyboard.mp4`, and `v19_side_by_side_keyboard.mp4` under that case directory.
 
 ## P20 publish canonical render names
 

@@ -31,7 +31,7 @@ These scripts exist and have traced CLIs:
 - SAM2/depth visible-surface bridge for rigid branches: `scripts/build_v19_visible_geometry_from_sam2_depth.py`.
 - Observed object geometry and optimization candidates: `scripts/reconstruct_object_mesh_v2.py`, `scripts/reconstruct_scaled_observed_object_mesh_v3.py`, `scripts/reconstruct_object_visual_hull_depth_carve_v3.py`, `scripts/complete_object_heightfield_from_mask_depth_v3.py`, `scripts/optimize_object_factor_graph_v3.py`, `scripts/optimize_joint_mano_object_graph_v3.py`, `scripts/optimize_joint_camera_object_graph_v3.py`, `scripts/optimize_contact_patch_object_pose_graph_v3.py`.
 - V18 rigid branch components: `scripts/build_v18_compact_rigid_evidence_bundle.py`, `scripts/remote_run_trellis_shape_v3.py`, `scripts/build_v18_compact_rigid_trellis_completion.py`, `scripts/build_v18_scale_sane_compact_rigid_completion.py`, `scripts/fit_v18_compact_rigid_object_pose.py`.
-- MANO/object correction and interval rendering: `scripts/build_v18_mano_object_constraint_state.py`, `scripts/build_v18_full_bridge_mano_object_constraint_state.py`, `scripts/apply_v18_mano_object_constraint_state.py`, `scripts/solve_v18_joint_mano_interval_trajectory.py`, `scripts/build_v18_compact_rigid_hidden_volume_depth_validation.py`, `scripts/render_v18_joint_mano_interval_correction.py`, `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`, `scripts/render_v18_full_pipeline_from_annotations.py`.
+- MANO/object correction and rendering: `scripts/build_v18_mano_object_constraint_state.py`, `scripts/build_v18_full_bridge_mano_object_constraint_state.py`, `scripts/apply_v18_mano_object_constraint_state.py`, `scripts/solve_v18_joint_mano_interval_trajectory.py`, `scripts/build_v18_compact_rigid_hidden_volume_depth_validation.py`, `scripts/build_v19_rigid_render_state.py`, `scripts/render_v19_rigid_state_artifact.py`, `scripts/render_v18_joint_mano_interval_correction.py`, `scripts/render_v18_full_pipeline_from_annotations.py`. `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py` is historical/diagnostic only because it renders sampled vertices rather than a rigid body.
 
 ### Remaining implementation that is not allowed to be faked
 
@@ -864,7 +864,7 @@ Interpretation rule: weak or conflicting factors must widen uncertainty, downwei
 
 ## 11. Renderable state assembly
 
-Current practical state backbone: use a V18-compatible annotation JSON as the render-consumed physical state, plus V19 sidecars under `state/` that record provenance and uncertainty. This is a temporary implementation decision forced by current renderer inputs; it is valid only if the final render is visibly driven by the corrected MANO/object state, not by labels or copied videos.
+The renderer boundary is an explicit V19 render-state JSON under `$RUN_ROOT/state/render_state/`. The annotation JSON remains the frame/backbone source, but the final rigid object layer is not allowed to read pose/mesh measurement reports privately. Before rendering, materialize the completed mesh path, accepted full-timeline rigid pose rows, MANO/object uncertainty rows, temporal MANO state, and projection contract into render-consumed state.
 
 Apply coordinate-level constraint candidates into annotations only when the constraint report marks them as accepted or explicitly uncertain:
 
@@ -877,6 +877,24 @@ python "$REPO_ROOT/scripts/apply_v18_mano_object_constraint_state.py" \
 ```
 
 Write `state/v19_physical_state.json`, `state/v19_uncertainty_state.json`, and `state/v19_agent_evidence.md` as renderer-facing sidecars. They must name which annotation/interval/mesh/pose files drive each visual layer. They are not completion evidence by themselves.
+
+For every rigid branch, build the concrete render state before P19 rendering:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_rigid_render_state.py" \
+  --case "$CASE_ID" \
+  --object-id "$TRACK_ID" \
+  --object-label "$TRACK_ID" \
+  --annotations "$RUN_ROOT/measurements/object_geometry/visible_geometry/$TRACK_ID/annotations_v19_visible_geometry.json" \
+  --pose-report "$RUN_ROOT/measurements/pose_fits/rigid_$TRACK_ID/v19_rigid_object_pose_graph_report.json" \
+  --completed-mesh "<completed_mesh_labeled.ply>" \
+  --completion-report "<completion_report.json>" \
+  --constraint-report "$RUN_ROOT/measurements/contact_nonpenetration/mano_object_$TRACK_ID/v18_mano_object_constraint_state.json" \
+  --temporal-mano-state "$RUN_ROOT/measurements/interval_mano/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
+  --output "$RUN_ROOT/state/render_state/${TRACK_ID}_rigid_render_state.json"
+```
+
+This state builder fails by default when a rigid branch lacks full-timeline pose rows. Missing local mask/depth observations should already have become uncertain rigid poses in the P15 graph, not omitted render frames.
 
 ## 12. Full-duration rendering
 
@@ -895,25 +913,18 @@ python "$REPO_ROOT/scripts/render_v18_joint_mano_interval_correction.py" \
 
 Outputs include full-video overlay/world/side-by-side files and `v18_joint_mano_interval_correction_render_manifest.json`.
 
-### 12.2 Rigid object + MANO uncertainty render
+### 12.2 Rigid object body + MANO uncertainty render
 
-When the rigid-object diagnostic renderer is more informative for the current branch:
+The default rigid branch renderer consumes the render state from Section 11 and rasterizes mesh faces as a body. It also scales source-coordinate intrinsics to the decoded render frame size before projection, so a 960x960 render of 1408x1408 source intrinsics does not use unscaled source K:
 
 ```bash
-python "$REPO_ROOT/scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py" \
-  --case "$CASE_ID" \
-  --object-label "$TRACK_ID rigid object" \
-  --annotations "$RUN_ROOT/state/annotations_with_mano_object_constraint.json" \
-  --pose-report "$RUN_ROOT/measurements/pose_fits/rigid_<track_id>/v18_compact_rigid_object_pose_fit_report.json" \
-  --completed-mesh "<completed_mesh_labeled.ply>" \
-  --constraint-report "$RUN_ROOT/measurements/contact_nonpenetration/mano_object_<track_id>/v18_mano_object_constraint_state.json" \
-  --temporal-mano-state "$RUN_ROOT/measurements/interval_mano/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
-  --hidden-volume-validation "$RUN_ROOT/measurements/contact_nonpenetration/hidden_volume_<track_id>/v18_compact_rigid_hidden_volume_depth_validation.json" \
-  --output-root "$RUN_ROOT/renders/rigid_temporal_mano_<track_id>" \
+python "$REPO_ROOT/scripts/render_v19_rigid_state_artifact.py" \
+  --render-state "$RUN_ROOT/state/render_state/${TRACK_ID}_rigid_render_state.json" \
+  --output-root "$RUN_ROOT/renders/${TRACK_ID}_rigid_state_runtime" \
   --world-view local
 ```
 
-The filename still says tomato because it came from V18. In V19 it may be used only if the command arguments actually pass the current object mesh/pose/state. Do not rely on tomato defaults.
+Outputs include full-video overlay/world/side-by-side files and `v19_rigid_state_render_manifest.json`. The manifest must show `rigid_object_body_rasterized_from_mesh_faces: true`, nonzero body pixels for frames with object pose, and projection examples with `scaled_intrinsics_fx_fy_cx_cy`. The old `render_v18_compact_rigid_tomato_temporal_mano_attempt.py` may be used only for historical diagnostics; it draws sampled vertices and cannot close the V19 final rigid-body render requirement.
 
 ### 12.3 Branch comparison render
 
@@ -934,7 +945,7 @@ The comparison renderer consumes state-driven render frames; it must not be used
 
 ### 12.4 Canonical V19 render names
 
-Do not use render commands that require prior-version raw-frame roots as pipeline inputs. Until those renderers are extracted, the default V19 render path is the interval/rigid renderer above, fed by V19-generated annotations whose `raw_frame_path` fields point into `$RUN_ROOT/input/raw_frame_manifest/rgb`.
+Do not use render commands that require prior-version raw-frame roots as pipeline inputs. The default V19 render path is the render-state rigid-body renderer above, fed by V19-generated annotations whose `raw_frame_path` fields point into `$RUN_ROOT/input/raw_frame_manifest/rgb`.
 
 A standardized V19 run publishes the chosen rendered videos to canonical names only after the agent has selected the current physical branch and stated the claim scope. Prefer the publication helper because it adds a stable legend/metric banner and writes the source branch into a report:
 
