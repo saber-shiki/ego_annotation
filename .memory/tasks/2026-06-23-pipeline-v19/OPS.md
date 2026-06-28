@@ -500,3 +500,114 @@
 - Contact-patch diagnostic from the accepted output-gated state explains why translation-freeze is not the right next mechanism. `clip-001851` contact patches are active but broad/sliding: right-hand contact-patch initial distance median `0.0961054935757875 m`; right object-frame contact centroid dispersion median `0.12503637578001287 m`, p95 `0.3104946182974659 m`; support uncertainty median `0.06 m`; contact-anchor residual allowed count `0`; all anchor states are `agent_interval_prior_no_stable_pose_anchor`. Left is weaker but still not stable (centroid-dispersion p95 `0.11613303757924517 m` > support p95 `0.06 m`). Therefore contact rows cannot be upgraded into global translation support.
 - Interpretation: the ablation falsifies the hypothesis that in-solver zero-support translation freeze is a better correction mechanism. The output gate remains the accepted safety mechanism. The next item-7 mechanism should construct or reject a nearby/latent rigid-surface support posterior for occluded keyboard contact, rather than making the zero-support optimizer stricter.
 - Clean-room review attempts: packaged `critic` and builtin `reviewer` failed before reasoning with `output_config.effort` enum errors; custom `v19-cleanroom-review` failed from token resource limit. These are subagent infrastructure failures, not V19 evidence. No adversarial finding was obtained from those failed runs.
+
+## 2026-06-27T10:10:00+08:00 — item-7 nearby support posterior and global-translation gate rejected
+- Workbench position: item 7 controlled autoresearch after the fixed HOT3D slice. This branch did not mutate frozen prediction inputs, measurements, state, or canonical renders; it wrote under each run's `evaluation/autoresearch/` subtree.
+- Mechanism prediction before testing: if broad contact patches contain a stable local object-frame support signal, rows with stable local support should be candidates for stronger hand-translation correction; if those rows still worsen wrist/root metrics, local contact-patch coherence is not a valid global-translation support variable.
+- Support-posterior diagnostic: ran `scripts/analyze_v19_contact_patch_support_posterior.py` over the three fixed frozen interval states and pose graphs. Stable-local-support rows by clip/side: `clip-001850` left 24/150 and right 33/150; `clip-001849` left 0/150 and right 0/150; `clip-001851` left 76/150 and right 13/150. `clip-001849` support rows are dominated by distance/low-prior blockers; `clip-001851` left has many locally stable patches while right remains mostly too far/sliding.
+- Translation-admission ablation: on `clip-001851`, `scripts/apply_v19_contact_support_translation_gate.py` admitted raw optimizer translation only on rows with stable local support posterior >= 0.2 and left all other rows output-gated. It converted 89/300 rows; admitted shift norm median `0.003045505 m`, mean `0.013627901 m`, max `0.077383224 m`. State SHA256 `43f1bfe5b18c13465d5f66850bc29efbb89ed1093ed361ba066272bda9b71926`; gate report SHA256 `e47bc5dcc42c942a3ada14e4c3a278cca30b8520ce3638efea4fb844fed73e05`.
+- Quantitative result: versus the accepted output-gated candidate, posterior-gated translation worsened wrist median by `+0.000384176 m`, joint MPJPE median by `+0.003740412 m`, and joint median error by `+0.003643275 m`; root-aligned MPJPE median was unchanged. Versus runtime HaWoR, wrist median worsened by `+0.000384176 m`, joint MPJPE median worsened by `+0.002740450 m`, and root-aligned MPJPE retained the same `+0.000852540 m` delta as the accepted output-gated candidate.
+- Visual/evaluator consumption: review sheet `/tmp/v19_clip001851_contact_support_gate_review/clip001851_contact_support_gate_review_sheet.jpg` shows the support posterior timeline plus HOT3D projected GT/predicted joints. Wrists remain plausible, but the metric change is a real absolute hand-state regression rather than a projection artifact.
+- Interpretation: nearby/local contact-patch coherence is not a sufficient global-translation support variable. It can identify patches that are temporally local in the keyboard frame, but admitting raw global translation on those rows reintroduces unsupported wrist/root error without improving wrist-relative articulation. The accepted support-gated output state remains the correct global-translation safety mechanism.
+
+## 2026-06-27T10:28:00+08:00 — item-7 wrist-relative articulation selector analysis
+- Workbench position: item 7. After rejecting stricter translation and local-support global translation, the next causal question was whether prediction-side physical features can select rows where wrist-relative interval articulation should be emitted versus reverted to runtime HaWoR.
+- Prediction before analysis: if a general selector is viable, physically sane prediction-side features such as same-frame HaWoR support, low visible-joint shift, low raw optimizer shift, low contact-patch distance, stable local support posterior, or low solver residual should distinguish rows where support-gated interval articulation improves HOT3D MANO metrics. If all such features have near-random or inverted discrimination, a selector would be post-hoc metric fitting rather than a physical mechanism.
+- Analysis output: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/evaluation/autoresearch/articulation_selector_v1/v19_hot3d_articulation_selector_report.json`, SHA256 `49e2bac856c78221663a37fed75142c255603476059118d43423c3dbdfce23e0`, over 900 matched rows.
+- Baseline observation: across all rows, current support-gated interval articulation is weakly positive in aggregate median metrics: all-baseline joint MPJPE median `0.038484086 m`, all-interval `0.038191644 m`; all-baseline root-aligned MPJPE median `0.022522073 m`, all-interval `0.022324546 m`. Row improvement fractions are only `0.4256` for joint MPJPE and `0.43` for root-aligned MPJPE, so the benefit is not rowwise monotonic.
+- Feature discrimination: expected-direction AUCs for joint improvement were non-discriminating or inverted: same-frame HaWoR `0.474`, support posterior `0.507`, stable local support `0.470`, visible joint shift max `0.416`, raw optimizer translation norm `0.416`, output-gate shift norm `0.417`, contact initial distance `0.384`, hand pose delta norm `0.407`. The only feature above `0.55` was row patch spread median (`0.591`) and it did not predict root-aligned improvement (`0.491`), so it is not a reliable physical selector.
+- Predeclared fixed selector rules did not beat the current all-interval output. `image_safe_visible_shift_max_le_8px` used 375 rows and had joint median `0.038485408 m`; `stable_local_support_only` used 146 rows and had joint median `0.038484086 m`; `image_safe_and_stable_support` used 85 rows and had joint median `0.038484086 m`; `same_frame_and_image_safe` used 362 rows and had joint median `0.038485408 m`. All lose the weak aggregate median benefit of the current support-gated interval state.
+- Interpretation: prediction-side summaries available in P18 do not justify a hard wrist-relative articulation selector. The current all-row wrist-relative articulation should remain an uncertainty-carrying hypothesis, not be promoted to accepted MANO correction. The next causal mechanism must add new hand evidence, not another gate over the same contact/visibility summaries.
+
+## 2026-06-27T10:36:00+08:00 — launched direct hand-owned surface evidence branch for clip-001851
+- Workbench position: item 7. The next constructive mechanism is direct hand-owned visible-surface evidence, because support/selector analyses show object-contact priors and summary gates cannot reliably improve wrist-relative MANO articulation.
+- Prediction before launch: if current P18 articulation is limited by missing hand-surface observations, HaWoR-seeded SAM2 hand masks filtered by MANO projection and object-mask subtraction should provide visible hand-owned surface/depth targets suitable for a later mask-depth MANO refit. If masks swallow the keyboard/object/table or survive filtering only as tiny/noisy fragments, the branch should stop before refitting; a MANO refit from false masks would be a false mechanism.
+- Launch: started `/tmp/run_v19_clip001851_hand_surface_stage1.sh` in existing A800 tmux session `v19_hot3d_001850_a800_v5_owlv2_p07`, window `clip001851_hand_surface`. The script verifies the accepted freeze manifest for `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate`, writes only under `evaluation/autoresearch/hand_owned_surface_mask_depth_v1/`, builds hand SAM2 prompts from prediction-side HaWoR + calibration, runs SAM2 for left/right hands, filters hand masks by dilated MANO projection minus the OWLv2/SAM2 keyboard mask, and writes a visual review sheet. No HOT3D GT/evaluator input is part of this stage.
+
+## 2026-06-27T10:46:00+08:00 — hand-owned surface stage 1 supports right-only refit and rejects left refit on clip-001851
+- Workbench position: item 7. This is prediction-side autoresearch evidence under the frozen `clip-001851` run root; no HOT3D GT/evaluator path was consumed and no frozen prediction artifacts were modified.
+- Stage-1 output root: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/hand_owned_surface_mask_depth_v1/`.
+- Freeze guard: the launch script loaded `state/v19_prediction_freeze_manifest.json` and required `status=frozen` and `hot3d_scoring_run=false` before writing under the autoresearch root.
+- Prompt/mask mechanism: `build_v19_hawor_hand_sam2_prompts.py` converted prediction-side HaWoR MANO projections into left/right SAM2 prompt tracks; SAM2 generated raw hand masks; `build_v19_mano_mask_depth_refit_inputs.py` intersected raw hand masks with dilated MANO projection and subtracted the OWLv2/SAM2 keyboard object mask.
+- Quantitative mask observation: summary SHA256 `ca5fa63a8c717b70c48fd9a20ed1ad8778aa8afe56de87b6c9c30d13cd2cd11c`; 150 frames; `left_visible_filtered_masks=1`, `right_visible_filtered_masks=97`. Therefore left-hand mask-depth refit is not physically supported on this clip, while right-hand refit has enough visible filtered hand-surface observations for a diagnostic run.
+- Visual observation: corrected review sheet `/tmp/v19_clip001851_hand_surface_stage1/hand_mask_filtered_support_review_v2.jpg` shows raw hand masks are broad, especially around hand/forearm regions, but filtered right-hand masks become compact cyan visible-hand support regions after MANO projection/object-mask subtraction. Left filtered support is essentially absent. This validates a right-only diagnostic refit and rejects a left refit before optimization.
+- Next action launched: `/tmp/run_v19_clip001851_right_mask_depth_refit.sh` in tmux session `v19_hot3d_001850_a800_v5_owlv2_p07`, window `clip001851_right_refit`. It runs `refit_mano_articulation_mask_depth_v3.py` on the filtered right-hand mask track, UniDepth depth, and legacy refit input annotations, writing only to `evaluation/autoresearch/hand_owned_surface_mask_depth_v1/right_mask_depth_refit_v1/`. It is diagnostic only and does not promote into the frozen support-gated state.
+## Objective
+// State the overall goal, final deliverable, and what done means.
+
+Egocentric loco-manipulation video annotation. Need to demonstrate accuracy/physical consistency improvement over existing open-source baseline.
+
+## Workbench
+// Maintain the short-term steering state: current status, selected next tasks, observed failures, and open blockers.
+
+## Context
+// List the code, docs, resources, and prior evidence the agent must consult or may optionally use.
+
+- Raw data: /data2/egoscale_demo_30h/
+- MANO pkl available somewhere over /data/dex_home/
+- Compute resources: Local: 3080 (can run relatively light workload). For heavy compute, prioritize using these servers available through wireguard:
+  192.168.11.220 A800
+  192.168.9.220 4090
+  (both username are yiwen; need to look for free GPU by yourself)
+  use tmux on servers!
+- OpenAI API keys:
+  - General purpose: use OPENAI_API_KEY in .env, not other keys you source from other env files; this is billed at standard API price; use with caution.
+  - Used for responses API and agent harness (e.g., pi-agent): use OCC_BASEURL and OCC_API_KEY in .env; this is much lower than standard API price.
+
+## Task specifications
+
+### Constitution of work
+
+1. Things to annotate: 1) head camera pose; 2) hand pose and keypoints (MANO); 3) semantic captioning of video; 4) manipulated object pose
+2. Desired accuracy: about 5mm (though we do not have ground truth for the data).
+3. Directions you can improve compared to existing open-source baselines: 1) creative and systematic composition of modules; 2) LLM/agent-aided judgment/decision/tuning in runtime pipeline; 3) awareness of dexterous manipulation priors and hand-object interaction physics.
+4. Deliverables: 1) video with overlaying MANO hand annotation and object annotation; 2) 3D animation of head camera, MANO hands, and object, in world coordinate; 3) side-by-side presentation of annotated video and reconstructed 3D, with semantic caption.
+
+### Specific directions I think of
+
+1. Handling occlusion / missing hand: use human motion prediction prior and Kalman-filter style prediction/update framework.
+2. Leveraging LLM: in traditional CV detection pipelines we may need case-by-case human annotation/tuning/modeling. Replace this decision-making process with LLM Agent. Can use pi-coding-agent and harness and OCC_BASEURL and OCC_API_KEY as model provider (use gpt-5.5 there in); consolidate the SOP fed to pi-coding-agent as skill.
+3. Physics and contact: it's obviously wrong to pay attention to hand only while treating manipulated objects as part of the "background video". Do mesh-level modeling of the objects, and ensure the process how hands manipulate objects is physically correct. Can annotate contact points as a side benefit. This improves both accuracy and physical plausibility, because physics provide information that vision alone cannot provide.
+4. Dexterous manipulation as first-class citizen: ego video is not like gripper-based teleoperation or UMI-collected data: the human has high-DOF hand which can do intricate manipulations. These DOFs are not background noise, but central to our annotation task. Be aware of dexterous manipulation priors such as form closure, force closure and auxiliary contact/support. Can give some local close-up views in reconstructed 3D world view.
+
+### Iterative pipeline design and troubleshooting
+
+(assuming you start from v1)
+1. Go through the implementation and results multiple times to ensure v1 specs is fully implemented. No missing planned components. No substituting solution due to "challenge". No taking shortcut. Test on multiple data samples and **inspect results** to ensure every result is uniformly satisfying standard.
+2. After v1 is fully closed, reason about the fundamental limit, deep research for improvement directions, and design v2 pipeline.
+3. Implement and test v2, iterate as many times as needed and ensure all standards pass, research and reason and design v3, and so forth.
+
+There is no upper limit on the number of versions. You can always keep iterating, according to the guidance of the constitution.
+
+### Quantitative verification
+
+1. Find open-source datasets that look similar to the target dataset, that are paired with ground truth.
+2. Test your pipelines of the open-source datasets and measure accuracy against ground truth. Do ablation if relevant.
+3. Notice that this accuracy can be used as a partial proof of effectiveness, but minimizing accuracy / overfitting open-source dataset is a nongoal. The real goal is achieving acceptable sanity-check accuracy, pay more attention to physical consistency and dexterous manipulation perspective, and demo the final results.
+
+### Result demo
+
+1. Planned form is side-by-side annotated video + 3D world reconstruction, with real-time text annotations.
+2. Pay special attention to the 3D presentation: must be visually impressive to stakeholders; add local close-up of dexterous manipulation where necessary. Must not look like internal diagnostics. The audience must be able to capture the main message immediately.
+
+## Constraints
+// Define hard rules the agent must never violate while executing the task.
+
+1. Pipeline planning / version update must interleave with actual implementation.
+2.1 One pipeline version must not be prematurely closed without extensive evaluation.
+2.2 Every version must have clear upfront pipeline design. No reactive version bumping allowed.
+3. Must not substitute planned components with "simpler/easier" ones due to implementation challenge. Any deviation from plan must be grounded in rigorous reasoning, not "operation fact".
+4. Must be aware of literature and open-source repos. Do deep research frequently, especially in planning stage. Must not get stuck in local trap knowledge-wise.
+5. Must not waste time overfitting accuracy metrics. Pay attention to the physics and the manipulation perspective instead.
+6. Must have strong audience awareness in demo/representation. Focus on how to impress audience, not how to dump your operation state into video.
+
+
+## 2026-06-28T17:48:00+08:00 — Subjective review protocol anti-checklist repair
+- User identified that a fixed subjective-review protocol can itself become a gate-style checklist. Added a PROMPT.md requirement that each subjective artifact review must include at least one open-ended observation/anomaly/risk hypothesis not merely answering the predeclared review dimensions.
+- Method implication: the review must look for something categorically new in the artifact. The new observation must either change the next repair target or justify why the artifact has no obvious unlisted fault. This is meant to preserve actual perception and judgment rather than checklist compliance.
+
+2026-06-28T18:49:49+08:00 Renderer/state repair implemented for reset Workbench items 1-2. Added scripts/build_v19_rigid_render_state.py to materialize explicit P19 render-consumed state under state/render_state, embedding accepted rigid pose rows, completed mesh contract, MANO/object constraint rows, optional temporal MANO/hidden-volume payloads, and the projection contract. Added scripts/render_v19_rigid_state_artifact.py to consume that state, load mesh faces, rasterize the rigid object body in overlay/world views, and scale source-coordinate intrinsics to the decoded render frame size. Updated runtime/v19_runtime_spec.md P19 to require P19a render state plus P19b V19 body renderer, and to forbid scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py as final output. Updated docs/v19_english_orchestration.md with the same state/render boundary.
+
+2026-06-28T18:49:49+08:00 Validation observations for renderer repair. Command: python -m py_compile scripts/build_v19_rigid_render_state.py scripts/render_v19_rigid_state_artifact.py passed. Local diagnostic build state on /data2/ego_annotation_outputs/v19_runs/20260626_hot3d_clip001850_pinhole_a800_native_v5_focalfix_coordrigid_v1 succeeded with total_frames=150, pose_rows=150, constraint_rows=300, missing_pose_frame_count=0. System python lacked trimesh, so the first render invocation failed with ModuleNotFoundError before exercising the renderer; rerunning with .venv/bin/python succeeded. Four-frame smoke render frames 32/75/120/149 wrote /tmp/v19_rigid_state_render_smoke_clip001850/renders/keyboard_rigid_state/hot3d_clip001850_pinhole_a800_native_v5_focalfix_coordrigid_v1/v19_rigid_state_render_manifest.json. Manifest evidence: frames_rendered=4, frames_with_object_pose=4, frames_with_rasterized_body_pixels=4, median rasterized_body_pixels=35583. Projection examples recorded raw K [559.1640985505215,559.1640985505215,720.8964233398438,719.5047607421875], source_size [1408,1408], render_size [960,960], scale_xy [0.6818181818181818,0.6818181818181818], scaled K [381.2482490117192,381.2482490117192,491.5202886408025,490.5714277787642]. Visual sheet: /tmp/v19_rigid_state_render_smoke_clip001850/keyboard_body_smoke_contact_sheet.jpg.
+
+2026-06-28T18:49:49+08:00 Higher-face-budget diagnostic on frame 75 used --mesh-face-budget 0/--world-face-budget 0 and wrote /tmp/v19_rigid_state_render_smoke_clip001850_fullface/renders/keyboard_rigid_state/hot3d_clip001850_pinhole_a800_native_v5_focalfix_coordrigid_v1/v19_rigid_state_render_manifest.json. Evidence: frames_rendered=1, frames_with_rasterized_body_pixels=1, rasterized_body_pixels=101697. Visual observation from overlay_frames/000000.jpg: the keyboard now appears as a filled green body rather than points, but the old clip001850 state renders a broad sheet that spills over the hand/table region. Interpretation: renderer/projection mechanism is repaired enough to expose the actual object state; existing old prediction state is not accepted as physically sane.
