@@ -393,6 +393,67 @@ def scaled_intrinsics_for_depth(intr: np.ndarray, depth_shape: tuple[int, int], 
     return np.asarray([fx, fy, cx, cy], dtype=float)
 
 
+def subtract_hand_owned_bbox_regions(
+    mask: np.ndarray,
+    base_frame: dict[str, Any],
+    *,
+    source_width: int,
+    source_height: int,
+    pad_px: int,
+    enabled: bool,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Remove image regions owned by visible hands before lifting object depth.
+
+    A semantic object mask can cover pixels where a hand occludes the object. Those
+    pixels are not visible object surface.  This conservative ownership filter
+    uses available hand detections from base annotations; it is intentionally
+    category-agnostic and records how much support was removed.
+    """
+    if not enabled:
+        return mask, {"state": "disabled", "input_mask_pixels": int(mask.sum()), "output_mask_pixels": int(mask.sum())}
+    out = mask.copy()
+    h, w = out.shape[:2]
+    sx = float(w) / float(max(1, int(source_width)))
+    sy = float(h) / float(max(1, int(source_height)))
+    removed_total = 0
+    boxes: list[dict[str, Any]] = []
+    for hand in as_list(base_frame.get("hands")):
+        if not isinstance(hand, dict):
+            continue
+        if hand.get("same_frame_detection") is False and not hand.get("hawor_candidate_present"):
+            continue
+        box = hand.get("bbox_xyxy")
+        if not (isinstance(box, list) and len(box) >= 4):
+            continue
+        x1, y1, x2, y2 = [float(v) for v in box[:4]]
+        pad = int(max(0, pad_px))
+        xi1 = max(0, int(np.floor(x1 * sx - pad)))
+        yi1 = max(0, int(np.floor(y1 * sy - pad)))
+        xi2 = min(w, int(np.ceil(x2 * sx + pad)))
+        yi2 = min(h, int(np.ceil(y2 * sy + pad)))
+        if xi2 <= xi1 or yi2 <= yi1:
+            continue
+        before = int(out.sum())
+        out[yi1:yi2, xi1:xi2] = False
+        removed = before - int(out.sum())
+        removed_total += int(removed)
+        boxes.append({
+            "hand_side": hand.get("hand_side"),
+            "source_bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
+            "mask_bbox_xyxy": [int(xi1), int(yi1), int(xi2), int(yi2)],
+            "removed_mask_pixels": int(removed),
+        })
+    return out, {
+        "state": "hand_owned_bbox_regions_subtracted" if boxes else "no_hand_bboxes_available",
+        "input_mask_pixels": int(mask.sum()),
+        "output_mask_pixels": int(out.sum()),
+        "removed_mask_pixels": int(removed_total),
+        "hand_boxes": boxes,
+        "pad_px_in_mask_coordinates": int(max(0, pad_px)),
+        "claim_scope": "Pixels inside visible hand support are not lifted as visible object surface; uncertain occluded object surface remains unobserved.",
+    }
+
+
 def choose_visible_points(
     valid: np.ndarray,
     depth: np.ndarray,
@@ -490,12 +551,26 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         mask_path = localize_path(source_mask_path, args.remote_root, args.local_root)
         mask = read_mask(mask_path)
         depth_m = np.asarray(depth["depth"][depth_i], dtype=float)
-        if mask.shape != depth_m.shape:
-            mask_depth = cv2.resize(mask.astype(np.uint8), (depth_m.shape[1], depth_m.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
-        else:
-            mask_depth = mask
         raw_row = raw_frames[idx]
         base_frame = copy.deepcopy(base_frames.get(idx, {"frame_idx": idx}))
+        source_width = int(raw_row.get("source_width") or raw_payload.get("video", {}).get("width") or raw_row.get("manifest_width") or mask.shape[1])
+        source_height = int(raw_row.get("source_height") or raw_payload.get("video", {}).get("height") or raw_row.get("manifest_height") or mask.shape[0])
+        mask_owned, ownership_summary = subtract_hand_owned_bbox_regions(
+            mask,
+            base_frame,
+            source_width=source_width,
+            source_height=source_height,
+            pad_px=int(args.hand_bbox_exclusion_pad_px),
+            enabled=bool(args.exclude_hand_bboxes),
+        )
+        owned_mask_path = args.output_dir / "object_owned_masks" / f"{idx:06d}_{safe_name(object_id)}_object_owned_mask.png"
+        owned_mask_path.parent.mkdir(parents=True, exist_ok=True)
+        if not cv2.imwrite(str(owned_mask_path), mask_owned.astype(np.uint8) * 255):
+            raise RuntimeError(f"failed to write object-owned mask: {owned_mask_path}")
+        if mask_owned.shape != depth_m.shape:
+            mask_depth_owned = cv2.resize(mask_owned.astype(np.uint8), (depth_m.shape[1], depth_m.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+        else:
+            mask_depth_owned = mask_owned
         if calibration_intrinsics is not None:
             raw_intrinsics = calibration_intrinsics
             intrinsics_source = calibration_source or "calibration_contract"
@@ -507,7 +582,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 raw_intrinsics = depth["intrinsics"][depth_i]
                 intrinsics_source = "depth_npz_intrinsics_fx_fy_cx_cy"
         intr = scaled_intrinsics_for_depth(raw_intrinsics, depth_m.shape, depth["source_size"])
-        valid = mask_depth & np.isfinite(depth_m) & (depth_m >= float(args.min_depth_m)) & (depth_m <= float(args.max_depth_m))
+        valid = mask_depth_owned & np.isfinite(depth_m) & (depth_m >= float(args.min_depth_m)) & (depth_m <= float(args.max_depth_m))
         if int(valid.sum()) < int(args.min_valid_points):
             skipped_rows.append({"frame_idx": idx, "status": "too_few_valid_mask_depth_pixels", "valid_pixels": int(valid.sum())})
             continue
@@ -525,8 +600,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             skipped_rows.append({"frame_idx": idx, "status": "too_few_sampled_visible_points", "sampled_points": int(len(world_points))})
             continue
         visible_data[idx] = {
-            "mask_path": str(mask_path),
+            "mask_path": str(owned_mask_path),
             "source_mask_path": source_mask_path,
+            "raw_sam2_mask_path": str(mask_path),
             "track_row": track_row,
             "raw_row": raw_row,
             "camera_points": camera_points,
@@ -539,8 +615,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_median_m": float(np.median(depth_m[valid])),
             "depth_p05_m": float(np.percentile(depth_m[valid], 5.0)),
             "depth_p95_m": float(np.percentile(depth_m[valid], 95.0)),
-            "mask_shape": list(mask.shape),
+            "mask_shape": list(mask_owned.shape),
+            "raw_sam2_mask_shape": list(mask.shape),
             "depth_shape": list(depth_m.shape),
+            "object_surface_ownership_filter": ownership_summary,
+            "source_width": int(source_width),
+            "source_height": int(source_height),
         }
 
     if not visible_data:
@@ -663,6 +743,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "track_id": args.track_id,
             "mask_path": str(vis["mask_path"]),
             "source_mask_path": str(vis.get("source_mask_path")),
+            "source_width": int(vis.get("source_width") or frame.get("source_width") or 0),
+            "source_height": int(vis.get("source_height") or frame.get("source_height") or 0),
             "depth_npz": str(args.depth_npz),
             "depth_frame_index": int(idx),
             "camera_pose_source": vis["camera_source"],
@@ -682,7 +764,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_p05_m": float(vis["depth_p05_m"]),
             "depth_p95_m": float(vis["depth_p95_m"]),
             "sample_summary": vis["sample_summary"],
-            "claim_scope": "visible metric surface measurement only; not hidden geometry and not final object pose",
+            "object_surface_ownership_filter": vis.get("object_surface_ownership_filter"),
+            "claim_scope": "visible metric surface measurement only; hand-owned pixels are excluded from object surface before metric lifting; not hidden geometry and not final object pose",
         }
         row_obj = {
             "object_id": object_id,
@@ -821,6 +904,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "allow_camera_frame_world": bool(args.allow_camera_frame_world),
             "carry_invisible_pose": bool(args.carry_invisible_pose),
             "preserve_source_index": bool(args.preserve_source_index),
+            "exclude_hand_bboxes": bool(args.exclude_hand_bboxes),
+            "hand_bbox_exclusion_pad_px": int(args.hand_bbox_exclusion_pad_px),
             "rigid_extent_ratio_max": float(args.rigid_extent_ratio_max),
             "rigid_extent_axis_ratio_max": float(args.rigid_extent_axis_ratio_max),
         },
@@ -881,6 +966,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-camera-frame-world", action="store_true", help="Explicitly use each camera frame as its own world frame when no world camera pose is available. This is not valid for temporal metric world claims.")
     parser.add_argument("--carry-invisible-pose", action="store_true", help="Carry the nearest visible centroid pose into invisible frames as an uncertain initialization only.")
     parser.add_argument("--preserve-source-index", action=argparse.BooleanOptionalAction, default=True, help="Write one output frame row per raw source frame so annotations['frames'][frame_idx] remains valid for V18 rigid tools.")
+    parser.add_argument("--exclude-hand-bboxes", action=argparse.BooleanOptionalAction, default=True, help="Subtract same-frame hand support boxes from object masks before lifting visible object depth; hand-owned pixels remain occlusion/uncertainty, not object surface.")
+    parser.add_argument("--hand-bbox-exclusion-pad-px", type=int, default=12, help="Padding, in mask/depth pixels, around projected hand boxes removed from object visible-surface support.")
     parser.add_argument("--seed", type=int, default=1901)
     parser.add_argument("--anchor-mesh-min-voxel-m", type=float, default=0.002)
     parser.add_argument("--anchor-mesh-voxel-divisor", type=float, default=80.0)

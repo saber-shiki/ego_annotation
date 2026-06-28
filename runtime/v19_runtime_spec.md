@@ -304,10 +304,12 @@ Script: `scripts/build_v19_visible_geometry_from_sam2_depth.py`
   --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
   --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
   --anchor-frame "{ANCHOR_FRAME}" \
-  --preserve-source-index
+  --preserve-source-index \
+  --exclude-hand-bboxes \
+  --hand-bbox-exclusion-pad-px 12
 ```
 
-Required output: `v19_visible_geometry_depth_fused_report.json` and visible-geometry annotations.
+Required output: `v19_visible_geometry_depth_fused_report.json` and visible-geometry annotations. P09 must treat hand-owned pixels as occlusion/uncertainty, not visible object surface; if same-frame hand boxes are available, subtract them before depth lifting and record the removed support in `object_surface_ownership_filter`. The per-object `mask_path` written to annotations must be the object-owned mask after this subtraction, because P11/P12 evidence crops and TRELLIS conditioning must not consume hand-owned pixels as object appearance.
 
 ## P10 branch decision
 
@@ -365,10 +367,16 @@ Script: `scripts/build_v18_compact_rigid_trellis_completion.py`
 "{REMOTE_MODEL_PYTHON}" scripts/build_v18_compact_rigid_trellis_completion.py \
   --evidence-report "<evidence_bundle_report>" \
   --trellis-report "<trellis_report>" \
-  --output-dir "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42"
+  --output-dir "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42" \
+  --silhouette-free-space-filter \
+  --silhouette-dilate-px 16 \
+  --planar-slab-support-filter \
+  --planar-slab-eigenvalue-ratio-max 0.04 \
+  --planar-slab-min-band-m 0.018 \
+  --planar-slab-max-band-m 0.055
 ```
 
-Required output: completion report and completed mesh. The completed mesh used by all downstream pose/contact/render stages is exactly `outputs.completed_mesh_labeled` in `{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json`. Do not substitute the P12 raw TRELLIS mesh (`trellis_mesh.ply`) for `<completed_mesh_ply>`; P14/P15 poses are in the P13 completed-canonical frame, not the raw TRELLIS model frame.
+Required output: completion report and completed mesh. The completed mesh used by all downstream pose/contact/render stages is exactly `outputs.completed_mesh_labeled` in `{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json`. Do not substitute the P12 raw TRELLIS mesh (`trellis_mesh.ply`) for `<completed_mesh_ply>`; P14/P15 poses are in the P13 completed-canonical frame, not the raw TRELLIS model frame. P13 must not promote TRELLIS hidden faces that project outside the evidence-frame object-owned silhouette; those faces are free-space-inconsistent hidden prior, not object body. If the observed support surfels are planar, P13 must also reject hidden-prior faces far outside the observed support slab; this is a conditional physical support constraint, not a category-specific keyboard rule.
 
 Resolve the downstream mesh path with the completion report as source of truth:
 

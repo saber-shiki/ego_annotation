@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 import trimesh
@@ -224,12 +225,170 @@ def color_for_labels(labels: list[str]) -> np.ndarray:
     return np.asarray([colors.get(l, [255, 255, 255, 255]) for l in labels], dtype=np.uint8)
 
 
+def resolve_anchor_centroid_world(evidence: dict[str, Any]) -> np.ndarray:
+    row = evidence.get("depth_fused_object_row") if isinstance(evidence.get("depth_fused_object_row"), dict) else {}
+    mesh_recon = row.get("mesh_reconstruction") if isinstance(row.get("mesh_reconstruction"), dict) else {}
+    for value in (
+        mesh_recon.get("anchor_centroid_world_m"),
+        (evidence.get("selected") or {}).get("visible_geometry_candidate", {}).get("anchor_centroid_world_m") if isinstance(evidence.get("selected"), dict) else None,
+        (evidence.get("selected") or {}).get("visible_geometry_candidate", {}).get("centroid_world_m") if isinstance(evidence.get("selected"), dict) else None,
+    ):
+        arr = np.asarray(value if value is not None else [], dtype=float).reshape(-1)
+        if arr.shape == (3,) and np.isfinite(arr).all():
+            return arr
+    raise RuntimeError("evidence report lacks anchor_centroid_world_m/centroid_world_m needed for silhouette free-space filtering")
+
+
+def world_points_to_camera(points_world: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
+    return (points_world - T_world_camera[:3, 3][None, :]) @ T_world_camera[:3, :3]
+
+
+def estimate_projection_source_size(intr: np.ndarray, image_w: int, image_h: int, selected: dict[str, Any]) -> tuple[int, int, str]:
+    vg = selected.get("visible_geometry_candidate") if isinstance(selected.get("visible_geometry_candidate"), dict) else {}
+    source_w = int(vg.get("source_width") or selected.get("source_width") or 0)
+    source_h = int(vg.get("source_height") or selected.get("source_height") or 0)
+    if source_w > 0 and source_h > 0:
+        return source_w, source_h, "visible_geometry_candidate_source_size"
+    # Older evidence reports did not persist source_width/source_height.  The
+    # principal point is near the source-frame center, so 2*cx,2*cy reconstructs
+    # the source coordinate scale while leaving already-decoded K unchanged.
+    fx, fy, cx, cy = [float(x) for x in intr]
+    source_w = max(int(image_w), int(round(2.0 * cx)))
+    source_h = max(int(image_h), int(round(2.0 * cy)))
+    return source_w, source_h, "estimated_from_principal_point_legacy_evidence"
+
+
+def trellis_planar_slab_keep_mask(
+    observed_points: np.ndarray,
+    mesh_canonical: trimesh.Trimesh,
+    *,
+    enabled: bool,
+    observed_band_m: float,
+    eigenvalue_ratio_max: float,
+    min_band_m: float,
+    max_band_m: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    face_count = int(len(mesh_canonical.faces))
+    if not enabled:
+        return np.ones(face_count, dtype=bool), {"state": "disabled", "kept_faces": face_count, "rejected_faces": 0}
+    center, basis, vals = pca_basis(observed_points)
+    ratio = float(vals[-1] / max(vals[0], 1e-12))
+    if not np.isfinite(ratio) or ratio > float(eigenvalue_ratio_max):
+        return np.ones(face_count, dtype=bool), {
+            "state": "not_applied_observed_surface_not_planar_enough",
+            "observed_pca_eigenvalues": vals.astype(float).tolist(),
+            "planarity_ratio_smallest_over_largest": ratio,
+            "ratio_threshold": float(eigenvalue_ratio_max),
+            "kept_faces": face_count,
+            "rejected_faces": 0,
+        }
+    normal = basis[:, -1]
+    obs_dist = np.abs((observed_points - center[None, :]) @ normal)
+    data_band = float(np.percentile(obs_dist, 95.0)) if len(obs_dist) else 0.0
+    band = max(float(min_band_m), data_band + 2.0 * float(observed_band_m))
+    band = min(float(max_band_m), band)
+    centers = np.asarray(mesh_canonical.triangles_center, dtype=float)
+    dist = np.abs((centers - center[None, :]) @ normal)
+    keep = np.isfinite(dist) & (dist <= band)
+    return keep, {
+        "state": "planar_support_slab_filter_applied",
+        "observed_pca_eigenvalues": vals.astype(float).tolist(),
+        "planarity_ratio_smallest_over_largest": ratio,
+        "ratio_threshold": float(eigenvalue_ratio_max),
+        "observed_normal_abs_distance_p95_m": data_band,
+        "observed_band_m": float(observed_band_m),
+        "slab_half_width_m": float(band),
+        "min_band_m": float(min_band_m),
+        "max_band_m": float(max_band_m),
+        "input_trellis_faces": face_count,
+        "kept_by_planar_slab_faces": int(np.count_nonzero(keep)),
+        "unsupported_outside_planar_slab_faces": int(np.count_nonzero(~keep)),
+        "claim_scope": "When the observed object surface is planar, hidden prior faces far off that observed support plane are not accepted as physical object body.",
+    }
+
+
+def trellis_silhouette_keep_mask(
+    evidence: dict[str, Any],
+    mesh_canonical: trimesh.Trimesh,
+    *,
+    enabled: bool,
+    dilate_px: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    face_count = int(len(mesh_canonical.faces))
+    if not enabled:
+        return np.ones(face_count, dtype=bool), {"state": "disabled", "kept_faces": face_count, "rejected_faces": 0}
+    selected = evidence.get("selected") if isinstance(evidence.get("selected"), dict) else {}
+    mask_path = selected.get("mask_path")
+    if not mask_path and isinstance(selected.get("trellis_conditioning_crop"), dict):
+        mask_path = selected["trellis_conditioning_crop"].get("mask")
+    if not mask_path:
+        raise RuntimeError("evidence selected row lacks mask_path for silhouette free-space filtering")
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        raise RuntimeError(f"failed to read silhouette mask for free-space filtering: {mask_path}")
+    mask_bool = mask > 0
+    if int(dilate_px) > 0:
+        k = 2 * int(dilate_px) + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        mask_bool = cv2.dilate(mask_bool.astype(np.uint8), kernel, iterations=1) > 0
+    h, w = mask_bool.shape[:2]
+    camera = selected.get("camera") if isinstance(selected.get("camera"), dict) else {}
+    T = np.asarray(camera.get("T_world_camera_metric") or camera.get("T_world_camera") or [], dtype=float)
+    if T.shape != (4, 4) or not np.isfinite(T).all():
+        raise RuntimeError("evidence selected camera lacks a valid T_world_camera for silhouette free-space filtering")
+    intr = np.asarray(camera.get("intrinsics_fx_fy_cx_cy") or [], dtype=float).reshape(-1)
+    if intr.shape != (4,) or not np.isfinite(intr).all():
+        vg = selected.get("visible_geometry_candidate") if isinstance(selected.get("visible_geometry_candidate"), dict) else {}
+        intr = np.asarray(vg.get("intrinsics_fx_fy_cx_cy") or [], dtype=float).reshape(-1)
+    if intr.shape != (4,) or not np.isfinite(intr).all() or intr[0] <= 0.0 or intr[1] <= 0.0:
+        raise RuntimeError("evidence selected row lacks valid intrinsics for silhouette free-space filtering")
+    source_w, source_h, source_note = estimate_projection_source_size(intr, w, h, selected)
+    sx = float(w) / float(source_w)
+    sy = float(h) / float(source_h)
+    fx, fy, cx, cy = [float(intr[0] * sx), float(intr[1] * sy), float(intr[2] * sx), float(intr[3] * sy)]
+    centroid_world = resolve_anchor_centroid_world(evidence)
+    centers_canonical = np.asarray(mesh_canonical.triangles_center, dtype=float)
+    centers_world = centers_canonical + centroid_world[None, :]
+    centers_camera = world_points_to_camera(centers_world, T)
+    z = centers_camera[:, 2]
+    keep = np.zeros(face_count, dtype=bool)
+    valid_z = np.isfinite(z) & (z > 0.01)
+    uv = np.full((face_count, 2), np.nan, dtype=float)
+    uv[valid_z, 0] = fx * centers_camera[valid_z, 0] / z[valid_z] + cx
+    uv[valid_z, 1] = fy * centers_camera[valid_z, 1] / z[valid_z] + cy
+    xi = np.rint(uv[:, 0]).astype(np.int64, copy=False)
+    yi = np.rint(uv[:, 1]).astype(np.int64, copy=False)
+    inside_image = valid_z & np.isfinite(uv).all(axis=1) & (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
+    keep[inside_image] = mask_bool[yi[inside_image], xi[inside_image]]
+    rejected = ~keep
+    return keep, {
+        "state": "silhouette_free_space_filter_applied",
+        "mask_path": str(mask_path),
+        "mask_size": [int(w), int(h)],
+        "source_size": [int(source_w), int(source_h)],
+        "source_size_note": source_note,
+        "scaled_intrinsics_fx_fy_cx_cy": [float(fx), float(fy), float(cx), float(cy)],
+        "dilate_px": int(max(0, dilate_px)),
+        "input_trellis_faces": int(face_count),
+        "projected_inside_image_faces": int(np.count_nonzero(inside_image)),
+        "kept_by_silhouette_faces": int(np.count_nonzero(keep)),
+        "free_space_rejected_faces": int(np.count_nonzero(rejected)),
+        "claim_scope": "TRELLIS hidden faces whose evidence-frame projection falls outside the object-owned silhouette are not accepted as object body.",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence-report", type=Path, required=True)
     parser.add_argument("--trellis-report", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--observed-band-scale", type=float, default=math.sqrt(3.0), help="multiplier on depth-fusion voxel size; sqrt(3) covers one voxel diagonal")
+    parser.add_argument("--silhouette-free-space-filter", action=argparse.BooleanOptionalAction, default=True, help="Reject TRELLIS hidden faces whose evidence-frame projection falls outside the object-owned mask silhouette.")
+    parser.add_argument("--silhouette-dilate-px", type=int, default=16, help="Dilation radius in evidence-mask pixels before silhouette/free-space rejection.")
+    parser.add_argument("--planar-slab-support-filter", action=argparse.BooleanOptionalAction, default=True, help="When observed surfels are planar, reject hidden-prior faces far off that observed support slab.")
+    parser.add_argument("--planar-slab-eigenvalue-ratio-max", type=float, default=0.04, help="Apply planar slab filter only when smallest/largest observed PCA eigenvalue is at most this ratio.")
+    parser.add_argument("--planar-slab-min-band-m", type=float, default=0.018, help="Minimum half-width for planar support slab.")
+    parser.add_argument("--planar-slab-max-band-m", type=float, default=0.055, help="Maximum half-width for planar support slab.")
     args = parser.parse_args()
 
     evidence = load_json(args.evidence_report)
@@ -260,17 +419,40 @@ def main() -> None:
     obs_d, obs_near = face_center_labels(observed_mesh, observed_points, observed_band_m)
     observed_labels = ["observed_depth_surface" if x else "unsupported_uncertain" for x in obs_near]
     trellis_d, trellis_near = face_center_labels(trellis_canonical, observed_points, observed_band_m)
-    # A TRELLIS face close to observed surfels is not a free-space violation.
-    # It is an RGB-prior candidate in a region where metric depth already owns
-    # the surface; the face is omitted from the completed mesh rather than
-    # counted as hidden geometry. True free-space rejection needs camera/depth
-    # ray evidence and is reported as not evaluated by this revision.
-    trellis_labels_all = ["observed_region_overwritten_candidate" if x else "trellis_inferred_hidden_surface" for x in trellis_near]
+    # A TRELLIS face close to observed surfels is an RGB-prior candidate in a
+    # region already owned by metric depth; it is omitted from the completed mesh.
+    # A TRELLIS hidden face whose evidence-frame projection falls outside the
+    # object silhouette is free-space inconsistent and is also omitted.
+    silhouette_keep, silhouette_state = trellis_silhouette_keep_mask(
+        evidence,
+        trellis_canonical,
+        enabled=bool(args.silhouette_free_space_filter),
+        dilate_px=int(args.silhouette_dilate_px),
+    )
+    planar_keep, planar_state = trellis_planar_slab_keep_mask(
+        observed_points,
+        trellis_canonical,
+        enabled=bool(args.planar_slab_support_filter),
+        observed_band_m=float(observed_band_m),
+        eigenvalue_ratio_max=float(args.planar_slab_eigenvalue_ratio_max),
+        min_band_m=float(args.planar_slab_min_band_m),
+        max_band_m=float(args.planar_slab_max_band_m),
+    )
+    trellis_labels_all = []
+    for near_observed, keep_by_silhouette, keep_by_planar_slab in zip(trellis_near, silhouette_keep, planar_keep):
+        if near_observed:
+            trellis_labels_all.append("observed_region_overwritten_candidate")
+        elif not keep_by_silhouette:
+            trellis_labels_all.append("free_space_rejected")
+        elif not keep_by_planar_slab:
+            trellis_labels_all.append("unsupported_uncertain")
+        else:
+            trellis_labels_all.append("trellis_inferred_hidden_surface")
 
     observed_mesh.visual.face_colors = color_for_labels(observed_labels)
     trellis_canonical.visual.face_colors = color_for_labels(trellis_labels_all)
 
-    kept_trellis_faces = np.where(~trellis_near)[0]
+    kept_trellis_faces = np.where((~trellis_near) & silhouette_keep & planar_keep)[0]
     kept_trellis = trellis_canonical.submesh([kept_trellis_faces], append=True, repair=False)
     kept_trellis_labels = ["trellis_inferred_hidden_surface"] * len(kept_trellis.faces)
 
@@ -328,9 +510,11 @@ def main() -> None:
             "observed_mesh": observed_sidecar["label_counts"],
             "trellis_all_candidate": trellis_sidecar["label_counts"],
             "completed_mesh": completed_sidecar["label_counts"],
-            "free_space_rejected": 0,
+            "free_space_rejected": int(trellis_sidecar["label_counts"].get("free_space_rejected", 0)),
         },
-        "free_space_rejection_state": "not_evaluated_in_this_revision_no_faces_claimed_free_space_rejected",
+        "free_space_rejection_state": "silhouette_free_space_filter_applied" if bool(args.silhouette_free_space_filter) else "silhouette_free_space_filter_disabled",
+        "silhouette_free_space_filter": silhouette_state,
+        "planar_slab_support_filter": planar_state,
         "mesh_counts": {
             "observed_mesh_vertices": int(len(observed_mesh.vertices)),
             "observed_mesh_faces": int(len(observed_mesh.faces)),
