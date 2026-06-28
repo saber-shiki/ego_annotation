@@ -2,37 +2,34 @@
 
 ## Current supported claim
 
-The prior claim that Workbench item 6 was complete remains retracted. Earlier HOT3D metrics/renders are diagnostic evidence only because the final object layer did not show a correct rigid keyboard body.
+Workbench item 3 remains unfinished. The renderer/projection reset has been repaired in code and runtime spec, but the accepted V19 milestone still requires a runtime-generated full-duration visual artifact whose physical keyboard body, MANO hand state, and world relationship pass subjective inspection.
 
-The current supported claim is narrower and updated: the known final-renderer mechanism has been repaired in code/spec, not yet accepted in a runtime deliverable. V19 now has a render-state builder (`scripts/build_v19_rigid_render_state.py`) and a V19 rigid-body renderer (`scripts/render_v19_rigid_state_artifact.py`) that consume explicit state, rasterize mesh faces as a rigid object body, and scale source-coordinate intrinsics to the decoded render frame size. A local smoke on the old `clip001850` run showed nonzero filled keyboard-body pixels and recorded 1408x1408 -> 960x960 K scaling. This proves the renderer no longer hides object geometry as sampled vertices, but it does not prove the physical keyboard pose/mesh is sane.
+The supported mechanism claim is now sharper: the failed `clip001851` P19 artifact is not primarily a P19 rasterization/projection failure. P19 rendered a filled rigid body from state, but the body was physically wrong because upstream object-support evidence admitted hand/table/occluder pixels as keyboard surface. The current repair changes the upstream evidence mechanism: P09 now writes object-owned masks after hand-owned support subtraction and propagates those masks as the object `mask_path`, so P11/P12 TRELLIS conditioning no longer consumes raw SAM2 hand/table pixels as object appearance. P13 now rejects TRELLIS hidden faces outside the evidence-frame object-owned silhouette and conditionally rejects hidden faces far off a planar observed support slab. Commit `78e610d Propagate object-owned support into V19 geometry` preserves this mechanism.
 
 ## Current causal model
 
-The original active failure had two coupled mechanisms:
+The original renderer failure had two solved mechanisms: the legacy renderer drew sampled vertices instead of mesh faces, and HOT3D projection used fragile source/render-size semantics. P19a/P19b now use explicit render-consumed state, mesh-face rasterization, and source-size-to-render-size K scaling.
 
-1. P19 routed to `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py`, which loaded only mesh vertices and drew sampled `cv2.circle` points. It did not load mesh faces or rasterize a rigid body, and it consumed measurement reports directly rather than a render-consumed state boundary.
-2. Projection semantics were implicit and wrong-prone. HOT3D frames decoded/rendered at 960x960 carried source-size 1408x1408 intrinsics; the old renderer scaled by `width/(2*cx)` rather than by an explicit source-size/render-size contract.
+The remaining visible failure is upstream object-state contamination. Earlier diagnostic evidence showed the keyboard mask/visible surface can include broad non-keyboard regions; once P19 renders faces honestly, the contaminated state appears as a large sheet-like body. A diagnostic P13 run with silhouette filtering rejected many hidden faces but still left a ~0.9 m planar extent. A depth-layer probe showed depth trimming alone keeps the large footprint. Therefore the live mechanism is not mainly hidden thickness; it is object-owned support selection before visible-geometry lifting and TRELLIS conditioning.
 
-The repair changes the mechanism: P19a now writes `state/render_state/{OBJECT_ID}_rigid_render_state.json` containing completed mesh path, accepted full-timeline pose rows, constraint rows, optional temporal MANO payload, and the projection contract. P19b renders from that state, rasterizes mesh faces, and records scaled intrinsics examples. The runtime spec and English orchestration now forbid the old V18-named point renderer as a final P19 renderer.
-
-The local diagnostic smoke is also negative evidence about the existing old prediction state: with all faces on frame 75, the keyboard appears as a large green rigid body but spills over hand/table regions. Follow-up mechanism inspection showed this is upstream state contamination rather than a renderer/projection-only error: the frame-75 SAM2 keyboard mask already covers an over-broad region on the 960 image (bbox [597,309,891,737], including non-keyboard support/hand-adjacent areas), visible geometry sampled depth inside that mask with world extent about 0.25 x 0.70 x 0.18 m, and the completed mesh remained similarly over-broad at about 0.25 x 0.66 x 0.26 m. Under corrected scaled K, observed-depth faces alone project across most of the bad footprint; TRELLIS-inferred hidden faces amplify the visible error. Thus the repaired renderer is faithfully exposing a contaminated object-support/geometry/pose state that the point renderer obscured. It does not by itself fix mask support, mesh completion, or pose fitting. See OPS.md diagnostic mechanism entry for /tmp/v19_clip001850_frame75_raw_mask_render_mechanism.jpg.
+The current intervention targets that mechanism directly. If the causal model is right, the repaired P09->P13 rerun should produce P11 crops whose alpha mask is the object-owned keyboard support rather than raw SAM2 support, a smaller/cleaner completed keyboard mesh, and a P19 overlay/world view where the green body aligns with the keyboard rather than spanning hands/table. If the repaired render still spills, then the next mechanism is likely open-vocabulary/SAM2 keyboard mask identity/support (P06/P07) or evidence-frame selection, not renderer/P19.
 
 ## Rejected mechanisms and claims
 
-- Rejected: “Workbench item 6 complete” for the fixed HOT3D slice. The final object artifact failed strict rendered-annotation consumption.
-- Rejected: “Workbench item 7 active.” Autoresearch must wait until renderer wiring, projection, full runtime rerun, subjective sanity, render quality, and quantitative comparison are done in order.
-- Rejected: treating full-duration videos, render manifests, residual reports, or green object points as evidence of a rigid keyboard body.
-- Rejected: treating SAM2 keyboard segmentation correctness as sufficient for object-pose/render correctness. The failure occurs downstream of segmentation.
-- Rejected: using `scripts/render_v18_compact_rigid_tomato_temporal_mano_attempt.py` as final V19 P19 output. It is historical/diagnostic only because it renders sampled vertices, not a body.
+- Rejected: “final V19 keyboard render is acceptable because P19 outputs exist.” The artifact was visually wrong.
+- Rejected: “rerun only P19 to fix the current failure.” P19 is exposing a bad state; the bad state is built before TRELLIS/pose fitting.
+- Rejected: “silhouette hidden-face filtering alone fixes the keyboard.” The diagnostic completion still had ~0.9 m extent, so the observed support itself was too broad.
+- Rejected: “depth-band trimming inside the raw mask fixes support.” Representative frames still retained the oversized footprint.
+- Rejected: “quantitative HOT3D comparison/autoresearch can resume now.” Workbench item 3 subjective artifact sanity still blocks metrics.
 
 ## Live uncertainties
 
-1. Whether a full runtime Pi rerun follows the corrected P19a/P19b state-render contract end-to-end without parent assembly.
-2. Whether the corrected runtime artifact passes subjective physical sanity in 2D overlay and 3D/world view when the filled rigid body exposes the actual mesh/pose state.
-3. Whether the existing keyboard mesh completion/pose branch is physically too broad or misregistered even after correct rendering and K scaling.
-4. Whether the MANO/contact/occlusion state remains coherent when viewed against a real filled keyboard body rather than point samples.
-5. How to preserve real subjective judgment rather than checklist compliance: every subjective review must surface at least one artifact-specific observation/anomaly/risk hypothesis not already named by the protocol, and that observation must affect the next repair decision or explicitly rule out an obvious unlisted fault.
+1. Whether the runtime Pi continuation can complete supportrepair_v1 P09->P19b under the curated runtime bundle without provider/tool failure.
+2. Whether hand-owned bbox subtraction is strong enough for this clip, or whether P06/P07 SAM2 support remains too broad even after hand boxes are removed.
+3. Whether the repaired P11/TRELLIS crop selects the physical keyboard key grid/body rather than table/hand support.
+4. Whether the completed keyboard mesh and pose are physically coherent in world view after support repair.
+5. Whether MANO interval correction remains visibly coherent once the object body is repaired.
 
 ## Next action
 
-Commit the scoped renderer/spec/task-memory repair, sync the corrected runtime code/spec into the runtime workspace, rerun the full pipeline through the runtime Pi agent, then inspect the final overlay/world/side-by-side videos as a user would. Do not resume HOT3D quantitative comparison or autoresearch until the runtime-rendered keyboard example is free of obvious first-glance faults or its failure mechanism is preserved.
+Let the active tmux Pi continuation run supportrepair_v1 from P09 through P19b on `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260628_hot3d_clip001851_pinhole_a800_native_v2_renderstate_rerun`. Do not run metrics or autoresearch. When P19b exists, inspect the rendered overlay/world/side-by-side as physical annotation, including an open-ended anomaly search. If the keyboard body remains wrong, repair the next exposed physical mechanism rather than adding validators or ledgers.
