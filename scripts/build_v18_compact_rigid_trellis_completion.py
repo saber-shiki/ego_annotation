@@ -452,12 +452,21 @@ def main() -> None:
     observed_mesh.visual.face_colors = color_for_labels(observed_labels)
     trellis_canonical.visual.face_colors = color_for_labels(trellis_labels_all)
 
+    accepted_observed_faces = np.where(obs_near)[0]
+    if len(accepted_observed_faces) == 0:
+        raise RuntimeError(
+            "observed Poisson mesh has no faces close to fused visible surfels; "
+            "refusing to construct accepted object body from unsupported fill"
+        )
+    accepted_observed = observed_mesh.submesh([accepted_observed_faces], append=True, repair=False)
+    accepted_observed_labels = ["observed_depth_surface"] * len(accepted_observed.faces)
+
     kept_trellis_faces = np.where((~trellis_near) & silhouette_keep & planar_keep)[0]
     kept_trellis = trellis_canonical.submesh([kept_trellis_faces], append=True, repair=False)
     kept_trellis_labels = ["trellis_inferred_hidden_surface"] * len(kept_trellis.faces)
 
-    completed = trimesh.util.concatenate([observed_mesh, kept_trellis])
-    completed_labels = observed_labels + kept_trellis_labels
+    completed = trimesh.util.concatenate([accepted_observed, kept_trellis])
+    completed_labels = accepted_observed_labels + kept_trellis_labels
     completed.visual.face_colors = color_for_labels(completed_labels)
 
     object_safe = safe_id(str(evidence.get("object_id", "object")).replace("object:", "object_"))
@@ -473,7 +482,7 @@ def main() -> None:
     completed_sidecar = export_label_sidecar(
         args.output_dir / "completed_mesh_face_labels.json",
         completed_labels,
-        np.concatenate([obs_d, trellis_d[kept_trellis_faces]]),
+        np.concatenate([obs_d[accepted_observed_faces], trellis_d[kept_trellis_faces]]),
         str(completed_path),
         0,
     )
@@ -483,7 +492,7 @@ def main() -> None:
         "status": "ok",
         "case": evidence.get("case"),
         "object_id": evidence.get("object_id"),
-        "claim_scope": "TRELLIS is metric-aligned as an RGB hidden-surface prior; observed depth-fused surfels remain the source of truth for visible surface regions.",
+        "claim_scope": "TRELLIS is metric-aligned as an RGB hidden-surface prior; observed depth-fused surfels remain the source of truth for visible surface regions; unsupported observed Poisson fill is diagnostic uncertainty and is excluded from accepted object body.",
         "inputs": {
             "evidence_report": str(args.evidence_report),
             "trellis_report": str(args.trellis_report),
@@ -511,6 +520,13 @@ def main() -> None:
             "trellis_all_candidate": trellis_sidecar["label_counts"],
             "completed_mesh": completed_sidecar["label_counts"],
             "free_space_rejected": int(trellis_sidecar["label_counts"].get("free_space_rejected", 0)),
+        },
+        "accepted_body_semantics": {
+            "observed_depth_surface_faces_accepted": int(len(accepted_observed_faces)),
+            "observed_unsupported_uncertain_faces_excluded": int(len(observed_labels) - len(accepted_observed_faces)),
+            "trellis_hidden_surface_faces_accepted": int(len(kept_trellis_faces)),
+            "unsupported_uncertain_is_not_object_body": True,
+            "claim_scope": "completed_mesh_labeled is the downstream accepted object body; unsupported observed Poisson fill remains only in observed_depth_surface_labeled_mesh and sidecar diagnostics.",
         },
         "free_space_rejection_state": "silhouette_free_space_filter_applied" if bool(args.silhouette_free_space_filter) else "silhouette_free_space_filter_disabled",
         "silhouette_free_space_filter": silhouette_state,

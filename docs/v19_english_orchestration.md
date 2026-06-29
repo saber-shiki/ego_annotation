@@ -608,7 +608,7 @@ python "$REPO_ROOT/scripts/build_v18_scale_sane_compact_rigid_completion.py" \
   --output-dir "$RUN_ROOT/measurements/geometry_completion/scale_sane_<track_id>"
 ```
 
-Systematic completion errors: wrong mesh instance, wrong scale, alignment to hand/support instead of object, mirrored/flipped pose, or hidden prior overriding observed surface. Normal errors: incomplete hidden side, small surface residuals, partial depth noise. Observed depth must overwrite visible regions.
+Systematic completion errors: wrong mesh instance, wrong scale, alignment to hand/support instead of object, mirrored/flipped pose, hidden prior overriding observed surface, or uncertainty labels that do not change downstream body semantics. Normal errors: incomplete hidden side, small surface residuals, partial depth noise. Observed depth must overwrite visible regions, but unsupported observed Poisson fill is diagnostic uncertainty, not accepted object body; `outputs.completed_mesh_labeled` must exclude `unsupported_uncertain` faces from the accepted mesh consumed by pose/contact/render.
 
 ### 9.4 Fit per-frame visible object pose
 
