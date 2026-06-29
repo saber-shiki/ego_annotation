@@ -71,7 +71,9 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
         normal = metric_value(summary, "contact_normal_abs_after_median")
         tangent = metric_value(summary, "contact_tangent_after_median")
         distance = metric_value(summary, "contact_distance_after_median")
-        shift = metric_value(summary, "metric_joint_shift_px") or metric_value(summary, "visible_joint_shift_px_median")
+        shift = metric_value(summary, "metric_joint_shift_px")
+        if shift is None:
+            shift = metric_value(summary, "visible_joint_shift_px_median")
         rows = summary.get("rows_out") or summary.get("rows") or summary.get("optimized_rows")
         parts = []
         if rows is not None:
