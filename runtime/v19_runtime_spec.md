@@ -538,7 +538,25 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --translation-gate-min-visible-surface-depth-vertices 0
 ```
 
-Required output: interval MANO trajectory state. The translation gate preserves source HaWoR wrist/root translation when no selected visible-surface support vertices exist, while keeping optimized wrist-relative articulation; this prevents contact/temporal terms from moving global hand pose without direct support evidence.
+Required output: raw interval MANO/contact trajectory state. The translation gate preserves source HaWoR wrist/root translation when no selected visible-surface support vertices exist, while keeping optimized wrist-relative articulation; this prevents contact/temporal terms from moving global hand pose without direct support evidence.
+
+## P18b metric-MANO/contact-surface state split
+
+Script: `scripts/build_v19_mano_surface_hypothesis_state.py`
+
+P18 may generate contact-like surface hypotheses from object geometry, depth order, and MANO surfaces. Those hypotheses must not automatically overwrite the metric MANO joint/root state used for evaluation. A surface-normal contact factor is evidence about a local uncertain contact surface, not proof that the whole hand root and 21 joints should move. Therefore the default runtime path preserves source metric MANO joints from P04 and carries P18 surface samples as a separate uncertain contact-surface hypothesis for rendering.
+
+```bash
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_mano_surface_hypothesis_state.py \
+  --contact-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
+  --joint-source hawor_npz \
+  --hawor-npz "{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
+  --case "{CASE_ID}" \
+  --object-id "{OBJECT_ID}" \
+  --output "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json"
+```
+
+Required output: `{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json`. Its per-frame states must set `joint_state_policy` to a metric-MANO-preserved policy, keep `optimized_joints_world_m` equal to the selected metric source, carry contact-surface samples under `optimized_vertices_world_sample_m` / `contact_surface_vertices_world_sample_m`, and label contact as unresolved/uncertain. This is the default P19/P20 interval state. The raw P18 state remains provenance and may be evaluated separately, but it must not be the canonical rendered/evaluated hand state unless a later evidence record proves it improves metric MANO without visual regression.
 
 ## P19 full-duration render
 
@@ -558,7 +576,7 @@ Script: `scripts/build_v19_rigid_render_state.py`
   --completed-mesh "$COMPLETED_MESH_PLY" \
   --completion-report "$COMPLETION_REPORT" \
   --constraint-report "{RUN_ROOT}/measurements/contact_nonpenetration/{OBJECT_ID}_mano_object_constraint/v18_mano_object_constraint_state.json" \
-  --temporal-mano-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
+  --temporal-mano-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
   --output "{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json"
 ```
 
@@ -577,6 +595,20 @@ Script: `scripts/render_v19_rigid_state_artifact.py`
 
 Required output: full-duration overlay/world/side-by-side render branch listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_state_runtime/{CASE_ID}/v19_rigid_state_render_manifest.json` as `outputs.overlay`, `outputs.world`, and `outputs.side_by_side`. The renderer must rasterize mesh faces as a visible rigid body, not draw sampled vertices as a point cloud. The manifest must record the projection rule that scales source-coordinate intrinsics to the decoded render frame size; a 960x960 render of 1408x1408 source intrinsics must show `scale_xy` near `[960/1408, 960/1408]`. A missing or empty manifest value is a P19 failure. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v19_overlay_keyboard.mp4`, `v19_world_keyboard.mp4`, and `v19_side_by_side_keyboard.mp4` under that case directory.
 
+### P19c presentation rerender for Workbench item 4
+
+Only after P19b has passed physical visual sanity, rerender the same P19a render state with presentation styling for audience readability. This is a render-only branch: it must not modify prediction state, rerun physical inference, publish canonical videos, or run metrics.
+
+```bash
+"{REMOTE_MODEL_PYTHON}" scripts/render_v19_rigid_state_artifact.py \
+  --render-state "{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json" \
+  --output-root "{RUN_ROOT}/renders/{OBJECT_ID}_rigid_state_presentation_runtime" \
+  --world-view local \
+  --render-style presentation
+```
+
+Required output: full-duration overlay/world/side-by-side presentation videos under `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_state_presentation_runtime/{CASE_ID}/`. The manifest must record `rendered_state.render_style=presentation` and the alpha/wireframe settings. Visual review must verify that the physical body from P19b is preserved, object overpaint/text clutter are reduced, and unresolved MANO/contact remains explicitly labeled as uncertainty rather than accepted contact.
+
 ## P20 publish canonical render names
 
 Script: `scripts/publish_v19_render_artifact.py`
@@ -586,7 +618,7 @@ Script: `scripts/publish_v19_render_artifact.py`
   --overlay "<render_manifest.outputs.overlay>" \
   --world "<render_manifest.outputs.world>" \
   --side-by-side "<render_manifest.outputs.side_by_side>" \
-  --interval-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
+  --interval-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \
   --output-dir "{RUN_ROOT}/renders/v19_published_runtime" \
   --canonical-dir "{RUN_ROOT}/renders" \
   --replace-canonical \

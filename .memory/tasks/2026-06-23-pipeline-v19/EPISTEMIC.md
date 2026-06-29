@@ -2,24 +2,28 @@
 
 ## Current supported claim
 
-Workbench items 3, 4, and 5 are complete for HOT3D `clip001851` on the `maskdepth_nearsurface_plane_v4` branch, with a strict scope.
+Workbench items 3, 4, 5, and one Workbench-6 iteration are complete for HOT3D `clip001851`, with a strict scope.
 
-Supported physical-artifact claim: the frozen V19 artifact is full-duration and audience-readable. It renders a real state-consumed rigid keyboard body plus an uncertain optimized MANO surface hypothesis. In the interaction interval, cyan optimized MANO surface samples align with the visible hands and lie on/near the keyboard surface, removing the previous obvious detached/misordered hand-keyboard failure. Contact ownership, signed nonpenetration, and metric-perfect MANO are **not** accepted.
+The current best mechanism is **source metric MANO plus a separate uncertain contact-surface hypothesis**. The metric MANO joint/root state remains the selected source hand state; the point-to-plane surface samples are rendered as an explicit uncertain contact/contact-surface posterior. This preserves 21-joint MANO evaluation while still visualizing the physically useful near-keyboard surface evidence. Contact ownership, signed nonpenetration, and certain hand-object contact remain unresolved.
 
-Supported evaluation claim: the v4 point-to-plane correction is **not** a HOT3D 21-joint MANO accuracy improvement. On the fair 109 candidate rows where v4 has optimized joints, it worsens runtime-HaWoR wrist and MPJPE metrics. This metric result bounds the claim: v4 improves the rendered uncertain hand-surface/keyboard relationship but corrupts evaluated joint localization.
+Canonical evidence for the prior v4 branch showed the failure mechanism: v4 point-to-plane fitting made the rendered hand-keyboard relation plausible, but when its fitted transform was promoted into `optimized_joints_world_m`, HOT3D 21-joint localization regressed badly. On 109 candidate rows, runtime-HaWoR wrist median was `0.03547 m` and v4 was `0.10211 m`; joint MPJPE median was `0.04721 m` and v4 was `0.11305 m`.
 
-Canonical frozen prediction artifacts for this branch:
+The item-6 split-state branch confirms the causal model. On the same 109 candidate rows, source-MANO/contact-surface candidate and runtime HaWoR are exactly equal for wrist error, joint MPJPE, joint median error, root-aligned MPJPE, root-aligned median error, and root-aligned p95 error; max absolute row delta is `0.0 m`. Visual inspection still shows cyan surface samples near the keyboard/visible hand, but labels make clear that the cyan surface is separate from metric joints and contact is not accepted.
 
-- Freeze manifest: `$RUN/state/v19_prediction_freeze_manifest.json`, SHA256 `2e829cdc16ee6602e5893cac91ed29a40e30eef64dda887e279fd515a8f5b7b7`, status `frozen`, `hot3d_scoring_run=false` at freeze.
-- Canonical videos: `$RUN/renders/v19_overlay.mp4`, `$RUN/renders/v19_world.mp4`, `$RUN/renders/v19_side_by_side.mp4`.
-- Presentation branch: `$RUN/renders/keyboard_rigid_state_runtime_maskdepth_nearsurface_plane_v4_surface_presentation/$CASE/`.
-- Evaluation: `$RUN/evaluation/hot3d_mano3d_maskdepth_nearsurface_plane_v4/`.
+Key current branch artifacts:
+
+- Split state: `$RUN/measurements/mano_interval_correction_maskdepth_nearsurface_plane_v4_surfacehyp_hawor_metric/$CASE/v18_joint_mano_interval_trajectory_state.json`.
+- Render state: `$RUN/state/render_state/keyboard_rigid_render_state_maskdepth_nearsurface_plane_v4_surfacehyp_hawor_metric.json`.
+- Full render: `$RUN/renders/keyboard_rigid_state_runtime_maskdepth_nearsurface_plane_v4_surfacehyp_hawor_metric_presentation/$CASE/`.
+- Freeze: `$RUN/state/v19_prediction_freeze_manifest_surfacehyp_hawor_metric.json`.
+- Evaluation: `$RUN/evaluation/hot3d_mano3d_surfacehyp_hawor_metric/`.
+- Fair matched-row comparison SHA256: `1a95947d37edb2b9c6b3a0e5e3ebe1cffed004e47b3ecee999b38e413eee3163`.
 
 ## Current causal model
 
 ### Object-registration mechanism
 
-The rejected `supportrepair_v2` artifact failed partly because unsupported Poisson fill and poor anchor/semantics promoted non-object surface into the accepted body. `anchorreview_v2` repaired object-side state by selecting frame 106 via visual candidate review and excluding `unsupported_uncertain` observed Poisson fill from the accepted/rendered body. Mesh-vs-UniDepth checks around frames `95/106/120/140/149` show keyboard mesh depth residuals near 0–4 mm median, with abs medians mostly below about 1.5 cm. Object registration is therefore not the primary root of the remaining MANO metric failure, although the keyboard mesh is broad/solid and can overpaint keys.
+The rejected `supportrepair_v2` artifact failed partly because unsupported Poisson fill and poor anchor/semantics promoted non-object surface into the accepted body. `anchorreview_v2` repaired object-side state by selecting frame 106 via visual candidate review and excluding `unsupported_uncertain` observed Poisson fill from the accepted/rendered body. Mesh-vs-UniDepth checks around frames `95/106/120/140/149` show keyboard mesh depth residuals near 0–4 mm median, with abs medians mostly below about 1.5 cm. Object registration is not the current root blocker, although the keyboard mesh is broad/solid and can overpaint keys.
 
 ### Hand support and depth mechanism
 
@@ -27,15 +31,13 @@ The earlier no-support conclusion was false. `build_v19_mano_mask_depth_refit_in
 
 ### Contact-coupling mechanism
 
-Object-mask-overlap-only contact selection was too sparse. v3 expanded contact candidates using full MANO vertices, explicit source-size projection, projected object mesh proximity, nearest object surface distance, and depth-order plausibility; this produced 109 rows but point-to-point residuals traded surface-normal improvement for tangential drift and scale pressure. v4 replaced point-to-point contact with a point-to-plane surface-normal residual. This matches the observed visual failure mechanism: before-correction errors were mostly normal separation from the keyboard surface, while exact nearest-sampled-vertex equality was an invalid tangential target under occlusion and sparse contact.
+Object-mask-overlap-only contact selection was too sparse. v3 expanded contact candidates using full MANO vertices, explicit source-size projection, projected object mesh proximity, nearest object surface distance, and depth-order plausibility; this produced 109 rows but point-to-point residuals traded surface-normal improvement for tangential drift and scale pressure. v4 replaced point-to-point contact with a point-to-plane surface-normal residual, which matches the geometric failure mechanism: the dominant visual error was normal separation from the keyboard surface, while exact nearest-sampled-vertex equality was an invalid tangential target under occlusion and sparse contact.
 
-The visual artifact accepted by item 3/4 is therefore an uncertainty-preserving surface hypothesis, not a snap and not contact closure. It uses a bounded similarity correction, preserves scale, retains baseline skeleton provenance in diagnostic renders, and marks contact as not accepted. The cyan optimized surface samples are the physical surface hypothesis to inspect; orange/white skeletons are provenance/baseline.
+The important correction is representational: surface-normal evidence is a **local uncertain contact-surface variable**, not a license to move the whole metric hand/root. A global Sim(3) contact fit couples local contact to all 21 joints and root translation, so it can improve a rendered surface relation while destroying metric MANO localization. The split-state mechanism breaks that bad coupling: keep metric MANO joints/root from a source with known evaluation behavior, and render the contact-surface posterior separately with explicit uncertainty.
 
 ### Metric mechanism
 
-The HOT3D MANO3D evaluator scores 21-joint localization in camera 3D. It does not score object pose, contact, occlusion, nonpenetration, or surface-to-keyboard plausibility. Evaluation after freeze required an evaluation-only copy of the v4 state with `source_hawor_npz` added for camera trajectory; the frozen prediction state was not modified.
-
-Metric observation on the fair 109 candidate rows: runtime HaWoR baseline wrist median `0.03547 m`, v4 `0.10211 m`; baseline joint MPJPE median `0.04721 m`, v4 `0.11305 m`; baseline root-aligned MPJPE median `0.02122 m`, v4 `0.04036 m`. Evaluator review projections land on visible hands, so this is not an obvious camera/review artifact. The mechanism is that the surface-normal correction moves the MANO joint/root state to make a plausible uncertain surface relation to the keyboard, but that movement damages the 21-joint state against HOT3D GT.
+The HOT3D MANO3D evaluator scores 21-joint localization in camera 3D. It does not score object pose, contact, occlusion, nonpenetration, or surface-to-keyboard plausibility. The source-MANO/contact-surface branch intentionally makes the evaluator see the preserved metric MANO state, so its 21-joint metrics are equal to source HaWoR on candidate rows. This is not metric cheating if, and only if, the artifact labels the contact surface as a separate uncertain hypothesis rather than as the accepted metric MANO body.
 
 ## Rejected mechanisms and claims
 
@@ -47,15 +49,16 @@ Metric observation on the fair 109 candidate rows: runtime HaWoR baseline wrist 
 - Rejected: “fixed-scale mask/depth MANO refit alone solves the hand-object relation.” It improves support/image/depth evidence but remains physically incoherent in world render.
 - Rejected: “sparse object-mask-overlap contact similarity solves the interval.” It produced too few rows and incoherent rendered hypotheses.
 - Rejected: “point-to-point nearest surface contact is the right residual.” It reduces distance but creates tangential artifacts and scale pressure.
-- Rejected: “v4 point-to-plane is a MANO metric improvement.” It is visually useful for uncertain surface/contact rendering but worsens HOT3D 21-joint localization on candidate rows.
+- Rejected: “v4 point-to-plane fitted joints are a MANO metric improvement.” They are visually useful but worsen HOT3D 21-joint localization.
+- Rejected: “surface-hypothesis rows prove contact.” They only prove an uncertain geometric surface posterior near the object; contact ownership/nonpenetration remain unresolved.
 
 ## Live uncertainties
 
-1. Representation split: whether the correct next design is to keep baseline/metric MANO joints as the evaluated hand state while rendering a separate uncertain near-surface MANO surface/contact hypothesis, instead of replacing joints with the surface-fit state.
-2. Contact semantics: v4 supports near-surface uncertain interaction, not accepted contact ownership. Any future artifact must avoid collapsing this into a hard contact claim.
+1. Generalization beyond clip001851: the source-MANO/contact-surface split is mechanically general, but it must be rerun on the fixed HOT3D slice or next representative clip to test whether visual clarity and metric preservation hold across cases.
+2. Contact semantics: the current branch visualizes a near-surface posterior, not accepted contact. A future factor should estimate contact ownership probability without moving metric MANO joints unless support is strong.
 3. Mesh appearance: the keyboard mesh is physically usable but broad/solid. Presentation opacity repairs readability for clip001851, but object-side refinement may still be needed later.
-4. Left frame 141 lacks a v4 temporal MANO row, and early-left rows have larger visible shifts. These are carried as uncertainty.
+4. Hand-surface posterior geometry: the cyan surface is not a full MANO mesh; it is sampled surface evidence. A future artifact may need better surface sampling/uncertainty visualization while preserving the metric hand state.
 
 ## Next action
 
-A scoped evidence checkpoint should be committed: near-surface/point-to-plane interval refitter, render-surface/label improvements, and task memory. The next Workbench phase after item 5 is research/iteration, but it must start from the negative metric mechanism: preserve the visually sane uncertain surface relation while preventing surface contact correction from degrading the evaluated 21-joint MANO state.
+Commit the item-6 mechanism and memory/spec updates after staged-diff review. Then continue Workbench item 6 by running the generalized P18b/P19/P20/evaluator path on the next fixed-slice clip or representative runtime branch, not by retuning clip001851 thresholds.

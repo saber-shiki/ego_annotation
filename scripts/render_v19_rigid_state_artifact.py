@@ -373,11 +373,19 @@ def fmt_px(value_px: float | None) -> str:
 def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> tuple[str, str, str]:
     contact = temporal.get("contact_similarity_refit") if isinstance(temporal.get("contact_similarity_refit"), dict) else {}
     mode = str(contact.get("contact_residual_mode") or "contact")
+    policy = str(temporal.get("joint_state_policy") or "")
     normal = summary_stat(contact.get("contact_normal_abs_after_m"), "median")
     tangent = summary_stat(contact.get("contact_tangent_after_m"), "median")
     distance = summary_stat(contact.get("contact_distance_after_m"), "median")
-    shift = summary_stat(temporal.get("visible_joint_shift_px"), "median")
+    shift = summary_stat(temporal.get("metric_joint_shift_px") or temporal.get("visible_joint_shift_px"), "median")
     if presentation:
+        if "metric_mano_preserved" in policy:
+            text = "source MANO + uncertain contact surface"
+            if mode == "point_to_plane":
+                text2 = f"surface normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, joint shift {fmt_px(shift)}"
+            else:
+                text2 = f"surface contact {fmt_mm(distance)}, joint shift {fmt_px(shift)}"
+            return text, text2, "contact not accepted; cyan surface is separate from metric joints"
         text = "uncertain MANO surface hypothesis"
         if mode == "point_to_plane":
             text2 = f"normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, shift {fmt_px(shift)}"
@@ -388,7 +396,9 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
     if residual is None:
         residual = summary_stat(temporal.get("final_active_constraint_residual_after_solver_m"), "max")
     text = f"INTERVAL MANO UNCERTAIN | {str(temporal.get('temporal_mano_state', 'interval_state'))[:42]}"
-    if mode == "point_to_plane":
+    if "metric_mano_preserved" in policy:
+        text2 = f"source_joints_preserved normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)}"
+    elif mode == "point_to_plane":
         text2 = f"normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)} shift_med={fmt_px(shift)}"
     else:
         text2 = f"pen_res={fmt_mm(residual)} contact_med={fmt_mm(distance)} shift_med={fmt_px(shift)}"
