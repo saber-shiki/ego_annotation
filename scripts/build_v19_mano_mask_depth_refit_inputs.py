@@ -74,16 +74,41 @@ def localize_path(path: str | Path, remote_root: Path | None, local_root: Path |
     raise FileNotFoundError(str(path))
 
 
-def read_mask_960(path: Path) -> np.ndarray:
+def read_mask(path: Path, target_shape: tuple[int, int] | None = None) -> np.ndarray:
     image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise FileNotFoundError(str(path))
     if image.ndim == 3:
         image = image[..., 0]
     mask = image > 0
-    if mask.shape != (540, 960):
-        mask = cv2.resize(mask.astype(np.uint8), (960, 540), interpolation=cv2.INTER_NEAREST) > 0
+    if target_shape is not None and mask.shape != target_shape:
+        height, width = target_shape
+        mask = cv2.resize(mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST) > 0
     return mask
+
+
+def image_shape(path: Path) -> tuple[int, int]:
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise FileNotFoundError(str(path))
+    return int(image.shape[0]), int(image.shape[1])
+
+
+def frame_target_shape(frame: dict[str, Any], frame_idx: int, tracks: list[dict[str, Any] | None], object_track: dict[str, Any], args: argparse.Namespace) -> tuple[int, int]:
+    for track in tracks:
+        row = track.get(str(frame_idx)) if isinstance(track, dict) else None
+        if isinstance(row, dict) and row.get("mask_path"):
+            path = localize_path(str(row["mask_path"]), args.remote_root, args.local_root)
+            return image_shape(path)
+    obj_row = object_track.get(str(frame_idx)) if isinstance(object_track, dict) else None
+    if isinstance(obj_row, dict) and obj_row.get("mask_path"):
+        path = localize_path(str(obj_row["mask_path"]), args.remote_root, args.local_root)
+        return image_shape(path)
+    raw = frame.get("raw_frame_path")
+    if isinstance(raw, str) and raw:
+        path = localize_path(raw, args.remote_root, args.local_root)
+        return image_shape(path)
+    return int(args.source_height), int(args.source_width)
 
 
 def mask_bbox(mask: np.ndarray) -> list[float] | None:
@@ -174,13 +199,25 @@ def project_camera(points_camera: np.ndarray, intr: np.ndarray) -> np.ndarray:
     return uv
 
 
-def projection_support_mask(vertices_camera: np.ndarray, joints_camera: np.ndarray, intr: np.ndarray, dilation_px_960: int) -> np.ndarray:
-    mask = np.zeros((540, 960), dtype=np.uint8)
+def projection_support_mask(
+    vertices_camera: np.ndarray,
+    joints_camera: np.ndarray,
+    intr: np.ndarray,
+    dilation_px: int,
+    source_size: tuple[int, int],
+    target_shape: tuple[int, int],
+) -> np.ndarray:
+    height, width = target_shape
+    source_width, source_height = source_size
+    if source_width <= 0 or source_height <= 0 or width <= 0 or height <= 0:
+        raise RuntimeError(f"invalid source/target sizes source={source_size} target={target_shape}")
+    mask = np.zeros((height, width), dtype=np.uint8)
     uv_vertices = project_camera(vertices_camera, intr)
     uv_joints = project_camera(joints_camera, intr)
-    scale = np.asarray([0.5, 0.5], dtype=float)
+    scale = np.asarray([float(width) / float(source_width), float(height) / float(source_height)], dtype=float)
+    margin = float(max(width, height)) * 0.25
     pts = uv_vertices[np.isfinite(uv_vertices).all(axis=1)] * scale[None, :]
-    pts = pts[(pts[:, 0] >= -200) & (pts[:, 0] <= 1160) & (pts[:, 1] >= -200) & (pts[:, 1] <= 740)]
+    pts = pts[(pts[:, 0] >= -margin) & (pts[:, 0] <= width + margin) & (pts[:, 1] >= -margin) & (pts[:, 1] <= height + margin)]
     if len(pts) >= 3:
         hull = cv2.convexHull(np.rint(pts).astype(np.int32).reshape(-1, 1, 2))
         cv2.fillConvexPoly(mask, hull, 1)
@@ -193,19 +230,19 @@ def projection_support_mask(vertices_camera: np.ndarray, joints_camera: np.ndarr
     for point in joints:
         if np.isfinite(point).all():
             cv2.circle(mask, tuple(np.rint(point).astype(int)), 8, 1, -1, cv2.LINE_AA)
-    if int(dilation_px_960) > 0:
-        radius = int(dilation_px_960)
+    if int(dilation_px) > 0:
+        radius = int(dilation_px)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
         mask = cv2.dilate(mask, kernel, iterations=1)
     return mask > 0
 
 
-def object_mask_for_frame(track: dict[str, Any], frame_idx: int, args: argparse.Namespace) -> np.ndarray | None:
+def object_mask_for_frame(track: dict[str, Any], frame_idx: int, args: argparse.Namespace, target_shape: tuple[int, int]) -> np.ndarray | None:
     row = track.get(str(frame_idx))
     if not isinstance(row, dict) or not row.get("visible") or not row.get("mask_path"):
         return None
     path = localize_path(str(row["mask_path"]), args.remote_root, args.local_root)
-    mask = read_mask_960(path)
+    mask = read_mask(path, target_shape)
     if int(args.object_mask_dilation_px_960) > 0:
         r = int(args.object_mask_dilation_px_960)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
@@ -243,15 +280,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         T, r_c2w, t_c2w = frame_camera_pose(frame)
         source_width = int(frame.get("source_width") or args.source_width)
         source_height = int(frame.get("source_height") or args.source_height)
+        target_shape = frame_target_shape(frame, frame_idx, [left_track, right_track], object_track, args)
+        target_height, target_width = target_shape
         legacy_frame: dict[str, Any] = {
             "frame_idx": int(frame_idx),
             "time_s": frame.get("time_s"),
             "raw_frame_path": frame.get("raw_frame_path"),
             "camera": {"T_world_camera_metric": T.astype(float).tolist()},
-            "object": {"source_image_size": [source_width, source_height]},
+            "object": {
+                "source_image_size": [source_width, source_height],
+                "mask_image_size": [target_width, target_height],
+                "source_to_mask_scale_xy": [float(target_width) / float(source_width), float(target_height) / float(source_height)],
+            },
             "hands": [],
         }
-        object_mask = object_mask_for_frame(object_track, frame_idx, args) if object_track else None
+        object_mask = object_mask_for_frame(object_track, frame_idx, args, target_shape) if object_track else None
         for side, track in (("left", left_track), ("right", right_track)):
             hand = hand_by_side(frame, side)
             if hand is None:
@@ -313,8 +356,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     diagnostics.append({"frame_idx": frame_idx, "side": side, "state": "missing_sam2_hand_mask"})
                     continue
                 sam2_path = localize_path(str(row["mask_path"]), args.remote_root, args.local_root)
-                sam2_mask = read_mask_960(sam2_path)
-                prior_mask = projection_support_mask(vertices_camera, joints_camera, intr, int(args.mano_projection_dilation_px_960))
+                sam2_mask = read_mask(sam2_path, target_shape)
+                prior_mask = projection_support_mask(
+                    vertices_camera,
+                    joints_camera,
+                    intr,
+                    int(args.mano_projection_dilation_px_960),
+                    (source_width, source_height),
+                    target_shape,
+                )
                 filtered = sam2_mask & prior_mask
                 object_overlap_px = 0
                 object_subtracted_px = 0
@@ -344,7 +394,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                         "center_xy": mask_center(filtered),
                         "area_px": float(area),
                         "source_sam2_mask_path": str(sam2_path),
-                        "filter": "sam2_hand_intersect_dilated_mano_projection_minus_object_mask",
+                        "filter": "sam2_hand_intersect_dilated_mano_projection" + ("_minus_object_mask" if object_mask is not None else ""),
                     }
                 else:
                     track_rows[side][str(frame_idx)] = {
@@ -359,11 +409,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                         "frame_idx": frame_idx,
                         "side": side,
                         "state": "ok" if visible else "filtered_mask_too_small",
-                        "sam2_area_px_960": int(np.count_nonzero(sam2_mask)),
-                        "mano_projection_area_px_960": int(np.count_nonzero(prior_mask)),
-                        "filtered_area_px_960": area,
-                        "object_overlap_px_960": object_overlap_px,
-                        "object_subtracted_px_960": object_subtracted_px,
+                        "target_mask_shape_hw": [int(target_height), int(target_width)],
+                        "source_size_wh": [int(source_width), int(source_height)],
+                        "source_to_mask_scale_xy": [float(target_width) / float(source_width), float(target_height) / float(source_height)],
+                        "sam2_area_px": int(np.count_nonzero(sam2_mask)),
+                        "mano_projection_area_px": int(np.count_nonzero(prior_mask)),
+                        "filtered_area_px": area,
+                        "object_overlap_px": object_overlap_px,
+                        "object_subtracted_px": object_subtracted_px,
                         "mask_path": str(mask_path) if visible else None,
                     }
                 )
