@@ -287,9 +287,40 @@ Script: `scripts/build_v19_base_annotations.py`
 
 Required output: `{RUN_ROOT}/state/base_annotations/annotations_v19_base.json`, `v19_base_physical_state.json`, and `v19_mano_bridge_from_hawor_world.npz`.
 
-## P09 visible metric geometry
+## P09 visible metric geometry and anchor proposal
 
 Script: `scripts/build_v19_visible_geometry_from_sam2_depth.py`
+
+P09 is intentionally two-step. First propose anchor candidates from the same SAM2/depth/camera evidence without committing to a canonical object frame:
+
+```bash
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_visible_geometry_from_sam2_depth.py \
+  --case "{CASE_ID}" \
+  --track-id "{TRACK_ID}" \
+  --object-id "{OBJECT_ID}" \
+  --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
+  --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
+  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --output-dir "{RUN_ROOT}/measurements/object_geometry/anchor_candidates/{OBJECT_ID}" \
+  --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
+  --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
+  --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
+  --preserve-source-index \
+  --exclude-hand-bboxes \
+  --hand-bbox-exclusion-pad-px 12 \
+  --propose-anchor-candidates-only \
+  --anchor-candidate-count 12
+```
+
+Required proposal outputs: `anchor_candidate_proposals.json` and `anchor_candidate_review.jpg`. The numeric proposal score is not an acceptance gate. The runtime agent must inspect the review sheet as an image, compare raw appearance/mask/depth/hand-removal summaries, and write an explicit anchor decision:
+
+```text
+{RUN_ROOT}/state/anchor_decisions/{OBJECT_ID}.json
+```
+
+Minimum decision fields: `object_id`, `selected_anchor_frame_idx`, `selected_candidate_rank`, `visual_rationale`, `rejected_candidate_observations`, `uncertainties`, and `candidate_report_path`. Favor the cleanest full-object evidence: large visible support, low hand overlap, non-border mask, coherent object outline/key-grid or texture, reliable depth, and metric extent consistent with neighboring plausible frames. Do not choose a frame solely because it has the largest mask or most sampled points.
+
+Then run canonical visible geometry with the selected anchor. This second command must use `--require-anchor-frame` so the pipeline cannot silently fall back to the max-point frame:
 
 ```bash
 "{REMOTE_MODEL_PYTHON}" scripts/build_v19_visible_geometry_from_sam2_depth.py \
@@ -304,6 +335,7 @@ Script: `scripts/build_v19_visible_geometry_from_sam2_depth.py`
   --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
   --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
   --anchor-frame "{ANCHOR_FRAME}" \
+  --require-anchor-frame \
   --preserve-source-index \
   --exclude-hand-bboxes \
   --hand-bbox-exclusion-pad-px 12
@@ -331,10 +363,10 @@ Script: `scripts/build_v18_compact_rigid_evidence_bundle.py`
   --depth-fused-report "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/v19_visible_geometry_depth_fused_report.json" \
   --output-root "{RUN_ROOT}/measurements/geometry_completion/rigid_evidence" \
   --selected-frame-idx "{ANCHOR_FRAME}" \
-  --selection-note "runtime selected clean object evidence frame"
+  --selection-note "agent-selected anchor from state/anchor_decisions/{OBJECT_ID}.json"
 ```
 
-Required output: evidence bundle report and object crop image path. The TRELLIS conditioning image is `selected.trellis_conditioning_crop.crop_rgba` in the evidence-bundle report. Do not use `selected.raw_frame_path`, the full raw frame, or the binary mask as TRELLIS input; those substitute a scene/mask prior for per-instance object mesh reconstruction.
+Required output: evidence bundle report and object crop image path. P11 must use the same `selected_anchor_frame_idx` recorded in P09's anchor-decision JSON; it must not independently rerank evidence frames by mask area or point count. The TRELLIS conditioning image is `selected.trellis_conditioning_crop.crop_rgba` in the evidence-bundle report. Do not use `selected.raw_frame_path`, the full raw frame, or the binary mask as TRELLIS input; those substitute a scene/mask prior for per-instance object mesh reconstruction.
 
 ## P12 mesh prior
 

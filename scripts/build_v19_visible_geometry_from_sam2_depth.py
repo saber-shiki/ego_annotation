@@ -494,6 +494,270 @@ def choose_visible_points(
     return cam.astype(float), world.astype(float), summary
 
 
+def normalize01(value: float, lo: float, hi: float) -> float:
+    if not np.isfinite(value) or not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return 0.0
+    return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
+
+
+def raw_image_path_from_row(raw_row: dict[str, Any]) -> str:
+    return str(raw_row.get("raw_frame_path") or raw_row.get("rgb") or raw_row.get("path") or "")
+
+
+def candidate_mask_summary(mask: np.ndarray, source_width: int, source_height: int) -> dict[str, Any]:
+    bbox = bbox_xyxy_from_mask(mask, source_width, source_height)
+    area = int(mask.sum())
+    h, w = mask.shape[:2]
+    component_count = 0
+    largest_component_px = 0
+    if area > 0:
+        n, labels = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+        component_count = max(0, int(n) - 1)
+        if n > 1:
+            counts = np.bincount(labels.reshape(-1))[1:]
+            largest_component_px = int(counts.max()) if counts.size else 0
+    if len(bbox) >= 4:
+        x0, y0, x1, y1 = [float(v) for v in bbox[:4]]
+        bw = max(0.0, x1 - x0)
+        bh = max(0.0, y1 - y0)
+        margin = 0.03 * float(min(max(1, source_width), max(1, source_height)))
+        touches_border = bool(x0 <= margin or y0 <= margin or x1 >= float(source_width) - margin or y1 >= float(source_height) - margin)
+        bbox_area = float(bw * bh)
+    else:
+        x0 = y0 = x1 = y1 = bw = bh = bbox_area = 0.0
+        touches_border = True
+    return {
+        "mask_area_px": area,
+        "component_count": int(component_count),
+        "largest_component_px": int(largest_component_px),
+        "bbox_xyxy": bbox,
+        "bbox_width_px": float(bw),
+        "bbox_height_px": float(bh),
+        "bbox_area_px": float(bbox_area),
+        "touches_or_near_image_border": bool(touches_border),
+    }
+
+
+def build_anchor_candidate_proposals(
+    *,
+    args: argparse.Namespace,
+    object_id: str,
+    visible_data: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    """Write anchor candidate evidence without choosing the anchor.
+
+    The score is a proposal heuristic only.  It intentionally exposes the raw
+    factors and review sheet so the runtime agent can choose, reject, or request
+    another proposal after subjective visual/geometric inspection.
+    """
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for idx, vis in sorted(visible_data.items()):
+        mask = read_mask(Path(vis["mask_path"]))
+        source_width = int(vis.get("source_width") or mask.shape[1])
+        source_height = int(vis.get("source_height") or mask.shape[0])
+        mask_stats = candidate_mask_summary(mask, source_width, source_height)
+        world_points = np.asarray(vis.get("world_points"), dtype=float)
+        extent = world_points.max(axis=0) - world_points.min(axis=0) if world_points.ndim == 2 and len(world_points) else np.zeros(3, dtype=float)
+        diag = float(np.linalg.norm(extent))
+        ownership = vis.get("object_surface_ownership_filter") if isinstance(vis.get("object_surface_ownership_filter"), dict) else {}
+        input_mask_px = int(ownership.get("input_mask_pixels") or mask_stats["mask_area_px"] or 0)
+        output_mask_px = int(ownership.get("output_mask_pixels") or mask_stats["mask_area_px"] or 0)
+        removed_px = int(ownership.get("removed_mask_pixels") or max(0, input_mask_px - output_mask_px))
+        removed_frac = float(removed_px / input_mask_px) if input_mask_px > 0 else 0.0
+        depth_p05 = float(vis.get("depth_p05_m") or np.nan)
+        depth_p95 = float(vis.get("depth_p95_m") or np.nan)
+        depth_spread = float(depth_p95 - depth_p05) if np.isfinite(depth_p05) and np.isfinite(depth_p95) else float("nan")
+        sample_summary = vis.get("sample_summary") if isinstance(vis.get("sample_summary"), dict) else {}
+        rows.append(
+            {
+                "frame_idx": int(idx),
+                "raw_frame_path": raw_image_path_from_row(vis.get("raw_row") if isinstance(vis.get("raw_row"), dict) else {}),
+                "object_owned_mask_path": str(vis.get("mask_path")),
+                "raw_sam2_mask_path": str(vis.get("raw_sam2_mask_path")),
+                "visible_depth_vertex_count": int(len(world_points)),
+                "valid_depth_mask_pixels": int(sample_summary.get("valid_depth_mask_pixels") or 0),
+                "sampled_points": int(sample_summary.get("sampled_points") or len(world_points)),
+                "mask_area_px": int(mask_stats["mask_area_px"]),
+                "raw_mask_area_px": int(input_mask_px),
+                "hand_owned_removed_px": int(removed_px),
+                "hand_owned_removed_fraction": float(removed_frac),
+                "component_count": int(mask_stats["component_count"]),
+                "largest_component_px": int(mask_stats["largest_component_px"]),
+                "bbox_xyxy": mask_stats["bbox_xyxy"],
+                "bbox_width_px": float(mask_stats["bbox_width_px"]),
+                "bbox_height_px": float(mask_stats["bbox_height_px"]),
+                "bbox_area_px": float(mask_stats["bbox_area_px"]),
+                "touches_or_near_image_border": bool(mask_stats["touches_or_near_image_border"]),
+                "depth_median_m": float(vis.get("depth_median_m") or np.nan),
+                "depth_p05_m": depth_p05,
+                "depth_p95_m": depth_p95,
+                "depth_spread_p95_p05_m": depth_spread,
+                "world_extent_m": extent.astype(float).tolist(),
+                "world_extent_diag_m": float(diag),
+                "intrinsics_source": str(vis.get("intrinsics_source")),
+                "camera_source": str(vis.get("camera_source")),
+            }
+        )
+    if not rows:
+        raise RuntimeError("no visible rows available for anchor candidate proposal")
+    area_values = np.asarray([float(r["mask_area_px"]) for r in rows], dtype=float)
+    point_values = np.asarray([float(r["visible_depth_vertex_count"]) for r in rows], dtype=float)
+    diag_values = np.asarray([float(r["world_extent_diag_m"]) for r in rows if float(r["world_extent_diag_m"]) > 0.0], dtype=float)
+    depth_spreads = np.asarray([float(r["depth_spread_p95_p05_m"]) for r in rows if np.isfinite(float(r["depth_spread_p95_p05_m"]))], dtype=float)
+    median_diag = float(np.median(diag_values)) if diag_values.size else 0.0
+    depth_spread_hi = float(np.percentile(depth_spreads, 90.0)) if depth_spreads.size else 1.0
+    area_hi = float(area_values.max()) if area_values.size else 1.0
+    point_hi = float(point_values.max()) if point_values.size else 1.0
+    for r in rows:
+        area_score = float(r["mask_area_px"]) / max(area_hi, 1.0)
+        point_score = float(r["visible_depth_vertex_count"]) / max(point_hi, 1.0)
+        hand_clean_score = 1.0 - float(np.clip(r["hand_owned_removed_fraction"], 0.0, 1.0))
+        border_score = 0.0 if bool(r["touches_or_near_image_border"]) else 1.0
+        comp = max(1, int(r["component_count"]))
+        component_score = float(max(0.0, 1.0 - 0.25 * (comp - 1)))
+        diag = float(r["world_extent_diag_m"])
+        extent_score = float(np.exp(-abs(np.log(max(diag, 1.0e-9) / max(median_diag, 1.0e-9))))) if median_diag > 0 else 0.0
+        spread = float(r["depth_spread_p95_p05_m"])
+        depth_score = 1.0 - normalize01(spread, 0.0, max(depth_spread_hi, 1.0e-6)) if np.isfinite(spread) else 0.0
+        proposal_score = (
+            0.24 * area_score
+            + 0.16 * point_score
+            + 0.18 * hand_clean_score
+            + 0.16 * border_score
+            + 0.14 * extent_score
+            + 0.07 * component_score
+            + 0.05 * depth_score
+        )
+        r["proposal_score"] = float(proposal_score)
+        r["proposal_score_terms"] = {
+            "mask_area_score": float(area_score),
+            "visible_depth_vertex_count_score": float(point_score),
+            "hand_clean_score": float(hand_clean_score),
+            "not_near_image_border_score": float(border_score),
+            "extent_consistency_score": float(extent_score),
+            "single_component_score": float(component_score),
+            "depth_stability_score": float(depth_score),
+        }
+        r["score_interpretation"] = "heuristic proposal score only; agent visual/geometric judgment must choose the anchor"
+    ranked = sorted(rows, key=lambda r: (-float(r["proposal_score"]), int(r["frame_idx"])))
+    top_k = max(1, int(args.anchor_candidate_count))
+    min_gap = max(0, int(args.anchor_candidate_min_gap))
+    review_rows: list[dict[str, Any]] = []
+    for row in ranked:
+        if all(abs(int(row["frame_idx"]) - int(prev["frame_idx"])) >= min_gap for prev in review_rows):
+            review_rows.append(row)
+        if len(review_rows) >= top_k:
+            break
+    if len(review_rows) < top_k:
+        seen = {int(r["frame_idx"]) for r in review_rows}
+        for row in ranked:
+            if int(row["frame_idx"]) not in seen:
+                review_rows.append(row)
+                seen.add(int(row["frame_idx"]))
+            if len(review_rows) >= top_k:
+                break
+    report_path = args.output_dir / "anchor_candidate_proposals.json"
+    review_path = args.output_dir / "anchor_candidate_review.jpg"
+    review_status = render_anchor_candidate_review(
+        review_rows=review_rows,
+        review_path=review_path,
+        panel_width=int(args.anchor_candidate_panel_width),
+    )
+    report = {
+        "method": "build_v19_visible_geometry_from_sam2_depth_anchor_candidate_proposals",
+        "status": "ok",
+        "object_id": object_id,
+        "track_id": args.track_id,
+        "claim_scope": "Anchor candidates for agent subjective selection. This report does not choose or accept an anchor frame.",
+        "selection_required": True,
+        "selection_instruction": "Inspect anchor_candidate_review.jpg and ranked_candidates; write an agent anchor decision before running P09/P11 with --anchor-frame/--selected-frame-idx.",
+        "proposal_score_policy": "weighted heuristic over owned mask area, visible depth support, low hand-owned removal, non-border support, metric extent consistency, component count, and depth stability; score is not an acceptance gate.",
+        "candidate_count": int(len(rows)),
+        "review_candidate_count": int(len(review_rows)),
+        "review_diversity_min_frame_gap": int(min_gap),
+        "outputs": {
+            "anchor_candidate_proposals": str(report_path),
+            "anchor_candidate_review": str(review_path) if review_status.get("status") == "ok" else None,
+        },
+        "review_status": review_status,
+        "ranked_candidates": ranked,
+        "review_candidates": review_rows,
+        "score_population_summary": {
+            "max_mask_area_px": int(area_hi),
+            "max_visible_depth_vertex_count": int(point_hi),
+            "median_world_extent_diag_m": float(median_diag),
+            "depth_spread_p90_m": float(depth_spread_hi),
+        },
+    }
+    write_json(report_path, report)
+    return report
+
+
+def render_anchor_candidate_review(*, review_rows: list[dict[str, Any]], review_path: Path, panel_width: int) -> dict[str, Any]:
+    panels: list[np.ndarray] = []
+    blockers: list[str] = []
+    panel_width = max(220, int(panel_width))
+    for rank, row in enumerate(review_rows, start=1):
+        raw_path = Path(str(row.get("raw_frame_path") or ""))
+        mask_path = Path(str(row.get("object_owned_mask_path") or ""))
+        raw = cv2.imread(str(raw_path), cv2.IMREAD_COLOR) if raw_path.is_file() else None
+        if raw is None:
+            blockers.append(f"missing_raw_frame:{row.get('frame_idx')}:{raw_path}")
+            raw = np.full((480, 480, 3), 240, dtype=np.uint8)
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) if mask_path.is_file() else None
+        if mask is None:
+            blockers.append(f"missing_object_owned_mask:{row.get('frame_idx')}:{mask_path}")
+            mask_bool_img = np.zeros(raw.shape[:2], dtype=bool)
+        else:
+            if mask.shape[:2] != raw.shape[:2]:
+                mask = cv2.resize(mask, (raw.shape[1], raw.shape[0]), interpolation=cv2.INTER_NEAREST)
+            mask_bool_img = mask > 0
+        overlay = raw.copy()
+        tint = overlay.copy()
+        tint[mask_bool_img] = (40, 220, 70)
+        overlay[mask_bool_img] = cv2.addWeighted(tint, 0.45, overlay, 0.55, 0)[mask_bool_img]
+        cnts, _ = cv2.findContours(mask_bool_img.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay, cnts, -1, (255, 255, 255), 2, cv2.LINE_AA)
+        scale = panel_width / float(max(1, overlay.shape[1]))
+        ph = int(round(overlay.shape[0] * scale))
+        panel_img = cv2.resize(overlay, (panel_width, ph), interpolation=cv2.INTER_AREA)
+        label_h = 112
+        panel = np.full((ph + label_h, panel_width, 3), 255, dtype=np.uint8)
+        panel[:ph] = panel_img
+        def put(line: str, y: int, color: tuple[int, int, int] = (0, 0, 0)) -> None:
+            cv2.putText(panel, line[:72], (6, ph + y), cv2.FONT_HERSHEY_SIMPLEX, 0.36, color, 1, cv2.LINE_AA)
+        put(f"rank {rank} frame {row.get('frame_idx')} score {float(row.get('proposal_score',0.0)):.3f}", 16)
+        put(f"mask {int(row.get('mask_area_px',0))}px pts {int(row.get('visible_depth_vertex_count',0))} border {bool(row.get('touches_or_near_image_border'))}", 34)
+        put(f"hand_removed {100.0*float(row.get('hand_owned_removed_fraction',0.0)):.1f}% comps {int(row.get('component_count',0))}", 52)
+        ext = row.get("world_extent_m") if isinstance(row.get("world_extent_m"), list) else []
+        if len(ext) >= 3:
+            put(f"extent m {float(ext[0]):.3f},{float(ext[1]):.3f},{float(ext[2]):.3f}", 70)
+        put(f"depth p05-p95 {float(row.get('depth_spread_p95_p05_m',0.0)):.3f}m", 88)
+        put("agent must inspect; score is not acceptance", 106, (40, 40, 180))
+        panels.append(panel)
+    if not panels:
+        return {"status": "no_review_candidates", "blockers": blockers}
+    cols = min(3, len(panels))
+    rows_img: list[np.ndarray] = []
+    for start in range(0, len(panels), cols):
+        chunk = panels[start:start + cols]
+        max_h = max(p.shape[0] for p in chunk)
+        padded = []
+        for p in chunk:
+            if p.shape[0] < max_h:
+                pad = np.full((max_h - p.shape[0], p.shape[1], 3), 255, dtype=np.uint8)
+                p = np.vstack([p, pad])
+            padded.append(p)
+        while len(padded) < cols:
+            padded.append(np.full((max_h, panel_width, 3), 255, dtype=np.uint8))
+        rows_img.append(np.hstack(padded))
+    sheet = np.vstack(rows_img)
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    ok = cv2.imwrite(str(review_path), sheet)
+    return {"status": "ok" if ok else "write_failed", "path": str(review_path), "blockers": blockers[:20]}
+
+
 def object_row_not_visible(object_id: str, track_id: str, status: str, reason: str, mask_path: str | None = None) -> dict[str, Any]:
     row: dict[str, Any] = {
         "object_id": object_id,
@@ -629,11 +893,31 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "Check SAM2 masks, depth archive coverage, frame range, and camera-pose availability."
         )
 
+    anchor_candidate_report = build_anchor_candidate_proposals(args=args, object_id=object_id, visible_data=visible_data)
+    if bool(args.propose_anchor_candidates_only):
+        return {
+            "method": "build_v19_visible_geometry_from_sam2_depth",
+            "status": "anchor_candidates_proposed_only",
+            "case": args.case,
+            "track_id": args.track_id,
+            "object_id": object_id,
+            "claim_scope": "Candidate anchor evidence only. No canonical anchor mesh, visible-geometry annotations, completion, pose, or render state was produced.",
+            "outputs": anchor_candidate_report.get("outputs", {}),
+            "candidate_count": anchor_candidate_report.get("candidate_count"),
+            "review_candidate_count": anchor_candidate_report.get("review_candidate_count"),
+        }
+
     if args.anchor_frame is not None:
         anchor = int(args.anchor_frame)
         if anchor not in visible_data:
             raise RuntimeError(f"--anchor-frame {anchor} has no visible metric geometry")
     else:
+        if bool(args.require_anchor_frame):
+            outputs = anchor_candidate_report.get("outputs", {}) if isinstance(anchor_candidate_report, dict) else {}
+            raise RuntimeError(
+                "--anchor-frame is required for this run. Inspect anchor candidates and rerun with an agent-selected anchor. "
+                f"candidate_report={outputs.get('anchor_candidate_proposals')} review={outputs.get('anchor_candidate_review')}"
+            )
         anchor = max(visible_data, key=lambda idx: len(visible_data[idx]["world_points"]))
     anchor_points = np.asarray(visible_data[anchor]["world_points"], dtype=float)
     anchor_centroid = anchor_points.mean(axis=0)
@@ -880,6 +1164,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "annotations": str(annotations_path),
             "depth_fused_report": str(args.output_dir / "v19_visible_geometry_depth_fused_report.json"),
             "visible_mask_report": str(visible_mask_report_path),
+            "anchor_candidate_proposals": anchor_candidate_report.get("outputs", {}).get("anchor_candidate_proposals") if isinstance(anchor_candidate_report, dict) else None,
+            "anchor_candidate_review": anchor_candidate_report.get("outputs", {}).get("anchor_candidate_review") if isinstance(anchor_candidate_report, dict) else None,
             "anchor_visible_surface_mesh": anchor_mesh_reconstruction.get("poisson_mesh_path") or anchor_mesh_reconstruction.get("convex_hull_mesh_path") or anchor_mesh_reconstruction.get("fused_point_cloud_path"),
         },
         "requested_frame_start": int(indices[0]),
@@ -908,6 +1194,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "hand_bbox_exclusion_pad_px": int(args.hand_bbox_exclusion_pad_px),
             "rigid_extent_ratio_max": float(args.rigid_extent_ratio_max),
             "rigid_extent_axis_ratio_max": float(args.rigid_extent_axis_ratio_max),
+            "anchor_candidate_count": int(args.anchor_candidate_count),
+            "anchor_candidate_min_gap": int(args.anchor_candidate_min_gap),
+            "require_anchor_frame": bool(args.require_anchor_frame),
         },
         "rows": rows,
         "skipped_rows_preview": skipped_rows[:200],
@@ -958,6 +1247,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-start", type=int, default=None)
     parser.add_argument("--frame-end", type=int, default=None)
     parser.add_argument("--anchor-frame", type=int, default=None)
+    parser.add_argument("--propose-anchor-candidates-only", action="store_true", help="Lift visible mask/depth rows, write anchor_candidate_proposals.json and anchor_candidate_review.jpg, then stop before exporting canonical anchor geometry. The agent must inspect and choose an anchor.")
+    parser.add_argument("--require-anchor-frame", action="store_true", help="Fail instead of falling back to the max-point frame when --anchor-frame is absent. Use after candidate proposal so anchor choice is explicit.")
+    parser.add_argument("--anchor-candidate-count", type=int, default=12, help="Number of diversified candidate frames to show in the visual anchor review sheet.")
+    parser.add_argument("--anchor-candidate-min-gap", type=int, default=8, help="Minimum frame gap used when diversifying review-sheet anchor candidates; ranked JSON still contains every candidate.")
+    parser.add_argument("--anchor-candidate-panel-width", type=int, default=360, help="Width in pixels for each candidate panel in anchor_candidate_review.jpg.")
     parser.add_argument("--pixel-stride", type=int, default=4)
     parser.add_argument("--max-points", type=int, default=2500)
     parser.add_argument("--min-valid-points", type=int, default=50)

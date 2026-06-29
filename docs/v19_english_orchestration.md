@@ -454,7 +454,29 @@ The script also writes `v19_mano_bridge_from_hawor_world.npz`, `v19_base_physica
 
 Physical mechanism: visible surface points are produced by back-projecting mask pixels with depth through intrinsics into camera/world coordinates. They are metric measurements and anchors. They are not hidden geometry and do not satisfy rigid object pose by themselves.
 
-The default V19 bridge from SAM2 masks to rigid-branch visible surfaces is now:
+The default V19 bridge from SAM2 masks to rigid-branch visible surfaces is a candidate-review flow, not a one-shot automatic anchor. First propose anchor candidates:
+
+```bash
+python "$REPO_ROOT/scripts/build_v19_visible_geometry_from_sam2_depth.py" \
+  --case "$CASE_ID" \
+  --track-id "$TRACK_ID" \
+  --object-id "$OBJECT_ID" \
+  --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
+  --base-annotations "$BASE_ANNOTATIONS" \
+  --sam2-track-json "$RUN_ROOT/measurements/object_tracks/sam2_agent_points/$TRACK_ID/sam2/sam2_track.json" \
+  --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --calibration-contract "$CALIBRATION_CONTRACT" \
+  --object-plan "$RUN_ROOT/measurements/object_candidates/object_plan_agent.json" \
+  --output-dir "$RUN_ROOT/measurements/object_geometry/anchor_candidates_<track_id>" \
+  --frame-start "$FRAME_START" \
+  --frame-end "$FRAME_END" \
+  --propose-anchor-candidates-only \
+  --anchor-candidate-count 12
+```
+
+This writes `anchor_candidate_proposals.json` and `anchor_candidate_review.jpg`. The proposal score is an ordering aid only. The agent must inspect the review image and write `$RUN_ROOT/state/anchor_decisions/<object_id>.json` with the selected frame, visual rationale, rejected candidates, and remaining uncertainty. The chosen frame should be the cleanest full-object evidence: broad visible object support, low hand overlap, non-border mask, coherent object outline/texture, stable depth, and metric extent consistent with plausible neighboring frames. Do not choose an anchor merely because it has the largest mask, most sampled points, or lies near a manipulation/contact moment.
+
+Then run the canonical visible-geometry adapter using that explicit decision:
 
 ```bash
 python "$REPO_ROOT/scripts/build_v19_visible_geometry_from_sam2_depth.py" \
@@ -470,7 +492,8 @@ python "$REPO_ROOT/scripts/build_v19_visible_geometry_from_sam2_depth.py" \
   --output-dir "$RUN_ROOT/measurements/object_geometry/visible_geometry_<track_id>" \
   --frame-start "$FRAME_START" \
   --frame-end "$FRAME_END" \
-  --anchor-frame "<agent_selected_full_object_frame>"
+  --anchor-frame "<agent_selected_full_object_frame>" \
+  --require-anchor-frame
 ```
 
 The `--base-annotations` input must be the V19-generated base annotation file above. When HaWoR MANO is the active hand state, use its camera poses from the base annotations unless a camera NPZ has been explicitly aligned into the same HaWoR/MANO world frame; do not mix DROID and HaWoR worlds by default. Mask/depth backprojection must use `$CALIBRATION_CONTRACT` or the same intrinsics already recorded in base annotations; do not silently fall back to per-frame UniDepth `K` after a contract exists. The script writes:
@@ -541,11 +564,11 @@ python "$REPO_ROOT/scripts/build_v18_compact_rigid_evidence_bundle.py" \
   --annotations "$RUN_ROOT/measurements/object_geometry/visible_geometry_<track_id>/annotations_v19_visible_geometry.json" \
   --depth-fused-report "$RUN_ROOT/measurements/object_geometry/visible_geometry_<track_id>/v19_visible_geometry_depth_fused_report.json" \
   --output-root "$RUN_ROOT/measurements/geometry_completion/rigid_evidence" \
-  --selected-frame-idx "<optional_agent_selected_frame>" \
-  --selection-note "<why this crop best represents the rigid object>"
+  --selected-frame-idx "<agent_selected_full_object_frame_from_anchor_decision>" \
+  --selection-note "anchor decision: <why this crop best represents the rigid object>"
 ```
 
-The conditioning crop is evidence for a mesh prior. It is not itself geometry.
+P11 must reuse the frame recorded in `$RUN_ROOT/state/anchor_decisions/<object_id>.json`; it must not silently rerank by support count or mask area after the agent has selected an anchor. The conditioning crop is evidence for a mesh prior. It is not itself geometry.
 
 ### 9.2 TRELLIS mesh prior
 
