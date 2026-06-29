@@ -66,6 +66,33 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
     if interval_state is None:
         return {"summary_text": "interval metrics unavailable", "sides": {}}
     payload = load_json(interval_state)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    if isinstance(payload.get("per_frame_states"), list) and summary:
+        normal = metric_value(summary, "contact_normal_abs_after_median")
+        tangent = metric_value(summary, "contact_tangent_after_median")
+        distance = metric_value(summary, "contact_distance_after_median")
+        shift = metric_value(summary, "metric_joint_shift_px") or metric_value(summary, "visible_joint_shift_px_median")
+        rows = summary.get("rows_out") or summary.get("rows") or summary.get("optimized_rows")
+        parts = []
+        if rows is not None:
+            parts.append(f"rows {rows}")
+        if normal is not None:
+            parts.append(f"normal {normal * 1000.0:.1f}mm")
+        if tangent is not None:
+            parts.append(f"tangent {tangent * 1000.0:.1f}mm")
+        elif distance is not None:
+            parts.append(f"surface {distance * 1000.0:.1f}mm")
+        if shift is not None:
+            parts.append(f"joint shift {shift:.1f}px")
+        if "metric_mano_preserved" in json.dumps(payload.get("per_frame_states", [])[:1]):
+            parts.append("metric MANO preserved")
+        parts.append("contact uncertain")
+        return {
+            "summary_text": " | ".join(parts),
+            "interval_state": str(interval_state),
+            "state_kind": payload.get("method"),
+            "per_frame_rows": len(payload.get("per_frame_states", [])),
+        }
     sides: dict[str, Any] = {}
     tokens: list[str] = []
     for side in ("left", "right"):
