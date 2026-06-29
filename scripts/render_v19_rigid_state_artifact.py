@@ -44,6 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--surface-alpha", type=float, default=0.50)
     parser.add_argument("--world-view", choices=("local", "global"), default="local")
     parser.add_argument("--local-world-padding-m", type=float, default=0.08)
+    parser.add_argument("--render-style", choices=("diagnostic", "presentation"), default="diagnostic", help="diagnostic preserves detailed state labels; presentation keeps the same state but reduces overpaint/text clutter for user-facing review.")
+    parser.add_argument("--presentation-surface-alpha", type=float, default=0.28, help="Overlay object opacity used by --render-style presentation.")
+    parser.add_argument("--presentation-world-alpha", type=float, default=0.42, help="World-view object opacity used by --render-style presentation.")
+    parser.add_argument("--presentation-wireframe-face-budget", type=int, default=600, help="Wireframe face budget used by --render-style presentation.")
     parser.add_argument("--path-rewrite", action="append", default=[], metavar="OLD=NEW")
     return parser.parse_args()
 
@@ -315,6 +319,7 @@ def rasterize_world_mesh(
     *,
     face_budget: int,
     wire_budget: int,
+    alpha: float,
 ) -> dict[str, Any]:
     height, width = image.shape[:2]
     uv = world_uv(vertices_world, min_xyz, max_xyz, width, height)
@@ -327,7 +332,7 @@ def rasterize_world_mesh(
         face_budget=face_budget,
         wire_budget=wire_budget,
         color=(40, 255, 80),
-        alpha=0.70,
+        alpha=float(alpha),
     )
 
 
@@ -341,12 +346,116 @@ def constraint_style(state: str) -> tuple[tuple[int, int, int], int, str]:
     return (150, 150, 150), 2, "not measured"
 
 
+def summary_stat(report: Any, name: str = "median") -> float | None:
+    if isinstance(report, dict):
+        value = report.get(name)
+        if value is None and name != "median":
+            value = report.get("median")
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+    try:
+        return float(report)
+    except (TypeError, ValueError):
+        return None
+
+
+def fmt_mm(value_m: float | None) -> str:
+    return "?" if value_m is None else f"{value_m * 1000.0:.0f}mm"
+
+
+def fmt_px(value_px: float | None) -> str:
+    return "?" if value_px is None else f"{value_px:.0f}px"
+
+
+def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> tuple[str, str, str]:
+    contact = temporal.get("contact_similarity_refit") if isinstance(temporal.get("contact_similarity_refit"), dict) else {}
+    mode = str(contact.get("contact_residual_mode") or "contact")
+    normal = summary_stat(contact.get("contact_normal_abs_after_m"), "median")
+    tangent = summary_stat(contact.get("contact_tangent_after_m"), "median")
+    distance = summary_stat(contact.get("contact_distance_after_m"), "median")
+    shift = summary_stat(temporal.get("visible_joint_shift_px"), "median")
+    if presentation:
+        text = "uncertain MANO surface hypothesis"
+        if mode == "point_to_plane":
+            text2 = f"normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, shift {fmt_px(shift)}"
+        else:
+            text2 = f"contact {fmt_mm(distance)}, shift {fmt_px(shift)}"
+        return text, text2, "contact not accepted; cyan points show optimized surface"
+    residual = summary_stat(temporal.get("full_observed_surface_penetration_after_solver_m"), "max")
+    if residual is None:
+        residual = summary_stat(temporal.get("final_active_constraint_residual_after_solver_m"), "max")
+    text = f"INTERVAL MANO UNCERTAIN | {str(temporal.get('temporal_mano_state', 'interval_state'))[:42]}"
+    if mode == "point_to_plane":
+        text2 = f"normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)} shift_med={fmt_px(shift)}"
+    else:
+        text2 = f"pen_res={fmt_mm(residual)} contact_med={fmt_mm(distance)} shift_med={fmt_px(shift)}"
+    return text, text2, ""
+
+
+def put_text_with_bg(
+    image: np.ndarray,
+    text: str,
+    origin: tuple[int, int],
+    *,
+    font_scale: float,
+    color: tuple[int, int, int],
+    thickness: int = 1,
+    bg_color: tuple[int, int, int] = (0, 0, 0),
+    bg_alpha: float = 0.58,
+) -> None:
+    if not text:
+        return
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    x, y = int(origin[0]), int(origin[1])
+    (tw, th), baseline = cv2.getTextSize(text, font, float(font_scale), int(thickness))
+    height, width = image.shape[:2]
+    x0 = max(0, x - 5)
+    y0 = max(0, y - th - baseline - 5)
+    x1 = min(width, x + tw + 5)
+    y1 = min(height, y + baseline + 5)
+    if x1 > x0 and y1 > y0:
+        layer = image.copy()
+        cv2.rectangle(layer, (x0, y0), (x1, y1), bg_color, -1)
+        image[y0:y1, x0:x1] = cv2.addWeighted(layer[y0:y1, x0:x1], float(bg_alpha), image[y0:y1, x0:x1], 1.0 - float(bg_alpha), 0)
+    cv2.putText(image, text, (x, y), font, float(font_scale), color, int(thickness), cv2.LINE_AA)
+
+
 def draw_projected_skeleton(image: np.ndarray, joints_camera: np.ndarray, intr: tuple[float, float, float, float], color: tuple[int, int, int], line_width: int) -> None:
     height, width = image.shape[:2]
     u, v, _z, valid = project_camera_points(joints_camera, intr, width, height)
     for a, b in HAND_EDGES:
         if a < len(valid) and b < len(valid) and valid[a] and valid[b]:
             cv2.line(image, (int(round(u[a])), int(round(v[a]))), (int(round(u[b])), int(round(v[b]))), color, line_width, cv2.LINE_AA)
+
+
+def draw_projected_points(image: np.ndarray, points_camera: np.ndarray, intr: tuple[float, float, float, float], color: tuple[int, int, int], radius: int, max_points: int) -> None:
+    points = np.asarray(points_camera, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+        return
+    if len(points) > int(max_points):
+        ids = np.linspace(0, len(points) - 1, int(max_points), dtype=np.int32)
+        points = points[ids]
+    height, width = image.shape[:2]
+    u, v, _z, valid = project_camera_points(points, intr, width, height)
+    for x, y, ok in zip(u, v, valid):
+        if ok and 0 <= x < width and 0 <= y < height:
+            cv2.circle(image, (int(round(x)), int(round(y))), int(radius), color, -1, cv2.LINE_AA)
+
+
+def draw_world_points(image: np.ndarray, points_world: np.ndarray, min_xyz: np.ndarray, max_xyz: np.ndarray, color: tuple[int, int, int], radius: int, max_points: int) -> None:
+    points = np.asarray(points_world, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+        return
+    if len(points) > int(max_points):
+        ids = np.linspace(0, len(points) - 1, int(max_points), dtype=np.int32)
+        points = points[ids]
+    for point in points:
+        xy = world_to_screen(point, min_xyz, max_xyz, image.shape[1], image.shape[0])
+        if xy is not None:
+            cv2.circle(image, xy, int(radius), color, -1, cv2.LINE_AA)
 
 
 def draw_world_skeleton(image: np.ndarray, joints_world: np.ndarray, min_xyz: np.ndarray, max_xyz: np.ndarray, color: tuple[int, int, int], line_width: int) -> None:
@@ -473,6 +582,10 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     fps = float((raw_video or {}).get("fps") or 30.0)
     canvas_w, canvas_h = 1280, 720
     global_min, global_max = collect_world_bounds(frames, vertices, poses)
+    presentation = str(args.render_style) == "presentation"
+    overlay_alpha = float(args.presentation_surface_alpha if presentation else args.surface_alpha)
+    world_alpha = float(args.presentation_world_alpha if presentation else 0.70)
+    wireframe_face_budget = int(min(args.wireframe_face_budget, args.presentation_wireframe_face_budget) if presentation else args.wireframe_face_budget)
     projection_examples: list[dict[str, Any]] = []
     render_rows: list[dict[str, Any]] = []
 
@@ -506,23 +619,36 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 z,
                 faces,
                 face_budget=int(args.mesh_face_budget),
-                wire_budget=int(args.wireframe_face_budget),
+                wire_budget=wireframe_face_budget,
                 color=(40, 255, 80),
-                alpha=float(args.surface_alpha),
+                alpha=overlay_alpha,
             )
             object_stats.update(mesh_stats)
             object_stats["pose_status"] = pose_status
             object_stats["projected_vertex_count_in_extended_bounds"] = int(np.count_nonzero(valid))
-            object_text = f"{label} BODY mesh {mesh_summary['vertices']}v/{mesh_summary['faces']}f | {pose_status}"
+            if presentation:
+                object_text = f"{label}: reconstructed rigid body (uncertain)"
+                object_text2 = "green mesh = state-driven object; hand contact remains weak/uncertain"
+            else:
+                object_text = f"{label} BODY mesh {mesh_summary['vertices']}v/{mesh_summary['faces']}f | {pose_status}"
+                object_text2 = ""
             color = (40, 255, 80) if mesh_stats.get("rasterized_pixels", 0) else (0, 165, 255)
         else:
             object_text = f"{label}: rigid pose missing in render state"
+            object_text2 = ""
             color = (0, 165, 255)
-        cv2.putText(overlay, object_text[:150], (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+        if presentation:
+            put_text_with_bg(overlay, object_text[:95], (12, 30), font_scale=0.46, color=color, thickness=1)
+            put_text_with_bg(overlay, object_text2[:105], (12, 54), font_scale=0.40, color=(210, 255, 210), thickness=1)
+        else:
+            cv2.putText(overlay, object_text[:150], (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
         volume_row = hidden_validation.get(idx)
         if volume_row is not None:
             volume_state = str(volume_row.get("state", "hidden_volume_unmeasured"))
-            cv2.putText(overlay, f"hidden volume {volume_state}"[:130], (12, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 150, 255), 1, cv2.LINE_AA)
+            if presentation and "unmeasured" not in volume_state:
+                put_text_with_bg(overlay, f"hidden volume {volume_state}"[:110], (12, 78), font_scale=0.36, color=(0, 180, 255), thickness=1)
+            elif not presentation:
+                cv2.putText(overlay, f"hidden volume {volume_state}"[:130], (12, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 150, 255), 1, cv2.LINE_AA)
 
         for hand_idx, hand in enumerate(frame.get("hands", []) if isinstance(frame.get("hands"), list) else []):
             if not isinstance(hand, dict):
@@ -535,29 +661,39 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             style_color, line_width, state_label = constraint_style(state_label_raw)
             interval_uncertain = temporal is not None or "uncertainty" in state_label_raw or "not_applied" in state_label_raw or "candidate" in state_label_raw
             penetrating = row.get("penetrating_vertex_count", "?") if row else "?"
-            label_y = 92 + hand_idx * 132
+            label_y = (88 + hand_idx * 50) if presentation else (92 + hand_idx * 132)
+            mano_text3 = ""
             if temporal is not None:
-                residual_report = temporal.get("full_observed_surface_penetration_after_solver_m") or temporal.get("final_active_constraint_residual_after_solver_m") or {}
-                residual = residual_report.get("max") if isinstance(residual_report, dict) else None
-                shift_report = temporal.get("visible_joint_shift_px") or temporal.get("visible_joint_shift_max_px") or {}
-                shift_px = shift_report.get("max") if isinstance(shift_report, dict) else None
-                residual_txt = "?" if residual is None else f"{float(residual) * 1000.0:.1f}mm"
-                shift_txt = "?" if shift_px is None else f"{float(shift_px):.1f}px"
-                text = f"{side} INTERVAL MANO UNCERTAIN | {str(temporal.get('temporal_mano_state', 'interval_state'))[:42]}"
-                text2 = f"pen_res={residual_txt} joint_shift={shift_txt} penverts={penetrating}"
+                mano_text, mano_text2, mano_text3 = temporal_contact_label(temporal, presentation=presentation)
+                if presentation:
+                    text = f"{side} MANO: {mano_text}"
+                    text2 = mano_text2
+                else:
+                    text = f"{side} {mano_text}"
+                    text2 = f"{mano_text2} penverts={penetrating}"
                 text_color = (0, 180, 255)
             else:
                 text = f"{side} {state_label} | {state_label_raw[:48]}"
                 text2 = f"penetrating verts={penetrating}"
                 text_color = style_color
-            cv2.putText(overlay, text[:130], (12, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, text_color, 2, cv2.LINE_AA)
-            cv2.putText(overlay, text2[:130], (12, label_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.46, text_color, 1, cv2.LINE_AA)
+            if presentation:
+                put_text_with_bg(overlay, text[:90], (12, label_y), font_scale=0.38, color=text_color, thickness=1)
+                put_text_with_bg(overlay, text2[:105], (12, label_y + 20), font_scale=0.34, color=text_color, thickness=1)
+                if mano_text3:
+                    put_text_with_bg(overlay, mano_text3[:105], (12, label_y + 38), font_scale=0.32, color=text_color, thickness=1)
+            else:
+                cv2.putText(overlay, text[:130], (12, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, text_color, 2, cv2.LINE_AA)
+                cv2.putText(overlay, text2[:130], (12, label_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.46, text_color, 1, cv2.LINE_AA)
             joints_camera = np.asarray(metric.get("joints_current_v18_camera_m") or [], dtype=np.float64)
             if joints_camera.shape == (21, 3):
                 if interval_uncertain:
                     draw_projected_skeleton(overlay, joints_camera, intr, (0, 120, 255), max(8, line_width + 4))
                 draw_projected_skeleton(overlay, joints_camera, intr, style_color, line_width)
             if temporal is not None:
+                temporal_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=np.float64)
+                if temporal_vertices_world.ndim == 2 and temporal_vertices_world.shape[1] == 3 and len(temporal_vertices_world) > 0:
+                    temporal_vertices_camera = world_points_to_camera(temporal_vertices_world, T_world_camera)
+                    draw_projected_points(overlay, temporal_vertices_camera, intr, (255, 255, 0), 2 if presentation else 2, 220)
                 joints_world = np.asarray(metric.get("joints_current_v18_world_m") or metric.get("joints_world_m") or [], dtype=np.float64)
                 if joints_world.shape == (21, 3):
                     candidate_world = apply_temporal_hypothesis(joints_world, temporal)
@@ -583,7 +719,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 world_min,
                 world_max,
                 face_budget=int(args.world_face_budget),
-                wire_budget=int(args.wireframe_face_budget),
+                wire_budget=wireframe_face_budget,
+                alpha=world_alpha,
             )
             object_stats["world_rasterized_pixels"] = world_stats.get("rasterized_pixels", 0)
         for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
@@ -602,11 +739,19 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                     draw_world_skeleton(world, joints_world, world_min, world_max, (0, 120, 255), max(8, line_width + 4))
                 draw_world_skeleton(world, joints_world, world_min, world_max, style_color, max(2, line_width - 1))
                 if temporal is not None:
+                    temporal_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=np.float64)
+                    if temporal_vertices_world.ndim == 2 and temporal_vertices_world.shape[1] == 3 and len(temporal_vertices_world) > 0:
+                        draw_world_points(world, temporal_vertices_world, world_min, world_max, (255, 255, 0), 2, 220)
                     candidate_world = apply_temporal_hypothesis(joints_world, temporal)
                     if candidate_world is not None:
                         draw_world_skeleton(world, candidate_world, world_min, world_max, (255, 255, 0), 2)
-        cv2.putText(world, world_label, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(world, f"green filled surface = rigid object body ({label})", (20, canvas_h - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (40, 255, 80), 1, cv2.LINE_AA)
+        if presentation:
+            put_text_with_bg(world, world_label, (20, 30), font_scale=0.48, color=(255, 255, 255), thickness=1, bg_alpha=0.50)
+            put_text_with_bg(world, f"green={label} rigid mesh; cyan/orange/yellow=uncertain MANO hypotheses", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
+            put_text_with_bg(world, "near-contact is not accepted unless geometry supports it", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
+        else:
+            cv2.putText(world, world_label, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(world, f"green filled surface = rigid object body ({label})", (20, canvas_h - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (40, 255, 80), 1, cv2.LINE_AA)
         cv2.imwrite(str(world_dir / f"{pos:06d}.jpg"), world, [cv2.IMWRITE_JPEG_QUALITY, 90])
         render_rows.append(object_stats)
         if pos % 120 == 0:
@@ -655,6 +800,10 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "temporal_mano_state_consumed": temporal_report is not None,
             "hidden_volume_validation_consumed": hidden_report is not None,
             "world_view": str(args.world_view),
+            "render_style": str(args.render_style),
+            "surface_alpha": float(overlay_alpha),
+            "world_surface_alpha": float(world_alpha),
+            "wireframe_face_budget": int(wireframe_face_budget),
         },
         "projection_contract": {
             "rule": "scaled K = raw source-coordinate K times decoded_render_size/source_size per axis",
