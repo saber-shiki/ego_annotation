@@ -764,8 +764,19 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                         draw_world_skeleton(world, candidate_world, world_min, world_max, (255, 255, 0), 2)
         if presentation:
             put_text_with_bg(world, world_label, (20, 30), font_scale=0.48, color=(255, 255, 255), thickness=1, bg_alpha=0.50)
-            put_text_with_bg(world, f"green={label} rigid mesh; cyan/orange/yellow=uncertain MANO hypotheses", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
-            put_text_with_bg(world, "near-contact is not accepted unless geometry supports it", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
+            direct_surface_posterior = any(
+                isinstance(t, dict)
+                and isinstance(t.get("contact_similarity_refit"), dict)
+                and t["contact_similarity_refit"].get("contact_residual_mode") == "direct_object_surface_posterior"
+                for (f, _side), t in temporal_states.items()
+                if f == idx
+            )
+            if direct_surface_posterior:
+                put_text_with_bg(world, f"green={label} rigid mesh; cyan=object-surface support posterior", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, "contact not accepted; source hand-to-surface gap remains uncertainty", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
+            else:
+                put_text_with_bg(world, f"green={label} rigid mesh; cyan/orange/yellow=uncertain MANO hypotheses", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, "near-contact is not accepted unless geometry supports it", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
         else:
             cv2.putText(world, world_label, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.putText(world, f"green filled surface = rigid object body ({label})", (20, canvas_h - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (40, 255, 80), 1, cv2.LINE_AA)
