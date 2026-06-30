@@ -61,7 +61,7 @@ The HOT3D MANO3D evaluator scores 21-joint localization in camera 3D. It does no
 4. Hand-surface posterior geometry: cyan samples are not a full MANO mesh and can scatter broadly in world view. The artifact remains honest because the samples are rendered as uncertainty, but better surface sampling/uncertainty visualization may be needed.
 5. Runtime: full-vertex point-to-plane fitting plus full rendering is slow and poorly observable while running. The current implementation is acceptable as Workbench research evidence, but it may need acceleration/incremental logging before it becomes the default runtime path.
 
-Prepared but unvalidated next mechanism: a direct object-surface posterior can preserve HaWoR metric MANO joints and place cyan samples on rigid-object surface points selected by source-MANO proximity, without solving a global hand Sim(3) whose joints are later discarded. This would be a contact-surface support hypothesis, not MANO correction or contact ownership. It needs rendered visual evidence before it can affect any supported claim.
+Prepared but unvalidated next mechanism: a direct object-surface posterior can preserve HaWoR metric MANO joints and place rendered posterior samples on rigid-object surface points selected by source-MANO proximity, without solving a global hand Sim(3) whose joints are later discarded. This would be a contact-surface support hypothesis with source hand-to-surface gap uncertainty, not MANO correction or contact ownership. It needs rendered visual evidence before it can affect any supported claim.
 
 ## Next action
 
