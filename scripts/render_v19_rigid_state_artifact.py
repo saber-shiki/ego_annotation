@@ -383,7 +383,7 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
             if mode == "direct_object_surface_posterior":
                 text = "source MANO + object-surface posterior"
                 text2 = f"source gap {fmt_mm(distance)}, normal {fmt_mm(normal)}, joint shift {fmt_px(shift)}"
-                return text, text2, "contact not accepted; cyan points are object-surface support hypotheses"
+                return text, text2, "contact not accepted; surface points are object-support hypotheses"
             text = "source MANO + uncertain contact surface"
             if mode == "point_to_plane":
                 text2 = f"surface normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, joint shift {fmt_px(shift)}"
@@ -487,8 +487,13 @@ def draw_world_skeleton(image: np.ndarray, joints_world: np.ndarray, min_xyz: np
 
 
 def apply_temporal_hypothesis(joints_world: np.ndarray, temporal: dict[str, Any]) -> np.ndarray | None:
+    contact = temporal.get("contact_similarity_refit") if isinstance(temporal.get("contact_similarity_refit"), dict) else {}
+    if contact.get("contact_residual_mode") == "direct_object_surface_posterior":
+        return None
     articulated_joints = np.asarray(temporal.get("optimized_joints_world_m") or [], dtype=float)
     if articulated_joints.shape == (21, 3):
+        if joints_world.shape == (21, 3) and np.allclose(articulated_joints, joints_world, rtol=0.0, atol=1.0e-10):
+            return None
         return articulated_joints
     delta_world = np.asarray(temporal.get("optimized_translation_world_m") or [], dtype=float)
     if delta_world.shape != (3,):
@@ -772,7 +777,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 if f == idx
             )
             if direct_surface_posterior:
-                put_text_with_bg(world, f"green={label} rigid mesh; cyan=object-surface support posterior", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, f"green={label} rigid mesh; surface dots=object-support posterior", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
                 put_text_with_bg(world, "contact not accepted; source hand-to-surface gap remains uncertainty", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
             else:
                 put_text_with_bg(world, f"green={label} rigid mesh; cyan/orange/yellow=uncertain MANO hypotheses", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)

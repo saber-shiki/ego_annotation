@@ -117,7 +117,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "joint_state_policy": "hawor_npz_metric_mano_preserved",
                 "optimized_joints_world_m": np.asarray(joints_world, dtype=float).tolist(),
                 "optimized_vertices_world_sample_m": posterior_surface_world.astype(float).tolist(),
-                "optimized_vertices_sample_ids": [int(x) for x in o.contact_idx.tolist()],
+                "optimized_vertices_sample_ids": [],
+                "object_surface_posterior_source_mano_vertex_ids": [int(x) for x in o.contact_idx.tolist()],
                 "source_contact_vertices_world_sample_m": source_contact_world.astype(float).tolist(),
                 "contact_surface_vertices_world_sample_m": posterior_surface_world.astype(float).tolist(),
                 "contact_surface_hypothesis_state": "uncertain_object_surface_posterior_not_contact_ownership",
@@ -133,6 +134,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "visible_joint_shift_px": zero_summary(),
                 "contact_similarity_refit": {
                     "contact_residual_mode": "direct_object_surface_posterior",
+                    "solver_stage": "none_source_gaps_only",
+                    "contact_solver_applied": False,
                     "contact_vertex_count": int(len(o.contact_idx)),
                     "source_hand_to_object_surface_distance_m": gaps["distance"],
                     "source_hand_to_object_surface_normal_abs_m": gaps["normal_abs"],
@@ -156,7 +159,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": (
-            "Metric MANO joints are preserved from HaWoR. Cyan samples are nearest rigid-object surface points conditioned on "
+            "Metric MANO joints are preserved from HaWoR. Rendered posterior samples are nearest rigid-object surface points conditioned on "
             "source MANO proximity and image/object-mask evidence. They are uncertain contact-surface support hypotheses, "
             "not accepted contact ownership, nonpenetration, or MANO correction."
         ),
