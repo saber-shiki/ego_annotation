@@ -71,19 +71,29 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
         normal = metric_value(summary, "contact_normal_abs_after_median")
         tangent = metric_value(summary, "contact_tangent_after_median")
         distance = metric_value(summary, "contact_distance_after_median")
+        source_gap = metric_value(summary, "source_hand_to_object_surface_distance_median")
         shift = metric_value(summary, "metric_joint_shift_px")
         if shift is None:
             shift = metric_value(summary, "visible_joint_shift_px_median")
         rows = summary.get("rows_out") or summary.get("rows") or summary.get("optimized_rows")
+        state_kind = str(payload.get("method") or "")
         parts = []
         if rows is not None:
             parts.append(f"rows {rows}")
-        if normal is not None:
-            parts.append(f"normal {normal * 1000.0:.1f}mm")
-        if tangent is not None:
-            parts.append(f"tangent {tangent * 1000.0:.1f}mm")
-        elif distance is not None:
-            parts.append(f"surface {distance * 1000.0:.1f}mm")
+        if state_kind == "v19_direct_object_surface_contact_posterior_state":
+            if source_gap is not None:
+                parts.append(f"source gap {source_gap * 1000.0:.1f}mm")
+            elif distance is not None:
+                parts.append(f"source gap {distance * 1000.0:.1f}mm")
+            if normal is not None:
+                parts.append(f"normal {normal * 1000.0:.1f}mm")
+        else:
+            if normal is not None:
+                parts.append(f"normal {normal * 1000.0:.1f}mm")
+            if tangent is not None:
+                parts.append(f"tangent {tangent * 1000.0:.1f}mm")
+            elif distance is not None:
+                parts.append(f"surface {distance * 1000.0:.1f}mm")
         if shift is not None:
             parts.append(f"joint shift {shift:.1f}px")
         if "metric_mano_preserved" in json.dumps(payload.get("per_frame_states", [])[:1]):

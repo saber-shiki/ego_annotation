@@ -380,6 +380,10 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
     shift = summary_stat(temporal.get("metric_joint_shift_px") or temporal.get("visible_joint_shift_px"), "median")
     if presentation:
         if "metric_mano_preserved" in policy:
+            if mode == "direct_object_surface_posterior":
+                text = "source MANO + object-surface posterior"
+                text2 = f"source gap {fmt_mm(distance)}, normal {fmt_mm(normal)}, joint shift {fmt_px(shift)}"
+                return text, text2, "contact not accepted; cyan points are object-surface support hypotheses"
             text = "source MANO + uncertain contact surface"
             if mode == "point_to_plane":
                 text2 = f"surface normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, joint shift {fmt_px(shift)}"
@@ -397,7 +401,10 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
         residual = summary_stat(temporal.get("final_active_constraint_residual_after_solver_m"), "max")
     text = f"INTERVAL MANO UNCERTAIN | {str(temporal.get('temporal_mano_state', 'interval_state'))[:42]}"
     if "metric_mano_preserved" in policy:
-        text2 = f"source_joints_preserved normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)}"
+        if mode == "direct_object_surface_posterior":
+            text2 = f"source_joints_preserved source_gap={fmt_mm(distance)} normal_med={fmt_mm(normal)}"
+        else:
+            text2 = f"source_joints_preserved normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)}"
     elif mode == "point_to_plane":
         text2 = f"normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)} shift_med={fmt_px(shift)}"
     else:
