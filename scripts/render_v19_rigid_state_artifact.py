@@ -381,9 +381,9 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
     if presentation:
         if "metric_mano_preserved" in policy:
             if mode == "direct_object_surface_posterior":
-                text = "source MANO + object-surface posterior"
+                text = "source MANO + object-surface interval"
                 text2 = f"source gap {fmt_mm(distance)}, normal {fmt_mm(normal)}, joint shift {fmt_px(shift)}"
-                return text, text2, "contact not accepted; surface points are object-support hypotheses"
+                return text, text2, "magenta=source hand, yellow=object surface, orange=uncertain gap"
             text = "source MANO + uncertain contact surface"
             if mode == "point_to_plane":
                 text2 = f"surface normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, joint shift {fmt_px(shift)}"
@@ -473,6 +473,78 @@ def draw_world_points(image: np.ndarray, points_world: np.ndarray, min_xyz: np.n
         xy = world_to_screen(point, min_xyz, max_xyz, image.shape[1], image.shape[0])
         if xy is not None:
             cv2.circle(image, xy, int(radius), color, -1, cv2.LINE_AA)
+
+
+def draw_projected_segments(
+    image: np.ndarray,
+    source_camera: np.ndarray,
+    target_camera: np.ndarray,
+    intr: tuple[float, float, float, float],
+    *,
+    line_color: tuple[int, int, int],
+    source_color: tuple[int, int, int],
+    target_color: tuple[int, int, int],
+    max_segments: int,
+) -> None:
+    source = np.asarray(source_camera, dtype=np.float64)
+    target = np.asarray(target_camera, dtype=np.float64)
+    if source.ndim != 2 or target.ndim != 2 or source.shape[1] != 3 or target.shape[1] != 3:
+        return
+    count = min(len(source), len(target))
+    if count == 0:
+        return
+    if count > int(max_segments):
+        ids = np.linspace(0, count - 1, int(max_segments), dtype=np.int32)
+        source = source[ids]
+        target = target[ids]
+    else:
+        source = source[:count]
+        target = target[:count]
+    height, width = image.shape[:2]
+    su, sv, _sz, svalid = project_camera_points(source, intr, width, height)
+    tu, tv, _tz, tvalid = project_camera_points(target, intr, width, height)
+    for x0, y0, ok0, x1, y1, ok1 in zip(su, sv, svalid, tu, tv, tvalid):
+        if ok0 and ok1 and 0 <= x0 < width and 0 <= y0 < height and 0 <= x1 < width and 0 <= y1 < height:
+            p0 = (int(round(x0)), int(round(y0)))
+            p1 = (int(round(x1)), int(round(y1)))
+            cv2.line(image, p0, p1, line_color, 1, cv2.LINE_AA)
+            cv2.circle(image, p0, 2, source_color, -1, cv2.LINE_AA)
+            cv2.circle(image, p1, 2, target_color, -1, cv2.LINE_AA)
+
+
+def draw_world_segments(
+    image: np.ndarray,
+    source_world: np.ndarray,
+    target_world: np.ndarray,
+    min_xyz: np.ndarray,
+    max_xyz: np.ndarray,
+    *,
+    line_color: tuple[int, int, int],
+    source_color: tuple[int, int, int],
+    target_color: tuple[int, int, int],
+    max_segments: int,
+) -> None:
+    source = np.asarray(source_world, dtype=np.float64)
+    target = np.asarray(target_world, dtype=np.float64)
+    if source.ndim != 2 or target.ndim != 2 or source.shape[1] != 3 or target.shape[1] != 3:
+        return
+    count = min(len(source), len(target))
+    if count == 0:
+        return
+    if count > int(max_segments):
+        ids = np.linspace(0, count - 1, int(max_segments), dtype=np.int32)
+        source = source[ids]
+        target = target[ids]
+    else:
+        source = source[:count]
+        target = target[:count]
+    for a, b in zip(source, target):
+        p0 = world_to_screen(a, min_xyz, max_xyz, image.shape[1], image.shape[0])
+        p1 = world_to_screen(b, min_xyz, max_xyz, image.shape[1], image.shape[0])
+        if p0 is not None and p1 is not None:
+            cv2.line(image, p0, p1, line_color, 1, cv2.LINE_AA)
+            cv2.circle(image, p0, 2, source_color, -1, cv2.LINE_AA)
+            cv2.circle(image, p1, 2, target_color, -1, cv2.LINE_AA)
 
 
 def draw_world_skeleton(image: np.ndarray, joints_world: np.ndarray, min_xyz: np.ndarray, max_xyz: np.ndarray, color: tuple[int, int, int], line_width: int) -> None:
@@ -713,9 +785,29 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 draw_projected_skeleton(overlay, joints_camera, intr, style_color, line_width)
             if temporal is not None:
                 temporal_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=np.float64)
+                source_contact_world = np.asarray(temporal.get("source_contact_vertices_world_sample_m") or [], dtype=np.float64)
+                target_contact_world = np.asarray(temporal.get("contact_surface_vertices_world_sample_m") or [], dtype=np.float64)
                 if temporal_vertices_world.ndim == 2 and temporal_vertices_world.shape[1] == 3 and len(temporal_vertices_world) > 0:
                     temporal_vertices_camera = world_points_to_camera(temporal_vertices_world, T_world_camera)
                     draw_projected_points(overlay, temporal_vertices_camera, intr, (255, 255, 0), 2 if presentation else 2, 220)
+                if (
+                    source_contact_world.ndim == 2
+                    and target_contact_world.ndim == 2
+                    and source_contact_world.shape[1] == 3
+                    and target_contact_world.shape[1] == 3
+                    and len(source_contact_world) > 0
+                    and len(target_contact_world) > 0
+                ):
+                    draw_projected_segments(
+                        overlay,
+                        world_points_to_camera(source_contact_world, T_world_camera),
+                        world_points_to_camera(target_contact_world, T_world_camera),
+                        intr,
+                        line_color=(255, 180, 40),
+                        source_color=(255, 80, 220),
+                        target_color=(255, 255, 0),
+                        max_segments=28 if presentation else 48,
+                    )
                 joints_world = np.asarray(metric.get("joints_current_v18_world_m") or metric.get("joints_world_m") or [], dtype=np.float64)
                 if joints_world.shape == (21, 3):
                     candidate_world = apply_temporal_hypothesis(joints_world, temporal)
@@ -762,8 +854,29 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 draw_world_skeleton(world, joints_world, world_min, world_max, style_color, max(2, line_width - 1))
                 if temporal is not None:
                     temporal_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=np.float64)
+                    source_contact_world = np.asarray(temporal.get("source_contact_vertices_world_sample_m") or [], dtype=np.float64)
+                    target_contact_world = np.asarray(temporal.get("contact_surface_vertices_world_sample_m") or [], dtype=np.float64)
                     if temporal_vertices_world.ndim == 2 and temporal_vertices_world.shape[1] == 3 and len(temporal_vertices_world) > 0:
                         draw_world_points(world, temporal_vertices_world, world_min, world_max, (255, 255, 0), 2, 220)
+                    if (
+                        source_contact_world.ndim == 2
+                        and target_contact_world.ndim == 2
+                        and source_contact_world.shape[1] == 3
+                        and target_contact_world.shape[1] == 3
+                        and len(source_contact_world) > 0
+                        and len(target_contact_world) > 0
+                    ):
+                        draw_world_segments(
+                            world,
+                            source_contact_world,
+                            target_contact_world,
+                            world_min,
+                            world_max,
+                            line_color=(255, 180, 40),
+                            source_color=(255, 80, 220),
+                            target_color=(255, 255, 0),
+                            max_segments=28 if presentation else 48,
+                        )
                     candidate_world = apply_temporal_hypothesis(joints_world, temporal)
                     if candidate_world is not None:
                         draw_world_skeleton(world, candidate_world, world_min, world_max, (255, 255, 0), 2)
@@ -777,8 +890,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 if f == idx
             )
             if direct_surface_posterior:
-                put_text_with_bg(world, f"green={label} rigid mesh; surface dots=object-support posterior", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
-                put_text_with_bg(world, "contact not accepted; source hand-to-surface gap remains uncertainty", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, f"green={label} rigid mesh; yellow=object surface, magenta=source hand", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, "orange links show source-gap correspondence; contact not accepted", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
             else:
                 put_text_with_bg(world, f"green={label} rigid mesh; cyan/orange/yellow=uncertain MANO hypotheses", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
                 put_text_with_bg(world, "near-contact is not accepted unless geometry supports it", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
