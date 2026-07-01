@@ -1101,3 +1101,24 @@ After source-gap frames 75/120 exposed long links to the broad keyboard body, pr
 Mechanism prediction if launched later: with `--target-locality-px 40`, orange/magenta/yellow links should become more local to the visible hand/key image neighborhood if the broad-link failure is caused by global nearest-neighbor target selection. Metric MANO should remain HaWoR exactly because joints are still preserved. Falsifiers: too few rows/vertices survive local targeting, links remain long/broad despite local target constraint, or targets attach to visibly wrong object surfaces; those outcomes would point to object geometry/pose or hand registration rather than target-selection locality.
 
 Prepared launch helper `/tmp/run_v19_clip001849_localpatch_posterior_after_sourcegap.sh` SHA256 `fe899cc547191cc648647e67f2d4c9c09bfb2612608f0343a44dfdfc8bc4fefd`. It has not been copied to remote or launched; wait until the active sourcegap branch completes and is consumed.
+
+
+## 2026-07-01T13:09:13+08:00 — Source-gap interval branch completed and consumed
+
+Remote branch `clip001849_sourcegap_interval_metric` completed in tmux `v19_hot3d_001850_a800_v5_owlv2_p07:clip001849_sourcegap` at `2026-07-01T12:59:07+08:00`. Final counts: 150 overlay frames and 150 world frames. Local fetch helper `/tmp/fetch_review_v19_clip001849_sourcegap_interval.sh` fetched the completed artifact set to `/tmp/v19_clip001849_sourcegap_interval_metric/`; helper output reported `video_frame_count 150`.
+
+Artifact hashes from local fetched files:
+- publication report `/tmp/v19_clip001849_sourcegap_interval_metric/v19_published_render_report.json` SHA256 `4c53b4ca602185f6fd80aa612e56785def3c544f2edd8bda9a28233c3704e471`.
+- render manifest `/tmp/v19_clip001849_sourcegap_interval_metric/v19_rigid_state_render_manifest.json` SHA256 `c5fde5f5d71724d2fb9e91108d4ac9e3cb42ad1bb14a8155df97ee6d94b93edc`.
+- freeze manifest `/tmp/v19_clip001849_sourcegap_interval_metric/v19_prediction_freeze_manifest_sourcegap_interval_metric.json` SHA256 `b43b05ee92384974880616123b14da316951064eed9712e6ed92beeb07697681`.
+- render state `/tmp/v19_clip001849_sourcegap_interval_metric/state/keyboard_rigid_render_state_sourcegap_interval_metric.json` SHA256 `9777c36e963242fc54741bebc21b0a21eab29461f983f62ab37654f90560522c`.
+- candidate eval `/tmp/v19_clip001849_sourcegap_interval_metric/eval/hot3d_v19_sourcegap_interval_metric_mano3d_eval.json` SHA256 `2c6a91d8335f04ea34f34c642d2f7db744702b825af2618c2071b0b6b5263d26`.
+- matched-row report `/tmp/v19_clip001849_sourcegap_interval_metric/eval/hot3d_runtime_baseline_vs_sourcegap_interval_metric_candidate_rows_only.json` SHA256 `2464cee0c41dc3f12eb4997a532a9c8a9a4648ae9c98fc140b667f7d45a48006`.
+- full review sheet `/tmp/v19_clip001849_sourcegap_interval_metric/clip001849_sourcegap_interval_metric_full_review_sheet.jpg` SHA256 `a09b88dc07e3431f0430535e62299a172ca5f16a547c5701bc746a9f3701a4ec`.
+- every-15-frame side sheet `/tmp/v19_clip001849_sourcegap_interval_metric/clip001849_sourcegap_interval_metric_side_every15_sheet.jpg` SHA256 `2c9b1a93f70969d5f60c1321f98c51a4b1eb7f1325243282b87dbb0e87132bf8`.
+
+Matched-row HOT3D comparison observations: row_count `240`; by side left/right `120` rows each, frames `30–149`; `max_abs_delta_by_metric_m` is exactly `0.0` for `wrist_error_m`, `joint_mpjpe_m`, `joint_median_error_m`, `root_aligned_mpjpe_m`, `root_aligned_median_error_m`, and `root_aligned_p95_error_m`. This supports only the metric-MANO preservation claim.
+
+Visual consumption observations: full sheet frames `0/30/75/120/149` and every-15-frame side sheet show the source-gap layer is readable and honestly labeled as contact-not-accepted. Magenta source endpoints, yellow object-surface endpoints, and orange links expose hand/object separation. The dominant pattern is broad keyboard-body target attachment and long normal/depth links, especially frames `75/120/149`; early frames have little/no meaningful local patch relation. This falsifies interpreting the links as contact correspondence or probabilistic uncertainty intervals. It supports the narrower claim that the renderer reveals the current global nearest-neighbor target failure.
+
+Async critic `26b508a8-2c13-4ebb-b7cc-a4b90d4bc789` completed and wrote `/tmp/v19_sourcegap_interval_critic.md`. Its core findings match the final artifact: renderer code is sound and labels are honest; HOT3D equality is expected because MANO is unchanged; sourcegap rendering has no causal novelty; the word correspondence/interval can overclaim because the links are deterministic nearest-neighbor proximity pairs; the next mechanism should be surface-patch-local correspondence or contact probability without moving metric MANO. Applied this by rewriting EPISTEMIC.md claim boundaries and preparing/committing the optional `--target-locality-px` mechanism.
