@@ -1080,3 +1080,24 @@ Workbench-6 next mechanism after direct-posterior critic integration: render the
 Implemented `scripts/render_v19_rigid_state_artifact.py` support for `source_contact_vertices_world_sample_m` to `contact_surface_vertices_world_sample_m` correspondence links in overlay/world views, with labels `magenta=source hand, yellow=object surface, orange=uncertain gap`. Synced patched renderer to remote bundle; remote SHA256 `a057aa4476000019aa149fab08836852d7188f6731283af2281f51cadba0fe45`.
 
 Launched `/tmp/run_v19_clip001849_sourcegap_interval_render.sh` SHA256 `94c82b3d7a1aa120f48d54720e93291f40d5a8e27a7d54f47741dbeee4aea6c9` in existing tmux session/window `v19_hot3d_001850_a800_v5_owlv2_p07:clip001849_sourcegap`. The script builds a new render state from the direct-posterior temporal state, renders/publishes/freezes/evaluates under `sourcegap_interval_metric`, and writes matched-row HOT3D comparison. Freeze is before evaluator consumption.
+
+
+## 2026-07-01T12:39:26+08:00 — Source-gap interval frame 30 visual observation
+
+Fetched active source-gap branch frame 000030 to `/tmp/v19_clip001849_sourcegap_interval_partial/partial_frame030_overlay_world.jpg`. Observation: the overlay remains physically registered to the visible keyboard and hands, while the new visual layer exposes magenta source-hand endpoints, yellow object-surface endpoints, and orange correspondence links. In world view the links are visible between the source hand skeleton and the broad green keyboard surface; the links mostly span the hand/object normal-depth separation rather than a tangential shuffle. This supports the intended mechanism of rendering the source-gap interval explicitly. It also confirms the branch does not make a contact claim: the links diagnose separation to a broad object surface, not contact ownership or nonpenetration.
+
+
+## 2026-07-01T12:51:19+08:00 — Source-gap interval frame 75 visual observation
+
+Fetched active source-gap branch frame 000075 to `/tmp/v19_clip001849_sourcegap_interval_partial/partial_frame075_overlay_world.jpg`. Observation: the overlay is readable and the new magenta/yellow/orange layer appears over the hand/key area. In world view the orange links do not create a local contact relation; many links extend from the source hand surface to a broad region of the green keyboard body, with the visible separation dominated by normal/depth gap. This supports the critic's warning that the links are deterministic nearest-neighbor/proximity links, not physical contact correspondences or uncertainty intervals. The artifact is useful as a diagnostic visualization of the remaining source-gap/broad-surface problem, but it is not a MANO correction or contact mechanism.
+
+Implication before full render/eval: if the final video preserves this pattern, the next true Workbench-6 mechanism should not be another global hand transform and not merely more link rendering. It should constrain object-surface targets to a local/visible patch or estimate contact probability from 2D locality, depth difference, normal compatibility, visibility, and temporal consistency while preserving metric MANO joints.
+
+
+## 2026-07-01T12:58:49+08:00 — Local-patch object-surface target mechanism prepared, not launched
+
+After source-gap frames 75/120 exposed long links to the broad keyboard body, prepared the next mechanism without launching it: `scripts/refit_v19_mano_contact_similarity_interval.py` now accepts optional `--target-locality-px`. When positive, each source MANO vertex chooses an object target only from projected object mesh samples within that many mask pixels, then selects the nearest 3D target within that local patch. Default is `0.0`, preserving all existing v4/direct behavior. `scripts/build_v19_direct_contact_surface_posterior_state.py` exposes the same flag for direct/no-hand-transform posterior states. Syntax check `python -m py_compile scripts/refit_v19_mano_contact_similarity_interval.py scripts/build_v19_direct_contact_surface_posterior_state.py` passed.
+
+Mechanism prediction if launched later: with `--target-locality-px 40`, orange/magenta/yellow links should become more local to the visible hand/key image neighborhood if the broad-link failure is caused by global nearest-neighbor target selection. Metric MANO should remain HaWoR exactly because joints are still preserved. Falsifiers: too few rows/vertices survive local targeting, links remain long/broad despite local target constraint, or targets attach to visibly wrong object surfaces; those outcomes would point to object geometry/pose or hand registration rather than target-selection locality.
+
+Prepared launch helper `/tmp/run_v19_clip001849_localpatch_posterior_after_sourcegap.sh` SHA256 `fe899cc547191cc648647e67f2d4c9c09bfb2612608f0343a44dfdfc8bc4fefd`. It has not been copied to remote or launched; wait until the active sourcegap branch completes and is consumed.

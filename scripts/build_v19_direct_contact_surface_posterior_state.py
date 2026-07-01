@@ -56,6 +56,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-contact-vertices", type=int, default=16)
     p.add_argument("--max-contact-vertices", type=int, default=96)
     p.add_argument("--mesh-sample-stride", type=int, default=8)
+    p.add_argument(
+        "--target-locality-px",
+        type=float,
+        default=0.0,
+        help=(
+            "If positive, choose object-surface posterior targets only from mesh samples projected within this many "
+            "mask pixels of each source MANO vertex. This constrains broad-object nearest-neighbor links to local patches."
+        ),
+    )
     return p.parse_args()
 
 

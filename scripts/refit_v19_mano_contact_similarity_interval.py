@@ -69,6 +69,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-contact-vertices", type=int, default=6)
     p.add_argument("--max-contact-vertices", type=int, default=48)
     p.add_argument("--mesh-sample-stride", type=int, default=32)
+    p.add_argument(
+        "--target-locality-px",
+        type=float,
+        default=0.0,
+        help=(
+            "If positive, choose each contact target from object mesh samples whose projected location is within this "
+            "many mask pixels of the source MANO vertex, instead of using the global nearest object surface point."
+        ),
+    )
     p.add_argument("--sigma-reprojection-px", type=float, default=8.0)
     p.add_argument("--contact-residual-mode", choices=("point_to_point", "point_to_plane"), default="point_to_point")
     p.add_argument("--sigma-contact-m", type=float, default=0.045)
@@ -379,9 +388,35 @@ def build_observations(args: argparse.Namespace) -> tuple[list[Obs], list[dict[s
             )
             proximity_mask = obj_mask | mesh_projection
             proximity_dist_px = sample_distance_map(distance_to_mask(proximity_mask), xy_verts, valid_uv)
-            surface_dist_m, nn_all = tree.query(verts, k=1)
-            targets_all = obj_cam[nn_all]
-            target_normals_all = obj_normals_cam[nn_all]
+            target_locality_px = float(getattr(args, "target_locality_px", 0.0) or 0.0)
+            if target_locality_px > 0.0:
+                obj_uv_source = project_camera(obj_cam, intr_float)[0]
+                obj_xy, obj_xy_valid = uv_source_to_mask_xy(obj_uv_source, (source_w, source_h), obj_mask.shape)
+                surface_dist_m = np.full((len(verts),), np.inf, dtype=np.float64)
+                nn_all = np.full((len(verts),), -1, dtype=np.int64)
+                targets_all = np.zeros_like(verts, dtype=np.float64)
+                target_normals_all = np.zeros_like(verts, dtype=np.float64)
+                if np.any(obj_xy_valid) and np.any(valid_uv):
+                    obj_valid_ids = np.flatnonzero(obj_xy_valid)
+                    obj_2d_tree = cKDTree(obj_xy[obj_valid_ids])
+                    hand_valid_ids = np.flatnonzero(valid_uv)
+                    candidates_by_hand = obj_2d_tree.query_ball_point(xy_verts[hand_valid_ids], r=target_locality_px)
+                    for hand_id, local_obj_ids in zip(hand_valid_ids, candidates_by_hand):
+                        if not local_obj_ids:
+                            continue
+                        obj_ids = obj_valid_ids[np.asarray(local_obj_ids, dtype=np.int64)]
+                        delta = obj_cam[obj_ids] - verts[hand_id][None, :]
+                        dist = np.linalg.norm(delta, axis=1)
+                        best_pos = int(np.argmin(dist))
+                        best_obj_id = int(obj_ids[best_pos])
+                        nn_all[hand_id] = best_obj_id
+                        surface_dist_m[hand_id] = float(dist[best_pos])
+                        targets_all[hand_id] = obj_cam[best_obj_id]
+                        target_normals_all[hand_id] = obj_normals_cam[best_obj_id]
+            else:
+                surface_dist_m, nn_all = tree.query(verts, k=1)
+                targets_all = obj_cam[nn_all]
+                target_normals_all = obj_normals_cam[nn_all]
             depth_delta_m = verts[:, 2] - targets_all[:, 2]
             near_surface = (
                 valid_uv
@@ -432,6 +467,8 @@ def build_observations(args: argparse.Namespace) -> tuple[list[Obs], list[dict[s
                 "selected_current_surface_distance_m": numeric_summary(surface_dist_m[ids].astype(float).tolist()),
                 "selected_depth_delta_m": numeric_summary(depth_delta_m[ids].astype(float).tolist()),
                 "selected_weight": numeric_summary(weights.astype(float).tolist()),
+                "target_locality_px": float(target_locality_px),
+                "localized_target_vertices": int(np.count_nonzero(nn_all >= 0)) if target_locality_px > 0.0 else None,
             }
             obs.append(
                 Obs(
