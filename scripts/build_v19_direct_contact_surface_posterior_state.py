@@ -107,6 +107,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             median = gaps[field].get("median") if isinstance(gaps[field], dict) else None
             if isinstance(median, (int, float)) and np.isfinite(float(median)):
                 target.append(float(median))
+        no_solver_residual = {
+            "count": 0,
+            "not_applicable": True,
+            "reason": (
+                "direct_object_surface_posterior does not run a contact/nonpenetration solver; "
+                "use contact_similarity_refit.source_hand_to_object_surface_distance_m for source gap"
+            ),
+        }
         rows.append(
             {
                 "frame_idx": int(o.frame_idx),
@@ -148,8 +156,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "contact_weight": numeric_summary(o.contact_weights.astype(float).tolist()),
                     "candidate_stats": o.candidate_stats,
                 },
-                "full_observed_surface_penetration_after_solver_m": gaps["distance"],
-                "final_active_constraint_residual_after_solver_m": gaps["distance"],
+                "direct_object_surface_source_gap_m": gaps["distance"],
+                "full_observed_surface_penetration_after_solver_m": no_solver_residual,
+                "final_active_constraint_residual_after_solver_m": no_solver_residual,
             }
         )
     if not rows:
