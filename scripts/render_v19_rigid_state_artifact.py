@@ -402,12 +402,20 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
     source_distance = summary_stat(contact.get("contact_distance_before_m"), "median")
     source_normal = summary_stat(contact.get("contact_normal_abs_before_m"), "median")
     shift = summary_stat(temporal.get("metric_joint_shift_px") or temporal.get("visible_joint_shift_px"), "median")
+    likelihood = temporal.get("contact_likelihood") if isinstance(temporal.get("contact_likelihood"), dict) else contact.get("contact_likelihood") if isinstance(contact.get("contact_likelihood"), dict) else {}
+    contact_prob = summary_stat(likelihood.get("contact_compatibility_probability"), "median") if likelihood else None
+    source_gap_z = summary_stat(likelihood.get("source_gap_z"), "median") if likelihood else None
+    likelihood_note = ""
+    if contact_prob is not None:
+        likelihood_note = f", p~{contact_prob:.3f}"
+        if source_gap_z is not None:
+            likelihood_note += f", z={source_gap_z:.1f}"
     if presentation:
         if "metric_mano_preserved" in policy:
             if mode == "direct_object_surface_posterior":
                 text = "source MANO + object-surface interval"
-                text2 = f"source gap {fmt_mm(distance)}, normal {fmt_mm(normal)}, joint shift {fmt_px(shift)}"
-                return text, text2, "magenta=source hand, yellow=object surface, orange=uncertain gap"
+                text2 = f"source gap {fmt_mm(distance)}, normal {fmt_mm(normal)}{likelihood_note}, joint shift {fmt_px(shift)}"
+                return text, text2, "magenta=source hand, yellow=object surface, orange=gap; contact not accepted"
             text = "source MANO + uncertain contact surface"
             if mode == "point_to_plane":
                 text2 = f"source gap {fmt_mm(source_distance)}, posterior normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}"
@@ -433,7 +441,7 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
     text = f"INTERVAL MANO UNCERTAIN | {str(temporal.get('temporal_mano_state', 'interval_state'))[:42]}"
     if "metric_mano_preserved" in policy:
         if mode == "direct_object_surface_posterior":
-            text2 = f"source_joints_preserved source_gap={fmt_mm(distance)} normal_med={fmt_mm(normal)}"
+            text2 = f"source_joints_preserved source_gap={fmt_mm(distance)} normal_med={fmt_mm(normal)}{likelihood_note}"
         else:
             text2 = f"source_joints_preserved source_gap={fmt_mm(source_distance)} source_normal={fmt_mm(source_normal)} posterior_normal={fmt_mm(normal)} tangent_med={fmt_mm(tangent)}"
     elif mode == "point_to_plane":
