@@ -60,6 +60,109 @@ def numeric_summary(values: list[float] | np.ndarray) -> dict[str, Any]:
     }
 
 
+def pose_support_sigma_m(row: dict[str, Any], *, floor_m: float, cap_m: float, default_m: float) -> float:
+    """Prediction-side uncertainty for one visible-depth pose measurement.
+
+    The measured quantity is the residual between observed object-owned depth
+    surfels and the fitted completed mesh.  A lower residual and more support
+    points make that pose translation more credible; the floor/cap prevent a
+    single sharp but partial planar fit from becoming certain.
+    """
+
+    obs = row.get("observed_to_mesh_final") if isinstance(row.get("observed_to_mesh_final"), dict) else {}
+    vals = []
+    for key in ("median_m", "p90_m", "p95_m"):
+        value = obs.get(key)
+        if value is not None and math.isfinite(float(value)):
+            vals.append(float(value))
+    residual = max(vals) if vals else float(default_m)
+    visible_n = int(row.get("visible_sample_count") or obs.get("count") or 0)
+    sample_factor = math.sqrt(max(1.0, min(float(visible_n), 400.0)) / 100.0)
+    sigma = residual / max(sample_factor, 1.0)
+    return float(np.clip(max(float(floor_m), sigma), float(floor_m), float(cap_m)))
+
+
+def weighted_geometric_median(points: np.ndarray, weights: np.ndarray, *, eps: float = 1.0e-9, max_iter: int = 256) -> np.ndarray:
+    points = np.asarray(points, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+        raise RuntimeError("weighted_geometric_median expects Nx3 points")
+    weights = np.where(np.isfinite(weights) & (weights > 0.0), weights, 0.0)
+    if float(weights.sum()) <= 0.0:
+        raise RuntimeError("all translation weights are zero")
+    x = np.average(points, axis=0, weights=weights)
+    for _ in range(int(max_iter)):
+        d = np.linalg.norm(points - x[None, :], axis=1)
+        hit = np.where(d < eps)[0]
+        if hit.size:
+            return points[int(hit[0])].astype(float)
+        inv = weights / np.maximum(d, eps)
+        new_x = np.sum(points * inv[:, None], axis=0) / float(np.sum(inv))
+        if float(np.linalg.norm(new_x - x)) < eps:
+            return new_x.astype(float)
+        x = new_x
+    return x.astype(float)
+
+
+def translation_estimate(
+    rows: list[dict[str, Any]],
+    anchor_t: np.ndarray,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    source = str(args.translation_source)
+    valid_rows = [row for row in rows if as_R_t(row) is not None]
+    if source == "anchor":
+        return anchor_t.astype(float), {
+            "translation_source": "anchor",
+            "row_count": 1,
+            "claim_scope": "single reviewed anchor translation",
+        }
+    translations = []
+    sigmas = []
+    frame_ids = []
+    visible_counts = []
+    for row in valid_rows:
+        pose = as_R_t(row)
+        if pose is None:
+            continue
+        _, t = pose
+        sigma = pose_support_sigma_m(
+            row,
+            floor_m=float(args.translation_weight_floor_m),
+            cap_m=float(args.translation_weight_cap_m),
+            default_m=float(args.translation_weight_default_m),
+        )
+        translations.append(t)
+        sigmas.append(sigma)
+        frame_ids.append(int(row.get("frame_idx", len(frame_ids))))
+        visible_counts.append(int(row.get("visible_sample_count") or 0))
+    if not translations:
+        raise RuntimeError("no valid pose translations for stationary translation estimate")
+    pts = np.vstack(translations).astype(float)
+    sigma_arr = np.asarray(sigmas, dtype=float)
+    weights = 1.0 / np.maximum(sigma_arr, 1.0e-6) ** 2
+    if source == "support_weighted_mean":
+        t_est = np.average(pts, axis=0, weights=weights).astype(float)
+    elif source == "support_weighted_geomedian":
+        t_est = weighted_geometric_median(pts, weights).astype(float)
+    else:  # pragma: no cover
+        raise RuntimeError(f"unknown translation source {source}")
+    deltas = np.linalg.norm(pts - t_est[None, :], axis=1)
+    return t_est, {
+        "translation_source": source,
+        "row_count": int(len(pts)),
+        "frame_idx_min": int(min(frame_ids)),
+        "frame_idx_max": int(max(frame_ids)),
+        "weight_model": "inverse squared visible-depth pose sigma from observed-to-mesh residual and visible support count",
+        "translation_sigma_m": numeric_summary(sigma_arr),
+        "translation_weight": numeric_summary(weights),
+        "visible_sample_count": numeric_summary(np.asarray(visible_counts, dtype=float)),
+        "source_translation_distance_to_estimate_m": numeric_summary(deltas),
+        "estimate_m": t_est.astype(float).tolist(),
+        "claim_scope": "stationary rigid-object translation posterior; uses prediction-side visible-depth pose measurements only; no hand/contact/GT",
+    }
+
+
 def nearest_summary(query: np.ndarray, target: np.ndarray) -> dict[str, Any]:
     query = np.asarray(query, dtype=float)
     target = np.asarray(target, dtype=float)
@@ -160,8 +263,17 @@ def parse_args() -> argparse.Namespace:
         "--hold-components",
         choices=("both", "translation", "rotation"),
         default="both",
-        help="Which anchor pose components to hold fixed. Translation-only stabilization preserves per-frame rotations.",
+        help="Which pose components to hold fixed. Translation-only stabilization preserves per-frame rotations.",
     )
+    p.add_argument(
+        "--translation-source",
+        choices=("anchor", "support_weighted_geomedian", "support_weighted_mean"),
+        default="anchor",
+        help="Source for stationary translation when --hold-components includes translation. Anchor preserves legacy behavior; support-weighted modes estimate translation from visible-depth pose observations.",
+    )
+    p.add_argument("--translation-weight-floor-m", type=float, default=0.006)
+    p.add_argument("--translation-weight-cap-m", type=float, default=0.080)
+    p.add_argument("--translation-weight-default-m", type=float, default=0.025)
     return p.parse_args()
 
 
@@ -177,7 +289,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     anchor_pose = as_R_t(anchor_row)
     if anchor_pose is None:
         raise RuntimeError(f"anchor row {anchor_idx} lacks pose")
-    R_static, t_static = anchor_pose
+    R_static, t_anchor = anchor_pose
+    t_static, translation_source_summary = translation_estimate(rows_in, t_anchor, args)
     mesh = load_mesh(args.completed_mesh)
     rng = np.random.default_rng(int(args.sample_seed))
     sample_count = min(int(args.mesh_sample_count), max(1, len(mesh.faces) * 2))
@@ -233,9 +346,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         row["rotation_world_from_completed_canonical_matrix"] = R_out.astype(float).tolist()
         row["translation_world_m"] = t_out.astype(float).tolist()
         row["static_pose_candidate"] = {
-            "method": "anchor_pose_component_hold_static_rigid_object",
+            "method": "stationary_pose_component_hold_static_rigid_object",
             "hold_components": str(args.hold_components),
+            "translation_source": str(args.translation_source),
+            "translation_source_summary": translation_source_summary,
             "anchor_frame_idx": anchor_idx,
+            "anchor_translation_world_m": t_anchor.astype(float).tolist(),
             "anchor_selection": "requested_or_visible_geometry_adapter_anchor_then_support_score",
             "source_pose_report": str(args.pose_report),
             "source_frame_original_translation_delta_m": trans_delta,
@@ -246,7 +362,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "claim_scope": "static object pose candidate; does not use hand/contact/GT; must be validated by render and prediction/evaluation residuals",
         }
         row["temporal_pose_graph"] = {
-            "pose_source": f"static_anchor_pose_{args.hold_components}_hold",
+            "pose_source": f"static_stationary_pose_{args.hold_components}_hold",
+            "translation_source": str(args.translation_source),
+            "translation_source_summary": translation_source_summary,
             "static_anchor_frame_idx": anchor_idx,
             "direct_visible_measurement": idx == anchor_idx,
             "original_pose_status": raw.get("status"),
@@ -274,7 +392,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             },
             "static_pose_candidate": {
                 "anchor_frame_idx": anchor_idx,
-                "anchor_pose_translation_world_m": t_static.astype(float).tolist(),
+                "anchor_pose_translation_world_m": t_anchor.astype(float).tolist(),
+                "stationary_translation_world_m": t_static.astype(float).tolist(),
+                "translation_source": str(args.translation_source),
+                "translation_source_summary": translation_source_summary,
                 "anchor_pose_rotation_world_from_completed_canonical_matrix": R_static.astype(float).tolist(),
                 "hold_components": str(args.hold_components),
                 "mesh_sample_count": int(len(mesh_sample_obj)),
@@ -288,15 +409,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "static_mesh_to_observed_median_m": numeric_summary(mesh_to_obs_medians),
             },
             "correction_summary": {
-                "status": "static_anchor_pose_hold_candidate",
+                "status": "static_stationary_pose_hold_candidate",
                 "anchor_frame_idx": anchor_idx,
+                "translation_source": str(args.translation_source),
+                "translation_source_summary": translation_source_summary,
                 "translation_delta_norm_m": numeric_summary(trans_deltas),
                 "rotation_delta_norm_rad": numeric_summary(rot_deltas),
                 "static_observed_to_mesh_median_m": numeric_summary(obs_to_mesh_medians),
                 "static_mesh_to_observed_median_m": numeric_summary(mesh_to_obs_medians),
             },
             "full_timeline_rigid_pose_completion": {
-                "state": f"static_anchor_pose_{args.hold_components}_full_timeline_candidate",
+                "state": f"static_stationary_pose_{args.hold_components}_{args.translation_source}_full_timeline_candidate",
                 "frame_count": len(frame_ids),
                 "pose_frame_count": len(pose_ids),
                 "missing_pose_frames": sorted(set(frame_ids).difference(pose_ids)),
