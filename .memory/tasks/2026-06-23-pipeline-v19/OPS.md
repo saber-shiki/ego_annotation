@@ -1503,3 +1503,152 @@ Observation vs P40/P41 anchor-translation state:
 - MANO matched-row deltas are exactly `0.0 m` across wrist, joint MPJPE, joint median, root-aligned MPJPE, root-aligned median, and root-aligned p95.
 
 Mechanism interpretation: the stationary geomedian translation is a better object/hand separation hypothesis than the single-anchor translation, but it pays a small observed-surface residual cost. This is a real tradeoff between object visible-depth support and hand/object relational geometry, not contact closure. Because the state improves source-gap physics and preserves MANO while only modestly worsening one support direction, P43 full render was launched in remote tmux `ego_annotation:clip001849_geoRender` to decide whether the support tradeoff is visually acceptable. Do not accept P42 from metrics alone.
+
+## 2026-07-03T06:21:41+08:00 — P44 camera trajectory attribution rules out camera drift as dominant object residual
+
+Implemented `scripts/evaluate_v19_hot3d_camera_trajectory_alignment.py`. Mechanism: fit one fixed transform from the V19 world frame to the HOT3D world frame and measure residual camera trajectory error. If camera/head trajectory drift dominated the object residual, the camera residual after one fixed transform would be comparable to object residuals and positively coupled framewise. If camera residuals are much smaller, object pose/shape dominates the object mismatch.
+
+P44 ran in remote tmux `ego_annotation:clip001849_camAlign` with `exit_code=0`. Report:
+
+- `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/hot3d_camera_trajectory_alignment_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1/hot3d_v19_staticT_geomedian_camera_trajectory_alignment.json`
+
+Observation over 150 common frames: camera residual after one fixed V19-world to HOT3D-world transform has translation median `3.74 mm`, p90 `10.89 mm`, max `13.90 mm`; rotation median `0.0567 deg`, p90 `0.124 deg`, max `0.503 deg`. On the 149 frames paired with P42 object residuals, object translation residual median is `33.57 mm`, p90 `156.23 mm`, max `217.97 mm`; Pearson coupling between camera translation residual and object translation residual is `-0.036`.
+
+Interpretation: V19 camera/head trajectory is temporally consistent with HOT3D up to a fixed world-frame transform at a millimetric scale. The remaining centimeter-scale object residual is not primarily camera drift. The live object-side blocker is object pose/shape/partial planar support, not camera trajectory. This strengthens the rejection of another hand-root/MANO correction and shifts future object work toward better keyboard geometry/pose support rather than camera repair.
+
+## 2026-07-03T06:38:57+08:00 — P43 support-weighted stationary object posterior rendered, published via encoder recovery, and accepted as current artifact
+
+P43 full render was launched from P42 render state in remote tmux `ego_annotation:clip001849_geoRender`. Raw rasterization produced complete `overlay_frames/` and `world_frames/` for all 150 frames, but the first default ffmpeg encoder child stalled after writing only a partial MP4 and sleeping on `futex_wait_queue` with no advancing I/O. Because the raw frame folders were complete and this was an encoder failure, not an annotation/render-state failure, the hung P43 encoder/parent were stopped and P43b recovered publication from the completed raw frames using single-thread ultrafast ffmpeg. P43b ran in `ego_annotation:clip001849_geoPub` with `exit_code=0`.
+
+Published P43/P43b outputs:
+
+- `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/published_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1_direct_surface_localpatch40_full_duration/v19_overlay.mp4` — 150 frames, 30 fps, 960x1038, SHA256 `8b219c3897dc309e50a155d7bd3cc429e8828389b772c4dde12d1c11c30d4c17`.
+- `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/published_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1_direct_surface_localpatch40_full_duration/v19_world.mp4` — 150 frames, 30 fps, 1280x798, SHA256 `b4cf422665f3a0e50459e9af3202d61414edcce05e3bc994181752806ee6941c`.
+- `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/published_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1_direct_surface_localpatch40_full_duration/v19_side_by_side.mp4` — 150 frames, 30 fps, 1920x618, SHA256 `59ade00c50d34eaabbdf4f0c326c0d1a3c65f852c6966526fadce00bb599b741`.
+- Summary/report: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/published_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1_direct_surface_localpatch40_full_duration/full_duration_summary.json` and `v19_published_render_report.json`.
+- Local inspection sheet: `/tmp/v19_clip001849_staticT_geomedian_p43_published/published_staticT_geomedian_p43_review_sheet.jpg`.
+
+Published banner: `rows 224 | source gap 106.3mm | normal 95.4mm | contact compat~0.002 | gap z 3.5 | joint shift 0.0px | metric MANO preserved | contact uncertain`.
+
+Visual consumption from frames `0/30/75/120/149`: the P43 overlay/world/side-by-side remain readable and state-driven. The green keyboard body still broadly overpaints the keyboard/table region but does not introduce a new first-glance projection error relative to P41. The world view still shows long hand-object source-gap links; the links are somewhat shorter by state metric but remain physically incompatible with accepted contact. The artifact honestly communicates the improved but still low contact compatibility and exact metric MANO preservation. Open-ended observation: P43 makes the object/hand relational gap numerically and visually less extreme, but the fundamental visible fact remains a separated source MANO surface and keyboard mesh; the artifact is a better uncertain/non-contact object-pose posterior, not a contact repair.
+
+Decision: P43 supersedes P41 as the current clip001849 Workbench-6 artifact because it improves source-gap/normal/tangent state metrics, preserves metric MANO exactly, and has no visible artifact-level regression. It still does not support accepted contact or signed nonpenetration. P45 face-budget render probe was launched after P43 completion to address the renderer runtime blocker exposed by P34/P41/P43.
+
+## 2026-07-03T07:00:00+08:00 — Direct hand-owned mask/depth evidence on clip001851 rejects safe MANO refit
+
+Existing Workbench-6 autoresearch output was inspected under:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/hand_owned_surface_mask_depth_v1/`
+
+Mechanism under test: exact visible-object support had zero positive rows across the fixed HOT3D slice, so the next physically justified MANO correction was to use HaWoR-projected SAM2 hand masks plus depth after subtracting object-owned keyboard pixels. If these masks isolated visible hand/palm/finger surface, a scale-preserving MANO pose+translation refit could improve hand state. If the refit required scale change, large reprojection displacement, or worsened HOT3D MANO metrics, the mask/depth branch was measuring contaminated/insufficient surface rather than a valid hand-state correction.
+
+Stage-1 filtered hand-mask support summary:
+
+- Report: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/hand_owned_surface_mask_depth_v1/hand_surface_stage1_summary.json`.
+- Review sheets: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/hand_owned_surface_mask_depth_v1/review/hand_mask_filtered_support_review.jpg` and `hand_mask_filtered_support_review_v2.jpg`; local inspected copy `/tmp/v19_clip001851_hand_surface_stage1/hand_mask_filtered_support_review_v2.jpg`.
+- Counts: 150 frames, left visible filtered masks `1`, right visible filtered masks `97`.
+- Visual observation: raw SAM2 masks often include forearm/sleeve/large hand regions; object-subtracted filtered support keeps small right-finger/hand patches near the keyboard, while left support is essentially absent. The surviving patches are real image evidence but sparse and not enough to constrain full MANO robustly.
+
+Refit/promotion outcomes:
+
+- Scale-preserving safe promotion: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/hand_owned_surface_mask_depth_v1/right_mask_depth_refit_safe_promotion_v1/right_refit_safe_promotion_report.json`, `promoted_count=0`, `skipped_count=300`.
+- Raw right refit QC: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/hand_owned_surface_mask_depth_v1/right_mask_depth_refit_v1/right_refit_qc.json`. Median scale `0.800000`, median translation delta `63.65 mm`, median base-joint reprojection shift `103.66 px`, pose delta at the imposed cap (`1.10 rad` median), and sampled vertex/depth p95 residual median `74.93 mm`.
+- Scale-relaxed scoring branch promoted 97 rows only by allowing scale relaxation: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/hand_owned_surface_mask_depth_v1/right_mask_depth_refit_scale_relaxed_scoring_v1/right_refit_scale_relaxed_promotion_report.json`.
+- HOT3D comparison rejects the scale-relaxed branch: support-gated vs scale-relaxed median wrist error worsened by `+6.69 mm`, median joint MPJPE worsened by `+17.54 mm`, median root-aligned MPJPE worsened by `+31.70 mm`; runtime-HaWoR vs scale-relaxed median wrist error worsened by `+6.69 mm`, median joint MPJPE by `+16.54 mm`, median root-aligned MPJPE by `+32.55 mm`.
+
+Decision: direct SAM2 hand-mask/depth evidence does not justify promoting a MANO correction on clip001851. The safe scale-preserving branch has no promotable rows; the scale-relaxed branch is physically invalid as a metric hand correction and quantitatively corrupts MANO. This strengthens the current policy: keep metric MANO preserved unless a future hand-owned surface measurement supports a scale-preserving refit. The next active physical blocker returns to object pose/shape/partial planar support, not another hand-root/contact-biased correction.
+
+## 2026-07-03T06:40:52+08:00 — P45 presentation face-budget probe supports runtime-safe render defaults
+
+P45 tested whether the full 50k mesh-face budget is necessary for user-facing presentation renders after P43 exposed slow rasterization/encoding. It rendered representative P43 frames `30/75/120/149` with presentation face caps: filled overlay/world mesh cap `3500`, wireframe cap `600`, overlay alpha `0.28`, world alpha `0.42`.
+
+Remote output:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/probe_staticT_geomedian_facebudget3500_frames30_75_120_149/hot3d_clip001849_pinhole_a800_native_v1_supportgate/`
+
+Log status: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/logs/P45_clip001849_staticT_geomedian_facebudget3500_probe.status` recorded `exit_code=0`.
+
+Observation: four representative overlay/world frames rendered in `14.66 s`, with median rasterized object-body pixels `47740` and all four frames containing object-pose/body pixels. Local inspection sheet `/tmp/v19_clip001849_p45_facebudget/p45_facebudget3500_sheet.jpg` showed the green keyboard body remains visually readable in overlay and world views, with no first-glance loss of object-body semantics relative to P43.
+
+Mechanism interpretation: presentation artifacts do not need the full accepted mesh face count to communicate the state-driven object body. The measured cap preserves physical readability while reducing CPU rasterization burden. P43b also showed single-thread ultrafast ffmpeg with explicit frame count avoids the default ffmpeg futex stall. `scripts/render_v19_rigid_state_artifact.py` was patched accordingly: presentation mode now caps filled overlay/world faces at 3500 by default, records the effective caps in the manifest, and encodes overlay/world/side-by-side videos with single-thread, frame-count-bounded ultrafast ffmpeg. This is an improved-rendering/runtime support patch only; it does not change prediction state or physical claims.
+
+## 2026-07-03T07:14:54+08:00 — P46 cross-clip support-weighted stationary translation test on clip001851
+
+Experiment: apply the same prediction-side support-weighted stationary object-translation mechanism that produced clip001849/P43 to clip001851, using only visible-depth/object pose evidence for candidate construction. HOT3D GT was consumed only after candidate render state materialization for scoring. No hand/contact/GT entered the static translation estimate.
+
+Prediction written before execution: if support-weighted stationary translation is a general correction for partial planar keyboard pose jitter, it should improve clip001851 object/source-gap residuals versus the runtime pose graph while leaving metric MANO unchanged. Falsifiers were: worse source gap, worse HOT3D object trajectory residual, worse observed-surface support/row coverage, or nonzero MANO matched-row deltas.
+
+Command launched in remote tmux `ego_annotation:clip001851_statT` via `/tmp/run_v19_clip001851_staticT_geomedian_p46.sh`. Log/status:
+
+- `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/logs/P46_clip001851_staticT_geomedian_crossclip_state.log`
+- `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/logs/P46_clip001851_staticT_geomedian_crossclip_state.status` recorded `exit_code=0`.
+
+Primary summary:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/staticT_geomedian_crossclip_v1/clip001851_staticT_geomedian_crossclip_state_comparison.json`
+
+Outputs and observations:
+
+- Candidate pose report: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/staticT_geomedian_crossclip_v1/pose_fits/v19_rigid_object_pose_graph_report.json`, SHA256 `64aa4b1aca479a56f5916963156b352af50d6ad91d46117ef03f3420fc2b996f`.
+- Runtime-pose baseline direct-surface state: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/staticT_geomedian_crossclip_v1/runtime_pose_graph_direct_surface_localpatch40/hot3d_clip001851_pinhole_a800_native_v1_supportgate/v18_joint_mano_interval_trajectory_state.json`, SHA256 `d13114492869703b4ee97e655a1cd452b398a95b26ca61d9421164763bb5804d`.
+- StaticT candidate direct-surface state: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/staticT_geomedian_crossclip_v1/staticT_geomedian_direct_surface_localpatch40/hot3d_clip001851_pinhole_a800_native_v1_supportgate/v18_joint_mano_interval_trajectory_state.json`, SHA256 `190a81e54bd7782da82f787978f1a26b9efa46f26be61269c19e2a30060d2231`.
+- Baseline rows/source gap/contact compatibility: `300` rows, source gap median `24.24 mm`, Gaussian contact compatibility score median `0.7289`.
+- StaticT rows/source gap/contact compatibility: `266` rows, source gap median `19.02 mm`, Gaussian contact compatibility score median `0.8231`.
+- Baseline HOT3D object translation residual: median `38.85 mm`, p90 `94.53 mm`.
+- StaticT HOT3D object translation residual: median `55.75 mm`, p90 `173.85 mm`.
+- Object rotation residual median unchanged: `4.39 deg`, because the candidate froze translation only.
+- Candidate translation deltas relative to runtime pose graph were large: median `37.46 mm`, p90 `270.87 mm`, p95 `281.10 mm`, max `307.61 mm`.
+- MANO matched-row deltas were exactly zero for wrist, joint MPJPE, joint median, root-aligned MPJPE, root-aligned median, and root-aligned p95.
+
+Interpretation: the static translation candidate moved the object closer to source MANO surface samples on retained rows, which improved the source-gap proxy, but it worsened HOT3D object trajectory alignment and dropped 34 candidate surface rows. The mechanism is therefore not a general object-pose correction on clip001851. It behaves like a contact/source-gap-compatible translation regularizer that can overfit hand/object proximity when the runtime object pose is already closer to GT. No full render was launched because the object-pose residual worsened and support coverage decreased; a rendered artifact would risk promoting a proxy improvement as physical progress.
+
+Decision: P43 remains the current clip001849 artifact because it improved that clip's object/source-gap metrics and passed visual inspection, but P46 falsifies support-weighted stationary translation as a default cross-clip repair. Future object work should target the underlying object shape/partial planar support/pose-observability mechanism, not broader stationary-translation deployment.
+
+## 2026-07-03T07:25:00+08:00 — Clean-room review recovered locally after subagent failure
+
+A `v19-cleanroom-review` subagent was launched for adversarial review of P43/P42/P44/P46, but the async runner disappeared before writing a result. This produced no usable review evidence and was treated as absent, not as support. The recovery review was performed directly from artifacts:
+
+- P43 visual sheet: `/tmp/v19_clip001849_staticT_geomedian_p43_published/published_staticT_geomedian_p43_review_sheet.jpg`.
+- P43 publish report: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/published_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1_direct_surface_localpatch40_full_duration/v19_published_render_report.json`.
+- P42/P41 comparison: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/staticT_geomedian_object_pose_candidate_wilor_visible_hawor_wrist_hybrid_v1/staticT_geomedian_vs_staticT_anchor75_state_comparison.json`.
+- P44 camera alignment: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/hot3d_camera_trajectory_alignment_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1/hot3d_v19_staticT_geomedian_camera_trajectory_alignment.json`.
+- P46 cross-clip summary: `/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/staticT_geomedian_crossclip_v1/clip001851_staticT_geomedian_crossclip_state_comparison.json`.
+
+Adversarial findings:
+
+1. P43/P42 do not justify the broad claim “support-weighted stationary translation is a better object pose.” On clip001849, P42 improved source gap (`114.7 -> 106.3 mm`) and Gaussian contact compatibility (`0.000838 -> 0.002299`) while preserving MANO exactly, but object translation residual median was unchanged/slightly worse (`33.52 -> 33.57 mm`) and observed-to-mesh support worsened (`17.95 -> 22.01 mm`). The accepted P43 claim is narrower: a better clip001849 uncertain object/hand-separation posterior with readable state-driven render and no visible regression.
+2. P43 visibly remains non-contact/uncertain-contact. The review sheet shows long cyan/orange source-gap links between MANO hands and keyboard surface in world view. The banner also reports `source gap 106.3mm`, `gap z 3.5`, and `contact compat~0.002`. Any claim of contact closure, nonpenetration, or metric MANO correction would be false.
+3. P44 supports rejecting camera drift as the dominant clip001849 residual. After one fixed V19-world to HOT3D-world transform, camera residuals are `3.74 mm` median / `10.89 mm` p90 and object residuals are `33.57 mm` median / `156.23 mm` p90 with correlation `-0.036`; the mechanism is object-side pose/shape/support, not camera trajectory.
+4. P46 falsifies support-weighted stationary translation as a default cross-clip repair. On clip001851, the same mechanism improved retained-row source gap (`24.24 -> 19.02 mm`) and compatibility (`0.7289 -> 0.8231`) but worsened HOT3D object residuals (`38.85 -> 55.75 mm` median, `94.53 -> 173.85 mm` p90) and dropped rows (`300 -> 266`). This is contact/source-gap proxy overfitting when the runtime object pose is already closer to GT.
+
+Decision: keep P43 as the current clip001849 Workbench-6 artifact only within its narrow claim boundary. Do not render or promote the P46 clip001851 staticT candidate. The next physical intervention should attack object shape/partial planar support/pose observability, or build a watertight thin keyboard sign mesh if signed nonpenetration becomes required. Do not continue anchor/radius sweeps, contact-biased MANO correction, scale-relaxed mask/depth hand refit, stationary-translation generalization, or camera repair.
+
+## 2026-07-03T07:26:00+08:00 — Renderer runtime patch validated and synced to A800 runtime bundle
+
+Validated `scripts/render_v19_rigid_state_artifact.py` support patch after P43/P45 exposed renderer runtime failures. Local syntax check succeeded with `python3 -m py_compile scripts/render_v19_rigid_state_artifact.py`. Local `--help` could not run because the workstation Python lacks `trimesh`; this was an environment limitation, not a syntax failure. The exact patched file was copied to `/tmp/render_v19_rigid_state_artifact_patched.py` on the A800 host and validated with the V19 runtime Python:
+
+`/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python -m py_compile /tmp/render_v19_rigid_state_artifact_patched.py`
+
+Remote help confirmed the new arguments:
+
+- `--presentation-mesh-face-budget`
+- `--presentation-world-face-budget`
+
+One-frame state-driven smoke render used the P43 render state and presentation mode:
+
+`/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python /tmp/render_v19_rigid_state_artifact_patched.py --render-state /mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/state/render_state/keyboard_rigid_render_state_staticT_geomedian_wilor_visible_hawor_wrist_hybrid_v1_direct_surface_localpatch40.json --output-root /tmp/v19_renderer_patch_smoke_presentation_20260703T072523 --frames 75 --render-style presentation`
+
+Smoke outputs:
+
+- Manifest: `/tmp/v19_renderer_patch_smoke_presentation_20260703T072523/hot3d_clip001849_pinhole_a800_native_v1_supportgate/v19_rigid_state_render_manifest.json`.
+- Overlay video: `/tmp/v19_renderer_patch_smoke_presentation_20260703T072523/hot3d_clip001849_pinhole_a800_native_v1_supportgate/v19_overlay_keyboard.mp4`, size `154795` bytes.
+- World video: `/tmp/v19_renderer_patch_smoke_presentation_20260703T072523/hot3d_clip001849_pinhole_a800_native_v1_supportgate/v19_world_keyboard.mp4`, size `102260` bytes.
+- Side-by-side video: `/tmp/v19_renderer_patch_smoke_presentation_20260703T072523/hot3d_clip001849_pinhole_a800_native_v1_supportgate/v19_side_by_side_keyboard.mp4`, size `108895` bytes.
+
+Manifest observations: `render_style=presentation`, `mesh_face_budget=3500`, `world_face_budget=3500`, `wireframe_face_budget=600`, `frames_rendered=1`, `frames_with_object_pose=1`, `frames_with_rasterized_body_pixels=1`, `rasterized_body_pixels_median=46672`. The output videos were created via the new single-thread, frame-count-bounded ffmpeg path.
+
+The validated patched file was synced into the curated runtime bundle:
+
+`/mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle_a800/scripts/render_v19_rigid_state_artifact.py`
+
+Runtime bundle script SHA256: `1d37dab8f3b9ac4129e45886f394634fba6fca544040ba7fa6d6222d8b24e2a2`, identical to `/tmp/render_v19_rigid_state_artifact_patched.py`. This is a renderer/runtime support patch only; it preserves state semantics and does not alter prediction variables.

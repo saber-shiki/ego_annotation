@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--presentation-surface-alpha", type=float, default=0.28, help="Overlay object opacity used by --render-style presentation.")
     parser.add_argument("--presentation-world-alpha", type=float, default=0.42, help="World-view object opacity used by --render-style presentation.")
     parser.add_argument("--presentation-wireframe-face-budget", type=int, default=600, help="Wireframe face budget used by --render-style presentation.")
+    parser.add_argument("--presentation-mesh-face-budget", type=int, default=3500, help="Filled overlay mesh face cap used by --render-style presentation; <=0 disables the presentation cap.")
+    parser.add_argument("--presentation-world-face-budget", type=int, default=3500, help="Filled world mesh face cap used by --render-style presentation; <=0 disables the presentation cap.")
     parser.add_argument("--path-rewrite", action="append", default=[], metavar="OLD=NEW")
     return parser.parse_args()
 
@@ -659,14 +661,19 @@ def frame_world_bounds(
     return pts.min(axis=0) - float(padding), pts.max(axis=0) + float(padding)
 
 
-def encode_video(frame_dir: Path, output_path: Path, fps: float) -> None:
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-framerate", str(fps),
-            "-i", str(frame_dir / "%06d.jpg"), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23", str(output_path),
-        ],
-        check=True,
-    )
+def encode_video(frame_dir: Path, output_path: Path, fps: float, frame_count: int | None = None) -> None:
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-threads", "1",
+        "-framerate", str(fps),
+        "-i", str(frame_dir / "%06d.jpg"),
+    ]
+    if frame_count is not None:
+        cmd.extend(["-frames:v", str(int(frame_count))])
+    cmd.extend([
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-crf", "23", str(output_path),
+    ])
+    subprocess.run(cmd, check=True)
 
 
 def render(args: argparse.Namespace) -> dict[str, Any]:
@@ -719,6 +726,12 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     overlay_alpha = float(args.presentation_surface_alpha if presentation else args.surface_alpha)
     world_alpha = float(args.presentation_world_alpha if presentation else 0.70)
     wireframe_face_budget = int(min(args.wireframe_face_budget, args.presentation_wireframe_face_budget) if presentation else args.wireframe_face_budget)
+    mesh_face_budget = int(args.mesh_face_budget)
+    world_face_budget = int(args.world_face_budget)
+    if presentation and int(args.presentation_mesh_face_budget) > 0:
+        mesh_face_budget = min(mesh_face_budget, int(args.presentation_mesh_face_budget))
+    if presentation and int(args.presentation_world_face_budget) > 0:
+        world_face_budget = min(world_face_budget, int(args.presentation_world_face_budget))
     projection_examples: list[dict[str, Any]] = []
     render_rows: list[dict[str, Any]] = []
 
@@ -751,7 +764,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 uv,
                 z,
                 faces,
-                face_budget=int(args.mesh_face_budget),
+                face_budget=mesh_face_budget,
                 wire_budget=wireframe_face_budget,
                 color=(40, 255, 80),
                 alpha=overlay_alpha,
@@ -871,7 +884,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 faces,
                 world_min,
                 world_max,
-                face_budget=int(args.world_face_budget),
+                face_budget=world_face_budget,
                 wire_budget=wireframe_face_budget,
                 alpha=world_alpha,
             )
@@ -945,16 +958,18 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     overlay_video = output_case_dir / f"v19_overlay_{safe_label}.mp4"
     world_video = output_case_dir / f"v19_world_{safe_label}.mp4"
     side_by_side_video = output_case_dir / f"v19_side_by_side_{safe_label}.mp4"
-    encode_video(overlay_dir, overlay_video, fps)
-    encode_video(world_dir, world_video, fps)
+    frame_count = len(frames)
+    encode_video(overlay_dir, overlay_video, fps, frame_count=frame_count)
+    encode_video(world_dir, world_video, fps, frame_count=frame_count)
     subprocess.run(
         [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-threads", "1",
             "-i", str(overlay_video), "-i", str(world_video),
             "-filter_complex",
             "[0:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[l];"
             "[1:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[r];[l][r]hstack=inputs=2[v]",
-            "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23", str(side_by_side_video),
+            "-map", "[v]", "-frames:v", str(frame_count), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-crf", "23", str(side_by_side_video),
         ],
         check=True,
     )
@@ -989,6 +1004,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "surface_alpha": float(overlay_alpha),
             "world_surface_alpha": float(world_alpha),
             "wireframe_face_budget": int(wireframe_face_budget),
+            "mesh_face_budget": int(mesh_face_budget),
+            "world_face_budget": int(world_face_budget),
         },
         "projection_contract": {
             "rule": "scaled K = raw source-coordinate K times decoded_render_size/source_size per axis",
