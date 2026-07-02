@@ -264,7 +264,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         outputs[kind] = write_video_with_banner(
             src=src,
             dst=dst,
-            title=title if kind != "world" else f"{title} — world view",
+            title=title if kind != "world" else f"{title} - world view",
             subtitle=subtitle,
             metrics=metrics["summary_text"],
             still_frames=stills,
