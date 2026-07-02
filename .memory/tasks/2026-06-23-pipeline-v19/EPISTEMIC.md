@@ -2,65 +2,67 @@
 
 ## Current supported claim
 
-Workbench items 3, 4, and 5 are complete for the corrected HOT3D keyboard runtime artifact. Workbench item 6 has a controlled mechanism chain on HOT3D `clip001851`, `clip001850`, and `clip001849`, with a strict scope:
+Workbench items 3, 4, and 5 are complete for the corrected HOT3D keyboard artifact lineage. Workbench item 6 is active and has produced a causal chain on clip001849:
 
-**Metric MANO must remain separate from contact-surface hypotheses.** The best supported representation is source metric MANO joints/root plus separate uncertain surface/posterior variables. A local hand-object coupling can improve rendered surface relation, but it must not be promoted into the scored metric MANO state unless matched-row HOT3D and visual evidence prove improvement. Contact ownership, signed nonpenetration, and certain contact are not supported.
+- Metric MANO must remain the WiLoR visible root-relative geometry on the HaWoR metric wrist trajectory for this clip. Contact-biased MANO/object fitting corrupts HOT3D hand metrics and is rejected.
+- Contact-surface hypotheses must remain separate from accepted metric MANO. They can be rendered as uncertain surface/source-gap posteriors, not accepted contact, nonpenetration, or MANO correction.
+- The remaining large hand/object gap is not primarily a target-selection artifact and not primarily a hand-root error. It is a coupled object-pose/geometry/camera/contact-truth problem.
+- A translation-only object-pose stabilization from the support-reviewed anchor partially improves object trajectory and source-gap metrics while preserving metric MANO exactly. It is accepted for a full render attempt, with strict uncertainty: contact remains unsupported.
 
-Evidence from `clip001851`: the raw v4 point-to-plane branch made the rendered hand-keyboard relation plausible but corrupted HOT3D 21-joint localization when fitted joints were promoted (`wrist median 0.03547 -> 0.10211 m`; `joint MPJPE median 0.04721 -> 0.11305 m` on 109 matched rows). The split-state branch kept the same surface evidence but restored exact HaWoR metric equality on those 109 rows: max absolute per-row delta `0.0 m` for wrist, joint MPJPE, joint median error, root-aligned MPJPE, root-aligned median error, and root-aligned p95.
+Current full-duration artifact: P41 published the P40 translation-stabilized render and is the current Workbench-6 artifact for clip001849. It is a coherent negative/uncertain-contact annotation, not contact closure. The overlay/world/side-by-side videos are full-duration and state-driven; the banner states `rows 235 | source gap 114.7mm | normal 103.8mm | contact compat~0.001 | gap z 3.8 | joint shift 0.0px | metric MANO preserved | contact uncertain`. Visual review confirms the keyboard projection is readable, metric MANO remains separate, and world-view links still show centimeter-scale hand/object separation. See OPS 2026-07-03T05:55:00.
 
-Evidence from `clip001850`: the same point-to-plane mechanism, without retuned thresholds, built 196 surface rows. Surface-normal separation improved from `27.4 mm` to `10.5 mm` median while scale stayed pinned near 1.0. The split-state branch rendered full-duration overlay/world/side-by-side videos and preserved metric MANO exactly on the 196 matched rows.
+Live autoresearch branch: P42 tested a support-weighted geometric-median stationary translation posterior over visible-depth object pose observations, preserving per-frame rotations and metric MANO. It uses no hand/contact/GT in prediction state. It improved source gap (`114.7 -> 106.3 mm`), normal gap (`103.8 -> 95.4 mm`), tangent gap (`42.0 -> 37.6 mm`), and compatibility score (`0.000838 -> 0.002299`), with exact `0.0 m` MANO deltas. It did not improve object median translation residual and it worsened observed-to-mesh support (`17.95 -> 22.01 mm`) while improving mesh-to-observed support (`77.03 -> 71.33 mm`). P43 is rendering this state to decide whether the support tradeoff is visually acceptable. See OPS 2026-07-03T06:08:39.
 
-Evidence from `clip001849`: the same v4 point-to-plane mechanism, without retuned thresholds, built 240 rows. Surface-normal separation improved from about `98.5 mm` to `9.7 mm` median, while tangent median increased from about `13.7 mm` to `51.6 mm`; this supports a normal-gap surface posterior, not tangential contact correspondence. The split-state branch preserved metric MANO exactly on the 240 matched rows. Visual review showed useful surface evidence around hand/key regions but persistent broad keyboard mesh/body and scattered world-view samples.
+## Hand/MANO mechanism
 
-The direct object-surface posterior branch on `clip001849` reused v4 candidate selection, skipped the hand Sim(3), and wrote object-surface targets while preserving source metric MANO. It preserved metrics exactly on the same ordered 240 rows and confirmed the object-surface dots lie on the pose-transformed sampled keyboard mesh. It did **not** produce a near-contact relation: source hand-to-object distance median was about `103.5 mm`, normal gap median about `98.0 mm`, and visuals showed separated hands/object dots. This branch is evidence that object-surface provenance without hand/object registration is insufficient for near-contact annotation.
+HaWoR alone is not an acceptable hand foundation for clip001849: same-projection HOT3D GT review shows visible 2D/3D errors, and the failure is not explained by a simple focal/center mismatch. WiLoR is the better visible-hand candidate, but raw WiLoR metric translation is rejected. The supported hybrid is WiLoR root-relative visible MANO geometry on HaWoR metric wrist trajectory.
 
-The source-gap correspondence renderer on `clip001849` consumed the direct branch’s stored source hand vertices and object-surface targets, rendered magenta source endpoints, yellow object endpoints, and orange source-gap links, then republished/froze/evaluated the full video. Matched-row HOT3D comparison again preserved metric MANO exactly on 240 candidate rows: all max absolute per-row deltas were `0.0 m`. Visual review across frames `0/30/75/120/149` and every-15-frame side-by-side sheets showed the layer is readable and honest, but the orange links mostly span from source hands to broad keyboard-body targets rather than to local contact patches. The source-gap renderer is therefore a diagnostic visualization of deterministic proximity links, not a contact mechanism, not an uncertainty interval in a probabilistic sense, and not Workbench-6 closure.
+Raw V19/UniDepth hand-pixel depth is also rejected as a wrist/root replacement for clip001849. It worsens wrist/root error, while only tightly gated variants give negligible full-state benefit. See OPS 2026-07-02 depth-root entries.
 
-## Current causal model
+Contact-coupled MANO correction is systematically invalid as metric hand state. It reduced surface-normal residuals by moving the hand with ~10 cm rigid transforms and worsened HOT3D wrist/MPJPE by ~8–11 cm on matched rows. Split-state repair preserves metric MANO exactly and stores the contact solution only as an uncertain surface posterior. See OPS 2026-07-03T03:20:00 and 2026-07-03T03:48:00.
 
-### Object-registration mechanism
+P38 directly tested whether the remaining P35 source gap was caused by the source hand estimate. Replacing the selected V19 hand vertices with HOT3D GT MANO vertices against the same V19 object targets left the median gap essentially unchanged (`122.8 mm` V19 source gap vs `117.5 mm` GT-hand gap; selected hand-to-GT shift median `30.6 mm`). Therefore another MANO-root/contact-biased correction attacks the wrong variable. See OPS 2026-07-03T05:10:00.
 
-The rejected `supportrepair_v2` artifact failed partly because unsupported Poisson fill and poor anchor/semantics promoted non-object surface into accepted body. `anchorreview_v2` repaired object-side state by selecting a better anchor and excluding `unsupported_uncertain` observed Poisson fill from accepted/rendered body. Mesh-vs-UniDepth checks around frames `95/106/120/140/149` show keyboard mesh depth residuals near 0–4 mm median, with abs medians mostly below about 1.5 cm. Object registration is no longer the active root blocker for the keyboard slices, although the mesh remains broad/solid and can over-cover keys/table in world view.
+## Object geometry and pose mechanism
 
-### Hand support and depth mechanism
+The pruned keyboard mesh is better than the earlier slab but remains broad/solid and non-watertight. It can support visible surface/posterior visualization; it cannot support signed nonpenetration. The accepted pruning mechanism removes TRELLIS-completed geometry that projects outside SAM ownership and in front of observed depth. See OPS around the multiframe depth/SAM pruning entries and P34 inspection.
 
-The earlier no-support conclusion was false. `build_v19_mano_mask_depth_refit_inputs.py` had hardcoded 960x540 / 0.5 projection scaling while clip001851 masks are 960x960 from 1408x1408 source. After repair, frames 95–149 recovered 55/55 filtered masks for each hand. Fixed-scale mask/depth refit alone improves image/depth evidence but remains visually incoherent in world view, so it is a measurement repair, not the final physical mechanism.
+P37 introduced object-pose trajectory attribution against HOT3D object id `28` (`keyboard`). Because V19 completed-canonical and HOT3D/BOP object frames differ, raw object origins cannot be compared. The evaluator fits one constant transform between object frames and measures camera-coordinate residuals over time. Original V19 object trajectory had time-varying residuals (`77.1 mm` median translation, `4.93 deg` median rotation on 120 direct rows), so object/camera pose inconsistency is real and systematic. See OPS 2026-07-03T05:02:00.
 
-### Contact-coupling mechanism
+Full static anchor pose was rejected. Holding both anchor translation and rotation fixed reduced object-origin translation residual (`19.7 mm` median over all visible frames) but worsened rotation residual (`11.85 deg` median, p90 `52.84 deg`) and worsened contact/source gap (`132.6 mm` median). Mechanism: per-frame rotations compensate camera/object orientation effects; full static pose breaks that compensation. See OPS 2026-07-03T05:22:00.
 
-Object-mask-overlap-only contact selection was too sparse. v3 expanded contact candidates using full MANO vertices, explicit source-size projection, projected object mesh proximity, nearest object surface distance, and depth-order plausibility. Point-to-point residuals reduced Euclidean distance but created tangential artifacts and scale pressure. v4 point-to-plane residual targeted surface-normal separation and made useful local surface posterior evidence, but promoting the fitted joints corrupted metric MANO. The split-state mechanism breaks that bad coupling: keep metric MANO from the source and render the contact-surface posterior separately.
+Translation-only stabilization is the current best rendered object-pose intervention. Holding anchor translation while preserving per-frame rotations improved object trajectory relative to original and avoided the full-static rotation failure: translation residual `33.5 mm` median, rotation residual `3.85 deg` median, source gap `114.7 mm` median versus P35 `122.8 mm`. MANO matched-row deltas remain exactly `0.0 m` on 235 rows. P41 rendered this full-duration and the user-facing artifact is readable and honest, but it remains partial progress: p90 translation residual remains `159.7 mm`, source gap z median remains `3.76`, `179/235` rows exceed `3σ`, and the world view still shows long source-gap links. See OPS 2026-07-03T05:31:00 and 2026-07-03T05:55:00.
 
-The direct and sourcegap branches isolate a second failure mode: the current target-selection mechanism uses deterministic global nearest-neighbor object surface points. On a broad keyboard mesh, those targets can spread over the body and produce long source-gap links. The failure is systematic and mostly normal/depth separation with broad-surface attachment, not random per-frame jitter. The next causal intervention must change target selection or contact probability estimation, not just draw more links or globally move the hand.
+## Contact and target-selection mechanism
 
-### Metric mechanism
+Global nearest-neighbor target selection was not the dominant failure. P35 localpatch changed object targets by `16.1 mm` median while source vertices were identical, but source gap did not improve (`117.6 mm` global vs `122.8 mm` localpatch); tangent residual worsened. Visual render showed 2D-local targets but long world-view links. See OPS 2026-07-03T04:39:00.
 
-The HOT3D MANO3D evaluator scores 21-joint localization in camera 3D. It does not score object pose, contact, occlusion, nonpenetration, surface patch plausibility, or whether an orange source-gap link is physically meaningful. Equality to HaWoR confirms metric preservation only. It is legitimate evidence for the metric-MANO invariant and irrelevant to contact correctness except by ruling out accidental joint/root motion.
+The Gaussian score is a contact compatibility residual, not a calibrated contact probability. Under the stated combined sigma `30.48 mm`, P35 localpatch source gap median `122.8 mm` corresponds to gap z `4.03` and compatibility `0.000298`. See OPS 2026-07-03T04:18:00 and 2026-07-03T04:28:00.
+
+Visible object-owned surfels did not close the gap. P36 produced fewer rows (`79`), skipped `161` candidates for too few visible-support vertices, and still had median gap `126.7 mm`, z `4.16`, compatibility `0.000177`. This rules out hidden/completed-mesh target ambiguity as the primary remaining cause. See OPS 2026-07-03T04:45:00.
+
+No current branch supports accepted contact ownership or signed nonpenetration. Rendered cyan/yellow/orange posterior/source-gap marks must be read as uncertain object-surface/source-gap diagnostics. The artifact should explicitly show contact uncertainty.
 
 ## Rejected mechanisms and claims
 
-- Rejected: “P19b/P19c supportrepair artifacts are accepted physical annotation.” They failed final visual physical registration.
-- Rejected: “`anchorreview_v2` alone closes Workbench item 3.” It fixes object rendering but fails MANO/object physical sanity.
-- Rejected: “unsupported_uncertain Poisson fill is acceptable object body.” It is diagnostic uncertainty and is now excluded from accepted mesh semantics.
-- Rejected: “translation-only contact/depth correction can repair the hand state.” It preserved scale/projection but left centimeter-scale separation.
-- Rejected: “visible hand-mask/depth refit is unavailable on the rejected frames.” That was caused by the mask-size adapter bug.
-- Rejected: “fixed-scale mask/depth MANO refit alone solves the hand-object relation.” It improves support/image/depth evidence but remains physically incoherent in world render.
-- Rejected: “sparse object-mask-overlap contact similarity solves the interval.” It produced too few rows and incoherent rendered hypotheses.
-- Rejected: “point-to-point nearest surface contact is the right residual.” It reduces distance but creates tangential artifacts and scale pressure.
-- Rejected: “v4 point-to-plane fitted joints are a MANO metric improvement.” They are visually useful but worsen HOT3D 21-joint localization when promoted into metric joint/root state.
-- Rejected: “surface-hypothesis rows prove contact.” They only prove an uncertain geometric surface posterior near the object; contact ownership/nonpenetration remain unresolved.
-- Rejected: “direct object-surface posterior can replace v4 near-surface posterior.” It preserves metrics and semantics but leaves a `~103 mm` source hand-to-object gap and visually separated hands/object dots.
-- Rejected: “source-gap correspondence rendering is a causal contact mechanism or Workbench-6 closure.” It renders pre-existing deterministic nearest-neighbor source/target pairs and exposes broad/wrong target attachment; it does not close the gap.
-- Rejected: “orange source-gap links are uncertainty intervals.” They are single deterministic 1:1 proximity links, not uncertainty regions or probability bounds.
-- Rejected: “summary report comparison across different row counts is causal metric evidence.” Use exact frame/side matched-row comparison for metric preservation claims.
+- HaWoR-only hand state as accepted clip001849 foundation.
+- Raw WiLoR camera translation as metric V19 hand translation.
+- Raw V19/UniDepth hand-pixel depth as a HaWoR wrist replacement on clip001849.
+- Any contact-biased MANO scale/translation/refit, including large scales such as `1.35`, as a metric hand correction.
+- Promoting point-to-plane/contact-fitted MANO joints into metric hand state.
+- Treating a source-gap link, row count, compatibility score, or JSON field as accepted contact.
+- Treating localpatch target selection or visible-surfels targets as contact closure.
+- Treating full static anchor pose as an accepted object-pose correction; it breaks rotation and worsens source gap.
+- Claiming signed nonpenetration with the current non-watertight keyboard mesh.
 
 ## Live uncertainties
 
-1. Generalization beyond keyboard HOT3D slices: the split-state invariant is mechanically general, but physical evidence remains keyboard-only.
-2. Contact semantics: no current branch supports accepted contact ownership or nonpenetration. Future output must render probability/uncertainty rather than pretend contact.
-3. Target selection: global nearest-neighbor object targets are a live root failure on broad objects. A locality-constrained target query or contact-probability factor is the next discriminating intervention.
-4. Mesh appearance: the keyboard mesh is usable but broad/solid. Local target restriction may reduce wrong links, but it will not by itself refine object geometry.
-5. Runtime: v4 point-to-plane fitting and full rendering are slow. Direct/local-patch posterior branches avoid hand optimization and should be preferred for diagnostic target-selection experiments.
+1. P43 visual result: P42 improved source-gap physics but introduced a small visible-support residual tradeoff; the full render must decide whether the object overlay/world view remains sane. If P43 visibly worsens keyboard alignment, reject P42 despite better source gap and keep P41.
+2. Object/camera source of residual: translation stabilization helps, but high p90 object residual remains. The deeper mechanism may be camera trajectory drift, partial planar pose underconstraint, object mesh shape error, or their combination.
+3. Contact truth: HOT3D GT hand to V19 object targets remains far, so the visible interaction may not contain true physical contact at the rendered target rows, or V19 object geometry/pose is still wrong. Current evidence cannot claim contact.
+4. Generalization beyond keyboard HOT3D slices: split-state and attribution tools are mechanically general, but the current strong evidence is clip001849 keyboard-specific.
+5. Runtime: P41 still took `1053.6 s` for a 5-second clip, so renderer runtime remains a design blocker.
 
 ## Next action
 
-Run the prepared local-patch object-surface posterior branch after syncing the committed target-locality code. Prediction: if global nearest-neighbor target selection caused the broad sourcegap links, restricting each object target to projected object mesh samples near the source MANO vertex should localize/shorten links while preserving metric MANO exactly. Falsifiers: too few rows/vertices survive, links remain broad/long despite locality, targets attach to visibly wrong object regions, or any matched-row MANO delta becomes nonzero. This branch should still be reported as a posterior/contact-probability diagnostic, not accepted contact.
+Inspect P43 full render/publish when complete. Accept it as the current artifact only if the overlay/world/side-by-side remain physically readable and do not introduce a first-glance object misalignment. If P43 is worse visually, reject P42 as a state-level tradeoff and keep P41. Do not run anchor/radius sweeps; the mechanism being tested is robust stationary translation, not parameter search.
