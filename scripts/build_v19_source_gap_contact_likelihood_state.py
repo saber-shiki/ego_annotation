@@ -4,12 +4,12 @@
 Contact requires the source MANO surface and object surface to be coincident
 within measurement uncertainty.  Direct object-surface posterior states already
 store paired source hand vertices and object-surface targets; this script turns
-that physical gap into an explicit likelihood while preserving all metric MANO,
-object, and posterior geometry fields.
+that physical gap into an explicit compatibility score while preserving all
+metric MANO, object, and posterior geometry fields.
 
-The likelihood is not contact ownership, nonpenetration, or a metric correction.
-It is a calibrated statement of how compatible the current source state is with
-contact under a stated Gaussian positional uncertainty scale.
+The score is not contact ownership, nonpenetration, a calibrated posterior
+probability, or a metric correction. It is a Gaussian residual compatibility
+score under a stated positional uncertainty scale.
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def state_label(z: float | None, p: float | None) -> str:
         return "contact_low_likelihood_source_gap_exceeds_2sigma"
     if z >= 1.0:
         return "near_contact_uncertain_within_2sigma"
-    return "near_contact_plausible_by_source_gap_only"
+    return "near_contact_compatible_by_source_gap_only"
 
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
@@ -113,14 +113,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             row_median_p.append(float(p_med))
         likelihood = {
             "model": "source_gap_gaussian_contact_compatibility",
-            "claim_scope": "Probability that paired source MANO and object-surface samples are geometrically coincident within stated independent Gaussian positional uncertainty; not contact ownership or nonpenetration.",
+            "claim_scope": "Gaussian compatibility score for paired source MANO and object-surface samples being geometrically coincident within stated independent positional uncertainty; not a calibrated probability, contact ownership, or nonpenetration.",
             "hand_sigma_m": float(args.hand_sigma_m),
             "object_sigma_m": float(args.object_sigma_m),
             "depth_order_sigma_m": float(args.depth_order_sigma_m),
             "combined_sigma_m": float(sigma),
             "source_gap_m": gap_summary,
             "source_gap_z": z_summary,
-            "contact_compatibility_probability": p_summary,
+            "contact_compatibility_score": p_summary,
             "likelihood_state": label,
         }
         row["contact_likelihood"] = likelihood
@@ -131,7 +131,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     summary = dict(summary)
     summary.update(
         {
-            "contact_likelihood_median": numeric_summary(row_median_p),
+            "contact_compatibility_score_median": numeric_summary(row_median_p),
             "source_gap_z_median": numeric_summary(row_median_z),
             "source_gap_for_likelihood_median_m": numeric_summary(row_median_gaps),
             "contact_likelihood_state_counts": row_states,
@@ -149,7 +149,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     out["method"] = str(out.get("method") or "v19_surface_posterior_state") + "+source_gap_contact_likelihood"
     out["source_gap_contact_likelihood_claim_scope"] = (
         "Adds an explicit source-gap contact compatibility likelihood. Metric MANO joints, object pose, and surface posterior samples are unchanged. "
-        "Low likelihood means the current source geometry is physically inconsistent with contact under the stated uncertainty scale."
+        "Low compatibility means the current source geometry is physically inconsistent with contact under the stated uncertainty scale."
     )
     inputs = out.get("inputs") if isinstance(out.get("inputs"), dict) else {}
     inputs = dict(inputs)

@@ -403,11 +403,11 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
     source_normal = summary_stat(contact.get("contact_normal_abs_before_m"), "median")
     shift = summary_stat(temporal.get("metric_joint_shift_px") or temporal.get("visible_joint_shift_px"), "median")
     likelihood = temporal.get("contact_likelihood") if isinstance(temporal.get("contact_likelihood"), dict) else contact.get("contact_likelihood") if isinstance(contact.get("contact_likelihood"), dict) else {}
-    contact_prob = summary_stat(likelihood.get("contact_compatibility_probability"), "median") if likelihood else None
+    contact_prob = summary_stat(likelihood.get("contact_compatibility_score") or likelihood.get("contact_compatibility_probability"), "median") if likelihood else None
     source_gap_z = summary_stat(likelihood.get("source_gap_z"), "median") if likelihood else None
     likelihood_note = ""
     if contact_prob is not None:
-        likelihood_note = f", p~{contact_prob:.3f}"
+        likelihood_note = f", compat~{contact_prob:.3f}"
         if source_gap_z is not None:
             likelihood_note += f", z={source_gap_z:.1f}"
     if presentation:

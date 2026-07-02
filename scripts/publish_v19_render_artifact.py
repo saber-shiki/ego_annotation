@@ -83,7 +83,9 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
             shift = metric_value(summary, "visible_joint_shift_px_median")
         rows = summary.get("rows_out") or summary.get("rows") or summary.get("optimized_rows") or summary.get("row_count")
         state_kind = str(payload.get("method") or "")
-        contact_prob = metric_value(summary, "contact_likelihood_median")
+        contact_prob = metric_value(summary, "contact_compatibility_score_median")
+        if contact_prob is None:
+            contact_prob = metric_value(summary, "contact_likelihood_median")
         source_gap_z = metric_value(summary, "source_gap_z_median")
         parts = []
         split_metric_surface = summary.get("split_state_policy") == "metric_mano_preserved_contact_surface_posterior"
@@ -97,7 +99,7 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
             if normal is not None:
                 parts.append(f"normal {normal * 1000.0:.1f}mm")
             if contact_prob is not None:
-                parts.append(f"contact p~{contact_prob:.3f}")
+                parts.append(f"contact compat~{contact_prob:.3f}")
             if source_gap_z is not None:
                 parts.append(f"gap z {source_gap_z:.1f}")
         else:
