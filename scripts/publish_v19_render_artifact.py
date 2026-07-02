@@ -91,7 +91,7 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
         split_metric_surface = summary.get("split_state_policy") == "metric_mano_preserved_contact_surface_posterior"
         if rows is not None:
             parts.append(f"rows {rows}")
-        if state_kind.startswith("v19_direct_object_surface_contact_posterior_state"):
+        if state_kind.startswith("v19_direct_object_surface_contact_posterior_state") or state_kind.startswith("v19_visible_object_surface_contact_posterior_state"):
             if source_gap is not None:
                 parts.append(f"source gap {source_gap * 1000.0:.1f}mm")
             elif distance is not None:
