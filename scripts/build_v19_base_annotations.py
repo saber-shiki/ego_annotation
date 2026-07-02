@@ -444,6 +444,10 @@ def build_hand_row(
         return base
     valid = int(np.asarray(arrays[f"{side}_valid"])[hawor_pos]) != 0
     detected = bool(int(np.asarray(arrays.get(f"{side}_detected_same_frame", np.zeros(len(arrays["frame_idx"]), dtype=np.uint8)))[hawor_pos])) if f"{side}_detected_same_frame" in arrays else False
+    source_tag = "fresh_v19_hawor_world_export"
+    if f"{side}_hybrid_source" in arrays:
+        raw_source = np.asarray(arrays[f"{side}_hybrid_source"])[hawor_pos]
+        source_tag = str(raw_source.item() if hasattr(raw_source, "item") else raw_source)
     if not valid:
         base.update(
             {
@@ -469,7 +473,7 @@ def build_hand_row(
         if raw.size >= 4 and np.all(np.isfinite(raw[:4])):
             det_box = [float(v) for v in raw[:4].tolist()]
     metric = {
-        "source": "build_v19_base_annotations_from_fresh_hawor_world",
+        "source": f"build_v19_base_annotations_from_{source_tag}",
         "case_frame_idx": int(frame_idx),
         "hand_side": side,
         "coordinate_status": "metric_world_from_hawor_camera_pose",
@@ -512,19 +516,24 @@ def build_hand_row(
         "current_v18_camera_intrinsics_fx_fy_cx_cy": intrinsics,
         "v19_camera_intrinsics_fx_fy_cx_cy": intrinsics,
         "same_frame_detection": detected,
-        "support_state": "fresh_hawor_world_candidate",
+        "support_state": source_tag,
     }
     base.update(
         {
-            "visibility_state": "hawor_valid_world_mano",
+            "visibility_state": "hybrid_valid_world_mano" if "wilor" in source_tag else "hawor_valid_world_mano",
             "bbox_xyxy": det_box,
             "same_frame_detection": detected,
             "hawor_same_frame_detection": detected,
             "hawor_candidate_present": True,
             "confidence": 0.65 if detected else 0.45,
-            "uncertainty": ["fresh_hawor_world_candidate_not_final_interval_corrected_state"],
+            "uncertainty": [
+                "fresh_hawor_world_candidate_not_final_interval_corrected_state"
+            ] if "wilor" not in source_tag else [
+                "wilor_visible_root_relative_geometry_on_hawor_metric_trajectory",
+                "not_a_contact_or_nonpenetration_claim",
+            ],
             "metric_mano_state": metric,
-            "hand_geometry_source": "fresh_v19_hawor_world_export",
+            "hand_geometry_source": source_tag,
         }
     )
     return base
