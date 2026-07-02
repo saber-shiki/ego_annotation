@@ -655,7 +655,7 @@ def encode_video(frame_dir: Path, output_path: Path, fps: float) -> None:
     subprocess.run(
         [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-framerate", str(fps),
-            "-i", str(frame_dir / "%06d.jpg"), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", str(output_path),
+            "-i", str(frame_dir / "%06d.jpg"), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23", str(output_path),
         ],
         check=True,
     )
@@ -946,7 +946,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "-filter_complex",
             "[0:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[l];"
             "[1:v]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black[r];[l][r]hstack=inputs=2[v]",
-            "-map", "[v]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", str(side_by_side_video),
+            "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-crf", "23", str(side_by_side_video),
         ],
         check=True,
     )
