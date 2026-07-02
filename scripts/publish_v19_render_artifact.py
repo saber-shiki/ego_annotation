@@ -71,13 +71,20 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
         normal = metric_value(summary, "contact_normal_abs_after_median")
         tangent = metric_value(summary, "contact_tangent_after_median")
         distance = metric_value(summary, "contact_distance_after_median")
+        if distance is None:
+            distance = metric_value(summary, "contact_after_median")
         source_gap = metric_value(summary, "source_hand_to_object_surface_distance_median")
+        if source_gap is None:
+            source_gap = metric_value(summary, "contact_distance_before_median")
+        if source_gap is None:
+            source_gap = metric_value(summary, "contact_before_median")
         shift = metric_value(summary, "metric_joint_shift_px")
         if shift is None:
             shift = metric_value(summary, "visible_joint_shift_px_median")
-        rows = summary.get("rows_out") or summary.get("rows") or summary.get("optimized_rows")
+        rows = summary.get("rows_out") or summary.get("rows") or summary.get("optimized_rows") or summary.get("row_count")
         state_kind = str(payload.get("method") or "")
         parts = []
+        split_metric_surface = summary.get("split_state_policy") == "metric_mano_preserved_contact_surface_posterior"
         if rows is not None:
             parts.append(f"rows {rows}")
         if state_kind == "v19_direct_object_surface_contact_posterior_state":
@@ -88,15 +95,24 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
             if normal is not None:
                 parts.append(f"normal {normal * 1000.0:.1f}mm")
         else:
-            if normal is not None:
-                parts.append(f"normal {normal * 1000.0:.1f}mm")
-            if tangent is not None:
-                parts.append(f"tangent {tangent * 1000.0:.1f}mm")
-            elif distance is not None:
-                parts.append(f"surface {distance * 1000.0:.1f}mm")
+            if split_metric_surface:
+                if source_gap is not None:
+                    parts.append(f"source gap {source_gap * 1000.0:.1f}mm")
+                if normal is not None:
+                    parts.append(f"posterior normal {normal * 1000.0:.1f}mm")
+                if tangent is not None:
+                    parts.append(f"tangent {tangent * 1000.0:.1f}mm")
+                parts.append("metric MANO preserved")
+            else:
+                if normal is not None:
+                    parts.append(f"normal {normal * 1000.0:.1f}mm")
+                if tangent is not None:
+                    parts.append(f"tangent {tangent * 1000.0:.1f}mm")
+                elif distance is not None:
+                    parts.append(f"surface {distance * 1000.0:.1f}mm")
         if shift is not None:
-            parts.append(f"joint shift {shift:.1f}px")
-        if "metric_mano_preserved" in json.dumps(payload.get("per_frame_states", [])[:1]):
+            parts.append(f"candidate shift {shift:.1f}px" if split_metric_surface else f"joint shift {shift:.1f}px")
+        if "metric_mano_preserved" in json.dumps(payload.get("per_frame_states", [])[:1]) and "metric MANO preserved" not in parts:
             parts.append("metric MANO preserved")
         parts.append("contact uncertain")
         return {

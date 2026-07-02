@@ -264,6 +264,42 @@ def load_hawor_prediction(args: argparse.Namespace, frames_list: list[dict[str, 
     }
 
 
+def camera_trajectory_from_annotations(annotation_path: Path, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load the V19 render/annotation camera trajectory.
+
+    Interval states are not intrinsically HaWoR predictions: newer V19 states may
+    store optimized world-frame joints without a source NPZ path.  In that case
+    the physically correct camera trajectory is the one consumed by the renderer
+    from ``annotations_v19_*.json``.  The renderer interprets
+    ``T_world_camera[:3,:3]`` as camera-to-world rotation and ``[:3,3]`` as camera
+    position, and projects world points as ``(p_world - t_c2w) @ R_c2w``.  The
+    evaluator uses the same convention.
+    """
+    annotations = load_json(localize_prediction_path(annotation_path, args))
+    frames = annotations.get("frames")
+    if not isinstance(frames, list) or not frames:
+        raise RuntimeError(f"{annotation_path} lacks frames for interval-state camera trajectory")
+    frame_ids: list[int] = []
+    rotations: list[np.ndarray] = []
+    translations: list[np.ndarray] = []
+    for pos, frame in enumerate(frames):
+        if not isinstance(frame, dict):
+            continue
+        camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+        raw_T = camera.get("T_world_camera_metric") or camera.get("T_world_camera")
+        if raw_T is None:
+            continue
+        T = np.asarray(raw_T, dtype=np.float64)
+        if T.shape != (4, 4) or not np.isfinite(T).all():
+            raise RuntimeError(f"invalid annotation camera transform for frame {frame.get('frame_idx', pos)} in {annotation_path}")
+        frame_ids.append(int(frame.get("frame_idx", pos)))
+        rotations.append(T[:3, :3].copy())
+        translations.append(T[:3, 3].copy())
+    if not frame_ids:
+        raise RuntimeError(f"{annotation_path} has no usable camera transforms")
+    return np.asarray(frame_ids, dtype=int), np.stack(rotations), np.stack(translations)
+
+
 def load_interval_state_prediction(args: argparse.Namespace, frames_list: list[dict[str, Any]]) -> dict[str, Any]:
     if args.interval_state is None:
         raise RuntimeError("internal error: interval-state path missing")
@@ -273,11 +309,23 @@ def load_interval_state_prediction(args: argparse.Namespace, frames_list: list[d
     if not isinstance(rows, list) or not rows:
         raise RuntimeError(f"{interval_path} lacks nonempty per_frame_states")
     source_candidates = [r.get("source_hawor_npz") for r in rows if isinstance(r, dict) and r.get("source_hawor_npz")]
-    if not source_candidates:
-        raise RuntimeError(f"{interval_path} lacks source_hawor_npz in per-frame states; camera trajectory is required")
-    source_npz_path = localize_prediction_path(source_candidates[0], args)
-    npz = np.load(source_npz_path, allow_pickle=True)
-    frame_idx = np.asarray(npz["frame_idx"], dtype=int) if "frame_idx" in npz.files else np.arange(len(frames_list), dtype=int)
+    camera_source: str
+    npz: Any | None = None
+    source_npz_path: Path | None = None
+    if source_candidates:
+        source_npz_path = localize_prediction_path(source_candidates[0], args)
+        npz = np.load(source_npz_path, allow_pickle=True)
+        frame_idx = np.asarray(npz["frame_idx"], dtype=int) if "frame_idx" in npz.files else np.arange(len(frames_list), dtype=int)
+        R_c2w = np.asarray(npz["R_c2w"], dtype=np.float64)
+        t_c2w = np.asarray(npz["t_c2w"], dtype=np.float64)
+        camera_source = f"source_hawor_npz:{source_npz_path}"
+    else:
+        inputs = state.get("inputs") if isinstance(state.get("inputs"), dict) else {}
+        annotation_value = inputs.get("annotations") or state.get("annotations")
+        if not annotation_value:
+            raise RuntimeError(f"{interval_path} lacks source_hawor_npz and inputs.annotations; camera trajectory is required")
+        frame_idx, R_c2w, t_c2w = camera_trajectory_from_annotations(Path(str(annotation_value)), args)
+        camera_source = f"annotations:{annotation_value}"
     frame_to_i = {int(f): i for i, f in enumerate(frame_idx.tolist())}
     sides: dict[str, dict[str, Any]] = {}
     for side in ("left", "right"):
@@ -285,7 +333,7 @@ def load_interval_state_prediction(args: argparse.Namespace, frames_list: list[d
             "valid": np.zeros(frame_idx.shape[0], dtype=bool),
             "joints_world_m": np.full((frame_idx.shape[0], 21, 3), np.nan, dtype=np.float64),
             "vertices_world_m": None,
-            "detected_same_frame": np.asarray(npz[f"{side}_detected_same_frame"]).astype(bool) if f"{side}_detected_same_frame" in npz.files else None,
+            "detected_same_frame": np.asarray(npz[f"{side}_detected_same_frame"]).astype(bool) if npz is not None and f"{side}_detected_same_frame" in npz.files else None,
             "row_meta": [None] * int(frame_idx.shape[0]),
         }
     for row in rows:
@@ -314,11 +362,12 @@ def load_interval_state_prediction(args: argparse.Namespace, frames_list: list[d
         "kind": "interval_state_optimized_joints",
         "path": str(interval_path),
         "frame_idx": frame_idx,
-        "R_c2w": np.asarray(npz["R_c2w"], dtype=np.float64),
-        "t_c2w": np.asarray(npz["t_c2w"], dtype=np.float64),
+        "R_c2w": np.asarray(R_c2w, dtype=np.float64),
+        "t_c2w": np.asarray(t_c2w, dtype=np.float64),
         "sides": sides,
         "full_vertices_available": False,
-        "source_hawor_npz": str(source_npz_path),
+        "source_hawor_npz": str(source_npz_path) if source_npz_path is not None else None,
+        "camera_trajectory_source": camera_source,
         "interval_summary": state.get("summary"),
     }
 
@@ -505,6 +554,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "kind": prediction["kind"],
             "path": prediction["path"],
             "source_hawor_npz": prediction.get("source_hawor_npz"),
+            "camera_trajectory_source": prediction.get("camera_trajectory_source", prediction.get("source_hawor_npz")),
             "full_vertices_available": bool(prediction.get("full_vertices_available")),
             "vertex_metric_scope": vertex_metric_scope,
         },

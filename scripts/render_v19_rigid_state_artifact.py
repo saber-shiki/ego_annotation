@@ -370,6 +370,28 @@ def fmt_px(value_px: float | None) -> str:
     return "?" if value_px is None else f"{value_px:.0f}px"
 
 
+def temporal_hypothesis_promotes_metric_mano(temporal: dict[str, Any]) -> bool:
+    """Return whether an interval row may be drawn as an accepted metric hand.
+
+    Contact-coupled interval optimizers can reduce an object-surface residual by
+    moving the hand in ways that corrupt the camera-coordinate MANO metric.  A
+    presentation render must therefore require an explicit promotion flag before
+    drawing the optimized full skeleton as if it were the hand state.  Diagnostic
+    renders still expose the optimized skeleton for debugging.
+    """
+    policy = str(temporal.get("joint_state_policy") or "")
+    state = str(temporal.get("temporal_mano_state") or "")
+    if "metric_mano_preserved" in policy:
+        return False
+    promote_tokens = (
+        "metric_mano_promoted",
+        "accepted_metric_mano",
+        "accepted_mano_correction",
+        "metric_correction_accepted",
+    )
+    return any(token in policy or token in state for token in promote_tokens)
+
+
 def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> tuple[str, str, str]:
     contact = temporal.get("contact_similarity_refit") if isinstance(temporal.get("contact_similarity_refit"), dict) else {}
     mode = str(contact.get("contact_residual_mode") or "contact")
@@ -377,6 +399,8 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
     normal = summary_stat(contact.get("contact_normal_abs_after_m"), "median")
     tangent = summary_stat(contact.get("contact_tangent_after_m"), "median")
     distance = summary_stat(contact.get("contact_distance_after_m"), "median")
+    source_distance = summary_stat(contact.get("contact_distance_before_m"), "median")
+    source_normal = summary_stat(contact.get("contact_normal_abs_before_m"), "median")
     shift = summary_stat(temporal.get("metric_joint_shift_px") or temporal.get("visible_joint_shift_px"), "median")
     if presentation:
         if "metric_mano_preserved" in policy:
@@ -386,16 +410,23 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
                 return text, text2, "magenta=source hand, yellow=object surface, orange=uncertain gap"
             text = "source MANO + uncertain contact surface"
             if mode == "point_to_plane":
-                text2 = f"surface normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, joint shift {fmt_px(shift)}"
+                text2 = f"source gap {fmt_mm(source_distance)}, posterior normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}"
             else:
-                text2 = f"surface contact {fmt_mm(distance)}, joint shift {fmt_px(shift)}"
-            return text, text2, "contact not accepted; cyan surface is separate from metric joints"
-        text = "uncertain MANO surface hypothesis"
+                text2 = f"source gap {fmt_mm(source_distance)}, posterior contact {fmt_mm(distance)}"
+            return text, text2, "metric hand preserved; posterior surface is separate from metric joints"
+        if temporal_hypothesis_promotes_metric_mano(temporal):
+            text = "accepted interval MANO correction"
+            if mode == "point_to_plane":
+                text2 = f"normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, shift {fmt_px(shift)}"
+            else:
+                text2 = f"contact {fmt_mm(distance)}, shift {fmt_px(shift)}"
+            return text, text2, "yellow skeleton is promoted metric correction"
+        text = "source MANO + near-surface hypothesis"
         if mode == "point_to_plane":
-            text2 = f"normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, shift {fmt_px(shift)}"
+            text2 = f"surface normal {fmt_mm(normal)}, tangent {fmt_mm(tangent)}, candidate shift {fmt_px(shift)}"
         else:
-            text2 = f"contact {fmt_mm(distance)}, shift {fmt_px(shift)}"
-        return text, text2, "contact not accepted; cyan points show optimized surface"
+            text2 = f"surface contact {fmt_mm(distance)}, candidate shift {fmt_px(shift)}"
+        return text, text2, "contact not accepted; optimized skeleton hidden in presentation"
     residual = summary_stat(temporal.get("full_observed_surface_penetration_after_solver_m"), "max")
     if residual is None:
         residual = summary_stat(temporal.get("final_active_constraint_residual_after_solver_m"), "max")
@@ -404,7 +435,7 @@ def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> t
         if mode == "direct_object_surface_posterior":
             text2 = f"source_joints_preserved source_gap={fmt_mm(distance)} normal_med={fmt_mm(normal)}"
         else:
-            text2 = f"source_joints_preserved normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)}"
+            text2 = f"source_joints_preserved source_gap={fmt_mm(source_distance)} source_normal={fmt_mm(source_normal)} posterior_normal={fmt_mm(normal)} tangent_med={fmt_mm(tangent)}"
     elif mode == "point_to_plane":
         text2 = f"normal_med={fmt_mm(normal)} tangent_med={fmt_mm(tangent)} shift_med={fmt_px(shift)}"
     else:
@@ -811,7 +842,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 joints_world = np.asarray(metric.get("joints_current_v18_world_m") or metric.get("joints_world_m") or [], dtype=np.float64)
                 if joints_world.shape == (21, 3):
                     candidate_world = apply_temporal_hypothesis(joints_world, temporal)
-                    if candidate_world is not None:
+                    if candidate_world is not None and (not presentation or temporal_hypothesis_promotes_metric_mano(temporal)):
                         candidate_camera = world_points_to_camera(candidate_world, T_world_camera)
                         draw_projected_skeleton(overlay, candidate_camera, intr, (255, 255, 0), 2)
         cv2.imwrite(str(overlay_dir / f"{pos:06d}.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
@@ -878,7 +909,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                             max_segments=28 if presentation else 48,
                         )
                     candidate_world = apply_temporal_hypothesis(joints_world, temporal)
-                    if candidate_world is not None:
+                    if candidate_world is not None and (not presentation or temporal_hypothesis_promotes_metric_mano(temporal)):
                         draw_world_skeleton(world, candidate_world, world_min, world_max, (255, 255, 0), 2)
         if presentation:
             put_text_with_bg(world, world_label, (20, 30), font_scale=0.48, color=(255, 255, 255), thickness=1, bg_alpha=0.50)
@@ -893,8 +924,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 put_text_with_bg(world, f"green={label} rigid mesh; yellow=object surface, magenta=source hand", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
                 put_text_with_bg(world, "orange links show source-gap correspondence; contact not accepted", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
             else:
-                put_text_with_bg(world, f"green={label} rigid mesh; cyan/orange/yellow=uncertain MANO hypotheses", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
-                put_text_with_bg(world, "near-contact is not accepted unless geometry supports it", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, f"green={label} rigid mesh; cyan/yellow/orange=uncertain surface posterior", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, "metric MANO stays source unless an interval correction is explicitly promoted", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
         else:
             cv2.putText(world, world_label, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.putText(world, f"green filled surface = rigid object body ({label})", (20, canvas_h - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (40, 255, 80), 1, cv2.LINE_AA)
