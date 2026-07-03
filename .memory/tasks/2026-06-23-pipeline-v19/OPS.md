@@ -1652,3 +1652,163 @@ The validated patched file was synced into the curated runtime bundle:
 `/mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle_a800/scripts/render_v19_rigid_state_artifact.py`
 
 Runtime bundle script SHA256: `1d37dab8f3b9ac4129e45886f394634fba6fca544040ba7fa6d6222d8b24e2a2`, identical to `/tmp/render_v19_rigid_state_artifact_patched.py`. This is a renderer/runtime support patch only; it preserves state semantics and does not alter prediction variables.
+
+## 2026-07-03T07:32:00+08:00 — P47 observed-only object-geometry diagnostic prediction
+
+Mechanism under test: clip001849 visible-depth ICP is tight (`~2–4 mm` observed-to-mesh on direct fit rows), while completed mesh-to-observed and HOT3D object residuals remain large. The pruned mesh still contains `4903` TRELLIS inferred hidden faces and `123` unsupported uncertain faces in addition to `5132` observed-depth faces. If the remaining source gap and object residual are driven by broad/incorrect hidden completion geometry or by the completed canonical frame it induces, an observed-depth-only geometry hypothesis should reduce mesh-to-observed support cost and may improve object trajectory/source-gap metrics without changing MANO. If it only improves visible-surface bookkeeping while HOT3D object residual/source gap remain bad or rows disappear, then hidden completion shape is not the sole cause; the blocker is deeper pose observability/canonical-frame/contact-truth rather than just hidden-face pruning.
+
+Planned P47 intervention: create a temporary prediction-side completion report whose `completed_mesh_labeled` is the existing observed-depth surface mesh from the accepted depthmask-pruned completion report, then rerun existing pose-fit, pose-graph, render-state construction, object-trajectory evaluation, direct surface posterior, source-gap scoring, and MANO preservation comparison. This is a diagnostic partial-geometry hypothesis only. It must not be promoted as accepted object pose because object pose requires reconstructed object geometry, and an observed-only mesh is not hidden-volume completion or signed nonpenetration support.
+
+Predeclared acceptance for render attempt: observed-only geometry can justify a render only if it improves object trajectory residual or source-gap metrics without dropping support rows and preserves MANO exactly. Falsifiers: worse HOT3D object residual, worse source gap/compatibility, fewer rows, or any MANO metric delta.
+
+## 2026-07-03T07:48:00+08:00 — P48 stationary-SE(3) support-weighted rotation prediction
+
+P47 falsified the hypothesis that removing hidden/broad completion geometry alone solves clip001849: observed-only geometry improved visible mesh support but worsened source gap, object trajectory residuals, and row coverage. The remaining object-side mechanism is pose observability: a stationary keyboard should have a nearly constant world SE(3), while per-frame visible-depth ICP rotations may jitter under partial planar support. P39 tested one anchor rotation and failed; it did not test whether a support-weighted rotation estimate over all visible-depth pose observations suppresses that jitter.
+
+Implemented a prediction-side extension to `scripts/build_v19_static_rigid_pose_report.py`: `--rotation-source support_weighted_quat_mean`. It computes a weighted Markley quaternion average using the same prediction-side visible-depth pose weights already used for support-weighted translation. It uses no hand/contact/GT in prediction state. The validated script was synced to `/mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle_a800/scripts/build_v19_static_rigid_pose_report.py`, SHA256 `f80a2f80d2438e963230c55dd296471bf2cb5d8b6bdbf4db3ee43789286cac76`.
+
+P48 prediction: if clip001849 object residual is dominated by per-frame planar-ICP rotation jitter around a stationary object, a support-weighted stationary SE(3) candidate (`hold-components both`, translation source `support_weighted_geomedian`, rotation source `support_weighted_quat_mean`) should reduce HOT3D object rotation residual and not worsen object translation residual, source gap, row coverage, or metric MANO. If per-frame rotations are compensating shape/canonical-frame/camera-visible-surface errors, the stationary rotation average will behave like P39: object residual/source gap/visible support will worsen despite mathematical stationarity.
+
+Predeclared acceptance for full render: P48 can proceed to render only if it improves object trajectory residuals or source-gap metrics versus P43 without dropping rows/support and preserves MANO exactly. Falsifiers: worse object translation/rotation residuals, worse source gap/compatibility, fewer rows, visibly worse support metrics, or any MANO metric delta.
+
+## 2026-07-03T07:44:17+08:00 — P47 observed-only geometry diagnostic rejects hidden-completion-only explanation
+
+P47 completed with `exit_code=0` in tmux window `ego_annotation:clip001849_obsgeo`. Summary:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/observed_only_geometry_p47_v1/p47_observed_only_geometry_diagnostic_summary.json`
+
+Observation against P43/P42:
+
+- Observed-only mesh support improved: mesh-to-observed median `7.72 mm`, and observed-to-mesh median stayed low `4.13 mm`.
+- Physical target variables worsened: rows `224 -> 201`, source gap `106.3 -> 130.1 mm`, Gaussian contact compatibility score `0.002299 -> 0.000111`, HOT3D object translation residual `33.57 -> 64.21 mm` median and `156.23 -> 201.42 mm` p90.
+- MANO matched-row deltas stayed exactly `0.0 m` for wrist, joint MPJPE, joint median, root-aligned MPJPE, root-aligned median, and root-aligned p95.
+
+Interpretation: the observed visible surface is easier to fit to depth, but as a partial first-surface shell it loses the object-coordinate/extent information needed for object-pose and hand/object relation. The remaining error is not solved by simply removing hidden/broad completion. The live object-side blocker is pose observability/canonical-frame/temporal motion, not hidden-face pruning alone. P47 must not be rendered or promoted as object pose because it is a partial visible-surface diagnostic and worsens the physical target variables.
+
+## 2026-07-03T07:58:00+08:00 — P48 support-weighted stationary SE(3) rotation rejected
+
+P48 completed with `exit_code=0` in tmux window `ego_annotation:clip001849_staticTR`. It used the new prediction-side `--rotation-source support_weighted_quat_mean` in `scripts/build_v19_static_rigid_pose_report.py` to test a stationary SE(3) object-pose candidate from support-weighted visible-depth pose observations. Summary:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/staticTR_geomedian_quatmean_p48/p48_staticTR_geomedian_quatmean_summary.json`
+
+Observation against P43:
+
+- Object translation residual improved: median `33.57 -> 19.66 mm`, p90 `156.23 -> 63.25 mm`.
+- Object rotation residual worsened: median `3.85 -> 11.85 deg`, p90 `~3.85/unchanged per-frame baseline -> 52.84 deg` for stationary-rotation residual behavior.
+- Source/contact variables worsened: rows `224 -> 216`, source gap `106.3 -> 125.9 mm`, Gaussian contact compatibility score `0.002299 -> 0.000198`.
+- The support-weighted rotation estimate was far from many per-frame visible-depth rotations: median source rotation angle `14.74 deg`, p90 `49.07 deg`, p95 `60.73 deg`, max `71.98 deg`.
+- Static visible support remained a tradeoff: observed-to-static-mesh median `24.07 mm`, mesh-to-observed median `68.63 mm`.
+- MANO matched-row deltas remained exactly `0.0 m`.
+
+Additional evaluator-side physical premise check: HOT3D object world pose itself is not static over clip001849/clip001851 under the available GT sidecar. For clip001849, HOT3D object translation deviation from mean had median `16.61 mm`, p90 `62.56 mm`, max `84.51 mm`; rotation deviation median `11.76 deg`, p90 `53.04 deg`, max `68.77 deg`. V19 object world pose variability was of the same rotation scale. Therefore a constant-rotation object model is not a valid default for this clip family, regardless of whether the variation is true object motion, GT/model-frame ambiguity, or systematic visible-pose/canonical-frame effects.
+
+Decision: P48 is rejected and should not be rendered. It improves one object-origin translation proxy while damaging rotation and hand/object relation. The next general mechanism is not more stationary pose; it is motion-aware temporal SE(3) smoothing that treats visible-depth ICP pose as a noisy measurement and regularizes physical object acceleration, allowing real object motion.
+
+## 2026-07-03T08:00:00+08:00 — P49 motion-aware SE(3) object-pose smoother prediction
+
+Mechanism under test: visible-depth ICP pose rows are noisy measurements of object SE(3). P37/P44/P47/P48 show the remaining blocker is object-side pose observability/canonical-frame/motion, not hand root, target selection, camera drift, hidden-face pruning, or constant rotation. Existing `solve_v19_rigid_object_pose_graph.py` smooths correction deltas around zero and therefore returns the raw visible pose when no trusted contact/nonpenetration target is active. A missing general mechanism is temporal smoothing of the physical object trajectory itself.
+
+Implemented `scripts/smooth_v19_rigid_object_pose_trajectory.py`. It consumes only prediction-side annotations, visible-depth pose rows, and the completed mesh. It solves for per-frame SE(3) deltas with measurement residuals weighted by visible-depth pose sigma and a physical acceleration prior on the corrected SE(3) trajectory. The acceleration sigma defaults to the median visible-pose measurement sigma, so smoothing is only strong when measured second differences exceed the estimated measurement noise. It allows nonzero velocity/real object motion and does not assume stationarity. It uses no hand/contact/GT for prediction state. The script was validated with `py_compile` and synced to the A800 runtime bundle at `/mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle_a800/scripts/smooth_v19_rigid_object_pose_trajectory.py`, SHA256 `7c82bfe34b24935f6ed21e96d5c8c6a56a4a7452ffc155e34982e762d84e918f`.
+
+P49 prediction: if the object residual comes from high-acceleration ICP jitter around a smoother physical trajectory, the motion-aware smoother should reduce HOT3D object trajectory residuals or source gap while preserving visible-surface support and metric MANO. If the residual is systematic canonical-frame/shape/contact-truth error rather than temporal jitter, smoothing will either make negligible changes or worsen object/source-gap metrics while preserving MANO. Falsifiers: worse object translation/rotation residuals, worse source gap/compatibility, fewer rows/support, materially worse observed-to-mesh/mesh-to-observed support, or any nonzero MANO delta. Render only if P49 improves the physical target variables without visual-support regression.
+
+## 2026-07-03T08:20:46+08:00 — P49 motion-aware SE(3) acceleration smoothing rejected as object-pose correction
+
+P49 tested the predeclared mechanism that visible-depth ICP pose rows are noisy observations of a smoother physical object trajectory. `scripts/smooth_v19_rigid_object_pose_trajectory.py` solved per-frame SE(3) corrections with measurement residuals and physical acceleration residuals. The optimizer itself behaved as designed: residual RMS improved from `3.2929` to `0.8819`, median translation correction was `7.16 mm`, median rotation correction was `0.745 deg`, and visible-support metrics became tight (`observed-to-mesh 5.69 mm`, `mesh-to-observed 17.34 mm`). The initial P49 report used a renderer-invisible custom status string; P49b repaired only the semantic handoff by mapping direct smoothed rows to accepted status `corrected_temporal_rigid_pose_graph` while preserving `temporal_pose_graph.method=smooth_v19_rigid_object_pose_trajectory`. The status-fixed render state was built successfully.
+
+P49b summary:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/motion_smooth_accel_auto_statusfix_p49b/p49b_motion_smooth_accel_auto_statusfix_summary.json`
+
+Observation against P43:
+
+- Rows worsened: `224 -> 199`.
+- Source gap worsened: `106.3 -> 119.85 mm`.
+- Normal gap worsened: `95.4 -> 102.0 mm`.
+- Gaussian contact compatibility score worsened: `0.002299 -> 0.000439`.
+- HOT3D object translation residual worsened: `33.57 -> 66.44 mm` median, `156.23 -> 196.88 mm` p90.
+- HOT3D object rotation median stayed `3.85 deg`, p90 `9.56 deg`.
+- MANO matched-row deltas stayed exactly `0.0 m` across all compared metrics.
+
+Interpretation: P49 improved the internal visible-depth/smoothness measurement model while damaging the target physical variables. This falsifies normal temporal acceleration noise as the dominant clip001849 object-pose blocker. The remaining mechanism is systematic object-pose observability/canonical-frame/shape error: visible depth on a partial broad keyboard surface can be made smooth and tight while the object-wide pose relative to hand and HOT3D remains wrong. P49 should not be rendered or promoted. The next admissible mechanism must add missing object-wide visual evidence to pose estimation, such as object-owned silhouette/extent, or repair canonical geometry; more static/temporal priors would continue optimizing the wrong measurement.
+
+## 2026-07-03T08:24:30+08:00 — P50 silhouette/pose-observability diagnostic prediction
+
+Mechanism under test: P49 showed visible-depth/smoothness can improve while physical object metrics worsen. A broad planar keyboard pose may be underconstrained by local depth nearest-neighbor fitting; the missing prediction-side evidence is the object-owned 2D silhouette/mask, which constrains object extent and in-plane pose. If this mechanism is live, the P49 pose that improved visible-depth support but worsened physical metrics should show worse projected completed-mesh/mask compatibility than P43. If P49 has equal or better projected mask compatibility, silhouette-only pose repair is unlikely to fix the target and the problem is deeper shape/canonical-frame/contact-truth mismatch.
+
+P50 diagnostic launched in tmux `ego_annotation:clip001849_sildiag` via `/tmp/run_v19_clip001849_silhouette_diagnostic_p50.sh`. It uses the renderer's source-to-render intrinsics rule (`1408 -> 960` scaling) and compares P43, P49, and the original depth pose against existing object-owned masks. Output target:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/silhouette_pose_observability_p50/projected_mesh_mask_diagnostic_p43_p49_orig.json`
+
+## 2026-07-03T08:33:50+08:00 — P50b silhouette diagnostic rejects silhouette-only pose correction
+
+The first full-frame P50 mask diagnostic was interrupted (`exit_code=130`) because it was spending runtime on an aggregate proxy before the mechanism was established. P50b reran the discriminating test on representative frames `30/75/120/149` with the same renderer projection contract and exited `0`.
+
+Report:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/silhouette_pose_observability_p50/projected_mesh_mask_diagnostic_p43_p49_orig_representative.json`
+
+Prediction: if object-owned silhouette is the missing pose constraint, the rejected P49/original depth pose should project the completed mesh worse against object-owned masks than accepted P43. Observation was the opposite:
+
+- P43 projected mesh inside-mask fraction median `0.281`, outside-mask median distance median `89.18 px`, outside p90 median `184 px`.
+- P49 projected mesh inside-mask fraction median `0.304`, outside-mask median distance median `38 px`, outside p90 median `93.09 px`.
+- Original depth pose was similar to P49: inside fraction median `0.298`, outside median distance median `38 px`, outside p90 median `94.46 px`.
+- Late frames `120/149` drive the distinction: P43 is much worse against the 2D mask but better in the accepted physical variables than P49/original.
+
+Interpretation: object-owned silhouette/mask compatibility is aligned with the visible-depth proxy that P49 optimized, not with the physical hand/object/object-trajectory target. A silhouette-depth pose refit would optimize the wrong measurement and is not an admissible next correction for clip001849. The remaining uncertainty is not ordinary pose observation fusion; it is contact truth, canonical shape/frame mismatch, or object model mismatch.
+
+## 2026-07-03T08:38:00+08:00 — P51 GT contact-truth attribution prediction
+
+Mechanism under test: the large P43 source gap may be a correct non-contact annotation rather than a correction failure. HOT3D object CAD is not present in the local benchmark copy, but the existing object-trajectory evaluator fits a constant transform between the V19 completed-canonical keyboard frame and the HOT3D object frame. P51 uses that transform to place the V19 keyboard mesh on the HOT3D object trajectory, replays HOT3D GT MANO, and measures GT hand vertices to the aligned V19 mesh. This is evaluator-side only and does not modify prediction state.
+
+Prediction: if HOT3D GT hands are also far from the HOT3D-aligned keyboard mesh, forcing MANO/object correction toward contact is a false target for this interval, and P43's uncertain/non-contact rendering is the honest artifact. If GT hand vertices approach the aligned mesh while V19 source posterior remains far, the remaining error is in V19 hand/object state selection or pose/shape, not true non-contact.
+
+P51 launched in tmux `ego_annotation:clip001849_gtgap` via `/tmp/run_v19_clip001849_gt_contact_truth_p51.sh`. Output target:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/gt_contact_truth_attribution_p51/hot3d_gt_mano_to_aligned_v19_keyboard_mesh_p43_object_frame.json`
+
+## 2026-07-03T08:44:25+08:00 — P51b GT contact-truth attribution supports non-contact interpretation for clip001849
+
+P51 first failed because the new evaluator incorrectly treated `se3_from_hot3d_dict` as returning a 4x4 matrix. P51b fixed the evaluator to construct 4x4 transforms from `(R,t)` and used a runner with an exit-status trap so failures remain explicit. The durable evaluator is `scripts/evaluate_v19_hot3d_gt_hand_to_aligned_object_mesh.py`, synced to the runtime bundle with SHA256 `f871a5b9a9fb6c47f2a95261708bf60703737662f1aa25bc51f5c932d313673f`.
+
+P51b report:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/gt_contact_truth_attribution_p51b/hot3d_gt_mano_to_aligned_v19_keyboard_mesh_p43_object_frame.json`
+
+Method: place the V19 reconstructed keyboard mesh onto the HOT3D object trajectory using the fitted constant object-frame transform from the P43 object-trajectory evaluator; replay HOT3D GT MANO; measure all GT MANO vertices to the aligned mesh in HOT3D camera coordinates. This uses the V19 mesh as a shape proxy because HOT3D CAD is not present locally; it is contact-truth attribution, not official signed contact.
+
+Observation over frames `30..149`, both hands, 240 rows:
+
+- GT hand-to-aligned-mesh minimum vertex distance: median `75.13 mm`, min `50.86 mm`, p90 `93.24 mm`, max `114.91 mm`.
+- GT hand-to-aligned-mesh p05 vertex distance: median `86.75 mm`, min `58.91 mm`, p90 `103.66 mm`.
+- GT hand-to-aligned-mesh median vertex distance: median `118.18 mm`.
+- Combined contact sigma remains `30.48 mm`; zero rows have min distance below `1σ`; 52/240 below `2σ`; 199/240 below `3σ`.
+- Left hand min-distance median `87.93 mm`; right hand min-distance median `72.31 mm`.
+
+Interpretation: under the best available open-dataset GT hand/object trajectory and the aligned V19 keyboard shape proxy, clip001849 is not a contact interval. The P43 rendered state showing centimeter-scale separation is therefore not merely an unresolved MANO/object correction failure; it is consistent with GT-level non-contact. For clip001849, forcing contact via MANO/object pose correction would be physically wrong. P43 remains the honest Workbench-6 artifact: an uncertain/non-contact object/hand separation posterior with metric MANO preserved.
+
+## 2026-07-03T08:46:00+08:00 — P52 cross-clip GT contact-truth attribution prediction
+
+P52 applies the same GT hand-to-aligned-V19-mesh evaluator to clip001851 using the runtime-pose baseline object alignment from P46. This tests whether the P51 result is clip-specific non-contact rather than a general evaluator artifact. Prediction: if clip001851 is a true/near contact clip, GT min vertex distances should be substantially smaller than clip001849 and often below the combined `30.48 mm` contact sigma. If clip001851 is also far, the HOT3D keyboard slices used here may not contain real contact, and Workbench-6 should stop treating contact closure as the primary correction target for these slices.
+
+P52 launched in tmux `ego_annotation:clip001851_gtgap` via `/tmp/run_v19_clip001851_gt_contact_truth_p52.sh`. Output target:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/gt_contact_truth_attribution_p52/hot3d_gt_mano_to_aligned_v19_keyboard_mesh_runtime_pose_graph.json`
+
+## 2026-07-03T08:48:29+08:00 — P52 confirms clip001851 is a near-contact contrast case
+
+P52 applied the same GT hand-to-HOT3D-aligned-V19-mesh evaluator to clip001851 using the runtime-pose baseline object alignment from P46. Report:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/evaluation/autoresearch/gt_contact_truth_attribution_p52/hot3d_gt_mano_to_aligned_v19_keyboard_mesh_runtime_pose_graph.json`
+
+Observation over frames `0..149`, both hands, 300 rows:
+
+- GT hand-to-aligned-mesh minimum vertex distance: median `16.94 mm`, min `2.21 mm`, p90 `52.29 mm`, p95 `66.46 mm`.
+- GT p05 vertex distance: median `26.31 mm`.
+- Combined contact sigma is `30.48 mm`; 205/300 rows have min distance below `1σ`; 281/300 below `2σ`; 293/300 below `3σ`.
+- Left hand is especially near: min-distance median `13.19 mm`, 132/150 rows below `1σ`, 150/150 below `3σ`.
+- Right hand is less near but still often compatible: min-distance median `31.65 mm`, 73/150 rows below `1σ`, 143/150 below `3σ`.
+
+Interpretation: the P51 non-contact result for clip001849 is not caused by the evaluator always producing large distances. Under the same aligned-V19-mesh proxy, clip001851 contains genuine near-contact evidence. This explains why the clip001851 runtime baseline already had strong source-gap compatibility (`24.24 mm`, score `0.7289`) and why support-weighted stationary translation P46 was overfitting a proxy when it worsened object residuals. For clip001849, P43's non-contact rendering is not a failure to close contact; for clip001851, the existing runtime pose/contact state is the better contact case and direct scale-relaxed MANO refit remains rejected.
+
+Current Workbench-6 causal conclusion: the next correction target is not to force clip001849 MANO/object contact. P43 should remain the current clip001849 artifact. General V19 autoresearch should distinguish true-contact slices like clip001851 from non-contact slices like clip001849 before applying contact-driven correction terms.
