@@ -62,6 +62,35 @@ def side_summary(interval_state: dict[str, Any], side: str) -> dict[str, Any]:
     return {}
 
 
+def contact_semantics(summary: dict[str, Any]) -> str:
+    """Human-facing contact wording from the metric source-gap model.
+
+    This is not an acceptance gate and not a calibrated probability.  It exposes
+    the physical meaning already represented by
+    build_v19_source_gap_contact_likelihood_state.py: source/object surfaces are
+    compared against the combined metric uncertainty
+    sqrt(hand_sigma^2 + object_sigma^2 + depth_order_sigma^2).  The wording
+    must never claim contact ownership or signed nonpenetration.
+    """
+    raw_counts = summary.get("contact_likelihood_state_counts")
+    counts = raw_counts if isinstance(raw_counts, dict) else {}
+    total = sum(int(v) for v in counts.values() if isinstance(v, (int, float)))
+    compatible = int(counts.get("near_contact_compatible_by_source_gap_only") or 0)
+    within2 = int(counts.get("near_contact_uncertain_within_2sigma") or 0)
+    unlikely = int(counts.get("contact_unlikely_source_gap_exceeds_3sigma") or 0)
+    z = metric_value(summary, "source_gap_z_median")
+    compat_score = metric_value(summary, "contact_compatibility_score_median")
+    if total > 0 and compatible >= 0.5 * total and z is not None and z <= 1.0:
+        return "near-contact compatible; ownership/NP unresolved"
+    if total > 0 and (compatible + within2) >= 0.5 * total and z is not None and z <= 2.0:
+        return "near-contact uncertain; ownership/NP unresolved"
+    if total > 0 and unlikely >= 0.5 * total and z is not None and z >= 3.0:
+        return "contact unlikely by source gap"
+    if total == 0 and compat_score is not None and compat_score >= 0.5:
+        return "near-contact compatible; ownership/NP unresolved"
+    return "contact uncertain"
+
+
 def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
     if interval_state is None:
         return {"summary_text": "interval metrics unavailable", "sides": {}}
@@ -122,12 +151,15 @@ def summarize_interval(interval_state: Path | None) -> dict[str, Any]:
             parts.append(f"candidate shift {shift:.1f}px" if split_metric_surface else f"joint shift {shift:.1f}px")
         if "metric_mano_preserved" in json.dumps(payload.get("per_frame_states", [])[:1]) and "metric MANO preserved" not in parts:
             parts.append("metric MANO preserved")
-        parts.append("contact uncertain")
+        contact_text = contact_semantics(summary)
+        parts.append(contact_text)
         return {
             "summary_text": " | ".join(parts),
             "interval_state": str(interval_state),
             "state_kind": payload.get("method"),
             "per_frame_rows": len(payload.get("per_frame_states", [])),
+            "contact_semantics": contact_text,
+            "contact_likelihood_state_counts": summary.get("contact_likelihood_state_counts"),
         }
     sides: dict[str, Any] = {}
     tokens: list[str] = []

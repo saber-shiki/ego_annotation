@@ -1826,3 +1826,67 @@ Local review sheet:
 `/tmp/v19_clip001851_published_runtime_review/clip001851_published_runtime_side_review.jpg`
 
 Visual observations: the overlay shows the hands visibly near the keyboard region throughout the sampled frames, and the world view shows hand skeletons/source links close to the green keyboard plane in early/mid frames. This is qualitatively different from clip001849/P43, where the world view shows centimeter-scale separation. Open-ended anomaly: in late frames the keyboard mesh still behaves like a broad planar body/green sheet and the world view remains sparse, so clip001851 can support near-contact evidence but still does not provide signed nonpenetration or precise full keyboard volume. The visual artifact agrees with the P52 quantitative contact-truth attribution: clip001851 is the slice to use for contact-preserving refinement, while clip001849 should remain an honest non-contact/uncertain-contact artifact.
+
+## 2026-07-03T09:05:00+08:00 — P53 contact-compatible publication prediction
+
+Mechanism: clip001851 is a true near-contact slice by P52, and its runtime prediction state already contains source-gap compatibility evidence: median source gap `24.24 mm`, gap z `0.795`, Gaussian contact compatibility score `0.7289`, with state counts `173` near-contact-compatible rows, `63` near-contact-uncertain rows, `19` low-likelihood rows, and `45` unlikely rows. The published banner still used the generic phrase `contact uncertain`, which under-communicates the physical state. This is a renderer/publication semantics defect, not a MANO or object-pose defect.
+
+Intervention: patch `scripts/publish_v19_render_artifact.py` so the banner phrase is driven by `contact_likelihood_state_counts` and median source-gap z from the existing metric uncertainty model. The phrase is bounded: it may say `near-contact compatible; ownership/NP unresolved` or `near-contact uncertain; ownership/NP unresolved`, but must not claim accepted contact ownership or signed nonpenetration. Prediction: republishing clip001851 runtime videos with the patched publisher should preserve the source render frames and metrics while replacing the generic contact wording with a near-contact-compatible statement. Falsifiers: missing/changed frame count, missing videos, absent contact semantics in the report, or any wording that claims accepted contact/nonpenetration.
+
+## 2026-07-03T09:12:00+08:00 — P53 clip001851 contact-compatible publication completed
+
+P53 patched `scripts/publish_v19_render_artifact.py` so contact wording is driven by the existing metric source-gap likelihood model rather than always appending `contact uncertain`. It uses `contact_likelihood_state_counts`, median source-gap z, and Gaussian contact compatibility score from the state summary. The wording remains bounded: it can say `near-contact compatible; ownership/NP unresolved`, `near-contact uncertain; ownership/NP unresolved`, or `contact unlikely by source gap`, but never accepted contact ownership or signed nonpenetration.
+
+P53 ran in tmux `ego_annotation:clip001851_pubcc` and exited `0`. New published artifact:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/renders/v19_published_runtime_contact_compatible_p53/`
+
+Report:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/renders/v19_published_runtime_contact_compatible_p53/v19_published_render_report.json`
+
+The report summary text is now: `rows 300 | source gap 24.2mm | normal 21.8mm | contact compat~0.729 | gap z 0.8 | joint shift 0.0px | metric MANO preserved | near-contact compatible; ownership/NP unresolved`. Full-duration outputs were written and copied to canonical `renders/v19_overlay.mp4`, `renders/v19_world.mp4`, and `renders/v19_side_by_side.mp4`; each has 150 frames. Canonical SHA256s: overlay `70ab18460cc32440f7f5e3d9a9c1685064c47092a0e470c6797c9d04527d2dc3`, world `77f135e2583aa58f4c0e54ccb892d251fb9259609ca1d53a043c39f33931cbcf`, side-by-side `bd9a5e4ff714863d687dcc8bd0278c6222891c644c37067a992db060e43d373e`.
+
+Local review sheet:
+
+`/tmp/v19_clip001851_p53_contact_compatible/p53_contact_compatible_side_review_sheet.jpg`
+
+Visual consumption: the banner now communicates the physical state that the frames show: hands close to the keyboard mesh with metric MANO preserved, while contact ownership and signed nonpenetration remain unresolved. This is an artifact improvement, not a metric-hand correction.
+
+## 2026-07-03T09:15:00+08:00 — P54 clip001849 contact-unlikely publication prediction
+
+P51b established clip001849 as a non-contact/uncertain-contact interval under HOT3D GT hand/object trajectory and the aligned V19 keyboard shape proxy. The current P43 artifact still uses generic `contact uncertain` wording. Mechanism: the same publisher contact-semantics patch should turn clip001849's low compatibility / high gap-z state into `contact unlikely by source gap` if the state summary contains the expected likelihood counts and z evidence. Prediction: P54 should preserve P43's physical marks and frame count while sharpening the banner to contact-unlikely/non-contact semantics. Falsifiers: missing videos, frame-count mismatch, absent contact semantics in the report, or any wording that claims accepted contact/nonpenetration.
+
+## 2026-07-03T09:20:00+08:00 — P54c clip001849 contact-unlikely publication completed
+
+P54 and P54b failed before producing an artifact because the inferred interval-state path and then inferred raw source-video path were wrong. Those failures were useful contract evidence: P43's durable accepted publication report, not filename inference, is the source of truth for the raw render video paths. P54c relaunched from the accepted P43 report paths and the actual P43 interval state:
+
+State:
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/measurements/mano_interval_correction/keyboard_30_149_staticT_geomedian_direct_surface_localpatch40_wilor_visible_hawor_wrist_hybrid_v1/hot3d_clip001849_pinhole_a800_native_v1_supportgate/v18_joint_mano_interval_trajectory_state.json`
+
+New artifact:
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/published_staticT_geomedian_contact_unlikely_p54c/`
+
+Report:
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001849_pinhole_a800_native_v1_supportgate/renders/published_staticT_geomedian_contact_unlikely_p54c/v19_published_render_report.json`
+
+The report summary text is now: `rows 224 | source gap 106.3mm | normal 95.4mm | contact compat~0.002 | gap z 3.5 | joint shift 0.0px | metric MANO preserved | contact unlikely by source gap`. The state counts support the wording: `137/224` rows are `contact_unlikely_source_gap_exceeds_3sigma`, `66/224` are low-likelihood beyond `2σ`, only `2/224` are near-contact-compatible, and median source-gap z is `3.49`. Full-duration outputs were written with 150 frames each. SHA256s: overlay `ae5da07743d8d9923a181b42ba7ac21431f8e4432a54ed367e925045865ae031`, world `162945d52b6013588450243abe70b88e3037c56e58c54a6d73770146ed646025`, side-by-side `bb677be5169c1b8605b1bc51610edcde257e431a7e548f8eb9a38afa0bb49275`.
+
+Local review sheet:
+`/tmp/v19_clip001849_p54c_contact_unlikely/p54c_contact_unlikely_side_review_sheet.jpg`
+
+Visual consumption: the banner now communicates the physical state that the frames show: the hand and keyboard are visibly separated in world view, metric MANO is preserved, and contact is unlikely under the source-gap model. This supersedes P43 only at the publication wording layer; the physical state and object/MANO trajectories are unchanged.
+
+## 2026-07-03T09:24:00+08:00 — P53/P54 publisher robustness sync
+
+After reviewing the diff, the publisher was hardened so the compatibility-score fallback remains reachable even when older state summaries lack `contact_likelihood_state_counts`. The patched publisher compiled locally and in the runtime bundle. Runtime bundle SHA256:
+
+`1ae433ece2b158f73d6dbdaf46dd27fb57ade73f8f82ffee6a71daa5d4d0311c  /mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle_a800/scripts/publish_v19_render_artifact.py`
+
+## 2026-07-03T09:28:00+08:00 — P53/P54 narrow critic and final publisher sync
+
+A narrow read-only critic reviewed the P53/P54 publisher change, the task memory updates, and both remote publication reports. Verdict: the claim is supported and commit is safe with one future robustness caveat. The critic confirmed that P53/P54 wording is driven by `contact_likelihood_state_counts`, source-gap z, and compatibility score; that P53 has 300 rows, z `0.8`, score `0.729`, 150/150 video frames, and `near-contact compatible; ownership/NP unresolved`; and that P54c has 224 rows, z `3.5`, score `0.002`, 150/150 video frames, and `contact unlikely by source gap`.
+
+The critic noted that a compatibility-score fallback could override inconclusive counts in future states. The publisher was tightened so the score fallback is used only when count evidence is absent. The tightened publisher compiled locally and remotely; direct summary checks against the P53/P54 state files still produce the same phrases. Final runtime bundle SHA256:
+
+`bed48e4c71d19a0072764ef2cb712422e9ee473671e49d46e8365a033dc6fbc0  /mnt/user-home/yiwen/ego_annotation_runtime/v19_bundle_a800/scripts/publish_v19_render_artifact.py`

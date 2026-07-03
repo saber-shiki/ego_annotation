@@ -9,3 +9,9 @@ Untrusted Poisson fill, unsupported TRELLIS faces, and any other uncertain compl
 ## Rigid anchor frames require candidate review
 
 A rigid-object anchor frame defines canonical visible surface, metric scale/extent checks, TRELLIS conditioning, and later pose refits. It is a physical-state decision, not a bookkeeping default. Scripts may rank/propose anchor candidates, but they must expose visual review evidence and raw score factors; the runtime agent must inspect candidate frames and record the chosen anchor with rationale. Do not silently choose the largest mask, most sampled points, earliest frame, or a contact-near frame when a less-occluded full-object frame gives stronger geometry evidence.
+
+## Contact wording follows the metric source-gap model
+
+V19 rendered contact wording must be generated from the physical state summary, not a generic banner phrase. Use the Gaussian contact compatibility score and `contact_likelihood_state_counts` as a compatibility residual at the combined metric uncertainty scale. The wording may distinguish regimes such as `near-contact compatible; ownership/NP unresolved`, `near-contact uncertain; ownership/NP unresolved`, and `contact unlikely by source gap`.
+
+These labels are publication semantics over the existing state. They do not accept contact ownership, do not prove signed nonpenetration, and do not authorize moving metric MANO or object pose. A clip can be a correct non-contact artifact; forcing contact on a slice whose GT/metric source-gap evidence is contact-unlikely is a physical error.
