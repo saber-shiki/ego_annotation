@@ -1812,3 +1812,17 @@ Observation over frames `0..149`, both hands, 300 rows:
 Interpretation: the P51 non-contact result for clip001849 is not caused by the evaluator always producing large distances. Under the same aligned-V19-mesh proxy, clip001851 contains genuine near-contact evidence. This explains why the clip001851 runtime baseline already had strong source-gap compatibility (`24.24 mm`, score `0.7289`) and why support-weighted stationary translation P46 was overfitting a proxy when it worsened object residuals. For clip001849, P43's non-contact rendering is not a failure to close contact; for clip001851, the existing runtime pose/contact state is the better contact case and direct scale-relaxed MANO refit remains rejected.
 
 Current Workbench-6 causal conclusion: the next correction target is not to force clip001849 MANO/object contact. P43 should remain the current clip001849 artifact. General V19 autoresearch should distinguish true-contact slices like clip001851 from non-contact slices like clip001849 before applying contact-driven correction terms.
+
+## 2026-07-03T08:54:00+08:00 — clip001851 published runtime visual consumption after P52
+
+After P52 established clip001851 as a true near-contact contrast case, the published runtime side-by-side video was consumed via representative frames `0/30/75/120/149`.
+
+Artifact video:
+
+`/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_runs/20260627_hot3d_clip001851_pinhole_a800_native_v1_supportgate/renders/v19_published_runtime/v19_side_by_side.mp4`
+
+Local review sheet:
+
+`/tmp/v19_clip001851_published_runtime_review/clip001851_published_runtime_side_review.jpg`
+
+Visual observations: the overlay shows the hands visibly near the keyboard region throughout the sampled frames, and the world view shows hand skeletons/source links close to the green keyboard plane in early/mid frames. This is qualitatively different from clip001849/P43, where the world view shows centimeter-scale separation. Open-ended anomaly: in late frames the keyboard mesh still behaves like a broad planar body/green sheet and the world view remains sparse, so clip001851 can support near-contact evidence but still does not provide signed nonpenetration or precise full keyboard volume. The visual artifact agrees with the P52 quantitative contact-truth attribution: clip001851 is the slice to use for contact-preserving refinement, while clip001849 should remain an honest non-contact/uncertain-contact artifact.
