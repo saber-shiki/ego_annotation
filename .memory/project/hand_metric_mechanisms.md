@@ -71,3 +71,19 @@ the HOT3D pinhole adapter / camera-convention mapping, not the hand estimator. C
   still pending.
 - HOT3D WiLoR raws for clips 1849/1850/1851 exist under the A800 demo-pack
   `quant_tuning{,/trackI_heldout}` dirs — reuse, don't re-run.
+
+## Resolution (Tracks M/P, end of sprint)
+
+- **Constant per-clip camera-frame rotation is REAL** on 1850/1851 (3.40/3.81 deg, even/odd-stable,
+  identical across prediction variants) — an adapter/extrinsics-level term; +R alone halves 1851.
+  1849's mechanism is depth-scale instead (0.72 deg). Fitted via origin-anchored Procrustes on
+  matched camera-frame wrist pairs; matched-pair NPZs dumped for reuse (trackM/pairs/).
+- **Time-varying per-clip calibration (windowed R(t)+s(t)+g(z), even-fit/odd-report) reaches
+  sub-10mm on 1849 both hands (8.78/8.90mm)**; 1850/1851 stop at 10.5–18.5mm with documented
+  overfitting boundaries (odd-frame regressions per added knot). Demo-only device; the capacity
+  ladder + knot sweep is the reusable METHODOLOGY: it measures how much error is slow drift vs
+  per-frame noise, and where calibration capacity stops generalizing.
+- Per-frame shared-rotation oracle still fails (13–30mm) → the terminal residual is per-side
+  hand localization, not camera mapping. That is the pipeline's real frontier.
+- Trash-clip hand layer: HaWoR bridge relative motion contained 7–11 m/frame discontinuities
+  (the "smooth relative motion" premise is clip-dependent — always cap/robustify delta priors).
