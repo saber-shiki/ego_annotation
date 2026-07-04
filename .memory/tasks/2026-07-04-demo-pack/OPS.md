@@ -281,3 +281,7 @@ Critic's clean axes: 13-video inventory matches everywhere; headline numerics ag
 
 ## 2026-07-04T18:46:00+08:00 — AF consumed: full 6/6 QC + metric coverage; release 227MB
 AF: window+scissors QC videos rendered (chips verified truthful per-frame incl. absent-hand no-chip and wilor_rejected suppression); self-consistency rows computed for both (window 5.4/3.7px residual medians; scissors 4.3/12.6px; coverage rows w/ held-tool caveat). Parent integrated: table rows pasted + six-clip coverage note; README/CN restored to "every presentation clip has a QC variant" (now true); appendix line updated to coverage-complete; release rebuilt 227MB (15 videos: 6 presentation + 6 QC + 3 benchmark), refs NONE missing.
+
+## 2026-07-04T19:46:00+08:00 — Delta gate passed; final release 227MB @19:45
+Gate critic (delta scope): 3 HIGHs, all stale-boundary sentences (EN appendix "do not yet cover fourth clip"; CN mirror; CN 36/36 headline unscoped) — fixed past-tense/scoped, rebuilt, verified present in release copies (greps 1/2/0). Clean axes: six-clip QC claims+inventory+chips (window f110, scissors f180 re-verified independently by critic), self-consistency rows coherent, presenter-brief paths all resolve against renamed release files, no other stale counts.
+Parent had independently consumed all 15 release videos by 19:45. This is the delivery state.
