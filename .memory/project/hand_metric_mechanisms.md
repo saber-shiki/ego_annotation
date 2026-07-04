@@ -87,3 +87,33 @@ the HOT3D pinhole adapter / camera-convention mapping, not the hand estimator. C
   hand localization, not camera mapping. That is the pipeline's real frontier.
 - Trash-clip hand layer: HaWoR bridge relative motion contained 7–11 m/frame discontinuities
   (the "smooth relative motion" premise is clip-dependent — always cap/robustify delta priors).
+
+## Track V resolution (final demo window): the residual is smooth drift
+
+- **Per-side time-varying translation-bias spline b(t) closes sub-10 on ALL clips** (worst 7.6mm
+  fixed a-priori config; 3.5-4.7mm per-clip-selected = oracle interpolation floor). The lag-1
+  autocorrelation (0.66-0.77) predicted exactly this: nothing in R(t)/s(t)/g(z) can absorb a
+  drifting offset (rotation pivots about origin, ray-scale moves along rays, depth curve reshapes
+  range). Anti-overfit evidence: even≈odd at K_b=24 (gaps -0.19..+0.69mm); raised-cosine support
+  makes 72 nominal params ≈ 8 effective dof.
+- **Pipeline implication**: the HOT3D wrist error is a smooth, low-dimensional camera/registration
+  drift — the GT-free self-calibration target is a slowly-varying SE(3)-ish correction per clip,
+  not per-frame hand-model work. Candidate GT-free anchors: multi-view/temporal reprojection
+  self-consistency, static-scene features, contact events.
+- Base-stream selection is inert for wrist metrics: hybrid and HaWoR share identical wrist vectors
+  (hybrids only replace root-relative geometry). Don't burn time re-selecting streams for
+  root/wrist targets.
+- Interleaved even/odd holdout proves smoothness, NOT cross-clip transfer — keep the two claims
+  separated in any report.
+
+## Renderer/fusion lessons (Tracks T/v3c)
+
+- Hand-override rendering must let CURRENT provenance supersede stale upstream validity fields
+  (second instance of this bug class: v18 `unresolved` hid a WiLoR-supported override at f850).
+- Global re-weighting of a fusion data term is the wrong fix for a local divergence: weight×400
+  everywhere fixed 840-880 but resurrected garbage-articulation accepts at 208-215. The correct
+  device: residual-driven band-local escalation (|fused-raw|>50px for ≥3 consecutive detected
+  frames) — fixes the divergent band, preserves smoothness elsewhere (p95 81/90 vs v3's 78/89).
+- Rough fused geometry (median dihedral ≥15°) must not be filled in world views: 900 centroid
+  surfels at low alpha keep hands dominant. Filled rasterization turns fused scene geometry into
+  panel-dominating blobs.
