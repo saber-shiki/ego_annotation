@@ -137,31 +137,31 @@ Predictions and interventions:
 - Correct graph output but stale render → repair state-to-render dependency chain.
 - Dominant factor suppresses others → recalibrate noise model and residual normalization.
 
-### D6 — Cross-solver geometry-source decoupling hides an existing measurement
+### D6 — Cross-solver geometry-source decoupling and contact-source admissibility
 
-Observed defect: in HOT3D clip001850 keyboard frames ~26-46, interval MANO reports ~10 cm right-hand penetration into an observed keyboard surface, contact/nonpenetration reports zero penetrating vertices against a different mostly-TRELLIS non-watertight completed mesh with zero signed-query candidates, and the render publishes a +39 mm gap.
+Observed defect: in HOT3D clip001850 keyboard frames 28-48, the interval MANO mesh-penetration channel reports large right-hand penetration while keyboard-masked, hand-quarantined depth places the hand in front of the keyboard surface on every mask-available frame. Contact/nonpenetration reports zero penetrating vertices against a non-watertight, 95.4%-TRELLIS completed mesh whose free space was never carved. The published render collapses this into a vague gap/penverts/UNCERTAIN banner.
 
 Live mechanisms:
-- M1: contact/nonpenetration is disabled by non-watertight or wrong-epoch geometry.
-- M2: interval MANO observed-surface penetration is contaminated by leaked hand/background surface.
-- M3: object pose support/freshness is weak enough that all hand-object distances are measured against wrong placement.
-- M4: graph factors do not couple the interval penetration measurement into pose/contact/render state.
-- M5: solver stages query different geometry epochs/source families, so generic support counters mislabel the defect as missing measurement.
+- M1: solver/contact/render stages consume different measured provenance hashes, so generic support-absent labels hide a source-lineage defect.
+- M2: the completed keyboard geometry epoch is contact-ineligible: inflated, mostly inferred, non-watertight, and uncarved.
+- M3: the interval mesh-penetration channel is not an admissible keyboard-contact factor unless keyboard-masked, hand-quarantined depth and per-vertex coherence preserve it.
+- M4: clip001850 hand metric depth bias is large enough that distance-only evidence can reach `contact_candidate` at most, not `confirmed_contact`.
+- M5: the graph/render path can carry rows without changing what the viewer sees unless `contact_frame_detail` is consumed by a render artifact.
 
 Discriminating measurements:
-- Solver/contact/render geometry epoch ids and geometry source families.
-- Signed query candidate vertex count and watertight flag for the contact/NP mesh.
-- Face provenance summary for the geometry queried by contact/NP.
-- Observed-surface penetration from interval MANO and published contact gap from render.
-- Hand-to-surface distances against observed surface and completed mesh under common pose.
-- Temporal coherence of penetrating MANO vertices across frames 26-46.
-- Free-space/extent plausibility of the completed keyboard geometry.
+- Provenance-hash-derived solver/contact/render geometry epoch ids and source families, plus explicit incomplete-provenance routing.
+- Keyboard-masked and hand-quarantined depth deltas per frame, with penetrating/near vertex ids rather than max scalar summaries.
+- Per-vertex temporal IoU and anatomical localization of surviving contact candidates.
+- Completed-mesh watertightness, face provenance, free-space state, and observed-face sign-mesh eligibility.
+- Pose provenance for posed-geometry fallback frames.
+- Viewer-visible f32/f36 ego.hoi review whose labels come from `contact_frame_detail` route states.
 
-Predictions and interventions:
-- Observed-surface penetration is coherent and completed-mesh query has zero candidates → add `cross_solver_geometry_decoupled` graph-health route and wire observed-surface contact evidence into contact/NP.
-- Penetrating vertices are scattered or coincide with leaked surface points → repair geometry epoch contamination before using penetration as a factor.
-- Distances change primarily by pose provenance → repair pose observability/freshness before contact factors.
-- Graph remains nfev=1 with zero NP targets after reconciliation → repair variable/factor coupling.
+Measured result and interventions:
+- f32 routes to `geometry_epoch_contaminated`: interval penetration max 82 mm, keyboard-HQ median delta -144 mm, zero eligible penetrating vertices.
+- f36 routes to `full_frame_depth_leak`: interval penetration max 107 mm, keyboard-HQ median delta -81 mm, zero eligible penetrating vertices; full-frame leak is only ~22 mm on non-keyboard pixels.
+- Do not wire interval mesh penetration into contact/NP. It is an inadmissible source until KT-1/KT-2/KT-3 preserve keyboard-local evidence.
+- Keep `cross_solver_geometry_decoupled` as a provenance-hash graph-health route, but not as permission to use the contaminated contact source.
+- Next artifact-changing work is object-geometry repair (free-space carving / observed-face watertight sign mesh) or hand-depth-bias repair; until then contact is explicit unresolved state, not no-contact and not confirmed contact.
 
 ### D7 — Runtime-heavy mechanisms need teacher/student separation
 

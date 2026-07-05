@@ -369,6 +369,12 @@ def derive_cross_solver_geometry_consistency(summary: dict[str, Any]) -> dict[st
     except (TypeError, ValueError):
         candidate_count_int = None
 
+    # Metric statistic policy (KT-6): do NOT treat max-of-max as the decisive
+    # penetration statistic. The summary may carry an explicit stat_policy
+    # block; if present, observed_surface_penetration_m is already the decisive
+    # (non-max) value. We also surface the policy so the decision rationale can
+    # cite it.
+    stat_policy = raw.get("observed_surface_penetration_stat_policy") or {}
     observed_penetration = raw.get("observed_surface_penetration_m")
     published_gap = raw.get("published_contact_gap_m")
     try:
@@ -380,6 +386,14 @@ def derive_cross_solver_geometry_consistency(summary: dict[str, Any]) -> dict[st
     except (TypeError, ValueError):
         published_gap_float = None
 
+    # provenance completeness gate (KT-6): the three geometry epoch/source
+    # families must be derived from measured provenance; if any provenance
+    # source is missing, the decision routes to evidence_incomplete rather
+    # than pretending measured cross-solver consistency.
+    completeness = raw.get("provenance_completeness") or {}
+    provenance_complete = bool(completeness.get("complete", True))
+    provenance_missing = list(completeness.get("missing") or [])
+
     mismatch_reasons: list[str] = []
     if epoch_consistent is False:
         mismatch_reasons.append("solver/contact/render geometry_epoch_id differ")
@@ -387,28 +401,33 @@ def derive_cross_solver_geometry_consistency(summary: dict[str, Any]) -> dict[st
         mismatch_reasons.append("solver/contact/render geometry_source_family differ")
     if candidate_count_int == 0 and (epoch_consistent is False or source_consistent is False):
         mismatch_reasons.append("signed query used zero candidate vertices on a different geometry source")
-    if (
-        observed_penetration_float is not None
-        and observed_penetration_float > 0.0
-        and published_gap_float is not None
-        and published_gap_float > 0.0
-    ):
-        mismatch_reasons.append("observed-surface penetration and published positive gap coexist")
+    # Deliberately do not add a mismatch reason merely because a penetration
+    # scalar and a render gap are both nonzero. That coexistence is a symptom
+    # after source provenance is already known to differ; by itself it is a
+    # tautology across channels and was the KT-6 failure mode.
 
     return {
         "solver_geometry_epoch_id": solver_epoch,
         "solver_geometry_source_family": solver_source,
+        "solver_geometry_provenance": raw.get("solver_geometry_provenance") or {},
         "contact_query_geometry_epoch_id": contact_epoch,
         "contact_query_geometry_source_family": contact_source,
+        "contact_query_geometry_provenance": raw.get("contact_query_geometry_provenance") or {},
         "render_geometry_epoch_id": render_epoch,
         "render_geometry_source_family": render_source,
+        "render_geometry_provenance": raw.get("render_geometry_provenance") or {},
+        "sign_mesh_watertight": raw.get("sign_mesh_watertight"),
+        "completed_surface_mesh_watertight": raw.get("completed_surface_mesh_watertight"),
         "geometry_epoch_consistent": epoch_consistent,
         "geometry_source_consistent": source_consistent,
         "signed_query_candidate_vertex_count": candidate_count_int,
         "watertight": raw.get("watertight"),
         "face_provenance_summary": raw.get("face_provenance_summary") or {},
         "observed_surface_penetration_m": observed_penetration_float,
+        "observed_surface_penetration_stat_policy": stat_policy,
         "published_contact_gap_m": published_gap_float,
+        "provenance_complete": provenance_complete,
+        "provenance_missing": provenance_missing,
         "mismatch_reasons": mismatch_reasons,
     }
 
@@ -467,6 +486,27 @@ def decide_mechanism(
     render chain before you confirm the graph moved.
     """
     rationale: list[str] = []
+
+    # 0. evidence_incomplete (KT-6): if the cross-solver geometry fields were
+    #    not derivable from measured provenance (a source hash/filter state is
+    #    missing), do NOT pretend measured cross-solver consistency. Route to
+    #    evidence_incomplete so the missing provenance is surfaced rather than
+    #    hidden behind an authored-string mismatch.
+    prov_complete = cross_solver_geometry.get("provenance_complete", True)
+    prov_missing = cross_solver_geometry.get("provenance_missing") or []
+    if not prov_complete:
+        rationale.append(
+            "cross_solver_geometry provenance incomplete; cannot derive measured "
+            f"geometry-source consistency. missing={prov_missing}"
+        )
+        return {
+            "decision": "evidence_incomplete",
+            "mechanism": "KT-6: a geometry provenance source (depth_npz/mesh/sign-mesh/render-state hash) is missing; cross-solver consistency is asserted, not measured",
+            "next_intervention": "re-emit the cross_solver_geometry_consistency block from measured provenance (file hashes + filter states) before any cross-solver decision is trusted",
+            "rationale": rationale,
+            "provenance_missing": prov_missing,
+            "cross_solver_geometry": cross_solver_geometry,
+        }
 
     # 1. cross-solver geometry-source decoupling. This precedes generic
     # support checks because the selected HOT3D slice has support in one solver
