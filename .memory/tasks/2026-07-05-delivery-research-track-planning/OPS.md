@@ -13,3 +13,6 @@ Dependent plan:
 
 ## 2026-07-05 — First-wave partial consumption
 Completed first-wave outputs 02 and 05 consumed. Implications recorded in EPISTEMIC: delivery serving must be video-aware Ray-first, Triton later; throughput arithmetic is 59.5 realtime streams/module for 10k video-h/week; GT-free camera metrics cannot certify 5mm head/camera without GT/fiducial/IMU; full-rate SAM2 is likely throughput blocker.
+
+## 2026-07-05 — Dependent wave partially launched
+Subagent 6 launched async (29a6cd3b-54d4-4a73-b6f3-f989b7377262) after outputs 04 and 05 landed. It will produce delivery-track auto-research guide using API output schema + self-consistency metrics + web research. Waiting on first-wave outputs 03 and 07 before launching subagent 8.
