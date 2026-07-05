@@ -16,3 +16,6 @@ Completed first-wave outputs 02 and 05 consumed. Implications recorded in EPISTE
 
 ## 2026-07-05 — Dependent wave partially launched
 Subagent 6 launched async (29a6cd3b-54d4-4a73-b6f3-f989b7377262) after outputs 04 and 05 landed. It will produce delivery-track auto-research guide using API output schema + self-consistency metrics + web research. Waiting on first-wave outputs 03 and 07 before launching subagent 8.
+
+## 2026-07-05 — Subagent 6 retry
+Initial communicator run 29a6cd3b-54d4-4a73-b6f3-f989b7377262 failed with upstream 400 before content. Retried as communicator on nearby Claude Opus route: 1c555144-b741-406c-952f-823988bc0112. First-wave still waiting on outputs 03 and 07 before subagent 8.
