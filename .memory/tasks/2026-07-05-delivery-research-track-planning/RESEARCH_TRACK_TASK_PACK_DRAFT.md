@@ -9,7 +9,7 @@ The research artifact is still renderable annotation: full-duration HOI overlays
 ## Track boundary
 
 - Base delivery outputs remain `ego.delivery.output` v1 and contain head/camera, hands, semantic clips, QC, and renders only.
-- Research outputs use an extension namespace, currently `ego.research_hoi` 0.x, as a sidecar or attached extension that references a pinned delivery manifest by id and hash.
+- Research outputs use an isolated extension namespace, currently reverse-DNS `org.ego.research.hoi` with schema family `ego.research.hoi` 0.x, as a sidecar or attached extension that references a pinned delivery manifest by id and hash.
 - The extension may read delivery hand/camera/semantic rows; it cannot mutate delivery rows, delivery captions, delivery status, or delivery metrics.
 - Promotion back to delivery requires measured utility, runtime budget, stable schema, and no contamination of the base accuracy claims.
 
@@ -27,12 +27,12 @@ Therefore the research program starts with measurement channels and state repres
 
 ## Research-state extension sketch
 
-Namespace: `ego.research_hoi` 0.1.0.
+Namespace: `org.ego.research.hoi`; schema family: `ego.research.hoi` 0.1.0.
 
 Default file layout:
 
 ```text
-research/ego.research_hoi/0.1.0/{research_run_id}/
+extensions/org.ego.research.hoi/0.1.0/{research_run_id}/
   manifest.json
   tables/
     objects.parquet
@@ -147,9 +147,32 @@ Runtime:
 5. Dual reporting: proxy metric plus GT metric where GT exists. Proxy improvement without GT improvement is proxy capture.
 6. Visual consumption is required: inspect full-duration renders or representative sheets as HOI annotations, not as file existence.
 
+## Research automation invariant
+
+Research auto-improvement cannot start as an unattended loop until the evaluator exists. The protected evaluator is not a single scalar; it is a vector over object pose, shape, rigidity, contact, occlusion, hand correction, graph health, and runtime. Acceptance requires target-family improvement, GT/proxy co-motion where GT exists, no protected-family regression, lockbox transfer, visual-render veto, and graph liveness/gauge/freshness asserts.
+
+The honest experiment sequence is dependency-constrained:
+
+1. Instrument graph health first: term support, liveness, gauge, stale joins, freshness.
+2. Measure rigidity and correspondence before pose optimization.
+3. Use pose-stabilized multi-frame geometry before nonpenetration/contact claims.
+4. Validate contact channels before switchable contact factors.
+5. Develop drift latents in parallel, but never fit them to GT for deployable claims.
+6. Treat every negative result as a redirect within the same mechanism family unless it falsifies that family.
+
+A fixed-slice win without lockbox transfer is overfit. A proxy win without GT/render agreement is proxy capture. A solved state that equals its input is inert. A nonwatertight or prior-completed face cannot support signed nonpenetration.
+
+## RL approximation boundary
+
+RL is useful only after the graph's variables and measurements are live. It may amortize a validated graph MAP solve, schedule discrete hypotheses/switches, choose initializers, or project a measurement-derived state into a feasibility set. It cannot recover information absent from the sensors and cannot replace object pose, contact, or drift measurements.
+
+Admissible RL outputs must preserve posterior uncertainty, provenance, gauge declaration, measurement coupling, and liveness. Rewards are the validated graph objective or a measurement-coupled simulator residual; silhouette/source-gap/proximity/render style rewards alone are invalid because they reproduce known proxy-capture failures. Online simulation is research-only and only a feasibility regularizer; mass/friction/soft-tissue parameters are unmeasured variables, not truth.
+
+RL stop conditions: R4 graph redesign not closed; channel ablation shows ignored measurements; reward improves while GT/proxy/render contradict; posterior calibration fails; simulator sensitivity dominates; runtime misses the delivery budget; disagreement with graph MAP persists beyond a declared band.
+
 ## Research milestones
 
-R0 — Schema/output harness: `ego.research_hoi` sidecar manifest, tables, and full-duration HOI render driven by rows.
+R0 — Schema/output harness: `ego.research.hoi` sidecar manifest, tables, and full-duration HOI render driven by rows.
 
 R1 — Correspondence-first rigid-body extraction: temporal 2D/3D tracks, rigidity windows, robust Procrustes, pose observability, and held-out track residuals.
 
@@ -159,18 +182,15 @@ R3 — Contact measurement channels: source-gap posterior, depth-order evidence,
 
 R4 — Factor graph redesign: drift latents, switchable contact mixtures, calibrated noise, liveness audit, gauge declarations, stale-join prevention.
 
-R5 — HOI evaluation suite: GT + GT-free metrics, routing rules, lockbox protocols, and visual-veto process.
+R5 — HOI evaluation suite: GT + GT-free metrics, routing rules, lockbox protocols, visual-veto process, and protected evaluator bundle. No autonomous research loop runs before R5 exists.
 
-R6 — RL approximation study: approximate the factor-graph inference policy only after the graph variables/measurements are validated; compare decisions and residuals against the graph, not raw reward proxies.
+R6 — RL approximation study: approximate the factor-graph inference policy only after R1-R4 produce live variables and a validated graph objective; evaluate graph-MAP parity, GT/GT-free metrics, posterior calibration, measurement-coupling ablations, and runtime.
 
-R7 — End-to-end distillation study: train a model to imitate validated research outputs and uncertainty, with delivery promotion gates for runtime and accuracy.
+R7 — End-to-end distillation study: train a model to imitate validated research outputs and uncertainty, with delivery promotion gates for runtime and accuracy. Distillation never becomes a source of HOI truth; it is a fast student of validated teachers.
 
-## Pending subagent slots
+## Remaining synthesis slot
 
-- Subagent 8b will fill the final HOI schema/metric artifact; this draft already incorporates the recovered partial run's mechanisms.
-- Subagent 9 should write the research auto-research operating loop using the HOI metrics, with protected eval bundles and proxy-capture guards.
-- Subagent 10 should define RL/factor-graph approximation scope, reward/state/action design, and invalid shortcuts.
-- Subagent 11 should define end-to-end distillation gates and how research outputs promote to delivery.
+The remaining unresolved planning question is distillation/promotion: which validated research outputs become trainable teacher labels, what uncertainty must be distilled, which failure modes require abstention, and what evidence permits a distilled model to affect delivery.
 
 ## Uncertainty boundaries
 

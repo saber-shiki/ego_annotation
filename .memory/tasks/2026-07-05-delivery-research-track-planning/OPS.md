@@ -35,3 +35,6 @@ Constrained subagent 8b run `75fa11b0-1702-452c-b075-7e9efa77c30b` failed only a
 
 ## 2026-07-05 — Wave 3 launched
 Launched wave 3 parallel subagents as run `ef8663cf-a5f6-497b-bf9a-d5feb7a6530f`: subagent 9 (`communicator`, `zai/glm-5.2`) writes `subagents/09_research_autoresearch_guide.md`; subagent 10 (`theorist`, `zai/glm-5.2`) writes `subagents/10_rl_factor_graph_approximation.md`. Both are constrained to file outputs and no edits beyond output capture.
+
+## 2026-07-05 — Wave 3 substantive implications integrated
+Subagent 9 and 10 outputs were usable despite acceptance-wrapper failures. Integrated their substantive claims into `RESEARCH_TRACK_TASK_PACK_DRAFT.md`: research auto-improvement is blocked until a protected HOI evaluator exists; fixed-slice-only wins are overfit; proxy-only wins are capture; RL is only an inference-side approximator of validated graph objectives and cannot supply missing measurements. Output files are `subagents/09_research_autoresearch_guide.md` and `subagents/10_rl_factor_graph_approximation.md`.
