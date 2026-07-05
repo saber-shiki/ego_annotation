@@ -47,6 +47,11 @@ mechanisms below).
   flag + new helpers, no changes to existing paths, py_compile after each edit) — used
   successfully by 5 agents in one day on one file.
 
+## V19 HOI render-consumer invariant
+
+- **Per-frame HOI/contact state must be consumed by the Stage-1 renderer that draws object/hand/contact pixels.** `publish_v19_render_artifact.py` stamps one static banner on every frame and cannot express frame-varying states such as f32 `geometry_epoch_contaminated`, f36 `full_frame_depth_leak`, and f45 `unresolved_incoherent_evidence`. A publish-banner edit or selected-frame still is QC only; a real consumer changes the full-duration mp4/backing manifest so the drawn body hash, contact-state label, and invalid-metric suppression are state-derived per frame.
+- **Do not leave raw TRELLIS bodies in pixels under repaired labels.** For clip001850 the false state was baked by a Stage-1 render of the raw 90,892-face TRELLIS keyboard body plus zero-by-construction `penverts=0`. The repair uses the 3221-face observed open body as an amber/hatched uncertain patch and removes the false `gap 39.2mm`, `penverts=0`, and bare `UNCERTAIN` strings from the replacement render. Future geometry-source repairs need the same body-replacement proof: consumed mesh hash changes away from TRELLIS, the original solid body disappears, and uncovered frames carry explicit unresolved defaults rather than fabricated contact.
+
 ## Demo-vs-pipeline boundary (user policy, 2026-07-04)
 
 Demo may use ad-hoc tuning, cherry-picking, per-clip overfitting — disclosed in metric

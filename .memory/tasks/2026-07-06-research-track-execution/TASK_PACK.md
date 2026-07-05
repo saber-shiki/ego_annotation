@@ -163,7 +163,7 @@ Measured result and interventions:
 - Observed-body repair removes the false TRELLIS penetration but leaves observed-only hand distances at 35.6-115.2 mm; it is a render/body-provenance repair, not a contact recovery route.
 - Hand-depth contact-forcing is refuted: required along-ray shifts are 83-202 mm, produce 62-169 px median reprojection displacement, and create a candidate on only f36. Do not use keyboard gap as a hand-depth correction target.
 - Keep `cross_solver_geometry_decoupled` as a provenance-hash graph-health route, but not as permission to use the contaminated contact source.
-- Next artifact-changing work is production render consumption of canonical `contact_frame_detail` and repaired/observed body styling, so the delivered annotation visibly carries named unresolved states instead of vague gap/penverts/UNCERTAIN.
+- Production-style render consumption now exists as a full-duration replacement artifact under `/data2/ego_annotation_outputs/research_clip001850_contact_state_20260706/v19_contact_state_full_duration/`: the durable canonical `contact_frame_detail` drives f32/f36/f45 labels, uncovered frames default to `unresolved_evidence_incomplete`, and the 3221-face observed body is rendered as an open/hatched patch instead of the raw TRELLIS body. The still-only consumer is QC evidence, not the consumer. Next artifact-changing work is promoting this consumer into the reusable runtime path or adding motion/GT adjudication for confirmed contact.
 
 ### D7 — Runtime-heavy mechanisms need teacher/student separation
 
