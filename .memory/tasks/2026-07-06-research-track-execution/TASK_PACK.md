@@ -159,9 +159,11 @@ Discriminating measurements:
 Measured result and interventions:
 - f32 routes to `geometry_epoch_contaminated`: interval penetration max 82 mm, keyboard-HQ median delta -144 mm, zero eligible penetrating vertices.
 - f36 routes to `full_frame_depth_leak`: interval penetration max 107 mm, keyboard-HQ median delta -81 mm, zero eligible penetrating vertices; full-frame leak is only ~22 mm on non-keyboard pixels.
-- Do not wire interval mesh penetration into contact/NP. It is an inadmissible source until KT-1/KT-2/KT-3 preserve keyboard-local evidence.
+- f45 demotes to `unresolved_incoherent_evidence`: one thumb vertex at +5.86 mm on a near-depth outlier, no temporally persistent contact patch.
+- Observed-body repair removes the false TRELLIS penetration but leaves observed-only hand distances at 35.6-115.2 mm; it is a render/body-provenance repair, not a contact recovery route.
+- Hand-depth contact-forcing is refuted: required along-ray shifts are 83-202 mm, produce 62-169 px median reprojection displacement, and create a candidate on only f36. Do not use keyboard gap as a hand-depth correction target.
 - Keep `cross_solver_geometry_decoupled` as a provenance-hash graph-health route, but not as permission to use the contaminated contact source.
-- Next artifact-changing work is object-geometry repair (free-space carving / observed-face watertight sign mesh) or hand-depth-bias repair; until then contact is explicit unresolved state, not no-contact and not confirmed contact.
+- Next artifact-changing work is production render consumption of canonical `contact_frame_detail` and repaired/observed body styling, so the delivered annotation visibly carries named unresolved states instead of vague gap/penverts/UNCERTAIN.
 
 ### D7 — Runtime-heavy mechanisms need teacher/student separation
 

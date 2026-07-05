@@ -37,6 +37,7 @@ VIS_GEO = RUN_ROOT / (
     "annotations_v19_visible_geometry.json"
 )
 KILL_DIR = Path("/tmp/clip001850_masked_contact_killtests")
+CONTACT_STATE_DIR = Path("/tmp/clip001850_contact_state_table")
 RGB_DIR = RUN_ROOT / "input/raw_frame_manifest/rgb"
 
 SOURCE_W, SOURCE_H = 1408, 1408
@@ -53,7 +54,8 @@ ROUTE_LABELS = {
     "geometry_epoch_contaminated": "UNRESOLVED — object body contaminated, not contact-eligible",
     "full_frame_depth_leak": "UNRESOLVED — full-frame depth leak; keyboard mask refutes penetration",
     "pose_unresolved": "UNRESOLVED — object pose/mask proxy gap",
-    "contact_candidate_keyboard_masked": "CONTACT CANDIDATE — one masked keyboard-depth vertex within band",
+    "contact_candidate_keyboard_masked": "CONTACT CANDIDATE — masked keyboard-depth patch survived policy gates",
+    "unresolved_incoherent_evidence": "UNRESOLVED — single/depth-outlier vertex, no persistent contact patch",
     "evidence_missing": "UNRESOLVED — evidence missing",
 }
 
@@ -111,6 +113,41 @@ def load_kill_rows() -> dict[int, dict[str, Any]]:
 
 def load_kill_summary() -> dict[str, Any]:
     return json.loads((KILL_DIR / "summary.json").read_text())
+
+
+def load_contact_state_rows(contact_state_dir: Path) -> tuple[dict[int, dict[str, Any]], dict[str, Any]] | None:
+    """Read the canonical ego.hoi contact_frame_detail table.
+
+    Returns (rows, summary) where each row is normalized to the shape the panels
+    consume: the kill-test evidence block is unwrapped to the top level and the
+    canonical ``contact_state`` overrides ``route`` (identity mapping on this
+    clip, but this keeps the rendered label tied to the canonical table).
+    Returns None if the canonical table is absent (caller falls back to raw
+    kill-test rows).
+    """
+    nd = contact_state_dir / "contact_frame_detail.ndjson"
+    sm = contact_state_dir / "summary.json"
+    if not nd.exists() or not sm.exists():
+        return None
+    rows: dict[int, dict[str, Any]] = {}
+    for line in nd.read_text().splitlines():
+        if not line.strip():
+            continue
+        cr = json.loads(line)
+        evidence = cr.get("killtest_evidence") or {}
+        # Normalize: start from the verbatim kill-test evidence, then bind route
+        # to the canonical contact_state so the panel label is authoritative.
+        view = dict(evidence)
+        view["route"] = cr.get("contact_state", evidence.get("route"))
+        view["contact_state"] = cr.get("contact_state")
+        view["_canonical_source"] = True
+        view["_source_gap_z"] = (cr.get("source_gap") or {}).get("source_gap_z")
+        view["_object_body_provenance"] = cr.get("object_body_provenance")
+        view["_contact_state_basis"] = cr.get("contact_state_basis")
+        view["_contact_state_demotion_reasons"] = cr.get("contact_state_demotion_reasons") or []
+        rows[int(cr["frame_idx"])] = view
+    summary = json.loads(sm.read_text())
+    return rows, summary
 
 
 def project_vertices(verts_world: np.ndarray, T_world_camera: np.ndarray, intr: list[float]) -> np.ndarray:
@@ -218,6 +255,8 @@ def build_panel_c(row: dict[str, Any], summary: dict[str, Any], proj_info: dict[
             ROUTE_LABELS.get(route, "UNRESOLVED — route not mapped"),
             f"mask source = {row['keyboard_mask_source']}  mask_file_exists={row['mask_files_exist']}",
             f"pose = {row['pose_source']}  direct_visible={row['pose_direct_visible']} gap={row['pose_gap_frames']}",
+            f"basis = {row.get('_contact_state_basis', 'raw_killtest_route')}",
+            f"demotion = {row.get('_contact_state_demotion_reasons', [])}",
         ]),
         ("KT-1: keyboard-masked + hand-quarantined depth", [
             f"eligible vertices over keyboard mask = {hq.get('n_vertices_in_region')}",
@@ -314,25 +353,52 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, nargs="+", default=[32, 36])
     ap.add_argument("--out-dir", default="/tmp/clip001850_egohoi_contact_review")
+    ap.add_argument(
+        "--contact-state-dir", default=str(CONTACT_STATE_DIR),
+        help="Canonical ego.hoi contact_frame_detail table dir. Falls back to "
+             "raw kill-test rows when the canonical table is absent.",
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     intv = load_interval()
     visgeo = load_visgeo()
-    rows = load_kill_rows()
-    summary = load_kill_summary()
+
+    contact_state_dir = Path(args.contact_state_dir)
+    canonical = load_contact_state_rows(contact_state_dir)
+    if canonical is not None:
+        rows, canonical_summary = canonical
+        # The canonical summary contains contact-state/provenance table metadata;
+        # the panel still needs the kill-test geometry_epoch and KT2 window stats.
+        summary = load_kill_summary()
+        summary["contact_state_counts"] = canonical_summary.get("contact_state_counts")
+        summary["canonical_summary"] = canonical_summary
+        source_rows = str(contact_state_dir / "contact_frame_detail.ndjson")
+        source_summary = str(contact_state_dir / "summary.json")
+        source_label = "canonical ego.hoi contact_frame_detail"
+        print(f"[review] consuming canonical table: {source_rows}")
+    else:
+        rows = load_kill_rows()
+        summary = load_kill_summary()
+        source_rows = str(KILL_DIR / "contact_killtests_frame_detail.ndjson")
+        source_summary = str(KILL_DIR / "summary.json")
+        source_label = "raw kill-test rows (canonical table absent)"
+        print(f"[review] canonical table absent; falling back to raw kill-test rows")
 
     manifest = {
         "schema": "ego.hoi_contact_review/0.1.0",
-        "source_rows": str(KILL_DIR / "contact_killtests_frame_detail.ndjson"),
-        "source_summary": str(KILL_DIR / "summary.json"),
+        "source_rows": source_rows,
+        "source_summary": source_summary,
+        "source_label": source_label,
         "meaning": (
-            "Panel C is driven by KT-1/2/3/5 contact_state rows. The published video says "
-            "gap/penverts/UNCERTAIN; this review says the specific mechanism: geometry_epoch_contaminated "
-            "or full_frame_depth_leak."
+            "Panel C is driven by the canonical ego.hoi contact_frame_detail "
+            "contact_state rows (KT-1/2/3/5 via the kill-test writer). The "
+            "published video says gap/penverts/UNCERTAIN; this review says the "
+            "specific mechanism: geometry_epoch_contaminated or "
+            "full_frame_depth_leak."
         ),
-        "route_counts": summary.get("route_counts"),
+        "contact_state_counts": summary.get("contact_state_counts") or summary.get("route_counts"),
         "frames": [],
     }
     for f in args.frames:
