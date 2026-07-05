@@ -4,6 +4,10 @@
 
 Internal planning tracks such as delivery, research, demo, v18, or v19 are not product concepts and must not appear in customer-facing API endpoint paths. Endpoint names should name the customer operation or data domain, e.g. annotation jobs, video analysis jobs, hand state, camera pose, or HOI extension resources. Track labels may remain in task memory, branch names, or internal run roots, but public schemas and endpoints should use stable domain nouns such as `ego.annotation.output` and optional domain extensions such as `ego.hoi`.
 
+## Accuracy targets are optimization objectives
+
+A target such as uniform 5mm head/camera/hand accuracy is the direction of work, not a premise to defend against. Planning must preserve the ideal target, decompose it into measurable axes, report the current frontier per axis, and name the next mechanism expected to reduce each error. Do not narrow the target to whichever metric is currently easiest, e.g. wrist-only instead of joints/surface, or self-consistency instead of fixed-gauge trajectory error. Measurement limits define interventions and uncertainty, not permission to delete the target.
+
 ## Uncertainty labels must control state/render semantics
 
 A label such as `unsupported_uncertain` is not an uncertainty mechanism unless downstream state construction and rendering consume it. In V19 clip001851, Poisson observed-surface fill faces were labeled `unsupported_uncertain` but still concatenated into the completed object mesh and rendered as accepted green object body. That is invalid.

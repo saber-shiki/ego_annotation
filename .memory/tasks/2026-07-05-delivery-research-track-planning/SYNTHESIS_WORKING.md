@@ -4,8 +4,8 @@
 
 1. **Split the stakeholder's "drift" complaint into three mechanisms.**
    - Overlay 2D drift: our projection/renderer/fusion chain; tomato defect is real and quantified.
-   - Hand metric error in camera frame: current sub-10 result is GT-fitted smooth drift correction; deployable claim needs GT-free smooth self-calibration.
-   - Head/camera trajectory error: currently unproven and likely decimeter-class under HaWoR/DROID world; first deliverable is a camera evaluator + calibration/trajectory measurement, not a promise.
+   - Hand metric error: current sub-10 wrist/root result is GT-fitted smooth drift correction; the deployable path replaces the GT fit with GT-free smooth self-calibration while keeping all-joint MPJPE and surface/MPVPE in the optimization vector.
+   - Head/camera trajectory error: current evidence is weak and likely decimeter-class under HaWoR/DROID world; the first deliverables are a fixed-gauge camera evaluator, stronger metric pose source, synchronization/extrinsics calibration, and trajectory repair toward the same 5mm ideal.
 
 2. **Minimal delivery module set (no HOI):** ingestion, calibration contract, conditional UniDepth, camera/head trajectory, HaWoR metric MANO, WiLoR visible geometry, hybrid+temporal fusion, GT-free smooth-drift self-calibration, deterministic renderer, self-consistency QC, offline evaluators. Object planning/SAM2/TRELLIS/object pose/contact/factor graph are out of the default delivery lane except semantics/captioning may use object evidence as a separate lane.
 
@@ -15,7 +15,7 @@
 
 5. **API output:** public API endpoints use domain nouns such as `POST /v1/annotation-jobs`, not internal track names. Base artifact schema is `ego.annotation.output` v1 with manifest, Parquet tables (`frames`, `head_camera`, `hand_states`, `semantic_clips`, `validation_metrics`), NDJSON overlay/caption/provenance/errors, renders. HOI is explicitly excluded from base schema and must live in a domain extension namespace such as `org.ego.hoi`.
 
-6. **Metrics:** GT-free metrics are disagreement between independent measurement paths. Required: camera static reprojection/3D closure/gravity plausibility + GT ATE/RPE when available; hand wrist GT, visible-joint/root-relative, reprojection, cross-detector, size-depth, jitter; rendered-overlay drift; intrinsics sweep; semantic segment/caption metrics; throughput/API health.
+6. **Metrics:** GT-free metrics are disagreement between independent measurement paths and route error-reduction work; they do not redefine the target. Required protected vector: camera/head ATE/RPE/rotation/scale plus static reprojection/3D closure; hand wrist/root, all-joint MPJPE, MPVPE/surface, reprojection, cross-detector, size-depth, visibility, jitter; rendered-overlay drift; intrinsics sweep; semantic segment/caption metrics; throughput/API health.
 
 ## Research track commitments emerging
 
@@ -27,7 +27,7 @@
 
 ## User decisions likely needed
 
-- Metric definition for the stakeholder's "~5mm hand": wrist/root camera-frame (reachable) vs root-aligned/full-joint MPJPE (not currently reachable).
-- Camera source policy: will customer/API inputs include device VIO/SLAM/calibration metadata? If yes, delivery head/camera track is ingest+cross-check; if no, we must build/validate camera trajectory from video and cannot claim 5mm until evaluator passes.
+- Metric vector priority for the stakeholder's uniform ~5mm ideal: wrist/root, all-joint MPJPE, MPVPE/surface, visibility under occlusion, and temporal stability all remain targets; choose which axis gets the first engineering budget without deleting the others.
+- Camera source policy: will customer/API inputs include device VIO/SLAM/calibration metadata? If yes, delivery head/camera track is ingest+cross-check; if no, build and validate the best visual trajectory while adding metric anchors and measuring ATE/RPE progress toward 5mm.
 - Camera benchmark source beyond HOT3D near-static: Aria/ADT/Nymeria/MPS sidecars or an in-house fiducial capture.
 - API deployment assumption: in-house Ray fleet first vs Kubernetes platform from day one; managed GPU only as overflow unless user wants vendor route.

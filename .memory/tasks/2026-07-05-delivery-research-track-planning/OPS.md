@@ -47,3 +47,6 @@ User identified that local VLM deployment was never part of the requirement. Cor
 
 ## 2026-07-06 00:11 — Public API endpoint naming correction
 User identified endpoint names such as `/v1/delivery/jobs` as a category error: delivery/research are internal planning tracks, not customer API concepts. Updated current planning artifacts to use domain-facing names: `POST /v1/annotation-jobs`, base schema `ego.annotation.output`, and HOI extension namespace `org.ego.hoi` / `ego.hoi` in task packs. Preserved historical subagent outputs as evidence rather than rewriting them. Added project invariant that public API endpoint paths must use product/domain nouns, not internal track labels.
+
+## 2026-07-06 00:28 — Reframed 5mm as positive optimization target
+User identified that delivery planning still negated the 5mm goal by over-emphasizing unsupported claim boundaries. Updated the delivery task pack to define uniform 5mm as the ideal across head/camera, hand wrist/root, all-joint MPJPE, hand surface/MPVPE, projection, visibility, and jitter. Rewrote head/camera and hand sections so measurement limits select interventions and reported frontier, not target deletion. Updated EPISTEMIC and SYNTHESIS_WORKING accordingly; added project invariant that accuracy targets are optimization objectives.
