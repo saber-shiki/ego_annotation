@@ -8,8 +8,8 @@ Build a separate delivery pipeline, independent of the v1-v19 HOI/factor-graph v
 
 1. Customer can submit videos through a domain-named endpoint such as `POST /v1/annotation-jobs` and receive a manifest-driven artifact bundle (`ego.annotation.output` v1) with frame-aligned numeric tables, semantic clips, QC metrics, provenance, explicit errors, and optional QC/demo renders. Internal track names such as delivery/research must not appear in public endpoint paths.
 2. The target metric vector covers head/camera translation and rotation, hand wrist/root, all-joint MPJPE, hand-surface/MPVPE where available, visible 2D projection, and temporal stability. The ideal is uniform 5mm-level metric error on the physical axes; early versions report the measured frontier per axis and the mechanism selected to reduce the largest remaining error.
-3. Head/camera error is minimized under a fixed metric gauge. The strongest route is to ingest or acquire metric pose evidence—device VIO/SLAM/IMU, fiducials, mocap, calibrated video↔pose synchronization, and camera/head extrinsics—then evaluate ATE/RPE/scale without per-clip Sim(3) fitting. RGB-only trajectory estimates remain useful as measured estimates and QC signals; when their metric gauge is weak, the next action is to add or infer metric anchors and measure the residual gap.
-4. Hand error is minimized on wrist/root, all joints, and surface, not collapsed to the easiest number. Wrist/root camera-frame error is the near-term calibrated anchor; all-joint MPJPE and MPVPE stay in the protected metric vector and are optimized toward the same 5mm ideal through crop/intrinsics repair, visible-geometry improvement, GT-free drift self-calibration, and held-out evaluation.
+3. Head/camera error is minimized under a fixed metric gauge. The API reserves optional fields for device calibration, VIO/SLAM/IMU, and head-pose metadata, but job submission cannot depend on those fields being present. When device pose is absent, the pipeline estimates the best video-derived trajectory, exposes gauge/scale uncertainty, adds or infers metric anchors when available, and evaluates ATE/RPE/scale without per-clip Sim(3) fitting.
+4. Hand error is minimized on wrist/root, all joints, and surface, not collapsed to the easiest number. Wrist/root camera-frame error is the near-term calibrated anchor; the first post-root optimization priority is all-joint MPJPE. MPVPE/surface, visibility, projection, and temporal stability stay in the protected metric vector.
 5. QC overlays must not contradict numeric states: if the rendered hand appears 20-100 px away from independent 2D evidence, diagnose whether the numeric hand state, projection/crop/K adapter, or renderer is wrong. Trash-style occluded-hand jitter is handled as a hand-state stability/visibility defect: cap relative-motion priors, use detector-bounded fusion when visible evidence returns, and mark occluded states uncertain instead of drawing confident jittering hands.
 6. Fine-grained semantic clips cover the full video timeline with mostly 2-3s segments; captions are grounded in visible entities/actions and carry confidence/evidence frames.
 7. Throughput path demonstrates measured capacity toward ~10,000 video-hours/week, using module-speed instrumentation and a Ray-first video-aware scheduler. Dense object segmentation/SAM2 is not in the delivery default path when HOI is skipped.
@@ -24,11 +24,11 @@ Build a separate delivery pipeline, independent of the v1-v19 HOI/factor-graph v
 
 D1. Ingestion + raw frame manifest: frame paths, frame count, timestamps, resolution, input hash.
 
-D2. Camera calibration contract: one canonical K (+ distortion/rectification, axis convention, source) per clip/session; all consumers cite the same contract; missing intrinsics is a hard error.
+D2. Camera calibration resolver: one canonical K (+ distortion/rectification, axis convention, source, and uncertainty) per clip/session; all consumers cite the same contract. Inputs may provide device calibration, but the resolver must also support calibration estimation/derivation when metadata is absent. Silent fallback intrinsics are invalid; unresolved calibration becomes an explicit job error or degraded-confidence state, not an invisible default.
 
 D3. Metric depth/intrinsics support: conditional lane for uncalibrated ingest diagnostics, semantic grounding, and camera-scale QC; not default hand-depth truth and not a substitute for a metric head/camera source.
 
-D4. Head/camera trajectory: first-class numeric output with validity/confidence, gauge declaration, and separated metrics. Use the strongest available metric pose evidence: device VIO/SLAM/IMU, fiducial/mocap-derived pose, calibrated visual tracking, and static-scene constraints. RGB-only tracking remains an estimator to improve and score; its role is to produce the best current trajectory, expose gauge/scale uncertainty, and identify which added metric anchor would most reduce ATE/RPE.
+D4. Head/camera trajectory: first-class numeric output with validity/confidence, gauge declaration, and separated metrics. Use the strongest available metric pose evidence: optional device VIO/SLAM/IMU/head-pose metadata, fiducial/mocap-derived pose, calibrated visual tracking, and static-scene constraints. When device metadata is absent, video-derived tracking remains the default estimator to improve and score; its role is to produce the best current trajectory, expose gauge/scale uncertainty, and identify which added metric anchor would most reduce ATE/RPE.
 
 D5. HaWoR metric MANO: current metric wrist/root translation source, with focal-cache invalidation.
 
@@ -36,7 +36,7 @@ D6. WiLoR visible-hand geometry: root-relative geometry, 2D/crop evidence, prese
 
 D7. Hybrid + temporal fusion hand layer: HaWoR metric translation + WiLoR visible geometry; detector-fidelity-bounded fusion; robust capped relative-motion prior; source hysteresis; occluded/fallback states ghosted.
 
-D8. GT-free smooth-drift self-calibration: fixed-capacity per-clip correction family (R(t)+per-side b(t)) anchored by GT-free residuals (cross-detector, size/depth, static-scene). This is one bridge from current wrist/root accuracy toward the uniform 5mm hand target; it must preserve and expose all-joint/surface metrics rather than substituting for them.
+D8. GT-free smooth-drift self-calibration: fixed-capacity per-clip correction family (R(t)+per-side b(t)) anchored by GT-free residuals (cross-detector, size/depth, static-scene). This is one bridge from current wrist/root accuracy toward the uniform 5mm hand target; its first optimization priority is all-joint MPJPE, with surface/MPVPE and visibility preserved as protected metrics.
 
 D9. QC/demo renderer: deterministic projection of the numeric state and captions; pure function of state/layer hashes; no silent K fallback; frame count equals input. It diagnoses state/projection contradictions but does not define the numeric result.
 
@@ -70,17 +70,18 @@ Use `ego.annotation.output` v1:
 
 Phase 0: benchmark current modules with cold/warm timings, module_speed_x, GPU utilization, queue wait, batch fill, and artifact correctness metrics.
 
-Phase 1: FastAPI async job service + custom video-aware coalescer + Ray Serve/Ray GPU actors. Public API accepts video URIs and emits job ids; internal scheduler groups adjacent chunks by video/time/state affinity.
+Phase 1: FastAPI async job service + custom video-aware coalescer + Ray Serve/Ray GPU actors on a private GPU fleet. This is the initial deployment, because it is the simplest path for arbitrary PyTorch functions, persistent model residency, batching, and video-affinity scheduling. Public API accepts video URIs and emits job ids; internal scheduler groups adjacent chunks by video/time/state affinity.
 
 Phase 2: migrate stable stateless local vision modules to PyTriton/Triton when tensor contracts settle; keep stateful video modules as Ray actors. Captioning is budgeted as existing action-caption ingestion or batched external/agent caption calls, not as a local GPU lane.
 
-Phase 3: KubeRay/KServe only as outer fleet control if needed; managed GPU platforms only after cost/data-locality benchmarks.
+Phase 3: KubeRay/KServe only as outer fleet control after the Ray fleet is saturated or operationally painful; managed GPU platforms only after cost/data-locality benchmarks.
 
 Avoid TorchServe for new production.
 
 ## Validation/metrics
 
 Camera/head:
+- Promotion benchmark: protected in-house fixed-gauge fiducial/mocap lockbox with hidden GT, calibrated sync, known camera/head extrinsics, and no per-clip Sim(3) fitting. Public datasets with camera sidecars are development and regression checks, not the final 5mm promotion source.
 - Static-scene reprojection residual, 3D closure residual, gravity/world drift plausibility, and GT ATE/RPE/scale when GT exists.
 
 Hands:
@@ -122,13 +123,14 @@ Run discipline:
 
 Initial eval set:
 
-- GT-anchored: HOT3D 001849/001850/001851 for hand H1/H2; camera GT only where sidecars exist.
+- Promotion lockbox: in-house fixed-gauge fiducial/mocap capture for head/camera ATE/RPE/scale, with hidden GT and fixed camera/head extrinsics.
+- Public GT-anchored development: HOT3D 001849/001850/001851 for hand wrist/root and all-joint MPJPE; public camera-sidecar datasets only as regression checks where they expose the required fixed gauge.
 - Self-consistency: task5_tomato_960, trash_1050, window_putty_knife, phone_calculator, cut_cloth_scissors, origami_paper.
 - `trash_1050` remains a known-fail probe; a cheap improvement without a plausible mechanism is suspected metric gaming.
 
 Axis gates:
 
-- Hand: H1 wrist/root camera-frame error, H2 all-joint/root-relative MPJPE, MPVPE/surface where available, visibility, and jitter all stay in the protected vector; near-term weighting may prioritize the largest measured error but cannot remove the other axes.
+- Hand: H1 wrist/root camera-frame error remains the anchor; H2 all-joint MPJPE is the first optimization priority after root. Root-relative MPJPE, MPVPE/surface where available, visibility, and jitter stay in the protected vector.
 - Drift: R1 burst + H3 reprojection paired with H5 size ratio; reject 2D-only wins.
 - Head/camera: HC1/HC2/HC3 route optimization and diagnose drift; HC4 ATE/RPE under fixed metric gauge measures progress toward the 5mm ideal.
 - Caption: S1 coverage/duration, S2 grounding, S4 boundary stability; periodic human audit for VLM shared hallucination.
@@ -146,7 +148,7 @@ Anti-patterns that invalidate a run:
 
 ## First implementation milestones
 
-M0 — Metric vector lock: define p50/p95/RMSE reporting for head/camera, wrist/root, all joints, hand surface, reprojection, visibility, and jitter; define camera source policy, benchmark source, and deployment assumption.
+M0 — Metric vector lock: define p50/p95/RMSE reporting for head/camera, wrist/root, all-joint MPJPE, hand surface, reprojection, visibility, and jitter; reserve optional device calibration/VIO/head-pose interface while supporting metadata-absent jobs; use the in-house fixed-gauge fiducial/mocap lockbox as the head/camera promotion benchmark; deploy first on FastAPI + Ray Serve/Ray GPU actors.
 
 M1 — Measurement harness: module-speed benchmark + camera/head evaluator + final-layer QC recomputation on tomato.
 
@@ -160,9 +162,9 @@ M5 — Throughput alpha: Ray scheduler running at batch load on representative c
 
 M6 — Pilot release: 100+ video-hours processed through API, all metrics emitted, failures explicit, capacity forecast for 10k h/week.
 
-## Parked decisions for user
+## Resolved operating choices
 
-1. Does customer input include device calibration/VIO/head pose metadata?
-2. Which hand axis receives the first optimization budget after wrist/root: all-joint MPJPE, MPVPE/surface, visibility under occlusion, or temporal stability? All remain in the protected metric vector.
-3. Which camera/head benchmark or fiducial capture defines measured progress toward the 5mm ideal?
-4. Is the initial deployment a private Ray fleet or Kubernetes-first platform?
+1. Customer input may include device calibration, VIO/SLAM/IMU, or head-pose metadata; the API reserves those fields, but the delivery pipeline must also run when they are absent. Missing metadata lowers gauge certainty or triggers explicit unresolved states; it is not a job-contract assumption.
+2. The first hand optimization priority after wrist/root is all-joint MPJPE. MPVPE/surface, visibility under occlusion, projection, and temporal stability remain protected metrics.
+3. The head/camera promotion benchmark is an in-house fixed-gauge fiducial/mocap lockbox with hidden GT, calibrated sync, known camera/head extrinsics, and no per-clip Sim(3) fitting. Public camera-sidecar datasets are development/regression checks.
+4. The simplest initial deployment is FastAPI job ingress plus Ray Serve/Ray GPU actors on a private GPU fleet. Kubernetes/KServe is deferred until the Ray fleet needs outer orchestration.

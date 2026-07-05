@@ -11,7 +11,7 @@
 
 3. **Blunt correctness fixes before API:** one calibrated K (+ distortion) per clip/device used everywhere; eliminate per-frame elastic depth scale; fusion constrained by detector residual not only smoothness; QC/chips must measure final fused layer, not pre-fusion rows; deterministic renderer with no silent intrinsics fallback; separate camera/head vs hand benchmark tables.
 
-4. **Serving architecture:** async job API + video-aware coalescer + Ray Serve/Ray GPU actors first; Triton/PyTriton once tensor contracts stabilize; vLLM/TGI for caption/VLM; KServe later as outer platform; avoid TorchServe. Measure `module_speed_x`, GPU utilization, queue wait, batch fill. 10k video-hours/week = 59.5 realtime streams continuously per module.
+4. **Serving architecture:** chosen default is async job API + video-aware coalescer + Ray Serve/Ray GPU actors on a private GPU fleet; this is the simplest solution for arbitrary PyTorch functions, persistent residency, batching, and video-affinity scheduling. Triton/PyTriton follows only after tensor contracts stabilize; KServe is later outer orchestration; avoid TorchServe. Measure `module_speed_x`, GPU utilization, queue wait, batch fill. 10k video-hours/week = 59.5 realtime streams continuously per module.
 
 5. **API output:** public API endpoints use domain nouns such as `POST /v1/annotation-jobs`, not internal track names. Base artifact schema is `ego.annotation.output` v1 with manifest, Parquet tables (`frames`, `head_camera`, `hand_states`, `semantic_clips`, `validation_metrics`), NDJSON overlay/caption/provenance/errors, renders. HOI is explicitly excluded from base schema and must live in a domain extension namespace such as `org.ego.hoi`.
 
@@ -25,9 +25,9 @@
 4. Detection + factor graph is not wrong, but semantic detection must become one object-hypothesis source alongside motion discovery. RL/physics is a feasibility projection experiment; end-to-end is a distillation endpoint, not current pipeline replacement.
 5. Research experiments E1-E9 from subagent 7 form the research backbone; E5 GT-free drift latent is the designed bridge back into delivery.
 
-## User decisions likely needed
+## Resolved operating choices
 
-- Metric vector priority for the stakeholder's uniform ~5mm ideal: wrist/root, all-joint MPJPE, MPVPE/surface, visibility under occlusion, and temporal stability all remain targets; choose which axis gets the first engineering budget without deleting the others.
-- Camera source policy: will customer/API inputs include device VIO/SLAM/calibration metadata? If yes, delivery head/camera track is ingest+cross-check; if no, build and validate the best visual trajectory while adding metric anchors and measuring ATE/RPE progress toward 5mm.
-- Camera benchmark source beyond HOT3D near-static: Aria/ADT/Nymeria/MPS sidecars or an in-house fiducial capture.
-- API deployment assumption: in-house Ray fleet first vs Kubernetes platform from day one; managed GPU only as overflow unless user wants vendor route.
+- Customer/API inputs may include device calibration, VIO/SLAM/IMU, or head-pose metadata, but the pipeline must not depend on them. The schema reserves optional fields; metadata-absent jobs use the calibration resolver and video-derived trajectory with explicit gauge uncertainty.
+- The first hand optimization priority after wrist/root is all-joint MPJPE. MPVPE/surface, visibility under occlusion, projection, and temporal stability remain protected metrics.
+- The camera/head promotion benchmark is an in-house fixed-gauge fiducial/mocap lockbox with hidden GT, calibrated sync, and known camera/head extrinsics. Public camera-sidecar datasets are development/regression checks.
+- The simplest initial deployment is FastAPI job ingress plus Ray Serve/Ray GPU actors on a private GPU fleet. Kubernetes/KServe is deferred until the Ray fleet needs outer orchestration.
