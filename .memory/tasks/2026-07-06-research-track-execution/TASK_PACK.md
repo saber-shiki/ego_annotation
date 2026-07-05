@@ -137,7 +137,33 @@ Predictions and interventions:
 - Correct graph output but stale render → repair state-to-render dependency chain.
 - Dominant factor suppresses others → recalibrate noise model and residual normalization.
 
-### D6 — Runtime-heavy mechanisms need teacher/student separation
+### D6 — Cross-solver geometry-source decoupling hides an existing measurement
+
+Observed defect: in HOT3D clip001850 keyboard frames ~26-46, interval MANO reports ~10 cm right-hand penetration into an observed keyboard surface, contact/nonpenetration reports zero penetrating vertices against a different mostly-TRELLIS non-watertight completed mesh with zero signed-query candidates, and the render publishes a +39 mm gap.
+
+Live mechanisms:
+- M1: contact/nonpenetration is disabled by non-watertight or wrong-epoch geometry.
+- M2: interval MANO observed-surface penetration is contaminated by leaked hand/background surface.
+- M3: object pose support/freshness is weak enough that all hand-object distances are measured against wrong placement.
+- M4: graph factors do not couple the interval penetration measurement into pose/contact/render state.
+- M5: solver stages query different geometry epochs/source families, so generic support counters mislabel the defect as missing measurement.
+
+Discriminating measurements:
+- Solver/contact/render geometry epoch ids and geometry source families.
+- Signed query candidate vertex count and watertight flag for the contact/NP mesh.
+- Face provenance summary for the geometry queried by contact/NP.
+- Observed-surface penetration from interval MANO and published contact gap from render.
+- Hand-to-surface distances against observed surface and completed mesh under common pose.
+- Temporal coherence of penetrating MANO vertices across frames 26-46.
+- Free-space/extent plausibility of the completed keyboard geometry.
+
+Predictions and interventions:
+- Observed-surface penetration is coherent and completed-mesh query has zero candidates → add `cross_solver_geometry_decoupled` graph-health route and wire observed-surface contact evidence into contact/NP.
+- Penetrating vertices are scattered or coincide with leaked surface points → repair geometry epoch contamination before using penetration as a factor.
+- Distances change primarily by pose provenance → repair pose observability/freshness before contact factors.
+- Graph remains nfev=1 with zero NP targets after reconciliation → repair variable/factor coupling.
+
+### D7 — Runtime-heavy mechanisms need teacher/student separation
 
 Observed defect: some mechanisms may improve HOI state but run too slowly for delivery-scale use.
 
@@ -192,7 +218,7 @@ extensions/org.ego.hoi/0.1.0/{run_id}/
     hoi_world.mp4
 ```
 
-Rows carry `base_job_id`, `base_manifest_sha256`, frame/interval, object id, geometry epoch id, solution id, input hashes, output hashes, coordinate frame, gauge, covariance/observability, and provenance. The renderer consumes these rows to draw hands, object bodies, visible surfaces, contact state, occlusion ownership, event labels, and uncertainty styling.
+Rows carry `base_job_id`, `base_manifest_sha256`, frame/interval, object id, geometry epoch id, solution id, input hashes, output hashes, coordinate frame, gauge, covariance/observability, and provenance. Graph-health rows additionally carry solver/contact/render geometry epoch ids, geometry source families, signed query candidate count, watertight flag, face provenance summary, observed-surface penetration, published contact gap, and `cross_solver_geometry_decoupled` decision state. The renderer consumes these rows to draw hands, object bodies, visible surfaces, contact state, occlusion ownership, event labels, and uncertainty styling.
 
 ## Workstream A — object hypotheses and temporal correspondences
 
@@ -396,7 +422,7 @@ Outcome routing:
 
 R0 — Output substrate: write `ego.hoi` sidecar manifest, tables, provenance streams, and full-duration render from rows.
 
-R1 — Causal cards and graph instrumentation: add support/liveness/gauge/freshness metrics to current v19-style graph runs; every experiment records mechanisms and predictions before runtime.
+R1 — Causal cards and graph instrumentation: add support/liveness/gauge/freshness metrics and cross-solver geometry-source consistency to current v19-style graph runs; every experiment records mechanisms and predictions before runtime.
 
 R2 — Correspondence and rigidity: produce temporal tracks, rigidity windows, Procrustes pose seeds, and residual reports.
 

@@ -23,7 +23,9 @@ Start with R0/R1 because the current graph can be inert while appearing implemen
 Use full-duration renderable HOI artifacts as the research output: tables/assets/provenance plus overlay/world/side-by-side videos driven by state rows.
 Do not replace analysis with activity: a build task is valid only when tied to a mechanism and discriminating measurement.
 Do not replace analysis with caution: uncertainty is a state variable and routing signal, not a reason to omit the mechanism.
-Initial mechanism families are object-pose null spaces, geometry epoch contamination/prior completion, contact evidence under occlusion, smooth HOI hand drift, graph inertness/stale joins, and runtime-heavy teacher/student separation.
+Initial mechanism families are object-pose null spaces, geometry epoch contamination/prior completion, contact evidence under occlusion, smooth HOI hand drift, graph inertness/stale joins, cross-solver geometry-source decoupling, and runtime-heavy teacher/student separation.
+The first slice is HOT3D clip001850 keyboard, right hand, frames ~26-46 in run `/data2/ego_annotation_outputs/v19_runs/20260626_hot3d_clip001850_pinhole_a800_native_v5_focalfix_coordrigid_v1`; R0/R1 must expose the interval-MANO observed-surface penetration, contact/NP completed-mesh zero-candidate query, and render published gap as one reconciled graph-health state.
+Graph-health rows must include solver/contact/render geometry epoch ids, geometry source families, signed query candidate count, watertight flag, face provenance summary, observed-surface penetration, published contact gap, and a `cross_solver_geometry_decoupled` decision route.
 RL work begins only after live graph variables and evaluator exist; distillation begins only from validated teacher outputs.
 All heavyweight inference/runtime work runs on server/A800 or approved non-local compute.
 
