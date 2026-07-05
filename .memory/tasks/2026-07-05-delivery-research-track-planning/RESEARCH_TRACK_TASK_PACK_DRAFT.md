@@ -2,37 +2,169 @@
 
 ## Objective
 
-Continue HOI/physical-state extraction as a separate research program. The research track may build object geometry, object pose, contact, occlusion ownership, nonpenetration, factor graphs, RL approximations, and distillation experiments, but none of these semantics enter the delivery API base contract until promoted through explicit evidence gates.
+Build a HOI/physical-state extraction system that turns egocentric video into full-duration, renderable annotations for object geometry, object pose, contact, occlusion ownership, nonpenetration, articulation/deformation, and hand-object interaction events.
 
-The research artifact is still renderable annotation: full-duration HOI overlays/world views whose visible object/contact/occlusion marks are driven by represented mechanisms and uncertainty. Schema rows are backing data, not the artifact.
+Progress is mechanism resolution. Each change must connect an observed artifact defect to a physical variable, test the mechanism that could explain it, implement the intervention selected by the result, and change the rendered/numeric HOI state.
 
-## Track boundary
+The research artifact is full-duration HOI annotation: tables, assets, and overlay/world/side-by-side videos whose visible marks are driven by measured geometry, pose, contact, occlusion, and hand-correction state. Schema rows exist to drive and reproduce those annotations.
 
-- Base customer-facing annotation outputs remain `ego.annotation.output` v1 and contain head/camera, hands, semantic clips, QC, and renders only.
-- HOI outputs use an isolated domain extension namespace, currently reverse-DNS `org.ego.hoi` with schema family `ego.hoi` 0.x, as a sidecar or attached extension that references a pinned base annotation manifest by id and hash. Internal track names such as delivery/research must not appear in public API endpoint paths.
-- The extension may read delivery hand/camera/semantic rows; it cannot mutate delivery rows, delivery captions, delivery status, or delivery metrics.
-- Promotion back to delivery requires measured utility, runtime budget, stable schema, and no contamination of the base accuracy claims.
+## Analysis contract for every experiment
 
-## Core causal diagnosis
+Every research experiment starts with a causal card:
 
-The v19 HOI path failed because the graph asked unobserved variables to explain the video:
+1. **Artifact defect:** the visible or numeric HOI failure being repaired.
+2. **Physical variable:** object pose, geometry, contact state, occlusion owner, hand drift, graph liveness, or runtime variable that is wrong.
+3. **Live mechanisms:** two or more concrete mechanisms that could produce the defect.
+4. **Discriminating measurement:** the observation that separates those mechanisms.
+5. **Predictions:** expected measurement pattern under each mechanism.
+6. **Intervention:** the implementation change selected by each possible outcome.
+7. **State change:** the table fields, assets, and rendered marks expected to change.
 
-1. Object pose was under-measured: silhouette/depth channels did not observe several failing directions, and pose could move through null spaces without changing residuals.
-2. Object shape was weak: single-anchor completion baked appearance defects and hidden-region priors into a mesh treated as if metric.
-3. Contact was under-observed: contact evidence often disappeared exactly under occlusion, and previous rows encoded empty support as if a factor existed.
-4. Hand state needed drift latents: hand errors were smooth per-clip/per-side biases not represented in the solver state.
-5. Factor graph liveness was not guaranteed: stale joins, zero-support terms, and passthrough solved states could look like implemented optimization.
+An experiment that only produces a score without selecting the next implementation is bookkeeping. An implementation that lacks a discriminating measurement is blind activity.
 
-Therefore the research program starts with measurement channels and state representation, then uses graphs, RL, and distillation after variables are observable.
+## Causal map of current HOI defects
 
-## Research-state extension sketch
+### D1 — Object pose moves through unobserved directions
+
+Observed defect: object pose can change while silhouette/depth residuals stay similar, so the rendered object can look plausible in one view and be physically wrong in 3D.
+
+Live mechanisms:
+- M1: temporal correspondences are missing, so pose lacks point-level constraints.
+- M2: object symmetry or weak texture leaves some rotations low-observability.
+- M3: camera/depth gauge error is being absorbed by object pose.
+- M4: optimizer weights let one residual channel dominate the others.
+
+Discriminating measurements:
+- Held-out temporal track reprojection residual.
+- Visible-depth residual along camera ray.
+- Silhouette residual separated by image-plane direction.
+- Per-DOF Hessian/covariance and residual contribution by factor family.
+
+Predictions and interventions:
+- High track residual with good silhouette → build/repair temporal correspondences and robust Procrustes seeds.
+- High depth residual with good 2D residual → add metric depth/camera constraints and depth-axis pose factors.
+- Low rotational observability on symmetric object → add part/texture correspondences or represent that DOF with high covariance.
+- One channel dominates gradient share → recalibrate factor noise and normalize residual scales.
+
+### D2 — Geometry encodes a single-frame prior as object body
+
+Observed defect: a mesh built from one anchor frame or prior completion can be treated as a stable physical object even where surfaces were never observed.
+
+Live mechanisms:
+- M1: source masks include background or hand pixels.
+- M2: depth support is sparse or wrong at the anchor.
+- M3: prior completion invents hidden surfaces that later contact logic consumes.
+- M4: pose error during fusion smears observed surfaces.
+
+Discriminating measurements:
+- Face-provenance fractions by region: observed, interpolated, prior-completed, unknown.
+- Free-space violation volume.
+- Held-out silhouette/depth residual.
+- Multi-frame fusion residual after pose alignment.
+
+Predictions and interventions:
+- High contamination rate → repair segmentation/source prompts before geometry fusion.
+- High free-space violation → prune mesh and refit scale/pose.
+- High prior-completed fraction in active contact region → collect additional views or route contact to visible-surface evidence.
+- Fusion residual grows with additional frames → repair pose alignment before adding geometry.
+
+### D3 — Contact evidence disappears when contact matters
+
+Observed defect: hand-object contact often occurs under partial occlusion; earlier factors encoded empty support as if contact had been measured.
+
+Live mechanisms:
+- M1: MANO/object source gap is wrong because hand or object pose is wrong.
+- M2: contact is visible only through motion coupling, not direct surface visibility.
+- M3: depth order is available but not linked to contact state.
+- M4: temporal contact state flickers because every frame is solved independently.
+
+Discriminating measurements:
+- Source-gap posterior at MANO region/object surface.
+- Depth-order render-and-compare residual.
+- Object motion onset relative to hand velocity/acceleration.
+- Contact-map response where learned channel exists.
+- Contact flicker rate and interval continuity.
+
+Predictions and interventions:
+- Source gap and motion agree but depth is missing → add visibility-conditioned contact posterior and temporal interval smoothing.
+- Motion without source-gap support → inspect hand/object pose and association before adding contact factors.
+- Depth order contradicts source gap → repair geometry, K, depth, or hand/object pose.
+- High flicker with stable evidence → add temporal contact mode variable and hysteresis.
+
+### D4 — Hand state has smooth metric drift inside HOI
+
+Observed defect: delivery hands can be locally plausible in 2D while metric wrist/root, joints, or surface are biased enough to corrupt contact and nonpenetration.
+
+Live mechanisms:
+- M1: per-clip/per-side translation and rotation bias from calibration/crop/K mismatch.
+- M2: hand source switching creates discontinuities.
+- M3: occlusion intervals are over-smoothed and exit at wrong position.
+- M4: root is corrected while all-joint MPJPE or surface remains wrong.
+
+Discriminating measurements:
+- Wrist/root error and all-joint MPJPE where GT exists.
+- Final-layer reprojection residual against independent 2D detector evidence.
+- Projected MANO size versus detected hand size.
+- Source-switch jitter and occlusion-exit residual.
+- Source gap residual under high-confidence contact candidates.
+
+Predictions and interventions:
+- Reprojection improves while MPJPE worsens → repair metric root/depth calibration.
+- MPJPE improves while render drifts → repair projection/crop/K adapter.
+- Jitter spikes at source switches → add source hysteresis and detector-bounded fusion.
+- Surface/contact residual remains after root repair → optimize all-joint/surface state, not only wrist/root.
+
+### D5 — Factor graph can be inert while looking implemented
+
+Observed defect: graph outputs can equal inputs, use stale dependencies, or include factors with no support while tables imply optimization occurred.
+
+Live mechanisms:
+- M1: factor support is zero or near zero on critical intervals.
+- M2: graph variables do not control the rendered state.
+- M3: stale object/hand/geometry ids are joined into the solve.
+- M4: residual scales make one factor family invisible.
+
+Discriminating measurements:
+- Active residual count and support fraction by factor family.
+- Input-output deltas for every state family.
+- Render-state hash lineage from graph output to final video.
+- Stale dependency count and geometry epoch freshness.
+- Gradient/share by factor family.
+
+Predictions and interventions:
+- Zero support → repair measurement extraction before changing optimizer weights.
+- Nonzero residual with zero state delta → repair variable wiring or solver plumbing.
+- Correct graph output but stale render → repair state-to-render dependency chain.
+- Dominant factor suppresses others → recalibrate noise model and residual normalization.
+
+### D6 — Runtime-heavy mechanisms need teacher/student separation
+
+Observed defect: some mechanisms may improve HOI state but run too slowly for delivery-scale use.
+
+Live mechanisms:
+- M1: heavy stage is needed only to create teacher labels.
+- M2: heavy stage can be replaced by an amortized initializer or scheduler.
+- M3: heavy stage consumes video-local context that batching fails to preserve.
+
+Discriminating measurements:
+- GPU-hours/video-hour by stage.
+- Batch fill, model residency, and queue wait.
+- Quality loss when stage is approximated.
+- Student/teacher parity by variable family.
+
+Predictions and interventions:
+- Teacher improves state but is slow → retain as offline teacher and start distillation.
+- Approximation preserves parity → package as fast research path.
+- Approximation loses one variable family → split model or add missing measurement input.
+
+## Output substrate: `ego.hoi`
 
 Namespace: `org.ego.hoi`; schema family: `ego.hoi` 0.1.0.
 
 Default file layout:
 
 ```text
-extensions/org.ego.hoi/0.1.0/{research_run_id}/
+extensions/org.ego.hoi/0.1.0/{run_id}/
   manifest.json
   tables/
     objects.parquet
@@ -60,159 +192,228 @@ extensions/org.ego.hoi/0.1.0/{research_run_id}/
     hoi_world.mp4
 ```
 
-Required invariants:
+Rows carry `base_job_id`, `base_manifest_sha256`, frame/interval, object id, geometry epoch id, solution id, input hashes, output hashes, coordinate frame, gauge, covariance/observability, and provenance. The renderer consumes these rows to draw hands, object bodies, visible surfaces, contact state, occlusion ownership, event labels, and uncertainty styling.
 
-- Every dependent row carries `base_job_id`, `base_manifest_sha256`, `frame_index` or half-open interval, and solution/epoch ids.
-- Geometry freshness is represented by mandatory `geometry_epoch_id`; stale joins are queryable defects.
-- Pose rows include per-DOF covariance/observability and declared gauge. Unobserved DOFs are uncertain, not silently smoothed.
-- Solved tables carry input hashes and `differs_from_input`/liveness bits.
-- Contact is a posterior over `{contact, near, none, unresolved}`, not a boolean.
-- Signed distance is valid only against watertight geometry epochs with per-face provenance.
-- Per-face labels distinguish observed, interpolated, prior-completed, and unknown regions.
-- Deformable objects use visible-surface/surfel state; rigid pose is `not_applicable_deformable`.
+## Workstream A — object hypotheses and temporal correspondences
 
-## Ontology
+Mechanism being tested: object pose is underconstrained because the object lacks stable temporal point/surface correspondences.
 
-Entities:
+Build:
+- Open-vocabulary object hypotheses from semantic plans, captions, boxes, and masks.
+- Motion-discovered rigid-body candidates from 2D tracks, 3D/depth tracks, and temporal mask correspondences.
+- Track-quality tables with lifetime, occlusion gaps, reprojection residual, depth residual, and association confidence.
 
-- Hands: delivery hand tracks (`left_primary`, `right_primary`) plus optional research correction rows; MANO vertex/region ownership references coarse anatomy (`thumb_tip`, `index_tip`, `fingers`, `palm`, etc.).
-- Objects: open-vocabulary semantic hypotheses, motion-discovered rigid bodies, support surfaces, articulated bodies, deformables, unresolved bodies.
-- Geometry epochs: time-scoped representations of object/surface geometry with method, source masks, anchor frames, scale basis, face provenance, and supersession links.
-- Poses: per-frame object/camera/world transforms with gauge and observability.
-- Rigidity windows: measured rigidity/deformation state over intervals via pairwise distance conservation and Procrustes residuals.
-- Contacts: hand-object/part intervals with source-gap posterior, depth-order evidence, motion-onset evidence, learned-contact evidence if available, and ownership uncertainty.
-- Occlusion: per-frame visibility state for hands/objects with occluder candidates and confidence.
-- Events: grasp onset/release, object motion, deformation, part articulation, occlusion transitions.
+Discriminating experiment:
+- Hold out frames from each candidate interval.
+- Fit correspondence tracks on the remaining frames.
+- Predict held-out 2D positions and depth support.
 
-## Metric families
+Outcome routing:
+- Low held-out residual → feed tracks to rigidity and pose.
+- High residual with identity swaps → improve association or split object hypotheses.
+- High depth inconsistency → repair depth/camera substrate before pose fitting.
 
-Object pose and trajectory:
+## Workstream B — rigidity, articulation, and deformation
 
-- GT: ADD/ADD-S, translation error mm, rotation error deg, trajectory ATE/RPE under declared gauge. Contact-usable target: ≤20–30 mm median translation and ≤6 deg rotation; strong: ≤10 mm and ≤3 deg.
-- GT-free: held-out surface-track reprojection, silhouette IoU, visible-depth residual, per-DOF observability, temporal jitter normalized by image motion.
-- Blind spots: symmetric objects hide rotation; silhouette misses depth-axis motion; global gauge can make a wrong trajectory look locally consistent.
-- Routing: pose residual bad with shape/mask good → tracking/pose; pose residual good with silhouette/depth bad → shape/mask/camera substrate.
+Mechanism being tested: the object state family is wrong if rigid pose is forced onto articulated or deformable motion.
 
-Object shape/geometry:
+Build:
+- Rigidity windows from pairwise distance conservation and robust Procrustes residuals.
+- Motion-class posterior over rigid, articulated, deformable, support surface, unresolved body.
+- Articulation candidates with revolute/prismatic/free-joint residuals.
+- Deformation intervals from visible surface flow and event labels.
 
-- GT: visible-region Chamfer to CAD, face-provenance-specific distance, free-space violation volume.
-- GT-free: silhouette reprojection, depth support residual, free-space carving violations, mask contamination rate, watertightness/self-intersection.
-- Threshold basis: visible shape should be comparable to or better than depth noise (roughly 15–45 mm depending channel); prior-completed faces are never used as hard contact evidence.
-- Routing: high prior-face fraction means hidden-region uncertainty, not pose failure.
+Discriminating experiment:
+- Compare rigid Procrustes residual against articulated and deformable alternatives over the same interval.
+- Normalize residuals by depth noise and track uncertainty.
 
-Contact and near-contact:
+Outcome routing:
+- Stable rigidity → feed pose graph and geometry fusion.
+- Articulation residual lower than rigid residual → split parts and fit joint model.
+- Deformation residual dominates → use visible-surface/surfel state for that interval.
 
-- GT/proxy-GT: interval AUROC/balanced accuracy against annotated/proximity-derived contact; onset/offset timing; signed-distance residual to GT mesh where available.
-- GT-free: channel agreement between source gap, depth order, hand/object motion coupling, learned contact map, and occlusion state; contact flicker rate; object-motion-without-grasp contradiction.
-- State semantics: `contact` when source gap is within soft-tissue band and channels support touch; `near` when within about 2σ combined uncertainty (~60 mm) without touch support; `none` when gap/channels reject; `unresolved` when occlusion or geometry makes the claim unmeasurable.
-- Blind spots: contact through full occlusion remains uncertain; pressure/force is unobserved unless pressure data exists.
+## Workstream C — geometry epochs
 
-Nonpenetration:
+Mechanism being tested: contact and pose fail because the geometry epoch is contaminated, stale, or dominated by unobserved completion.
 
-- Valid only on watertight/observed-enough geometry. Use soft-tissue bands: finger pads about 2–3 mm, palm about 5 mm. Penetration beyond band into observed faces is a defect; penetration into prior-completed hidden faces is uncertainty.
+Build:
+- Pose-aligned multi-frame visible-surface fusion.
+- Geometry epochs with source masks, depth sources, anchor frames, scale basis, supersession links, and per-face provenance.
+- Free-space carving and silhouette/depth validation against held-out frames.
+- Prior completion only for never-seen regions, with separate provenance labels.
 
-Rigidity/articulation/deformation:
+Discriminating experiment:
+- Render the fused geometry into held-out frames.
+- Compare silhouette, visible-depth residual, and free-space violations by face provenance class.
 
-- GT-free: pairwise distance conservation, Procrustes residual over windows, depth noise floor, rigidity SNR, motion-class posterior.
-- GT: known rigid objects and articulated datasets (HOT3D/ARCTIC/DexYCB/HOI4D where adopted after noise decomposition).
-- Articulation: fitted revolute/prismatic/free model residual; scissors and similar objects validate part-motion semantics.
-- Deformation: visible surface flow/residual and human event labels for fold/cut/bend intervals.
+Outcome routing:
+- High observed-face residual → repair masks, depth, pose, or fusion.
+- High free-space violation → prune geometry and refit scale/pose.
+- High completion fraction in active interaction region → acquire more visible surface evidence or route contact to observed faces.
 
-Occlusion and ownership:
+## Workstream D — object pose and trajectory
 
-- GT: rendered visibility from CAD/pose where available.
-- GT-free: depth-order render-and-compare, mask boundary consistency, occluder overlap/frontness, contradiction with detector evidence.
-- Claim boundary: ownership through full occlusion is posterior/uncertain unless depth-order and temporal evidence constrain it.
+Mechanism being tested: object trajectory error comes from weak pose seeds, wrong residual weighting, or camera/depth gauge leakage.
 
-Hand correction inside HOI:
+Build:
+- Pose seeds from robust Procrustes over temporal correspondences.
+- Pose refinement using silhouette, visible depth, surface-track reprojection, rigidity, and smooth motion priors.
+- Per-DOF covariance/observability and declared gauge per trajectory.
+- Pose routes for rigid objects, articulated parts, deformables, and support surfaces.
 
-- Research may maintain `hoi_hand_corrections` as drift latents/corrections relative to base delivery hands.
-- These rows cannot overwrite base hand states. Promotion to delivery requires GT-free anchors validated against HOT3D/held-out GT and final-layer visual drift.
+Discriminating experiment:
+- Run ablations with correspondence-only, depth-only, silhouette-only, and fused residuals.
+- Compare GT ADD/ADD-S where available and GT-free held-out residuals everywhere.
 
-Graph health:
+Outcome routing:
+- Depth-axis residual dominates → add metric depth/camera constraints and depth-axis factors.
+- Rotation weak on symmetric shape → add texture/part correspondence and represent covariance.
+- Good masks with bad pose → repair optimizer and correspondence weighting.
+- Good pose with bad masks/depth → repair perception substrate.
 
-- Term support fraction, zero-support active factor count, term gradient/share, solver liveness (`differs_from_input`), input-output hash difference, stale join count, gauge declaration count.
-- Zero-support factors, stale joins, and unlabeled gauges are blocking defects for graph-derived claims.
+## Workstream E — HOI hand corrections
 
-Runtime:
+Mechanism being tested: HOI contact is wrong because delivery hand state contains smooth drift or source-switch artifacts.
 
-- Research may be offline, but records GPU-hours/video-hour and wall-clock. Any method requiring hours per one-minute clip is research-only by default and cannot be promoted to delivery without a runtime redesign.
+Build:
+- `hoi_hand_corrections` rows as drift latents relative to delivery hands.
+- Per-side smooth translation/rotation correction families tied to visible 2D, MANO geometry, depth/size, and object-contact channels.
+- Source hysteresis and occlusion-aware uncertainty for hand state used inside HOI.
 
-## Validation protocols
+Discriminating experiment:
+- Fit correction family on development clips using GT-free residuals.
+- Evaluate wrist/root, all-joint MPJPE, reprojection, projected size, source gap, and jitter on held-out clips.
 
-1. Fixed HOT3D slices with MANO and object CAD/pose where available; lockbox clips selected before tuning.
-2. Demo-regime clips for GT-free metrics and human-labeled event boundaries: tomato, trash, origami, scissors, putty knife, phone/calculator.
-3. External datasets only after noise/regime-transfer decomposition: EgoPressure for pressure/contact, ARCTIC for articulation, HOI4D for scale/part statistics, DexYCB for tabletop grasping.
-4. Every experiment records predictions before running: which metric should move, which metric should not move, and what each outcome implies.
-5. Dual reporting: proxy metric plus GT metric where GT exists. Proxy improvement without GT improvement is proxy capture.
-6. Visual consumption is required: inspect full-duration renders or representative sheets as HOI annotations, not as file existence.
+Outcome routing:
+- Reprojection improves while MPJPE worsens → repair metric root/depth calibration.
+- MPJPE improves while rendered hand drifts → repair projection/crop/K adapter.
+- Occlusion-exit drift remains high → strengthen detector-bounded fusion and temporal reset.
+- Root improves but all-joint MPJPE stays high → optimize articulation/surface, not only global hand transform.
 
-## Research automation invariant
+## Workstream F — contact, near-contact, and occlusion ownership
 
-Research auto-improvement cannot start as an unattended loop until the evaluator exists. The protected evaluator is not a single scalar; it is a vector over object pose, shape, rigidity, contact, occlusion, hand correction, graph health, and runtime. Acceptance requires target-family improvement, GT/proxy co-motion where GT exists, no protected-family regression, lockbox transfer, visual-render veto, and graph liveness/gauge/freshness asserts.
+Mechanism being tested: contact state is recoverable by combining weak channels that fail at different times.
 
-The honest experiment sequence is dependency-constrained:
+Build:
+- Contact posterior over `contact`, `near`, `none`, and `unresolved` per hand/object/part interval.
+- Source-gap channel from MANO region/object surface distance with soft-tissue bands.
+- Depth-order channel from render-and-compare and local depth evidence.
+- Motion-coupling channel from object motion onset, hand velocity, and relative acceleration.
+- Learned contact-map channel where training/evaluation data exists.
+- Visibility states for hand/object with occluder candidates and confidence.
 
-1. Instrument graph health first: term support, liveness, gauge, stale joins, freshness.
-2. Measure rigidity and correspondence before pose optimization.
-3. Use pose-stabilized multi-frame geometry before nonpenetration/contact claims.
-4. Validate contact channels before switchable contact factors.
-5. Develop drift latents in parallel, but never fit them to GT for deployable claims.
-6. Treat every negative result as a redirect within the same mechanism family unless it falsifies that family.
+Discriminating experiment:
+- For each candidate contact interval, score source gap, depth order, motion coupling, learned contact, and visibility independently.
+- Compare channel combinations against annotated/proximity-derived contact and render review.
 
-A fixed-slice win without lockbox transfer is overfit. A proxy win without GT/render agreement is proxy capture. A solved state that equals its input is inert. A nonwatertight or prior-completed face cannot support signed nonpenetration.
+Outcome routing:
+- Source gap and motion agree while depth is missing → add visibility-conditioned posterior and interval smoothing.
+- Motion without source-gap support → inspect hand/object pose and association.
+- Depth order contradicts source gap → repair geometry, K, depth, or hand/object pose.
+- High flicker with stable evidence → add temporal contact mode variable and hysteresis.
 
-## RL approximation boundary
+## Workstream G — graph redesign
 
-RL is useful only after the graph's variables and measurements are live. It may amortize a validated graph MAP solve, schedule discrete hypotheses/switches, choose initializers, or project a measurement-derived state into a feasibility set. It cannot recover information absent from the sensors and cannot replace object pose, contact, or drift measurements.
+Mechanism being tested: the graph succeeds only when every factor family has live measurement support and controls rendered variables.
 
-Admissible RL outputs must preserve posterior uncertainty, provenance, gauge declaration, measurement coupling, and liveness. Rewards are the validated graph objective or a measurement-coupled simulator residual; silhouette/source-gap/proximity/render style rewards alone are invalid because they reproduce known proxy-capture failures. Online simulation is research-only and only a feasibility regularizer; mass/friction/soft-tissue parameters are unmeasured variables, not truth.
+Build:
+- Variables: object pose, geometry epoch, rigidity state, contact mode, occlusion owner, hand drift latent, gauge, and per-channel noise.
+- Factors: correspondence reprojection, visible-depth residual, silhouette residual, rigidity, contact source-gap, depth-order, motion coupling, nonpenetration, hand correction, and temporal smoothness.
+- Switchable contact mixtures and visibility-conditioned factor activation.
+- Graph health table with support fraction, active residual count, gradient/share, liveness, input-output deltas, stale dependency count, and gauge declarations.
 
-RL stop conditions: R4 graph redesign not closed; channel ablation shows ignored measurements; reward improves while GT/proxy/render contradict; posterior calibration fails; simulator sensitivity dominates; runtime misses the delivery budget; disagreement with graph MAP persists beyond a declared band.
+Discriminating experiment:
+- Add one factor family at a time on the same frozen clips.
+- Measure target metric movement, cross-family regressions, factor support, gradient share, liveness, and rendered state deltas.
 
-## Research milestones
+Outcome routing:
+- Factor support near zero → repair measurement extraction.
+- Nonzero residual with zero state delta → repair variable wiring or solver plumbing.
+- Correct graph output but stale render → repair state-to-render dependency chain.
+- One family improves while another degrades → inspect shared variables and noise scaling.
 
-R0 — Schema/output harness: `ego.hoi` sidecar manifest, tables, and full-duration HOI render driven by rows.
+## Workstream H — evaluator and datasets
 
-R1 — Correspondence-first rigid-body extraction: temporal 2D/3D tracks, rigidity windows, robust Procrustes, pose observability, and held-out track residuals.
+Mechanism being tested: a metric is useful only if it selects the same implementation direction as GT or visual HOI consumption on held-out data.
 
-R2 — Multi-frame geometry epochs: pose-aligned visible surface fusion, face provenance, free-space checks, prior completion only for never-seen regions.
+Build:
+- Frozen development set from HOT3D clips with MANO/object CAD/pose where available.
+- Demo-regime GT-free set: tomato, trash, origami, scissors, putty knife, phone/calculator.
+- In-house HOI lockbox with synchronized camera/head/hand/object/contact annotations for promotion studies.
+- External dataset adapters after regime/noise decomposition: EgoPressure, ARCTIC, HOI4D, DexYCB.
+- Full-duration visual review renderer plus representative sheets for every metric run.
 
-R3 — Contact measurement channels: source-gap posterior, depth-order evidence, object-motion coupling, contact-map integration, and unresolved state rendering.
+Discriminating experiment:
+- Compare proxy metric movement against GT metric movement where GT exists.
+- Compare both against visual annotation consumption: object identity, pose, contact interval, occlusion state, and event timing.
 
-R4 — Factor graph redesign: drift latents, switchable contact mixtures, calibrated noise, liveness audit, gauge declarations, stale-join prevention.
+Outcome routing:
+- GT metric and proxy metric move together → keep metric and expand clips.
+- Proxy moves alone → redesign proxy channel or weighting.
+- Render contradicts table state → repair state construction or renderer wiring.
+- Runtime dominates → isolate teacher path and start approximation study.
 
-R5 — HOI evaluation suite: GT + GT-free metrics, routing rules, lockbox protocols, visual-veto process, and protected evaluator bundle. No autonomous research loop runs before R5 exists.
+## Workstream I — RL approximation
 
-R6 — RL approximation study: approximate the factor-graph inference policy only after R1-R4 produce live variables and a validated graph objective; evaluate graph-MAP parity, GT/GT-free metrics, posterior calibration, measurement-coupling ablations, and runtime.
+Mechanism being tested: validated graph inference can be accelerated by learned initialization, scheduling, or projection without losing measurement coupling.
 
-R7 — End-to-end distillation study: train a model to imitate validated research outputs and uncertainty, with delivery promotion gates for runtime and accuracy. Distillation never becomes a source of HOI truth; it is a fast student of validated teachers.
+Build after live graph variables and evaluator exist:
+- Amortized MAP initializer for graph variables.
+- Discrete hypothesis scheduler for object/part/contact modes.
+- Feasibility projection over measurement-derived states.
+- Policy/value model trained against validated graph objective and evaluator outputs.
 
-## Remaining synthesis slot
+Discriminating experiment:
+- Compare learned approximation to graph MAP on held-out clips.
+- Ablate measurement channels to verify dependence on pose/geometry/contact evidence.
+- Measure runtime reduction and posterior calibration.
 
-The remaining unresolved planning question is distillation/promotion: which validated research outputs become trainable teacher labels, what uncertainty must be distilled, which failure modes require abstention, and what evidence permits a distilled model to affect delivery.
+Outcome routing:
+- High parity and lower runtime → use as initializer or fast path.
+- Low parity localized to one variable family → improve teacher labels or policy inputs for that family.
+- Runtime still high → distill smaller student or restrict RL to scheduling.
 
-## Uncertainty boundaries
+## Workstream J — distillation and delivery handoff
 
-Must remain uncertain unless new evidence exists:
+Mechanism being tested: validated HOI teachers can produce a fast student that preserves useful physical state and calibrated uncertainty.
 
-- Contact ownership through full occlusion.
-- Signed distance on prior-completed/hallucinated mesh faces.
-- Pose DOFs below observability/noise threshold.
-- Hidden-region object shape.
-- Deformable object full state from monocular video.
-- Contact versus hover when the source gap is within combined uncertainty but channels disagree.
-- Grasp force/pressure without pressure or force evidence.
-- Object identity completeness from open-vocabulary plans alone.
-- World gravity/camera trajectory on drift-bent worlds without calibrated camera evidence.
-- Occluded hand pose beyond the temporal/measurement horizon.
+Build:
+- Teacher label export from validated graph/evaluator runs: pose, geometry provenance, contact posterior, occlusion state, hand correction, and uncertainty.
+- Student model trained to predict teacher state and calibrated uncertainty from delivery-available inputs.
+- Abstention head for low-observability intervals.
+- Runtime implementation as a Ray actor or later PyTriton service once tensor ABI is stable.
 
-## Promotion gate to delivery
+Discriminating experiment:
+- Compare student to teacher, GT/proxy metrics, visual render consumption, and runtime.
+- Ablate teacher state families to identify which ones create delivery utility.
 
-A research mechanism can enter the delivery track only if:
+Outcome routing:
+- Student matches teacher and cuts runtime → package as research fast path.
+- Student fails a family → return to teacher measurement or split the student by variable family.
+- Delivery utility appears → define the smallest delivery extension, QC lane, or model service that consumes it.
 
-1. It improves a delivery-protected metric or caption utility on a frozen eval set.
-2. It does not regress hand/camera/drift/caption/throughput protected metrics.
-3. It fits the delivery runtime budget or has a redesigned fast approximation.
-4. Its uncertainty can be represented in `ego.annotation.output` without changing base semantics.
-5. The rendered delivery artifact visibly improves or the mechanism remains research-only.
+## Milestones
+
+R0 — Output substrate: write `ego.hoi` sidecar manifest, tables, provenance streams, and full-duration render from rows.
+
+R1 — Causal cards and graph instrumentation: add support/liveness/gauge/freshness metrics to current v19-style graph runs; every experiment records mechanisms and predictions before runtime.
+
+R2 — Correspondence and rigidity: produce temporal tracks, rigidity windows, Procrustes pose seeds, and residual reports.
+
+R3 — Geometry epochs: build pose-aligned multi-frame visible-surface fusion with face provenance and free-space checks.
+
+R4 — Pose optimizer: refine object/part pose with correspondence, silhouette, depth, rigidity, and observability outputs.
+
+R5 — HOI hand correction: add drift latents and all-joint hand metrics inside HOI state.
+
+R6 — Contact/occlusion channels: implement source gap, depth order, motion coupling, learned maps, visibility states, and temporal contact smoothing.
+
+R7 — Live factor graph: combine R2-R6 variables with calibrated noise, switchable contact modes, and graph-health reporting.
+
+R8 — HOI evaluator: run GT, GT-free, render, lockbox, and runtime metrics across development, demo-regime, and in-house promotion clips.
+
+R9 — RL approximation: train initializer/scheduler/projection models against validated graph outputs and measure parity/runtime.
+
+R10 — Distillation: train student models from validated teacher outputs, measure parity/calibration/runtime, and package fast research path.
+
+R11 — Delivery integration route: when a research output improves delivery utility and runtime, convert it into the smallest delivery extension, QC lane, or model service that preserves base output semantics and measured accuracy.
