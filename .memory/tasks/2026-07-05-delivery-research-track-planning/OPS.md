@@ -22,3 +22,10 @@ Initial communicator run 29a6cd3b-54d4-4a73-b6f3-f989b7377262 failed with upstre
 
 ## 2026-07-05 — First-wave complete; subagent 8 launched
 First-wave run fc1a7524-8af7-4606-b164-4bdfa1ccacfd completed. Outputs 01/02/03/04/05/07 saved under subagents/. Key evidence: tomato drift quantified (p95 31.6/24.5px, fallback ~100px), delivery minimal modules D1-D11, Ray-first serving design, delivery schema v1, metrics suite, v19 HOI bottleneck taxonomy and E1-E9 research experiment plan. Subagent 8 launched as 2fdf43f7-70d7-427b-bd95-44af47ee1e3f. Subagent 6 retry still running.
+
+## 2026-07-05 — Subagent 6 integrated; subagent 8 OOM and relaunch
+Subagent 6 completed and wrote `subagents/06_delivery_autoresearch_guide.md`. Mechanism added to delivery plan: auto-research requires a protected vector evaluator over hand/camera/drift/caption/throughput plus visual-veto; a single scalar would optimize gameable self-consistency proxies. Updated `DELIVERY_TRACK_TASK_PACK_DRAFT.md` accordingly.
+
+Subagent 8 run `2fdf43f7-70d7-427b-bd95-44af47ee1e3f` failed from Node heap OOM after producing only a partial tool-call stream. No target file was written. Salvaged mechanism-level implications from the partial stream: `ego.research_hoi` 0.x extension, geometry epochs, per-DOF observability, contact posterior, full-timeline contact hypotheses, graph liveness/stale-join/gauge metrics, and contact thresholds grounded in 30.48 mm source-gap uncertainty. Relaunched constrained subagent 8 as `75fa11b0-1702-452c-b075-7e9efa77c30b` using communicator/zai with concise output target `subagents/08_hoi_output_and_metrics.md`.
+
+Created `RESEARCH_TRACK_TASK_PACK_DRAFT.md` from subagent 7 plus salvaged subagent 8 mechanisms; slots remain for 8b/9/10/11.

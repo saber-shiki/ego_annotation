@@ -23,3 +23,7 @@ The tomato drift complaint is no longer generic: shipped tomato left/right fused
 Delivery can drop HOI/object/factor-graph work without losing hand/camera accuracy because the metric hand path is already independent of the HOI graph. The hard delivery unknown is head/camera 5 mm; current evidence says no evaluator exists and HaWoR/DROID world is decimeter-class, so the first deliverable is measurement + camera-source policy.
 
 Research should not add more HOI factors until it adds measurements: temporal surface correspondence, rigidity statistics, multi-frame fusion, and contact channels surviving occlusion.
+
+Subagent 6 sharpened the delivery auto-research model: delivery has no honest single scalar because self-consistency metrics are gameable. The protected evaluator must be a vector over hand/camera/drift/caption/throughput, with a visual-truth veto and frozen GT/eval bundles. This prevents a loop from lowering H3 reprojection while worsening depth/size H5, or reducing throughput while degrading caption grounding.
+
+Subagent 8 failed operationally (Node heap OOM) but its partial reasoning supports a stable research schema mechanism: HOI output must represent geometry epochs, pose observability, contact posteriors, face provenance, graph liveness, stale joins, and gauge declarations as first-class fields. The research track's schema is not administrative; it is how prior v19 failure modes become impossible to hide.
