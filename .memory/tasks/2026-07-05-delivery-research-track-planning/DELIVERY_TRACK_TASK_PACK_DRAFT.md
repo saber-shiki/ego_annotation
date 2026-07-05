@@ -39,6 +39,8 @@ D8. GT-free smooth-drift self-calibration: fixed-capacity per-clip correction fa
 
 D9. QC/demo renderer: deterministic projection of the numeric state and captions; pure function of state/layer hashes; no silent K fallback; frame count equals input. It diagnoses state/projection contradictions but does not define the numeric result.
 
+D9b. Captioning lane: source is either existing task/action captions aligned into 2-3s semantic clips, or batched external/agent caption review over minute-level contact sheets. This lane is tracked by calls/sec, tokens/images/sec, latency, cost, and grounding metrics, not by local GPU-hours.
+
 D10. Self-consistency QC: per-frame and per-clip metrics over camera, hands, overlay drift, semantic captions, and throughput.
 
 D11. Offline evaluator harness: HOT3D hand evaluator + new camera/head evaluator + ray/lateral decomposition and reconciliation checks.
@@ -69,7 +71,7 @@ Phase 0: benchmark current modules with cold/warm timings, module_speed_x, GPU u
 
 Phase 1: FastAPI async job service + custom video-aware coalescer + Ray Serve/Ray GPU actors. Public API accepts video URIs and emits job ids; internal scheduler groups adjacent chunks by video/time/state affinity.
 
-Phase 2: migrate stable stateless modules to PyTriton/Triton when tensor contracts settle; VLM/captioning to vLLM/TGI when supported; keep stateful video modules as Ray actors.
+Phase 2: migrate stable stateless local vision modules to PyTriton/Triton when tensor contracts settle; keep stateful video modules as Ray actors. Captioning is budgeted as existing action-caption ingestion or batched external/agent caption calls, not as a local GPU lane.
 
 Phase 3: KubeRay/KServe only as outer fleet control if needed; managed GPU platforms only after cost/data-locality benchmarks.
 

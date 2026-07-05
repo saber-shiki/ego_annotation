@@ -41,3 +41,6 @@ Subagent 9 and 10 outputs were usable despite acceptance-wrapper failures. Integ
 
 ## 2026-07-05 — User correction to delivery problem model
 User rejected prior summaries that over-centered renderer/QC, SAM2, and claim-policing language. Corrected `DELIVERY_TRACK_TASK_PACK_DRAFT.md` and `EPISTEMIC.md`: delivery's main body is numeric outputs; renderer is QC/demo only; SAM2 is not in the default delivery path when HOI is skipped; reaching ~5mm head/camera requires a metric pose source plus calibration/evaluator, not RGB-only monocular inference.
+
+## 2026-07-05 — Removed invented local-VLM delivery option
+User identified that local VLM deployment was never part of the requirement. Corrected delivery plan and epistemic model: captioning throughput is counted as existing action-caption alignment or external/agent caption-call throughput, not local GPU-hours or vLLM/TGI deployment.
