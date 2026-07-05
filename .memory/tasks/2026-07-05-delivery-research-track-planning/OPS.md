@@ -29,3 +29,9 @@ Subagent 6 completed and wrote `subagents/06_delivery_autoresearch_guide.md`. Me
 Subagent 8 run `2fdf43f7-70d7-427b-bd95-44af47ee1e3f` failed from Node heap OOM after producing only a partial tool-call stream. No target file was written. Salvaged mechanism-level implications from the partial stream: `ego.research_hoi` 0.x extension, geometry epochs, per-DOF observability, contact posterior, full-timeline contact hypotheses, graph liveness/stale-join/gauge metrics, and contact thresholds grounded in 30.48 mm source-gap uncertainty. Relaunched constrained subagent 8 as `75fa11b0-1702-452c-b075-7e9efa77c30b` using communicator/zai with concise output target `subagents/08_hoi_output_and_metrics.md`.
 
 Created `RESEARCH_TRACK_TASK_PACK_DRAFT.md` from subagent 7 plus salvaged subagent 8 mechanisms; slots remain for 8b/9/10/11.
+
+## 2026-07-05 — Subagent 8b artifact normalized
+Constrained subagent 8b run `75fa11b0-1702-452c-b075-7e9efa77c30b` failed only acceptance wrapping (`criterion-2` not reported), but wrote a complete 255-line HOI schema/metrics artifact to `subagents/08b_relaunch_summary.md`. Copied it to canonical dependency path `subagents/08_hoi_output_and_metrics.md` for downstream wave 3. Content includes `org.ego.research.hoi` / `ego.research.hoi` 0.1.0, isolated extension file layout, full-duration HOI renders, object/geometry/pose/rigidity/contact/occlusion/hand-correction tables, GT and GT-free metrics, validation protocols, uncertainty boundaries, and promotion gate.
+
+## 2026-07-05 — Wave 3 launched
+Launched wave 3 parallel subagents as run `ef8663cf-a5f6-497b-bf9a-d5feb7a6530f`: subagent 9 (`communicator`, `zai/glm-5.2`) writes `subagents/09_research_autoresearch_guide.md`; subagent 10 (`theorist`, `zai/glm-5.2`) writes `subagents/10_rl_factor_graph_approximation.md`. Both are constrained to file outputs and no edits beyond output capture.
