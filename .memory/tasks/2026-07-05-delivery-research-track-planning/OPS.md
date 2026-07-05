@@ -19,3 +19,6 @@ Subagent 6 launched async (29a6cd3b-54d4-4a73-b6f3-f989b7377262) after outputs 0
 
 ## 2026-07-05 — Subagent 6 retry
 Initial communicator run 29a6cd3b-54d4-4a73-b6f3-f989b7377262 failed with upstream 400 before content. Retried as communicator on nearby Claude Opus route: 1c555144-b741-406c-952f-823988bc0112. First-wave still waiting on outputs 03 and 07 before subagent 8.
+
+## 2026-07-05 — First-wave complete; subagent 8 launched
+First-wave run fc1a7524-8af7-4606-b164-4bdfa1ccacfd completed. Outputs 01/02/03/04/05/07 saved under subagents/. Key evidence: tomato drift quantified (p95 31.6/24.5px, fallback ~100px), delivery minimal modules D1-D11, Ray-first serving design, delivery schema v1, metrics suite, v19 HOI bottleneck taxonomy and E1-E9 research experiment plan. Subagent 8 launched as 2fdf43f7-70d7-427b-bd95-44af47ee1e3f. Subagent 6 retry still running.

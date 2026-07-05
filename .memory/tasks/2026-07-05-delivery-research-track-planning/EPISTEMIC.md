@@ -15,3 +15,11 @@ Metric mechanism: a useful GT-free metric is disagreement between independent me
 - Whether visible drift is dominated by intrinsics, crop/pinhole adapter, coordinate conventions, metric scaling, or stale render layer wiring.
 - What API output schema makes provenance, coordinate frames, semantic clips, and QC metrics implementable without HOI baggage.
 - Which HOI research bottlenecks are real physical-model limits versus implementation mistakes.
+
+## First-wave synthesis additions
+
+The tomato drift complaint is no longer generic: shipped tomato left/right fused hands have p95 31.6/24.5 px versus WiLoR 2D, with fallback rows around 100 px off and fusion doubling the tail relative to pre-fusion fit. The dominant product fixes are calibrated K, rigid metric space, detector-bounded fusion, final-layer QC, and deterministic renderer.
+
+Delivery can drop HOI/object/factor-graph work without losing hand/camera accuracy because the metric hand path is already independent of the HOI graph. The hard delivery unknown is head/camera 5 mm; current evidence says no evaluator exists and HaWoR/DROID world is decimeter-class, so the first deliverable is measurement + camera-source policy.
+
+Research should not add more HOI factors until it adds measurements: temporal surface correspondence, rigidity statistics, multi-frame fusion, and contact channels surviving occlusion.
