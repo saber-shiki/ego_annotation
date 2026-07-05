@@ -38,3 +38,6 @@ Launched wave 3 parallel subagents as run `ef8663cf-a5f6-497b-bf9a-d5feb7a6530f`
 
 ## 2026-07-05 — Wave 3 substantive implications integrated
 Subagent 9 and 10 outputs were usable despite acceptance-wrapper failures. Integrated their substantive claims into `RESEARCH_TRACK_TASK_PACK_DRAFT.md`: research auto-improvement is blocked until a protected HOI evaluator exists; fixed-slice-only wins are overfit; proxy-only wins are capture; RL is only an inference-side approximator of validated graph objectives and cannot supply missing measurements. Output files are `subagents/09_research_autoresearch_guide.md` and `subagents/10_rl_factor_graph_approximation.md`.
+
+## 2026-07-05 — User correction to delivery problem model
+User rejected prior summaries that over-centered renderer/QC, SAM2, and claim-policing language. Corrected `DELIVERY_TRACK_TASK_PACK_DRAFT.md` and `EPISTEMIC.md`: delivery's main body is numeric outputs; renderer is QC/demo only; SAM2 is not in the default delivery path when HOI is skipped; reaching ~5mm head/camera requires a metric pose source plus calibration/evaluator, not RGB-only monocular inference.

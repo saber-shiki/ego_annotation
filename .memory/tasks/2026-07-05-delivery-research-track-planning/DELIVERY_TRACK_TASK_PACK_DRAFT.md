@@ -2,21 +2,22 @@
 
 ## Objective
 
-Build a separate delivery pipeline, independent of the v1-v19 HOI/factor-graph version line, that exposes a directly callable API for egocentric-video head/camera state, metric hand state, visible overlay data, semantic clip captions, provenance, and validation metrics. The delivery pipeline intentionally excludes object-pose/contact/nonpenetration/HOI optimization from its default path.
+Build a separate delivery pipeline, independent of the v1-v19 HOI/factor-graph version line, that exposes a directly callable API for egocentric-video head/camera numeric state, metric hand numeric state, semantic clip captions, provenance, and validation metrics. Renders/overlays are QC and demonstration views of those numbers, not the primary delivery result. The delivery pipeline intentionally excludes object-pose/contact/nonpenetration/HOI optimization from its default path.
 
 ## Success criteria
 
-1. Customer can submit videos through `/v1/delivery/jobs` and receive a manifest-driven artifact bundle (`ego.delivery.output` v1) with frame-aligned tables, overlay events, semantic clips, QC metrics, and renders.
-2. Head/camera and hand metrics are reported separately. Hand metric claim is wrist/root in camera frame unless the user explicitly chooses a stricter joint-level target. Head/camera ~5mm is not claimed until a camera-GT/fiducial/IMU evaluator supports it.
-3. Visible hand overlays do not drift: per delivered clip, final-layer residual to independent 2D evidence has median <=8 px, p95 <=20 px, and no >20 px run longer than ~0.5s unless explicitly marked low-confidence/ghosted.
-4. Fine-grained semantic clips cover the full video timeline with mostly 2-3s segments; captions are grounded in visible entities/actions and carry confidence/evidence frames.
-5. Throughput path demonstrates measured capacity toward ~10,000 video-hours/week, using module-speed instrumentation and a Ray-first video-aware scheduler.
+1. Customer can submit videos through `/v1/delivery/jobs` and receive a manifest-driven artifact bundle (`ego.delivery.output` v1) with frame-aligned numeric tables, semantic clips, QC metrics, provenance, explicit errors, and optional QC/demo renders.
+2. Head/camera and hand metrics are reported separately. The head/camera path to ~5mm is a measurement-source problem: ingest device VIO/SLAM/IMU/fiducial/GT-capable pose where available, calibrate video↔pose synchronization and camera/head extrinsics, and evaluate ATE/RPE under a fixed metric gauge. If input is RGB-only monocular video with no metric anchor, the input contract cannot support ~5mm translation.
+3. Hand metric claim is wrist/root in camera frame unless the user explicitly chooses a stricter joint-level target. The deployable route is GT-free drift self-calibration anchored by cross-detector residuals, projected-size/depth consistency, crop/intrinsics correctness, and held-out HOT3D-style evaluation.
+4. QC overlays must not contradict numeric states: if the rendered hand appears 20-100 px away from independent 2D evidence, diagnose whether the numeric hand state, projection/crop/K adapter, or renderer is wrong. Overlay correctness is a QC constraint, not the primary result.
+5. Fine-grained semantic clips cover the full video timeline with mostly 2-3s segments; captions are grounded in visible entities/actions and carry confidence/evidence frames.
+6. Throughput path demonstrates measured capacity toward ~10,000 video-hours/week, using module-speed instrumentation and a Ray-first video-aware scheduler. Dense object segmentation/SAM2 is not in the delivery default path when HOI is skipped.
 
 ## Non-goals
 
 - No default HOI factor graph, object pose optimization, contact ownership, signed nonpenetration, object mesh reconstruction, TRELLIS completion, or per-instance neural reconstruction.
-- No claim that current GT-fitted calibration is deployable accuracy.
-- No camera/head 5mm headline before a camera/head evaluator exists.
+- No dense object segmentation/SAM2/object tracking lane unless a delivery metric or caption-grounding requirement specifically needs it.
+- No reliance on RGB-only monocular reconstruction for ~5mm head/camera translation; add or ingest a metric pose source instead.
 
 ## Required module set
 
@@ -24,9 +25,9 @@ D1. Ingestion + raw frame manifest: frame paths, frame count, timestamps, resolu
 
 D2. Camera calibration contract: one canonical K (+ distortion/rectification, axis convention, source) per clip/session; all consumers cite the same contract; missing intrinsics is a hard error.
 
-D3. Metric depth/intrinsics support: UniDepth or equivalent, mandatory for uncalibrated ingest and camera-scale QC, not used as hand-depth truth.
+D3. Metric depth/intrinsics support: conditional lane for uncalibrated ingest diagnostics, semantic grounding, and camera-scale QC; not default hand-depth truth and not a substitute for a metric head/camera source.
 
-D4. Head/camera trajectory: first-class output with validity/confidence, gauge declaration, and separated metrics. Prefer device VIO/SLAM metadata if available; otherwise build/rerun camera tracker under the calibrated K.
+D4. Head/camera trajectory: first-class numeric output with validity/confidence, gauge declaration, and separated metrics. Preferred source is device VIO/SLAM/IMU or fiducial/mocap-derived pose. RGB-only tracking may provide QC/relative motion but cannot by itself establish ~5mm metric translation in arbitrary egocentric video.
 
 D5. HaWoR metric MANO: current metric wrist/root translation source, with focal-cache invalidation.
 
@@ -36,7 +37,7 @@ D7. Hybrid + temporal fusion hand layer: HaWoR metric translation + WiLoR visibl
 
 D8. GT-free smooth-drift self-calibration: fixed-capacity per-clip correction family (R(t)+per-side b(t)) anchored by GT-free residuals (cross-detector, size/depth, static-scene). This is the deployable hand-accuracy bridge.
 
-D9. Deterministic overlay renderer: pure function of state/layer hashes; no silent K fallback; final-layer residual drives alpha/chips; frame count equals input.
+D9. QC/demo renderer: deterministic projection of the numeric state and captions; pure function of state/layer hashes; no silent K fallback; frame count equals input. It diagnoses state/projection contradictions but does not define the numeric result.
 
 D10. Self-consistency QC: per-frame and per-clip metrics over camera, hands, overlay drift, semantic captions, and throughput.
 
@@ -48,8 +49,8 @@ D11. Offline evaluator harness: HOT3D hand evaluator + new camera/head evaluator
 2. Eliminate per-frame elastic depth scale; one rigid metric space per clip.
 3. Constrain temporal hand fusion by detector residual; do not allow smoothness priors to drag hands 20-100 px off evidence.
 4. Recompute QC confidence from the final fused layer, not pre-fusion residuals.
-5. Make renderer deterministic and content-hash/resume safe; remove silent intrinsics defaults.
-6. Build separated benchmark tables: camera/head ATE/RPE/scale and hand wrist/MPJPE/root-aligned metrics.
+5. Make renderer deterministic and content-hash/resume safe so QC views cannot hide numeric/projection mismatches; remove silent intrinsics defaults.
+6. Build separated benchmark tables: camera/head ATE/RPE/scale under fixed metric gauge and hand wrist/MPJPE/root-aligned metrics.
 
 ## API/output contract
 
@@ -93,7 +94,7 @@ Throughput/API:
 
 ## Delivery auto-research operating model
 
-Auto-research is allowed only after the protected evaluator exists. The delivery loop cannot optimize a single scalar because most useful metrics are GT-free proxies that can be gamed. The evaluator is a protected vector over hand accuracy, visible drift, head/camera, captions, and throughput, read from the API artifacts the customer receives.
+Auto-research is allowed only after the protected evaluator exists. The evaluator couples the numbers customers care about: head/camera metric error, hand metric error, caption grounding, throughput, and projection/QC contradictions. Each axis has paired guard metrics so a fix cannot improve one numeric table while damaging another.
 
 Three surfaces:
 
@@ -105,12 +106,12 @@ Acceptance rule:
 
 1. Target-axis metric improves beyond measured rerun noise.
 2. No protected metric regresses beyond noise. Examples: H3 reprojection improvement with worse H5 size/depth is rejected; throughput improvement with worse caption grounding is rejected.
-3. Visual-truth veto passes on rendered overlay/side-by-side. A proxy win with a visibly worse annotation is rejected.
-4. Provenance contradiction count stays zero: no current detector evidence hidden behind stale/solid inferred states.
+3. Numeric-output consistency passes: improved head/camera or hand numbers do not create impossible projection/crop/size/caption contradictions in QC views.
+4. Provenance contradiction count stays zero: no current detector or pose evidence hidden behind stale inferred states.
 
 Run discipline:
 
-- Each experiment starts with a causal card: rendered defect, wrong physical variable, mechanism hypothesis, coupling, predictions, accept/reject logic, and next action per outcome.
+- Each experiment starts with a causal card: numeric defect, wrong physical variable, mechanism hypothesis, coupling, predictions, accept/reject logic, and next action per outcome.
 - One mechanism change per iteration; keep-if-better, else reset; preserve rejected rows as negative information.
 - Cross-axis monotonicity is enforced at merge by recomputing the full vector on the frozen eval set.
 - Human opens bounded family experiments when a real mechanism requires worse-before-better steps, such as replacing an intrinsics/crop adapter.
@@ -128,13 +129,13 @@ Axis gates:
 - Drift: R1 burst + H3 reprojection paired with H5 size ratio; reject 2D-only wins.
 - Head/camera: HC1/HC2/HC3 for routing only; HC4 GT required for any 5 mm claim.
 - Caption: S1 coverage/duration, S2 grounding, S4 boundary stability; periodic human audit for VLM shared hallucination.
-- Throughput: T1 GPU-hours/video-hour by lane; guard lane-specific quality, especially SAM2 rate changes against caption/object grounding.
+- Throughput: T1 GPU-hours/video-hour by active lane; guard lane-specific quality. SAM2/object segmentation is absent from the default delivery lane unless explicitly enabled for caption grounding or a future requirement.
 
 Anti-patterns that invalidate a run:
 
 - Fitting calibration or corrections to eval GT and calling the number deployable.
-- Improving a metric while the rendered artifact gets worse.
-- Shipping schema/ledger/validator changes as progress when rendered marks did not improve.
+- Improving one customer-facing number while another required number or QC/projection consistency gets worse.
+- Shipping schema/ledger/validator changes as progress when head/camera, hand, caption, or throughput numbers did not improve.
 - Global reweighting to hide localized hand-source failures.
 - Hand-coded category/action if/else paths.
 - Emitting 5 mm camera/head accuracy from self-consistency metrics alone.
