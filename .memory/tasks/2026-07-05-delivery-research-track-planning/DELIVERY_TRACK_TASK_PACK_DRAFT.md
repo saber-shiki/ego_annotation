@@ -6,7 +6,7 @@ Build a separate delivery pipeline, independent of the v1-v19 HOI/factor-graph v
 
 ## Success criteria
 
-1. Customer can submit videos through `/v1/delivery/jobs` and receive a manifest-driven artifact bundle (`ego.delivery.output` v1) with frame-aligned numeric tables, semantic clips, QC metrics, provenance, explicit errors, and optional QC/demo renders.
+1. Customer can submit videos through a domain-named endpoint such as `POST /v1/annotation-jobs` and receive a manifest-driven artifact bundle (`ego.annotation.output` v1) with frame-aligned numeric tables, semantic clips, QC metrics, provenance, explicit errors, and optional QC/demo renders. Internal track names such as delivery/research must not appear in public endpoint paths.
 2. Head/camera and hand metrics are reported separately. The head/camera path to ~5mm is a measurement-source problem: ingest device VIO/SLAM/IMU/fiducial/GT-capable pose where available, calibrate video↔pose synchronization and camera/head extrinsics, and evaluate ATE/RPE under a fixed metric gauge. If input is RGB-only monocular video with no metric anchor, the input contract cannot support ~5mm translation.
 3. Hand metric claim is wrist/root in camera frame unless the user explicitly chooses a stricter joint-level target. The deployable route is GT-free drift self-calibration anchored by cross-detector residuals, projected-size/depth consistency, crop/intrinsics correctness, and held-out HOT3D-style evaluation.
 4. QC overlays must not contradict numeric states: if the rendered hand appears 20-100 px away from independent 2D evidence, diagnose whether the numeric hand state, projection/crop/K adapter, or renderer is wrong. Overlay correctness is a QC constraint, not the primary result.
@@ -56,7 +56,7 @@ D11. Offline evaluator harness: HOT3D hand evaluator + new camera/head evaluator
 
 ## API/output contract
 
-Use `ego.delivery.output` v1:
+Use `ego.annotation.output` v1:
 
 - `manifest.json` as source of truth and artifact index.
 - Parquet: `frames`, `head_camera`, `hand_states`, `semantic_clips`, `validation_metrics`.

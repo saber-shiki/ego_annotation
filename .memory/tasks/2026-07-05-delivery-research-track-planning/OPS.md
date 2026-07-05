@@ -44,3 +44,6 @@ User rejected prior summaries that over-centered renderer/QC, SAM2, and claim-po
 
 ## 2026-07-05 — Removed invented local-VLM delivery option
 User identified that local VLM deployment was never part of the requirement. Corrected delivery plan and epistemic model: captioning throughput is counted as existing action-caption alignment or external/agent caption-call throughput, not local GPU-hours or vLLM/TGI deployment.
+
+## 2026-07-06 00:11 — Public API endpoint naming correction
+User identified endpoint names such as `/v1/delivery/jobs` as a category error: delivery/research are internal planning tracks, not customer API concepts. Updated current planning artifacts to use domain-facing names: `POST /v1/annotation-jobs`, base schema `ego.annotation.output`, and HOI extension namespace `org.ego.hoi` / `ego.hoi` in task packs. Preserved historical subagent outputs as evidence rather than rewriting them. Added project invariant that public API endpoint paths must use product/domain nouns, not internal track labels.

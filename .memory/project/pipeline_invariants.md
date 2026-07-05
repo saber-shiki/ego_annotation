@@ -1,5 +1,9 @@
 # Pipeline invariants
 
+## Public API names are product/domain names
+
+Internal planning tracks such as delivery, research, demo, v18, or v19 are not product concepts and must not appear in customer-facing API endpoint paths. Endpoint names should name the customer operation or data domain, e.g. annotation jobs, video analysis jobs, hand state, camera pose, or HOI extension resources. Track labels may remain in task memory, branch names, or internal run roots, but public schemas and endpoints should use stable domain nouns such as `ego.annotation.output` and optional domain extensions such as `ego.hoi`.
+
 ## Uncertainty labels must control state/render semantics
 
 A label such as `unsupported_uncertain` is not an uncertainty mechanism unless downstream state construction and rendering consume it. In V19 clip001851, Poisson observed-surface fill faces were labeled `unsupported_uncertain` but still concatenated into the completed object mesh and rendered as accepted green object body. That is invalid.

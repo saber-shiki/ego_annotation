@@ -8,8 +8,8 @@ The research artifact is still renderable annotation: full-duration HOI overlays
 
 ## Track boundary
 
-- Base delivery outputs remain `ego.delivery.output` v1 and contain head/camera, hands, semantic clips, QC, and renders only.
-- Research outputs use an isolated extension namespace, currently reverse-DNS `org.ego.research.hoi` with schema family `ego.research.hoi` 0.x, as a sidecar or attached extension that references a pinned delivery manifest by id and hash.
+- Base customer-facing annotation outputs remain `ego.annotation.output` v1 and contain head/camera, hands, semantic clips, QC, and renders only.
+- HOI outputs use an isolated domain extension namespace, currently reverse-DNS `org.ego.hoi` with schema family `ego.hoi` 0.x, as a sidecar or attached extension that references a pinned base annotation manifest by id and hash. Internal track names such as delivery/research must not appear in public API endpoint paths.
 - The extension may read delivery hand/camera/semantic rows; it cannot mutate delivery rows, delivery captions, delivery status, or delivery metrics.
 - Promotion back to delivery requires measured utility, runtime budget, stable schema, and no contamination of the base accuracy claims.
 
@@ -27,12 +27,12 @@ Therefore the research program starts with measurement channels and state repres
 
 ## Research-state extension sketch
 
-Namespace: `org.ego.research.hoi`; schema family: `ego.research.hoi` 0.1.0.
+Namespace: `org.ego.hoi`; schema family: `ego.hoi` 0.1.0.
 
 Default file layout:
 
 ```text
-extensions/org.ego.research.hoi/0.1.0/{research_run_id}/
+extensions/org.ego.hoi/0.1.0/{research_run_id}/
   manifest.json
   tables/
     objects.parquet
@@ -172,7 +172,7 @@ RL stop conditions: R4 graph redesign not closed; channel ablation shows ignored
 
 ## Research milestones
 
-R0 — Schema/output harness: `ego.research.hoi` sidecar manifest, tables, and full-duration HOI render driven by rows.
+R0 — Schema/output harness: `ego.hoi` sidecar manifest, tables, and full-duration HOI render driven by rows.
 
 R1 — Correspondence-first rigid-body extraction: temporal 2D/3D tracks, rigidity windows, robust Procrustes, pose observability, and held-out track residuals.
 
@@ -214,5 +214,5 @@ A research mechanism can enter the delivery track only if:
 1. It improves a delivery-protected metric or caption utility on a frozen eval set.
 2. It does not regress hand/camera/drift/caption/throughput protected metrics.
 3. It fits the delivery runtime budget or has a redesigned fast approximation.
-4. Its uncertainty can be represented in `ego.delivery.output` without changing base semantics.
+4. Its uncertainty can be represented in `ego.annotation.output` without changing base semantics.
 5. The rendered delivery artifact visibly improves or the mechanism remains research-only.

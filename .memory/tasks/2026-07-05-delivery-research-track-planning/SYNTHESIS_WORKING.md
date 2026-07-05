@@ -13,7 +13,7 @@
 
 4. **Serving architecture:** async job API + video-aware coalescer + Ray Serve/Ray GPU actors first; Triton/PyTriton once tensor contracts stabilize; vLLM/TGI for caption/VLM; KServe later as outer platform; avoid TorchServe. Measure `module_speed_x`, GPU utilization, queue wait, batch fill. 10k video-hours/week = 59.5 realtime streams continuously per module.
 
-5. **API output:** `ego.delivery.output` v1 with manifest, Parquet tables (`frames`, `head_camera`, `hand_states`, `semantic_clips`, `validation_metrics`), NDJSON overlay/caption/provenance/errors, renders. HOI explicitly excluded from base schema and must live in extension namespace.
+5. **API output:** public API endpoints use domain nouns such as `POST /v1/annotation-jobs`, not internal track names. Base artifact schema is `ego.annotation.output` v1 with manifest, Parquet tables (`frames`, `head_camera`, `hand_states`, `semantic_clips`, `validation_metrics`), NDJSON overlay/caption/provenance/errors, renders. HOI is explicitly excluded from base schema and must live in a domain extension namespace such as `org.ego.hoi`.
 
 6. **Metrics:** GT-free metrics are disagreement between independent measurement paths. Required: camera static reprojection/3D closure/gravity plausibility + GT ATE/RPE when available; hand wrist GT, visible-joint/root-relative, reprojection, cross-detector, size-depth, jitter; rendered-overlay drift; intrinsics sweep; semantic segment/caption metrics; throughput/API health.
 
