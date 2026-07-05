@@ -10,3 +10,6 @@ Dependent plan:
 - Wave 3 after 6+8(+7): subagent 9 research auto-research guide, subagent 10 RL/factor-graph reasoning.
 - Wave 4 after 10(+7/8): subagent 11 end-to-end distillation.
 - Final: Claude-opus synthesis assistant + main synthesis into two task-definition packs and discussion memo.
+
+## 2026-07-05 — First-wave partial consumption
+Completed first-wave outputs 02 and 05 consumed. Implications recorded in EPISTEMIC: delivery serving must be video-aware Ray-first, Triton later; throughput arithmetic is 59.5 realtime streams/module for 10k video-h/week; GT-free camera metrics cannot certify 5mm head/camera without GT/fiducial/IMU; full-rate SAM2 is likely throughput blocker.
