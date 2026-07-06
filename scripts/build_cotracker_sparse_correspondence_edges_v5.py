@@ -26,6 +26,16 @@ def summarize(values: np.ndarray) -> dict:
     }
 
 
+def track_max_visible_sample_distance(distances: np.ndarray, accepted: np.ndarray) -> np.ndarray:
+    out = np.full((accepted.shape[1],), np.nan, dtype=np.float64)
+    for track_id in range(accepted.shape[1]):
+        vals = distances[accepted[:, track_id], track_id]
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            out[track_id] = float(np.max(vals))
+    return out
+
+
 def run(args: argparse.Namespace) -> dict:
     tracks = np.load(args.cotracker_npz)
     required = {"frame_idx", "accepted", "world_xyz"}
@@ -37,14 +47,18 @@ def run(args: argparse.Namespace) -> dict:
     world = np.asarray(tracks["world_xyz"], dtype=np.float64)
     if world.shape[:2] != accepted.shape:
         raise RuntimeError(f"world/accepted shape mismatch: {world.shape} vs {accepted.shape}")
-    meshes = load_mesh_archive(args.mesh_archive)
-    if any(int(frame) not in meshes for frame in frame_idx.tolist()):
-        raise RuntimeError("mesh archive missing frames in CoTracker archive")
+
+    # The loader name is historical. For R2 visible-surfel compatibility archives, faces
+    # are non-evidential padding and this script uses only vertices for nearest-neighbor
+    # filtering against prediction-side visible metric surfel samples.
+    visible_samples = load_mesh_archive(args.mesh_archive)
+    if any(int(frame) not in visible_samples for frame in frame_idx.tolist()):
+        raise RuntimeError("visible-sample archive missing frames in CoTracker archive")
 
     nearest_vertex = np.full(accepted.shape, -1, dtype=np.int64)
-    nearest_distance = np.full(accepted.shape, np.nan, dtype=np.float64)
+    nearest_visible_sample_distance = np.full(accepted.shape, np.nan, dtype=np.float64)
     for i, frame in enumerate(frame_idx.tolist()):
-        vertices, _faces = meshes[int(frame)]
+        vertices, _non_evidential_faces = visible_samples[int(frame)]
         tree = cKDTree(vertices)
         valid = accepted[i] & np.all(np.isfinite(world[i]), axis=1)
         if not np.any(valid):
@@ -52,17 +66,18 @@ def run(args: argparse.Namespace) -> dict:
         distances, ids = tree.query(world[i, valid], k=1)
         take = np.where(valid)[0]
         nearest_vertex[i, take] = ids.astype(np.int64)
-        nearest_distance[i, take] = distances.astype(np.float64)
+        nearest_visible_sample_distance[i, take] = distances.astype(np.float64)
 
     support = accepted.sum(axis=0)
-    surface_ok = np.nanmax(nearest_distance, axis=0) <= float(args.max_surface_distance_m)
+    max_sample_distance = track_max_visible_sample_distance(nearest_visible_sample_distance, accepted)
+    sample_proximity_ok = np.isfinite(max_sample_distance) & (max_sample_distance <= float(args.max_visible_sample_distance_m))
     support_ok = support >= int(args.min_track_frames)
-    usable_track = support_ok & surface_ok
+    usable_track = support_ok & sample_proximity_ok
     all_frame_track = usable_track & (support == len(frame_idx))
 
     edge_rows = []
     edge_steps = []
-    edge_surface_distances = []
+    edge_visible_sample_distances = []
     for track_id in np.where(usable_track)[0].tolist():
         valid_frames = np.where(accepted[:, track_id])[0]
         for a, b in zip(valid_frames[:-1], valid_frames[1:]):
@@ -71,20 +86,22 @@ def run(args: argparse.Namespace) -> dict:
             step = float(np.linalg.norm(world[b, track_id] - world[a, track_id]))
             if step > float(args.max_world_step_m):
                 continue
+            source_distance = float(nearest_visible_sample_distance[a, track_id])
+            target_distance = float(nearest_visible_sample_distance[b, track_id])
             edge_rows.append(
                 {
                     "track_id": int(track_id),
                     "source_frame": int(frame_idx[a]),
                     "target_frame": int(frame_idx[b]),
-                    "source_vertex": int(nearest_vertex[a, track_id]),
-                    "target_vertex": int(nearest_vertex[b, track_id]),
+                    "source_visible_sample_vertex": int(nearest_vertex[a, track_id]),
+                    "target_visible_sample_vertex": int(nearest_vertex[b, track_id]),
                     "world_step_m": step,
-                    "source_surface_distance_m": float(nearest_distance[a, track_id]),
-                    "target_surface_distance_m": float(nearest_distance[b, track_id]),
+                    "source_nearest_visible_sample_distance_m": source_distance,
+                    "target_nearest_visible_sample_distance_m": target_distance,
                 }
             )
             edge_steps.append(step)
-            edge_surface_distances.extend([nearest_distance[a, track_id], nearest_distance[b, track_id]])
+            edge_visible_sample_distances.extend([source_distance, target_distance])
 
     per_frame_rows = []
     for i, frame in enumerate(frame_idx.tolist()):
@@ -92,9 +109,9 @@ def run(args: argparse.Namespace) -> dict:
             {
                 "frame_idx": int(frame),
                 "accepted_tracks": int(np.count_nonzero(accepted[i])),
-                "usable_tracks_visible": int(np.count_nonzero(usable_track & accepted[i])),
-                "all_frame_tracks_visible": int(np.count_nonzero(all_frame_track & accepted[i])),
-                "surface_distance_m": summarize(nearest_distance[i, accepted[i]]),
+                "usable_tracks_visible_sample_proximity": int(np.count_nonzero(usable_track & accepted[i])),
+                "all_frame_tracks_visible_sample_proximity": int(np.count_nonzero(all_frame_track & accepted[i])),
+                "nearest_visible_sample_distance_m": summarize(nearest_visible_sample_distance[i, accepted[i]]),
             }
         )
 
@@ -103,9 +120,20 @@ def run(args: argparse.Namespace) -> dict:
         "annotation_ready": False,
         "diagnostic_only": True,
         "method": "build_cotracker_sparse_correspondence_edges_v5",
-        "claim_tested": "CoTracker world-space point tracks can provide sparse metric correspondence edges on the repaired object mesh without changing the delivered per-frame meshes",
+        "claim_tested": (
+            "CoTracker world-space point tracks can provide candidate sparse correspondence edges "
+            "whose tracked points remain close to prediction-side visible metric surfel samples. "
+            "This is a diagnostic sample-proximity test, not an object mesh, pose, contact, "
+            "occlusion, or nonpenetration claim."
+        ),
+        "terminology_note": (
+            "Distances are nearest visible-surface sample distances. If visible-sample spacing is "
+            "comparable to the threshold, the filter is a sample-proximity gate rather than a "
+            "continuous surface-membership test. Faces in a visible-surfel compatibility archive "
+            "are ignored by this script."
+        ),
         "cotracker_npz": str(args.cotracker_npz),
-        "mesh_archive": str(args.mesh_archive),
+        "visible_surfel_archive": str(args.mesh_archive),
         "frames": [int(frame) for frame in frame_idx.tolist()],
         "track_count": int(accepted.shape[1]),
         "usable_track_count": int(np.count_nonzero(usable_track)),
@@ -113,14 +141,16 @@ def run(args: argparse.Namespace) -> dict:
         "edge_count": int(len(edge_rows)),
         "valid_frames_per_track": summarize(support),
         "usable_valid_frames_per_track": summarize(support[usable_track]),
-        "surface_distance_m": summarize(nearest_distance[accepted]),
-        "usable_surface_distance_m": summarize(nearest_distance[:, usable_track][accepted[:, usable_track]]) if np.any(usable_track) else {"count": 0},
+        "nearest_visible_sample_distance_m": summarize(nearest_visible_sample_distance[accepted]),
+        "usable_nearest_visible_sample_distance_m": (
+            summarize(nearest_visible_sample_distance[:, usable_track][accepted[:, usable_track]]) if np.any(usable_track) else {"count": 0}
+        ),
         "edge_world_step_m": summarize(np.asarray(edge_steps, dtype=np.float64)),
-        "edge_surface_distance_m": summarize(np.asarray(edge_surface_distances, dtype=np.float64)),
+        "edge_nearest_visible_sample_distance_m": summarize(np.asarray(edge_visible_sample_distances, dtype=np.float64)),
         "per_frame_rows": per_frame_rows,
         "parameters": {
             "min_track_frames": int(args.min_track_frames),
-            "max_surface_distance_m": float(args.max_surface_distance_m),
+            "max_visible_sample_distance_m": float(args.max_visible_sample_distance_m),
             "max_world_step_m": float(args.max_world_step_m),
             "max_frame_gap": int(args.max_frame_gap),
         },
@@ -135,10 +165,24 @@ def run(args: argparse.Namespace) -> dict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cotracker-npz", type=Path, required=True)
-    parser.add_argument("--mesh-archive", type=Path, required=True)
+    parser.add_argument(
+        "--mesh-archive",
+        "--visible-surfel-archive",
+        dest="mesh_archive",
+        type=Path,
+        required=True,
+        help="Loader-compatible archive whose vertices are prediction-side visible metric surfel samples; faces are ignored.",
+    )
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--min-track-frames", type=int, default=4)
-    parser.add_argument("--max-surface-distance-m", type=float, default=0.004)
+    parser.add_argument(
+        "--max-visible-sample-distance-m",
+        "--max-surface-distance-m",
+        dest="max_visible_sample_distance_m",
+        type=float,
+        default=0.004,
+        help="Maximum nearest visible-sample distance. The --max-surface-distance-m spelling is a deprecated alias.",
+    )
     parser.add_argument("--max-world-step-m", type=float, default=0.040)
     parser.add_argument("--max-frame-gap", type=int, default=1)
     return parser.parse_args()

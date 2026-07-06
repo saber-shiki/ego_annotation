@@ -387,25 +387,28 @@ python3 scripts/run_cotracker_object_tracks_v5.py \\
   --still-frames 0 30 75 95 106 120 140 149 \\
   --backward-tracking --require-cuda
 
+python3 scripts/build_visible_surfel_compat_archive.py \\
+  --annotations "$RUN_ROOT/prediction_annotations/annotations_for_cotracker.json" \\
+  --object-id keyboard \\
+  --output-npz "$RUN_ROOT/r3_visible_surfel_compat/visible_surfel_compat_archive.npz" \\
+  --output-report "$RUN_ROOT/r3_visible_surfel_compat/visible_surfel_compat_archive_report.json" \\
+  --required-frame-npz "$RUN_ROOT/r2_cotracker_keyboard/cotracker_object_tracks_v5.npz" \\
+  --distance-threshold-m 0.004
+
 python3 scripts/build_cotracker_sparse_correspondence_edges_v5.py \\
   --cotracker-npz "$RUN_ROOT/r2_cotracker_keyboard/cotracker_object_tracks_v5.npz" \\
-  --mesh-archive "$RUN_ROOT/r3_geometry_epoch/visible_surface_mesh_archive.json" \\
-  --output-json "$RUN_ROOT/r2_cotracker_keyboard/sparse_correspondence_edges_v5.json"
-
-python3 scripts/diagnose_cotracker_local_rigidity_v5.py \\
-  --cotracker-npz "$RUN_ROOT/r2_cotracker_keyboard/cotracker_object_tracks_v5.npz" \\
-  --sparse-edges-json "$RUN_ROOT/r2_cotracker_keyboard/sparse_correspondence_edges_v5.json" \\
-  --output-json "$RUN_ROOT/r2_cotracker_keyboard/rigidity_windows_v5.json"
-
-python3 scripts/fit_cotracker_pairwise_rigid_factors_v6.py \\
-  --cotracker-npz "$RUN_ROOT/r2_cotracker_keyboard/cotracker_object_tracks_v5.npz" \\
-  --sparse-edges-json "$RUN_ROOT/r2_cotracker_keyboard/sparse_correspondence_edges_v5.json" \\
-  --output-json "$RUN_ROOT/r2_cotracker_keyboard/correspondence_pose_v6.json"
+  --visible-surfel-archive "$RUN_ROOT/r3_visible_surfel_compat/visible_surfel_compat_archive.npz" \\
+  --output-json "$RUN_ROOT/r2_cotracker_keyboard/sparse_correspondence_edges_v5.json" \\
+  --max-visible-sample-distance-m 0.004
 ```
 
-`visible_surface_mesh_archive.json` is a prerequisite for sparse edges. If R3
-mesh-archive generation is not ready, run CoTracker first and stop after
-`qc_cotracker_object_tracks_v5.json`; do not fabricate mesh edges from GT.
+Stop here and inspect `visible_surfel_compat_archive_report.json` plus
+`sparse_correspondence_edges_v5.json` before running rigidity or pairwise pose
+fitting. The compatibility archive is prediction-side visible surfel samples
+only; its faces are loader padding and are not geometry evidence. If the sparse
+edge report has trivial edge count, poor temporal continuity, or sample spacing
+comparable to the 4 mm proximity threshold, do not run rigidity as pose support.
+Do not fabricate mesh edges from GT.
 
 ## Acceptance evidence
 

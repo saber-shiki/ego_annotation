@@ -101,6 +101,15 @@ def depth_archive(path: Path) -> tuple[np.ndarray, dict[int, int]]:
     return depths, frame_to_i
 
 
+def scale_xy_to_depth(xy: np.ndarray, image_hw: tuple[int, int], depth_hw: tuple[int, int]) -> np.ndarray:
+    image_h, image_w = image_hw
+    depth_h, depth_w = depth_hw
+    out = np.asarray(xy, dtype=np.float64).copy()
+    out[:, 0] *= float(depth_w) / max(1.0, float(image_w))
+    out[:, 1] *= float(depth_h) / max(1.0, float(image_h))
+    return out
+
+
 def sample_depth_nearest(depth: np.ndarray, xy: np.ndarray) -> np.ndarray:
     x = np.rint(xy[:, 0]).astype(np.int64)
     y = np.rint(xy[:, 1]).astype(np.int64)
@@ -201,13 +210,19 @@ def run(args: argparse.Namespace) -> dict:
         raise RuntimeError("depth archive missing frames for CoTracker QC")
 
     mask_hits = np.stack([mask_hit(mask, tracks[i]) for i, mask in enumerate(masks)], axis=0)
-    depths_sampled = np.stack(
-        [sample_depth_nearest(depths[frame_to_depth_i[frame]], tracks[i]) for i, frame in enumerate(frame_ids)],
-        axis=0,
-    )
+    image_hw = tuple(int(v) for v in images.shape[1:3])
+    tracks_depth_xy = []
+    sampled_depth_rows = []
+    for i, frame in enumerate(frame_ids):
+        depth = depths[frame_to_depth_i[frame]]
+        depth_xy = scale_xy_to_depth(tracks[i], image_hw, tuple(int(v) for v in depth.shape[:2]))
+        tracks_depth_xy.append(depth_xy.astype(np.float32))
+        sampled_depth_rows.append(sample_depth_nearest(depth, depth_xy))
+    tracks_depth_xy = np.stack(tracks_depth_xy, axis=0)
+    depths_sampled = np.stack(sampled_depth_rows, axis=0)
     depth_valid = np.isfinite(depths_sampled)
     accepted = visibility & mask_hits & depth_valid
-    world = np.stack([world_points(tracks[i], depths_sampled[i], annotations[frame]) for i, frame in enumerate(frame_ids)], axis=0)
+    world = np.stack([world_points(tracks_depth_xy[i], depths_sampled[i], annotations[frame]) for i, frame in enumerate(frame_ids)], axis=0)
     consecutive = accepted[:-1] & accepted[1:]
     step_m = np.linalg.norm(world[1:] - world[:-1], axis=2)
     step_m = step_m[consecutive]
@@ -239,6 +254,7 @@ def run(args: argparse.Namespace) -> dict:
         mask_hits=mask_hits,
         accepted=accepted,
         query_xy=query_points,
+        tracks_depth_xy=tracks_depth_xy,
         world_xyz=world,
     )
     h, w = images.shape[1:3]
@@ -264,7 +280,7 @@ def run(args: argparse.Namespace) -> dict:
         "annotation_ready": False,
         "diagnostic_only": True,
         "method": "run_cotracker_object_tracks_v5",
-        "claim_tested": "learned point tracking on the repaired object mask provides candidate material correspondences before any mesh regularization is applied",
+        "claim_tested": "learned point tracking on prediction-side object support masks provides candidate material correspondences before any geometry or pose regularization is applied",
         "manifest": str(args.manifest),
         "annotations": str(args.annotations),
         "metric_depth_npz": str(args.metric_depth_npz),
@@ -276,6 +292,7 @@ def run(args: argparse.Namespace) -> dict:
         "valid_frames_per_track": summarize(valid_frames_per_track),
         "world_step_m": summarize(step_m),
         "flow_px": summarize(flow_px),
+        "coordinate_note": "tracks_xy are in manifest image/mask pixels; tracks_depth_xy are scaled to the metric depth/intrinsics source grid before depth sampling and world lifting.",
         "rows": rows,
         "outputs": {
             "tracks_npz": str(args.output_dir / "cotracker_object_tracks_v5.npz"),
