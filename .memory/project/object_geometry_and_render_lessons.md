@@ -60,3 +60,4 @@ GT-free self-calibration, and every heuristic here must either trace to a measur
 mechanism or be replaced. The self-consistency metric family
 (`self_consistency_metrics.md`) is the designated bridge: demo QC today, pipeline
 confidence/re-estimation triggers tomorrow.
+- Visible surfel renders are admissible as observation-only substrate artifacts when they draw per-frame prediction-side surfel samples as points/splats, avoid triangulated/shaded faces, avoid cross-frame accumulation, and label camera-relative panels as observations rather than object pose. NPZ faces in visible-surfel compatibility archives are loader padding only and must never drive rendering, contact, pose, occlusion, nonpenetration, normals, or surface continuity. A surfel render can improve the delivered visual substrate while leaving pose/contact blockers unresolved.
