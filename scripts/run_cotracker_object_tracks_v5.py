@@ -101,6 +101,26 @@ def depth_archive(path: Path) -> tuple[np.ndarray, dict[int, int]]:
     return depths, frame_to_i
 
 
+def annotation_source_hw(frame: dict) -> tuple[int, int] | None:
+    height = frame.get("source_height")
+    width = frame.get("source_width")
+    if height is None or width is None:
+        return None
+    return int(height), int(width)
+
+
+def validate_depth_grid(frame: dict, depth_hw: tuple[int, int], frame_idx: int) -> bool:
+    source_hw = annotation_source_hw(frame)
+    if source_hw is None:
+        return False
+    if tuple(int(v) for v in depth_hw) != source_hw:
+        raise RuntimeError(
+            f"frame {frame_idx}: depth grid {tuple(int(v) for v in depth_hw)} does not match "
+            f"annotation source grid {source_hw}; refusing to lift CoTracker tracks across mismatched intrinsics/depth frames"
+        )
+    return True
+
+
 def scale_xy_to_depth(xy: np.ndarray, image_hw: tuple[int, int], depth_hw: tuple[int, int]) -> np.ndarray:
     image_h, image_w = image_hw
     depth_h, depth_w = depth_hw
@@ -213,9 +233,13 @@ def run(args: argparse.Namespace) -> dict:
     image_hw = tuple(int(v) for v in images.shape[1:3])
     tracks_depth_xy = []
     sampled_depth_rows = []
+    depth_grid_checks = 0
     for i, frame in enumerate(frame_ids):
         depth = depths[frame_to_depth_i[frame]]
-        depth_xy = scale_xy_to_depth(tracks[i], image_hw, tuple(int(v) for v in depth.shape[:2]))
+        depth_hw = tuple(int(v) for v in depth.shape[:2])
+        if validate_depth_grid(annotations[frame], depth_hw, frame):
+            depth_grid_checks += 1
+        depth_xy = scale_xy_to_depth(tracks[i], image_hw, depth_hw)
         tracks_depth_xy.append(depth_xy.astype(np.float32))
         sampled_depth_rows.append(sample_depth_nearest(depth, depth_xy))
     tracks_depth_xy = np.stack(tracks_depth_xy, axis=0)
@@ -293,6 +317,7 @@ def run(args: argparse.Namespace) -> dict:
         "world_step_m": summarize(step_m),
         "flow_px": summarize(flow_px),
         "coordinate_note": "tracks_xy are in manifest image/mask pixels; tracks_depth_xy are scaled to the metric depth/intrinsics source grid before depth sampling and world lifting.",
+        "depth_grid_source_match_checked_frames": int(depth_grid_checks),
         "rows": rows,
         "outputs": {
             "tracks_npz": str(args.output_dir / "cotracker_object_tracks_v5.npz"),
