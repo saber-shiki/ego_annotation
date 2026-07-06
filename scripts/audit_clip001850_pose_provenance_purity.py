@@ -144,10 +144,22 @@ def load_original_pose_graph() -> list[dict[str, Any]]:
 
 
 def load_static_fill_pose() -> list[dict[str, Any]]:
-    """Superseded static-gauge fill (held T_rest on 142 frames)."""
-    return load_ndjson(
-        RESEARCH_ROOT / "static_gauge_pose_render/object_pose_static_gauge.ndjson"
-    )
+    """Superseded static-gauge fill (held T_rest on 142 frames).
+
+    The table is intentionally outside consumable package paths. Older audit
+    outputs kept it under `static_gauge_pose_render/`; the corrected package
+    stores it under `superseded_prior_laundering/sidecar_tables/` as negative
+    evidence only.
+    """
+    candidates = [
+        RESEARCH_ROOT
+        / "superseded_prior_laundering/sidecar_tables/object_pose_static_gauge.ndjson",
+        RESEARCH_ROOT / "static_gauge_pose_render/object_pose_static_gauge.ndjson",
+    ]
+    for path in candidates:
+        if path.exists():
+            return load_ndjson(path)
+    raise FileNotFoundError("static-gauge negative-evidence pose table not found")
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +270,265 @@ def static_source_getter(row: dict[str, Any]) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# Render-surface purity: every current/advertised render must respect the pose ontology
+# --------------------------------------------------------------------------- #
+def _as_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    return Path(value)
+
+
+def _status_is_superseded(status: Any) -> bool:
+    if not isinstance(status, str):
+        return False
+    low = status.lower()
+    return "superseded" in low or "rejected" in low or "negative_evidence" in low
+
+
+def _add_surface(surfaces: list[dict[str, Any]], *, name: str, manifest_path: Path | None,
+                 root_path: Path | None = None, status: str | None = None,
+                 source: str, current: bool | None = None) -> None:
+    if manifest_path is None and root_path is not None:
+        manifest_path = root_path / "manifest.json"
+    if manifest_path is None:
+        return
+    if current is None:
+        current = not _status_is_superseded(status)
+    surfaces.append({
+        "name": name,
+        "manifest_path": str(manifest_path),
+        "root_path": str(root_path) if root_path else str(manifest_path.parent),
+        "status": status,
+        "source": source,
+        "current_advertised": bool(current),
+    })
+
+
+def discover_render_surfaces() -> list[dict[str, Any]]:
+    """Discover render manifests that the package advertises.
+
+    Current/advised render surfaces are checked as contract-bearing. Superseded
+    render surfaces are still summarized as negative evidence but do not fail the
+    current package after they have been structurally demoted.
+    """
+    surfaces: list[dict[str, Any]] = []
+    root_manifest_path = RESEARCH_ROOT / "artifact_manifest.json"
+    sidecar_manifest_path = SIDECAR_TABLES.parent / "manifest.json"
+    root = load_json(root_manifest_path) if root_manifest_path.exists() else {}
+    side = load_json(sidecar_manifest_path) if sidecar_manifest_path.exists() else {}
+
+    # Canonical current render_artifacts: the corresponding manifest path is
+    # stored separately by the package cleanup.
+    if root.get("render_artifacts"):
+        _add_surface(
+            surfaces,
+            name="root.render_artifacts",
+            manifest_path=_as_path(root.get("render_artifacts_full_duration_manifest")),
+            status="current",
+            source="root_manifest.render_artifacts",
+            current=True,
+        )
+    if side.get("render_artifacts"):
+        _add_surface(
+            surfaces,
+            name="sidecar.render_artifacts",
+            manifest_path=_as_path(side.get("render_artifacts_full_duration_manifest")),
+            status="current",
+            source="sidecar_manifest.render_artifacts",
+            current=True,
+        )
+
+    # Legacy top-level root render blocks. If these exist without superseded
+    # status, they are advertised current render surfaces and must be audited.
+    for key in ("full_duration_render", "generic_contact_state_render"):
+        block = root.get(key)
+        if isinstance(block, dict):
+            _add_surface(
+                surfaces,
+                name=f"root.{key}",
+                manifest_path=_as_path(block.get("manifest")),
+                root_path=_as_path(block.get("root")),
+                status=block.get("status"),
+                source=f"root_manifest.{key}",
+                current=not _status_is_superseded(block.get("status")),
+            )
+
+    # Superseded render artifacts from root and sidecar are not current, but they
+    # remain summarized so a reviewer can see that known-bad renders are demoted.
+    for i, art in enumerate(root.get("superseded_artifacts", []) or []):
+        if not isinstance(art, dict):
+            continue
+        path = _as_path(art.get("path"))
+        if path and (path / "manifest.json").exists():
+            _add_surface(
+                surfaces,
+                name=f"root.superseded_artifacts[{i}].{art.get('name','render')}",
+                manifest_path=path / "manifest.json",
+                root_path=path,
+                status=art.get("status", "superseded"),
+                source="root_manifest.superseded_artifacts",
+                current=False,
+            )
+    for i, art in enumerate(side.get("superseded_artifacts", []) or []):
+        if not isinstance(art, dict):
+            continue
+        path = _as_path(art.get("path"))
+        if path and not path.is_absolute():
+            path = RESEARCH_ROOT / path
+        if path and (path / "manifest.json").exists():
+            _add_surface(
+                surfaces,
+                name=f"sidecar.superseded_artifacts[{i}].{art.get('name','render')}",
+                manifest_path=path / "manifest.json",
+                root_path=path,
+                status=art.get("status", "superseded"),
+                source="sidecar_manifest.superseded_artifacts",
+                current=False,
+            )
+    for i, art in enumerate(side.get("superseded_render_artifacts", []) or []):
+        if not isinstance(art, dict):
+            continue
+        rarts = art.get("render_artifacts") or {}
+        manifest_path = None
+        # The old sidecar shape carries only video paths; infer the sibling manifest.
+        for v in rarts.values():
+            if isinstance(v, dict) and v.get("path"):
+                manifest_path = Path(v["path"]).parent / "manifest.json"
+                break
+            if isinstance(v, str):
+                manifest_path = Path(v).parent / "manifest.json"
+                break
+        _add_surface(
+            surfaces,
+            name=f"sidecar.superseded_render_artifacts[{i}].{art.get('name','render')}",
+            manifest_path=manifest_path,
+            status=art.get("status", "superseded"),
+            source="sidecar_manifest.superseded_render_artifacts",
+            current=False,
+        )
+
+    # Deduplicate by manifest path + current status, preferring current entries.
+    dedup: dict[tuple[str, bool], dict[str, Any]] = {}
+    for surf in surfaces:
+        key = (surf["manifest_path"], bool(surf["current_advertised"]))
+        if key not in dedup:
+            dedup[key] = surf
+        else:
+            dedup[key]["source"] += ";" + surf["source"]
+            dedup[key]["name"] += ";" + surf["name"]
+    return list(dedup.values())
+
+
+def _frame_body_draw_count(frame: dict[str, Any]) -> int:
+    count = 0
+    if frame.get("body_drawn") is True:
+        count += 1
+    for key in ("overlay_info", "world_info", "overlay_render_info", "world_render_info"):
+        info = frame.get(key) or {}
+        if not isinstance(info, dict):
+            continue
+        if info.get("body_drawn") is True or info.get("body_centroid_drawn") is True:
+            count += 1
+        for metric in (
+            "overlay_faces_drawn",
+            "world_edges_drawn",
+            "observed_body_faces_drawn",
+            "observed_body_edges_drawn",
+        ):
+            val = info.get(metric)
+            if isinstance(val, (int, float)) and val > 0:
+                count += int(val)
+    return count
+
+
+def analyze_render_manifest(surface: dict[str, Any], current_pose_sha: str) -> dict[str, Any]:
+    mp = Path(surface["manifest_path"])
+    out = dict(surface)
+    out.update({
+        "manifest_exists": mp.exists(),
+        "frame_count": None,
+        "pose_source_matches_current": False,
+        "declared_pose_source": None,
+        "declared_pose_sha256": None,
+        "nonmeasured_body_drawn_count": None,
+        "nonmeasured_body_drawn_frames_sample": [],
+        "current_surface_violation": False,
+    })
+    if not mp.exists():
+        out["current_surface_violation"] = bool(surface.get("current_advertised"))
+        out["violation_reason"] = "advertised render manifest missing"
+        return out
+    manifest = load_json(mp)
+    frames = manifest.get("frames") or []
+    out["frame_count"] = len(frames) if isinstance(frames, list) else None
+    declared_sha = manifest.get("render_consumed_pose_sha256")
+    declared_source = manifest.get("render_consumed_pose_source")
+    inputs = manifest.get("inputs") or {}
+    if declared_sha is None and isinstance(inputs, dict):
+        declared_sha = inputs.get("object_pose_observations_sha256") or inputs.get("pose_observations_sha256")
+    if declared_source is None and isinstance(inputs, dict):
+        declared_source = inputs.get("object_pose_observations") or inputs.get("pose_report")
+    out["declared_pose_source"] = declared_source
+    out["declared_pose_sha256"] = declared_sha
+    out["pose_source_matches_current"] = declared_sha == current_pose_sha
+
+    bad_frames: list[dict[str, Any]] = []
+    if isinstance(frames, list):
+        for fr in frames:
+            try:
+                fi = int(fr.get("frame_idx"))
+            except Exception:
+                continue
+            cls = ontology_class(fi)
+            draw = _frame_body_draw_count(fr)
+            if cls != "observed_measured" and draw > 0:
+                bad_frames.append({
+                    "frame_idx": fi,
+                    "ontology_class": cls,
+                    "body_draw_count": draw,
+                })
+    out["nonmeasured_body_drawn_count"] = len(bad_frames)
+    out["nonmeasured_body_drawn_frames_sample"] = bad_frames[:12]
+
+    # If a current/advised surface either draws body on non-measured frames or
+    # does not declare consumption of the current pose table, it is laundering.
+    if surface.get("current_advertised"):
+        reasons = []
+        if bad_frames:
+            reasons.append("body_drawn_on_non_observed_measured_frames")
+        if not out["pose_source_matches_current"]:
+            reasons.append("consumed_pose_source_not_current_object_pose_observations")
+        if reasons:
+            out["current_surface_violation"] = True
+            out["violation_reason"] = ",".join(reasons)
+    return out
+
+
+def audit_render_surface() -> dict[str, Any]:
+    current_pose_sha = sha256_file(
+        RESEARCH_ROOT / "unknown_preserving_pose_render/object_pose_observations.ndjson"
+    )
+    surfaces = [analyze_render_manifest(s, current_pose_sha) for s in discover_render_surfaces()]
+    current = [s for s in surfaces if s.get("current_advertised")]
+    violations = [s for s in current if s.get("current_surface_violation")]
+    superseded_with_body = [
+        s for s in surfaces
+        if not s.get("current_advertised") and (s.get("nonmeasured_body_drawn_count") or 0) > 0
+    ]
+    return {
+        "current_pose_sha256": current_pose_sha,
+        "surface_count": len(surfaces),
+        "current_surface_count": len(current),
+        "current_surface_violation_count": len(violations),
+        "current_surface_violations": violations,
+        "superseded_surface_with_nonmeasured_body_count": len(superseded_with_body),
+        "superseded_surface_with_nonmeasured_body": superseded_with_body,
+        "surfaces": surfaces,
+        "package_render_surface_pure": len(violations) == 0,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Required check 3: render manifest lineage
 # --------------------------------------------------------------------------- #
 def audit_render_lineage() -> dict[str, Any]:
@@ -266,10 +537,12 @@ def audit_render_lineage() -> dict[str, Any]:
         RESEARCH_ROOT
         / "unknown_preserving_pose_render/object_pose_observations.ndjson"
     )
-    static_pose_path = str(
+    static_pose_candidates = [
         RESEARCH_ROOT
-        / "static_gauge_pose_render/object_pose_static_gauge.ndjson"
-    )
+        / "superseded_prior_laundering/sidecar_tables/object_pose_static_gauge.ndjson",
+        RESEARCH_ROOT / "static_gauge_pose_render/object_pose_static_gauge.ndjson",
+    ]
+    static_pose_path = str(next((p for p in static_pose_candidates if p.exists()), static_pose_candidates[0]))
 
     consumes_current = [
         i for i, r in enumerate(rc)
@@ -383,6 +656,7 @@ def run_audit() -> dict[str, Any]:
     )
 
     render_lineage = audit_render_lineage()
+    render_surface = audit_render_surface()
     factor_elig = audit_factor_eligibility()
 
     # ---- Required check verdicts ----
@@ -448,6 +722,18 @@ def run_audit() -> dict[str, Any]:
         ],
     }
 
+    # (6) every current/advised render surface is pose-provenance pure
+    check_6 = {
+        "name": "package_render_surface_pose_purity",
+        "passed": render_surface["package_render_surface_pure"],
+        "current_surface_count": render_surface["current_surface_count"],
+        "current_surface_violation_count": render_surface["current_surface_violation_count"],
+        "violations": render_surface["current_surface_violations"],
+        "superseded_surface_with_nonmeasured_body_count": render_surface[
+            "superseded_surface_with_nonmeasured_body_count"
+        ],
+    }
+
     # graph_health-like aggregate row (the required fields + provenance)
     graph_health_row = {
         "schema": SCHEMA,
@@ -469,14 +755,16 @@ def run_audit() -> dict[str, Any]:
         "unresolved_count": len(UNRESOLVED_FRAMES),
         "unresolved_frames": sorted(UNRESOLVED_FRAMES),
         "current_render_body_drawn_only_on_measured": check_5["passed"],
+        "package_render_surface_pure": check_6["passed"],
+        "package_render_surface_violation_count": render_surface["current_surface_violation_count"],
         "solver_estimate_count": factor_elig["solver_estimate_count"],
         "eligible_measurement_factor_count": factor_elig[
             "eligible_measurement_factor_count"
         ],
         "decision": (
             "pose_channel_pure_current__original_laundering_detected"
-            if check_1["passed"] and check_2["passed"]
-            else "POSE_CHANNEL_PURITY_VIOLATION"
+            if check_1["passed"] and check_2["passed"] and check_6["passed"]
+            else "POSE_CHANNEL_OR_RENDER_SURFACE_PURITY_VIOLATION"
         ),
     }
 
@@ -509,16 +797,29 @@ def run_audit() -> dict[str, Any]:
                 "v19_rigid_object_pose_graph_report.json"
             ),
             "static_fill": str(
-                RESEARCH_ROOT
-                / "static_gauge_pose_render/object_pose_static_gauge.ndjson"
+                next(
+                    (
+                        p
+                        for p in [
+                            RESEARCH_ROOT
+                            / "superseded_prior_laundering/sidecar_tables/object_pose_static_gauge.ndjson",
+                            RESEARCH_ROOT
+                            / "static_gauge_pose_render/object_pose_static_gauge.ndjson",
+                        ]
+                        if p.exists()
+                    ),
+                    RESEARCH_ROOT
+                    / "superseded_prior_laundering/sidecar_tables/object_pose_static_gauge.ndjson",
+                )
             ),
         },
         "current_unknown_preserving": current,
         "original_pose_graph": original,
         "static_gauge_fill": static,
         "render_lineage": render_lineage,
+        "render_surface": render_surface,
         "factor_eligibility": factor_elig,
-        "checks": [check_1, check_2, check_3, check_4, check_5],
+        "checks": [check_1, check_2, check_3, check_4, check_5, check_6],
         "graph_health_row": graph_health_row,
     }
     summary["all_checks_pass"] = all(
@@ -584,6 +885,7 @@ def render_audit_md(summary: dict[str, Any], per_frame: list[dict[str, Any]]) ->
     o = summary["original_pose_graph"]
     s = summary["static_gauge_fill"]
     rl = summary["render_lineage"]
+    rs = summary.get("render_surface", {})
     fe = summary["factor_eligibility"]
     checks = summary["checks"]
     lines = []
@@ -677,6 +979,24 @@ def render_audit_md(summary: dict[str, Any], per_frame: list[dict[str, Any]]) ->
         f"{rl['body_drawn_only_on_measured_asserted_by_rows']}"
     )
     lines.append("")
+    lines.append("## Package render-surface purity")
+    lines.append(
+        f"- current/advised render surfaces: {rs.get('current_surface_count')}"
+    )
+    lines.append(
+        f"- current render-surface violations: {rs.get('current_surface_violation_count')}"
+    )
+    for surf in rs.get('current_surface_violations', []):
+        lines.append(
+            f"  - {surf.get('name')}: {surf.get('violation_reason')} "
+            f"(non-measured body frames={surf.get('nonmeasured_body_drawn_count')}, "
+            f"manifest={surf.get('manifest_path')})"
+        )
+    lines.append(
+        f"- superseded surfaces with non-measured body draw retained as negative evidence: "
+        f"{rs.get('superseded_surface_with_nonmeasured_body_count')}"
+    )
+    lines.append("")
     lines.append("## graph_health-like aggregate row")
     lines.append("```json")
     lines.append(json.dumps(summary["graph_health_row"], indent=2))
@@ -689,7 +1009,7 @@ def render_audit_md(summary: dict[str, Any], per_frame: list[dict[str, Any]]) ->
     if summary["all_checks_pass"]:
         lines.append("")
         lines.append(
-            "All five required checks pass: the current unknown-preserving pose "
+            "All required checks pass: the current unknown-preserving pose "
             "channel is pure (no forbidden numeric pose), the original laundering "
             "is correctly detected, the render manifest points to the unknown-"
             "preserving artifact with the static fill superseded, and the "
@@ -726,6 +1046,8 @@ def main() -> None:
     print(f"unknown_null_pose_count: {gh['unknown_null_pose_count']}")
     print(f"rejected_fit_count: {gh['rejected_fit_count']}")
     print(f"solver_estimate_count: {gh['solver_estimate_count']}")
+    print(f"package_render_surface_pure: {gh.get('package_render_surface_pure')}")
+    print(f"package_render_surface_violation_count: {gh.get('package_render_surface_violation_count')}")
 
 
 if __name__ == "__main__":
