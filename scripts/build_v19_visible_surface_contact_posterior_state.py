@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Build a V19 contact posterior from observed object-owned visible surfels.
+"""Build a V19 visible-surface proximity residual from observed object surfels.
 
-Completed object meshes can contain hidden/backside or broad prior surfaces.  For
-contact support, a stricter measurement is the per-frame object-owned visible
-surface lifted from SAM/depth.  This builder keeps metric MANO fixed and writes
-posterior targets on those visible object surfels.  Missing or distant surfels are
-evidence for low/absent visible contact support, not a reason to move the hand.
+This is not a contact prior and not a contact detector.  Contact priors must come
+from visual/semantic evidence such as VLM or agent inspection of the RGB video.
+This builder keeps metric MANO fixed and measures MANO sample vertices against
+per-frame object-owned visible depth surfels.  The result is a geometry residual
+conditioned on an externally supplied/inspected interaction hypothesis; it must
+not be used to infer contact and then feed that inferred contact back into a
+pose/hand solver.
 """
 from __future__ import annotations
 
@@ -44,15 +46,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sides", nargs="+", choices=("left", "right"), default=["left", "right"])
     p.add_argument("--hawor-npz", type=Path, required=True, help="Metric MANO joint source to preserve exactly; may be a hybrid NPZ")
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--object-mask-dilation-px", type=int, default=8)
-    p.add_argument("--object-proximity-px", type=float, default=65.0)
-    p.add_argument("--target-locality-px", type=float, default=40.0)
-    p.add_argument("--max-current-surface-distance-m", type=float, default=0.22)
-    p.add_argument("--max-hand-behind-surface-m", type=float, default=0.08)
-    p.add_argument("--contact-proximity-weight-px", type=float, default=45.0)
-    p.add_argument("--contact-distance-weight-m", type=float, default=0.12)
-    p.add_argument("--min-contact-vertices", type=int, default=16)
-    p.add_argument("--max-contact-vertices", type=int, default=96)
+    p.add_argument("--object-mask-dilation-px", type=int, default=8,
+                   help="Small SAM-mask boundary tolerance for candidate gathering only; not a contact classifier.")
+    p.add_argument("--object-proximity-px", type=float, default=65.0,
+                   help="Generous image-space candidate radius around the object mask; distance summaries remain metric.")
+    p.add_argument("--target-locality-px", type=float, default=40.0,
+                   help="2D locality window for choosing a visible surfel target near each projected MANO vertex.")
+    p.add_argument("--max-current-surface-distance-m", type=float, default=0.22,
+                   help="Loose candidate ceiling so distant vertices are excluded from residual rows; not a contact threshold.")
+    p.add_argument("--max-hand-behind-surface-m", type=float, default=0.08,
+                   help="Reject vertices far behind the visible object surface in camera depth; not a nonpenetration test.")
+    p.add_argument("--contact-proximity-weight-px", type=float, default=45.0,
+                   help="Gaussian scoring width for ranking candidate vertices inside the generous mask band; output distances are not thresholded by this value.")
+    p.add_argument("--contact-distance-weight-m", type=float, default=0.12,
+                   help="Gaussian scoring width for ranking candidate vertices within the loose 0.22 m distance ceiling; not a contact threshold.")
+    p.add_argument("--min-contact-vertices", type=int, default=16,
+                   help="Minimum selected MANO vertices needed to report a visible-surface residual row.")
+    p.add_argument("--max-contact-vertices", type=int, default=96,
+                   help="Computational/report-size cap after candidate ranking; downstream state should use the reported distance summaries, not this cap as evidence.")
     p.add_argument("--max-visible-surfels", type=int, default=2500)
     return p.parse_args()
 
@@ -263,8 +274,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "frame_idx": frame_idx,
                 "source_frame_index": frame_idx,
                 "hand_side": side,
-                "interval_id": f"{side}_{frame_idx:04d}_visible_object_surface_posterior",
-                "temporal_mano_state": "v19_source_metric_mano_plus_visible_object_surface_contact_posterior",
+                "interval_id": f"{side}_{frame_idx:04d}_visible_object_surface_proximity_residual",
+                "temporal_mano_state": "v19_source_metric_mano_plus_visible_object_surface_proximity_residual",
                 "joint_state_policy": "hawor_npz_metric_mano_preserved",
                 "optimized_joints_world_m": np.asarray(joints_world, dtype=np.float64).tolist(),
                 "optimized_vertices_world_sample_m": target_world.astype(float).tolist(),
@@ -272,7 +283,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "object_surface_posterior_source_mano_vertex_ids": [int(x) for x in ids.tolist()],
                 "source_contact_vertices_world_sample_m": source_world.astype(float).tolist(),
                 "contact_surface_vertices_world_sample_m": target_world.astype(float).tolist(),
-                "contact_surface_hypothesis_state": "uncertain_visible_object_surface_posterior_not_contact_ownership",
+                "visible_surface_residual_state": "metric_mano_to_visible_surfels_residual_not_contact_prior",
+                "contact_surface_hypothesis_state": "legacy_alias_not_contact_prior_or_contact_ownership",
                 "source_metric_mano_state": {"kind": "hawor_npz_or_hybrid_npz", "path": str(args.hawor_npz)},
                 "source_hawor_npz": str(args.hawor_npz),
                 "optimized_translation_world_m": [0.0, 0.0, 0.0],
@@ -284,10 +296,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "metric_joint_shift_px": zero_summary(),
                 "visible_joint_shift_px": zero_summary(),
                 "contact_similarity_refit": {
-                    "contact_residual_mode": "direct_object_surface_posterior",
+                    "residual_mode": "direct_visible_surface_proximity_residual",
+                    "contact_residual_mode": "legacy_alias_direct_visible_surface_proximity_residual",
                     "target_surface_source": "object_owned_visible_depth_surfels",
                     "solver_stage": "none_source_gaps_only",
                     "contact_solver_applied": False,
+                    "can_supply_contact_prior": False,
+                    "contact_prior_required_source": "vlm_or_agent_visual_semantic_prior",
                     "contact_vertex_count": int(len(ids)),
                     "source_hand_to_object_surface_distance_m": gaps["distance"],
                     "source_hand_to_object_surface_normal_abs_m": gaps["normal_abs"],
@@ -308,20 +323,36 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                         "target_locality_px": float(args.target_locality_px),
                     },
                 },
+                "direct_object_surface_source_distance_gap_m": gaps["distance"],
+                "direct_object_surface_source_gap_components_m": gaps,
                 "direct_object_surface_source_gap_m": gaps["distance"],
-                "full_observed_surface_penetration_after_solver_m": {"count": 0, "not_applicable": True, "reason": "visible-surface posterior does not solve nonpenetration"},
-                "final_active_constraint_residual_after_solver_m": {"count": 0, "not_applicable": True, "reason": "visible-surface posterior does not solve nonpenetration"},
+                "full_observed_surface_penetration_after_solver_m": {"count": 0, "not_applicable": True, "reason": "visible-surface residual does not solve nonpenetration"},
+                "final_active_constraint_residual_after_solver_m": {"count": 0, "not_applicable": True, "reason": "visible-surface residual does not solve nonpenetration"},
             })
     if not rows:
-        raise RuntimeError(f"no visible-surface posterior rows; skipped={skipped[:20]}")
+        raise RuntimeError(f"no visible-surface residual rows; skipped={skipped[:20]}")
     payload = {
-        "method": "v19_visible_object_surface_contact_posterior_state",
+        "method": "v19_visible_object_surface_proximity_residual_state",
         "case": str(args.case),
         "object_id": str(args.object_id),
         "claim_scope": (
-            "Metric MANO joints are preserved. Posterior targets come only from per-frame object-owned visible depth surfels, "
-            "so missing/high-gap rows are evidence about visible contact support, not hidden contact ownership or nonpenetration."
+            "Metric MANO joints are preserved. Targets come only from per-frame object-owned visible depth surfels. "
+            "This is a visible-surface proximity residual/likelihood, not a contact prior, hidden-state decision, ownership claim, or nonpenetration result."
         ),
+        "contact_prior_policy": {
+            "can_supply_contact_prior": False,
+            "required_prior_source": "vlm_or_agent_visual_semantic_prior",
+            "forbidden_loop": "do not infer contact from MANO/object distance and then use that inferred contact to correct MANO/object pose",
+        },
+        "schema_notes": {
+            "direct_object_surface_source_distance_gap_m": "distance-only MANO-vertex to visible-surfel residual summary",
+            "direct_object_surface_source_gap_components_m": "distance, normal_abs, and tangent summaries for the same selected vertices",
+            "direct_object_surface_source_gap_m": "legacy distance-only alias; use direct_object_surface_source_distance_gap_m in new consumers",
+            "candidate_weights": "Gaussian weights rank selected candidate vertices; they are not contact thresholds, do not create a prior, and do not change metric MANO or object surfels.",
+            "summary_visible_surface_*": "preferred naming for residual summaries; contact_*_after_median keys are legacy aliases preserved for downstream compatibility",
+            "contact_*_after_median": "legacy alias; identical to visible_surface_*_after_median. These are visible-surface proximity residual statistics, not contact-prior statements.",
+            "contact_prior_policy": "this key is a meta-declaration stating the artifact CANNOT supply contact priors; it is NOT a contact claim",
+        },
         "inputs": {"annotations": str(args.annotations), "hawor_npz": str(args.hawor_npz)},
         "parameters": vars(args) | {"annotations": str(args.annotations), "hawor_npz": str(args.hawor_npz), "output": str(args.output)},
         "summary": {
@@ -330,6 +361,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "source_hand_to_object_surface_distance_median": numeric_summary(distance_medians),
             "source_hand_to_object_surface_normal_abs_median": numeric_summary(normal_medians),
             "source_hand_to_object_surface_tangent_median": numeric_summary(tangent_medians),
+            "visible_surface_distance_after_median": numeric_summary(distance_medians),
+            "visible_surface_normal_abs_after_median": numeric_summary(normal_medians),
+            "visible_surface_tangent_after_median": numeric_summary(tangent_medians),
             "contact_distance_after_median": numeric_summary(distance_medians),
             "contact_normal_abs_after_median": numeric_summary(normal_medians),
             "contact_tangent_after_median": numeric_summary(tangent_medians),

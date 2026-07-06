@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Build a V19 temporal state that separates metric MANO joints from contact surface hypotheses.
+"""Build a V19 temporal state that separates metric MANO joints from visible-surface hypotheses.
 
-The input contact state may contain a point-to-plane similarity correction whose
+The input state may contain a point-to-plane similarity correction whose
 surface samples look physically useful but whose optimized MANO joints are not a
 valid metric hand state.  This adapter preserves a chosen source MANO joint state
 for evaluation/rendered skeletons and carries the optimized surface samples as an
-explicit uncertain contact-surface hypothesis.
+explicit uncertain visible-surface proximity hypothesis.
 
 It does not accept contact, nonpenetration, or ownership.  It encodes a separate
-state variable: a local MANO-surface posterior constrained by object geometry.
+state variable: a local MANO-to-visible-surface proximity residual constrained by
+object geometry.  Contact priors must come from VLM/agent visual evidence, never
+from MANO/object geometry distance.
 """
 from __future__ import annotations
 
@@ -84,7 +86,7 @@ def hawor_joint_map(path: Path) -> dict[tuple[int, str], np.ndarray]:
 
 
 def zero_summary() -> dict[str, Any]:
-    return {"count": 21, "min": 0.0, "median": 0.0, "mean": 0.0, "p90": 0.0, "p95": 0.0, "max": 0.0}
+    return {"count": 21, "min": 0.0, "p10": 0.0, "median": 0.0, "mean": 0.0, "p90": 0.0, "p95": 0.0, "max": 0.0}
 
 
 def numeric_summary(vals: list[float]) -> dict[str, Any]:
@@ -94,6 +96,7 @@ def numeric_summary(vals: list[float]) -> dict[str, Any]:
     return {
         "count": int(arr.size),
         "min": float(np.min(arr)),
+        "p10": float(np.percentile(arr, 10)),
         "median": float(np.median(arr)),
         "mean": float(np.mean(arr)),
         "p90": float(np.percentile(arr, 90)),
@@ -159,7 +162,7 @@ def main() -> None:
         out["source_metric_mano_state"] = {"kind": args.joint_source, "path": source_desc}
         if args.hawor_npz is not None:
             out["source_hawor_npz"] = str(args.hawor_npz)
-        out["contact_surface_hypothesis_state"] = "uncertain_not_contact_ownership"
+        out["visible_surface_hypothesis_state"] = "uncertain_visible_surface_proximity_not_contact_ownership"
         out["contact_surface_vertices_world_sample_m"] = out.get("optimized_vertices_world_sample_m") or []
         out["metric_joint_shift_px"] = zero_summary()
         out["visible_joint_shift_px"] = zero_summary()
@@ -183,12 +186,13 @@ def main() -> None:
         raise SystemExit(f"no rows could be built from {args.contact_state}; skipped={skipped[:10]}")
 
     payload = {
-        "method": "v19_source_metric_mano_plus_contact_surface_hypothesis_state",
+        "method": "v19_source_metric_mano_plus_visible_surface_proximity_hypothesis_state",
         "case": args.case or contact_state.get("case"),
         "object_id": args.object_id or contact_state.get("object_id"),
         "claim_scope": (
             "Metric MANO joints are preserved from the selected source; optimized point-to-plane vertices are rendered only as "
-            "uncertain contact-surface hypotheses. This state does not accept contact ownership or nonpenetration."
+            "uncertain visible-surface proximity hypotheses. This state does not accept contact ownership or nonpenetration. "
+            "Contact priors must come from VLM/agent visual evidence, never from MANO/object geometry distance."
         ),
         "inputs": {
             "contact_state": str(args.contact_state),
@@ -201,6 +205,9 @@ def main() -> None:
             "contact_rows_in": len(contact_rows),
             "rows_out": len(rows),
             "skipped_count": len(skipped),
+            "visible_surface_normal_abs_after_median": numeric_summary(normal_vals),
+            "visible_surface_tangent_after_median": numeric_summary(tangent_vals),
+            "visible_surface_distance_after_median": numeric_summary(distance_vals),
             "contact_normal_abs_after_median": numeric_summary(normal_vals),
             "contact_tangent_after_median": numeric_summary(tangent_vals),
             "contact_distance_after_median": numeric_summary(distance_vals),
