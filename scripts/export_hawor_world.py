@@ -316,7 +316,12 @@ def run(args: argparse.Namespace) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hawor-root", type=Path, default=Path("/mnt/user-home/yiwen/ego_annotation_remote/hawor_work/third_party/HaWoR"))
+    project_hawor = Path(__file__).resolve().parents[1] / ".runtime" / "hawor_work" / "third_party" / "HaWoR"
+    parser.add_argument(
+        "--hawor-root",
+        type=Path,
+        default=Path(os.environ.get("EGO_HAWOR_REPO", str(project_hawor))),
+    )
     parser.add_argument("--video_path", type=str, required=True)
     parser.add_argument("--input_type", type=str, default="file")
     parser.add_argument("--checkpoint", type=str, default="./weights/hawor/checkpoints/hawor.ckpt")

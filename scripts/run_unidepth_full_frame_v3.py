@@ -65,7 +65,25 @@ def run(args: argparse.Namespace) -> dict:
         lo, hi = np.percentile(depth[valid], [5.0, 95.0])
         norm = np.clip((norm - lo) / max(1e-6, hi - lo), 0.0, 1.0)
         color = cv2.applyColorMap((norm * 255.0).astype(np.uint8), cv2.COLORMAP_TURBO)
-        review = cv2.addWeighted(rgb, 0.55, color, 0.45, 0.0)
+        # The manifest RGB is intentionally rendered at --render-width (960 px),
+        # while the metric depth archive is resized to the source-coordinate
+        # contract (1408 px here).  Keep the archive/intrinsics in source
+        # coordinates and resize only the visualization overlay to the decoded
+        # RGB frame; cv2.addWeighted requires identical H/W/C arrays.
+        if color.shape[:2] != rgb.shape[:2]:
+            color_review = cv2.resize(
+                color,
+                (int(rgb.shape[1]), int(rgb.shape[0])),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            color_review = color
+        if color_review.ndim != rgb.ndim or color_review.shape[2] != rgb.shape[2]:
+            raise RuntimeError(
+                f"review channel mismatch for frame {frame_idx}: "
+                f"rgb={rgb.shape} color={color_review.shape}"
+            )
+        review = cv2.addWeighted(rgb, 0.55, color_review, 0.45, 0.0)
         cv2.imwrite(str(still_dir / f"frame_{frame_idx:06d}.png"), review)
 
         frame_indices.append(frame_idx)
@@ -109,6 +127,8 @@ def run(args: argparse.Namespace) -> dict:
         "last_frame": int(frame_indices[-1]),
         "depth_archive": str(depth_archive),
         "stills_dir": str(still_dir),
+        "review_resolution": [int(rgb.shape[1]), int(rgb.shape[0])],
+        "depth_archive_source_size": [int(args.source_width), int(args.source_height)],
         "unidepth_focal_px": summarize([row["unidepth_focal_px"] for row in rows]),
         "depth_median_m": summarize([row["depth_median_m"] for row in rows]),
         "rows": rows,

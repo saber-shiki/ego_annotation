@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,8 @@ from PIL import Image
 from transformers import Owlv2ForObjectDetection, Owlv2Processor  # type: ignore[import-not-found]
 
 
-DEFAULT_OWLV2_MODEL = Path("/home/yiwen/.cache/huggingface/hub/models--google--owlv2-base-patch16-ensemble")
+_LOCAL_OWLV2_MODEL = Path(__file__).resolve().parents[1] / "checkpoints" / "owlv2-base-patch16-ensemble"
+DEFAULT_OWLV2_MODEL = Path(os.environ.get("EGO_OWLV2_MODEL", str(_LOCAL_OWLV2_MODEL)))
 
 
 def load_json(path: Path) -> Any:

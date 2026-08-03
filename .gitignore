@@ -8,6 +8,7 @@ outputs/
 .DS_Store
 .serena/
 .scratch/
+.runtime/
 third_party/
 checkpoints/
 # Only machine-local/private memory is ignored. Task and project memory are durable.

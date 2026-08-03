@@ -5,11 +5,12 @@ The script does not change physical state.  It consumes existing state-driven
 render videos, adds a stable explanatory legend/metric banner, writes a
 publication report, optional review stills, and can atomically update canonical
 ``v19_overlay.mp4``, ``v19_world.mp4``, and ``v19_side_by_side.mp4`` paths,
-using symlinks when the filesystem preserves them and real copies otherwise.
+using real copies on filesystems that do not preserve reliable symlinks.
 """
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shutil
@@ -276,14 +277,35 @@ def atomic_symlink(target: Path, link: Path) -> str:
     tmp = link.with_name(f".{link.name}.tmp")
     if tmp.exists() or tmp.is_symlink():
         tmp.unlink()
-    shutil.copy2(target, tmp)
-    if tmp.stat().st_size <= 0:
+    source_size = target.stat().st_size
+    try:
+        # Do not use copy2/copystat here: CIFS-backed Truenas mounts can copy
+        # bytes and rename atomically while rejecting utime/chmod metadata
+        # updates with EPERM.  Canonical publication needs byte identity, not
+        # source timestamps or POSIX mode replication.
+        with target.open("rb") as src, tmp.open("xb") as dst:
+            shutil.copyfileobj(src, dst, length=16 * 1024 * 1024)
+            dst.flush()
+            try:
+                os.fsync(dst.fileno())
+            except OSError as exc:
+                if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EPERM}:
+                    raise
+        copied_size = tmp.stat().st_size
+        if copied_size != source_size or copied_size <= 0:
+            raise RuntimeError(
+                f"canonical copy size mismatch for {link}: "
+                f"source={source_size} copied={copied_size}"
+            )
+        os.replace(tmp, link)
+    except Exception:
         tmp.unlink(missing_ok=True)
-        raise RuntimeError(f"canonical copy for {link} is empty after copying {target}")
-    os.replace(tmp, link)
-    if link.is_symlink() or not link.exists() or link.stat().st_size <= 0:
-        raise RuntimeError(f"canonical render {link} is not a non-empty regular file after publication")
-    return "copy"
+        raise
+    if link.is_symlink() or not link.exists() or link.stat().st_size != source_size:
+        raise RuntimeError(
+            f"canonical render {link} is not a byte-sized regular copy after publication"
+        )
+    return "copy_without_metadata"
 
 
 def publish(args: argparse.Namespace) -> dict[str, Any]:
