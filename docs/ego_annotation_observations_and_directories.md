@@ -1739,3 +1739,26 @@ $BENCH/evaluation_current_output_vs_gt_pose_gate_b7b97e6/
 experiments/egoexo4d_rigid_benchmark/
 CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md
 ```
+
+### 30.9 下一阶段 multi-clip regression suite
+
+完整问题清单、因果修正顺序和选片报告：
+
+```text
+experiments/egoexo4d_rigid_benchmark/
+NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md
+```
+
+类别无关 scanner 在 317 个同时有 relations、hand 和 camera annotation 的 train/val takes 中，找到 1202 个满足五张非空 1 Hz Mask、完整 camera 和 raw video contract 的 target-track/stream windows；rigidity 和 manipulation suitability 再由 raw RGB + evaluation-only Mask review 判断。
+
+最终冻结 12 cases：6 development、1 个已消费 tire-lever reference、5 locked internal holdout；使用 12 个不同 take、participant 和 capture，development/holdout 无 participant/capture overlap。Prediction/evaluation roots：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_inputs/
+  egoexo4d_v19_rigid_multiclip_v1/
+
+/mnt/truenas-user-home/kupingxin/ego_annotation_benchmarks/
+  egoexo4d_v19_rigid_multiclip_v1/
+```
+
+每个 prediction case 使用 opaque `exo_rigid_001 ... exo_rigid_012` ID，且仅含 `input.mp4` 和 `PREDICTION_INPUT_MANIFEST.json`；relation track、take UID/name 和 role 不发布到 prediction side。12/12 为 960×960、150 frames、30 fps，coordinate-contract self-test 和 source endpoint alignment 均通过。所有 12 cases 本地 VRS 仍缺失，且尚未启动任何 suite runtime。该 suite 是 P13/temporal observation/P15–P16/P18 修正的 guardrail，不是物理结果改善。

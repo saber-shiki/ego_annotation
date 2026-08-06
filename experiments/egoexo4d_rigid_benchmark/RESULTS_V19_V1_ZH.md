@@ -29,6 +29,7 @@ completed with an exposed physical failure
 冻结/fixed completed-Mesh 投影到 sparse video Mask GT 的新增对照，以及 confirmed bug / design problem / observability limit 分类见：
 
 - [`CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
+- [`NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md`](NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md)：下一阶段修正顺序和 12-case regression/holdout suite
 
 新增 projected-Mesh mean IoU 为 frozen `0.1508`、pose-gate fixed `0.0651`；后者正确标记 `annotation_ready=false`，不能解释为应恢复 rejected rows。
 

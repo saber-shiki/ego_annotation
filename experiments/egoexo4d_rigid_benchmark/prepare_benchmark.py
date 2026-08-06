@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prepare an isolated Ego-Exo4D hand-object benchmark clip and GT bundle.
 
-The prediction input contains raw, distorted Aria RGB plus a target text hint.
+The prediction input contains raw, distorted Aria RGB plus a target text hint;
+take identity and the evaluation-only relation track are not published there.
 Evaluation annotations (3-D hand keypoints, rectified-view 2-D hand keypoints,
 per-frame camera extrinsics, and sparse raw-view visible object masks) are
 written to a separate directory so a V19 runtime can run blind.
@@ -253,11 +254,18 @@ def project_world(points_world: np.ndarray, world_to_camera: np.ndarray, intrins
     return projected[:, :2] / projected[:, 2:3]
 
 
-def find_atomic_descriptions(dataset_root: Path, split: str, take_uid: str, start_s: float, end_s: float) -> list[dict[str, Any]]:
+def find_atomic_descriptions(
+    dataset_root: Path,
+    split: str,
+    take_uid: str,
+    start_s: float,
+    end_s: float,
+    payload_override: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     path = dataset_root / "annotations" / f"atomic_descriptions_{split}.json"
-    if not path.exists():
+    if payload_override is None and not path.exists():
         return []
-    payload = load_json(path)
+    payload = payload_override if payload_override is not None else load_json(path)
     annotations = payload.get("annotations", [])
     if isinstance(annotations, dict):
         candidates = [annotations[take_uid]] if take_uid in annotations else []
@@ -341,7 +349,14 @@ def build_preview(
     cv2.imwrite(str(output), sheet, [cv2.IMWRITE_JPEG_QUALITY, 94])
 
 
-def prepare(args: argparse.Namespace) -> dict[str, Any]:
+def prepare(
+    args: argparse.Namespace,
+    *,
+    take_override: dict[str, Any] | None = None,
+    relation_annotations_override: dict[str, Any] | None = None,
+    atomic_descriptions_override: dict[str, Any] | None = None,
+    sha256_cache: dict[Path, str] | None = None,
+) -> dict[str, Any]:
     dataset_root = args.dataset_root.resolve()
     input_dir = args.input_dir.resolve()
     gt_dir = args.ground_truth_dir.resolve()
@@ -354,11 +369,18 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             shutil.rmtree(path)
         path.mkdir(parents=True)
 
-    take = find_take(dataset_root, args.take_uid)
+    take = take_override if take_override is not None else find_take(dataset_root, args.take_uid)
+    if str(take.get("take_uid")) != args.take_uid:
+        raise RuntimeError(f"take override UID mismatch: expected {args.take_uid}, got {take.get('take_uid')}")
     relation_path = dataset_root / "annotations" / f"relations_{args.split}.json"
     hand_path = dataset_root / "annotations" / "ego_pose" / args.split / "hand" / "annotation" / f"{args.take_uid}.json"
     camera_path = dataset_root / "annotations" / "ego_pose" / args.split / "camera_pose" / f"{args.take_uid}.json"
-    relation = load_json(relation_path)["annotations"][args.take_uid]
+    relation_annotations = (
+        relation_annotations_override
+        if relation_annotations_override is not None
+        else load_json(relation_path)["annotations"]
+    )
+    relation = relation_annotations[args.take_uid]
     if args.target_track not in relation.get("object_masks", {}):
         raise RuntimeError(f"target track not found: {args.target_track}")
     target_streams = relation["object_masks"][args.target_track]
@@ -428,10 +450,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     prediction_manifest = {
         "status": "prediction_input_ready_raw_distorted_aria_rgb",
         "case_id": args.case_id,
-        "take_uid": args.take_uid,
-        "take_name": take["take_name"],
         "target_hint": args.target_description,
-        "target_track_name_is_not_a_pixel_prompt": args.target_track,
+        "evaluation_relation_track_published_to_predictor": False,
         "clip": {
             "source_frame_start_inclusive": args.source_frame_start,
             "source_frame_end_inclusive": source_frame_end,
@@ -634,7 +654,14 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
 
     interval_start_s = args.source_frame_start / 30.0
     interval_end_s = source_frame_end / 30.0
-    descriptions = find_atomic_descriptions(dataset_root, args.split, args.take_uid, interval_start_s - 2.0, interval_end_s + 2.0)
+    descriptions = find_atomic_descriptions(
+        dataset_root,
+        args.split,
+        args.take_uid,
+        interval_start_s - 2.0,
+        interval_end_s + 2.0,
+        payload_override=atomic_descriptions_override,
+    )
     availability = {
         "status": "partial_ground_truth_available",
         "dataset_identity": "Ego-Exo4D v2 subset stored under nas-106/ego4d",
@@ -647,7 +674,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "target": {
             "description": args.target_description,
             "relation_track": args.target_track,
-            "rigidity_assumption": "rigid plastic tire lever over this interval; selected from visual review and action narration",
+            "rigidity_assumption": args.rigidity_assumption,
         },
         "available_for_quantitative_evaluation": {
             "hand_2d_named_keypoints_rectified_512": True,
@@ -679,6 +706,14 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     write_json(gt_dir / "GROUND_TRUTH_AVAILABILITY.json", availability)
     build_preview(output_video, mask_rows, runtime_mask_dir, gt_dir / "ground_truth_preview.jpg")
 
+    def cached_sha256(path: Path) -> str:
+        resolved = path.resolve()
+        if sha256_cache is None:
+            return sha256_file(resolved)
+        if resolved not in sha256_cache:
+            sha256_cache[resolved] = sha256_file(resolved)
+        return sha256_cache[resolved]
+
     manifest = {
         "status": "egoexo4d_rigid_benchmark_prepared",
         "case_id": args.case_id,
@@ -693,10 +728,10 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             "take_name": take["take_name"],
             "split": args.split,
             "source_video": str(source_video),
-            "source_video_sha256": sha256_file(source_video),
-            "relations_json_sha256": sha256_file(relation_path),
-            "hand_json_sha256": sha256_file(hand_path),
-            "camera_json_sha256": sha256_file(camera_path),
+            "source_video_sha256": cached_sha256(source_video),
+            "relations_json_sha256": cached_sha256(relation_path),
+            "hand_json_sha256": cached_sha256(hand_path),
+            "camera_json_sha256": cached_sha256(camera_path),
         },
         "clip": {
             "source_frame_start_inclusive": args.source_frame_start,
@@ -732,6 +767,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-count", type=int, default=150)
     parser.add_argument("--target-track", default="yellow bicycle tire lever_0")
     parser.add_argument("--target-description", default="yellow rigid plastic bicycle tire lever")
+    parser.add_argument(
+        "--rigidity-assumption",
+        default="curator-reviewed approximately rigid target over the selected interval",
+        help="Evaluation-only statement explaining why the selected target is treated as rigid.",
+    )
     parser.add_argument("--case-id", default="egoexo4d_georgiatech_bike_07_10_tire_lever_f2040_2189")
     parser.add_argument("--output-size", type=int, default=960)
     parser.add_argument("--input-dir", type=Path, required=True)

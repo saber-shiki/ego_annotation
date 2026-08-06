@@ -11,6 +11,7 @@
 
 - [`RESULTS_V19_V1_ZH.md`](RESULTS_V19_V1_ZH.md)
 - [`CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
+- [`NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md`](NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md)
 
 ---
 
@@ -29,6 +30,15 @@ self_test_coordinate_contract.py
 compare_current_outputs_to_gt.py
     重算 available GT，并比较冻结/fixed projected Mesh、hand、camera 和 failure taxonomy。
 
+scan_multiclip_candidates.py
+    类别无关扫描五张非空 1 Hz Mask、完整 camera、raw MP4 和 hand coverage 的候选 windows。
+
+multiclip_rigid_suite_v1.json
+    12-case development/locked-holdout curated suite identity、target hint、rigidity assumption 和 strata。
+
+prepare_multiclip_suite.py
+    审计并准备 12-case prediction/evaluation 隔离 bundle，验证坐标 contract 和 source-frame alignment。
+
 regression_pose_eligibility.py
     无 pytest 依赖的三帧 synthetic P09→P14→P15 eligibility/support regression。
 
@@ -37,6 +47,9 @@ RESULTS_V19_V1_ZH.md
 
 CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md
     当前输出 vs available GT，以及 confirmed bug / pipeline design / observability limit 分类。
+
+NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md
+    下一阶段问题清单、因果修正顺序、12-case suite、split policy 和 go/no-go protocol。
 ```
 
 ---
@@ -280,6 +293,8 @@ cd /mnt/user-home/kupingxin/ego_annotation
     /mnt/truenas-user-home/kupingxin/ego_annotation_inputs/egoexo4d_georgiatech_bike_07_10_tire_lever_f2040_2189_raw_distorted_v2 \
   --ground-truth-dir \
     /mnt/truenas-user-home/kupingxin/ego_annotation_benchmarks/egoexo4d_georgiatech_bike_07_10_tire_lever_f2040_2189/ground_truth_v2_rectified_camera \
+  --rigidity-assumption \
+    "Single rigid plastic tire lever over the selected interval; no articulated parts are visible." \
   --replace
 ```
 
@@ -292,7 +307,8 @@ cd /mnt/user-home/kupingxin/ego_annotation
 5. 抽取 camera extrinsics；
 6. 写入官方 camera-axis adapter provenance；
 7. 不把 rectified K 冒充 prediction-side raw K；
-8. 生成 mask-only raw-view preview。
+8. 不把 evaluation-only relation track 写入 prediction manifest；
+9. 生成 mask-only raw-view preview。
 
 ---
 
@@ -524,3 +540,52 @@ camera SE3 ATE RMSE:                  58.588 mm
 ```
 
 完整解释见 [`CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)。Projected-Mesh 指标同时受 estimated raw-view camera、错误 completed geometry、pose 和 visible occlusion 影响；它是 failure diagnostic，不是 object SE(3) GT。
+
+---
+
+## 13. 下一阶段 12-case multi-clip suite
+
+问题、建议、因果修正顺序和完整选片依据：
+
+- [`NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md`](NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md)
+
+类别无关 metadata/partial-GT scan：
+
+```text
+train hand+camera+relations overlap takes: 258
+val hand+camera+relations overlap takes:    59
+train candidate track-stream windows:     1030
+val candidate track-stream windows:        172
+total candidates:                         1202
+```
+
+机器 scan 只要求五张非空 1 Hz visible Mask、完整 camera、raw MP4，并记录 hand coverage；它不能判断刚性或真实手物操作。Curator 随后检查 raw RGB + evaluation-only masks，并冻结：
+
+```text
+development:                         6
+consumed development reference:      1
+locked internal holdout:              5
+unique takes/participants/captures: 12 / 12 / 12
+dev↔holdout participant overlap:      0
+dev↔holdout capture overlap:          0
+local VRS available:                  0 / 12
+runtime runs launched:                0
+```
+
+Prediction root：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_inputs/
+  egoexo4d_v19_rigid_multiclip_v1/
+```
+
+Evaluation-only root：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_benchmarks/
+  egoexo4d_v19_rigid_multiclip_v1/
+```
+
+Prediction case IDs 使用不含 split/role/take/target 的 opaque aliases `exo_rigid_001 ... exo_rigid_012`。每个 prediction case 恰有 `input.mp4 + PREDICTION_INPUT_MANIFEST.json`；relation track、take UID/name、Mask、hand/camera GT、narration和 rectified K 均不发布到 prediction side。12/12 视频为 960×960、150 帧、30 fps；12/12 coordinate-contract self-tests 和 endpoint source-frame alignment checks 通过。
+
+该 suite 是下一步 P13/temporal-observation/P15–P16/P18 修正的 regression guardrail，不是新的物理成功结果。Holdout 在 revision、target hints、suite-level metrics 和 no-per-case-tuning policy 冻结前不得运行。

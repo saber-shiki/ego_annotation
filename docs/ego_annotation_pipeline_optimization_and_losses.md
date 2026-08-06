@@ -1471,3 +1471,21 @@ Fixed 在 frame 0/30/60/90 上 IoU 均为 0，只在 trusted interval 附近的 
 - [`experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](../experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
 
 它将问题分为 confirmed implementation bugs、可修 pipeline design/architecture problems、当前输入/GT 的 observability limits，以及尚需 targeted test 的 suspected bugs；没有把缺失 object SE(3)/contact GT 的指标补造出来。
+
+### 19.10 下一轮 optimizer 修正的 multi-clip guardrail
+
+下一阶段完整计划：
+
+- [`experiments/egoexo4d_rigid_benchmark/NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md`](../experiments/egoexo4d_rigid_benchmark/NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md)
+
+已冻结 12 个五秒 clips，覆盖 elongated/tiny/reflective tools、large symmetric objects、visibility transition 和 intentional low-support controls。6 development + 1 consumed reference 用于 staged diagnostics/exact-state correction；5 locked internal holdout 在 revision、target hints、suite metrics 和 no-per-case-tuning policy 冻结前不得运行。
+
+Optimizer 修改顺序：
+
+1. 分离 P13 observed surface、hidden completion 和 collision/sign eligibility；
+2. 增加跨时间轴、跨 viewpoint 的 direct object observations；
+3. 建立 P15a→P16→P15b bounded second pass；
+4. 统一 P18 projection/grid contract，并在无 anchor 时从 variable set 冻结 translation；
+5. 独立重测、rollback，再做 full-duration runtime profiling。
+
+该 suite 没有 object SE(3)/contact GT，因此主要评价 false-ready、abstention、Mask/hand/camera regression 和 projected-silhouette failure diagnostics；完整物理 certification 仍需第二条 CAD/pose/contact GT benchmark。
