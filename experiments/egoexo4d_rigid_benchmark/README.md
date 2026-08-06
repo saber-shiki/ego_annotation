@@ -405,7 +405,7 @@ full physical GT available:          false
 
 ## 10. P09→P15 eligibility 修复回归
 
-冻结的 V19 v1 run 不做原地修改。工作树机制 ablation 将 P09 的 explicit eligibility 接入 P14/P15 后得到：
+冻结的 V19 v1 run 不做原地修改。实现提交 `b7b97e6` 的 mechanism ablation 将 P09 的 explicit eligibility 接入 P14/P15 后得到：
 
 ```text
 P14 frozen v1 fits:                    33
@@ -452,3 +452,37 @@ cd /mnt/user-home/kupingxin/ego_annotation
 - 禁用 completion 时低支撑 hard fail；
 - 即使 P14 override，P15 default 仍二次拒绝 explicit false；
 - 只有 P14 和 P15 均显式 override 时才复现三行图。
+
+---
+
+## 11. `b7b97e6` isolated runtime bundle
+
+已从提交 `b7b97e617e56a48fcfcdfe327d83fe66017f2fe5` 构建新的隔离 bundle：
+
+```text
+/mnt/user-home/kupingxin/ego_annotation_runtime/
+  v19_bundle_a800_b7b97e6_pose_gate_local3/
+```
+
+Bundle manifest：
+
+```text
+status:          curated_runtime_bundle_built
+source_revision: b7b97e617e56a48fcfcdfe327d83fe66017f2fe5
+scripts:         27
+manifest files:  97
+path isolation:  ok
+```
+
+Raw-v2 prediction input 的新 preflight：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/
+  runtime_preflight_egoexo4d_tire_lever_pose_gate_b7b97e6_raw_v2.json
+
+status:        ready_for_runtime_agent_launch
+failed_checks: []
+input SHA256:  37de09c1193bc5c56e23a4c9ea49caa1d38623cb4f6ea5e92dc03a78d9f29ec4
+```
+
+预留的 run root 仍未创建。当前没有启动第二次 full run：输入 RGB 与冻结 v1 字节完全相同，且仍缺 `aria06_noimagestreams.vrs`，所以它不能被称为 sensor-calibrated rerun。P14–P19 的 exact-state mechanism replay 已在独立 ablation 中完成；若以后启动该 fresh root，只能标为 `b7b97e6` mechanism-ablation run，不能据此增加 camera/geometry GT claim。

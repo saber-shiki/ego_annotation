@@ -25,8 +25,9 @@ OBJECT=keyboard
 
 - runtime bundle：`/mnt/user-home/kupingxin/ego_annotation_runtime/v19_bundle_a800_0c8e6a9_local1`；
 - bundle source revision：`0c8e6a9ff1925caa5fa2665de116c404b5d39eee`；
-- 当前仓库检查分支：`local/kupingxin-v19-a800-deployment`；本次文档初始审计时仓库 HEAD 为 `b18cecd2c90932282eb3b50ecef7298bb7546498`，之后 benchmark/docs 提交为 `ca254f7`，eligibility/support quarantine 修复在独立工作树和 ablation 中验证；
-- P13/P14/P15/P16/P17/P18/P18b 的冻结执行行为以 runtime bundle 为准。当前工作树中的 P14/P15/P16/P18/P18b/render consumer 已加入 eligibility/support quarantine，因此不能用当前源码反向声称冻结 run 当时执行过这些 gate；`export_hawor_world.py` 的默认路径部署差异不改变冻结调用逻辑。
+- 当前仓库检查分支：`local/kupingxin-v19-a800-deployment`；本次文档初始审计时仓库 HEAD 为 `b18cecd2c90932282eb3b50ecef7298bb7546498`，之后 benchmark/docs 提交为 `ca254f7`，eligibility/support quarantine 实现提交为 `b7b97e6`；
+- P13/P14/P15/P16/P17/P18/P18b 的冻结执行行为以 runtime bundle 为准。实现提交 `b7b97e6` 中的 P14/P15/P16/P18/P18b/render consumer 已加入 eligibility/support quarantine，因此不能用当前源码反向声称冻结 run 当时执行过这些 gate；`export_hawor_world.py` 的默认路径部署差异不改变冻结调用逻辑；
+- `b7b97e6` 已另建 `/mnt/user-home/kupingxin/ego_annotation_runtime/v19_bundle_a800_b7b97e6_pose_gate_local3`，raw-v2 preflight 通过；由于 RGB 未变且仍缺 VRS calibration，没有把它启动或描述成 calibrated rerun。
 
 结果解释以以下文件为准：
 
@@ -325,7 +326,7 @@ P09 的 extent gate 标记：
 
 冻结 bundle 中的 `fit_v18_compact_rigid_object_pose.py` 只检查 visible samples 和初始 pose，**没有读取 `rigid_pose_observation_eligible` 字段并跳过这 7 帧**。因此该次冻结 P14/P15 实际仍使用了 150 帧。这个历史差异必须在下游解释中保留，不能用后续修复回写冻结结果。
 
-当前工作树已将 explicit false 接成 P14 hard gate，并保留两个可审计例外：缺失字段仅作为 legacy compatibility；`--include-ineligible-rigid-pose-observations` 仅作为显式历史复现 override。P15 还会独立二次拒绝仍携带 explicit false 的 fitted row。
+实现提交 `b7b97e6` 已将 explicit false 接成 P14 hard gate，并保留两个可审计例外：缺失字段仅作为 legacy compatibility；`--include-ineligible-rigid-pose-observations` 仅作为显式历史复现 override。P15 还会独立二次拒绝仍携带 explicit false 的 fitted row。
 
 ---
 
@@ -454,9 +455,9 @@ $$
 | final mesh→observed median | — | 25.8009 mm |
 | final mesh→observed p90 | — | 58.4130 mm |
 
-P14 因而确实产生了每帧 pose 改变。但冻结 bundle 没有尊重 P09 的 7 个 `rigid_pose_observation_eligible=false` 标记；这些数值是 bug-preserving execution record，不是当前工作树 eligibility gate 的行为。
+P14 因而确实产生了每帧 pose 改变。但冻结 bundle 没有尊重 P09 的 7 个 `rigid_pose_observation_eligible=false` 标记；这些数值是 bug-preserving execution record，不是 `b7b97e6` eligibility gate 的行为。
 
-在独立 tire-lever ablation 中，当前工作树只拟合 6 个 explicit-eligible rows、拒绝 27 个 explicit-false rows；eligible-only final median 为 `2.006 mm`，而冻结 all-row aggregate final median 为 `63.038 mm`。这只说明污染 measurement 被删除，不证明 full-timeline pose accurate。
+在独立 tire-lever ablation 中，`b7b97e6` 只拟合 6 个 explicit-eligible rows、拒绝 27 个 explicit-false rows；eligible-only final median 为 `2.006 mm`，而冻结 all-row aggregate final median 为 `63.038 mm`。这只说明污染 measurement 被删除，不证明 full-timeline pose accurate。
 
 ---
 
@@ -582,7 +583,7 @@ surface degradation  = 0
 - P16 结果若要影响 P15，必须显式重排 phase 或再运行一个带 constraint report 的 pose graph；当前一次 pass 没有这条数据流。
 - full-timeline completion 在本次冻结 keyboard run 没有真正插值，因为 150 帧都有 direct pose；`completed_row_count=0`。
 
-当前工作树不再把 completion row count 当作 support。若 trusted graph frames 少于默认 8，P15 仍可为 failure render 建立 full timeline，但顶层与每行都标 `annotation_ready=false`/`graph_support_sufficient=false`。真实 tire-lever 修复 ablation 是 6 direct +144 completion（141 nearest holds、3 interpolations），因此没有晋级为物理 trajectory。
+`b7b97e6` 不再把 completion row count 当作 support。若 trusted graph frames 少于默认 8，P15 仍可为 failure render 建立 full timeline，但顶层与每行都标 `annotation_ready=false`/`graph_support_sufficient=false`。真实 tire-lever 修复 ablation 是 6 direct +144 completion（141 nearest holds、3 interpolations），因此没有晋级为物理 trajectory。
 
 ---
 
@@ -1152,7 +1153,7 @@ P19c 的 presentation rerender 是 render-only 分支，不重新运行任何 in
 这些规则同样会影响最终输出，但不应被误写成 loss：
 
 1. **P09 mask ownership**：hand bbox 区域从 object visible support 删除；
-2. **P09 extent eligibility**：explicit false 在当前工作树中是 P14/P15 默认 hard rejection；冻结运行仍保留当时未接线的历史结果；
+2. **P09 extent eligibility**：explicit false 在 `b7b97e6` 中是 P14/P15 默认 hard rejection；冻结运行仍保留当时未接线的历史结果；
 3. **P13 observed-band overwrite**：TRELLIS 近 observed surfels 的 face 不作为 hidden completion；
 4. **P13 silhouette free-space**：投影到 object-owned silhouette 外的 hidden face 丢弃；
 5. **P13 planar slab**：仅在 PCA ratio≤0.04 时生效；
@@ -1181,7 +1182,7 @@ P19c 的 presentation rerender 是 render-only 分支，不重新运行任何 in
 
 ### 16.2 P14 eligibility hard gate 与 P15 support gate（已实现，仍缺观测）
 
-当前工作树中的 `fit_v18_compact_rigid_object_pose.py` 已明确：
+实现提交 `b7b97e6` 中的 `fit_v18_compact_rigid_object_pose.py` 已明确：
 
 - explicit `rigid_pose_observation_eligible=false` 默认拒绝；
 - missing field 仅作为单独计数的 legacy compatibility；

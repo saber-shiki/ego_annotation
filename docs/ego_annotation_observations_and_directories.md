@@ -693,7 +693,7 @@ rigid_pose_observation_eligible
 rigid_pose_observation_reason
 ```
 
-当前有 143 帧被标为 rigid-pose eligible，7 帧因 Mask 范围或所有权问题不适合直接作为刚体位姿观测。这是冻结 keyboard run 的测量结果；其当时的 P14 没有消费该 gate。当前工作树 contract 为：explicit false 默认 hard reject，missing field 仅作 legacy compatibility，历史复现 override 必须显式写入 report。
+当前有 143 帧被标为 rigid-pose eligible，7 帧因 Mask 范围或所有权问题不适合直接作为刚体位姿观测。这是冻结 keyboard run 的测量结果；其当时的 P14 没有消费该 gate。实现提交 `b7b97e6` 的 contract 为：explicit false 默认 hard reject，missing field 仅作 legacy compatibility，历史复现 override 必须显式写入 report。
 
 生产脚本：
 
@@ -840,7 +840,7 @@ $RUN/measurements/pose_fits/keyboard_rigid_pose_graph/v18_compact_rigid_object_p
 
 因此，冻结 keyboard 状态名虽然包含 `corrected`，实际 150 帧均来自直接可见表面拟合，没有发生非零时间图修正。该 run 还保留当时 eligibility 未接线的行为，不能用当前代码反向改写。
 
-当前工作树的 P15 report 还会保存：
+实现提交 `b7b97e6` 的 P15 report 还会保存：
 
 ```text
 annotation_ready
@@ -1642,7 +1642,7 @@ P14 consumed rows:     33
 
 P14 eligible rows 的 observed→mesh median-of-medians从 `3.956 mm` 降到 `2.006 mm`；27 个 ineligible rows 则从 `51.783 mm` 恶化到 `63.425 mm`。这说明冻结 V19 v1 的 eligibility flag 没有进入 optimizer。
 
-独立工作树 ablation 已修复该 wiring，而不修改冻结 run：
+独立 `b7b97e6` mechanism ablation 已修复该 wiring，而不修改冻结 run：
 
 ```text
 P14 trusted fits:                  6
@@ -1697,3 +1697,22 @@ ratio: 730.4× realtime
 ```
 
 因此该 run 是完整、可审计的离线实验，但不满足项目对 V18+ default runtime 与输入时长同一数量级的要求。
+
+### 30.7 Eligibility 修复 bundle 和 preflight
+
+实现提交 `b7b97e6` 的隔离 runtime：
+
+```text
+/mnt/user-home/kupingxin/ego_annotation_runtime/v19_bundle_a800_b7b97e6_pose_gate_local3/
+```
+
+Manifest 记录 source revision `b7b97e617e56a48fcfcdfe327d83fe66017f2fe5`、27 个 scripts、97 个 hashed files；全部 bundle integrity/path-isolation checks 通过。
+
+对应 preflight：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/
+runtime_preflight_egoexo4d_tire_lever_pose_gate_b7b97e6_raw_v2.json
+```
+
+状态为 `ready_for_runtime_agent_launch`、`failed_checks=[]`，但预留 run root 保持未创建。没有 VRS calibration 时，同字节 raw RGB 的新运行只能是 mechanism ablation，不能称为 sensor-calibrated rerun。

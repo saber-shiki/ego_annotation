@@ -113,6 +113,20 @@ python scripts/build_local_v19_runtime_bundle.py \
 
 构建器仅复制 runtime spec 所需的脚本闭包、SAM2、WiLoR 和授权 MANO，并拒绝含其他用户绝对路径的 bundle。运行前必须用 `scripts/preflight_local_v19_runtime.py` 检查 bundle hash、prompt/路径隔离、输入 hash、模型 hash、四个解释器导入、脚本 CLI 和 fresh run root。
 
+当前最新 pose-eligibility/support-quarantine bundle（source commit `b7b97e6`）：
+
+```text
+/mnt/user-home/kupingxin/ego_annotation_runtime/v19_bundle_a800_b7b97e6_pose_gate_local3
+```
+
+其 Ego-Exo4D raw-v2 preflight 位于：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/runtime_preflight_egoexo4d_tire_lever_pose_gate_b7b97e6_raw_v2.json
+```
+
+Preflight 已通过，但 fresh run root 未创建，也未启动同 RGB 的第二次 full run；该 bundle 只准备 future mechanism-ablation 或取得 VRS calibration 后的新实验。
+
 启动器参数依次为输入、fresh run root、case id、对应 preflight report：
 
 ```bash

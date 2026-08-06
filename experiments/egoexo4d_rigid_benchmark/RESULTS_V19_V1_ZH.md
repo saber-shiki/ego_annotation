@@ -737,7 +737,7 @@ logs/harness_events.jsonl
 
 ### 10.5 独立 eligibility/support quarantine ablation
 
-冻结 V19 v1 run 保持不变。工作树修复在 benchmark `ablations/` 下独立运行。最终 current-code reports 位于：
+冻结 V19 v1 run 保持不变。实现提交 `b7b97e6` 在 benchmark `ablations/` 下独立运行。最终 reports 位于：
 
 ```text
 $BENCH=/mnt/truenas-user-home/kupingxin/ego_annotation_benchmarks/egoexo4d_georgiatech_bike_07_10_tire_lever_f2040_2189
@@ -789,6 +789,31 @@ Standalone synthetic regression：
 ```
 
 该脚本无需 pytest，并覆盖 P14 default/override、P15 二次 hard gate、low-support completion、single-observation nearest hold、no-completion hard failure 和双 override 历史复现。
+
+### 10.6 新 bundle/preflight 已准备，但未伪装成 calibrated rerun
+
+实现提交对应的 isolated bundle：
+
+```text
+/mnt/user-home/kupingxin/ego_annotation_runtime/
+v19_bundle_a800_b7b97e6_pose_gate_local3
+
+source revision: b7b97e617e56a48fcfcdfe327d83fe66017f2fe5
+scripts: 27
+manifest files: 97
+```
+
+对应 raw-v2 preflight：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/
+runtime_preflight_egoexo4d_tire_lever_pose_gate_b7b97e6_raw_v2.json
+
+status: ready_for_runtime_agent_launch
+failed_checks: []
+```
+
+Fresh run root 仍不存在，没有启动第二个 full run。原因不是 bundle blocker，而是该 input 与冻结运行 RGB SHA256 相同，且 VRS calibration 仍缺失；重复推理不能升级为 sensor-calibrated experiment。当前更可控的证据是从冻结 P09/P13 exact state 开始的 P14–P19 mechanism replay。未来若启动，只能标记为 mechanism-ablation rerun。
 
 ---
 
