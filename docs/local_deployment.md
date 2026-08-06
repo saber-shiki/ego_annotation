@@ -111,7 +111,7 @@ python scripts/build_local_v19_runtime_bundle.py \
   --replace
 ```
 
-构建器仅复制 runtime spec 所需的脚本闭包、SAM2、WiLoR 和授权 MANO，并拒绝含其他用户绝对路径的 bundle。运行前必须用 `scripts/preflight_local_v19_runtime.py` 检查 bundle hash、prompt/路径隔离、输入 hash、模型 hash、四个解释器导入、脚本 CLI 和 fresh run root。
+构建器仅复制 runtime spec 所需的脚本闭包、SAM2、WiLoR 和授权 MANO，并拒绝含其他用户绝对路径的 bundle。`--wilor-source` 若是 Git checkout，manifest 记录 `git rev-parse HEAD`；若是从既有 bundle 复制的 curated non-Git tree，应通过 `--wilor-source-revision <parent-manifest-revision>` 显式继承 immutable provenance，否则构建器记录 deterministic `tree-sha256:`，不能伪造 Git revision。运行前必须用 `scripts/preflight_local_v19_runtime.py` 检查 bundle hash、prompt/路径隔离、输入 hash、模型 hash、四个解释器导入、脚本 CLI 和 fresh run root。
 
 当前最新 pose-eligibility/support-quarantine bundle（source commit `b7b97e6`）：
 

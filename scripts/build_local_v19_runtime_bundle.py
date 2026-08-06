@@ -231,6 +231,27 @@ def assert_bundle_path_isolation(root: Path) -> None:
         raise RuntimeError("runtime bundle contains other-user absolute paths: " + "; ".join(findings))
 
 
+def source_revision(path: Path, explicit_revision: str | None = None) -> tuple[str, str]:
+    if explicit_revision:
+        return explicit_revision, "explicit_revision"
+    try:
+        revision = subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        return revision, "git_rev_parse"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        digest = hashlib.sha256()
+        for file_path in all_files(path):
+            relative = str(file_path.relative_to(path)).encode("utf-8")
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            file_digest = bytes.fromhex(sha256_file(file_path))
+            digest.update(file_digest)
+        return f"tree-sha256:{digest.hexdigest()}", "deterministic_tree_hash_no_git_metadata"
+
+
 def run(args: argparse.Namespace) -> dict:
     source_root = args.source_root.resolve()
     bundle_root = args.bundle_root.resolve()
@@ -288,13 +309,16 @@ def run(args: argparse.Namespace) -> dict:
         {"path": str(path.relative_to(bundle_root)), "bytes": path.stat().st_size, "sha256": sha256_file(path)}
         for path in all_files(bundle_root)
     ]
+    wilor_revision, wilor_revision_source = source_revision(wilor_source, args.wilor_source_revision)
     manifest = {
         "status": "curated_runtime_bundle_built",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "bundle_root": str(bundle_root),
         "source_repo": str(source_root),
         "source_revision": subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"], text=True).strip(),
-        "wilor_source_revision": subprocess.check_output(["git", "-C", str(wilor_source), "rev-parse", "HEAD"], text=True).strip(),
+        "wilor_source_revision": wilor_revision,
+        "wilor_source_revision_source": wilor_revision_source,
+        "wilor_source": str(wilor_source),
         "scripts": [path.name for path in scripts],
         "file_count": len(files),
         "files": files,
@@ -316,6 +340,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--bundle-root", type=Path, required=True)
     parser.add_argument("--wilor-source", type=Path, required=True)
+    parser.add_argument("--wilor-source-revision", default=None, help="Optional immutable revision inherited from a parent bundle manifest when --wilor-source is a curated non-git tree")
     parser.add_argument("--mano-left", type=Path, required=True)
     parser.add_argument("--mano-right", type=Path, required=True)
     parser.add_argument("--python", type=Path, required=True)
