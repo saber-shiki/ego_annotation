@@ -672,7 +672,7 @@ $RUN/renders/v19_side_by_side.mp4
 | hand metric translation accurate | 明确不支持 | wrist 186.3 mm、absolute MPJPE 193.0 mm |
 | P18 明显改善 hand GT | 不支持 | 仅改善 0.516/0.325 mm，wrist 0 mm |
 | object geometry accurate | 不可量化且视觉拒绝 | 无 GT CAD；render 为 partial sheet |
-| object 6DoF accurate | 不可量化且内部不可靠 | 无 GT pose；27 个 ineligible rows 被消费；P15 inert |
+| object 6DoF accurate | 不可量化且内部不可靠 | 无 GT pose；冻结 v1 消费 27 个 ineligible rows；修复后仅 6 帧可信且 support 不足 |
 | metric contact established | 不支持 | 无 GT；weight 0；无 anchor；65 mm uncertainty |
 | nonpenetration established | 不支持 | non-watertight；无 P15 target；P16 zero candidate |
 | 完整高精度物理标注 | 明确不支持 | 上述多项共同失败 |
@@ -682,9 +682,9 @@ $RUN/renders/v19_side_by_side.mp4
 
 ## 10. Runtime contract/audit 异常
 
-### 10.1 P09 eligibility 没有传到 P14
+### 10.1 冻结 v1 中 P09 eligibility 没有传到 P14
 
-这是本次最直接的 correctness bug：
+这是冻结运行中最直接的 correctness bug：
 
 ```text
 P09 eligible = 6
@@ -692,7 +692,7 @@ P14 consumed = 33
 P14 consumed ineligible = 27
 ```
 
-应先修复它，再讨论更复杂的联合 MAP 或 RL。
+应先修复它，再讨论更复杂的联合 MAP 或 RL。下述 10.5 记录修复后的独立 mechanism ablation；它不回写、不覆盖本节冻结结果。
 
 ### 10.2 P15 没有 active correction
 
@@ -735,11 +735,66 @@ logs/harness_events.jsonl
 
 当前 spec 不要求 `FINAL_RUNTIME_AUDIT.json`，本次也没有生成该文件。
 
+### 10.5 独立 eligibility/support quarantine ablation
+
+冻结 V19 v1 run 保持不变。工作树修复在 benchmark `ablations/` 下独立运行。最终 current-code reports 位于：
+
+```text
+$BENCH=/mnt/truenas-user-home/kupingxin/ego_annotation_benchmarks/egoexo4d_georgiatech_bike_07_10_tire_lever_f2040_2189
+
+$BENCH/ablations/p14_eligibility_default_v2/
+$BENCH/ablations/p15_from_p14_eligibility_quarantine_v3/
+$BENCH/ablations/p16_from_p15_eligibility_quarantine_v3/
+$BENCH/ablations/p18_unready_pose_quarantine_v3/
+$BENCH/ablations/p18b_unready_pose_quarantine_v3/
+$BENCH/ablations/eligibility_pose_render_quarantine_v3/
+```
+
+其中 `$BENCH` 是本 benchmark 的 NAS root。数值结果：
+
+```text
+P14 frozen v1 fits:                    33
+P14 fixed trusted fits:                 6
+P14 explicit-false hard rejects:       27
+P14 rows lacking usable pose/sample:  117
+frozen all-row final median:        63.038 mm
+fixed eligible-only final median:    2.006 mm
+
+trusted frames: 115,116,119,120,121,123
+P15 configured min_graph_frames:        8
+P15 direct/completion rows:          6 / 144
+completion modes:             141 nearest / 3 interpolated
+P15 annotation_ready:                false
+P15 status: completed_uncertain_insufficient_trusted_pose_graph_support
+```
+
+因此 `33→6` 和 `63.038→2.006 mm` 只证明 eligibility gate 删除了污染 measurement；它不证明 150-frame 6DoF 更准。6 个可信帧集中在 local `115–123`，其余几乎全是 nearest hold。selected-frame render 显示 early timeline 仍与可见撬胎棒明显不一致。
+
+Downstream 现采用 quarantine 而非静默消费：
+
+- P16 仍可重测 diagnostic distance，但 `constraint_eligible_for_physical_correction=false`，physical candidate translation 为零；
+- P18 在加载 MANO model/optimizer 前输出 300-row source-only state，`optimization_skipped=true`；
+- P18b 不再制造 contact-surface samples；
+- P19a 拒绝把 corrected/unready P15 与 stale non-quarantined P16/P18 artifact 混接；
+- P19 将 unresolved object hypothesis 画为橙色，显式写 `POSE UNREADY` / `OBJECT POSE UNREADY`，manifest 中 annotation-ready pose frame 为 0；本轮只运行 selected-frame mechanism QC，未把它冒充新的 full-duration V19 run。
+
+这项修复改善的是 correctness、失败可见性和 claim discipline，不是 trajectory accuracy。下一项物理工作是增加跨时间轴的可信 object observations，而不是重新纳入 27 个 rejected rows 或降低 support minimum。
+
+Standalone synthetic regression：
+
+```bash
+.venv/bin/python \
+  experiments/egoexo4d_rigid_benchmark/regression_pose_eligibility.py \
+  --python .venv/bin/python
+```
+
+该脚本无需 pytest，并覆盖 P14 default/override、P15 二次 hard gate、low-support completion、single-observation nearest hold、no-completion hard failure 和双 override 历史复现。
+
 ---
 
 ## 11. 下一步优先级
 
-1. **修 P09→P14 eligibility wiring**：P14/P15 默认拒绝 ineligible rows。
+1. **增加跨时间轴的 trusted object-pose observations**：eligibility wiring 已在独立 ablation 中修复，但当前只剩 6 帧且集中在 `115–123`；不要降低 minimum 或恢复 rejected rows。
 2. **取得 Aria no-image-stream VRS calibration**，生成官方 rectified 512/960 clip；不要继续混用 raw RGB 与 rectified K。
 3. **对 object evidence 做 multi-frame fusion**，而不是从 60 个 anchor points/64×64 partial crop决定全部 hidden body。
 4. **P13 acceptance gate 必须真的删除 unsupported faces**；本次 silhouette/slab gate 均删除 0 face。

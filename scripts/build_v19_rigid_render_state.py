@@ -181,6 +181,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     constraint_data = load_json(constraint_report_path)
     if not isinstance(annotations, dict) or not isinstance(pose_data, dict) or not isinstance(completion_data, dict) or not isinstance(constraint_data, dict):
         raise RuntimeError("annotations, pose report, completion report, and constraint report must be JSON objects")
+    graph_support = pose_data.get("graph_support") if isinstance(pose_data.get("graph_support"), dict) else {}
+    pose_annotation_ready = pose_data.get("annotation_ready")
+    graph_support_sufficient = graph_support.get("sufficient")
+    pose_readiness_legacy_fields_missing = pose_annotation_ready is None and graph_support_sufficient is None
+    pose_trajectory_quarantined = bool(pose_annotation_ready is False or graph_support_sufficient is False)
 
     expected_mesh = completion_report_completed_mesh(completion_report_path, rewrites)
     completed_mesh = rewrite_path(args.completed_mesh, rewrites) if args.completed_mesh is not None else expected_mesh
@@ -202,14 +207,30 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     constraint_rows = constraint_data.get("constraint_rows") if isinstance(constraint_data.get("constraint_rows"), list) else []
     temporal_payload = load_optional_json(temporal_mano_path)
     hidden_payload = load_optional_json(hidden_validation_path)
+    if pose_trajectory_quarantined and constraint_data.get("physical_constraint_quarantined") is not True:
+        raise RuntimeError(
+            "P15 object pose is explicitly unready, but the supplied P16 constraint report is not quarantined; "
+            "rerun P16 instead of embedding stale object-relative physical candidates"
+        )
+    if (
+        pose_trajectory_quarantined
+        and temporal_payload is not None
+        and temporal_payload.get("physical_constraint_quarantined") is not True
+    ):
+        raise RuntimeError(
+            "P15 object pose is explicitly unready, but the supplied P18/P18b temporal state is not quarantined; "
+            "rerun the source-only P18/P18b quarantine path before building render state"
+        )
 
     output = rewrite_path(args.output, rewrites)
     if output is None:
         raise RuntimeError("output path resolved to None")
     object_label = args.object_label or args.object_id
     state = {
-        "status": "ok",
+        "status": "ok_with_unready_object_pose_quarantine" if pose_trajectory_quarantined else "ok",
         "method": "build_v19_rigid_render_state",
+        "annotation_ready": False,
+        "physical_state_quarantined": pose_trajectory_quarantined,
         "claim_scope": "explicit render-consumed state for a rigid object body, pose trajectory, MANO/contact uncertainty, and projection contract",
         "case": str(args.case),
         "object_id": str(args.object_id),
@@ -239,8 +260,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "raw_trellis_mesh_is_renderable": False,
         },
         "object_pose_trajectory": {
-            "state": "full_timeline_rigid_pose_trajectory" if not missing_pose_frames else "rigid_pose_trajectory_with_explicit_missing_frames",
+            "state": "full_timeline_unresolved_sparse_support_hypothesis" if pose_trajectory_quarantined else ("full_timeline_rigid_pose_trajectory" if not missing_pose_frames else "rigid_pose_trajectory_with_explicit_missing_frames"),
             "pose_report_path": str(pose_report_path),
+            "pose_report_status": pose_data.get("status"),
+            "annotation_ready": pose_annotation_ready if isinstance(pose_annotation_ready, bool) else None,
+            "graph_support": graph_support,
+            "graph_support_sufficient": graph_support_sufficient if isinstance(graph_support_sufficient, bool) else None,
+            "readiness_legacy_fields_missing": pose_readiness_legacy_fields_missing,
+            "physical_state_quarantined": pose_trajectory_quarantined,
             "accepted_statuses": sorted(ACCEPTED_RIGID_POSE_STATUSES),
             "pose_rows": pose_rows,
             "frame_count_with_pose": len(pose_frame_ids),
@@ -249,13 +276,21 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "correction_summary": pose_data.get("correction_summary"),
         },
         "mano_constraint_state": {
-            "state": "constraint_rows_embedded_for_render_labels",
+            "state": "constraint_rows_quarantined_unready_object_pose" if pose_trajectory_quarantined else "constraint_rows_embedded_for_render_labels",
             "constraint_report_path": str(constraint_report_path),
+            "constraint_report_status": constraint_data.get("status"),
+            "physical_constraint_quarantined": bool(
+                pose_trajectory_quarantined or constraint_data.get("physical_constraint_quarantined") is True
+            ),
             "constraint_rows": constraint_rows,
         },
         "temporal_mano_state": {
-            "state": "embedded" if temporal_payload is not None else "not_supplied",
+            "state": "embedded_object_pose_quarantine" if pose_trajectory_quarantined and temporal_payload is not None else ("embedded" if temporal_payload is not None else "not_supplied"),
             "path": str(temporal_mano_path) if temporal_mano_path is not None else None,
+            "status": temporal_payload.get("status") if isinstance(temporal_payload, dict) else None,
+            "physical_constraint_quarantined": bool(
+                isinstance(temporal_payload, dict) and temporal_payload.get("physical_constraint_quarantined") is True
+            ),
             "payload": temporal_payload,
         },
         "hidden_volume_validation": {
@@ -276,6 +311,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "constraint_rows": len(constraint_rows),
             "temporal_mano_rows": len(temporal_payload.get("per_frame_states", [])) if isinstance(temporal_payload, dict) and isinstance(temporal_payload.get("per_frame_states"), list) else 0,
             "missing_pose_frame_count": len(missing_pose_frames),
+            "pose_trajectory_annotation_ready": pose_annotation_ready if isinstance(pose_annotation_ready, bool) else None,
+            "graph_support_sufficient": graph_support_sufficient if isinstance(graph_support_sufficient, bool) else None,
+            "pose_readiness_legacy_fields_missing": pose_readiness_legacy_fields_missing,
+            "physical_state_quarantined": pose_trajectory_quarantined,
         },
         "total_elapsed_s": time.time() - started,
     }

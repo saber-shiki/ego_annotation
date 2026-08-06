@@ -287,11 +287,12 @@ def rasterize_image_mesh(
         image[object_pixels] = blended[object_pixels]
     if rasterized > 0 and int(wire_budget) != 0:
         edge_ids = face_ids[choose_face_ids(len(face_ids), int(wire_budget))]
+        wire_color = tuple(int(np.clip(component * 0.48, 0, 255)) for component in base)
         for face_id in edge_ids:
             poly = np.round(uv[faces[int(face_id)]]).astype(np.int32)
             if np.any(poly[:, 0] < -width) or np.any(poly[:, 0] > 2 * width) or np.any(poly[:, 1] < -height) or np.any(poly[:, 1] > 2 * height):
                 continue
-            cv2.polylines(image, [poly], True, (20, 120, 50), 1, cv2.LINE_AA)
+            cv2.polylines(image, [poly], True, wire_color, 1, cv2.LINE_AA)
     return {"rasterized_faces": int(rasterized), "rasterized_pixels": int(np.count_nonzero(object_pixels))}
 
 
@@ -322,6 +323,7 @@ def rasterize_world_mesh(
     face_budget: int,
     wire_budget: int,
     alpha: float,
+    color: tuple[int, int, int] = (40, 255, 80),
 ) -> dict[str, Any]:
     height, width = image.shape[:2]
     uv = world_uv(vertices_world, min_xyz, max_xyz, width, height)
@@ -333,12 +335,14 @@ def rasterize_world_mesh(
         faces,
         face_budget=face_budget,
         wire_budget=wire_budget,
-        color=(40, 255, 80),
+        color=color,
         alpha=float(alpha),
     )
 
 
 def constraint_style(state: str) -> tuple[tuple[int, int, int], int, str]:
+    if "quarantined_unready_object_pose" in state:
+        return (255, 255, 0), 4, "POSE QUARANTINE"
     if "not_applied" in state or "candidate" in state:
         return (0, 255, 255), 4, "CONSTRAINT CONFLICT"
     if "uncertainty" in state:
@@ -395,6 +399,12 @@ def temporal_hypothesis_promotes_metric_mano(temporal: dict[str, Any]) -> bool:
 
 
 def temporal_contact_label(temporal: dict[str, Any], *, presentation: bool) -> tuple[str, str, str]:
+    if temporal.get("physical_constraint_quarantine") or "object_pose_quarantine" in str(temporal.get("temporal_mano_state") or ""):
+        return (
+            "SOURCE MANO | OBJECT POSE UNREADY",
+            "object-relative contact/nonpenetration optimization skipped",
+            "no contact surface or corrected physical hand is accepted",
+        )
     contact = temporal.get("contact_similarity_refit") if isinstance(temporal.get("contact_similarity_refit"), dict) else {}
     mode = str(contact.get("contact_residual_mode") or "contact")
     policy = str(temporal.get("joint_state_policy") or "")
@@ -686,8 +696,22 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     state = load_json(render_state_path)
     if not isinstance(state, dict):
         raise RuntimeError(f"render state must be a JSON object: {render_state_path}")
-    if state.get("status") != "ok":
-        raise RuntimeError(f"render state status is not ok: {state.get('status')}")
+    if not str(state.get("status") or "").startswith("ok"):
+        raise RuntimeError(f"render state status is not renderable: {state.get('status')}")
+    pose_state = state.get("object_pose_trajectory") if isinstance(state.get("object_pose_trajectory"), dict) else {}
+    pose_annotation_ready_raw = pose_state.get("annotation_ready")
+    pose_graph_support_raw = pose_state.get("graph_support_sufficient")
+    pose_readiness_legacy_unknown = not isinstance(pose_annotation_ready_raw, bool) and not isinstance(pose_graph_support_raw, bool)
+    pose_trajectory_quarantined = bool(
+        state.get("physical_state_quarantined") is True
+        or pose_state.get("physical_state_quarantined") is True
+        or pose_annotation_ready_raw is False
+        or pose_graph_support_raw is False
+    )
+    pose_trajectory_annotation_ready = bool(
+        not pose_trajectory_quarantined and pose_annotation_ready_raw is True and pose_graph_support_raw is not False
+    )
+    object_render_color = (0, 165, 255) if pose_trajectory_quarantined else ((0, 255, 255) if pose_readiness_legacy_unknown else (40, 255, 80))
     annotation_path = rewrite_path((state.get("annotation_backbone") or {}).get("path"), rewrites)
     mesh_path = rewrite_path((state.get("object_geometry") or {}).get("completed_mesh_path"), rewrites)
     if annotation_path is None or mesh_path is None:
@@ -766,19 +790,27 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 faces,
                 face_budget=mesh_face_budget,
                 wire_budget=wireframe_face_budget,
-                color=(40, 255, 80),
+                color=object_render_color,
                 alpha=overlay_alpha,
             )
             object_stats.update(mesh_stats)
             object_stats["pose_status"] = pose_status
+            object_stats["pose_trajectory_annotation_ready"] = pose_trajectory_annotation_ready
+            object_stats["pose_readiness_legacy_unknown"] = pose_readiness_legacy_unknown
             object_stats["projected_vertex_count_in_extended_bounds"] = int(np.count_nonzero(valid))
-            if presentation:
+            if pose_trajectory_quarantined:
+                object_text = f"POSE UNREADY | {label} sparse-support trajectory hypothesis"
+                object_text2 = "orange mesh = unresolved interpolation/nearest hold; not annotation-ready"
+            elif pose_readiness_legacy_unknown:
+                object_text = f"POSE READINESS UNKNOWN | {label} legacy render state"
+                object_text2 = "yellow mesh = readiness/support fields absent; not an explicit support pass"
+            elif presentation:
                 object_text = f"{label}: reconstructed rigid body (uncertain)"
                 object_text2 = "green mesh = state-driven object; hand contact remains weak/uncertain"
             else:
                 object_text = f"{label} BODY mesh {mesh_summary['vertices']}v/{mesh_summary['faces']}f | {pose_status}"
                 object_text2 = ""
-            color = (40, 255, 80) if mesh_stats.get("rasterized_pixels", 0) else (0, 165, 255)
+            color = object_render_color if mesh_stats.get("rasterized_pixels", 0) else (0, 165, 255)
         else:
             object_text = f"{label}: rigid pose missing in render state"
             object_text2 = ""
@@ -788,13 +820,16 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             put_text_with_bg(overlay, object_text2[:105], (12, 54), font_scale=0.40, color=(210, 255, 210), thickness=1)
         else:
             cv2.putText(overlay, object_text[:150], (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+            if object_text2:
+                cv2.putText(overlay, object_text2[:150], (12, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.43, color, 1, cv2.LINE_AA)
         volume_row = hidden_validation.get(idx)
         if volume_row is not None:
             volume_state = str(volume_row.get("state", "hidden_volume_unmeasured"))
             if presentation and "unmeasured" not in volume_state:
                 put_text_with_bg(overlay, f"hidden volume {volume_state}"[:110], (12, 78), font_scale=0.36, color=(0, 180, 255), thickness=1)
             elif not presentation:
-                cv2.putText(overlay, f"hidden volume {volume_state}"[:130], (12, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 150, 255), 1, cv2.LINE_AA)
+                volume_y = 88 if object_text2 else 66
+                cv2.putText(overlay, f"hidden volume {volume_state}"[:130], (12, volume_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 150, 255), 1, cv2.LINE_AA)
 
         for hand_idx, hand in enumerate(frame.get("hands", []) if isinstance(frame.get("hands"), list) else []):
             if not isinstance(hand, dict):
@@ -810,7 +845,14 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             label_y = (88 + hand_idx * 50) if presentation else (92 + hand_idx * 132)
             mano_text3 = ""
             if temporal is not None:
-                mano_text, mano_text2, mano_text3 = temporal_contact_label(temporal, presentation=presentation)
+                if pose_trajectory_quarantined:
+                    mano_text, mano_text2, mano_text3 = (
+                        "SOURCE MANO | OBJECT POSE UNREADY",
+                        "object-relative contact/nonpenetration optimization skipped",
+                        "no contact surface or corrected physical hand is accepted",
+                    )
+                else:
+                    mano_text, mano_text2, mano_text3 = temporal_contact_label(temporal, presentation=presentation)
                 if presentation:
                     text = f"{side} MANO: {mano_text}"
                     text2 = mano_text2
@@ -835,7 +877,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 if interval_uncertain:
                     draw_projected_skeleton(overlay, joints_camera, intr, (0, 120, 255), max(8, line_width + 4))
                 draw_projected_skeleton(overlay, joints_camera, intr, style_color, line_width)
-            if temporal is not None:
+            if temporal is not None and not pose_trajectory_quarantined:
                 temporal_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=np.float64)
                 source_contact_world = np.asarray(temporal.get("source_contact_vertices_world_sample_m") or [], dtype=np.float64)
                 target_contact_world = np.asarray(temporal.get("contact_surface_vertices_world_sample_m") or [], dtype=np.float64)
@@ -875,6 +917,10 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         else:
             world_min, world_max = global_min, global_max
             world_label = f"global metric world  frame {idx:04d}"
+        if pose_trajectory_quarantined:
+            world_label += " | OBJECT POSE UNREADY"
+        elif pose_readiness_legacy_unknown:
+            world_label += " | POSE READINESS LEGACY-UNKNOWN"
         if idx in poses:
             rot, trans, _ = poses[idx]
             vertices_world = vertices @ rot.T + trans[None, :]
@@ -887,6 +933,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 face_budget=world_face_budget,
                 wire_budget=wireframe_face_budget,
                 alpha=world_alpha,
+                color=object_render_color,
             )
             object_stats["world_rasterized_pixels"] = world_stats.get("rasterized_pixels", 0)
         for hand in frame.get("hands", []) if isinstance(frame.get("hands"), list) else []:
@@ -904,7 +951,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 if interval_uncertain:
                     draw_world_skeleton(world, joints_world, world_min, world_max, (0, 120, 255), max(8, line_width + 4))
                 draw_world_skeleton(world, joints_world, world_min, world_max, style_color, max(2, line_width - 1))
-                if temporal is not None:
+                if temporal is not None and not pose_trajectory_quarantined:
                     temporal_vertices_world = np.asarray(temporal.get("optimized_vertices_world_sample_m") or [], dtype=np.float64)
                     source_contact_world = np.asarray(temporal.get("source_contact_vertices_world_sample_m") or [], dtype=np.float64)
                     target_contact_world = np.asarray(temporal.get("contact_surface_vertices_world_sample_m") or [], dtype=np.float64)
@@ -941,7 +988,13 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 for (f, _side), t in temporal_states.items()
                 if f == idx
             )
-            if direct_surface_posterior:
+            if pose_trajectory_quarantined:
+                put_text_with_bg(world, f"orange={label} unresolved sparse-support pose hypothesis", (20, canvas_h - 48), font_scale=0.43, color=object_render_color, thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, "object-relative contact/nonpenetration state is quarantined", (20, canvas_h - 22), font_scale=0.40, color=(0, 165, 255), thickness=1, bg_alpha=0.50)
+            elif pose_readiness_legacy_unknown:
+                put_text_with_bg(world, f"yellow={label} legacy pose state with missing readiness fields", (20, canvas_h - 48), font_scale=0.43, color=object_render_color, thickness=1, bg_alpha=0.50)
+                put_text_with_bg(world, "renderable for provenance; not an explicit annotation-ready support pass", (20, canvas_h - 22), font_scale=0.40, color=(0, 255, 255), thickness=1, bg_alpha=0.50)
+            elif direct_surface_posterior:
                 put_text_with_bg(world, f"green={label} rigid mesh; yellow=object surface, magenta=source hand", (20, canvas_h - 48), font_scale=0.43, color=(210, 255, 210), thickness=1, bg_alpha=0.50)
                 put_text_with_bg(world, "orange links show source-gap correspondence; contact not accepted", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
             else:
@@ -949,7 +1002,16 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 put_text_with_bg(world, "metric MANO stays source unless an interval correction is explicitly promoted", (20, canvas_h - 22), font_scale=0.40, color=(0, 200, 255), thickness=1, bg_alpha=0.50)
         else:
             cv2.putText(world, world_label, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-            cv2.putText(world, f"green filled surface = rigid object body ({label})", (20, canvas_h - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (40, 255, 80), 1, cv2.LINE_AA)
+            world_object_text = (
+                f"orange surface = unresolved sparse-support object hypothesis ({label})"
+                if pose_trajectory_quarantined
+                else (
+                    f"yellow surface = legacy object pose with unknown readiness ({label})"
+                    if pose_readiness_legacy_unknown
+                    else f"green filled surface = rigid object body ({label})"
+                )
+            )
+            cv2.putText(world, world_object_text, (20, canvas_h - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.50, object_render_color, 1, cv2.LINE_AA)
         cv2.imwrite(str(world_dir / f"{pos:06d}.jpg"), world, [cv2.IMWRITE_JPEG_QUALITY, 90])
         render_rows.append(object_stats)
         if pos % 120 == 0:
@@ -975,7 +1037,9 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     )
     raster_pixels = np.asarray([row.get("rasterized_pixels", 0) for row in render_rows], dtype=np.float64)
     manifest = {
-        "status": "ok",
+        "status": "ok_with_unready_object_pose_quarantine" if pose_trajectory_quarantined else "ok",
+        "annotation_ready": False,
+        "physical_state_quarantined": pose_trajectory_quarantined,
         "method": "render_v19_rigid_state_artifact",
         "case": case,
         "object_id": str(state.get("object_id")),
@@ -995,9 +1059,16 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         "rendered_state": {
             "rigid_object_body_rasterized_from_mesh_faces": True,
             "object_pose_source": "render_state.object_pose_trajectory.pose_rows",
+            "object_pose_annotation_ready": pose_trajectory_annotation_ready,
+            "object_pose_readiness_legacy_unknown": pose_readiness_legacy_unknown,
+            "object_pose_rendered_as_unresolved_hypothesis": pose_trajectory_quarantined,
+            "object_pose_render_color_bgr": list(object_render_color),
             "mesh_source": "render_state.object_geometry.completed_mesh_path",
             "mano_constraint_state_consumed": bool(constraints),
             "temporal_mano_state_consumed": temporal_report is not None,
+            "temporal_object_relative_geometry_suppressed": bool(
+                pose_trajectory_quarantined and temporal_report is not None
+            ),
             "hidden_volume_validation_consumed": hidden_report is not None,
             "world_view": str(args.world_view),
             "render_style": str(args.render_style),
@@ -1014,7 +1085,15 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         "mesh_summary": mesh_summary,
         "evidence": {
             "frames_rendered": len(frames),
+            "rendered_source_frame_ids": [int(row["frame_idx"]) for row in render_rows],
+            "output_frame_index_to_source_frame_idx": [
+                {"output_frame_index": int(output_idx), "source_frame_idx": int(row["frame_idx"])}
+                for output_idx, row in enumerate(render_rows)
+            ],
             "frames_with_object_pose": int(sum(1 for row in render_rows if row.get("object_pose_present"))),
+            "frames_with_annotation_ready_object_pose": int(
+                sum(1 for row in render_rows if row.get("pose_trajectory_annotation_ready") is True)
+            ),
             "frames_with_rasterized_body_pixels": int(np.count_nonzero(raster_pixels > 0)),
             "rasterized_body_pixels_median": float(np.median(raster_pixels)) if len(raster_pixels) else 0.0,
             "rasterized_body_pixels_min": float(np.min(raster_pixels)) if len(raster_pixels) else 0.0,

@@ -442,7 +442,7 @@ Script: `scripts/fit_v18_compact_rigid_object_pose.py`
   --output-dir "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit"
 ```
 
-Required output: object pose fit report.
+Required output: object pose fit report. P14 must consume the P09/P13 annotation field `rigid_pose_observation_eligible`. An explicit `false` on either the object row or its `visible_geometry_candidate` is a hard measurement rejection by default and must appear in the report as `rigid_pose_observation_ineligible`; it must not silently become `fit_to_visible_depth_samples`. A missing field may remain usable only for legacy-input compatibility and must be counted separately from explicit `true`. The report must include the eligibility policy, eligible/unspecified/ineligible counts, rejected frame IDs, rejection reasons, and any override count. `--include-ineligible-rigid-pose-observations` is a historical-reproduction/diagnostic override, not the production default; its use must be explicit and recorded.
 
 ## P15 temporal rigid pose graph
 
@@ -458,7 +458,19 @@ Script: `scripts/solve_v19_rigid_object_pose_graph.py`
   --output-dir "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph"
 ```
 
-Required output: rigid pose graph report with `full_timeline_rigid_pose_completion.enabled: true`. For a rigid branch, all frames in the raw video must have either a direct corrected pose (`corrected_temporal_rigid_pose_graph`) or an explicit uncertain rigid trajectory completion (`completed_temporal_rigid_pose_uncertain`). A rigid object must not disappear from frames merely because the local mask/depth observation is missing; missing local observations become uncertainty/provenance, not omitted object pose.
+Required output: rigid pose graph report with `full_timeline_rigid_pose_completion.enabled: true`. P15 must independently reject any fitted row that still carries explicit `rigid_pose_observation_eligible: false` unless the historical-reproduction flag `--include-ineligible-rigid-pose-observations` is explicitly supplied. Missing eligibility fields remain a counted legacy-compatible case, not evidence of an explicit pass.
+
+The default trusted-support minimum is `min_graph_frames=8`; do not lower it merely to make a sparse graph pass. When the trusted direct observations meet that minimum, all raw-video frames must have either a direct corrected pose (`corrected_temporal_rigid_pose_graph`) or an explicit uncertain rigid trajectory completion (`completed_temporal_rigid_pose_uncertain`). A rigid object must not disappear merely because a local mask/depth observation is missing; missing local observations become uncertainty/provenance, not omitted rows.
+
+When direct trusted support is below the configured minimum but full-timeline completion is requested, P15 may still materialize interpolation/nearest-hold rows so diagnostics and rendering can finish, but it must set:
+
+- `status: completed_uncertain_insufficient_trusted_pose_graph_support`;
+- `annotation_ready: false`;
+- `graph_support.sufficient: false`;
+- `graph_support_sufficient: false` and `annotation_ready: false` on every direct/completed pose row;
+- explicit uncertainty saying sparse-cluster interpolation/nearest hold is an unresolved trajectory hypothesis, not a new measurement.
+
+Such a 150-row file is not a trusted 150-frame object trajectory. Downstream stages must quarantine it rather than treating completion-row count as observability.
 
 ## P16 MANO/object constraint measurement
 
@@ -474,7 +486,7 @@ Script: `scripts/build_v18_mano_object_constraint_state.py`
   --object-id "{OBJECT_ID}"
 ```
 
-Required output: MANO/object constraint state.
+Required output: MANO/object constraint state. P16 must inspect the P15 top-level `annotation_ready` and `graph_support.sufficient` fields. If either is explicitly false, P16 may remeasure object-relative distances for diagnostics, but every row must be quarantined, `constraint_eligible_for_physical_correction: false`, and expose a zero physical candidate translation; any pre-quarantine diagnostic candidate must live under a clearly named diagnostic field. The report must set `physical_constraint_quarantined: true` and `candidate_correction_count: 0`. A legacy pose report lacking both readiness fields may be consumed only under the recorded legacy-compatibility policy.
 
 ## P17 contact/occlusion prior rows
 
@@ -512,6 +524,8 @@ Script: `scripts/build_v19_visible_contact_ownership_factor.py`
 
 Required output: visible contact/ownership factor report at `{RUN_ROOT}/measurements/contact_visibility_factors/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}/{CASE_ID}/v19_visible_contact_ownership_factor_report.json`. Because the script nests outputs under `--case`, bind P18 `--factor-report` to this concrete path; do not guess `{output-root}/v19_visible_contact_ownership_factor_report.json`.
 
+P17 rows are semantic/visibility priors, not object-pose observations. Their existence or high `contact_prior_probability` cannot promote an unready P15 trajectory, recover missing metric object poses, or bypass the P16/P18 quarantine.
+
 ## P18 interval MANO correction
 
 Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
@@ -540,6 +554,8 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
 
 Required output: raw interval MANO/contact trajectory state. The translation gate preserves source HaWoR wrist/root translation when no selected visible-surface support vertices exist, while keeping optimized wrist-relative articulation; this prevents contact/temporal terms from moving global hand pose without direct support evidence.
 
+Before loading MANO models or running an optimizer, P18 must inspect P15 readiness. For an explicitly unready/insufficient-support object trajectory, the default behavior is a cheap source-only quarantine state with `optimization_skipped: true`, `annotation_ready: false`, empty object-relative contact-surface samples, and explicit quarantined factor families. It must not evaluate object-relative contact, nonpenetration, depth-order, or MANO correction as if the interpolated/held object poses were trusted. `--include-unready-object-pose-for-diagnostic-optimization` is an explicit diagnostic override only; any output produced with it remains `annotation_ready: false` and must record the override.
+
 ## P18b metric-MANO/contact-surface state split
 
 Script: `scripts/build_v19_mano_surface_hypothesis_state.py`
@@ -556,7 +572,7 @@ P18 may generate contact-like surface hypotheses from object geometry, depth ord
   --output "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json"
 ```
 
-Required output: `{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json`. Its per-frame states must set `joint_state_policy` to a metric-MANO-preserved policy, keep `optimized_joints_world_m` equal to the selected metric source, carry contact-surface samples under `optimized_vertices_world_sample_m` / `contact_surface_vertices_world_sample_m`, and label contact as unresolved/uncertain. This is the default P19/P20 interval state. The raw P18 state remains provenance and may be evaluated separately, but it must not be the canonical rendered/evaluated hand state unless a later evidence record proves it improves metric MANO without visual regression.
+Required output: `{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json`. Its per-frame states must set `joint_state_policy` to a metric-MANO-preserved policy, keep `optimized_joints_world_m` equal to the selected metric source, carry contact-surface samples under `optimized_vertices_world_sample_m` / `contact_surface_vertices_world_sample_m`, and label contact as unresolved/uncertain. This is the default P19/P20 interval state. The raw P18 state remains provenance and may be evaluated separately, but it must not be the canonical rendered/evaluated hand state unless a later evidence record proves it improves metric MANO without visual regression. If P18 is a P15-readiness quarantine state, P18b must preserve that quarantine, keep both surface-sample fields empty, and must not rename the result into a contact-surface hypothesis.
 
 ## P19 full-duration render
 
@@ -580,7 +596,9 @@ Script: `scripts/build_v19_rigid_render_state.py`
   --output "{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json"
 ```
 
-Required output: `{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json`. This file is the P19 renderer boundary: it must explicitly contain the completed mesh path, accepted full-timeline rigid pose rows, MANO/object constraint rows, temporal MANO state when present, and the projection contract. For a rigid branch, missing pose frames are a P19a failure unless the state explicitly records them as missing-pose uncertainty via `--allow-missing-poses`; the default runtime path must not omit rigid object poses for unobserved frames.
+Required output: `{RUN_ROOT}/state/render_state/{OBJECT_ID}_rigid_render_state.json`. This file is the P19 renderer boundary: it must explicitly contain the completed mesh path, renderable full-timeline rigid pose rows with their readiness/support state, MANO/object constraint rows, temporal MANO state when present, and the projection contract. For a rigid branch, missing pose frames are a P19a failure unless the state explicitly records them as missing-pose uncertainty via `--allow-missing-poses`; the default runtime path must not omit rigid object poses for unobserved frames.
+
+P19a must propagate P15 `annotation_ready`, `graph_support`, and downstream quarantine fields. A full-timeline sparse-support hypothesis remains renderable for failure diagnosis, but the render state must use `status: ok_with_unready_object_pose_quarantine`, `physical_state_quarantined: true`, and `object_pose_trajectory.state: full_timeline_unresolved_sparse_support_hypothesis`; row count alone must not turn it into an accepted trajectory. If P15 is explicitly unready, P19a must reject stale P16/P18/P18b inputs that do not carry their required quarantine fields; do not combine a corrected P15 report with object-relative states generated from the frozen/old trajectory.
 
 ### P19b render rigid body from state
 
@@ -593,7 +611,9 @@ Script: `scripts/render_v19_rigid_state_artifact.py`
   --world-view local
 ```
 
-Required output: full-duration overlay/world/side-by-side render branch listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_state_runtime/{CASE_ID}/v19_rigid_state_render_manifest.json` as `outputs.overlay`, `outputs.world`, and `outputs.side_by_side`. The renderer must rasterize mesh faces as a visible rigid body, not draw sampled vertices as a point cloud. The manifest must record the projection rule that scales source-coordinate intrinsics to the decoded render frame size; a 960x960 render of 1408x1408 source intrinsics must show `scale_xy` near `[960/1408, 960/1408]`. A missing or empty manifest value is a P19 failure. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v19_overlay_keyboard.mp4`, `v19_world_keyboard.mp4`, and `v19_side_by_side_keyboard.mp4` under that case directory.
+Required output: full-duration overlay/world/side-by-side render branch listed in `{RUN_ROOT}/renders/{OBJECT_ID}_rigid_state_runtime/{CASE_ID}/v19_rigid_state_render_manifest.json` as `outputs.overlay`, `outputs.world`, and `outputs.side_by_side`. The renderer must rasterize mesh faces as a visible rigid body, not draw sampled vertices as a point cloud. The manifest must record the projection rule that scales source-coordinate intrinsics to the decoded render frame size; a 960x960 render of 1408x1408 source intrinsics must show `scale_xy` near `[960/1408, 960/1408]`. It must also record `rendered_source_frame_ids` and output-frame-index→source-frame-index mapping so selected-frame QC cannot be mistaken for source frame numbering. A missing or empty manifest value is a P19 failure. For `{OBJECT_ID}=keyboard`, the expected branch videos are `v19_overlay_keyboard.mp4`, `v19_world_keyboard.mp4`, and `v19_side_by_side_keyboard.mp4` under that case directory.
+
+When the render state is quarantined, P19b must remain runnable but must render the object hypothesis in the explicit unresolved color/label, show `POSE UNREADY` / `OBJECT POSE UNREADY`, set `physical_state_quarantined: true`, and report zero annotation-ready object-pose frames. Such a video is a failure/uncertainty artifact, not a physically successful annotation. A legacy render state lacking both readiness fields may remain renderable for provenance, but must use the distinct legacy-unknown color/label and must not infer annotation readiness from row count.
 
 ### P19c presentation rerender for Workbench item 4
 

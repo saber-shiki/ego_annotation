@@ -127,6 +127,13 @@ def main() -> None:
     contact_rows = contact_state.get("per_frame_states")
     if not isinstance(contact_rows, list) or not contact_rows:
         raise SystemExit(f"{args.contact_state} lacks nonempty per_frame_states")
+    contact_pose_readiness = contact_state.get("object_pose_readiness") if isinstance(contact_state.get("object_pose_readiness"), dict) else {}
+    input_pose_quarantined = bool(
+        contact_state.get("optimization_skipped") is True
+        or contact_state.get("physical_state_quarantined") is True
+        or contact_state.get("status") == "completed_quarantined_unready_object_pose_trajectory"
+        or contact_pose_readiness.get("explicitly_unready") is True
+    )
 
     if args.joint_source == "hawor_npz":
         source_joints = hawor_joint_map(args.hawor_npz)  # type: ignore[arg-type]
@@ -157,13 +164,32 @@ def main() -> None:
             out["surface_fit_joints_world_m"] = original_joints.astype(float).tolist()
             out["surface_fit_joint_delta_from_source_m"] = numeric_summary(np.linalg.norm(original_joints - joints, axis=1).astype(float).tolist())
         out["optimized_joints_world_m"] = joints.astype(float).tolist()
-        out["joint_state_policy"] = f"{args.joint_source}_metric_mano_preserved"
-        out["temporal_mano_state"] = "v19_source_metric_mano_plus_uncertain_contact_surface_hypothesis"
+        out["joint_state_policy"] = (
+            f"{args.joint_source}_metric_mano_preserved_due_to_unready_object_pose"
+            if input_pose_quarantined
+            else f"{args.joint_source}_metric_mano_preserved"
+        )
+        out["temporal_mano_state"] = (
+            "v19_source_metric_mano_only_object_pose_quarantine"
+            if input_pose_quarantined
+            else "v19_source_metric_mano_plus_uncertain_contact_surface_hypothesis"
+        )
         out["source_metric_mano_state"] = {"kind": args.joint_source, "path": source_desc}
         if args.hawor_npz is not None:
             out["source_hawor_npz"] = str(args.hawor_npz)
-        out["visible_surface_hypothesis_state"] = "uncertain_visible_surface_proximity_not_contact_ownership"
-        out["contact_surface_vertices_world_sample_m"] = out.get("optimized_vertices_world_sample_m") or []
+        out["visible_surface_hypothesis_state"] = (
+            "not_built_unready_object_pose_trajectory"
+            if input_pose_quarantined
+            else "uncertain_visible_surface_proximity_not_contact_ownership"
+        )
+        out["contact_surface_vertices_world_sample_m"] = (
+            [] if input_pose_quarantined else (out.get("optimized_vertices_world_sample_m") or [])
+        )
+        if input_pose_quarantined:
+            out["optimized_vertices_world_sample_m"] = []
+            out["annotation_ready"] = False
+            out["physical_constraint_quarantine"] = "p15_unready_object_pose_trajectory"
+            out["contact_state"] = "unresolved_object_pose_trajectory"
         out["metric_joint_shift_px"] = zero_summary()
         out["visible_joint_shift_px"] = zero_summary()
         out["optimized_similarity_scale"] = 1.0
@@ -187,12 +213,19 @@ def main() -> None:
 
     payload = {
         "method": "v19_source_metric_mano_plus_visible_surface_proximity_hypothesis_state",
+        "status": "completed_source_metric_mano_object_pose_quarantine" if input_pose_quarantined else "ok",
+        "annotation_ready": False,
+        "physical_constraint_quarantined": input_pose_quarantined,
         "case": args.case or contact_state.get("case"),
         "object_id": args.object_id or contact_state.get("object_id"),
         "claim_scope": (
-            "Metric MANO joints are preserved from the selected source; optimized point-to-plane vertices are rendered only as "
-            "uncertain visible-surface proximity hypotheses. This state does not accept contact ownership or nonpenetration. "
-            "Contact priors must come from VLM/agent visual evidence, never from MANO/object geometry distance."
+            "P15 object-pose support is insufficient, so metric MANO joints are preserved from the selected source and no object-relative visible-surface/contact hypothesis is exposed."
+            if input_pose_quarantined
+            else (
+                "Metric MANO joints are preserved from the selected source; optimized point-to-plane vertices are rendered only as "
+                "uncertain visible-surface proximity hypotheses. This state does not accept contact ownership or nonpenetration. "
+                "Contact priors must come from VLM/agent visual evidence, never from MANO/object geometry distance."
+            )
         ),
         "inputs": {
             "contact_state": str(args.contact_state),
@@ -205,6 +238,7 @@ def main() -> None:
             "contact_rows_in": len(contact_rows),
             "rows_out": len(rows),
             "skipped_count": len(skipped),
+            "input_pose_quarantined": input_pose_quarantined,
             "visible_surface_normal_abs_after_median": numeric_summary(normal_vals),
             "visible_surface_tangent_after_median": numeric_summary(tangent_vals),
             "visible_surface_distance_after_median": numeric_summary(distance_vals),

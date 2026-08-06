@@ -11,7 +11,7 @@
 
 ### 1.1 权威运行和可复现范围
 
-本文的数值结果全部来自已经存在的权威运行，不重新执行求解器，也不把报告缺失的 scalar cost 猜出来：
+本文的主数值结果来自已经存在的权威冻结运行，不把报告缺失的 scalar cost 猜出来。后文显式标成 `eligibility/support ablation` 的数字来自独立 benchmark 输出目录，不回写冻结 run：
 
 ```bash
 REPO=/mnt/user-home/kupingxin/ego_annotation
@@ -25,8 +25,8 @@ OBJECT=keyboard
 
 - runtime bundle：`/mnt/user-home/kupingxin/ego_annotation_runtime/v19_bundle_a800_0c8e6a9_local1`；
 - bundle source revision：`0c8e6a9ff1925caa5fa2665de116c404b5d39eee`；
-- 当前仓库检查分支：`local/kupingxin-v19-a800-deployment`，HEAD 为 `b18cecd2c90932282eb3b50ecef7298bb7546498`；
-- P13/P14/P15/P16/P17/P18/P18b 等核心脚本在实际 bundle 和当前仓库中相同；`export_hawor_world.py` 只有默认路径的部署差异，不改变本次实际调用的求解逻辑。
+- 当前仓库检查分支：`local/kupingxin-v19-a800-deployment`；本次文档初始审计时仓库 HEAD 为 `b18cecd2c90932282eb3b50ecef7298bb7546498`，之后 benchmark/docs 提交为 `ca254f7`，eligibility/support quarantine 修复在独立工作树和 ablation 中验证；
+- P13/P14/P15/P16/P17/P18/P18b 的冻结执行行为以 runtime bundle 为准。当前工作树中的 P14/P15/P16/P18/P18b/render consumer 已加入 eligibility/support quarantine，因此不能用当前源码反向声称冻结 run 当时执行过这些 gate；`export_hawor_world.py` 的默认路径部署差异不改变冻结调用逻辑。
 
 结果解释以以下文件为准：
 
@@ -315,7 +315,7 @@ $$
 
 再从隐式场提取等值面。**但是当前脚本没有构造或记录这个连续目标的数值、权重和迭代收敛信息**；因此在 pipeline audit 中应把它记成 library reconstruction，而不是声称有一个可复现的 Poisson loss 曲线。
 
-### 5.4 当前 P09 结果和一个重要实现差异
+### 5.4 冻结 runtime 的 P09 结果和 eligibility 数据流差异
 
 P09 的 extent gate 标记：
 
@@ -323,7 +323,9 @@ P09 的 extent gate 标记：
 - ineligible frames：`[0,18,19,20,55,60,69]`；
 - 原因是 extent 与 selected anchor 不一致，疑似 mask/background leakage。
 
-但是当前 `fit_v18_compact_rigid_object_pose.py` 只检查 visible samples 和初始 pose，**没有读取 `rigid_pose_observation_eligible` 字段并跳过这 7 帧**。因此 P14/P15 实际仍使用了 150 帧。这个差异必须在下游解释中保留：P09 的“不可用于 rigid fit”判断没有真正传递到 P14。
+冻结 bundle 中的 `fit_v18_compact_rigid_object_pose.py` 只检查 visible samples 和初始 pose，**没有读取 `rigid_pose_observation_eligible` 字段并跳过这 7 帧**。因此该次冻结 P14/P15 实际仍使用了 150 帧。这个历史差异必须在下游解释中保留，不能用后续修复回写冻结结果。
+
+当前工作树已将 explicit false 接成 P14 hard gate，并保留两个可审计例外：缺失字段仅作为 legacy compatibility；`--include-ineligible-rigid-pose-observations` 仅作为显式历史复现 override。P15 还会独立二次拒绝仍携带 explicit false 的 fitted row。
 
 ---
 
@@ -440,7 +442,7 @@ $$
 
 代码实际用 nearest-neighbor 后的 Kabsch/Umeyama 闭式更新，没有显式 robust kernel、visibility weight 或 residual trimming。输出的 `observed_to_mesh_*` 与 `mesh_to_observed_*` 是评估统计；前者更接近 fit update 的方向，后者用于暴露 hidden mesh/partial-view mismatch。
 
-### 7.3 当前结果
+### 7.3 冻结 keyboard 结果
 
 由 P14 report 的 150 个 pose rows 汇总：
 
@@ -452,7 +454,9 @@ $$
 | final mesh→observed median | — | 25.8009 mm |
 | final mesh→observed p90 | — | 58.4130 mm |
 
-P14 因而确实产生了每帧 pose 改变。但它没有尊重 P09 的 7 个 `rigid_pose_observation_eligible=false` 标记，这是当前实现中必须单独记录的输入门控断裂。
+P14 因而确实产生了每帧 pose 改变。但冻结 bundle 没有尊重 P09 的 7 个 `rigid_pose_observation_eligible=false` 标记；这些数值是 bug-preserving execution record，不是当前工作树 eligibility gate 的行为。
+
+在独立 tire-lever ablation 中，当前工作树只拟合 6 个 explicit-eligible rows、拒绝 27 个 explicit-false rows；eligible-only final median 为 `2.006 mm`，而冻结 all-row aggregate final median 为 `63.038 mm`。这只说明污染 measurement 被删除，不证明 full-timeline pose accurate。
 
 ---
 
@@ -576,7 +580,9 @@ surface degradation  = 0
 - P15 的 pose prior 是“对 P14 pose 的 correction prior”，不是从 RGB 重新拟合 pose；零 correction 本来就是最优。
 - P15 的 surface metrics 使用独立 2,500 sample/seed，和 P14 的 6,000 sample/seed 不应直接当成同一 loss 曲线。
 - P16 结果若要影响 P15，必须显式重排 phase 或再运行一个带 constraint report 的 pose graph；当前一次 pass 没有这条数据流。
-- full-timeline completion 在本次没有真正插值，因为 150 帧都有 direct pose；`completed_row_count=0`。
+- full-timeline completion 在本次冻结 keyboard run 没有真正插值，因为 150 帧都有 direct pose；`completed_row_count=0`。
+
+当前工作树不再把 completion row count 当作 support。若 trusted graph frames 少于默认 8，P15 仍可为 failure render 建立 full timeline，但顶层与每行都标 `annotation_ready=false`/`graph_support_sufficient=false`。真实 tire-lever 修复 ablation 是 6 direct +144 completion（141 nearest holds、3 interpolations），因此没有晋级为物理 trajectory。
 
 ---
 
@@ -1146,7 +1152,7 @@ P19c 的 presentation rerender 是 render-only 分支，不重新运行任何 in
 这些规则同样会影响最终输出，但不应被误写成 loss：
 
 1. **P09 mask ownership**：hand bbox 区域从 object visible support 删除；
-2. **P09 extent eligibility**：将 7 帧标成 probable leakage；当前 P14 没有消费该标记；
+2. **P09 extent eligibility**：explicit false 在当前工作树中是 P14/P15 默认 hard rejection；冻结运行仍保留当时未接线的历史结果；
 3. **P13 observed-band overwrite**：TRELLIS 近 observed surfels 的 face 不作为 hidden completion；
 4. **P13 silhouette free-space**：投影到 object-owned silhouette 外的 hidden face 丢弃；
 5. **P13 planar slab**：仅在 PCA ratio≤0.04 时生效；
@@ -1173,14 +1179,24 @@ P19c 的 presentation rerender 是 render-only 分支，不重新运行任何 in
 
 在此修复前，P18 的 visible depth-order 和 ownership quarantine loss 不应被当作有效 metric evidence。
 
-### 16.2 让 P14 真正消费 P09 eligibility
+### 16.2 P14 eligibility hard gate 与 P15 support gate（已实现，仍缺观测）
 
-`fit_v18_compact_rigid_object_pose.py` 应明确：
+当前工作树中的 `fit_v18_compact_rigid_object_pose.py` 已明确：
 
-- 跳过 `rigid_pose_observation_eligible=false` 的 row，或
-- 把它们作为 uncertain observation 并放大 sigma，而不是无条件 ICP fit。
+- explicit `rigid_pose_observation_eligible=false` 默认拒绝；
+- missing field 仅作为单独计数的 legacy compatibility；
+- historical override 必须显式传 `--include-ineligible-rigid-pose-observations`；
+- P15 对 override row 再做一次默认 hard rejection。
 
-否则 P09 的 mask leakage gate 只是诊断字段，不能控制 pose optimization 的输入。
+真实 tire-lever ablation 从 33 个冻结 fits 变为 6 个 trusted fits；P15 默认 minimum 为 8，因此 6 direct +144 interpolation/nearest-hold rows必须输出：
+
+```text
+status = completed_uncertain_insufficient_trusted_pose_graph_support
+annotation_ready = false
+graph_support.sufficient = false
+```
+
+P16 将 object-relative corrections quarantine；P18 默认跳过 object-relative optimizer并生成 source-only hand state；P19 只把 object trajectory 画成橙色 unresolved hypothesis。剩余问题不是继续修改 eligibility gate，而是取得跨时间轴的更多可信 object measurements。
 
 ### 16.3 重新设计 P15/P16 的 phase wiring
 

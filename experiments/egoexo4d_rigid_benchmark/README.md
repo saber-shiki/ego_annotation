@@ -25,6 +25,9 @@ evaluate_benchmark.py
 self_test_coordinate_contract.py
     用 exact synthetic 3D round trip 验证固定 camera-axis adapter 和 evaluator 数学实现。
 
+regression_pose_eligibility.py
+    无 pytest 依赖的三帧 synthetic P09→P14→P15 eligibility/support regression。
+
 RESULTS_V19_V1_ZH.md
     本次 V19 完整盲运行、内部阶段审计和 partial-GT 结果。
 ```
@@ -397,3 +400,55 @@ full physical GT available:          false
 ```
 
 这些数字的详细 coverage、distribution、P09–P18 runtime mechanism 和 render failure 见 [`RESULTS_V19_V1_ZH.md`](RESULTS_V19_V1_ZH.md)。
+
+---
+
+## 10. P09→P15 eligibility 修复回归
+
+冻结的 V19 v1 run 不做原地修改。工作树机制 ablation 将 P09 的 explicit eligibility 接入 P14/P15 后得到：
+
+```text
+P14 frozen v1 fits:                    33
+P14 fixed trusted fits:                 6
+P14 fixed explicit-false rejected:     27
+P14 fixed rows without pose/sample:   117
+frozen all-row final median:        63.038 mm
+fixed eligible-only final median:    2.006 mm
+
+P15 trusted direct rows:                 6
+P15 configured minimum:                  8
+P15 completion rows:                   144
+  nearest holds:                       141
+  interpolations:                        3
+P15 annotation_ready:                false
+```
+
+这不是 object-trajectory accuracy 改善声明。6 个可信 rows 只集中在 local frame `115–123`；selected-frame state render 显示早期时间轴的 nearest hold 仍明显错误。因此修复的收益是：
+
+1. 污染观测不再进入 P14/P15；
+2. 33-row aggregate residual 不再掩盖 trusted subset；
+3. sparse completion 不再升格为 annotation-ready trajectory；
+4. P16 将 object-relative correction rows quarantine；
+5. P18 在加载 MANO model/optimizer 前生成 source-only quarantine state；
+6. P18b 清空 object-relative surface samples，P19a 拒绝与新 P15 混用的 stale non-quarantined P16/P18 state；
+7. P19 路径仍支持完整时长 failure artifact，但 object hypothesis 使用橙色并显式标注 `POSE UNREADY`。本次 ablation 只做 selected-frame mechanism QC，不冒充新的 full-duration V19 run。
+
+Standalone regression 不依赖 pytest：
+
+```bash
+cd /mnt/user-home/kupingxin/ego_annotation
+
+.venv/bin/python \
+  experiments/egoexo4d_rigid_benchmark/regression_pose_eligibility.py \
+  --python .venv/bin/python
+```
+
+它构造三帧 cuboid fixture：frame 0 explicit true、frame 1 explicit false、frame 2 legacy unspecified，并断言：
+
+- P14 default 仅拟合 `0,2`；
+- P14 historical override 才拟合 `0,1,2`；
+- P15 对低于 minimum 的 full-timeline completion 输出 `annotation_ready=false`；
+- 单个 direct observation 只能生成 explicit nearest-hold hypotheses，不会因 Slerp key 不足崩溃；
+- 禁用 completion 时低支撑 hard fail；
+- 即使 P14 override，P15 default 仍二次拒绝 explicit false；
+- 只有 P14 和 P15 均显式 override 时才复现三行图。

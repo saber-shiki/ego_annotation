@@ -178,6 +178,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--object-id", default="object:obj_tomato")
     p.add_argument("--annotations", type=Path, default=DEFAULT_ANNOTATIONS)
     p.add_argument("--pose-report", type=Path, default=DEFAULT_POSE_REPORT)
+    p.add_argument(
+        "--include-unready-object-pose-for-diagnostic-optimization",
+        action="store_true",
+        help="Diagnostic/historical override: run object-relative MANO optimization even when P15 explicitly reports annotation_ready=false or insufficient graph support",
+    )
     p.add_argument("--completed-mesh", type=Path, default=DEFAULT_MESH)
     p.add_argument(
         "--completion-report",
@@ -2294,6 +2299,144 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     return interval, states
 
 
+def pose_graph_readiness(report: dict[str, Any]) -> dict[str, Any]:
+    graph = report.get("graph_support") if isinstance(report.get("graph_support"), dict) else {}
+    annotation_ready = report.get("annotation_ready")
+    support_sufficient = graph.get("sufficient")
+    explicitly_unready = annotation_ready is False or support_sufficient is False
+    explicitly_ready = annotation_ready is True and support_sufficient is not False
+    return {
+        "pose_report_status": report.get("status"),
+        "annotation_ready": annotation_ready if isinstance(annotation_ready, bool) else None,
+        "graph_support_sufficient": support_sufficient if isinstance(support_sufficient, bool) else None,
+        "explicitly_unready": explicitly_unready,
+        "explicitly_ready": explicitly_ready,
+        "legacy_readiness_fields_missing": annotation_ready is None and support_sufficient is None,
+    }
+
+
+def quarantined_source_state(args: argparse.Namespace, pose_readiness: dict[str, Any]) -> dict[str, Any]:
+    """Emit source-only hand rows without loading MANO models or physical factors."""
+    annotations = load_json(args.annotations)
+    rows: list[dict[str, Any]] = []
+    side_counts: Counter[str] = Counter()
+    for pos, frame in enumerate(as_list(annotations.get("frames"))):
+        if not isinstance(frame, dict):
+            continue
+        frame_idx = int(frame.get("frame_idx", pos))
+        if frame_idx < int(args.start_frame) or frame_idx > int(args.end_frame):
+            continue
+        hands = {
+            str(hand.get("hand_side")): hand
+            for hand in as_list(frame.get("hands"))
+            if isinstance(hand, dict) and str(hand.get("hand_side")) in {"left", "right"}
+        }
+        for side in args.sides:
+            hand = hands.get(side)
+            if hand is None:
+                continue
+            metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+            joints = np.asarray(
+                metric.get("joints_current_v18_world_m")
+                or metric.get("joints_world_m")
+                or hand.get("joints_current_v18_world_m")
+                or [],
+                dtype=float,
+            )
+            joints_payload = joints.astype(float).tolist() if joints.shape == (21, 3) and np.isfinite(joints).all() else []
+            rows.append(
+                {
+                    "frame_idx": frame_idx,
+                    "hand_side": side,
+                    "status": "quarantined_unready_object_pose_trajectory",
+                    "annotation_ready": False,
+                    "physical_constraint_quarantine": "p15_unready_object_pose_trajectory",
+                    "temporal_mano_state": "source_metric_mano_only_object_relative_optimization_skipped",
+                    "joint_state_policy": "source_metric_mano_preserved_due_to_unready_object_pose",
+                    "optimized_joints_world_m": joints_payload,
+                    "optimized_vertices_world_sample_m": [],
+                    "contact_surface_vertices_world_sample_m": [],
+                    "contact_state": "unresolved_object_pose_trajectory",
+                    "candidate_application_state": "quarantined_unready_object_pose_trajectory",
+                    "object_pose_readiness": pose_readiness,
+                    "uncertainty": (
+                        "P15 trusted graph support is insufficient; no object-relative contact, nonpenetration, "
+                        "depth-order, or MANO optimization was run"
+                    ),
+                }
+            )
+            side_counts[side] += 1
+    if not rows:
+        raise RuntimeError("cannot build source-only P18 quarantine state: no hand rows in the requested interval")
+    intervals = [
+        {
+            "hand_side": side,
+            "start_frame": int(args.start_frame),
+            "end_frame": int(args.end_frame),
+            "frame_count": int(side_counts.get(side, 0)),
+            "solver": "not_run_unready_object_pose_trajectory",
+            "state": "quarantined_source_metric_mano_only",
+        }
+        for side in args.sides
+    ]
+    report = {
+        "method": "solve_v18_joint_mano_interval_trajectory",
+        "status": "completed_quarantined_unready_object_pose_trajectory",
+        "annotation_ready": False,
+        "case": str(args.case),
+        "object_id": str(args.object_id),
+        "claim_scope": (
+            "P15 explicitly reports an unready object trajectory. P18 therefore preserves source hand rows and skips all "
+            "object-relative MANO/contact/nonpenetration optimization; this output is a quarantine state, not a physical solve."
+        ),
+        "inputs": {
+            "annotations": str(args.annotations),
+            "pose_report": str(args.pose_report),
+            "completed_mesh": str(args.completed_mesh),
+            "completion_report": None if args.completion_report is None else str(args.completion_report),
+            "depth_npz_not_consumed": [str(path) for path in list(args.depth_npz or [DEFAULT_DEPTH])],
+            "factor_report": None if args.factor_report is None else [str(path) for path in args.factor_report],
+        },
+        "object_pose_readiness": pose_readiness,
+        "object_pose_input_ready_for_optimization": False,
+        "object_pose_input_legacy_compatibility": bool(pose_readiness["legacy_readiness_fields_missing"]),
+        "optimization_skipped": True,
+        "physical_state_quarantined": True,
+        "physical_factor_families_quarantined": [
+            "object_surface_nonpenetration",
+            "visible_surface_depth_order",
+            "contact_patch",
+            "object_relative_mano_correction",
+        ],
+        "parameters": {
+            key: (
+                [str(item) for item in value]
+                if key == "factor_report" and value is not None
+                else (str(value) if isinstance(value, Path) else value)
+            )
+            for key, value in vars(args).items()
+            if key not in {"depth_npz"}
+        },
+        "build_meta": {},
+        "summary": {
+            "interval_count": len(intervals),
+            "per_frame_state_count": len(rows),
+            "frame_span": [int(args.start_frame), int(args.end_frame)],
+            "sides": list(args.sides),
+            "optimization_skipped": True,
+        },
+        "intervals": intervals,
+        "per_frame_states": rows,
+        "scientific_test": "No object-relative scientific test was run because the object trajectory failed its support gate.",
+    }
+    out_dir = args.output_dir / str(args.case)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "v18_joint_mano_interval_trajectory_state.json"
+    write_json(out, report)
+    print(json.dumps({"output": str(out), "status": report["status"], "summary": report["summary"]}, indent=2))
+    return report
+
+
 def reject_rejected_annotation_path(path: Path) -> None:
     raw = str(path)
     hits = [marker for marker in REJECTED_ANNOTATION_PATH_MARKERS if marker in raw]
@@ -2307,6 +2450,11 @@ def reject_rejected_annotation_path(path: Path) -> None:
 def main() -> None:
     args = parse_args()
     reject_rejected_annotation_path(args.annotations)
+    pose_report = load_json(args.pose_report)
+    pose_readiness = pose_graph_readiness(pose_report)
+    if pose_readiness["explicitly_unready"] and not args.include_unready_object_pose_for_diagnostic_optimization:
+        quarantined_source_state(args, pose_readiness)
+        return
     visible_surface_factor_supplied = args.visible_surface_track_factor_report is not None or bool(args.factor_report)
     if (bool(args.visible_object_mask_gate) or bool(args.visible_surface_depth_order_term)) and args.visible_object_mask_report is None and not visible_surface_factor_supplied:
         raise ValueError("visible object mask terms require --visible-object-mask-report or a visible_surface_track factor report")
@@ -2329,11 +2477,24 @@ def main() -> None:
         per_frame_states.extend(states)
     report = {
         "method": "solve_v18_joint_mano_interval_trajectory",
+        "status": "completed_diagnostic_optimization_with_unready_object_pose_override" if pose_readiness["explicitly_unready"] else "ok",
+        "annotation_ready": False,
+        "physical_state_quarantined": bool(pose_readiness["explicitly_unready"]),
+        "object_pose_input_ready_for_optimization": bool(pose_readiness["explicitly_ready"]),
+        "object_pose_input_legacy_compatibility": bool(pose_readiness["legacy_readiness_fields_missing"]),
         "case": str(args.case),
         "object_id": str(args.object_id),
-        "claim_scope": "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface.",
+        "claim_scope": (
+            "Diagnostic override ran continuous MANO/object-relative optimization despite an explicitly unready P15 trajectory; all output remains non-annotation-ready and must stay quarantined."
+            if pose_readiness["explicitly_unready"]
+            else "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface."
+        ),
         "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "completion_report": None if args.completion_report is None else str(args.completion_report), "completion_report_completed_mesh_labeled": None if args.completion_report is None else str(completion_report_completed_mesh(args.completion_report)), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report), "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report), "factor_report": None if args.factor_report is None else [str(p) for p in args.factor_report]},
         "parameters": {k: ([str(x) for x in v] if k == "factor_report" and v is not None else (str(v) if isinstance(v, Path) else v)) for k, v in vars(args).items() if k not in {"depth_npz"}},
+        "object_pose_readiness": pose_readiness,
+        "unready_object_pose_diagnostic_optimization_override": bool(
+            pose_readiness["explicitly_unready"] and args.include_unready_object_pose_for_diagnostic_optimization
+        ),
         "build_meta": build_meta,
         "summary": {"interval_count": int(len(intervals)), "per_frame_state_count": int(len(per_frame_states)), "frame_span": [int(args.start_frame), int(args.end_frame)], "sides": list(args.sides)},
         "intervals": intervals,

@@ -693,7 +693,7 @@ rigid_pose_observation_eligible
 rigid_pose_observation_reason
 ```
 
-当前有 143 帧被标为 rigid-pose eligible，7 帧因 Mask 范围或所有权问题不适合直接作为刚体位姿观测。
+当前有 143 帧被标为 rigid-pose eligible，7 帧因 Mask 范围或所有权问题不适合直接作为刚体位姿观测。这是冻结 keyboard run 的测量结果；其当时的 P14 没有消费该 gate。当前工作树 contract 为：explicit false 默认 hard reject，missing field 仅作 legacy compatibility，历史复现 override 必须显式写入 report。
 
 生产脚本：
 
@@ -838,7 +838,19 @@ $RUN/measurements/pose_fits/keyboard_rigid_pose_graph/v18_compact_rigid_object_p
 - observed-to-mesh median 残差约 3.84 mm；
 - temporal graph 的平移和旋转修正量全部为 0。
 
-因此，当前状态名虽然包含 `corrected`，实际 150 帧均来自直接可见表面拟合，没有发生非零时间图修正。
+因此，冻结 keyboard 状态名虽然包含 `corrected`，实际 150 帧均来自直接可见表面拟合，没有发生非零时间图修正。该 run 还保留当时 eligibility 未接线的行为，不能用当前代码反向改写。
+
+当前工作树的 P15 report 还会保存：
+
+```text
+annotation_ready
+graph_support.sufficient
+graph_support.configured_min_graph_frames
+graph_support.actual_graph_frames
+pose_observation_eligibility_policy
+```
+
+若 trusted direct rows 少于 minimum，full-timeline interpolation/nearest hold 仍可作为 renderer diagnostic rows，但所有 row 都必须 `annotation_ready=false`、`graph_support_sufficient=false`。下游 P16/P18 只能 quarantine object-relative physical factors；row count 不再等于可信轨迹 coverage。
 
 生产脚本：
 
@@ -1628,7 +1640,22 @@ P09 ineligible rows:   27
 P14 consumed rows:     33
 ```
 
-P14 eligible rows 的 observed→mesh median-of-medians从 `3.956 mm` 降到 `2.006 mm`；27 个 ineligible rows 则从 `51.783 mm` 恶化到 `63.425 mm`。这说明 eligibility flag 必须进入 optimizer，而不能只保存在 annotation JSON。
+P14 eligible rows 的 observed→mesh median-of-medians从 `3.956 mm` 降到 `2.006 mm`；27 个 ineligible rows 则从 `51.783 mm` 恶化到 `63.425 mm`。这说明冻结 V19 v1 的 eligibility flag 没有进入 optimizer。
+
+独立工作树 ablation 已修复该 wiring，而不修改冻结 run：
+
+```text
+P14 trusted fits:                  6
+P14 explicit-false rejects:       27
+P14 no usable pose/sample:       117
+P15 trusted direct:                6
+P15 completion:                  144
+  nearest hold / interpolation: 141 / 3
+P15 min_graph_frames:              8
+P15 annotation_ready:          false
+```
+
+`6+144=150` 只是 full-timeline hypothesis rows，不是 150 个观测。6 个 direct rows 只位于 local frame `115,116,119,120,121,123`。P16 将 physical correction candidate quarantine；P18 跳过 object-relative optimization；selected-frame P19 mechanism QC 用橙色 `POSE UNREADY` artifact 暴露 sparse hold 的可见失败。该 QC 不是新的 full-duration V19 run。修复提升的是数据流正确性和不确定性传播，不是 object 6DoF accuracy。
 
 P18 raw 相对 HaWoR 只改善：
 

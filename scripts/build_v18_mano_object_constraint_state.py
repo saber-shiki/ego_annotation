@@ -18,6 +18,30 @@ def load_json(path: Path) -> Any:
         return json.load(f)
 
 
+def pose_graph_readiness(report: dict[str, Any]) -> dict[str, Any]:
+    """Treat an explicit unready/support-false P15 report as a physical-factor quarantine.
+
+    Older pose reports did not publish these fields, so missing readiness remains a
+    recorded legacy-compatible state rather than being silently converted to false.
+    """
+    graph = report.get("graph_support") if isinstance(report.get("graph_support"), dict) else {}
+    annotation_ready = report.get("annotation_ready")
+    support_sufficient = graph.get("sufficient")
+    explicitly_unready = annotation_ready is False or support_sufficient is False
+    return {
+        "pose_report_status": report.get("status"),
+        "annotation_ready": annotation_ready if isinstance(annotation_ready, bool) else None,
+        "graph_support_sufficient": support_sufficient if isinstance(support_sufficient, bool) else None,
+        "explicitly_unready": explicitly_unready,
+        "legacy_readiness_fields_missing": annotation_ready is None and support_sufficient is None,
+        "policy": (
+            "quarantine physical correction factors from unresolved object poses"
+            if explicitly_unready
+            else "consume ready pose report or legacy report lacking an explicit rejection"
+        ),
+    }
+
+
 def load_mesh(path: Path) -> trimesh.Trimesh:
     geom = trimesh.load(str(path), process=False)
     if isinstance(geom, trimesh.Scene):
@@ -189,6 +213,11 @@ def main() -> None:
 
     annotations = load_json(args.annotations)
     pose_report = load_json(args.pose_report)
+    pose_readiness = pose_graph_readiness(pose_report)
+    quarantine_unready_pose = bool(pose_readiness["explicitly_unready"])
+    pose_input_explicitly_ready = bool(
+        pose_readiness["annotation_ready"] is True and pose_readiness["graph_support_sufficient"] is not False
+    )
     completion = load_json(args.completion_report)
     mesh_path = Path(completion["outputs"]["completed_mesh_labeled"])
     observed_band_m = float(completion.get("observed_band_m") or 0.0)
@@ -329,12 +358,38 @@ def main() -> None:
             else:
                 app_state = "no_penetration_no_coordinate_change_needed"
                 reason = "sign-supporting compact-rigid mesh does not require nonpenetration correction for this hand/frame"
+            diagnostic_candidate_translation_world_m = correction_w.astype(float).tolist()
+            diagnostic_candidate_translation_norm_m = correction_norm_m
+            diagnostic_candidate_joint_reprojection_shift_px = reproj_summary
+            diagnostic_candidate_visible_2d_consistency = visible_consistency
+            if quarantine_unready_pose:
+                correction_w = np.zeros(3, dtype=float)
+                correction_norm_m = 0.0
+                reproj_summary = nearest_summary(np.zeros(len(joints_w), dtype=float)) if intr is not None else None
+                visible_consistency = {
+                    "state": "not_evaluated_physical_candidate_quarantined_unready_object_pose_trajectory",
+                    "compatible_with_visible_2d": False,
+                }
+                app_state = "quarantined_unready_object_pose_trajectory"
+                reason = (
+                    "P15 explicitly reports annotation_ready=false or insufficient graph support; object-relative MANO/contact and "
+                    "nonpenetration measurements are retained only as diagnostics and cannot produce a physical correction"
+                )
             row = {
                 "frame_idx": int(frame_idx),
                 "hand_side": side,
                 "same_frame_detection": same_frame,
                 "object_id": args.object_id,
-                "status": "mano_object_constraint_measured",
+                "status": (
+                    "mano_object_constraint_quarantined_unready_object_pose_trajectory"
+                    if quarantine_unready_pose
+                    else "mano_object_constraint_measured"
+                ),
+                "annotation_ready": False,
+                "object_pose_input_ready_for_constraint_measurement": pose_input_explicitly_ready,
+                "object_pose_input_legacy_compatibility": bool(pose_readiness["legacy_readiness_fields_missing"]),
+                "constraint_eligible_for_physical_correction": not quarantine_unready_pose,
+                "object_pose_readiness": pose_readiness,
                 "surface_mesh_path": str(mesh_path),
                 "sign_mesh_path": str(sign_mesh_path),
                 "sign_mesh_source_report": str(args.sign_mesh_source_report) if args.sign_mesh_source_report else None,
@@ -360,6 +415,10 @@ def main() -> None:
                 "nearest_surface_unsigned_m": nearest_summary(np.asarray(unsigned_surface_dist, dtype=float)),
                 "candidate_translation_world_m": correction_w.astype(float).tolist(),
                 "candidate_translation_norm_m": correction_norm_m,
+                "diagnostic_candidate_translation_world_m_before_pose_quarantine": diagnostic_candidate_translation_world_m,
+                "diagnostic_candidate_translation_norm_m_before_pose_quarantine": diagnostic_candidate_translation_norm_m,
+                "diagnostic_candidate_joint_reprojection_shift_px_before_pose_quarantine": diagnostic_candidate_joint_reprojection_shift_px,
+                "diagnostic_candidate_visible_2d_consistency_before_pose_quarantine": diagnostic_candidate_visible_2d_consistency,
                 "candidate_translation_solver": correction_solver,
                 "candidate_joint_reprojection_shift_px": reproj_summary,
                 "candidate_visible_2d_consistency": visible_consistency,
@@ -367,7 +426,7 @@ def main() -> None:
                 "reason": reason,
             }
             rows.append(row)
-            if penetrating.any():
+            if penetrating.any() and not quarantine_unready_pose:
                 corrective_rows.append(row)
 
     by_side = {}
@@ -382,8 +441,17 @@ def main() -> None:
         }
     report = {
         "method": "build_v18_mano_object_constraint_state",
-        "status": "ok",
-        "claim_scope": "Completed posed object mesh supplies surface/overlap measurements; an optional watertight aligned sign mesh supplies signed nonpenetration hypotheses. Coordinate corrections remain candidates until visible 2D consistency is inspected.",
+        "status": "completed_quarantined_unready_object_pose_trajectory" if quarantine_unready_pose else "ok",
+        "annotation_ready": False,
+        "object_pose_input_ready_for_constraint_measurement": pose_input_explicitly_ready,
+        "object_pose_input_legacy_compatibility": bool(pose_readiness["legacy_readiness_fields_missing"]),
+        "physical_constraint_quarantined": quarantine_unready_pose,
+        "object_pose_readiness": pose_readiness,
+        "claim_scope": (
+            "Object-relative MANO/contact and nonpenetration values are diagnostic-only because P15 explicitly reports an unready object trajectory; no candidate coordinate correction is exposed downstream."
+            if quarantine_unready_pose
+            else "Completed posed object mesh supplies surface/overlap measurements; an optional watertight aligned sign mesh supplies signed nonpenetration hypotheses. Coordinate corrections remain candidates until visible 2D consistency is inspected."
+        ),
         "object_id": args.object_id,
         "inputs": {
             "annotations": str(args.annotations),
@@ -399,6 +467,7 @@ def main() -> None:
         "sign_mesh_watertight": sign_mesh_watertight,
         "measured_pair_count": len(rows),
         "candidate_correction_count": len(corrective_rows),
+        "diagnostic_penetrating_pair_count_before_pose_quarantine": int(sum(int(row.get("penetrating_vertex_count") or 0) > 0 for row in rows)),
         "summary_by_side": by_side,
         "constraint_rows": rows,
     }

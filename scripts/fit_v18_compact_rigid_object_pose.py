@@ -57,6 +57,26 @@ def apply_pose(points: np.ndarray, r: np.ndarray, t: np.ndarray) -> np.ndarray:
     return points @ r.T + t
 
 
+def rigid_pose_observation_eligibility(obj: dict[str, Any], geom: dict[str, Any]) -> tuple[bool | None, list[str], list[str]]:
+    """Resolve explicit P09 eligibility without rejecting legacy rows lacking the field."""
+    values: list[bool] = []
+    reasons: list[str] = []
+    sources: list[str] = []
+    for source, payload in (("object", obj), ("visible_geometry_candidate", geom)):
+        value = payload.get("rigid_pose_observation_eligible")
+        if isinstance(value, bool):
+            values.append(value)
+            sources.append(source)
+        reason = payload.get("rigid_pose_observation_reason")
+        if isinstance(reason, str) and reason and reason not in reasons:
+            reasons.append(reason)
+    if False in values:
+        return False, reasons, sources
+    if True in values:
+        return True, reasons, sources
+    return None, reasons, sources
+
+
 def nearest_summary(query: np.ndarray, target: np.ndarray) -> dict[str, float | int]:
     if len(query) == 0 or len(target) == 0:
         return {"count": int(len(query)), "median_m": None, "p90_m": None, "p95_m": None, "mean_m": None, "max_m": None}
@@ -103,6 +123,11 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sample-count", type=int, default=6000)
     parser.add_argument("--iterations", type=int, default=4)
+    parser.add_argument(
+        "--include-ineligible-rigid-pose-observations",
+        action="store_true",
+        help="Historical-reproduction override: fit rows explicitly rejected by P09 rigid-pose eligibility",
+    )
     args = parser.parse_args()
 
     annotations = load_json(args.annotations)
@@ -115,6 +140,15 @@ def main() -> None:
     rows = []
     missing_pose = 0
     missing_observed = 0
+    ineligible_observation_count = 0
+    explicit_ineligible_input_count = 0
+    explicit_eligible_input_count = 0
+    eligibility_unspecified_input_count = 0
+    ineligible_observation_frames: list[int] = []
+    ineligible_reason_counts: dict[str, int] = {}
+    explicit_eligible_fit_count = 0
+    eligibility_unspecified_fit_count = 0
+    ineligible_override_fit_count = 0
     for frame in annotations.get("frames", []):
         frame_idx = int(frame.get("frame_idx"))
         obj = None
@@ -125,7 +159,32 @@ def main() -> None:
         if obj is None:
             continue
         geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+        eligibility, eligibility_reasons, eligibility_sources = rigid_pose_observation_eligibility(obj, geom)
         observed = np.asarray(geom.get("world_vertices_sample_m") or [], dtype=float)
+        if eligibility is True:
+            explicit_eligible_input_count += 1
+        elif eligibility is False:
+            explicit_ineligible_input_count += 1
+        else:
+            eligibility_unspecified_input_count += 1
+        if eligibility is False and not args.include_ineligible_rigid_pose_observations:
+            ineligible_observation_count += 1
+            ineligible_observation_frames.append(frame_idx)
+            for reason in eligibility_reasons or ["explicit_false_without_reason"]:
+                ineligible_reason_counts[reason] = ineligible_reason_counts.get(reason, 0) + 1
+            rows.append(
+                {
+                    "frame_idx": frame_idx,
+                    "status": "rigid_pose_observation_ineligible",
+                    "object_id": args.object_id,
+                    "rigid_pose_observation_eligible": False,
+                    "rigid_pose_observation_reasons": eligibility_reasons,
+                    "rigid_pose_observation_eligibility_sources": eligibility_sources,
+                    "visible_sample_count": int(len(observed)) if observed.ndim == 2 else 0,
+                    "policy": "explicit P09 false is a hard measurement-rejection gate",
+                }
+            )
+            continue
         pose = obj.get("reconstructed_geometry_pose") if isinstance(obj.get("reconstructed_geometry_pose"), dict) else {}
         r = np.asarray(pose.get("rotation_world_from_canonical_matrix") or [], dtype=float)
         t = np.asarray(pose.get("translation_world_m") or [], dtype=float)
@@ -143,6 +202,12 @@ def main() -> None:
             })
             continue
         fit = fit_frame_pose(canonical_samples, observed, r, t, args.iterations)
+        if eligibility is True:
+            explicit_eligible_fit_count += 1
+        elif eligibility is None:
+            eligibility_unspecified_fit_count += 1
+        else:
+            ineligible_override_fit_count += 1
         fit.update({
             "frame_idx": frame_idx,
             "status": "fit_to_visible_depth_samples",
@@ -150,6 +215,10 @@ def main() -> None:
             "visible_sample_count": int(len(observed)),
             "initial_pose_source": pose.get("pose_source"),
             "initial_pose_observation_residual_norm": pose.get("pose_observation_residual_norm"),
+            "rigid_pose_observation_eligible": eligibility,
+            "rigid_pose_observation_reasons": eligibility_reasons,
+            "rigid_pose_observation_eligibility_sources": eligibility_sources,
+            "ineligible_override_used": bool(eligibility is False and args.include_ineligible_rigid_pose_observations),
         })
         rows.append(fit)
 
@@ -157,7 +226,7 @@ def main() -> None:
     report = {
         "method": "fit_v18_compact_rigid_object_pose",
         "status": "ok",
-        "claim_scope": "Per-frame completed-mesh pose is initialized from V18 graph SE3 and refit only against current visible depth samples; hidden TRELLIS faces do not create pose observations by themselves.",
+        "claim_scope": "Per-frame completed-mesh pose is initialized from V18 graph SE3 and refit only against current visible depth samples that are not explicitly rejected by the upstream rigid-pose observation eligibility contract; hidden TRELLIS faces do not create pose observations by themselves.",
         "object_id": args.object_id,
         "inputs": {
             "annotations": str(args.annotations),
@@ -166,8 +235,23 @@ def main() -> None:
         },
         "sample_count": int(len(canonical_samples)),
         "iterations": int(args.iterations),
+        "eligibility_policy": {
+            "explicit_false": "included_only_with_override" if args.include_ineligible_rigid_pose_observations else "rejected",
+            "missing_field": "allowed_for_legacy_compatibility",
+            "resolution": "false from either object or visible_geometry_candidate rejects the observation; otherwise explicit true is recorded",
+            "include_ineligible_override": bool(args.include_ineligible_rigid_pose_observations),
+        },
         "frame_count": len(rows),
         "fit_frame_count": sum(1 for r in rows if r.get("status") == "fit_to_visible_depth_samples"),
+        "explicit_eligible_fit_count": explicit_eligible_fit_count,
+        "eligibility_unspecified_fit_count": eligibility_unspecified_fit_count,
+        "explicit_eligible_input_count": explicit_eligible_input_count,
+        "eligibility_unspecified_input_count": eligibility_unspecified_input_count,
+        "explicit_ineligible_input_count": explicit_ineligible_input_count,
+        "ineligible_observation_count": ineligible_observation_count,
+        "ineligible_override_fit_count": ineligible_override_fit_count,
+        "ineligible_observation_frames": ineligible_observation_frames,
+        "ineligible_reason_counts": ineligible_reason_counts,
         "missing_pose_count": missing_pose,
         "missing_visible_depth_sample_count": missing_observed,
         "final_observed_to_mesh_median_summary_m": {
@@ -178,8 +262,9 @@ def main() -> None:
         "pose_rows": rows,
     }
     out_path = args.output_dir / "v18_compact_rigid_object_pose_fit_report.json"
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ["status", "object_id", "frame_count", "fit_frame_count", "missing_pose_count", "missing_visible_depth_sample_count", "final_observed_to_mesh_median_summary_m"]}, indent=2))
+    print(json.dumps({k: report[k] for k in ["status", "object_id", "frame_count", "fit_frame_count", "explicit_eligible_input_count", "eligibility_unspecified_input_count", "explicit_ineligible_input_count", "explicit_eligible_fit_count", "eligibility_unspecified_fit_count", "ineligible_observation_count", "ineligible_override_fit_count", "missing_pose_count", "missing_visible_depth_sample_count", "final_observed_to_mesh_median_summary_m"]}, indent=2))
 
 
 if __name__ == "__main__":

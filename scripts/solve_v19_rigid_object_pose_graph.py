@@ -188,6 +188,15 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
         if str(row.get("status") or "") not in POSE_MEASUREMENT_STATUSES:
             continue
         idx = int(row["frame_idx"])
+        if row.get("rigid_pose_observation_eligible") is False and not args.include_ineligible_rigid_pose_observations:
+            skipped.append(
+                {
+                    "frame_idx": idx,
+                    "reason": "explicit upstream rigid_pose_observation_eligible=false",
+                    "policy": "hard rejected unless --include-ineligible-rigid-pose-observations is explicitly enabled for historical reproduction",
+                }
+            )
+            continue
         if args.frame_start is not None and idx < int(args.frame_start):
             continue
         if args.frame_end is not None and idx > int(args.frame_end):
@@ -226,8 +235,13 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
             )
         except Exception as exc:
             skipped.append({"frame_idx": idx, "reason": str(exc)})
-    if len(observations) < int(args.min_graph_frames):
-        raise RuntimeError(f"only {len(observations)} usable pose observations; skipped={skipped[:8]}")
+    if not observations:
+        raise RuntimeError(f"no usable pose observations; skipped={skipped[:8]}")
+    if len(observations) < int(args.min_graph_frames) and not args.complete_full_timeline_rigid_pose:
+        raise RuntimeError(
+            f"only {len(observations)} usable pose observations below min_graph_frames={args.min_graph_frames}; "
+            f"uncertain full-timeline completion is disabled; skipped={skipped[:8]}"
+        )
     observations.sort(key=lambda obs: obs.frame_idx)
     return observations, skipped, targets
 
@@ -359,6 +373,7 @@ def build_pose_rows(
     observations: list[PoseObservation],
     x: np.ndarray,
     args: argparse.Namespace,
+    graph_support_sufficient: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     obs_by_idx = {obs.frame_idx: i for i, obs in enumerate(observations)}
     rot_delta, trans_delta = unpack(x, len(observations))
@@ -378,6 +393,7 @@ def build_pose_rows(
         new_row["pose_measurement_status"] = row.get("status")
         new_row["rotation_world_from_completed_canonical_matrix"] = r.astype(float).tolist()
         new_row["translation_world_m"] = t.astype(float).tolist()
+        new_row["graph_support_sufficient"] = graph_support_sufficient
         new_row["temporal_pose_graph"] = {
             "pose_source": "direct_visible_pose_observation_corrected",
             "rotation_delta_rotvec_rad": rot_delta[i].astype(float).tolist(),
@@ -387,11 +403,14 @@ def build_pose_rows(
             "nonpenetration_target_world_m": None if obs.nonpenetration_target_world_m is None else obs.nonpenetration_target_world_m.astype(float).tolist(),
             "nonpenetration_weight": float(obs.nonpenetration_weight),
             "nonpenetration_source_rows": int(obs.nonpenetration_source_rows),
+            "graph_support_sufficient": graph_support_sufficient,
+            "uncertainty": None if graph_support_sufficient else "direct visible observation exists, but trusted graph-frame count is below the configured support minimum",
         }
         out.append(new_row)
 
     summary: dict[str, Any] = {
         "enabled": bool(args.complete_full_timeline_rigid_pose),
+        "graph_support_sufficient": graph_support_sufficient,
         "completed_row_count": 0,
         "direct_row_count": int(len(corrected_by_idx)),
         "mode_counts": {},
@@ -403,7 +422,7 @@ def build_pose_rows(
 
     key_frames = sorted(corrected_by_idx)
     key_rots = Rotation.from_matrix([corrected_by_idx[idx][0] for idx in key_frames])
-    slerp = Slerp(np.asarray(key_frames, dtype=float), key_rots)
+    slerp = Slerp(np.asarray(key_frames, dtype=float), key_rots) if len(key_frames) >= 2 else None
     key_trans = np.asarray([corrected_by_idx[idx][1] for idx in key_frames], dtype=float)
 
     def add_mode(mode: str) -> None:
@@ -425,7 +444,7 @@ def build_pose_rows(
             lo = before[-1]
             hi = after[0]
             gap_frames = int(hi - lo)
-            if gap_frames <= int(args.max_rigid_pose_interpolation_gap_frames):
+            if gap_frames <= int(args.max_rigid_pose_interpolation_gap_frames) and slerp is not None:
                 alpha = float(idx - lo) / float(max(1, hi - lo))
                 r_fill = slerp([float(idx)]).as_matrix()[0]
                 t_lo = key_trans[key_frames.index(lo)]
@@ -449,12 +468,18 @@ def build_pose_rows(
         row["pose_measurement_status"] = old_status
         row["rotation_world_from_completed_canonical_matrix"] = r_fill.astype(float).tolist()
         row["translation_world_m"] = t_fill.astype(float).tolist()
+        row["graph_support_sufficient"] = graph_support_sufficient
         row["temporal_pose_graph"] = {
             "pose_source": mode,
             "bracket_visible_pose_frames": bracket,
             "gap_frames": gap_frames,
             "direct_visible_measurement": False,
-            "uncertainty": "rigid-body temporal completion; not a direct object mask/depth observation",
+            "graph_support_sufficient": graph_support_sufficient,
+            "uncertainty": (
+                "rigid-body temporal completion; not a direct object mask/depth observation"
+                if graph_support_sufficient
+                else "insufficient trusted graph support; sparse-cluster interpolation/nearest hold is an unresolved trajectory hypothesis"
+            ),
         }
         summary["completed_row_count"] = int(summary["completed_row_count"]) + 1
         add_mode(mode)
@@ -465,12 +490,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
     annotations = load_json(args.annotations)
     pose_report = load_json(args.pose_report)
+    pose_measurement_candidates = [
+        row
+        for row in (pose_report.get("pose_rows", []) if isinstance(pose_report.get("pose_rows"), list) else [])
+        if isinstance(row, dict)
+        and str(row.get("status") or "") in POSE_MEASUREMENT_STATUSES
+        and (args.frame_start is None or int(row.get("frame_idx", -1)) >= int(args.frame_start))
+        and (args.frame_end is None or int(row.get("frame_idx", -1)) <= int(args.frame_end))
+    ]
     completion = load_json(args.completion_report) if args.completion_report else {}
     mesh_path = args.completed_mesh or Path(completion.get("outputs", {}).get("completed_mesh_labeled", ""))
     if not mesh_path:
         raise RuntimeError("completed mesh path missing; pass --completed-mesh or --completion-report")
     mesh = load_mesh(Path(mesh_path))
     observations, skipped, targets = build_observations(args, annotations, pose_report, mesh)
+    graph_support_sufficient = len(observations) >= int(args.min_graph_frames)
     x0 = np.zeros(len(observations) * 6, dtype=float)
     before = residual_vector(x0, observations, args)
     jac = residual_sparsity(observations)
@@ -492,7 +526,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     after_surface = surface_metrics(observations, mesh_samples, result.x)
     before_target = target_residual_summary(x0, observations)
     after_target = target_residual_summary(result.x, observations)
-    pose_rows, full_timeline_completion = build_pose_rows(pose_report.get("pose_rows", []), observations, result.x, args)
+    pose_rows, full_timeline_completion = build_pose_rows(
+        pose_report.get("pose_rows", []),
+        observations,
+        result.x,
+        args,
+        graph_support_sufficient,
+    )
     surface_before_med = before_surface["observed_to_mesh_median_m"]["median"]
     surface_after_med = after_surface["observed_to_mesh_median_m"]["median"]
     target_before_med = before_target["target_residual_norm_m"]["median"]
@@ -502,7 +542,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         surface_degraded_m = float(surface_after_med) - float(surface_before_med)
     target_improved = target_before_med is not None and target_after_med is not None and float(target_after_med) < float(target_before_med)
     surface_preserved = surface_degraded_m is None or surface_degraded_m <= float(args.max_surface_median_degradation_m)
-    if result.success and surface_preserved and target_improved:
+    if not graph_support_sufficient:
+        status = "completed_uncertain_insufficient_trusted_pose_graph_support"
+    elif result.success and surface_preserved and target_improved:
         status = "corrected_pose_graph_surface_preserved_nonpenetration_pressure_improved"
     elif result.success and surface_preserved:
         status = "corrected_pose_graph_surface_preserved_no_nonpenetration_gain"
@@ -510,11 +552,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         status = "corrected_pose_graph_surface_degraded_untrusted"
     else:
         status = "corrected_pose_graph_optimizer_incomplete"
+    annotation_ready = bool(result.success and surface_preserved and graph_support_sufficient)
+    for row in pose_rows:
+        if row.get("status") in {CORRECTED_POSE_STATUS, COMPLETED_POSE_STATUS}:
+            row["annotation_ready"] = annotation_ready
     report = {
         "method": "solve_v19_rigid_object_pose_graph",
         "status": status,
-        "annotation_ready": bool(result.success and surface_preserved),
-        "claim_scope": "Temporal rigid-object pose correction over visible-frame SE(3) measurements. Visible-surface ICP rows are pose observations; nonpenetration rows exert only clipped soft pressure. Remaining penetration after remeasurement is systematic hand/object/camera conflict, not solved by this graph.",
+        "annotation_ready": annotation_ready,
+        "claim_scope": "Temporal rigid-object pose correction over eligible visible-frame SE(3) measurements. Visible-surface ICP rows are pose observations; nonpenetration rows exert only clipped soft pressure. If trusted graph support is below the configured minimum, full-timeline rows remain an explicitly unresolved interpolation/nearest-hold hypothesis rather than an annotation-ready trajectory.",
         "object_id": args.object_id,
         "inputs": {
             "annotations": str(args.annotations),
@@ -525,6 +571,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "graph_frames": [obs.frame_idx for obs in observations],
         "graph_frame_count": int(len(observations)),
+        "graph_support": {
+            "sufficient": graph_support_sufficient,
+            "configured_min_graph_frames": int(args.min_graph_frames),
+            "actual_graph_frames": int(len(observations)),
+            "frame_span": [int(observations[0].frame_idx), int(observations[-1].frame_idx)],
+            "continued_only_as_uncertain_full_timeline_completion": bool(not graph_support_sufficient and args.complete_full_timeline_rigid_pose),
+        },
+        "pose_observation_eligibility_policy": {
+            "explicit_false": "included_only_with_override" if args.include_ineligible_rigid_pose_observations else "hard_rejected",
+            "missing_field": "allowed_for_legacy_compatibility",
+            "include_ineligible_override": bool(args.include_ineligible_rigid_pose_observations),
+            "candidate_measurement_row_count": len(pose_measurement_candidates),
+            "explicit_eligible_candidate_count": int(
+                sum(row.get("rigid_pose_observation_eligible") is True for row in pose_measurement_candidates)
+            ),
+            "eligibility_unspecified_candidate_count": int(
+                sum(not isinstance(row.get("rigid_pose_observation_eligible"), bool) for row in pose_measurement_candidates)
+            ),
+            "explicit_ineligible_candidate_count": int(
+                sum(row.get("rigid_pose_observation_eligible") is False for row in pose_measurement_candidates)
+            ),
+            "explicit_ineligible_skipped_count": int(
+                sum(row.get("reason") == "explicit upstream rigid_pose_observation_eligible=false" for row in skipped)
+            ),
+            "explicit_ineligible_admitted_count": int(
+                sum(obs.source_row.get("rigid_pose_observation_eligible") is False for obs in observations)
+            ),
+        },
         "skipped_pose_observations": skipped,
         "nonpenetration_target_frame_count": int(sum(1 for obs in observations if obs.nonpenetration_target_world_m is not None)),
         "nonpenetration_target_source_frame_count": int(len(targets)),
@@ -536,6 +610,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "sigma_translation_delta_accel_m": float(args.sigma_translation_delta_accel_m),
             "sigma_rotation_delta_accel_rad": float(args.sigma_rotation_delta_accel_rad),
             "max_surface_median_degradation_m": float(args.max_surface_median_degradation_m),
+            "min_graph_frames": int(args.min_graph_frames),
             "nonpenetration_states": list(args.nonpenetration_states),
             "complete_full_timeline_rigid_pose": bool(args.complete_full_timeline_rigid_pose),
             "max_rigid_pose_interpolation_gap_frames": int(args.max_rigid_pose_interpolation_gap_frames),
@@ -583,6 +658,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--frame-start", type=int, default=None)
     p.add_argument("--frame-end", type=int, default=None)
     p.add_argument("--min-graph-frames", type=int, default=8)
+    p.add_argument(
+        "--include-ineligible-rigid-pose-observations",
+        action="store_true",
+        help="Historical-reproduction override: admit P14 rows that still carry explicit rigid_pose_observation_eligible=false",
+    )
     p.add_argument("--min-visible-points", type=int, default=20)
     p.add_argument("--min-pose-sigma-m", type=float, default=0.004)
     p.add_argument("--max-pose-sigma-m", type=float, default=0.045)
