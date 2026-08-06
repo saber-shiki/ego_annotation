@@ -183,12 +183,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Diagnostic/historical override: run object-relative MANO optimization even when P15 explicitly reports annotation_ready=false or insufficient graph support",
     )
-    p.add_argument("--completed-mesh", type=Path, default=DEFAULT_MESH)
+    p.add_argument("--completed-mesh", type=Path, default=DEFAULT_MESH, help="P13 completed-canonical pose hypothesis mesh. This preserves the canonical frame contract; physical factors use --physical-surface-mesh or the completion report collision_eligible_mesh_labeled output.")
+    p.add_argument(
+        "--physical-surface-mesh",
+        type=Path,
+        default=None,
+        help="Optional explicit collision-eligible surface. With --completion-report it must match outputs.collision_eligible_mesh_labeled; generated hidden pose-hypothesis faces are not a physical fallback.",
+    )
     p.add_argument(
         "--completion-report",
         type=Path,
         default=None,
-        help="Optional P13 compact-rigid completion report. When supplied, --completed-mesh must equal outputs.completed_mesh_labeled.",
+        help="Optional P13/P14b completion report. --completed-mesh must match its pose hypothesis and physical factors use its collision-eligible surface.",
+    )
+    p.add_argument(
+        "--allow-unready-signed-geometry-for-diagnostic-optimization",
+        action="store_true",
+        help="Historical diagnostic override: allow signed-mesh terms without geometry_readiness.signed_geometry_ready=true. Output remains non-annotation-ready and records the override.",
     )
     p.add_argument("--depth-npz", type=Path, action="append", default=None, help="Depth NPZ path(s). Defaults to the task5 complete-depth source only when omitted; explicit paths replace that default for other cases.")
     p.add_argument("--hand-depth-repair-graph", type=Path, default=None, help="Optional prior source with per-frame hand_ray_shift_m camera-ray observations from the V17 hand-depth repair graph.")
@@ -277,15 +288,32 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def completion_report_completed_mesh(path: Path) -> Path:
+def completion_report_mesh_contract(path: Path) -> dict[str, Any]:
     data = load_json(path)
     outputs = data.get("outputs") if isinstance(data, dict) else None
     if not isinstance(outputs, dict):
         raise RuntimeError(f"completion report {path} has no outputs object")
-    value = outputs.get("completed_mesh_labeled") or outputs.get("completed_mesh")
-    if not value:
-        raise RuntimeError(f"completion report {path} has no completed mesh output")
-    return Path(str(value))
+    pose_value = outputs.get("pose_hypothesis_mesh_labeled") or outputs.get("completed_mesh_labeled") or outputs.get("completed_mesh")
+    if not pose_value:
+        raise RuntimeError(f"completion report {path} has no pose hypothesis/completed mesh output")
+    collision_value = outputs.get("collision_eligible_mesh_labeled")
+    readiness = data.get("geometry_readiness") if isinstance(data.get("geometry_readiness"), dict) else {}
+    return {
+        "pose_hypothesis_mesh": Path(str(pose_value)),
+        "physical_surface_mesh": Path(str(collision_value or pose_value)),
+        "physical_surface_semantics": (
+            "collision_eligible_mesh_labeled"
+            if collision_value
+            else "legacy_completed_mesh_labeled_unknown_collision_readiness"
+        ),
+        "geometry_readiness": readiness,
+        "signed_geometry_ready": readiness.get("signed_geometry_ready") if isinstance(readiness.get("signed_geometry_ready"), bool) else None,
+        "legacy_geometry_readiness_fields_missing": readiness.get("signed_geometry_ready") is None,
+    }
+
+
+def completion_report_completed_mesh(path: Path) -> Path:
+    return completion_report_mesh_contract(path)["pose_hypothesis_mesh"]
 
 
 def same_mesh_path(a: Path, b: Path) -> bool:
@@ -312,6 +340,42 @@ def validate_completed_mesh_contract(completed_mesh: Path, completion_report: Pa
     if not completed_mesh.exists() or completed_mesh.stat().st_size <= 0:
         raise RuntimeError(f"completed mesh {completed_mesh} is missing or empty")
     return expected
+
+
+def resolve_physical_surface_contract(
+    completed_mesh: Path,
+    physical_surface_mesh: Path | None,
+    completion_report: Path | None,
+) -> dict[str, Any]:
+    validate_completed_mesh_contract(completed_mesh, completion_report)
+    if completion_report is None:
+        selected = physical_surface_mesh or completed_mesh
+        contract = {
+            "pose_hypothesis_mesh": completed_mesh,
+            "physical_surface_mesh": selected,
+            "physical_surface_semantics": (
+                "explicit_physical_surface_without_readiness_report"
+                if physical_surface_mesh is not None
+                else "legacy_completed_mesh_labeled_unknown_collision_readiness"
+            ),
+            "geometry_readiness": {},
+            "signed_geometry_ready": None,
+            "legacy_geometry_readiness_fields_missing": True,
+        }
+    else:
+        contract = completion_report_mesh_contract(completion_report)
+        expected = contract["physical_surface_mesh"]
+        selected = physical_surface_mesh or expected
+        if not same_mesh_path(selected, expected) and selected.resolve(strict=False) != expected.resolve(strict=False):
+            raise RuntimeError(
+                "physical surface mismatch: object-relative factors must consume the completion report collision-eligible surface; "
+                f"--physical-surface-mesh={selected} differs from {completion_report} physical surface={expected}"
+            )
+        contract["physical_surface_mesh"] = selected
+    selected_path = Path(contract["physical_surface_mesh"])
+    if not selected_path.exists() or selected_path.stat().st_size <= 0:
+        raise RuntimeError(f"physical surface mesh {selected_path} is missing or empty")
+    return contract
 
 
 def project_world(points_world: np.ndarray, frame: dict[str, Any], side: str) -> np.ndarray | None:
@@ -1017,6 +1081,17 @@ def infer_pose_joint_finger_groups(model: Any, base_root_mat: torch.Tensor, base
     return np.asarray(out_groups, dtype=np.int64)
 
 
+def inactive_signed_surface_measure(frame_idx: int, support_uncertainty_m: float = 0.0) -> dict[str, Any]:
+    return {
+        "frame_idx": int(frame_idx),
+        "state": "inactive_signed_geometry_not_ready",
+        "penetrating_vertex_count": 0,
+        "observed_supported_penetrating_vertex_count": 0,
+        "observed_supported_penetration_m": numeric_summary(np.asarray([], dtype=float)),
+        "observed_surface_support_uncertainty_m": max(0.0, float(support_uncertainty_m)),
+    }
+
+
 def observed_constraints_for_hand(
     *,
     vertices_world: np.ndarray,
@@ -1091,7 +1166,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     pose_report = load_json(args.pose_report)
     poses = pose_map(pose_report)
     validate_completed_mesh_contract(args.completed_mesh, args.completion_report)
-    mesh = load_mesh(args.completed_mesh)
+    physical_surface_mesh = Path(getattr(args, "resolved_physical_surface_mesh", args.completed_mesh))
+    mesh = load_mesh(physical_surface_mesh)
     vertices_object = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int64)
     tri_obj = vertices_object[faces]
@@ -1240,6 +1316,11 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             max_constraints=int(args.max_constraints_per_frame),
             eps=float(args.penetration_epsilon_m),
             support_uncertainty_m=observed_surface_support_uncertainty_m,
+        ) if bool(getattr(args, "signed_object_surface_factor_active", False)) else (
+            np.zeros((0,), dtype=np.int64),
+            np.zeros((0, 3), dtype=float),
+            np.zeros((0,), dtype=float),
+            inactive_signed_surface_measure(frame_idx, observed_surface_support_uncertainty_m),
         )
         if bool(args.visibility_weighted_hand_observation):
             joint_visibility_weights, joint_depth_residual = joint_visibility_from_metric_depth(frame, side, current_joints, depth_rows.get(frame_idx), args)
@@ -1391,6 +1472,11 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         "row_count": int(len(rows)),
         "skipped": skipped,
         "object_depth_summaries": object_depth_summaries[:5],
+        "pose_hypothesis_mesh": str(args.completed_mesh),
+        "physical_surface_mesh": str(physical_surface_mesh),
+        "physical_surface_semantics": getattr(args, "physical_surface_semantics", "legacy_unknown"),
+        "geometry_readiness": getattr(args, "completion_geometry_readiness", {}),
+        "signed_object_surface_factor_active": bool(getattr(args, "signed_object_surface_factor_active", False)),
     }
     return rows, meta, scene
 
@@ -1685,14 +1771,20 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     dense_constraint_depths: list[np.ndarray] = []
     reference_observed_measures: list[dict[str, Any]] = []
     reference_raw_observed_measures: list[dict[str, Any]] = []
+    signed_surface_active = bool(getattr(args, "signed_object_surface_factor_active", False))
     for i, r in enumerate(rows):
-        c_idx, c_normals, c_depths = active_constraints_from_vertices(
-            reference_vertices_np[i], r, scene, int(args.max_constraints_per_frame), float(args.penetration_epsilon_m), reference_vertices_np[i]
-        )
+        if signed_surface_active:
+            c_idx, c_normals, c_depths = active_constraints_from_vertices(
+                reference_vertices_np[i], r, scene, int(args.max_constraints_per_frame), float(args.penetration_epsilon_m), reference_vertices_np[i]
+            )
+        else:
+            c_idx = np.zeros((0,), dtype=np.int64)
+            c_normals = np.zeros((0, 3), dtype=float)
+            c_depths = np.zeros((0,), dtype=float)
         active_constraint_indices.append(c_idx)
         active_constraint_normals.append(c_normals)
         active_constraint_depths.append(c_depths)
-        if bool(args.dense_observed_surface_barrier):
+        if bool(args.dense_observed_surface_barrier) and signed_surface_active:
             d_idx, d_normals, d_depths = dense_observed_surface_constraints_from_vertices(reference_vertices_np[i], r, scene, reference_vertices_np[i])
         else:
             d_idx = np.zeros((0,), dtype=np.int64)
@@ -1701,8 +1793,12 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         dense_constraint_indices.append(d_idx)
         dense_constraint_normals.append(d_normals)
         dense_constraint_depths.append(d_depths)
-        reference_observed_measures.append(full_observed_surface_measure(reference_vertices_np[i], r, scene, float(args.penetration_epsilon_m)))
-        reference_raw_observed_measures.append(full_observed_surface_measure(reference_vertices_np[i], r, scene, float(args.penetration_epsilon_m), face_strict_observed=r.face_strict_observed_raw))
+        if signed_surface_active:
+            reference_observed_measures.append(full_observed_surface_measure(reference_vertices_np[i], r, scene, float(args.penetration_epsilon_m)))
+            reference_raw_observed_measures.append(full_observed_surface_measure(reference_vertices_np[i], r, scene, float(args.penetration_epsilon_m), face_strict_observed=r.face_strict_observed_raw))
+        else:
+            reference_observed_measures.append(inactive_signed_surface_measure(r.frame_idx, r.observed_surface_support_uncertainty_m))
+            reference_raw_observed_measures.append(inactive_signed_surface_measure(r.frame_idx, r.observed_surface_support_uncertainty_m))
     pose_joint_finger_groups = infer_pose_joint_finger_groups(model, base_root_mat, base_pose_mat, betas, trans)
     joint_visibility_weights_np = np.stack([r.joint_visibility_weights for r in rows]).astype(float)
     pose_visibility_weights_np = np.ones((b, 15), dtype=float)
@@ -1920,15 +2016,20 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 object_trans_np_active = object_trans_delta.detach().cpu().numpy().astype(float)
             added_total = 0
             for i, row in enumerate(rows):
-                new_idx, new_normals, new_depths = active_constraints_from_vertices(
-                    hyp_vertices_np[i],
-                    row,
-                    scene,
-                    int(args.max_constraints_per_frame),
-                    float(args.penetration_epsilon_m),
-                    reference_vertices_np[i],
-                    object_trans_np_active[i],
-                )
+                if signed_surface_active:
+                    new_idx, new_normals, new_depths = active_constraints_from_vertices(
+                        hyp_vertices_np[i],
+                        row,
+                        scene,
+                        int(args.max_constraints_per_frame),
+                        float(args.penetration_epsilon_m),
+                        reference_vertices_np[i],
+                        object_trans_np_active[i],
+                    )
+                else:
+                    new_idx = np.zeros((0,), dtype=np.int64)
+                    new_normals = np.zeros((0, 3), dtype=float)
+                    new_depths = np.zeros((0,), dtype=float)
                 before = len(active_constraint_indices[i])
                 merged = merge_constraints(
                     active_constraint_indices[i],
@@ -1941,7 +2042,7 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 )
                 active_constraint_indices[i], active_constraint_normals[i], active_constraint_depths[i] = merged
                 added_total += max(0, len(active_constraint_indices[i]) - before)
-                if bool(args.dense_observed_surface_barrier):
+                if bool(args.dense_observed_surface_barrier) and signed_surface_active:
                     dense_constraint_indices[i], dense_constraint_normals[i], dense_constraint_depths[i] = dense_observed_surface_constraints_from_vertices(
                         hyp_vertices_np[i], row, scene, reference_vertices_np[i], object_trans_np_active[i]
                     )
@@ -1991,8 +2092,12 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         init_raw_measure = reference_raw_observed_measures[i]
         init_max = float((init_measure.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         final_max = float(np.max(residual)) if residual.size else 0.0
-        full_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i])
-        full_raw_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i], face_strict_observed=row.face_strict_observed_raw)
+        if signed_surface_active:
+            full_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i])
+            full_raw_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i], face_strict_observed=row.face_strict_observed_raw)
+        else:
+            full_post = inactive_signed_surface_measure(row.frame_idx, row.observed_surface_support_uncertainty_m)
+            full_raw_post = inactive_signed_surface_measure(row.frame_idx, row.observed_surface_support_uncertainty_m)
         full_post_max = float((full_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         full_raw_post_max = float((full_raw_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         uv0 = project_world(row.current_joints_world, row.frame, row.side)
@@ -2128,6 +2233,16 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "optimized_joints_world_m": state_joints_world.astype(float).tolist(),
                 "optimized_vertices_world_sample_m": state_vertices_world[render_ids].astype(float).tolist(),
                 "optimized_vertices_sample_ids": render_ids.astype(int).tolist(),
+                "signed_object_surface_factor_state": str(
+                    getattr(
+                        args,
+                        "signed_object_surface_factor_state",
+                        "active_explicit_signed_geometry_ready" if signed_surface_active else "inactive_signed_geometry_not_ready",
+                    )
+                ),
+                "physical_surface_mesh": str(getattr(args, "resolved_physical_surface_mesh", args.completed_mesh)),
+                "initial_observed_surface_measurement_state": init_measure.get("state", "active_signed_surface_measurement"),
+                "final_observed_surface_measurement_state": full_post.get("state", "active_signed_surface_measurement"),
                 "initial_observed_surface_penetration_m": init_measure.get("observed_supported_penetration_m"),
                 "initial_raw_observed_surface_penetration_m": init_raw_measure.get("observed_supported_penetration_m"),
                 "current_bridge_observed_surface_penetration_m": row.observed_initial_measure.get("observed_supported_penetration_m"),
@@ -2293,7 +2408,9 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "visible_mask_quarantine_signed_mesh_enabled": bool(args.visible_mask_quarantine_signed_mesh),
         "visible_surface_depth_order_term_enabled": bool(args.visible_surface_depth_order_term),
         "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report),
-        "dense_observed_surface_barrier_enabled": bool(args.dense_observed_surface_barrier),
+        "dense_observed_surface_barrier_configured": bool(args.dense_observed_surface_barrier),
+        "dense_observed_surface_barrier_enabled": bool(args.dense_observed_surface_barrier and signed_surface_active),
+        "signed_object_surface_factor_active": signed_surface_active,
         "dense_observed_constraint_count_final": numeric_summary(np.asarray([len(x) for x in dense_constraint_indices], dtype=float)),
     }
     return interval, states
@@ -2393,6 +2510,10 @@ def quarantined_source_state(args: argparse.Namespace, pose_readiness: dict[str,
             "annotations": str(args.annotations),
             "pose_report": str(args.pose_report),
             "completed_mesh": str(args.completed_mesh),
+            "pose_hypothesis_mesh": str(args.completed_mesh),
+            "physical_surface_mesh_not_loaded": str(getattr(args, "resolved_physical_surface_mesh", args.completed_mesh)),
+            "physical_surface_semantics": getattr(args, "physical_surface_semantics", "legacy_unknown"),
+            "completion_geometry_readiness": getattr(args, "completion_geometry_readiness", {}),
             "completion_report": None if args.completion_report is None else str(args.completion_report),
             "depth_npz_not_consumed": [str(path) for path in list(args.depth_npz or [DEFAULT_DEPTH])],
             "factor_report": None if args.factor_report is None else [str(path) for path in args.factor_report],
@@ -2408,6 +2529,13 @@ def quarantined_source_state(args: argparse.Namespace, pose_readiness: dict[str,
             "contact_patch",
             "object_relative_mano_correction",
         ],
+        "physical_surface_contract": {
+            "pose_hypothesis_mesh": str(args.completed_mesh),
+            "physical_surface_mesh": str(getattr(args, "resolved_physical_surface_mesh", args.completed_mesh)),
+            "physical_surface_semantics": getattr(args, "physical_surface_semantics", "legacy_unknown"),
+            "geometry_readiness": getattr(args, "completion_geometry_readiness", {}),
+            "mesh_not_loaded_due_to_pose_quarantine": True,
+        },
         "parameters": {
             key: (
                 [str(item) for item in value]
@@ -2452,9 +2580,36 @@ def main() -> None:
     reject_rejected_annotation_path(args.annotations)
     pose_report = load_json(args.pose_report)
     pose_readiness = pose_graph_readiness(pose_report)
+    surface_contract = resolve_physical_surface_contract(
+        args.completed_mesh,
+        args.physical_surface_mesh,
+        args.completion_report,
+    )
+    args.resolved_physical_surface_mesh = Path(surface_contract["physical_surface_mesh"])
+    args.physical_surface_semantics = str(surface_contract["physical_surface_semantics"])
+    args.completion_geometry_readiness = surface_contract["geometry_readiness"]
     if pose_readiness["explicitly_unready"] and not args.include_unready_object_pose_for_diagnostic_optimization:
         quarantined_source_state(args, pose_readiness)
         return
+    physical_surface_probe = load_mesh(args.resolved_physical_surface_mesh)
+    args.physical_surface_watertight = bool(physical_surface_probe.is_watertight)
+    signed_geometry_declared_ready = surface_contract["signed_geometry_ready"] is True
+    signed_geometry_diagnostic_override_used = bool(
+        args.physical_surface_watertight
+        and not signed_geometry_declared_ready
+        and args.allow_unready_signed_geometry_for_diagnostic_optimization
+    )
+    args.signed_object_surface_factor_active = bool(
+        args.physical_surface_watertight
+        and (signed_geometry_declared_ready or signed_geometry_diagnostic_override_used)
+    )
+    args.signed_object_surface_factor_state = (
+        "active_explicit_signed_geometry_ready"
+        if args.signed_object_surface_factor_active and signed_geometry_declared_ready
+        else "active_diagnostic_override_unready_signed_geometry"
+        if signed_geometry_diagnostic_override_used
+        else "inactive_signed_geometry_not_ready_or_nonwatertight"
+    )
     visible_surface_factor_supplied = args.visible_surface_track_factor_report is not None or bool(args.factor_report)
     if (bool(args.visible_object_mask_gate) or bool(args.visible_surface_depth_order_term)) and args.visible_object_mask_report is None and not visible_surface_factor_supplied:
         raise ValueError("visible object mask terms require --visible-object-mask-report or a visible_surface_track factor report")
@@ -2477,9 +2632,17 @@ def main() -> None:
         per_frame_states.extend(states)
     report = {
         "method": "solve_v18_joint_mano_interval_trajectory",
-        "status": "completed_diagnostic_optimization_with_unready_object_pose_override" if pose_readiness["explicitly_unready"] else "ok",
+        "status": (
+            "completed_diagnostic_optimization_with_unready_object_pose_override"
+            if pose_readiness["explicitly_unready"]
+            else "completed_diagnostic_optimization_with_unready_signed_geometry_override"
+            if signed_geometry_diagnostic_override_used
+            else "ok"
+            if args.signed_object_surface_factor_active
+            else "ok_with_signed_object_surface_factor_inactive"
+        ),
         "annotation_ready": False,
-        "physical_state_quarantined": bool(pose_readiness["explicitly_unready"]),
+        "physical_state_quarantined": bool(pose_readiness["explicitly_unready"] or signed_geometry_diagnostic_override_used),
         "object_pose_input_ready_for_optimization": bool(pose_readiness["explicitly_ready"]),
         "object_pose_input_legacy_compatibility": bool(pose_readiness["legacy_readiness_fields_missing"]),
         "case": str(args.case),
@@ -2487,11 +2650,43 @@ def main() -> None:
         "claim_scope": (
             "Diagnostic override ran continuous MANO/object-relative optimization despite an explicitly unready P15 trajectory; all output remains non-annotation-ready and must stay quarantined."
             if pose_readiness["explicitly_unready"]
-            else "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and trusted observed object surface."
+            else "Historical diagnostic override activated signed object-surface terms without explicit signed-geometry readiness; all output remains quarantined and cannot be published as physical state."
+            if signed_geometry_diagnostic_override_used
+            else "Continuous interval MANO trajectory candidate uses collision-eligible unsigned surface/contact/depth-order evidence, while signed object-surface barriers are explicitly inactive because signed geometry is not ready."
+            if not args.signed_object_surface_factor_active
+            else "Continuous interval MANO trajectory correction candidate: root translation, root orientation, and finger articulation optimized jointly against visible/depth compatibility and explicitly ready signed object-surface geometry."
         ),
-        "inputs": {"annotations": str(args.annotations), "pose_report": str(args.pose_report), "completed_mesh": str(args.completed_mesh), "completion_report": None if args.completion_report is None else str(args.completion_report), "completion_report_completed_mesh_labeled": None if args.completion_report is None else str(completion_report_completed_mesh(args.completion_report)), "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])], "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report), "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report), "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report), "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report), "factor_report": None if args.factor_report is None else [str(p) for p in args.factor_report]},
+        "inputs": {
+            "annotations": str(args.annotations),
+            "pose_report": str(args.pose_report),
+            "completed_mesh": str(args.completed_mesh),
+            "pose_hypothesis_mesh": str(args.completed_mesh),
+            "physical_surface_mesh": str(args.resolved_physical_surface_mesh),
+            "physical_surface_semantics": args.physical_surface_semantics,
+            "completion_report": None if args.completion_report is None else str(args.completion_report),
+            "completion_report_pose_hypothesis_mesh": None if args.completion_report is None else str(completion_report_completed_mesh(args.completion_report)),
+            "completion_geometry_readiness": args.completion_geometry_readiness,
+            "depth_npz": [str(p) for p in list(args.depth_npz or [DEFAULT_DEPTH])],
+            "visible_object_mask_report": None if args.visible_object_mask_report is None else str(args.visible_object_mask_report),
+            "visible_ownership_factor_report": None if args.visible_ownership_factor_report is None else str(args.visible_ownership_factor_report),
+            "surface_eligibility_factor_report": None if args.surface_eligibility_factor_report is None else str(args.surface_eligibility_factor_report),
+            "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report),
+            "factor_report": None if args.factor_report is None else [str(p) for p in args.factor_report],
+        },
         "parameters": {k: ([str(x) for x in v] if k == "factor_report" and v is not None else (str(v) if isinstance(v, Path) else v)) for k, v in vars(args).items() if k not in {"depth_npz"}},
         "object_pose_readiness": pose_readiness,
+        "physical_surface_contract": {
+            "pose_hypothesis_mesh": str(args.completed_mesh),
+            "physical_surface_mesh": str(args.resolved_physical_surface_mesh),
+            "physical_surface_semantics": args.physical_surface_semantics,
+            "physical_surface_watertight": args.physical_surface_watertight,
+            "geometry_readiness": args.completion_geometry_readiness,
+            "signed_geometry_declared_ready": signed_geometry_declared_ready,
+            "signed_object_surface_factor_active": args.signed_object_surface_factor_active,
+            "signed_object_surface_factor_state": args.signed_object_surface_factor_state,
+            "unready_signed_geometry_diagnostic_override_requested": bool(args.allow_unready_signed_geometry_for_diagnostic_optimization),
+            "unready_signed_geometry_diagnostic_override_used": signed_geometry_diagnostic_override_used,
+        },
         "unready_object_pose_diagnostic_optimization_override": bool(
             pose_readiness["explicitly_unready"] and args.include_unready_object_pose_for_diagnostic_optimization
         ),

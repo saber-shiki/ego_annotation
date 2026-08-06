@@ -416,6 +416,43 @@ median 并非每轮严格单调，但 mean/p95 总体下降；这只是 correspo
 
 `completed_mesh_labeled` 只由 `observed_depth_surface` 和 `trellis_inferred_hidden_surface` 组成。它不是 raw `trellis_mesh.ply`，也不是 watertight body；audit 的 `watertight=false` 必须继续传播到 P16/contact state。
 
+### 6.6 新分支的 pose / collision / sign geometry 分离（不是冻结 run 的反向改写）
+
+分支 `research/v19-multiclip-pipeline-corrections` 将 P13 输出拆成三层语义：
+
+1. `pose_hypothesis_mesh_labeled`：保留完整 P13 canonical completion，继续供 P14/P15 pose correspondence 和 uncertainty render；legacy `completed_mesh_labeled` 仅镜像这一语义；
+2. `collision_eligible_mesh_labeled`：默认只含 measured `observed_depth_surface`，不把单视角 TRELLIS hidden prior 自动升格；
+3. `geometry_readiness.signed_geometry_ready`：独立检查，不由 face 数、单视角 silhouette、历史 override 或 watertightness 单独推出。
+
+显式 `--promote-single-view-hidden-prior-to-collision` 只复现历史行为，仍保持 `annotation_ready=false` 和 `signed_geometry_ready=false`。P14/P15 必须使用 pose hypothesis；P16/P18 必须使用 collision surface，并在 sign readiness 不是显式 `true` 时关闭 signed-distance correction/barrier。
+
+新增的 P14b `filter_v19_rigid_completion_multiview_support.py` 只把 explicit-eligible direct P14 fits 当作 pose-conditioned 观测。每个 sample 必须先通过 canonical-mesh camera-ray first-hit visibility；self-occluded generated face 不能因与前表面共享投影/depth 而获得 visible support。Observed faces 的 visibility 只对 measured observed surface 求 first hit，generated faces 则对完整 pose hypothesis 求 first hit，避免 hidden prior 反过来遮掉 measured evidence。每个 hidden face 除了重复 mask/depth support，还必须至少存在一对 supporting direct poses，其 object-canonical view-angle 达到阈值；greedy viewpoint bins 只作审计，physical gate 使用 exact supporting-frame pair，避免 bin boundary 误判。全局还检查 direct count、frame span、temporal bins、maximum unobserved gap 和 separated-viewpoint pair。P15 interpolation、nearest hold 和同一 viewpoint 的相邻重复帧都不增加 geometry support。
+
+Tire-lever mechanism ablation（非新 full-duration runtime）得到：
+
+| 字段 | 结果 |
+|---|---:|
+| pose hypothesis faces | 151,831 |
+| measured observed collision faces | 496 |
+| observed faces with any / repeated support | 495 / 477 |
+| observed faces with any support/free-space conflict | 11 |
+| observed faces with repeated free-space contradiction | 0 |
+| generated hidden faces | 151,335 |
+| repeated-frame depth support after first-hit visibility | 44,801 |
+| 其中 same-view-only support | 44,801 |
+| distinct-viewpoint supported candidate | 0 |
+| free-space-only contradicted hidden faces | 17,365 |
+| support/free-space conflicting hidden faces | 23,206 |
+| remaining unsupported/self-occluded hidden faces | 65,963 |
+| promoted hidden collision faces | 0 |
+| P14 direct eligible frames | 6（115,116,119,120,121,123） |
+| direct frame span fraction | 0.05369 |
+| maximum unobserved gap | 115 frames / 0.7667 timeline |
+| viewpoint angular max / bins（15°） | 11.394° / 1 |
+| collision surface watertight / sign ready | false / false |
+
+因此 44,801 个“重复支持”仍只是同一窄 viewpoint cluster 的重测，不能描述为独立 hidden geometry。first-hit visibility 进一步把自遮挡的 generated samples 从 visible support 中移除。这里投影 UniDepth depth raster 使用该 NPZ frame row 的 `[fx,fy,cx,cy]`；annotation camera K 不是 depth-grid K 的静默替代。P14 的 6-frame pose 和 residual 与分离前逐项精确相同；P15 仍是 6 direct + 144 unresolved completion，`annotation_ready=false`。P16/P18 消费 496-face collision surface，signed nonpenetration 显式 inactive。
+
 ---
 
 ## 7. P14：逐帧 completed-mesh pose fit

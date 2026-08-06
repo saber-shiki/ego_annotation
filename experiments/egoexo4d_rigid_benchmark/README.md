@@ -42,6 +42,12 @@ prepare_multiclip_suite.py
 regression_pose_eligibility.py
     无 pytest 依赖的三帧 synthetic P09→P14→P15 eligibility/support regression。
 
+filter_v19_rigid_completion_multiview_support.py（位于 `scripts/`）
+    以 explicit-eligible direct P14 poses 重测 hidden faces 的 mask/depth、free-space、temporal coverage 和 object-canonical viewpoint support；physical promotion 使用 exact separated-view pair，same-view repetition不晋级。
+
+regression_geometry_evidence_contract.py
+    无 pytest/NAS 依赖的 P13 pose/collision/sign split、P14b multi-view promotion 和 P16/P18 consumer-contract regression。
+
 RESULTS_V19_V1_ZH.md
     本次 V19 完整盲运行、内部阶段审计和 partial-GT 结果。
 
@@ -475,6 +481,15 @@ cd /mnt/user-home/kupingxin/ego_annotation
 - 禁用 completion 时低支撑 hard fail；
 - 即使 P14 override，P15 default 仍二次拒绝 explicit false；
 - 只有 P14 和 P15 均显式 override 时才复现三行图。
+
+Geometry evidence regression 同样不依赖 pytest、NAS 或 benchmark GT：
+
+```bash
+.venv/bin/python \
+  experiments/egoexo4d_rigid_benchmark/regression_geometry_evidence_contract.py
+```
+
+它构造 partial observed plane + hidden box 和两帧 synthetic camera/depth fixture，并断言：P13 默认隔离 single-view hidden faces；历史 override 必须显式且不产生 sign readiness；pose canonical geometry 精确保留；P14 pose/completion canonical binding mismatch hard fail；depth-grid projection 优先使用 depth NPZ K；camera-ray first-hit 会排除 self-occluded generated support；相同 viewpoint 的重复 depth support 不晋级；跨 viewpoint 且 temporal coverage 足够时只有 visible hidden faces 才可晋级；exact pair test 不受 greedy-bin boundary 影响；P16/P18 选择 collision surface 而非 pose hypothesis；external sign readiness 必须绑定 exact mesh；legacy 缺 readiness 时保持 unknown/inactive。
 
 ---
 

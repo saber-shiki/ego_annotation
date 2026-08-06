@@ -132,7 +132,11 @@ def main() -> None:
 
     annotations = load_json(args.annotations)
     completion = load_json(args.completion_report)
-    mesh_path = Path(completion["outputs"]["completed_mesh_labeled"])
+    completion_outputs = completion.get("outputs") if isinstance(completion.get("outputs"), dict) else {}
+    mesh_value = completion_outputs.get("pose_hypothesis_mesh_labeled") or completion_outputs.get("completed_mesh_labeled")
+    if not mesh_value:
+        raise RuntimeError("completion report lacks outputs.pose_hypothesis_mesh_labeled/completed_mesh_labeled")
+    mesh_path = Path(mesh_value)
     mesh = load_mesh(mesh_path)
     canonical_samples = deterministic_sample_mesh(mesh, args.sample_count)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -226,12 +230,23 @@ def main() -> None:
     report = {
         "method": "fit_v18_compact_rigid_object_pose",
         "status": "ok",
-        "claim_scope": "Per-frame completed-mesh pose is initialized from V18 graph SE3 and refit only against current visible depth samples that are not explicitly rejected by the upstream rigid-pose observation eligibility contract; hidden TRELLIS faces do not create pose observations by themselves.",
+        "claim_scope": "Per-frame pose is initialized from V18 graph SE3 and refit against current visible depth samples using the P13 pose hypothesis mesh. Hidden TRELLIS faces remain pose correspondences only; they do not become collision/sign geometry or create observations by themselves. Explicitly ineligible upstream rows are hard-rejected.",
         "object_id": args.object_id,
         "inputs": {
             "annotations": str(args.annotations),
             "completion_report": str(args.completion_report),
             "completed_mesh": str(mesh_path),
+            "mesh_semantics": (
+                "pose_hypothesis_mesh_labeled"
+                if completion_outputs.get("pose_hypothesis_mesh_labeled")
+                else "legacy_completed_mesh_labeled"
+            ),
+            "collision_eligible_mesh_not_used_for_pose_correspondence": completion_outputs.get("collision_eligible_mesh_labeled"),
+            "completion_geometry_readiness": (
+                completion.get("geometry_readiness")
+                if isinstance(completion.get("geometry_readiness"), dict)
+                else {}
+            ),
         },
         "sample_count": int(len(canonical_samples)),
         "iterations": int(args.iterations),

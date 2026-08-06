@@ -408,24 +408,37 @@ Script: `scripts/build_v18_compact_rigid_trellis_completion.py`
   --planar-slab-max-band-m 0.055
 ```
 
-Required output: completion report and completed mesh. The completed mesh used by all downstream pose/contact/render stages is exactly `outputs.completed_mesh_labeled` in `{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json`. Do not substitute the P12 raw TRELLIS mesh (`trellis_mesh.ply`) for `<completed_mesh_ply>`; P14/P15 poses are in the P13 completed-canonical frame, not the raw TRELLIS model frame. P13 must not promote `unsupported_uncertain` observed Poisson fill into `outputs.completed_mesh_labeled`; unsupported observed fill may remain in labeled diagnostics, but the downstream accepted body must contain only `observed_depth_surface` faces plus accepted hidden-prior faces. P13 must not promote TRELLIS hidden faces that project outside the evidence-frame object-owned silhouette; those faces are free-space-inconsistent hidden prior, not object body. If the observed support surfels are planar, P13 must also reject hidden-prior faces far outside the observed support slab; this is a conditional physical support constraint, not a category-specific keyboard rule.
+Required outputs split geometry by consumer semantics:
 
-Resolve the downstream mesh path with the completion report as source of truth:
+- `outputs.pose_hypothesis_mesh_labeled` (also mirrored at legacy `outputs.completed_mesh_labeled`) is the full completed-canonical TRELLIS-aligned pose/render hypothesis. P14/P15 and uncertainty rendering use this mesh so the canonical frame remains stable.
+- `outputs.collision_eligible_mesh_labeled` is the physical proximity/collision surface. By default it contains measured `observed_depth_surface` faces only.
+- `geometry_readiness` records collision-surface provenance, watertightness, sign readiness, and annotation readiness. P13 alone must set `signed_geometry_ready: false` because a single conditioning view does not independently support generated back/side geometry.
+
+Do not substitute the P12 raw TRELLIS mesh (`trellis_mesh.ply`) for either output; P14/P15 poses are in the P13 completed-canonical frame, not the raw TRELLIS model frame. P13 must not promote `unsupported_uncertain` observed Poisson fill into either output. Single-view silhouette consistency and planar-slab compatibility may reject impossible hidden faces, but they are not positive independent evidence for the hidden faces that survive. Therefore surviving `trellis_inferred_hidden_surface` faces remain pose/render hypotheses and are excluded from collision/sign geometry by default.
+
+`--promote-single-view-hidden-prior-to-collision` exists only for explicit historical/diagnostic reproduction. Its report must use the historical-override status, remain `annotation_ready: false`, and keep `signed_geometry_ready: false`; watertightness or an override does not create independent physical support.
+
+Resolve both downstream paths with the report as source of truth:
 
 ```bash
-COMPLETION_REPORT="{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json"
-COMPLETED_MESH_PLY=$("{REMOTE_MODEL_PYTHON}" - "$COMPLETION_REPORT" <<'PY'
-import json, sys
+P13_COMPLETION_REPORT="{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json"
+eval $("{REMOTE_MODEL_PYTHON}" - "$P13_COMPLETION_REPORT" <<'PY'
+import json, shlex, sys
 from pathlib import Path
 report = Path(sys.argv[1])
 data = json.loads(report.read_text())
-mesh = (data.get("outputs") or {}).get("completed_mesh_labeled")
-if not mesh:
-    raise SystemExit(f"missing outputs.completed_mesh_labeled in {report}")
-path = Path(mesh)
-if not path.exists() or path.stat().st_size <= 0:
-    raise SystemExit(f"completed mesh from {report} is missing or empty: {path}")
-print(path)
+outputs = data.get("outputs") or {}
+values = {
+    "POSE_HYPOTHESIS_MESH_PLY": outputs.get("pose_hypothesis_mesh_labeled") or outputs.get("completed_mesh_labeled"),
+    "COLLISION_ELIGIBLE_MESH_PLY": outputs.get("collision_eligible_mesh_labeled"),
+}
+for name, value in values.items():
+    if not value:
+        raise SystemExit(f"missing {name} output in {report}")
+    path = Path(value)
+    if not path.exists() or path.stat().st_size <= 0:
+        raise SystemExit(f"{name} from {report} is missing or empty: {path}")
+    print(f"{name}={shlex.quote(str(path))}")
 PY
 )
 ```
@@ -437,12 +450,34 @@ Script: `scripts/fit_v18_compact_rigid_object_pose.py`
 ```bash
 "{REMOTE_MODEL_PYTHON}" scripts/fit_v18_compact_rigid_object_pose.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
-  --completion-report "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json" \
+  --completion-report "$P13_COMPLETION_REPORT" \
   --object-id "{OBJECT_ID}" \
   --output-dir "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit"
 ```
 
-Required output: object pose fit report. P14 must consume the P09/P13 annotation field `rigid_pose_observation_eligible`. An explicit `false` on either the object row or its `visible_geometry_candidate` is a hard measurement rejection by default and must appear in the report as `rigid_pose_observation_ineligible`; it must not silently become `fit_to_visible_depth_samples`. A missing field may remain usable only for legacy-input compatibility and must be counted separately from explicit `true`. The report must include the eligibility policy, eligible/unspecified/ineligible counts, rejected frame IDs, rejection reasons, and any override count. `--include-ineligible-rigid-pose-observations` is a historical-reproduction/diagnostic override, not the production default; its use must be explicit and recorded.
+Required output: object pose fit report. P14 consumes `outputs.pose_hypothesis_mesh_labeled`, not the partial collision surface, because pose estimation and physical collision have different evidence contracts. P14 must consume the P09/P13 annotation field `rigid_pose_observation_eligible`. An explicit `false` on either the object row or its `visible_geometry_candidate` is a hard measurement rejection by default and must appear in the report as `rigid_pose_observation_ineligible`; it must not silently become `fit_to_visible_depth_samples`. A missing field may remain usable only for legacy-input compatibility and must be counted separately from explicit `true`. The report must include the eligibility policy, eligible/unspecified/ineligible counts, rejected frame IDs, rejection reasons, and any override count. `--include-ineligible-rigid-pose-observations` is a historical-reproduction/diagnostic override, not the production default; its use must be explicit and recorded.
+
+## P14b trusted multi-view completion support
+
+Script: `scripts/filter_v19_rigid_completion_multiview_support.py`
+
+```bash
+"{REMOTE_MODEL_PYTHON}" scripts/filter_v19_rigid_completion_multiview_support.py \
+  --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
+  --completion-report "$P13_COMPLETION_REPORT" \
+  --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit/v18_compact_rigid_object_pose_fit_report.json" \
+  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --object-id "{OBJECT_ID}" \
+  --output-dir "{RUN_ROOT}/measurements/geometry_completion/{OBJECT_ID}_multiview_support"
+
+COMPLETION_REPORT="{RUN_ROOT}/measurements/geometry_completion/{OBJECT_ID}_multiview_support/v19_multiview_supported_completion_report.json"
+```
+
+P14b is a prediction-side physical-consistency stage, not benchmark GT evaluation. It may condition on explicit-eligible direct P14 fits and remeasure prediction masks/depth, but it must never count P15 interpolation, nearest hold, explicit-ineligible rows, or repeated adjacent frames as new geometry observations. Its pose report must bind to the exact P13 pose-hypothesis mesh/annotation source; canonical-frame mismatch is a hard error. Projection into a depth NPZ raster must use that NPZ frame row's `[fx,fy,cx,cy]`; annotation-camera K is a recorded fallback only when depth-grid intrinsics are absent. A face sample must also be a canonical-mesh first ray hit from that P14 camera before it can receive visible-depth support or visible free-space contradiction; self-occluded generated faces cannot gain support by sharing a projected pixel/depth with the front surface. Observed faces are visibility-tested against the measured observed surface, while generated faces are tested against the full pose hypothesis so generated prior cannot occlude measured evidence. Each generated hidden face requires repeated visible-depth support from at least one pair of direct poses whose object-canonical view directions differ by the configured angular threshold. Greedy viewpoint bins remain diagnostics only; the physical gate uses an exact supporting-frame pair test so bin-boundary effects cannot promote or reject a face. Global promotion also requires the configured minimum direct-frame count, temporal-bin occupancy, frame-span coverage, maximum unobserved gap, and at least one separated viewpoint pair. The report must record all of these observability quantities and preserve same-view repeated support as diagnostic uncertainty rather than promote it.
+
+Required outputs retain `outputs.pose_hypothesis_mesh_labeled` exactly and replace `outputs.collision_eligible_mesh_labeled` only with the measured observed faces plus generated faces that pass both per-face viewpoint support and global direct-pose coverage. Measured observed faces remain explicit unsigned evidence, but repeated free-space contradictions on them must be counted and block sign readiness. `geometry_readiness.signed_geometry_ready` may be true only when the resulting collision surface is a watertight, winding-consistent volume, the direct-pose coverage gate passes, and no measured observed face has repeated free-space contradiction. This remains a runtime hypothesis, not independent object-pose/shape GT, and top-level `annotation_ready` remains false pending the temporal-pose and downstream physical gates.
+
+For all P15–P19 physical consumers, use the P14b `COMPLETION_REPORT`. Keep `POSE_HYPOTHESIS_MESH_PLY` from P13 for pose/render canonical-frame compatibility; do not replace it with the collision surface.
 
 ## P15 temporal rigid pose graph
 
@@ -452,7 +487,7 @@ Script: `scripts/solve_v19_rigid_object_pose_graph.py`
 "{REMOTE_MODEL_PYTHON}" scripts/solve_v19_rigid_object_pose_graph.py \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit/v18_compact_rigid_object_pose_fit_report.json" \
-  --completion-report "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json" \
+  --completion-report "$COMPLETION_REPORT" \
   --object-id "{OBJECT_ID}" \
   --complete-full-timeline-rigid-pose \
   --output-dir "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph"
@@ -468,9 +503,10 @@ When direct trusted support is below the configured minimum but full-timeline co
 - `annotation_ready: false`;
 - `graph_support.sufficient: false`;
 - `graph_support_sufficient: false` and `annotation_ready: false` on every direct/completed pose row;
+- `temporal_pose_graph.direct_visible_measurement: true` on direct corrected rows and `false` on interpolation/nearest-hold rows;
 - explicit uncertainty saying sparse-cluster interpolation/nearest hold is an unresolved trajectory hypothesis, not a new measurement.
 
-Such a 150-row file is not a trusted 150-frame object trajectory. Downstream stages must quarantine it rather than treating completion-row count as observability.
+Such a 150-row file is not a trusted 150-frame object trajectory. Downstream stages must quarantine it rather than treating completion-row count as observability. P15 must record the P14b collision/readiness contract, but its SE(3) optimization remains in `pose_hypothesis_mesh_labeled`; the collision surface is not a replacement pose body and geometry readiness does not convert completion rows into observations.
 
 ## P16 MANO/object constraint measurement
 
@@ -481,12 +517,16 @@ Script: `scripts/build_v18_mano_object_constraint_state.py`
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --hawor-npz "{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
-  --completion-report "{RUN_ROOT}/measurements/geometry_completion/compact_{OBJECT_ID}_seed42/v18_compact_rigid_trellis_completion_report.json" \
+  --completion-report "$COMPLETION_REPORT" \
   --output-dir "{RUN_ROOT}/measurements/contact_nonpenetration/{OBJECT_ID}_mano_object_constraint" \
   --object-id "{OBJECT_ID}"
 ```
 
-Required output: MANO/object constraint state. P16 must inspect the P15 top-level `annotation_ready` and `graph_support.sufficient` fields. If either is explicitly false, P16 may remeasure object-relative distances for diagnostics, but every row must be quarantined, `constraint_eligible_for_physical_correction: false`, and expose a zero physical candidate translation; any pre-quarantine diagnostic candidate must live under a clearly named diagnostic field. The report must set `physical_constraint_quarantined: true` and `candidate_correction_count: 0`. A legacy pose report lacking both readiness fields may be consumed only under the recorded legacy-compatibility policy.
+Required output: MANO/object constraint state. P16 must consume `outputs.collision_eligible_mesh_labeled`; `outputs.pose_hypothesis_mesh_labeled` is not a physical fallback. A legacy report with only `completed_mesh_labeled` may be measured for provenance under explicit `legacy_completed_mesh_labeled_unknown_collision_readiness` semantics, but missing readiness cannot activate signed nonpenetration.
+
+P16 must independently require `geometry_readiness.signed_geometry_ready: true` and actual sign-mesh watertightness before constructing a signed-distance scene or exposing any correction. An external `--sign-mesh-source-report` must bind readiness to the exact supplied mesh path; a missing mesh binding is inactive and a mismatched binding is a hard error. Watertightness, face count, a single-view completion override, or an explicit sign-mesh path without a readiness-bearing source report is insufficient. When the collision surface supports only unsigned proximity, P16 must report `signed_nonpenetration_factor_active: false`, zero signed-query candidates/corrections, and retain a named unsigned-measurement state.
+
+P16 must also inspect the P15 top-level `annotation_ready` and `graph_support.sufficient` fields. If either is explicitly false, P16 may remeasure object-relative distances for diagnostics, but every row must be quarantined, `constraint_eligible_for_physical_correction: false`, and expose a zero physical candidate translation; any pre-quarantine diagnostic candidate must live under a clearly named diagnostic field. The report must set `physical_constraint_quarantined: true` and `candidate_correction_count: 0`. A legacy pose report lacking both readiness fields may be consumed only under the recorded legacy-compatibility policy.
 
 ## P17 contact/occlusion prior rows
 
@@ -536,7 +576,7 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --object-id "object:{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
-  --completed-mesh "$COMPLETED_MESH_PLY" \
+  --completed-mesh "$POSE_HYPOTHESIS_MESH_PLY" \
   --completion-report "$COMPLETION_REPORT" \
   --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
   --wilor-root third_party/WiLoR \
@@ -552,7 +592,9 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --translation-gate-min-visible-surface-depth-vertices 0
 ```
 
-Required output: raw interval MANO/contact trajectory state. The translation gate preserves source HaWoR wrist/root translation when no selected visible-surface support vertices exist, while keeping optimized wrist-relative articulation; this prevents contact/temporal terms from moving global hand pose without direct support evidence.
+Required output: raw interval MANO/contact trajectory state. `--completed-mesh` preserves and validates the P13 pose-hypothesis canonical frame; object-relative physical factors must load the P14b `outputs.collision_eligible_mesh_labeled` surface (or an explicit `--physical-surface-mesh` that exactly matches it). P18 must reject a pose-hypothesis mesh passed as the physical surface when the report exposes a separate collision surface.
+
+Signed object-surface active-set and dense barriers require both an actually watertight physical surface and `geometry_readiness.signed_geometry_ready: true`. Otherwise they remain explicitly inactive; unsigned local contact-surface and direct visible depth-order terms may remain available under their own evidence gates. `--allow-unready-signed-geometry-for-diagnostic-optimization` is a historical diagnostic override only and must quarantine the resulting state. The translation gate preserves source HaWoR wrist/root translation when no selected visible-surface support vertices exist, while keeping optimized wrist-relative articulation; this prevents contact/temporal terms from moving global hand pose without direct support evidence.
 
 Before loading MANO models or running an optimizer, P18 must inspect P15 readiness. For an explicitly unready/insufficient-support object trajectory, the default behavior is a cheap source-only quarantine state with `optimization_skipped: true`, `annotation_ready: false`, empty object-relative contact-surface samples, and explicit quarantined factor families. It must not evaluate object-relative contact, nonpenetration, depth-order, or MANO correction as if the interpolated/held object poses were trusted. `--include-unready-object-pose-for-diagnostic-optimization` is an explicit diagnostic override only; any output produced with it remains `annotation_ready: false` and must record the override.
 
@@ -589,7 +631,7 @@ Script: `scripts/build_v19_rigid_render_state.py`
   --object-label "{OBJECT_ID}" \
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
-  --completed-mesh "$COMPLETED_MESH_PLY" \
+  --completed-mesh "$POSE_HYPOTHESIS_MESH_PLY" \
   --completion-report "$COMPLETION_REPORT" \
   --constraint-report "{RUN_ROOT}/measurements/contact_nonpenetration/{OBJECT_ID}_mano_object_constraint/v18_mano_object_constraint_state.json" \
   --temporal-mano-state "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json" \

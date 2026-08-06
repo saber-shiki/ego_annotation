@@ -219,6 +219,19 @@ signed_geometry_state
 
 默认规则：hidden completion 没有独立跨帧支持时仍可作为橙色 uncertain hypothesis 渲染，但不能进入 signed collision/contact。
 
+#### 当前实现状态（新分支 mechanism ablation）
+
+已实现并通过 synthetic + tire-lever replay：
+
+- P13 输出 `pose_hypothesis_mesh_labeled` 与 `collision_eligible_mesh_labeled`；legacy `completed_mesh_labeled` 只保留 pose/render hypothesis 语义；
+- 默认 collision surface 只含 measured observed faces；`--promote-single-view-hidden-prior-to-collision` 是显式历史诊断 override，仍不产生 sign readiness；
+- P14/P15 保持 pose-hypothesis canonical frame，P16/P18 改为消费 collision surface；
+- P16/P18 除实际 watertight 外，还要求显式 `geometry_readiness.signed_geometry_ready=true`，否则 signed correction/active-set/dense barrier inactive；
+- P14b 记录 per-face visible-depth support、camera-ray first-hit self-visibility、free-space contradiction、same-view repetition、diagnostic viewpoint bins 和 exact separated-view supporting-frame pairs，并输出可视化 QC 和 compressed face-state NPZ；
+- standalone regression：`regression_geometry_evidence_contract.py`，覆盖默认 quarantine、历史 override、canonical geometry 精确保留、same-view 不晋级、distinct-view synthetic 晋级、P16/P18 consumer selection 和 legacy-unknown readiness。
+
+Tire-lever 当前结果（depth-grid K + first-hit visibility contract 修正后）：pose hypothesis 151,831 faces；collision 496 observed faces，其中 495 个在 P14 direct frames 至少一次获得 visible-depth support、477 个重复支持、11 个出现过 support/free-space conflict，但 0 个在至少两帧出现 visible free-space contradiction。151,335 hidden faces 中 44,801 只有 same-view repeated support、0 个获得 ≥15° exact separated-view support、17,365 个纯 free-space contradicted、23,206 个在不同帧出现 support/free-space conflict、65,963 个其余 unsupported/self-occluded，因此 hidden collision promotion 仍为 0，sign readiness 仍为 false。该结果暴露证据不足和预测测量冲突，不是通过降低门槛制造 geometry。P14b 投影 UniDepth raster 时使用 NPZ row 的 `intrinsics_fx_fy_cx_cy`；annotation-camera scalar-focal K 只允许在 depth K 缺失时作为显式 fallback。
+
 #### 判别预测
 
 - 如果 hidden prior 是主要故障：held-out-frame silhouette/free-space consistency 改善，unsupported hidden faces 被隔离；
@@ -248,6 +261,8 @@ viewpoint/baseline diversity
 ```
 
 Interpolation/nearest hold 永远不计为 direct support。低支撑 measurement 继续进入 uncertainty graph 和 failure render，但不得变成 annotation-ready trajectory。
+
+当前只完成了 **support/readiness evaluator**，尚未完成新的 object keyframe acquisition：P14b 已报告 tire-lever 的 direct count=6、span=[115,123]、span fraction=0.05369、occupied bins=2/5、maximum gap=115 frames（0.7667 timeline）、15° viewpoint bins=1、pairwise angular max=11.394°。因此 44,801 个 first-hit-visible repeated-support hidden faces全部归为 same-view-only。下一步仍需让 P09/P14 在时间轴和 viewpoint 上实际产生新的可信 direct observations，不能把这个 evaluator 本身描述为新增观测。
 
 ### Priority 3：P15/P16 block-coordinate second pass
 

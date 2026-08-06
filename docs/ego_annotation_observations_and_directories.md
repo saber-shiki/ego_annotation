@@ -1762,3 +1762,30 @@ NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md
 ```
 
 每个 prediction case 使用 opaque `exo_rigid_001 ... exo_rigid_012` ID，且仅含 `input.mp4` 和 `PREDICTION_INPUT_MANIFEST.json`；relation track、take UID/name 和 role 不发布到 prediction side。12/12 为 960×960、150 frames、30 fps，coordinate-contract self-test 和 source endpoint alignment 均通过。所有 12 cases 本地 VRS 仍缺失，且尚未启动任何 suite runtime。该 suite 是 P13/temporal observation/P15–P16/P18 修正的 guardrail，不是物理结果改善。
+
+### 30.10 新分支 P13/P14b geometry evidence ablation
+
+这些目录是 `research/v19-multiclip-pipeline-corrections` 上的 mechanism replay，不是冻结 V19 run，也不是 prediction/evaluation GT：
+
+```text
+$BENCH/ablations/p13_single_view_hidden_quarantine_v3/
+$BENCH/ablations/p14_from_p13_hidden_quarantine_v3/
+$BENCH/ablations/p14b_multiview_hidden_support_v6_depth_grid_intrinsics/
+$BENCH/ablations/p15_from_p14b_multiview_hidden_support_v4_depth_grid_intrinsics/
+$BENCH/ablations/p16_from_p14b_multiview_support_v4_depth_grid_intrinsics/
+$BENCH/ablations/p16_signed_geometry_inactive_ready_pose_regression_v2/
+$BENCH/ablations/p18_multiview_physical_surface_quarantine_v4_depth_grid_intrinsics/
+$BENCH/ablations/p18_signed_inactive_oneframe_diagnostic_v4_depth_grid_intrinsics/
+```
+
+其中 P13 pose hypothesis 与冻结 completed Mesh 的 vertices/faces/colors 精确保留；P14 6 个 eligible fits 和 residual 精确保留。P14b 的 direct observations 仍只有 frames `115,116,119,120,121,123`，span `[115,123]`，15° object-canonical diagnostic viewpoint bins 只有 1，达到阈值的 exact pose-row pair 为 0。投影 UniDepth raster 时使用 NPZ row K；frame 115 的 depth K 为 `[337.2726,350.7081,487.7248,487.7248]`，而 annotation-camera K 为 `[347.2999,347.2999,487.7248,487.7248]`，两者被显式记录而不静默混用。Visible support 还要求 canonical-mesh camera-ray first hit：observed faces 只对 measured observed surface 做 visibility，generated faces 对完整 pose hypothesis 做 visibility。496 个 measured collision faces 中，495 个至少一次获得 visible-depth support、477 个重复支持、11 个出现过 support/free-space conflict，但 0 个在至少两帧出现 visible free-space contradiction。151,335 个 generated hidden faces 中，44,801 个只有 same-view repeated support、0 个具有 separated-view support、17,365 个纯 free-space contradicted、23,206 个在不同帧出现 support/free-space conflict、65,963 个其余 unsupported/self-occluded；collision surface 保持 496 faces、非 watertight，`signed_geometry_ready=false`。
+
+P15 继续输出 6 direct + 144 unresolved completion，不能因 P14b row/face 数增加 readiness。P16 和 P18 明确记录 collision-surface path；P16 signed query/correction 为 inactive，P18 signed active-set/dense barrier 为 inactive。额外的 P16 ready-pose synthetic-top-level regression 将 P15 readiness 临时设为 true，signed factor 仍因 geometry readiness false 而保持 inactive，证明两个 gate 相互独立。P18 one-frame diagnostic 只验证 consumer wiring 和 factor inactivity，不是 full-duration runtime、性能结果或 annotation-ready hand 改善。
+
+独立 synthetic regression：
+
+```text
+experiments/egoexo4d_rigid_benchmark/regression_geometry_evidence_contract.py
+```
+
+它不读取 NAS/GT，覆盖 single-view default/override、same-view negative、distinct-view positive、P16/P18 surface selection 和 legacy-unknown readiness。

@@ -389,6 +389,14 @@ def main() -> None:
     parser.add_argument("--planar-slab-eigenvalue-ratio-max", type=float, default=0.04, help="Apply planar slab filter only when smallest/largest observed PCA eigenvalue is at most this ratio.")
     parser.add_argument("--planar-slab-min-band-m", type=float, default=0.018, help="Minimum half-width for planar support slab.")
     parser.add_argument("--planar-slab-max-band-m", type=float, default=0.055, help="Maximum half-width for planar support slab.")
+    parser.add_argument(
+        "--promote-single-view-hidden-prior-to-collision",
+        action="store_true",
+        help=(
+            "Historical/diagnostic override. By default single-view TRELLIS hidden faces remain a pose/render "
+            "hypothesis and are excluded from collision/sign geometry until independent multi-view support exists."
+        ),
+    )
     args = parser.parse_args()
 
     evidence = load_json(args.evidence_report)
@@ -469,13 +477,35 @@ def main() -> None:
     completed_labels = accepted_observed_labels + kept_trellis_labels
     completed.visual.face_colors = color_for_labels(completed_labels)
 
+    # P13 has only one selected anchor view. Silhouette consistency in that same
+    # view is not independent evidence for hidden geometry: any back/side face
+    # that projects inside the anchor silhouette can pass without ever being
+    # observed. Keep the complete TRELLIS body as a pose/render hypothesis for
+    # P14, but expose a separate physical surface that contains only measured
+    # observed faces unless a historical diagnostic override is explicit.
+    if args.promote_single_view_hidden_prior_to_collision:
+        collision_surface = completed.copy()
+        collision_labels = list(completed_labels)
+        collision_distances = np.concatenate([obs_d[accepted_observed_faces], trellis_d[kept_trellis_faces]])
+        hidden_collision_faces = int(len(kept_trellis_faces))
+        hidden_collision_state = "historical_override_single_view_hidden_prior_promoted"
+    else:
+        collision_surface = accepted_observed.copy()
+        collision_labels = list(accepted_observed_labels)
+        collision_distances = obs_d[accepted_observed_faces]
+        hidden_collision_faces = 0
+        hidden_collision_state = "single_view_hidden_prior_quarantined_pending_independent_multiview_support"
+    collision_surface.visual.face_colors = color_for_labels(collision_labels)
+
     object_safe = safe_id(str(evidence.get("object_id", "object")).replace("object:", "object_"))
     observed_mesh_path = args.output_dir / f"{object_safe}_observed_depth_surface_labeled.ply"
     trellis_all_path = args.output_dir / f"{object_safe}_trellis_aligned_all_candidate_labeled.ply"
     completed_path = args.output_dir / f"{object_safe}_compact_rigid_completed_mesh_labeled.ply"
+    collision_surface_path = args.output_dir / f"{object_safe}_collision_eligible_surface_labeled.ply"
     observed_mesh.export(str(observed_mesh_path))
     trellis_canonical.export(str(trellis_all_path))
     completed.export(str(completed_path))
+    collision_surface.export(str(collision_surface_path))
 
     observed_sidecar = export_label_sidecar(args.output_dir / "observed_depth_surface_face_labels.json", observed_labels, obs_d, str(observed_mesh_path), 0)
     trellis_sidecar = export_label_sidecar(args.output_dir / "trellis_candidate_face_labels.json", trellis_labels_all, trellis_d, str(trellis_all_path), 0)
@@ -486,13 +516,29 @@ def main() -> None:
         str(completed_path),
         0,
     )
+    collision_sidecar = export_label_sidecar(
+        args.output_dir / "collision_eligible_surface_face_labels.json",
+        collision_labels,
+        collision_distances,
+        str(collision_surface_path),
+        0,
+    )
 
     report = {
         "method": "build_v18_compact_rigid_trellis_completion",
-        "status": "ok",
+        "status": (
+            "ok_historical_override_single_view_hidden_prior_promoted_for_diagnostic"
+            if args.promote_single_view_hidden_prior_to_collision
+            else "ok_with_single_view_hidden_completion_quarantined_from_physical_geometry"
+        ),
+        "annotation_ready": False,
         "case": evidence.get("case"),
         "object_id": evidence.get("object_id"),
-        "claim_scope": "TRELLIS is metric-aligned as an RGB hidden-surface prior; observed depth-fused surfels remain the source of truth for visible surface regions; unsupported observed Poisson fill is diagnostic uncertainty and is excluded from accepted object body.",
+        "claim_scope": (
+            "Historical diagnostic override explicitly promoted the single-view TRELLIS hidden prior into collision geometry. This reproduces legacy behavior only; it does not create independent hidden-surface evidence or annotation readiness."
+            if args.promote_single_view_hidden_prior_to_collision
+            else "TRELLIS is metric-aligned as an RGB hidden-surface pose/render hypothesis. Observed depth-fused surfels remain the source of truth for physical surface regions. Single-view silhouette consistency is not independent hidden-geometry support, so generated hidden faces are excluded from collision/sign geometry by default."
+        ),
         "inputs": {
             "evidence_report": str(args.evidence_report),
             "trellis_report": str(args.trellis_report),
@@ -511,22 +557,48 @@ def main() -> None:
             "observed_depth_surface_labeled_mesh": str(observed_mesh_path),
             "trellis_aligned_all_candidate_labeled_mesh": str(trellis_all_path),
             "completed_mesh_labeled": str(completed_path),
+            "pose_hypothesis_mesh_labeled": str(completed_path),
+            "collision_eligible_mesh_labeled": str(collision_surface_path),
             "observed_face_labels": str(args.output_dir / "observed_depth_surface_face_labels.json"),
             "trellis_candidate_face_labels": str(args.output_dir / "trellis_candidate_face_labels.json"),
             "completed_face_labels": str(args.output_dir / "completed_mesh_face_labels.json"),
+            "collision_eligible_face_labels": str(args.output_dir / "collision_eligible_surface_face_labels.json"),
         },
         "face_label_counts": {
             "observed_mesh": observed_sidecar["label_counts"],
             "trellis_all_candidate": trellis_sidecar["label_counts"],
             "completed_mesh": completed_sidecar["label_counts"],
+            "collision_eligible_mesh": collision_sidecar["label_counts"],
             "free_space_rejected": int(trellis_sidecar["label_counts"].get("free_space_rejected", 0)),
+        },
+        "geometry_readiness": {
+            "pose_hypothesis_available": True,
+            "pose_hypothesis_mesh": str(completed_path),
+            "completed_mesh_legacy_field_semantics": "pose_and_render_hypothesis_not_collision_or_signed_geometry",
+            "single_view_hidden_prior_independently_supported": False,
+            "hidden_prior_collision_promotion_override": bool(args.promote_single_view_hidden_prior_to_collision),
+            "hidden_prior_collision_state": hidden_collision_state,
+            "local_observed_collision_surface_available": True,
+            "collision_eligible_mesh": str(collision_surface_path),
+            "collision_eligible_hidden_face_count": hidden_collision_faces,
+            "collision_surface_watertight": bool(collision_surface.is_watertight),
+            "signed_geometry_ready": False,
+            "signed_geometry_readiness_reason": (
+                "historical collision-promotion override does not create independent multi-view sign support"
+                if args.promote_single_view_hidden_prior_to_collision
+                else "single-view hidden completion is quarantined and the observed partial surface is not a certified signed body"
+            ),
+            "annotation_ready": False,
+            "required_next_evidence": "independent trusted multi-view silhouette/depth support in solved object poses before generated hidden faces can enter collision/sign geometry",
         },
         "accepted_body_semantics": {
             "observed_depth_surface_faces_accepted": int(len(accepted_observed_faces)),
             "observed_unsupported_uncertain_faces_excluded": int(len(observed_labels) - len(accepted_observed_faces)),
-            "trellis_hidden_surface_faces_accepted": int(len(kept_trellis_faces)),
+            "trellis_hidden_surface_faces_in_pose_hypothesis": int(len(kept_trellis_faces)),
+            "trellis_hidden_surface_faces_collision_eligible": hidden_collision_faces,
+            "completed_mesh_is_pose_hypothesis_not_physical_body": True,
             "unsupported_uncertain_is_not_object_body": True,
-            "claim_scope": "completed_mesh_labeled is the downstream accepted object body; unsupported observed Poisson fill remains only in observed_depth_surface_labeled_mesh and sidecar diagnostics.",
+            "claim_scope": "completed_mesh_labeled is retained for backward-compatible P14 pose proposal and uncertainty rendering. Physical proximity/collision consumers must use collision_eligible_mesh_labeled and honor geometry_readiness; generated hidden faces require independent multi-view support.",
         },
         "free_space_rejection_state": "silhouette_free_space_filter_applied" if bool(args.silhouette_free_space_filter) else "silhouette_free_space_filter_disabled",
         "silhouette_free_space_filter": silhouette_state,
@@ -538,6 +610,8 @@ def main() -> None:
             "trellis_faces": int(len(trellis.faces)),
             "completed_vertices": int(len(completed.vertices)),
             "completed_faces": int(len(completed.faces)),
+            "collision_eligible_vertices": int(len(collision_surface.vertices)),
+            "collision_eligible_faces": int(len(collision_surface.faces)),
         },
     }
     (args.output_dir / "v18_compact_rigid_trellis_completion_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

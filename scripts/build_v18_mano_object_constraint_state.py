@@ -198,6 +198,82 @@ def frame_camera_pose(frame: dict[str, Any], fallback_r_c2w: np.ndarray, fallbac
     return fallback_r_c2w, fallback_t_c2w, "hawor_npz_camera_pose_fallback"
 
 
+def completion_surface_contract(completion: dict[str, Any]) -> tuple[Path, str, dict[str, Any]]:
+    outputs = completion.get("outputs") if isinstance(completion.get("outputs"), dict) else {}
+    readiness = completion.get("geometry_readiness") if isinstance(completion.get("geometry_readiness"), dict) else {}
+    explicit_collision = outputs.get("collision_eligible_mesh_labeled")
+    legacy_completed = outputs.get("completed_mesh_labeled")
+    mesh_value = explicit_collision or legacy_completed
+    if not mesh_value:
+        raise RuntimeError("completion report lacks collision-eligible or legacy completed surface mesh")
+    semantics = (
+        "collision_eligible_mesh_labeled"
+        if explicit_collision
+        else "legacy_completed_mesh_labeled_unknown_collision_readiness"
+    )
+    return Path(str(mesh_value)), semantics, readiness
+
+
+def same_mesh_path(left: Path, right: Path) -> bool:
+    try:
+        return left.exists() and right.exists() and left.samefile(right)
+    except OSError:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def signed_geometry_source_readiness(
+    completion_readiness: dict[str, Any],
+    sign_mesh_source_report: Path | None,
+    sign_mesh_is_completion_surface: bool,
+    sign_mesh_path: Path | None = None,
+) -> dict[str, Any]:
+    if sign_mesh_source_report is not None:
+        payload = load_json(sign_mesh_source_report)
+        readiness = payload.get("geometry_readiness") if isinstance(payload.get("geometry_readiness"), dict) else {}
+        outputs = payload.get("outputs") if isinstance(payload.get("outputs"), dict) else {}
+        declared = readiness.get("signed_geometry_ready")
+        expected_value = (
+            readiness.get("signed_geometry_mesh")
+            or readiness.get("collision_eligible_mesh")
+            or outputs.get("signed_geometry_mesh")
+            or outputs.get("collision_eligible_mesh_labeled")
+        )
+        if not expected_value:
+            return {
+                "source": str(sign_mesh_source_report),
+                "signed_geometry_ready": None,
+                "legacy_readiness_fields_missing": declared is None,
+                "source_mesh_contract_missing": True,
+                "reason": "sign source report does not bind signed readiness to a concrete mesh path",
+            }
+        expected_path = Path(str(expected_value))
+        if sign_mesh_path is None or not same_mesh_path(sign_mesh_path, expected_path):
+            raise RuntimeError(
+                "sign mesh/source-report mismatch: signed readiness is bound to "
+                f"{expected_path}, not supplied sign mesh {sign_mesh_path}"
+            )
+        return {
+            "source": str(sign_mesh_source_report),
+            "source_mesh": str(expected_path),
+            "signed_geometry_ready": declared if isinstance(declared, bool) else None,
+            "legacy_readiness_fields_missing": declared is None,
+            "source_mesh_contract_missing": False,
+        }
+    if sign_mesh_is_completion_surface:
+        declared = completion_readiness.get("signed_geometry_ready")
+        return {
+            "source": "completion_report.geometry_readiness",
+            "signed_geometry_ready": declared if isinstance(declared, bool) else None,
+            "legacy_readiness_fields_missing": declared is None,
+        }
+    return {
+        "source": None,
+        "signed_geometry_ready": None,
+        "legacy_readiness_fields_missing": True,
+        "reason": "explicit sign mesh lacks --sign-mesh-source-report; watertightness alone cannot establish physical sign readiness",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--annotations", type=Path, required=True)
@@ -219,7 +295,7 @@ def main() -> None:
         pose_readiness["annotation_ready"] is True and pose_readiness["graph_support_sufficient"] is not False
     )
     completion = load_json(args.completion_report)
-    mesh_path = Path(completion["outputs"]["completed_mesh_labeled"])
+    mesh_path, surface_mesh_semantics, geometry_readiness = completion_surface_contract(completion)
     observed_band_m = float(completion.get("observed_band_m") or 0.0)
     surface_mesh = load_mesh(mesh_path)
     surface_mesh_watertight = bool(surface_mesh.is_watertight)
@@ -230,15 +306,25 @@ def main() -> None:
 
     sign_mesh_path = args.sign_mesh if args.sign_mesh is not None else mesh_path
     sign_mesh = load_mesh(sign_mesh_path)
-    sign_query = None
+    sign_mesh_watertight = bool(sign_mesh.is_watertight)
+    sign_source_readiness = signed_geometry_source_readiness(
+        geometry_readiness,
+        args.sign_mesh_source_report,
+        sign_mesh_is_completion_surface=args.sign_mesh is None,
+        sign_mesh_path=sign_mesh_path,
+    )
+    signed_geometry_declared_ready = sign_source_readiness["signed_geometry_ready"] is True
+    signed_geometry_query_eligible = bool(sign_mesh_watertight and signed_geometry_declared_ready)
+    signed_nonpenetration_physical_active = bool(
+        signed_geometry_query_eligible and not args.skip_signed_distance and not quarantine_unready_pose
+    )
     sign_scene = None
-    if not args.skip_signed_distance:
+    if not args.skip_signed_distance and signed_geometry_query_eligible:
         sign_scene = o3d.t.geometry.RaycastingScene()
         sign_scene.add_triangles(
             o3d.core.Tensor(np.asarray(sign_mesh.vertices, dtype=np.float32)),
             o3d.core.Tensor(np.asarray(sign_mesh.faces, dtype=np.uint32)),
         )
-    sign_mesh_watertight = bool(sign_mesh.is_watertight)
     sign_bounds_min = np.asarray(sign_mesh.bounds[0], dtype=float)
     sign_bounds_max = np.asarray(sign_mesh.bounds[1], dtype=float)
 
@@ -298,8 +384,9 @@ def main() -> None:
             penetrating = np.zeros(len(verts_c), dtype=bool)
             correction_c = np.zeros(3, dtype=float)
             correction_solver = {"solver": "not_needed_no_penetration", "success": True, "constraint_count": 0}
-            signed_query_candidate = sign_aabb & near_surface
-            if sign_mesh_watertight and signed_query_candidate.any() and sign_scene is not None:
+            signed_broadphase_candidate = sign_aabb & near_surface
+            signed_query_candidate = signed_broadphase_candidate if signed_geometry_query_eligible else np.zeros(len(verts_c), dtype=bool)
+            if signed_geometry_query_eligible and signed_query_candidate.any() and sign_scene is not None:
                 candidate_idx = np.where(signed_query_candidate)[0]
                 query_tensor = o3d.core.Tensor(np.asarray(verts_c[candidate_idx], dtype=np.float32))
                 # Open3D convention is negative inside, positive outside. Convert
@@ -334,7 +421,26 @@ def main() -> None:
                 proj1 = project(joints_corr_w, r_c2w, t_c2w, intr)
                 reproj_summary = nearest_summary(np.linalg.norm(proj1 - proj0, axis=1))
                 visible_consistency = visible_2d_consistency(frame, hand_ann, intr, proj0, proj1, same_frame, raw_video_meta)
-            if penetrating.any() and bounded_local_escape and visible_consistency.get("compatible_with_visible_2d") is True:
+            if not signed_geometry_declared_ready:
+                app_state = "inactive_signed_geometry_not_ready"
+                reason = (
+                    "completion/sign source does not explicitly declare signed_geometry_ready=true; watertightness, row count, "
+                    "or a single-view hidden prior cannot activate a signed nonpenetration correction"
+                )
+                correction_solver = {
+                    "solver": "not_run_signed_geometry_not_ready",
+                    "success": False,
+                    "constraint_count": 0,
+                }
+            elif not sign_mesh_watertight:
+                app_state = "inactive_nonwatertight_mesh_no_signed_correction"
+                reason = "the declared sign source mesh is non-watertight, so signed nonpenetration remains inactive"
+                correction_solver = {
+                    "solver": "not_run_nonwatertight_sign_mesh",
+                    "success": False,
+                    "constraint_count": 0,
+                }
+            elif penetrating.any() and bounded_local_escape and visible_consistency.get("compatible_with_visible_2d") is True:
                 app_state = "candidate_coordinate_correction_visible_2d_compatible"
                 reason = "watertight sign mesh predicts local MANO/object penetration; least-norm local halfspace translation satisfies penetrating-vertex escape constraints and does not contradict available same-frame 2D hand-box evidence"
             elif penetrating.any() and correction_solver.get("success") is not True:
@@ -346,7 +452,7 @@ def main() -> None:
             elif penetrating.any():
                 app_state = "not_applied_visible_2d_conflict_or_unmeasured"
                 reason = "watertight sign mesh predicts MANO/object penetration, but available visible 2D consistency is missing or degraded; coordinate update is held"
-            elif signed_query_candidate.any() and args.skip_signed_distance:
+            elif signed_broadphase_candidate.any() and args.skip_signed_distance:
                 app_state = "uncertainty_signed_distance_not_evaluated_broadphase_support"
                 reason = "MANO vertices are within the observed-surface band and inside the sign-mesh AABB, but exact signed distance was intentionally skipped for broadphase measurement"
             elif near_surface.any() and sign_mesh_watertight and not sign_aabb.any():
@@ -384,13 +490,20 @@ def main() -> None:
                     "mano_object_constraint_quarantined_unready_object_pose_trajectory"
                     if quarantine_unready_pose
                     else "mano_object_constraint_measured"
+                    if signed_nonpenetration_physical_active
+                    else "mano_object_unsigned_surface_measurement_signed_nonpenetration_inactive"
                 ),
                 "annotation_ready": False,
                 "object_pose_input_ready_for_constraint_measurement": pose_input_explicitly_ready,
                 "object_pose_input_legacy_compatibility": bool(pose_readiness["legacy_readiness_fields_missing"]),
-                "constraint_eligible_for_physical_correction": not quarantine_unready_pose,
+                "constraint_eligible_for_physical_correction": signed_nonpenetration_physical_active,
                 "object_pose_readiness": pose_readiness,
                 "surface_mesh_path": str(mesh_path),
+                "surface_mesh_semantics": surface_mesh_semantics,
+                "completion_geometry_readiness": geometry_readiness,
+                "signed_geometry_source_readiness": sign_source_readiness,
+                "signed_geometry_query_eligible": signed_geometry_query_eligible,
+                "signed_nonpenetration_factor_active": signed_nonpenetration_physical_active,
                 "sign_mesh_path": str(sign_mesh_path),
                 "sign_mesh_source_report": str(args.sign_mesh_source_report) if args.sign_mesh_source_report else None,
                 "signed_distance_semantics": "positive_inside_negative_outside_zero_on_surface_open3d_raycasting_converted_from_negative_inside",
@@ -406,6 +519,8 @@ def main() -> None:
                 "surface_aabb_candidate_vertex_fraction": float(surface_aabb.mean()),
                 "sign_aabb_candidate_vertex_count": int(sign_aabb.sum()),
                 "sign_aabb_candidate_vertex_fraction": float(sign_aabb.mean()),
+                "signed_broadphase_candidate_vertex_count": int(signed_broadphase_candidate.sum()),
+                "signed_broadphase_candidate_vertex_fraction": float(signed_broadphase_candidate.mean()),
                 "signed_query_candidate_vertex_count": int(signed_query_candidate.sum()),
                 "signed_query_candidate_vertex_fraction": float(signed_query_candidate.mean()),
                 "penetrating_vertex_count": int(penetrating.sum()),
@@ -426,7 +541,7 @@ def main() -> None:
                 "reason": reason,
             }
             rows.append(row)
-            if penetrating.any() and not quarantine_unready_pose:
+            if penetrating.any() and signed_nonpenetration_physical_active:
                 corrective_rows.append(row)
 
     by_side = {}
@@ -441,16 +556,26 @@ def main() -> None:
         }
     report = {
         "method": "build_v18_mano_object_constraint_state",
-        "status": "completed_quarantined_unready_object_pose_trajectory" if quarantine_unready_pose else "ok",
+        "status": (
+            "completed_quarantined_unready_object_pose_trajectory"
+            if quarantine_unready_pose
+            else "ok"
+            if signed_nonpenetration_physical_active
+            else "completed_unsigned_surface_measurement_signed_nonpenetration_inactive"
+        ),
         "annotation_ready": False,
         "object_pose_input_ready_for_constraint_measurement": pose_input_explicitly_ready,
         "object_pose_input_legacy_compatibility": bool(pose_readiness["legacy_readiness_fields_missing"]),
         "physical_constraint_quarantined": quarantine_unready_pose,
+        "signed_nonpenetration_constraint_quarantined": not signed_nonpenetration_physical_active,
+        "unsigned_collision_surface_measurement_available": True,
         "object_pose_readiness": pose_readiness,
         "claim_scope": (
             "Object-relative MANO/contact and nonpenetration values are diagnostic-only because P15 explicitly reports an unready object trajectory; no candidate coordinate correction is exposed downstream."
             if quarantine_unready_pose
-            else "Completed posed object mesh supplies surface/overlap measurements; an optional watertight aligned sign mesh supplies signed nonpenetration hypotheses. Coordinate corrections remain candidates until visible 2D consistency is inspected."
+            else "Collision-eligible surface supports unsigned proximity measurement, but signed nonpenetration is inactive because geometry readiness is not explicitly true, the sign mesh is not watertight, or signed evaluation was skipped; no coordinate correction is exposed."
+            if not signed_nonpenetration_physical_active
+            else "Collision-eligible posed object surface supplies unsigned measurements and an explicitly ready watertight sign source supplies signed nonpenetration hypotheses. Coordinate corrections remain candidates until visible 2D consistency is inspected."
         ),
         "object_id": args.object_id,
         "inputs": {
@@ -459,11 +584,27 @@ def main() -> None:
             "pose_report": str(args.pose_report),
             "completion_report": str(args.completion_report),
             "completed_surface_mesh": str(mesh_path),
+            "surface_mesh_semantics": surface_mesh_semantics,
+            "completion_geometry_readiness": geometry_readiness,
             "sign_mesh": str(sign_mesh_path),
             "sign_mesh_source_report": str(args.sign_mesh_source_report) if args.sign_mesh_source_report else None,
             "skip_signed_distance": bool(args.skip_signed_distance),
         },
         "completed_surface_mesh_watertight": surface_mesh_watertight,
+        "surface_mesh_semantics": surface_mesh_semantics,
+        "completion_geometry_readiness": geometry_readiness,
+        "signed_geometry_source_readiness": sign_source_readiness,
+        "signed_geometry_query_eligible": signed_geometry_query_eligible,
+        "signed_nonpenetration_factor_active": signed_nonpenetration_physical_active,
+        "signed_nonpenetration_inactive_reason": (
+            None
+            if signed_nonpenetration_physical_active
+            else "unready_object_pose"
+            if quarantine_unready_pose
+            else "signed_distance_explicitly_skipped"
+            if args.skip_signed_distance
+            else "signed_geometry_not_explicitly_ready_or_not_watertight"
+        ),
         "sign_mesh_watertight": sign_mesh_watertight,
         "measured_pair_count": len(rows),
         "candidate_correction_count": len(corrective_rows),
@@ -474,7 +615,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.output_dir / "v18_mano_object_constraint_state.json"
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ["status", "object_id", "completed_surface_mesh_watertight", "sign_mesh_watertight", "measured_pair_count", "candidate_correction_count", "summary_by_side"]}, indent=2))
+    print(json.dumps({k: report[k] for k in ["status", "object_id", "surface_mesh_semantics", "completed_surface_mesh_watertight", "sign_mesh_watertight", "signed_geometry_query_eligible", "signed_nonpenetration_factor_active", "measured_pair_count", "candidate_correction_count", "summary_by_side"]}, indent=2))
 
 
 if __name__ == "__main__":

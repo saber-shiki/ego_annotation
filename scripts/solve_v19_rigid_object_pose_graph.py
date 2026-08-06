@@ -396,6 +396,7 @@ def build_pose_rows(
         new_row["graph_support_sufficient"] = graph_support_sufficient
         new_row["temporal_pose_graph"] = {
             "pose_source": "direct_visible_pose_observation_corrected",
+            "direct_visible_measurement": True,
             "rotation_delta_rotvec_rad": rot_delta[i].astype(float).tolist(),
             "translation_delta_world_m": trans_delta[i].astype(float).tolist(),
             "translation_prior_sigma_m": float(obs.translation_sigma_m),
@@ -499,9 +500,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         and (args.frame_end is None or int(row.get("frame_idx", -1)) <= int(args.frame_end))
     ]
     completion = load_json(args.completion_report) if args.completion_report else {}
-    mesh_path = args.completed_mesh or Path(completion.get("outputs", {}).get("completed_mesh_labeled", ""))
+    completion_outputs = completion.get("outputs") if isinstance(completion.get("outputs"), dict) else {}
+    completion_geometry_readiness = completion.get("geometry_readiness") if isinstance(completion.get("geometry_readiness"), dict) else {}
+    completion_collision_mesh = completion_outputs.get("collision_eligible_mesh_labeled")
+    completion_pose_mesh = completion_outputs.get("pose_hypothesis_mesh_labeled") or completion_outputs.get("completed_mesh_labeled")
+    mesh_path = args.completed_mesh or Path(completion_pose_mesh or "")
     if not mesh_path:
-        raise RuntimeError("completed mesh path missing; pass --completed-mesh or --completion-report")
+        raise RuntimeError("pose-hypothesis mesh path missing; pass --completed-mesh or --completion-report")
+    pose_mesh_semantics = (
+        "explicit_cli_mesh"
+        if args.completed_mesh is not None
+        else "pose_hypothesis_mesh_labeled"
+        if completion_outputs.get("pose_hypothesis_mesh_labeled")
+        else "legacy_completed_mesh_labeled"
+    )
     mesh = load_mesh(Path(mesh_path))
     observations, skipped, targets = build_observations(args, annotations, pose_report, mesh)
     graph_support_sufficient = len(observations) >= int(args.min_graph_frames)
@@ -567,7 +579,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "pose_report": str(args.pose_report),
             "completion_report": str(args.completion_report) if args.completion_report else None,
             "completed_mesh": str(mesh_path),
+            "pose_mesh_semantics": pose_mesh_semantics,
+            "collision_eligible_mesh_not_used_as_pose_body": completion_collision_mesh,
+            "completion_geometry_readiness": completion_geometry_readiness,
             "constraint_report": str(args.constraint_report) if args.constraint_report else None,
+        },
+        "geometry_contract": {
+            "pose_hypothesis_mesh": str(mesh_path),
+            "pose_mesh_semantics": pose_mesh_semantics,
+            "collision_eligible_mesh": completion_collision_mesh,
+            "completion_geometry_readiness": completion_geometry_readiness,
+            "pose_graph_consumes_collision_surface": False,
+            "claim_scope": "P15 estimates temporal SE(3) in the P13 pose-hypothesis canonical frame. Collision/sign readiness is recorded for P16/P15b but does not replace the pose body or turn completion rows into observations.",
         },
         "graph_frames": [obs.frame_idx for obs in observations],
         "graph_frame_count": int(len(observations)),
