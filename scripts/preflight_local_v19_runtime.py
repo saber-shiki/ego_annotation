@@ -129,7 +129,7 @@ def load_manifest(path: Path, expected_status_prefix: str) -> dict[str, Any]:
     }
 
 
-def video_info(path: Path) -> dict[str, Any]:
+def video_info(path: Path, expected: dict[str, Any], expected_sha256: str | None) -> dict[str, Any]:
     import cv2
 
     if not path.is_file():
@@ -142,19 +142,19 @@ def video_info(path: Path) -> dict[str, Any]:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
-    expected = {"fps": 30.0, "frame_count": 150, "width": 1408, "height": 1408}
     actual = {"fps": fps, "frame_count": frames, "width": width, "height": height}
     digest = sha256_file(path)
     metadata_ok = actual == expected
-    hash_ok = digest == EXPECTED_INPUT_SHA256
+    hash_ok = expected_sha256 is None or digest == expected_sha256
     return {
         "path": str(path),
         "status": "ok" if metadata_ok and hash_ok else "metadata_or_hash_mismatch",
         "expected": expected,
         "actual": actual,
         "bytes": path.stat().st_size,
-        "expected_sha256": EXPECTED_INPUT_SHA256,
+        "expected_sha256": expected_sha256,
         "sha256": digest,
+        "hash_check_enabled": expected_sha256 is not None,
     }
 
 
@@ -164,11 +164,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     checks["bundle_integrity"] = verify_bundle_manifest(bundle)
     checks["prompt_isolation"] = prompt_isolation(bundle)
     checks["bundle_path_isolation"] = bundle_path_isolation(bundle)
-    checks["input_video"] = video_info(args.input_video)
+    expected_video = {
+        "fps": float(args.expected_fps),
+        "frame_count": int(args.expected_frame_count),
+        "width": int(args.expected_width),
+        "height": int(args.expected_height),
+    }
+    expected_input_sha256 = None if str(args.expected_input_sha256).lower() in {"", "none", "skip"} else str(args.expected_input_sha256)
+    checks["input_video"] = video_info(args.input_video, expected_video, expected_input_sha256)
     input_files = sorted(p.name for p in args.input_video.parent.iterdir() if p.is_file()) if args.input_video.parent.is_dir() else []
+    allowed_input_files = {"input.mp4", "INPUT_PROVENANCE.json", *args.allow_input_sidecar}
+    unexpected_input_files = sorted(set(input_files).difference(allowed_input_files))
     checks["input_isolation"] = {
-        "status": "ok" if set(input_files) <= {"input.mp4", "INPUT_PROVENANCE.json"} else "unexpected_sidecars",
+        "status": "ok" if not unexpected_input_files else "unexpected_sidecars",
         "files": input_files,
+        "allowed_files": sorted(allowed_input_files),
+        "unexpected_files": unexpected_input_files,
     }
     checks["fresh_run_root"] = {
         "path": str(args.run_root),
@@ -264,6 +275,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torch-home", type=Path, required=True)
     parser.add_argument("--sam2-checkpoint", type=Path, required=True)
     parser.add_argument("--owlv2-model", type=Path, required=True)
+    parser.add_argument("--expected-input-sha256", default=EXPECTED_INPUT_SHA256, help="Expected input hash, or 'none'/'skip' to disable the hash check")
+    parser.add_argument("--expected-width", type=int, default=1408)
+    parser.add_argument("--expected-height", type=int, default=1408)
+    parser.add_argument("--expected-fps", type=float, default=30.0)
+    parser.add_argument("--expected-frame-count", type=int, default=150)
+    parser.add_argument("--allow-input-sidecar", action="append", default=[], help="Additional prediction-side sensor/provenance filename allowed next to input.mp4")
     return parser.parse_args()
 
 
