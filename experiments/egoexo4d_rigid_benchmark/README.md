@@ -7,9 +7,10 @@
 3. 对 V19 的目标可见 Mask、named hand joints 和 camera trajectory 做 partial-GT 评测；
 4. 对缺少 GT 的 object geometry/6DoF/contact/nonpenetration 明确输出 `not_evaluated`。
 
-完整运行结果见：
+完整运行结果与当前输出/GT 故障分类见：
 
 - [`RESULTS_V19_V1_ZH.md`](RESULTS_V19_V1_ZH.md)
+- [`CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
 
 ---
 
@@ -25,11 +26,17 @@ evaluate_benchmark.py
 self_test_coordinate_contract.py
     用 exact synthetic 3D round trip 验证固定 camera-axis adapter 和 evaluator 数学实现。
 
+compare_current_outputs_to_gt.py
+    重算 available GT，并比较冻结/fixed projected Mesh、hand、camera 和 failure taxonomy。
+
 regression_pose_eligibility.py
     无 pytest 依赖的三帧 synthetic P09→P14→P15 eligibility/support regression。
 
 RESULTS_V19_V1_ZH.md
     本次 V19 完整盲运行、内部阶段审计和 partial-GT 结果。
+
+CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md
+    当前输出 vs available GT，以及 confirmed bug / pipeline design / observability limit 分类。
 ```
 
 ---
@@ -486,3 +493,34 @@ input SHA256:  37de09c1193bc5c56e23a4c9ea49caa1d38623cb4f6ea5e92dc03a78d9f29ec4
 ```
 
 预留的 run root 仍未创建。当前没有启动第二次 full run：输入 RGB 与冻结 v1 字节完全相同，且仍缺 `aria06_noimagestreams.vrs`，所以它不能被称为 sensor-calibrated rerun。P14–P19 的 exact-state mechanism replay 已在独立 ablation 中完成；若以后启动该 fresh root，只能标为 `b7b97e6` mechanism-ablation run，不能据此增加 camera/geometry GT claim。
+
+---
+
+## 12. 当前输出 vs available GT
+
+新增输出：
+
+```text
+$BENCH/evaluation_current_output_vs_gt_pose_gate_b7b97e6/
+├── current_output_vs_gt_evaluation.json
+├── failure_taxonomy.json
+├── summary.json
+├── object_mask_comparison.jpg
+├── projected_mesh_vs_sparse_gt.jpg
+└── projected_mesh_masks/
+```
+
+Headline：
+
+```text
+SAM2 visible-mask mean IoU:           0.6522
+frozen projected-Mesh mean IoU:       0.1508
+fixed projected-Mesh mean IoU:        0.0651
+fixed P15 trusted/min frames:          6 / 8
+fixed P15 annotation_ready:            false
+fixed P18b absolute MPJPE:           192.956 mm
+fixed P18b exactly equals HaWoR:       true
+camera SE3 ATE RMSE:                  58.588 mm
+```
+
+完整解释见 [`CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)。Projected-Mesh 指标同时受 estimated raw-view camera、错误 completed geometry、pose 和 visible occlusion 影响；它是 failure diagnostic，不是 object SE(3) GT。

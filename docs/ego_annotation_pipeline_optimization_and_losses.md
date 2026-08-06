@@ -1361,7 +1361,7 @@ P14 fit rows:      33
 | 27 ineligible rows | 51.783 mm | 63.425 mm |
 | all 33 rows | 47.745 mm | 63.038 mm |
 
-这直接说明：优化器在可信局部 support 上有效，但 pipeline 没有把 hard eligibility 送到 P14，导致 aggregate objective/physical state 被污染 rows 主导。增加更复杂 loss 之前，必须先修 correctness wiring。
+这直接说明：优化器在可信局部 support 上有效，但冻结 pipeline 没有把 hard eligibility 送到 P14，导致 aggregate objective/physical state 被污染 rows 主导。该 correctness wiring 已在 `b7b97e6` 修复；修复后仅余 6 个 trusted rows，P15 正确输出 `annotation_ready=false`，没有把 144 completion rows 升格。
 
 ### 19.3 P15：依旧是 inert problem
 
@@ -1453,3 +1453,21 @@ P19a→P19b = 1271 s
 ```
 
 完整 render 和失败机制确实被保留，但该运行不符合 V18+ default runtime 应与输入时长同一数量级的要求。优化方向应是同机制下的 profiling、batching、vectorization 和 renderer 加速；不能通过删掉 full timeline、只渲染 selected frames 或跳过物理 block 来制造速度数字。
+
+### 19.9 当前输出、fixed ablation 与 sparse video GT 的新增对照
+
+新增 evaluator 将同一个 completed Mesh 分别按冻结/fixed P15 pose 投影到 5 个 raw-grid visible Mask GT：
+
+```text
+SAM2 visible segmentation mean IoU: 0.6522
+frozen completed-Mesh projection:   0.1508
+fixed completed-Mesh projection:    0.0651
+```
+
+Fixed 在 frame 0/30/60/90 上 IoU 均为 0，只在 trusted interval 附近的 frame 120 为 `0.3253`。这不是恢复 rejected rows 的理由，而是 6 个 trusted observations 集中在 115–123、141 个 nearest holds 不具 trajectory support 的直接证据。
+
+完整报告：
+
+- [`experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](../experiments/egoexo4d_rigid_benchmark/CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
+
+它将问题分为 confirmed implementation bugs、可修 pipeline design/architecture problems、当前输入/GT 的 observability limits，以及尚需 targeted test 的 suspected bugs；没有把缺失 object SE(3)/contact GT 的指标补造出来。

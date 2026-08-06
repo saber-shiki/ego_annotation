@@ -1716,3 +1716,26 @@ runtime_preflight_egoexo4d_tire_lever_pose_gate_b7b97e6_raw_v2.json
 ```
 
 状态为 `ready_for_runtime_agent_launch`、`failed_checks=[]`，但预留 run root 保持未创建。没有 VRS calibration 时，同字节 raw RGB 的新运行只能是 mechanism ablation，不能称为 sensor-calibrated rerun。
+
+### 30.8 当前输出 vs available GT 故障分类
+
+新增 evaluator：
+
+```text
+experiments/egoexo4d_rigid_benchmark/compare_current_outputs_to_gt.py
+```
+
+输出：
+
+```text
+$BENCH/evaluation_current_output_vs_gt_pose_gate_b7b97e6/
+```
+
+其中重新评价了 sparse visible Mask、冻结/fixed completed-Mesh projection、HaWoR/P18/P18b/fixed quarantine hand joints 和 camera trajectory。Projected completed-Mesh mean IoU 为 frozen `0.1508`、fixed `0.0651`；fixed 在 GT frame 0/30/60/90 上为零 overlap，只在 frame 120 与 frozen 同为 `0.3253`。这证明 sparse nearest hold 不能作为可信轨迹，但不提供 object SE(3) GT。
+
+人类可读结论和 bug/design/observability taxonomy：
+
+```text
+experiments/egoexo4d_rigid_benchmark/
+CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md
+```

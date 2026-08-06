@@ -26,6 +26,12 @@ completed with an exposed physical failure
 8. 当前 NAS 没有 object CAD/6DoF/contact/nonpenetration GT，因此不能为这些 family 制造误差数字；但最终 render 和内部机制已经足以拒绝“成功物理标注”的结论。
 9. **Runtime 也不达标**：P00→P21 用时 `3652 s` 处理 `5 s` 视频，约实时的 `730×`；这不符合仓库对 V18+ default runtime“与输入时长同一数量级”的 invariant。
 
+冻结/fixed completed-Mesh 投影到 sparse video Mask GT 的新增对照，以及 confirmed bug / design problem / observability limit 分类见：
+
+- [`CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
+
+新增 projected-Mesh mean IoU 为 frozen `0.1508`、pose-gate fixed `0.0651`；后者正确标记 `annotation_ready=false`，不能解释为应恢复 rejected rows。
+
 ---
 
 ## 1. 运行身份与隔离
