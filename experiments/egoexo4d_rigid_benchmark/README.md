@@ -10,6 +10,7 @@
 完整运行结果与当前输出/GT 故障分类见：
 
 - [`RESULTS_V19_V1_ZH.md`](RESULTS_V19_V1_ZH.md)
+- [`ORIGINAL_V19_PIPELINE_ISSUES_BRIEF_ZH.md`](ORIGINAL_V19_PIPELINE_ISSUES_BRIEF_ZH.md)
 - [`CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md`](CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md)
 - [`NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md`](NEXT_PIPELINE_CORRECTION_AND_MULTICLIP_PLAN_ZH.md)
 
@@ -50,6 +51,9 @@ regression_geometry_evidence_contract.py
 
 RESULTS_V19_V1_ZH.md
     本次 V19 完整盲运行、内部阶段审计和 partial-GT 结果。
+
+ORIGINAL_V19_PIPELINE_ISSUES_BRIEF_ZH.md
+    冻结原始 V19 的主要 bug、设计问题、数据限制和修正优先级简报。
 
 CURRENT_OUTPUT_VS_GT_AND_FAILURE_TAXONOMY_ZH.md
     当前输出 vs available GT，以及 confirmed bug / pipeline design / observability limit 分类。
