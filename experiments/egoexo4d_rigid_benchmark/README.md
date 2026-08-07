@@ -652,3 +652,35 @@ $BENCH/evaluation_p14_p15_p18_error_visualization_v1/
 6. P18 raw 相对 HaWoR 的逐帧 error delta。
 
 Claim boundary：P14 是内部 visible-depth residual，不是 object-pose GT；P15 projection 同时混合 geometry、pose、camera 和 occlusion，也不是 object SE(3) GT；只有 P18 panel 使用 released independent 3-D hand-joint GT。
+
+---
+
+## 15. 直接叠加在实际视频上的 P14 / P15 / P18 对比
+
+脚本：
+
+```text
+render_p14_p15_p18_actual_video_comparison.py
+```
+
+输出完整 150 帧、30 fps、5 秒实际 RGB 时间轴：
+
+```text
+$BENCH/evaluation_actual_video_phase_comparison_v1/
+├── p14_p15_p18_actual_video_comparison.mp4
+├── p14_p15_object_mesh_actual_video_comparison.mp4
+├── p18_hand_actual_video_comparison.mp4
+├── actual_video_comparison_selected_frames.jpg
+└── actual_video_comparison_manifest.json
+```
+
+合并视频为 4×2 panel：
+
+- 上排依次为 actual RGB + cyan observed Mask（5 个 released GT 帧另画绿色轮廓）、frozen P14→P15 completed-Mesh 投影、eligibility-fixed P14→P15 投影、冻结 P19 metric-world render；
+- 下排依次为 HaWoR、P18 solver 的 pre-gate candidate、P18 translation gate 后实际发布的 raw state、P18b canonical source-preserved state；
+- pre-gate skeleton 不是臆造状态，而是用每行记录的 `output_translation_gate.applied_world_shift_m` 从 emitted joints 精确逆回 global translation；
+- 有 released 3-D hand GT 的帧在标题中显示 per-frame absolute MPJPE，但不把 GT skeleton 画到 raw RGB：本地缺 Aria VRS distortion calibration，不能把 rectified 512 GT UV 冒充 raw-view UV。
+
+该视频用于直接观察可见失败：冻结 completed Mesh 在 world panel 中表现为错误 sheet；frozen projection 与 actual target 仅局部重叠；fixed pose gate 暴露全时间轴 low-support nearest hold，不能将其较低 IoU 解释成应该恢复 rejected rows；P18 pre-gate candidate 明显漂移，translation gate 虽阻止该漂移进入发布状态，但 P18 emitted / P18b 仍没有修复约 193 mm 的 independent absolute hand error。
+
+Object panel 的绿色 sparse Mask 仅评价 visible silhouette。Mesh projection 仍联合混合 geometry、pose、camera、raw-view intrinsics approximation 和 occlusion；没有 object CAD/SE(3) GT，因此不得将该视频表述为单独的 geometry 或 object-pose 精度认证。
