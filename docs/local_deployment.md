@@ -127,6 +127,22 @@ python scripts/build_local_v19_runtime_bundle.py \
 
 Preflight 已通过，但 fresh run root 未创建，也未启动同 RGB 的第二次 full run；该 bundle 只准备 future mechanism-ablation 或取得 VRS calibration 后的新实验。
 
+当前 geometry-evidence bundle（source commit `da87a1a5c4b6cc2ed3d2caa3c5d832742ae3ed57`）：
+
+```text
+/mnt/user-home/kupingxin/ego_annotation_runtime/
+  v19_bundle_a800_da87a1a_geometry_gate_local4/
+```
+
+它含 28 个 runtime scripts、98 个 hashed files，并包含 P14b multi-view/self-visibility gate；WiLoR provenance 从 parent bundle manifest 显式继承 revision `fcb911312a38fa8badd30d9656a167485d61b8f9`。对应 raw-v2 preflight：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/
+  runtime_preflight_egoexo4d_tire_lever_geometry_gate_da87a1a_raw_v2.json
+```
+
+状态为 `ready_for_runtime_agent_launch`、`failed_checks=[]`、28/28 CLI contracts 通过。预留 run root `...geometry_gate_da87a1a_kupingxin_v3` 仍不存在；这不是新的 P00–P21 运行或物理结果。
+
 启动器参数依次为输入、fresh run root、case id、对应 preflight report：
 
 ```bash

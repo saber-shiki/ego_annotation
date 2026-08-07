@@ -1789,3 +1789,30 @@ experiments/egoexo4d_rigid_benchmark/regression_geometry_evidence_contract.py
 ```
 
 它不读取 NAS/GT，覆盖 single-view default/override、same-view negative、distinct-view positive、P16/P18 surface selection 和 legacy-unknown readiness。
+
+### 30.11 Geometry-gate isolated runtime bundle
+
+从 source revision `da87a1a5c4b6cc2ed3d2caa3c5d832742ae3ed57` 构建：
+
+```text
+/mnt/user-home/kupingxin/ego_annotation_runtime/
+  v19_bundle_a800_da87a1a_geometry_gate_local4/
+```
+
+Manifest 记录 28 个 scripts、98 个 hashed files、path isolation `ok`；`filter_v19_rigid_completion_multiview_support.py` 已进入 runtime closure。WiLoR 来源是既有 `b7b97e6` curated bundle 的 non-Git tree，revision `fcb911312a38fa8badd30d9656a167485d61b8f9` 通过 parent manifest 显式继承，而不是把 tree hash 冒充 Git revision。
+
+对应 prediction-only raw-v2 preflight：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/
+  runtime_preflight_egoexo4d_tire_lever_geometry_gate_da87a1a_raw_v2.json
+```
+
+结果为 `ready_for_runtime_agent_launch`、`failed_checks=[]`、28/28 script CLI contracts 通过；input SHA-256 仍为 `37de09c1193bc5c56e23a4c9ea49caa1d38623cb4f6ea5e92dc03a78d9f29ec4`。预留 fresh run root：
+
+```text
+/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/
+  20260806_egoexo4d_georgiatech_bike_07_10_tire_lever_f2040_2189_geometry_gate_da87a1a_kupingxin_v3/
+```
+
+该 root 保持不存在；没有用相同 RGB 启动新的 full run，也没有把 staged replay 描述为 sensor-calibrated rerun。

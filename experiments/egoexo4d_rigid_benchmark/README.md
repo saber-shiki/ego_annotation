@@ -525,6 +525,17 @@ input SHA256:  37de09c1193bc5c56e23a4c9ea49caa1d38623cb4f6ea5e92dc03a78d9f29ec4
 
 预留的 run root 仍未创建。当前没有启动第二次 full run：输入 RGB 与冻结 v1 字节完全相同，且仍缺 `aria06_noimagestreams.vrs`，所以它不能被称为 sensor-calibrated rerun。P14–P19 的 exact-state mechanism replay 已在独立 ablation 中完成；若以后启动该 fresh root，只能标为 `b7b97e6` mechanism-ablation run，不能据此增加 camera/geometry GT claim。
 
+Geometry-evidence 修正后的 isolated bundle：
+
+```text
+/mnt/user-home/kupingxin/ego_annotation_runtime/
+  v19_bundle_a800_da87a1a_geometry_gate_local4/
+source revision: da87a1a5c4b6cc2ed3d2caa3c5d832742ae3ed57
+scripts/files:   28 / 98
+```
+
+其 raw-v2 preflight 为 `runtime_preflight_egoexo4d_tire_lever_geometry_gate_da87a1a_raw_v2.json`，状态 `ready_for_runtime_agent_launch`、`failed_checks=[]`；预留 `...geometry_gate_da87a1a_kupingxin_v3` run root 仍未创建。它只冻结新的 phase/CLI/provenance contract，不是新 full run。
+
 ---
 
 ## 12. 当前输出 vs available GT
