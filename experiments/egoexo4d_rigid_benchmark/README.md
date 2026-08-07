@@ -31,6 +31,9 @@ self_test_coordinate_contract.py
 compare_current_outputs_to_gt.py
     重算 available GT，并比较冻结/fixed projected Mesh、hand、camera 和 failure taxonomy。
 
+visualize_p14_p15_p18_error_comparison.py
+    生成 P14 internal residual、P15 support/projection diagnostic 和 P18 independent hand-GT error 的六面板对比图。
+
 scan_multiclip_candidates.py
     类别无关扫描五张非空 1 Hz Mask、完整 camera、raw MP4 和 hand coverage 的候选 windows。
 
@@ -619,3 +622,33 @@ Evaluation-only root：
 Prediction case IDs 使用不含 split/role/take/target 的 opaque aliases `exo_rigid_001 ... exo_rigid_012`。每个 prediction case 恰有 `input.mp4 + PREDICTION_INPUT_MANIFEST.json`；relation track、take UID/name、Mask、hand/camera GT、narration和 rectified K 均不发布到 prediction side。12/12 视频为 960×960、150 帧、30 fps；12/12 coordinate-contract self-tests 和 endpoint source-frame alignment checks 通过。
 
 该 suite 是下一步 P13/temporal-observation/P15–P16/P18 修正的 regression guardrail，不是新的物理成功结果。Holdout 在 revision、target hints、suite-level metrics 和 no-per-case-tuning policy 冻结前不得运行。
+
+---
+
+## 14. P14 / P15 / P18 误差与支撑可视化
+
+脚本：
+
+```text
+visualize_p14_p15_p18_error_comparison.py
+```
+
+输出：
+
+```text
+$BENCH/evaluation_p14_p15_p18_error_visualization_v1/
+├── p14_p15_p18_error_comparison.png
+├── p14_p15_p18_error_comparison.jpg
+└── p14_p15_p18_error_comparison.json
+```
+
+六个 panel 分别显示：
+
+1. P14 每帧 initial/final observed→mesh median residual；
+2. P14 eligible 与 rejected rows 的 residual distribution；
+3. P15 direct/interpolation/nearest-hold 时间轴；
+4. P15 completed-Mesh projection 与 sparse visible Mask GT 的 IoU；
+5. HaWoR/P18 raw/P18b 的 independent 3-D hand-GT MPJPE timeline；
+6. P18 raw 相对 HaWoR 的逐帧 error delta。
+
+Claim boundary：P14 是内部 visible-depth residual，不是 object-pose GT；P15 projection 同时混合 geometry、pose、camera 和 occlusion，也不是 object SE(3) GT；只有 P18 panel 使用 released independent 3-D hand-joint GT。
