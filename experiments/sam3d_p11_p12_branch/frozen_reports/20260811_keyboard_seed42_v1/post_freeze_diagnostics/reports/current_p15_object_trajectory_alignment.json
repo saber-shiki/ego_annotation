@@ -1,0 +1,3405 @@
+{
+  "status": "ok",
+  "method": "evaluate_v19_hot3d_object_trajectory_alignment",
+  "claim_scope": "camera-coordinate object-pose trajectory consistency after fitting one fixed transform between predicted and HOT3D object canonical frames; does not score object shape/contact/nonpenetration",
+  "inputs": {
+    "render_state": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/sam3d_owned_dual_mesh/experimental_layered_render_state.json",
+    "annotations": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_vs_trellis_20260803/input/annotations_v19_visible_geometry.json",
+    "hot3d_gt": "/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/v19_inputs/clip-001851/evaluation/hot3d_gt/hot3d_clip_gt_sidecar.json",
+    "object_bop_id": "28",
+    "stream_id": "214-1",
+    "min_visibility": 0.0,
+    "direct_only": false
+  },
+  "row_count": 150,
+  "frame_min": 0,
+  "frame_max": 149,
+  "hot3d_object_name": "keyboard",
+  "fitted_constant_transform_pred_object_to_hot3d_object": {
+    "rotation_quaternion_wxyz": [
+      0.19459572710241238,
+      -0.6699846772683384,
+      0.648327200855575,
+      -0.3048358178592186
+    ],
+    "translation_xyz_m": [
+      -0.05621938790492184,
+      0.058471782771097006,
+      -0.04128783176669771
+    ]
+  },
+  "relative_transform_variability": {
+    "translation_deviation_from_mean_m": {
+      "count": 150,
+      "min": 0.0123957454543784,
+      "median": 0.09141140333878095,
+      "mean": 0.09728011525544111,
+      "p90": 0.15574722240848277,
+      "p95": 0.1734928431280735,
+      "max": 0.18675147564147307
+    },
+    "rotation_deviation_from_mean_rad": {
+      "count": 150,
+      "min": 0.011849457466485849,
+      "median": 0.14206244272622334,
+      "mean": 0.133637435436284,
+      "p90": 0.21691229876180337,
+      "p95": 0.23396288591803022,
+      "max": 0.24863842229331545
+    },
+    "rotation_deviation_from_mean_deg": {
+      "count": 150,
+      "min": 0.6789239023494202,
+      "median": 8.139578395531577,
+      "mean": 7.656861035451102,
+      "p90": 12.428159243532125,
+      "p95": 13.405085925803892,
+      "max": 14.245932222198455
+    }
+  },
+  "constant_transform_residual": {
+    "translation_m": {
+      "count": 150,
+      "min": 0.012395745171326219,
+      "median": 0.09141140268166695,
+      "mean": 0.09728011530135856,
+      "p90": 0.15574722468923463,
+      "p95": 0.1734928426301081,
+      "max": 0.18675147297393832
+    },
+    "rotation_rad": {
+      "count": 150,
+      "min": 0.011853967605485856,
+      "median": 0.14206245978228169,
+      "mean": 0.13363748147172344,
+      "p90": 0.2169122482672728,
+      "p95": 0.2339629818304728,
+      "max": 0.24863839085604236
+    },
+    "rotation_deg": {
+      "count": 150,
+      "min": 0.679182314279138,
+      "median": 8.139579372771736,
+      "mean": 7.656863673087491,
+      "p90": 12.428156350408635,
+      "p95": 13.405091421182055,
+      "max": 14.245930420975387
+    },
+    "aligned_object_origin_depth_delta_m": {
+      "count": 150,
+      "min": -0.11386303791497765,
+      "median": -0.0008127541264290605,
+      "mean": 0.0013631297773881279,
+      "p90": 0.05013386933380143,
+      "p95": 0.08410369343382784,
+      "max": 0.09630657584172087
+    }
+  },
+  "interpretation_notes": [
+    "A stable relative transform means the predicted and GT object trajectories are temporally consistent up to object-frame convention.",
+    "This cannot certify object shape, contact, or signed nonpenetration because the HOT3D CAD model is not used here.",
+    "Large residuals after one fixed transform indicate object pose/camera trajectory inconsistency, not ordinary per-frame contact measurement noise."
+  ],
+  "rows": [
+    {
+      "frame_idx": 0,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8699227760505466,
+      "gt_box_amodal": [
+        896.0,
+        211.0,
+        1126.0,
+        778.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06239810066859505,
+        0.18298061878265706,
+        -0.06138694380146881
+      ],
+      "relative_transform_rotation_angle_rad": 2.6028637738419613,
+      "constant_transform_residual_translation_m": 0.1262719333197471,
+      "constant_transform_residual_rotation_rad": 0.15954586777050597,
+      "aligned_object_origin_depth_delta_m": 0.03500884405714261
+    },
+    {
+      "frame_idx": 1,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8731248997272582,
+      "gt_box_amodal": [
+        896.0,
+        215.0,
+        1127.0,
+        782.0
+      ],
+      "relative_transform_translation_m": [
+        -0.061136120030148317,
+        0.2074261535744932,
+        -0.042521857537747454
+      ],
+      "relative_transform_rotation_angle_rad": 2.6422141632242964,
+      "constant_transform_residual_translation_m": 0.14904060100005193,
+      "constant_transform_residual_rotation_rad": 0.14262471001066815,
+      "aligned_object_origin_depth_delta_m": 0.015801838072460384
+    },
+    {
+      "frame_idx": 2,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8741682581163936,
+      "gt_box_amodal": [
+        898.0,
+        218.0,
+        1129.0,
+        785.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05769445377769444,
+        0.2368681014208816,
+        -0.04070671617337107
+      ],
+      "relative_transform_rotation_angle_rad": 2.6576122414533954,
+      "constant_transform_residual_translation_m": 0.17840336513498942,
+      "constant_transform_residual_rotation_rad": 0.11632314291158898,
+      "aligned_object_origin_depth_delta_m": 0.01611131252320047
+    },
+    {
+      "frame_idx": 3,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8701037156379016,
+      "gt_box_amodal": [
+        902.0,
+        219.0,
+        1135.0,
+        786.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05169939917211677,
+        0.23007597217018516,
+        -0.04186097923892945
+      ],
+      "relative_transform_rotation_angle_rad": 2.6533967509640592,
+      "constant_transform_residual_translation_m": 0.17166466687588627,
+      "constant_transform_residual_rotation_rad": 0.10783135245861522,
+      "aligned_object_origin_depth_delta_m": 0.012241551934656203
+    },
+    {
+      "frame_idx": 4,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8676250614891929,
+      "gt_box_amodal": [
+        905.0,
+        220.0,
+        1139.0,
+        787.0
+      ],
+      "relative_transform_translation_m": [
+        -0.057122412385483934,
+        0.23770559073879377,
+        -0.022631704103770467
+      ],
+      "relative_transform_rotation_angle_rad": 2.61437604224559,
+      "constant_transform_residual_translation_m": 0.1802043995160353,
+      "constant_transform_residual_rotation_rad": 0.14960233595269531,
+      "aligned_object_origin_depth_delta_m": 0.004549646601620272
+    },
+    {
+      "frame_idx": 5,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8666793705557283,
+      "gt_box_amodal": [
+        905.0,
+        221.0,
+        1141.0,
+        788.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0607093043360549,
+        0.1735567116349256,
+        -0.03462289683474268
+      ],
+      "relative_transform_rotation_angle_rad": 2.5842060521110564,
+      "constant_transform_residual_translation_m": 0.1153651655548051,
+      "constant_transform_residual_rotation_rad": 0.18424938944079697,
+      "aligned_object_origin_depth_delta_m": 0.008939470415049167
+    },
+    {
+      "frame_idx": 6,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8665782813064963,
+      "gt_box_amodal": [
+        905.0,
+        224.0,
+        1140.0,
+        791.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06147011072586622,
+        0.1944413244101334,
+        -0.019668130893867264
+      ],
+      "relative_transform_rotation_angle_rad": 2.5862343024576147,
+      "constant_transform_residual_translation_m": 0.13777771316669724,
+      "constant_transform_residual_rotation_rad": 0.18976407436312331,
+      "aligned_object_origin_depth_delta_m": 0.0006791575461683741
+    },
+    {
+      "frame_idx": 7,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8698218307593307,
+      "gt_box_amodal": [
+        903.0,
+        232.0,
+        1141.0,
+        798.0
+      ],
+      "relative_transform_translation_m": [
+        -0.052826637011541805,
+        0.13765315799011762,
+        -0.03246913542388746
+      ],
+      "relative_transform_rotation_angle_rad": 2.594969415045284,
+      "constant_transform_residual_translation_m": 0.07974315369154458,
+      "constant_transform_residual_rotation_rad": 0.1778673045228452,
+      "aligned_object_origin_depth_delta_m": 0.0018430719221993463
+    },
+    {
+      "frame_idx": 8,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8768142910308895,
+      "gt_box_amodal": [
+        901.0,
+        245.0,
+        1143.0,
+        811.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04142997342107413,
+        0.11883903712681756,
+        -0.028902445391456144
+      ],
+      "relative_transform_rotation_angle_rad": 2.6365125161947334,
+      "constant_transform_residual_translation_m": 0.06337452126069992,
+      "constant_transform_residual_rotation_rad": 0.14255995732097063,
+      "aligned_object_origin_depth_delta_m": -0.005226041875354082
+    },
+    {
+      "frame_idx": 9,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8860403722032061,
+      "gt_box_amodal": [
+        901.0,
+        258.0,
+        1145.0,
+        824.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05646242200995169,
+        0.061375064231976445,
+        -0.06879880607609606
+      ],
+      "relative_transform_rotation_angle_rad": 2.75348011909658,
+      "constant_transform_residual_translation_m": 0.02766481229365418,
+      "constant_transform_residual_rotation_rad": 0.06882034305313148,
+      "aligned_object_origin_depth_delta_m": 0.027514049948844377
+    },
+    {
+      "frame_idx": 10,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8964920528542707,
+      "gt_box_amodal": [
+        901.0,
+        269.0,
+        1146.0,
+        835.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04679650453667067,
+        0.03472340142139624,
+        -0.05190318477692013
+      ],
+      "relative_transform_rotation_angle_rad": 2.7704681238045445,
+      "constant_transform_residual_translation_m": 0.02766698537721618,
+      "constant_transform_residual_rotation_rad": 0.041142307975208355,
+      "aligned_object_origin_depth_delta_m": 0.00852720394251677
+    },
+    {
+      "frame_idx": 11,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9053633754362805,
+      "gt_box_amodal": [
+        897.0,
+        276.0,
+        1143.0,
+        842.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04457888799066628,
+        0.026303495617120365,
+        -0.04496806212297483
+      ],
+      "relative_transform_rotation_angle_rad": 2.7677041074820163,
+      "constant_transform_residual_translation_m": 0.03440703487990081,
+      "constant_transform_residual_rotation_rad": 0.04041196509967408,
+      "aligned_object_origin_depth_delta_m": 0.0009367228019835361
+    },
+    {
+      "frame_idx": 12,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9104098040589925,
+      "gt_box_amodal": [
+        892.0,
+        281.0,
+        1139.0,
+        846.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05096773518899414,
+        0.014250019047585438,
+        -0.05386560154583536
+      ],
+      "relative_transform_rotation_angle_rad": 2.772238044821837,
+      "constant_transform_residual_translation_m": 0.04627466505952565,
+      "constant_transform_residual_rotation_rad": 0.05671139250441509,
+      "aligned_object_origin_depth_delta_m": 0.01030606713668708
+    },
+    {
+      "frame_idx": 13,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9108130309344447,
+      "gt_box_amodal": [
+        888.0,
+        283.0,
+        1135.0,
+        848.0
+      ],
+      "relative_transform_translation_m": [
+        -0.051388567418674425,
+        0.0021242892738723984,
+        -0.046983995786110344
+      ],
+      "relative_transform_rotation_angle_rad": 2.7993689839138547,
+      "constant_transform_residual_translation_m": 0.05684033128814656,
+      "constant_transform_residual_rotation_rad": 0.05789748531920957,
+      "aligned_object_origin_depth_delta_m": 0.002480505836554736
+    },
+    {
+      "frame_idx": 14,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.911742894937267,
+      "gt_box_amodal": [
+        886.0,
+        285.0,
+        1133.0,
+        848.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05561660408879593,
+        -0.0054153791143665975,
+        -0.048153258978257285
+      ],
+      "relative_transform_rotation_angle_rad": 2.80579115137787,
+      "constant_transform_residual_translation_m": 0.06425781560017865,
+      "constant_transform_residual_rotation_rad": 0.06611036679037242,
+      "aligned_object_origin_depth_delta_m": 0.004381510707123337
+    },
+    {
+      "frame_idx": 15,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9108188750138136,
+      "gt_box_amodal": [
+        887.0,
+        284.0,
+        1134.0,
+        848.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04808919259355185,
+        -0.011831649339067135,
+        -0.04394468460051759
+      ],
+      "relative_transform_rotation_angle_rad": 2.7857187839309026,
+      "constant_transform_residual_translation_m": 0.07082183010379209,
+      "constant_transform_residual_rotation_rad": 0.046551696732411045,
+      "aligned_object_origin_depth_delta_m": -0.0017889197873168228
+    },
+    {
+      "frame_idx": 16,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9083395338548474,
+      "gt_box_amodal": [
+        889.0,
+        282.0,
+        1136.0,
+        845.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04162847277782461,
+        -0.016253973668413052,
+        -0.04031974042938219
+      ],
+      "relative_transform_rotation_angle_rad": 2.7727874182067374,
+      "constant_transform_residual_translation_m": 0.07614309232064212,
+      "constant_transform_residual_rotation_rad": 0.04195909416807501,
+      "aligned_object_origin_depth_delta_m": -0.0072520995447988845
+    },
+    {
+      "frame_idx": 17,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9114202270195405,
+      "gt_box_amodal": [
+        890.0,
+        278.0,
+        1138.0,
+        842.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04180757369208438,
+        -0.001703826783969048,
+        -0.04551467597241732
+      ],
+      "relative_transform_rotation_angle_rad": 2.7562341786667814,
+      "constant_transform_residual_translation_m": 0.06202153294167144,
+      "constant_transform_residual_rotation_rad": 0.03737054229123545,
+      "aligned_object_origin_depth_delta_m": -0.0012914359727819735
+    },
+    {
+      "frame_idx": 18,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9238940891142691,
+      "gt_box_amodal": [
+        891.0,
+        275.0,
+        1137.0,
+        839.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03534033999094252,
+        -0.0075344171598048515,
+        -0.05015970856137164
+      ],
+      "relative_transform_rotation_angle_rad": 2.7106721176140356,
+      "constant_transform_residual_translation_m": 0.06979586713688501,
+      "constant_transform_residual_rotation_rad": 0.05693203400670893,
+      "aligned_object_origin_depth_delta_m": 0.0011940790151538372
+    },
+    {
+      "frame_idx": 19,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9246834997536376,
+      "gt_box_amodal": [
+        890.0,
+        273.0,
+        1135.0,
+        836.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04687271891223216,
+        -0.012439379672235767,
+        -0.05963556032561823
+      ],
+      "relative_transform_rotation_angle_rad": 2.7302126636001165,
+      "constant_transform_residual_translation_m": 0.07384031446150441,
+      "constant_transform_residual_rotation_rad": 0.04052909818540644,
+      "aligned_object_origin_depth_delta_m": 0.011605693941639572
+    },
+    {
+      "frame_idx": 20,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9225265884781575,
+      "gt_box_amodal": [
+        888.0,
+        271.0,
+        1133.0,
+        834.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04229816175350962,
+        -0.010182240032351048,
+        -0.05630310324121035
+      ],
+      "relative_transform_rotation_angle_rad": 2.7254840050095375,
+      "constant_transform_residual_translation_m": 0.0716424028982043,
+      "constant_transform_residual_rotation_rad": 0.043164300137910776,
+      "aligned_object_origin_depth_delta_m": 0.008584723844703712
+    },
+    {
+      "frame_idx": 21,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9202705992129498,
+      "gt_box_amodal": [
+        887.0,
+        270.0,
+        1132.0,
+        833.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04432675493181609,
+        -0.01606333878418445,
+        -0.0563455914961295
+      ],
+      "relative_transform_rotation_angle_rad": 2.73815249938402,
+      "constant_transform_residual_translation_m": 0.07696528553992703,
+      "constant_transform_residual_rotation_rad": 0.040796155116437256,
+      "aligned_object_origin_depth_delta_m": 0.009480307608412841
+    },
+    {
+      "frame_idx": 22,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9145388854126718,
+      "gt_box_amodal": [
+        886.0,
+        270.0,
+        1132.0,
+        834.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0464251241133794,
+        -0.012734280358272315,
+        -0.046358532387117124
+      ],
+      "relative_transform_rotation_angle_rad": 2.7694949427866455,
+      "constant_transform_residual_translation_m": 0.07205513717465255,
+      "constant_transform_residual_rotation_rad": 0.06124545899429233,
+      "aligned_object_origin_depth_delta_m": 0.0026950621646475437
+    },
+    {
+      "frame_idx": 23,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9073708077088998,
+      "gt_box_amodal": [
+        884.0,
+        271.0,
+        1133.0,
+        836.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04458861540092299,
+        0.006961660871453723,
+        -0.047052721782816664
+      ],
+      "relative_transform_rotation_angle_rad": 2.762036698627807,
+      "constant_transform_residual_translation_m": 0.05312063104194625,
+      "constant_transform_residual_rotation_rad": 0.048948236204441595,
+      "aligned_object_origin_depth_delta_m": 0.002612195382293736
+    },
+    {
+      "frame_idx": 24,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9075823461788374,
+      "gt_box_amodal": [
+        884.0,
+        272.0,
+        1133.0,
+        837.0
+      ],
+      "relative_transform_translation_m": [
+        -0.054380806510752056,
+        0.01675899669136477,
+        -0.058133746262291175
+      ],
+      "relative_transform_rotation_angle_rad": 2.771960453487336,
+      "constant_transform_residual_translation_m": 0.04502356980549114,
+      "constant_transform_residual_rotation_rad": 0.05240199937593124,
+      "aligned_object_origin_depth_delta_m": 0.0150604639331407
+    },
+    {
+      "frame_idx": 25,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9075316480971207,
+      "gt_box_amodal": [
+        882.0,
+        273.0,
+        1131.0,
+        837.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05561937565820593,
+        0.0025096069188020875,
+        -0.05480901043964442
+      ],
+      "relative_transform_rotation_angle_rad": 2.783401363313287,
+      "constant_transform_residual_translation_m": 0.05757557998307537,
+      "constant_transform_residual_rotation_rad": 0.07608177384742264,
+      "aligned_object_origin_depth_delta_m": 0.012561473679204904
+    },
+    {
+      "frame_idx": 26,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9047433592969842,
+      "gt_box_amodal": [
+        882.0,
+        273.0,
+        1131.0,
+        837.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05410358072988869,
+        0.007346928008895387,
+        -0.048171719726634976
+      ],
+      "relative_transform_rotation_angle_rad": 2.796902746099764,
+      "constant_transform_residual_translation_m": 0.05162959612941547,
+      "constant_transform_residual_rotation_rad": 0.0770888836757817,
+      "aligned_object_origin_depth_delta_m": 0.005945334250756162
+    },
+    {
+      "frame_idx": 27,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8988027536665669,
+      "gt_box_amodal": [
+        884.0,
+        272.0,
+        1132.0,
+        837.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04800795718246806,
+        -0.000783623890755758,
+        -0.03706920065270475
+      ],
+      "relative_transform_rotation_angle_rad": 2.793754153322841,
+      "constant_transform_residual_translation_m": 0.05997022147996025,
+      "constant_transform_residual_rotation_rad": 0.09197874851413562,
+      "aligned_object_origin_depth_delta_m": -0.00502697793353174
+    },
+    {
+      "frame_idx": 28,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8924150999850397,
+      "gt_box_amodal": [
+        885.0,
+        271.0,
+        1133.0,
+        836.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04951977555134912,
+        0.003961744393372574,
+        -0.03912693927529959
+      ],
+      "relative_transform_rotation_angle_rad": 2.7961282822521136,
+      "constant_transform_residual_translation_m": 0.05496270094733478,
+      "constant_transform_residual_rotation_rad": 0.08332555269689945,
+      "aligned_object_origin_depth_delta_m": -0.003253401342339368
+    },
+    {
+      "frame_idx": 29,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8869076160792776,
+      "gt_box_amodal": [
+        885.0,
+        271.0,
+        1132.0,
+        835.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05329290450511792,
+        0.023350792328938885,
+        -0.041950347120795206
+      ],
+      "relative_transform_rotation_angle_rad": 2.7704315422617376,
+      "constant_transform_residual_translation_m": 0.035248931731956076,
+      "constant_transform_residual_rotation_rad": 0.07935993942955037,
+      "aligned_object_origin_depth_delta_m": -0.00017549425548635256
+    },
+    {
+      "frame_idx": 30,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8819427771108443,
+      "gt_box_amodal": [
+        886.0,
+        271.0,
+        1133.0,
+        834.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05592917008753895,
+        0.035244693338794264,
+        -0.04577144004813588
+      ],
+      "relative_transform_rotation_angle_rad": 2.761231615275521,
+      "constant_transform_residual_translation_m": 0.023657654633082986,
+      "constant_transform_residual_rotation_rad": 0.058201162416801296,
+      "aligned_object_origin_depth_delta_m": 0.0035818041802214706
+    },
+    {
+      "frame_idx": 31,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8780990495247624,
+      "gt_box_amodal": [
+        888.0,
+        270.0,
+        1135.0,
+        834.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04861932343460945,
+        0.04152932200176432,
+        -0.042700845765623885
+      ],
+      "relative_transform_rotation_angle_rad": 2.7412002287493467,
+      "constant_transform_residual_translation_m": 0.018622689288277452,
+      "constant_transform_residual_rotation_rad": 0.04894602924251409,
+      "aligned_object_origin_depth_delta_m": -0.00025843860920454764
+    },
+    {
+      "frame_idx": 32,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8752789536361544,
+      "gt_box_amodal": [
+        890.0,
+        270.0,
+        1136.0,
+        833.0
+      ],
+      "relative_transform_translation_m": [
+        -0.050433420306052607,
+        0.05056168818217782,
+        -0.0488777914443857
+      ],
+      "relative_transform_rotation_angle_rad": 2.7208634184617346,
+      "constant_transform_residual_translation_m": 0.012395745171326219,
+      "constant_transform_residual_rotation_rad": 0.05900820686832365,
+      "aligned_object_origin_depth_delta_m": 0.006624485372239808
+    },
+    {
+      "frame_idx": 33,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.872181885738961,
+      "gt_box_amodal": [
+        892.0,
+        270.0,
+        1137.0,
+        832.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04419635236938024,
+        0.02223015490047167,
+        -0.028715523663465026
+      ],
+      "relative_transform_rotation_angle_rad": 2.7385563041780143,
+      "constant_transform_residual_translation_m": 0.04020039735881839,
+      "constant_transform_residual_rotation_rad": 0.07528311602754025,
+      "aligned_object_origin_depth_delta_m": -0.014509476451601666
+    },
+    {
+      "frame_idx": 34,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8672077987472053,
+      "gt_box_amodal": [
+        893.0,
+        269.0,
+        1138.0,
+        831.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04945358700001601,
+        -0.001847603977922524,
+        -0.01884768147295135
+      ],
+      "relative_transform_rotation_angle_rad": 2.802268607636875,
+      "constant_transform_residual_translation_m": 0.06471294211343595,
+      "constant_transform_residual_rotation_rad": 0.11815373707733548,
+      "aligned_object_origin_depth_delta_m": -0.021364733083708787
+    },
+    {
+      "frame_idx": 35,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8641642888719205,
+      "gt_box_amodal": [
+        893.0,
+        268.0,
+        1138.0,
+        831.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0574596032267049,
+        -0.013212445305006815,
+        -0.02073018682086286
+      ],
+      "relative_transform_rotation_angle_rad": 2.834637198300639,
+      "constant_transform_residual_translation_m": 0.07458407063486651,
+      "constant_transform_residual_rotation_rad": 0.17296589097029957,
+      "aligned_object_origin_depth_delta_m": -0.015555392579795602
+    },
+    {
+      "frame_idx": 36,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8615724584787369,
+      "gt_box_amodal": [
+        893.0,
+        268.0,
+        1139.0,
+        831.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06734077181681233,
+        -0.03221690760205026,
+        -0.019987339743927135
+      ],
+      "relative_transform_rotation_angle_rad": 2.9027639869575137,
+      "constant_transform_residual_translation_m": 0.09381809308213247,
+      "constant_transform_residual_rotation_rad": 0.22524502702957297,
+      "aligned_object_origin_depth_delta_m": -0.009992640047189028
+    },
+    {
+      "frame_idx": 37,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.85709011445164,
+      "gt_box_amodal": [
+        893.0,
+        269.0,
+        1139.0,
+        831.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05739980576232509,
+        -0.06783818119453514,
+        -0.002127767352582577
+      ],
+      "relative_transform_rotation_angle_rad": 2.912765834954972,
+      "constant_transform_residual_translation_m": 0.1322464016580304,
+      "constant_transform_residual_rotation_rad": 0.24863839085604236,
+      "aligned_object_origin_depth_delta_m": -0.022353900164878426
+    },
+    {
+      "frame_idx": 38,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8532289628180039,
+      "gt_box_amodal": [
+        892.0,
+        269.0,
+        1136.0,
+        831.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06224597873773405,
+        -0.07998691758285127,
+        -0.007153210490888795
+      ],
+      "relative_transform_rotation_angle_rad": 2.921210829840242,
+      "constant_transform_residual_translation_m": 0.14273158384598783,
+      "constant_transform_residual_rotation_rad": 0.24542429847502636,
+      "aligned_object_origin_depth_delta_m": -0.01613741798104107
+    },
+    {
+      "frame_idx": 39,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8511760056824434,
+      "gt_box_amodal": [
+        891.0,
+        267.0,
+        1134.0,
+        828.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06453666316475132,
+        -0.08826688926238284,
+        -0.013233574854039365
+      ],
+      "relative_transform_rotation_angle_rad": 2.8959661151730107,
+      "constant_transform_residual_translation_m": 0.14962772320320475,
+      "constant_transform_residual_rotation_rad": 0.22477178172700127,
+      "aligned_object_origin_depth_delta_m": -0.01308174799246703
+    },
+    {
+      "frame_idx": 40,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8529329385403329,
+      "gt_box_amodal": [
+        892.0,
+        264.0,
+        1134.0,
+        825.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06549291107115157,
+        -0.07814006812718793,
+        -0.016807426125581282
+      ],
+      "relative_transform_rotation_angle_rad": 2.900717294622883,
+      "constant_transform_residual_translation_m": 0.13909739882579164,
+      "constant_transform_residual_rotation_rad": 0.2339629818304728,
+      "aligned_object_origin_depth_delta_m": -0.008521861692764365
+    },
+    {
+      "frame_idx": 41,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8557793423938627,
+      "gt_box_amodal": [
+        895.0,
+        262.0,
+        1136.0,
+        823.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06757300759234192,
+        -0.0752768549850032,
+        -0.01956455021038539
+      ],
+      "relative_transform_rotation_angle_rad": 2.897766339227897,
+      "constant_transform_residual_translation_m": 0.13597611422876646,
+      "constant_transform_residual_rotation_rad": 0.22899712466556327,
+      "aligned_object_origin_depth_delta_m": -0.007114133755590335
+    },
+    {
+      "frame_idx": 42,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8540475927395458,
+      "gt_box_amodal": [
+        899.0,
+        259.0,
+        1139.0,
+        820.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06712781535515053,
+        -0.07826280167687405,
+        -0.02034141642377052
+      ],
+      "relative_transform_rotation_angle_rad": 2.9046206958966416,
+      "constant_transform_residual_translation_m": 0.13875911637924462,
+      "constant_transform_residual_rotation_rad": 0.23795127459289248,
+      "aligned_object_origin_depth_delta_m": -0.004321639188138937
+    },
+    {
+      "frame_idx": 43,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8475269356051115,
+      "gt_box_amodal": [
+        900.0,
+        257.0,
+        1142.0,
+        819.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06846051248420393,
+        -0.07741114198479102,
+        -0.020222625243213832
+      ],
+      "relative_transform_rotation_angle_rad": 2.9072748883961905,
+      "constant_transform_residual_translation_m": 0.1380498341053082,
+      "constant_transform_residual_rotation_rad": 0.2343871632701676,
+      "aligned_object_origin_depth_delta_m": -0.003822821075062932
+    },
+    {
+      "frame_idx": 44,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.840455755255839,
+      "gt_box_amodal": [
+        899.0,
+        255.0,
+        1142.0,
+        818.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06703404239943142,
+        -0.06512792587801222,
+        -0.014682028134957337
+      ],
+      "relative_transform_rotation_angle_rad": 2.917224655332036,
+      "constant_transform_residual_translation_m": 0.1268925303863747,
+      "constant_transform_residual_rotation_rad": 0.23719815709902756,
+      "aligned_object_origin_depth_delta_m": -0.009295027947553991
+    },
+    {
+      "frame_idx": 45,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.834425300498096,
+      "gt_box_amodal": [
+        898.0,
+        253.0,
+        1141.0,
+        816.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06992638980112056,
+        -0.027695267656762723,
+        -0.0232633730422534
+      ],
+      "relative_transform_rotation_angle_rad": 2.9038130530102793,
+      "constant_transform_residual_translation_m": 0.08909278311791875,
+      "constant_transform_residual_rotation_rad": 0.22366194687725124,
+      "aligned_object_origin_depth_delta_m": -0.005871229615854512
+    },
+    {
+      "frame_idx": 46,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8294858916085655,
+      "gt_box_amodal": [
+        897.0,
+        250.0,
+        1140.0,
+        814.0
+      ],
+      "relative_transform_translation_m": [
+        -0.059208716940156086,
+        -0.014886176440771545,
+        -0.012794974194123065
+      ],
+      "relative_transform_rotation_angle_rad": 2.86211711518419,
+      "constant_transform_residual_translation_m": 0.07875385398010722,
+      "constant_transform_residual_rotation_rad": 0.1790169593241072,
+      "aligned_object_origin_depth_delta_m": -0.021320054250324294
+    },
+    {
+      "frame_idx": 47,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8273103558067341,
+      "gt_box_amodal": [
+        896.0,
+        247.0,
+        1137.0,
+        810.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05912852555522477,
+        0.032546735756401546,
+        -0.042067419106041004
+      ],
+      "relative_transform_rotation_angle_rad": 2.7619243108407145,
+      "constant_transform_residual_translation_m": 0.026099404654999447,
+      "constant_transform_residual_rotation_rad": 0.09608853389941653,
+      "aligned_object_origin_depth_delta_m": 0.0012764464038408363
+    },
+    {
+      "frame_idx": 48,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.826705647206229,
+      "gt_box_amodal": [
+        896.0,
+        242.0,
+        1137.0,
+        806.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06099791950380268,
+        0.07200790661236134,
+        -0.059327717218121745
+      ],
+      "relative_transform_rotation_angle_rad": 2.68683439995861,
+      "constant_transform_residual_translation_m": 0.023054250216388527,
+      "constant_transform_residual_rotation_rad": 0.09395616784131107,
+      "aligned_object_origin_depth_delta_m": 0.018950506314189375
+    },
+    {
+      "frame_idx": 49,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8274248820461882,
+      "gt_box_amodal": [
+        898.0,
+        237.0,
+        1139.0,
+        801.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04764003359289096,
+        0.09739295099473927,
+        -0.03368285764443396
+      ],
+      "relative_transform_rotation_angle_rad": 2.6018023940854764,
+      "constant_transform_residual_translation_m": 0.040574602275616545,
+      "constant_transform_residual_rotation_rad": 0.1588338311574595,
+      "aligned_object_origin_depth_delta_m": -0.0031186741614184776
+    },
+    {
+      "frame_idx": 50,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8277518610421836,
+      "gt_box_amodal": [
+        902.0,
+        233.0,
+        1141.0,
+        796.0
+      ],
+      "relative_transform_translation_m": [
+        -0.046082554969830436,
+        0.11125402446593041,
+        -0.02238244542578821
+      ],
+      "relative_transform_rotation_angle_rad": 2.5884184206163026,
+      "constant_transform_residual_translation_m": 0.056974854020264185,
+      "constant_transform_residual_rotation_rad": 0.17062918042775274,
+      "aligned_object_origin_depth_delta_m": -0.012195437329066083
+    },
+    {
+      "frame_idx": 51,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8235756502358162,
+      "gt_box_amodal": [
+        906.0,
+        229.0,
+        1144.0,
+        793.0
+      ],
+      "relative_transform_translation_m": [
+        -0.048230604963618084,
+        0.11629555541847428,
+        -0.02193727117278854
+      ],
+      "relative_transform_rotation_angle_rad": 2.5885713291460197,
+      "constant_transform_residual_translation_m": 0.061496775345506675,
+      "constant_transform_residual_rotation_rad": 0.1693713938853444,
+      "aligned_object_origin_depth_delta_m": -0.011575040954245108
+    },
+    {
+      "frame_idx": 52,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8164823382244902,
+      "gt_box_amodal": [
+        909.0,
+        225.0,
+        1147.0,
+        790.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05089436861681357,
+        0.11213667830117335,
+        -0.02630476904763973
+      ],
+      "relative_transform_rotation_angle_rad": 2.5985511015551306,
+      "constant_transform_residual_translation_m": 0.05597114536338192,
+      "constant_transform_residual_rotation_rad": 0.16236686733919264,
+      "aligned_object_origin_depth_delta_m": -0.008502271727818755
+    },
+    {
+      "frame_idx": 53,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8070495800061198,
+      "gt_box_amodal": [
+        911.0,
+        222.0,
+        1149.0,
+        787.0
+      ],
+      "relative_transform_translation_m": [
+        -0.042502531285102146,
+        0.1061718424150147,
+        -0.021319129243471346
+      ],
+      "relative_transform_rotation_angle_rad": 2.5357897943833625,
+      "constant_transform_residual_translation_m": 0.0534995031692142,
+      "constant_transform_residual_rotation_rad": 0.2261923026168229,
+      "aligned_object_origin_depth_delta_m": -0.012551678651235187
+    },
+    {
+      "frame_idx": 54,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7966708994084005,
+      "gt_box_amodal": [
+        911.0,
+        220.0,
+        1148.0,
+        784.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04390250280488581,
+        0.11571226148207886,
+        -0.018686312737626387
+      ],
+      "relative_transform_rotation_angle_rad": 2.524382801573751,
+      "constant_transform_residual_translation_m": 0.06276150815298444,
+      "constant_transform_residual_rotation_rad": 0.23555333306690973,
+      "aligned_object_origin_depth_delta_m": -0.013652784174197408
+    },
+    {
+      "frame_idx": 55,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7854911660080999,
+      "gt_box_amodal": [
+        910.0,
+        217.0,
+        1146.0,
+        781.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05266284549122782,
+        0.13614424978800066,
+        -0.027241355755740215
+      ],
+      "relative_transform_rotation_angle_rad": 2.5180357510837927,
+      "constant_transform_residual_translation_m": 0.07901243387572411,
+      "constant_transform_residual_rotation_rad": 0.23759953394742134,
+      "aligned_object_origin_depth_delta_m": -0.0019032053865180032
+    },
+    {
+      "frame_idx": 56,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7760688988418207,
+      "gt_box_amodal": [
+        910.0,
+        214.0,
+        1145.0,
+        778.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05954990958259848,
+        0.1661450353849151,
+        -0.012540385615054328
+      ],
+      "relative_transform_rotation_angle_rad": 2.550094162547773,
+      "constant_transform_residual_translation_m": 0.111494564381054,
+      "constant_transform_residual_rotation_rad": 0.2119409563168536,
+      "aligned_object_origin_depth_delta_m": -0.010560952772026178
+    },
+    {
+      "frame_idx": 57,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7678670032342036,
+      "gt_box_amodal": [
+        911.0,
+        212.0,
+        1145.0,
+        775.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05342546837316456,
+        0.17846028393325566,
+        -0.006890951865592909
+      ],
+      "relative_transform_rotation_angle_rad": 2.540562504143302,
+      "constant_transform_residual_translation_m": 0.1248526834048625,
+      "constant_transform_residual_rotation_rad": 0.2169122482672728,
+      "aligned_object_origin_depth_delta_m": -0.014361465031829723
+    },
+    {
+      "frame_idx": 58,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7597401319027464,
+      "gt_box_amodal": [
+        914.0,
+        210.0,
+        1148.0,
+        773.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04689889050516577,
+        0.19519621054828987,
+        0.0009672991325054281
+      ],
+      "relative_transform_rotation_angle_rad": 2.577122861744852,
+      "constant_transform_residual_translation_m": 0.14340828396691446,
+      "constant_transform_residual_rotation_rad": 0.1830647609018586,
+      "aligned_object_origin_depth_delta_m": -0.02216462324294921
+    },
+    {
+      "frame_idx": 59,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7520020438042271,
+      "gt_box_amodal": [
+        919.0,
+        207.0,
+        1151.0,
+        770.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03603716371274529,
+        0.20697915054252636,
+        0.008777019088756333
+      ],
+      "relative_transform_rotation_angle_rad": 2.615806751791705,
+      "constant_transform_residual_translation_m": 0.1580134462448792,
+      "constant_transform_residual_rotation_rad": 0.14614992735528978,
+      "aligned_object_origin_depth_delta_m": -0.02911228599081711
+    },
+    {
+      "frame_idx": 60,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7454124161765716,
+      "gt_box_amodal": [
+        922.0,
+        205.0,
+        1153.0,
+        767.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03233723331731789,
+        0.22531096217727453,
+        0.00407896199996155
+      ],
+      "relative_transform_rotation_angle_rad": 2.578183996015892,
+      "constant_transform_residual_translation_m": 0.17453886120384782,
+      "constant_transform_residual_rotation_rad": 0.1984032813462449,
+      "aligned_object_origin_depth_delta_m": -0.011718489762985063
+    },
+    {
+      "frame_idx": 61,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7411455927021793,
+      "gt_box_amodal": [
+        923.0,
+        203.0,
+        1151.0,
+        764.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03751777800254563,
+        0.20660872379569295,
+        0.006422599291768583
+      ],
+      "relative_transform_rotation_angle_rad": 2.611814056554848,
+      "constant_transform_residual_translation_m": 0.1567500851249983,
+      "constant_transform_residual_rotation_rad": 0.15990787096707954,
+      "aligned_object_origin_depth_delta_m": -0.024587793626182797
+    },
+    {
+      "frame_idx": 62,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7401731456767751,
+      "gt_box_amodal": [
+        923.0,
+        202.0,
+        1149.0,
+        763.0
+      ],
+      "relative_transform_translation_m": [
+        -0.045632665252994864,
+        0.20199126182074442,
+        0.0022478448661180095
+      ],
+      "relative_transform_rotation_angle_rad": 2.5984303466185454,
+      "constant_transform_residual_translation_m": 0.1503505029310639,
+      "constant_transform_residual_rotation_rad": 0.16862848615284426,
+      "aligned_object_origin_depth_delta_m": -0.02194527213888181
+    },
+    {
+      "frame_idx": 63,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.741498743656698,
+      "gt_box_amodal": [
+        923.0,
+        202.0,
+        1148.0,
+        763.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04494309564827778,
+        0.1947001518407359,
+        0.0033891544049529654
+      ],
+      "relative_transform_rotation_angle_rad": 2.580195652310684,
+      "constant_transform_residual_translation_m": 0.1438101400211324,
+      "constant_transform_residual_rotation_rad": 0.1818056312719837,
+      "aligned_object_origin_depth_delta_m": -0.02347478127250796
+    },
+    {
+      "frame_idx": 64,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7433066057250931,
+      "gt_box_amodal": [
+        923.0,
+        202.0,
+        1147.0,
+        763.0
+      ],
+      "relative_transform_translation_m": [
+        -0.048800823239302654,
+        0.19972037911345938,
+        -0.0007830686308705759
+      ],
+      "relative_transform_rotation_angle_rad": 2.56652858149511,
+      "constant_transform_residual_translation_m": 0.14712864040100543,
+      "constant_transform_residual_rotation_rad": 0.1937164565092571,
+      "aligned_object_origin_depth_delta_m": -0.01725530613717252
+    },
+    {
+      "frame_idx": 65,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.745346203092682,
+      "gt_box_amodal": [
+        921.0,
+        202.0,
+        1145.0,
+        763.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04243309533151218,
+        0.20608745702344827,
+        0.0003964312866897024
+      ],
+      "relative_transform_rotation_angle_rad": 2.6191133360152015,
+      "constant_transform_residual_translation_m": 0.15400658219023294,
+      "constant_transform_residual_rotation_rad": 0.14728735473283094,
+      "aligned_object_origin_depth_delta_m": -0.023185650579684858
+    },
+    {
+      "frame_idx": 66,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7494308157814332,
+      "gt_box_amodal": [
+        920.0,
+        202.0,
+        1143.0,
+        762.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04564369633914908,
+        0.21787513617321816,
+        -0.004336117512629689
+      ],
+      "relative_transform_rotation_angle_rad": 2.644422606954034,
+      "constant_transform_residual_translation_m": 0.1639716525658994,
+      "constant_transform_residual_rotation_rad": 0.13525899394896693,
+      "aligned_object_origin_depth_delta_m": -0.017219254047334598
+    },
+    {
+      "frame_idx": 67,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7549328812757485,
+      "gt_box_amodal": [
+        921.0,
+        201.0,
+        1144.0,
+        761.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03414698198115959,
+        0.2271399762334937,
+        -0.007176015228575416
+      ],
+      "relative_transform_rotation_angle_rad": 2.69304906907975,
+      "constant_transform_residual_translation_m": 0.1734928426301081,
+      "constant_transform_residual_rotation_rad": 0.09645377571567328,
+      "aligned_object_origin_depth_delta_m": -0.018793723452977862
+    },
+    {
+      "frame_idx": 68,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7602141086542165,
+      "gt_box_amodal": [
+        922.0,
+        199.0,
+        1145.0,
+        759.0
+      ],
+      "relative_transform_translation_m": [
+        -0.027571328601940392,
+        0.22540535999548525,
+        -0.009045230320521125
+      ],
+      "relative_transform_rotation_angle_rad": 2.723388607915176,
+      "constant_transform_residual_translation_m": 0.1724155305153127,
+      "constant_transform_residual_rotation_rad": 0.08431594410149582,
+      "aligned_object_origin_depth_delta_m": -0.02116453368457416
+    },
+    {
+      "frame_idx": 69,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7608682682364172,
+      "gt_box_amodal": [
+        925.0,
+        198.0,
+        1146.0,
+        759.0
+      ],
+      "relative_transform_translation_m": [
+        -0.02477344932920636,
+        0.24022000068277072,
+        -0.012049981515853347
+      ],
+      "relative_transform_rotation_angle_rad": 2.7088832229435997,
+      "constant_transform_residual_translation_m": 0.18675147297393832,
+      "constant_transform_residual_rotation_rad": 0.11130952604121239,
+      "aligned_object_origin_depth_delta_m": -0.012054662998323529
+    },
+    {
+      "frame_idx": 70,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7628414105673279,
+      "gt_box_amodal": [
+        926.0,
+        198.0,
+        1148.0,
+        758.0
+      ],
+      "relative_transform_translation_m": [
+        -0.027912439172562142,
+        0.23305208531241703,
+        -0.013133929969562086
+      ],
+      "relative_transform_rotation_angle_rad": 2.713684417227132,
+      "constant_transform_residual_translation_m": 0.17908715086785099,
+      "constant_transform_residual_rotation_rad": 0.07389911948684103,
+      "aligned_object_origin_depth_delta_m": -0.017093857081887487
+    },
+    {
+      "frame_idx": 71,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7671284348333383,
+      "gt_box_amodal": [
+        927.0,
+        198.0,
+        1151.0,
+        759.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03455176150535161,
+        0.22452934554582357,
+        0.003987187135944481
+      ],
+      "relative_transform_rotation_angle_rad": 2.6561125558389103,
+      "constant_transform_residual_translation_m": 0.17347745097192308,
+      "constant_transform_residual_rotation_rad": 0.10601511766137145,
+      "aligned_object_origin_depth_delta_m": -0.030417870755168885
+    },
+    {
+      "frame_idx": 72,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7772632325700548,
+      "gt_box_amodal": [
+        927.0,
+        199.0,
+        1152.0,
+        760.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05233173005807554,
+        0.19634944143396654,
+        0.0027933943598743016
+      ],
+      "relative_transform_rotation_angle_rad": 2.572043091735726,
+      "constant_transform_residual_translation_m": 0.14480510439113636,
+      "constant_transform_residual_rotation_rad": 0.19534805653779555,
+      "aligned_object_origin_depth_delta_m": -0.022047239548566633
+    },
+    {
+      "frame_idx": 73,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.7910892358679463,
+      "gt_box_amodal": [
+        926.0,
+        200.0,
+        1150.0,
+        761.0
+      ],
+      "relative_transform_translation_m": [
+        -0.050809699259934143,
+        0.18805871456372383,
+        0.003839780752722066
+      ],
+      "relative_transform_rotation_angle_rad": 2.5541918885647665,
+      "constant_transform_residual_translation_m": 0.1373263942027,
+      "constant_transform_residual_rotation_rad": 0.20674766244518306,
+      "aligned_object_origin_depth_delta_m": -0.023774912974771023
+    },
+    {
+      "frame_idx": 74,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8063900102905089,
+      "gt_box_amodal": [
+        925.0,
+        202.0,
+        1146.0,
+        761.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05464347521855603,
+        0.19285591644436725,
+        -0.002670975348642912
+      ],
+      "relative_transform_rotation_angle_rad": 2.556934184029954,
+      "constant_transform_residual_translation_m": 0.13983146900098933,
+      "constant_transform_residual_rotation_rad": 0.2071565513432173,
+      "aligned_object_origin_depth_delta_m": -0.015208383257010127
+    },
+    {
+      "frame_idx": 75,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8218321926288369,
+      "gt_box_amodal": [
+        923.0,
+        202.0,
+        1143.0,
+        762.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05877513473706886,
+        0.20770659347585743,
+        -0.01315471320939221
+      ],
+      "relative_transform_rotation_angle_rad": 2.5410074211699665,
+      "constant_transform_residual_translation_m": 0.15188493742801693,
+      "constant_transform_residual_rotation_rad": 0.21676078102987037,
+      "aligned_object_origin_depth_delta_m": -0.0010634345253478505
+    },
+    {
+      "frame_idx": 76,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8329935675408213,
+      "gt_box_amodal": [
+        923.0,
+        203.0,
+        1144.0,
+        763.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05701031686390365,
+        0.20157744985017173,
+        -0.005224134164149408
+      ],
+      "relative_transform_rotation_angle_rad": 2.5567150999597725,
+      "constant_transform_residual_translation_m": 0.14758200246459144,
+      "constant_transform_residual_rotation_rad": 0.20624598607833544,
+      "aligned_object_origin_depth_delta_m": -0.011705994150820076
+    },
+    {
+      "frame_idx": 77,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8415999842132786,
+      "gt_box_amodal": [
+        924.0,
+        203.0,
+        1146.0,
+        764.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0672387044654642,
+        0.20673953898295966,
+        -0.015894136957720795
+      ],
+      "relative_transform_rotation_angle_rad": 2.5241347823104685,
+      "constant_transform_residual_translation_m": 0.15082968120500462,
+      "constant_transform_residual_rotation_rad": 0.2327392012147504,
+      "aligned_object_origin_depth_delta_m": 0.0009158568492430019
+    },
+    {
+      "frame_idx": 78,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8472473812711664,
+      "gt_box_amodal": [
+        926.0,
+        203.0,
+        1148.0,
+        764.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05523625984540054,
+        0.1842311750049428,
+        -0.032776852336521334
+      ],
+      "relative_transform_rotation_angle_rad": 2.558653315289121,
+      "constant_transform_residual_translation_m": 0.126050897661063,
+      "constant_transform_residual_rotation_rad": 0.19481521308483868,
+      "aligned_object_origin_depth_delta_m": 0.0076165632806680095
+    },
+    {
+      "frame_idx": 79,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8497737111373475,
+      "gt_box_amodal": [
+        926.0,
+        203.0,
+        1149.0,
+        764.0
+      ],
+      "relative_transform_translation_m": [
+        -0.055852988699438416,
+        0.18736208376020144,
+        -0.03918946509221616
+      ],
+      "relative_transform_rotation_angle_rad": 2.5881531005837157,
+      "constant_transform_residual_translation_m": 0.1289079037093303,
+      "constant_transform_residual_rotation_rad": 0.1656220922747239,
+      "aligned_object_origin_depth_delta_m": 0.013602057197046213
+    },
+    {
+      "frame_idx": 80,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8489108210128972,
+      "gt_box_amodal": [
+        926.0,
+        203.0,
+        1150.0,
+        764.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04418976205248104,
+        0.1729585750898554,
+        -0.02693307602834194
+      ],
+      "relative_transform_rotation_angle_rad": 2.57012545812318,
+      "constant_transform_residual_translation_m": 0.11600860667394877,
+      "constant_transform_residual_rotation_rad": 0.18265612654629193,
+      "aligned_object_origin_depth_delta_m": -0.0005620737275102705
+    },
+    {
+      "frame_idx": 81,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8482133196943021,
+      "gt_box_amodal": [
+        926.0,
+        203.0,
+        1150.0,
+        763.0
+      ],
+      "relative_transform_translation_m": [
+        -0.045519306026956086,
+        0.18236369771525093,
+        -0.023134613143525773
+      ],
+      "relative_transform_rotation_angle_rad": 2.5715806963619072,
+      "constant_transform_residual_translation_m": 0.12567115110261617,
+      "constant_transform_residual_rotation_rad": 0.18184690939233755,
+      "aligned_object_origin_depth_delta_m": -0.003021325625646276
+    },
+    {
+      "frame_idx": 82,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.852852350643857,
+      "gt_box_amodal": [
+        926.0,
+        203.0,
+        1150.0,
+        764.0
+      ],
+      "relative_transform_translation_m": [
+        -0.047899878548988084,
+        0.1966110847679956,
+        -0.03260947860869834
+      ],
+      "relative_transform_rotation_angle_rad": 2.544812072774109,
+      "constant_transform_residual_translation_m": 0.13866144168929886,
+      "constant_transform_residual_rotation_rad": 0.21080959884655487,
+      "aligned_object_origin_depth_delta_m": 0.008143602862162369
+    },
+    {
+      "frame_idx": 83,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8550298775317018,
+      "gt_box_amodal": [
+        925.0,
+        204.0,
+        1150.0,
+        766.0
+      ],
+      "relative_transform_translation_m": [
+        -0.048853286118349576,
+        0.23757050246160877,
+        0.004783393809656422
+      ],
+      "relative_transform_rotation_angle_rad": 2.5534048522094124,
+      "constant_transform_residual_translation_m": 0.1850761197592085,
+      "constant_transform_residual_rotation_rad": 0.20100863672908942,
+      "aligned_object_origin_depth_delta_m": -0.01439249304098189
+    },
+    {
+      "frame_idx": 84,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8520671451450264,
+      "gt_box_amodal": [
+        925.0,
+        207.0,
+        1152.0,
+        770.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06013533431324847,
+        0.22806292824629232,
+        0.0017098348109760297
+      ],
+      "relative_transform_rotation_angle_rad": 2.576512659956212,
+      "constant_transform_residual_translation_m": 0.1750008295071576,
+      "constant_transform_residual_rotation_rad": 0.18796953252050408,
+      "aligned_object_origin_depth_delta_m": -0.01882226932729586
+    },
+    {
+      "frame_idx": 85,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.84753805629273,
+      "gt_box_amodal": [
+        924.0,
+        215.0,
+        1155.0,
+        778.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06929176690079397,
+        0.20137399767699907,
+        -0.0048108652815749275
+      ],
+      "relative_transform_rotation_angle_rad": 2.5515528028021683,
+      "constant_transform_residual_translation_m": 0.1480624848708093,
+      "constant_transform_residual_rotation_rad": 0.21533803135671953,
+      "aligned_object_origin_depth_delta_m": -0.012048681528963268
+    },
+    {
+      "frame_idx": 86,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8444721619312323,
+      "gt_box_amodal": [
+        923.0,
+        233.0,
+        1160.0,
+        796.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06762896970162896,
+        0.14708138799315182,
+        -0.022143204428617502
+      ],
+      "relative_transform_rotation_angle_rad": 2.5806876050699468,
+      "constant_transform_residual_translation_m": 0.09136934479878668,
+      "constant_transform_residual_rotation_rad": 0.186292527437396,
+      "aligned_object_origin_depth_delta_m": -0.0030751773261507576
+    },
+    {
+      "frame_idx": 87,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.84307632170429,
+      "gt_box_amodal": [
+        921.0,
+        264.0,
+        1169.0,
+        828.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06117437880602314,
+        0.09484656200466304,
+        -0.052518850697854336
+      ],
+      "relative_transform_rotation_angle_rad": 2.5797165759906573,
+      "constant_transform_residual_translation_m": 0.03839026270757358,
+      "constant_transform_residual_rotation_rad": 0.17994643324335405,
+      "aligned_object_origin_depth_delta_m": 0.016898325092850497
+    },
+    {
+      "frame_idx": 88,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8454124566869522,
+      "gt_box_amodal": [
+        918.0,
+        304.0,
+        1179.0,
+        868.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0664175289488324,
+        -0.0015478145505072038,
+        -0.022046565064784307
+      ],
+      "relative_transform_rotation_angle_rad": 2.8736299005629453,
+      "constant_transform_residual_translation_m": 0.06384810424847238,
+      "constant_transform_residual_rotation_rad": 0.1447692683984976,
+      "aligned_object_origin_depth_delta_m": -0.018638086396304265
+    },
+    {
+      "frame_idx": 89,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8494798533388508,
+      "gt_box_amodal": [
+        915.0,
+        345.0,
+        1188.0,
+        911.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07526230446554358,
+        -0.10597606198453245,
+        -0.00791187003049032
+      ],
+      "relative_transform_rotation_angle_rad": 2.9496932570044474,
+      "constant_transform_residual_translation_m": 0.16887770971800048,
+      "constant_transform_residual_rotation_rad": 0.2240591054508898,
+      "aligned_object_origin_depth_delta_m": -0.042985728298121806
+    },
+    {
+      "frame_idx": 90,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8555259906870665,
+      "gt_box_amodal": [
+        913.0,
+        384.0,
+        1200.0,
+        955.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07046315567125527,
+        -0.09644833793785898,
+        -0.03393469860466014
+      ],
+      "relative_transform_rotation_angle_rad": 2.7768715800033545,
+      "constant_transform_residual_translation_m": 0.15574722468923463,
+      "constant_transform_residual_rotation_rad": 0.1341480673150203,
+      "aligned_object_origin_depth_delta_m": -0.05464546146048793
+    },
+    {
+      "frame_idx": 91,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8694433806290107,
+      "gt_box_amodal": [
+        914.0,
+        423.0,
+        1215.0,
+        1000.0
+      ],
+      "relative_transform_translation_m": [
+        -0.036535376459876534,
+        -0.08797069642375098,
+        0.004729000490813207
+      ],
+      "relative_transform_rotation_angle_rad": 2.7714715424730376,
+      "constant_transform_residual_translation_m": 0.1547591978398932,
+      "constant_transform_residual_rotation_rad": 0.11274494531891666,
+      "aligned_object_origin_depth_delta_m": -0.09331252650091049
+    },
+    {
+      "frame_idx": 92,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9029777561887654,
+      "gt_box_amodal": [
+        917.0,
+        457.0,
+        1228.0,
+        1041.0
+      ],
+      "relative_transform_translation_m": [
+        -0.031180079385021542,
+        -0.06799592924891192,
+        0.00694983728254267
+      ],
+      "relative_transform_rotation_angle_rad": 2.8170770024465277,
+      "constant_transform_residual_translation_m": 0.13765144746320013,
+      "constant_transform_residual_rotation_rad": 0.10828206055558297,
+      "aligned_object_origin_depth_delta_m": -0.09234853743553068
+    },
+    {
+      "frame_idx": 93,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9479042886464297,
+      "gt_box_amodal": [
+        920.0,
+        485.0,
+        1240.0,
+        1075.0
+      ],
+      "relative_transform_translation_m": [
+        -0.030722926024874975,
+        -0.049888836973452755,
+        0.006986925231023733
+      ],
+      "relative_transform_rotation_angle_rad": 2.814858282110313,
+      "constant_transform_residual_translation_m": 0.12133649671279426,
+      "constant_transform_residual_rotation_rad": 0.11367840800504134,
+      "aligned_object_origin_depth_delta_m": -0.0881232724943583
+    },
+    {
+      "frame_idx": 94,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9716380508797251,
+      "gt_box_amodal": [
+        925.0,
+        506.0,
+        1251.0,
+        1103.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03222883079006847,
+        -0.06722894760215928,
+        0.018385690947969213
+      ],
+      "relative_transform_rotation_angle_rad": 2.785913745123234,
+      "constant_transform_residual_translation_m": 0.1411989709456971,
+      "constant_transform_residual_rotation_rad": 0.12272354448137833,
+      "aligned_object_origin_depth_delta_m": -0.10669643562721726
+    },
+    {
+      "frame_idx": 95,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9871206682193077,
+      "gt_box_amodal": [
+        930.0,
+        522.0,
+        1260.0,
+        1124.0
+      ],
+      "relative_transform_translation_m": [
+        -0.026075015955997483,
+        -0.037079178261946205,
+        0.013935668107609711
+      ],
+      "relative_transform_rotation_angle_rad": 2.8024065082259058,
+      "constant_transform_residual_translation_m": 0.11440412810908836,
+      "constant_transform_residual_rotation_rad": 0.0980502545963384,
+      "aligned_object_origin_depth_delta_m": -0.09048166725334966
+    },
+    {
+      "frame_idx": 96,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9930937905000479,
+      "gt_box_amodal": [
+        935.0,
+        533.0,
+        1266.0,
+        1139.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05148305525603486,
+        -0.026695061640367668,
+        -0.02222207124254244
+      ],
+      "relative_transform_rotation_angle_rad": 2.8134851020944343,
+      "constant_transform_residual_translation_m": 0.0874032477381494,
+      "constant_transform_residual_rotation_rad": 0.10336561159661732,
+      "aligned_object_origin_depth_delta_m": -0.054737513746441535
+    },
+    {
+      "frame_idx": 97,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9936058500407215,
+      "gt_box_amodal": [
+        940.0,
+        541.0,
+        1270.0,
+        1150.0
+      ],
+      "relative_transform_translation_m": [
+        -0.035692880022197615,
+        -0.026221734095971005,
+        -0.0030831638929713634
+      ],
+      "relative_transform_rotation_angle_rad": 2.821168679848155,
+      "constant_transform_residual_translation_m": 0.09515211973462737,
+      "constant_transform_residual_rotation_rad": 0.11509991754946239,
+      "aligned_object_origin_depth_delta_m": -0.07195197602978787
+    },
+    {
+      "frame_idx": 98,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9939908827186076,
+      "gt_box_amodal": [
+        945.0,
+        546.0,
+        1273.0,
+        1158.0
+      ],
+      "relative_transform_translation_m": [
+        -0.037896719592795586,
+        -0.05151002826995839,
+        0.009778587284311024
+      ],
+      "relative_transform_rotation_angle_rad": 2.821172363089478,
+      "constant_transform_residual_translation_m": 0.12263563053736447,
+      "constant_transform_residual_rotation_rad": 0.13498820334190584,
+      "aligned_object_origin_depth_delta_m": -0.09535434020677602
+    },
+    {
+      "frame_idx": 99,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9940551469006753,
+      "gt_box_amodal": [
+        950.0,
+        548.0,
+        1275.0,
+        1161.0
+      ],
+      "relative_transform_translation_m": [
+        -0.039369633685990724,
+        -0.057778411030533536,
+        0.009415972130151273
+      ],
+      "relative_transform_rotation_angle_rad": 2.8279175317351033,
+      "constant_transform_residual_translation_m": 0.1279409919531937,
+      "constant_transform_residual_rotation_rad": 0.15320477283674827,
+      "aligned_object_origin_depth_delta_m": -0.09834092395941052
+    },
+    {
+      "frame_idx": 100,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9937838069889242,
+      "gt_box_amodal": [
+        956.0,
+        544.0,
+        1278.0,
+        1157.0
+      ],
+      "relative_transform_translation_m": [
+        -0.029308969961633874,
+        -0.06153823599031992,
+        0.02292267056122499
+      ],
+      "relative_transform_rotation_angle_rad": 2.814131256209418,
+      "constant_transform_residual_translation_m": 0.1387427987247154,
+      "constant_transform_residual_rotation_rad": 0.14377447615810404,
+      "aligned_object_origin_depth_delta_m": -0.11083166208696477
+    },
+    {
+      "frame_idx": 101,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9931070684818339,
+      "gt_box_amodal": [
+        963.0,
+        530.0,
+        1280.0,
+        1143.0
+      ],
+      "relative_transform_translation_m": [
+        -0.025621231653961213,
+        -0.06246051265389782,
+        0.027587167797966106
+      ],
+      "relative_transform_rotation_angle_rad": 2.8150521617702826,
+      "constant_transform_residual_translation_m": 0.14249432613366297,
+      "constant_transform_residual_rotation_rad": 0.1557231055067714,
+      "aligned_object_origin_depth_delta_m": -0.11386303791497765
+    },
+    {
+      "frame_idx": 102,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9917642673232135,
+      "gt_box_amodal": [
+        972.0,
+        508.0,
+        1281.0,
+        1118.0
+      ],
+      "relative_transform_translation_m": [
+        -0.03147149111999545,
+        -0.024496903573918816,
+        0.006488320356199173
+      ],
+      "relative_transform_rotation_angle_rad": 2.8037288092577737,
+      "constant_transform_residual_translation_m": 0.09888792591428279,
+      "constant_transform_residual_rotation_rad": 0.10468662149558101,
+      "aligned_object_origin_depth_delta_m": -0.07592957234608838
+    },
+    {
+      "frame_idx": 103,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9898941289701636,
+      "gt_box_amodal": [
+        982.0,
+        476.0,
+        1281.0,
+        1082.0
+      ],
+      "relative_transform_translation_m": [
+        -0.02721553984495184,
+        -0.01892940929581191,
+        0.014394562263372879
+      ],
+      "relative_transform_rotation_angle_rad": 2.82863323143031,
+      "constant_transform_residual_translation_m": 0.09966291579752175,
+      "constant_transform_residual_rotation_rad": 0.1342185094449051,
+      "aligned_object_origin_depth_delta_m": -0.07940780663177671
+    },
+    {
+      "frame_idx": 104,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9873488648998853,
+      "gt_box_amodal": [
+        994.0,
+        438.0,
+        1282.0,
+        1044.0
+      ],
+      "relative_transform_translation_m": [
+        -0.015648261234108507,
+        -0.01746523555916224,
+        0.028585409252226746
+      ],
+      "relative_transform_rotation_angle_rad": 2.795395708509472,
+      "constant_transform_residual_translation_m": 0.11088154405311532,
+      "constant_transform_residual_rotation_rad": 0.08776721326766791,
+      "aligned_object_origin_depth_delta_m": -0.08717351572207499
+    },
+    {
+      "frame_idx": 105,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9833998611593197,
+      "gt_box_amodal": [
+        1001.0,
+        400.0,
+        1281.0,
+        1007.0
+      ],
+      "relative_transform_translation_m": [
+        -0.030144545925286675,
+        0.016524706889497448,
+        0.008229223298398758
+      ],
+      "relative_transform_rotation_angle_rad": 2.764985444826993,
+      "constant_transform_residual_translation_m": 0.0699384966944649,
+      "constant_transform_residual_rotation_rad": 0.04948177880271677,
+      "aligned_object_origin_depth_delta_m": -0.05546781084126934
+    },
+    {
+      "frame_idx": 106,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.978663748888737,
+      "gt_box_amodal": [
+        1004.0,
+        364.0,
+        1276.0,
+        976.0
+      ],
+      "relative_transform_translation_m": [
+        -0.04673991582312642,
+        -0.02135976640212775,
+        -0.012805857941410426
+      ],
+      "relative_transform_rotation_angle_rad": 2.754243288596376,
+      "constant_transform_residual_translation_m": 0.08528868319092964,
+      "constant_transform_residual_rotation_rad": 0.03526306776652462,
+      "aligned_object_origin_depth_delta_m": -0.04286177229640331
+    },
+    {
+      "frame_idx": 107,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9746468457718133,
+      "gt_box_amodal": [
+        1003.0,
+        334.0,
+        1267.0,
+        954.0
+      ],
+      "relative_transform_translation_m": [
+        -0.050012972732162375,
+        0.012559489926572076,
+        -0.021155760211595875
+      ],
+      "relative_transform_rotation_angle_rad": 2.7390610026580666,
+      "constant_transform_residual_translation_m": 0.05051493426901848,
+      "constant_transform_residual_rotation_rad": 0.057507293525179436,
+      "aligned_object_origin_depth_delta_m": -0.025584843099413335
+    },
+    {
+      "frame_idx": 108,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9709153335157863,
+      "gt_box_amodal": [
+        997.0,
+        310.0,
+        1254.0,
+        940.0
+      ],
+      "relative_transform_translation_m": [
+        -0.058219313996516225,
+        0.0077118262525931874,
+        -0.042576594513670685
+      ],
+      "relative_transform_rotation_angle_rad": 2.729709177507373,
+      "constant_transform_residual_translation_m": 0.050815684169480194,
+      "constant_transform_residual_rotation_rad": 0.052932797057639536,
+      "aligned_object_origin_depth_delta_m": -0.00373186265696851
+    },
+    {
+      "frame_idx": 109,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9687302044342068,
+      "gt_box_amodal": [
+        986.0,
+        292.0,
+        1235.0,
+        930.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05072392488617264,
+        0.0038716661855131007,
+        -0.03220336811699609
+      ],
+      "relative_transform_rotation_angle_rad": 2.7231475637543774,
+      "constant_transform_residual_translation_m": 0.05562284090203999,
+      "constant_transform_residual_rotation_rad": 0.04284642343730607,
+      "aligned_object_origin_depth_delta_m": -0.011833291367118581
+    },
+    {
+      "frame_idx": 110,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9684692474287079,
+      "gt_box_amodal": [
+        971.0,
+        282.0,
+        1215.0,
+        925.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05567347419155674,
+        0.003147569899894481,
+        -0.04409723268772414
+      ],
+      "relative_transform_rotation_angle_rad": 2.7461088163708314,
+      "constant_transform_residual_translation_m": 0.0553981887605815,
+      "constant_transform_residual_rotation_rad": 0.030877140698206972,
+      "aligned_object_origin_depth_delta_m": 0.0011366361625447796
+    },
+    {
+      "frame_idx": 111,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.967113753111705,
+      "gt_box_amodal": [
+        954.0,
+        279.0,
+        1194.0,
+        924.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06661670743716797,
+        0.0014408696693580247,
+        -0.06127683808382617
+      ],
+      "relative_transform_rotation_angle_rad": 2.759022245597201,
+      "constant_transform_residual_translation_m": 0.061320384001823346,
+      "constant_transform_residual_rotation_rad": 0.011853967605485856,
+      "aligned_object_origin_depth_delta_m": 0.01856618885318606
+    },
+    {
+      "frame_idx": 112,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9659162003033861,
+      "gt_box_amodal": [
+        935.0,
+        283.0,
+        1171.0,
+        922.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05998385040033491,
+        0.009713358077780537,
+        -0.06207441752321968
+      ],
+      "relative_transform_rotation_angle_rad": 2.7438811106664915,
+      "constant_transform_residual_translation_m": 0.05313790849752554,
+      "constant_transform_residual_rotation_rad": 0.04286774352456348,
+      "aligned_object_origin_depth_delta_m": 0.020878947277550297
+    },
+    {
+      "frame_idx": 113,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9650433036274633,
+      "gt_box_amodal": [
+        917.0,
+        293.0,
+        1150.0,
+        920.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07064618669610068,
+        0.013181279021557413,
+        -0.08866928763063897
+      ],
+      "relative_transform_rotation_angle_rad": 2.7551774333674426,
+      "constant_transform_residual_translation_m": 0.06711456364020055,
+      "constant_transform_residual_rotation_rad": 0.05331038063564631,
+      "aligned_object_origin_depth_delta_m": 0.04753228572721302
+    },
+    {
+      "frame_idx": 114,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9639878659934005,
+      "gt_box_amodal": [
+        903.0,
+        306.0,
+        1130.0,
+        921.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06617901988661329,
+        0.009874443757781487,
+        -0.09105973552616653
+      ],
+      "relative_transform_rotation_angle_rad": 2.754096723823448,
+      "constant_transform_residual_translation_m": 0.07027188771389478,
+      "constant_transform_residual_rotation_rad": 0.06342029986854104,
+      "aligned_object_origin_depth_delta_m": 0.05013386933380143
+    },
+    {
+      "frame_idx": 115,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9630111902339776,
+      "gt_box_amodal": [
+        894.0,
+        321.0,
+        1114.0,
+        922.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05598280680764875,
+        0.011830125798319935,
+        -0.0810978210267772
+      ],
+      "relative_transform_rotation_angle_rad": 2.7595607273873655,
+      "constant_transform_residual_translation_m": 0.06132157415663219,
+      "constant_transform_residual_rotation_rad": 0.06361006503544,
+      "aligned_object_origin_depth_delta_m": 0.04062301638813054
+    },
+    {
+      "frame_idx": 116,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9624447396502537,
+      "gt_box_amodal": [
+        890.0,
+        335.0,
+        1102.0,
+        923.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05560593720467777,
+        0.01074550392994919,
+        -0.08262952909496074
+      ],
+      "relative_transform_rotation_angle_rad": 2.7849424590388043,
+      "constant_transform_residual_translation_m": 0.06314515005178054,
+      "constant_transform_residual_rotation_rad": 0.06021878205530967,
+      "aligned_object_origin_depth_delta_m": 0.04254117158740667
+    },
+    {
+      "frame_idx": 117,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9591532705099778,
+      "gt_box_amodal": [
+        891.0,
+        348.0,
+        1095.0,
+        923.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05313385403530704,
+        0.0384311755190602,
+        -0.08210325810601271
+      ],
+      "relative_transform_rotation_angle_rad": 2.804450451331981,
+      "constant_transform_residual_translation_m": 0.04557461413223661,
+      "constant_transform_residual_rotation_rad": 0.07003585697125168,
+      "aligned_object_origin_depth_delta_m": 0.04176273883365628
+    },
+    {
+      "frame_idx": 118,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.954865646860617,
+      "gt_box_amodal": [
+        897.0,
+        358.0,
+        1094.0,
+        924.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05221590900352116,
+        0.052634093963035145,
+        -0.08541014902853061
+      ],
+      "relative_transform_rotation_angle_rad": 2.809701292691937,
+      "constant_transform_residual_translation_m": 0.04468652230670388,
+      "constant_transform_residual_rotation_rad": 0.08090473258247396,
+      "aligned_object_origin_depth_delta_m": 0.044565085787441006
+    },
+    {
+      "frame_idx": 119,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9503516011672901,
+      "gt_box_amodal": [
+        908.0,
+        366.0,
+        1099.0,
+        924.0
+      ],
+      "relative_transform_translation_m": [
+        -0.05423913091673255,
+        0.05265707826892358,
+        -0.09075380015652612
+      ],
+      "relative_transform_rotation_angle_rad": 2.8267256159855934,
+      "constant_transform_residual_translation_m": 0.04984590452066208,
+      "constant_transform_residual_rotation_rad": 0.08871067992576913,
+      "aligned_object_origin_depth_delta_m": 0.04954246512410565
+    },
+    {
+      "frame_idx": 120,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9467807112068966,
+      "gt_box_amodal": [
+        923.0,
+        372.0,
+        1111.0,
+        925.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07471004866217457,
+        0.058226886353330586,
+        -0.1308521712022107
+      ],
+      "relative_transform_rotation_angle_rad": 2.842957093392226,
+      "constant_transform_residual_translation_m": 0.09145346056454723,
+      "constant_transform_residual_rotation_rad": 0.0988432842312817,
+      "aligned_object_origin_depth_delta_m": 0.0857355564454545
+    },
+    {
+      "frame_idx": 121,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9450868273171557,
+      "gt_box_amodal": [
+        943.0,
+        375.0,
+        1127.0,
+        927.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07499393872275542,
+        0.046519464179922226,
+        -0.13123780535125928
+      ],
+      "relative_transform_rotation_angle_rad": 2.8686505652612184,
+      "constant_transform_residual_translation_m": 0.09266250076862523,
+      "constant_transform_residual_rotation_rad": 0.12187354177611322,
+      "aligned_object_origin_depth_delta_m": 0.0852843649988822
+    },
+    {
+      "frame_idx": 122,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9437866806471813,
+      "gt_box_amodal": [
+        964.0,
+        378.0,
+        1144.0,
+        929.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06849792759756562,
+        0.046609837910361857,
+        -0.12840412968764847
+      ],
+      "relative_transform_rotation_angle_rad": 2.857691281037754,
+      "constant_transform_residual_translation_m": 0.0887734071255259,
+      "constant_transform_residual_rotation_rad": 0.11349176064925433,
+      "aligned_object_origin_depth_delta_m": 0.08138151287579554
+    },
+    {
+      "frame_idx": 123,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9391551729274032,
+      "gt_box_amodal": [
+        983.0,
+        379.0,
+        1161.0,
+        930.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0678194571792877,
+        0.04551491658345645,
+        -0.12257830847817464
+      ],
+      "relative_transform_rotation_angle_rad": 2.8832536967131297,
+      "constant_transform_residual_translation_m": 0.08312991759333907,
+      "constant_transform_residual_rotation_rad": 0.14315627560942773,
+      "aligned_object_origin_depth_delta_m": 0.07542250727059352
+    },
+    {
+      "frame_idx": 124,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.936079651154138,
+      "gt_box_amodal": [
+        1000.0,
+        377.0,
+        1176.0,
+        929.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07107464106719122,
+        0.04211224304983926,
+        -0.13288914847429156
+      ],
+      "relative_transform_rotation_angle_rad": 2.8836942013146656,
+      "constant_transform_residual_translation_m": 0.09422905109106246,
+      "constant_transform_residual_rotation_rad": 0.14866855631854947,
+      "aligned_object_origin_depth_delta_m": 0.08365129128701598
+    },
+    {
+      "frame_idx": 125,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9335918565196316,
+      "gt_box_amodal": [
+        1013.0,
+        373.0,
+        1189.0,
+        928.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07990303163888343,
+        0.04135760272671825,
+        -0.14814098854760127
+      ],
+      "relative_transform_rotation_angle_rad": 2.8981178707201307,
+      "constant_transform_residual_translation_m": 0.11077638599346114,
+      "constant_transform_residual_rotation_rad": 0.15970015880015168,
+      "aligned_object_origin_depth_delta_m": 0.09527926224550531
+    },
+    {
+      "frame_idx": 126,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9295282132793873,
+      "gt_box_amodal": [
+        1023.0,
+        366.0,
+        1198.0,
+        923.0
+      ],
+      "relative_transform_translation_m": [
+        -0.08226914439352306,
+        0.0431363340330186,
+        -0.15030885787462833
+      ],
+      "relative_transform_rotation_angle_rad": 2.910928039855856,
+      "constant_transform_residual_translation_m": 0.11313421217938238,
+      "constant_transform_residual_rotation_rad": 0.16759713497023904,
+      "aligned_object_origin_depth_delta_m": 0.09630657584172087
+    },
+    {
+      "frame_idx": 127,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9258523904069477,
+      "gt_box_amodal": [
+        1030.0,
+        357.0,
+        1204.0,
+        917.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07083544703864295,
+        0.04490315400701024,
+        -0.12555818942101116
+      ],
+      "relative_transform_rotation_angle_rad": 2.8997756700880486,
+      "constant_transform_residual_translation_m": 0.08659809441732236,
+      "constant_transform_residual_rotation_rad": 0.15409213056919582,
+      "aligned_object_origin_depth_delta_m": 0.07540930855626304
+    },
+    {
+      "frame_idx": 128,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9229533369351949,
+      "gt_box_amodal": [
+        1036.0,
+        347.0,
+        1209.0,
+        910.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07689783286630647,
+        0.04489394167545348,
+        -0.1384197320701568
+      ],
+      "relative_transform_rotation_angle_rad": 2.918810682726634,
+      "constant_transform_residual_translation_m": 0.10023254086457906,
+      "constant_transform_residual_rotation_rad": 0.17530596923611247,
+      "aligned_object_origin_depth_delta_m": 0.08552451231276437
+    },
+    {
+      "frame_idx": 129,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9215518450961133,
+      "gt_box_amodal": [
+        1039.0,
+        337.0,
+        1213.0,
+        904.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07889369333106666,
+        0.05162206346969858,
+        -0.14861831578397233
+      ],
+      "relative_transform_rotation_angle_rad": 2.90632154461224,
+      "constant_transform_residual_translation_m": 0.10991303424017569,
+      "constant_transform_residual_rotation_rad": 0.16570383846051584,
+      "aligned_object_origin_depth_delta_m": 0.0926930288358957
+    },
+    {
+      "frame_idx": 130,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.91961029846844,
+      "gt_box_amodal": [
+        1040.0,
+        327.0,
+        1217.0,
+        898.0
+      ],
+      "relative_transform_translation_m": [
+        -0.08057507616308104,
+        0.0509926345794743,
+        -0.1460803511732166
+      ],
+      "relative_transform_rotation_angle_rad": 2.9054173670905112,
+      "constant_transform_residual_translation_m": 0.10784530431355266,
+      "constant_transform_residual_rotation_rad": 0.16586532087139505,
+      "aligned_object_origin_depth_delta_m": 0.08997170420295292
+    },
+    {
+      "frame_idx": 131,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9157783526798412,
+      "gt_box_amodal": [
+        1038.0,
+        316.0,
+        1224.0,
+        889.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07977976534313516,
+        0.05324448682533868,
+        -0.13906257836402036
+      ],
+      "relative_transform_rotation_angle_rad": 2.9070661517254006,
+      "constant_transform_residual_translation_m": 0.10070907313565426,
+      "constant_transform_residual_rotation_rad": 0.172665608696449,
+      "aligned_object_origin_depth_delta_m": 0.08410369343382784
+    },
+    {
+      "frame_idx": 132,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9123687451172522,
+      "gt_box_amodal": [
+        1038.0,
+        307.0,
+        1233.0,
+        882.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07836980743559827,
+        0.053419039044776406,
+        -0.1333076191938395
+      ],
+      "relative_transform_rotation_angle_rad": 2.9020749266940253,
+      "constant_transform_residual_translation_m": 0.09478297766431783,
+      "constant_transform_residual_rotation_rad": 0.16105563441976897,
+      "aligned_object_origin_depth_delta_m": 0.07853819632533865
+    },
+    {
+      "frame_idx": 133,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9125491910800175,
+      "gt_box_amodal": [
+        1038.0,
+        301.0,
+        1244.0,
+        878.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0759356805302292,
+        0.05332530364309732,
+        -0.1169112829165806
+      ],
+      "relative_transform_rotation_angle_rad": 2.872227901570944,
+      "constant_transform_residual_translation_m": 0.0783206544372008,
+      "constant_transform_residual_rotation_rad": 0.12719413164676954,
+      "aligned_object_origin_depth_delta_m": 0.06510612698237395
+    },
+    {
+      "frame_idx": 134,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9126233114901469,
+      "gt_box_amodal": [
+        1036.0,
+        298.0,
+        1254.0,
+        875.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07934102771124846,
+        0.05919919249235769,
+        -0.10272979247785863
+      ],
+      "relative_transform_rotation_angle_rad": 2.853386727765109,
+      "constant_transform_residual_translation_m": 0.06565252374375322,
+      "constant_transform_residual_rotation_rad": 0.11188365213982597,
+      "aligned_object_origin_depth_delta_m": 0.05223845464225696
+    },
+    {
+      "frame_idx": 135,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9107964187489028,
+      "gt_box_amodal": [
+        1041.0,
+        296.0,
+        1258.0,
+        877.0
+      ],
+      "relative_transform_translation_m": [
+        -0.06908948646900251,
+        0.059099591957999145,
+        -0.08754044054510446
+      ],
+      "relative_transform_rotation_angle_rad": 2.8511035474620536,
+      "constant_transform_residual_translation_m": 0.04801392870614192,
+      "constant_transform_residual_rotation_rad": 0.10916230750495591,
+      "aligned_object_origin_depth_delta_m": 0.03990837357616617
+    },
+    {
+      "frame_idx": 136,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9097906509893892,
+      "gt_box_amodal": [
+        1048.0,
+        295.0,
+        1263.0,
+        879.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07555925715020018,
+        0.05460399304014504,
+        -0.09015673424377046
+      ],
+      "relative_transform_rotation_angle_rad": 2.866438194033919,
+      "constant_transform_residual_translation_m": 0.0526987666081888,
+      "constant_transform_residual_rotation_rad": 0.11895819126947078,
+      "aligned_object_origin_depth_delta_m": 0.04213956648865391
+    },
+    {
+      "frame_idx": 137,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9086317930177381,
+      "gt_box_amodal": [
+        1057.0,
+        292.0,
+        1270.0,
+        880.0
+      ],
+      "relative_transform_translation_m": [
+        -0.08281576986265671,
+        0.05540354977339288,
+        -0.09346705031835345
+      ],
+      "relative_transform_rotation_angle_rad": 2.889378460315247,
+      "constant_transform_residual_translation_m": 0.05864684527431659,
+      "constant_transform_residual_rotation_rad": 0.1473865429124503,
+      "aligned_object_origin_depth_delta_m": 0.044666944237093775
+    },
+    {
+      "frame_idx": 138,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9075906859213778,
+      "gt_box_amodal": [
+        1062.0,
+        286.0,
+        1278.0,
+        878.0
+      ],
+      "relative_transform_translation_m": [
+        -0.07326614656062064,
+        0.051489045698113474,
+        -0.07428444249383115
+      ],
+      "relative_transform_rotation_angle_rad": 2.880047878505419,
+      "constant_transform_residual_translation_m": 0.03779056554845099,
+      "constant_transform_residual_rotation_rad": 0.1349002065217525,
+      "aligned_object_origin_depth_delta_m": 0.028847516758578773
+    },
+    {
+      "frame_idx": 139,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9108661794656763,
+      "gt_box_amodal": [
+        1066.0,
+        280.0,
+        1288.0,
+        876.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0756815199029946,
+        0.056468247563368115,
+        -0.07328456572097519
+      ],
+      "relative_transform_rotation_angle_rad": 2.904484219307204,
+      "constant_transform_residual_translation_m": 0.037504395955140664,
+      "constant_transform_residual_rotation_rad": 0.16429458161666008,
+      "aligned_object_origin_depth_delta_m": 0.027019616203334762
+    },
+    {
+      "frame_idx": 140,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.91191088260497,
+      "gt_box_amodal": [
+        1072.0,
+        278.0,
+        1297.0,
+        877.0
+      ],
+      "relative_transform_translation_m": [
+        -0.0711214933362792,
+        0.01830859951963178,
+        -0.0647397601841716
+      ],
+      "relative_transform_rotation_angle_rad": 2.870667016377353,
+      "constant_transform_residual_translation_m": 0.0488379666569471,
+      "constant_transform_residual_rotation_rad": 0.12642962284691192,
+      "aligned_object_origin_depth_delta_m": 0.027579330265322
+    },
+    {
+      "frame_idx": 141,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.91053003235632,
+      "gt_box_amodal": [
+        1078.0,
+        278.0,
+        1305.0,
+        881.0
+      ],
+      "relative_transform_translation_m": [
+        -0.08832326681292832,
+        0.004794579954497169,
+        -0.08780272534081107
+      ],
+      "relative_transform_rotation_angle_rad": 2.8626904136528024,
+      "constant_transform_residual_translation_m": 0.07794572593439773,
+      "constant_transform_residual_rotation_rad": 0.11980789853454273,
+      "aligned_object_origin_depth_delta_m": 0.04756584015834392
+    },
+    {
+      "frame_idx": 142,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9041323851655848,
+      "gt_box_amodal": [
+        1086.0,
+        279.0,
+        1314.0,
+        888.0
+      ],
+      "relative_transform_translation_m": [
+        -0.08221470932430647,
+        -0.0055363046858455806,
+        -0.06733119565466239
+      ],
+      "relative_transform_rotation_angle_rad": 2.8905115059738273,
+      "constant_transform_residual_translation_m": 0.07383121839357759,
+      "constant_transform_residual_rotation_rad": 0.14762540871766364,
+      "aligned_object_origin_depth_delta_m": 0.03361937086638306
+    },
+    {
+      "frame_idx": 143,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8837511417842282,
+      "gt_box_amodal": [
+        1093.0,
+        280.0,
+        1321.0,
+        895.0
+      ],
+      "relative_transform_translation_m": [
+        -0.09099121497976992,
+        -0.015031276355843455,
+        -0.0807601101459598
+      ],
+      "relative_transform_rotation_angle_rad": 2.885814569662822,
+      "constant_transform_residual_translation_m": 0.09038716868296487,
+      "constant_transform_residual_rotation_rad": 0.14156496224359275,
+      "aligned_object_origin_depth_delta_m": 0.04613958117265432
+    },
+    {
+      "frame_idx": 144,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8526570770657017,
+      "gt_box_amodal": [
+        1097.0,
+        280.0,
+        1324.0,
+        900.0
+      ],
+      "relative_transform_translation_m": [
+        -0.09539624783877992,
+        -0.04119681828774013,
+        -0.07498448942901759
+      ],
+      "relative_transform_rotation_angle_rad": 2.8927180369789602,
+      "constant_transform_residual_translation_m": 0.11226807758375904,
+      "constant_transform_residual_rotation_rad": 0.15069979096157102,
+      "aligned_object_origin_depth_delta_m": 0.04663400532615802
+    },
+    {
+      "frame_idx": 145,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8339691474860006,
+      "gt_box_amodal": [
+        1100.0,
+        279.0,
+        1326.0,
+        903.0
+      ],
+      "relative_transform_translation_m": [
+        -0.09475441161802356,
+        -0.032719268054061966,
+        -0.06522483261291911
+      ],
+      "relative_transform_rotation_angle_rad": 2.8894345282184846,
+      "constant_transform_residual_translation_m": 0.10185153865436711,
+      "constant_transform_residual_rotation_rad": 0.15508940520910366,
+      "aligned_object_origin_depth_delta_m": 0.03577330465639644
+    },
+    {
+      "frame_idx": 146,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8409082114387432,
+      "gt_box_amodal": [
+        1102.0,
+        276.0,
+        1327.0,
+        905.0
+      ],
+      "relative_transform_translation_m": [
+        -0.09409400538341184,
+        -0.02640798825218258,
+        -0.0588710483968094
+      ],
+      "relative_transform_rotation_angle_rad": 2.892777488769963,
+      "constant_transform_residual_translation_m": 0.09459509212209553,
+      "constant_transform_residual_rotation_rad": 0.15042240251195305,
+      "aligned_object_origin_depth_delta_m": 0.029400460049919863
+    },
+    {
+      "frame_idx": 147,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.8796369640113377,
+      "gt_box_amodal": [
+        1103.0,
+        274.0,
+        1328.0,
+        906.0
+      ],
+      "relative_transform_translation_m": [
+        -0.10304482320434943,
+        -0.0254773194366089,
+        -0.06791424564404702
+      ],
+      "relative_transform_rotation_angle_rad": 2.895667115126087,
+      "constant_transform_residual_translation_m": 0.09974486890852022,
+      "constant_transform_residual_rotation_rad": 0.15344974822034108,
+      "aligned_object_origin_depth_delta_m": 0.03641780376045045
+    },
+    {
+      "frame_idx": 148,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9203323097790252,
+      "gt_box_amodal": [
+        1108.0,
+        271.0,
+        1331.0,
+        907.0
+      ],
+      "relative_transform_translation_m": [
+        -0.08175903039808863,
+        -0.01622346093275879,
+        -0.03963907211753154
+      ],
+      "relative_transform_rotation_angle_rad": 2.887229907588701,
+      "constant_transform_residual_translation_m": 0.07895803500795848,
+      "constant_transform_residual_rotation_rad": 0.14681809600670934,
+      "aligned_object_origin_depth_delta_m": 0.012111890494087896
+    },
+    {
+      "frame_idx": 149,
+      "v19_pose_status": "corrected_temporal_rigid_pose_graph",
+      "v19_pose_measurement_status": "fit_to_visible_depth_samples",
+      "v19_direct_visible_measurement": null,
+      "gt_visibility_modeled": 0.9419437912887695,
+      "gt_box_amodal": [
+        1115.0,
+        267.0,
+        1334.0,
+        907.0
+      ],
+      "relative_transform_translation_m": [
+        -0.09434441628955409,
+        -0.012117551505203765,
+        -0.07661861930235492
+      ],
+      "relative_transform_rotation_angle_rad": 2.8726213350494305,
+      "constant_transform_residual_translation_m": 0.08766205734392134,
+      "constant_transform_residual_rotation_rad": 0.1288182702142351,
+      "aligned_object_origin_depth_delta_m": 0.04221555595578119
+    }
+  ]
+}

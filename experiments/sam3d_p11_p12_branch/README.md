@@ -343,3 +343,17 @@ Only distance to the shared prediction-side observed mesh is physically eligible
 and even that partial non-watertight surface cannot supply a sign.  Generated
 layer distances are layout diagnostics only; near-zero values must not be called
 contact or penetration.
+
+## Frozen baseline and post-freeze video audit
+
+`frozen_reports/20260811_keyboard_seed42_v1/` preserves the keyboard/seed42
+baseline reports, runbooks, and external artifact hashes. Its additive
+`post_freeze_diagnostics/` directory records the later evaluator-only review;
+it does not change the frozen prediction or original hashes.
+
+`audit_p15_mask_drift_and_handedness.py` separates raw SAM2 tracking,
+object-owned masks, and the projected green observed mesh before attributing
+visible drift. It also verifies the full 778-vertex MANO bridge/source/renderer
+chain and compares the labeled hands with a complete left/right swap
+counterfactual against HOT3D boxes and MANO 3D. HOT3D GT is permitted only after
+prediction freeze and is never written back into prediction state.
