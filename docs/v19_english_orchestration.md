@@ -116,22 +116,49 @@ python "$REPO_ROOT/scripts/run_unidepth_full_frame_v3.py" \
 
 Outputs include `unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json`. Treat focal/scale disagreement as uncertainty or a calibration bug, not as a reason to omit 3D state.
 
-Build the run-level calibration contract before metric hand/object lifting. A physical camera normally has constant intrinsics; UniDepth's per-frame intrinsics are measurement hypotheses, not hardware truth. The default V19 contract robustly aggregates them into one video-level pinhole `K`:
+Build the run-level source-neutral camera/image-transform contract before metric hand/object lifting. A physical camera normally has constant intrinsics; UniDepth's per-frame intrinsics are measurement hypotheses, not hardware truth. Prefer launcher-supplied prediction-side sensor metadata. If none is supplied, retain the original robust UniDepth aggregation as an explicit fallback behind the same V2 schema. A supplied-but-invalid sensor contract must fail rather than silently fall back.
 
 ```bash
-python "$REPO_ROOT/scripts/build_v19_calibration_contract.py" \
+CAMERA_ARGS=()
+if [[ -n "${SENSOR_CALIBRATION_METADATA:-}" ]]; then
+  CAMERA_ARGS+=(--sensor-calibration-contract "$SENSOR_CALIBRATION_METADATA")
+  CAMERA_ARGS+=(--sensor-calibration-authority "${SENSOR_CALIBRATION_AUTHORITY:-prediction_side_sensor_metadata}")
+  CAMERA_ARGS+=(--prediction-source-video "$INPUT_VIDEO")
+  CAMERA_ARGS+=(--sensor-source-video "$SENSOR_SOURCE_VIDEO")
+  if [[ -n "${SENSOR_FRAME_INTRINSICS_KEY:-}" ]]; then
+    CAMERA_ARGS+=(--sensor-frame-intrinsics-key "$SENSOR_FRAME_INTRINSICS_KEY")
+  fi
+else
+  CAMERA_ARGS+=(
+    --unidepth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz"
+    --fallback-reason "launcher supplied no prediction-side sensor calibration"
+    --aggregation median
+    --square-focal
+  )
+fi
+
+python "$REPO_ROOT/scripts/resolve_v19_camera_contract.py" \
   --case "$CASE_ID" \
   --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
-  --unidepth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
   --output-dir "$RUN_ROOT/state/calibration" \
-  --aggregation median
+  "${CAMERA_ARGS[@]}"
 
 CALIBRATION_CONTRACT="$RUN_ROOT/state/calibration/v19_camera_calibration_contract.json"
 CALIBRATION_INTRINSICS_NPZ="$RUN_ROOT/state/calibration/v19_camera_calibration_intrinsics.npz"
-HAWOR_IMG_FOCAL="$($PYTHON -c 'import json,sys; print(json.load(open(sys.argv[1]))["focal_geom_px"])' "$CALIBRATION_CONTRACT")"
+
+python "$REPO_ROOT/scripts/adapt_v19_depth_to_camera_contract.py" \
+  --source-depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --camera-contract "$CALIBRATION_CONTRACT" \
+  --depth-plane source_rgb \
+  --output-dir "$RUN_ROOT/state/calibration/depth_camera_contract"
+
+CAMERA_BOUND_DEPTH="$RUN_ROOT/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz"
+HAWOR_IMG_FOCAL="$($PYTHON -c 'import json,math,sys; d=json.load(open(sys.argv[1])); k=d.get("source_plane_intrinsics_fx_fy_cx_cy") or d["intrinsics_fx_fy_cx_cy"]; print(math.sqrt(float(k[0])*float(k[1])))' "$CALIBRATION_CONTRACT")"
 ```
 
-If the dataset later provides real calibration, replace this contract source with that dataset calibration and keep the same downstream contract path. Do not mix HaWoR, DROID, UniDepth, and object surfels under different unaligned intrinsics.
+The V2 contract explicitly records `K_plane = A_plane_from_calibration @ K_calibration` for calibration, source RGB/depth, manifest RGB, SAM2 mask, and render planes. Sensor-first resolution first requires the prediction input video and the sensor-metadata source video to have the same SHA256 and frame/time timeline; matching row count alone is not enough. The depth adapter preserves every depth value, frame row, raster dimension, and dtype while binding downstream backprojection to the resolved K and preserving the estimator's original K as provenance. It embeds the contract SHA256, depth plane, K, and affine; the visible-geometry builder rejects an unbound archive or any hash/plane/K/affine mismatch. The legacy `build_v19_calibration_contract.py` remains available, and its aggregation functions are reused by the fallback resolver.
+
+Do not mix HaWoR, camera poses, UniDepth, masks, object surfels, and render pixels under different or implicit image planes. Sensor metadata is prediction input only when the launcher supplies it; the runtime must not search evaluator/GT roots for calibration.
 
 Camera/head trajectory candidate:
 
@@ -240,7 +267,7 @@ python "$REPO_ROOT/scripts/build_v19_mano_mask_depth_refit_inputs.py" \
 python "$REPO_ROOT/scripts/refit_mano_articulation_mask_depth_v3.py" \
   --annotations "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/prep/legacy_mano_refit_input_annotations.json" \
   --mask-track "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/prep/mask_tracks/<side>/sam2_track.json" \
-  --metric-depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --metric-depth-npz "$CAMERA_BOUND_DEPTH" \
   --output-annotations "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/<side>_refit_annotations.json" \
   --output-qc "$RUN_ROOT/measurements/hand_candidates/mano_mask_depth_refit/<side>_refit_qc.json" \
   --video "$INPUT_VIDEO" \
@@ -307,7 +334,7 @@ Refit MANO depth/scale against metric depth:
 ```bash
 python "$REPO_ROOT/scripts/refit_mano_metric_depth_v3.py" \
   --annotations "$RUN_ROOT/measurements/hand_candidates/merged/annotations_hand_candidates.json" \
-  --metric-depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --metric-depth-npz "$CAMERA_BOUND_DEPTH" \
   --output-json "$RUN_ROOT/measurements/hand_candidates/refit_mano_metric_depth.json" \
   --frame-start "$FRAME_START" \
   --frame-end "$FRAME_END"
@@ -436,7 +463,7 @@ Physical mechanism: downstream rigid/contact/MANO/render components need a singl
 python "$REPO_ROOT/scripts/build_v19_base_annotations.py" \
   --case "$CASE_ID" \
   --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
-  --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "$CAMERA_BOUND_DEPTH" \
   --calibration-contract "$CALIBRATION_CONTRACT" \
   --hawor-npz "$RUN_ROOT/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
   --object-plan "$RUN_ROOT/measurements/object_candidates/object_plan_agent.json" \
@@ -448,7 +475,7 @@ python "$REPO_ROOT/scripts/build_v19_base_annotations.py" \
 BASE_ANNOTATIONS="$RUN_ROOT/state/base_annotations/annotations_v19_base.json"
 ```
 
-The script also writes `v19_mano_bridge_from_hawor_world.npz`, `v19_base_physical_state.json`, and `v19_base_annotations_report.json`. It fails if no real camera/world pose source is supplied. When HaWoR world MANO is the hand source, the default camera pose should be HaWoR's `R_c2w/t_c2w` so camera and MANO vertices stay in the same world frame. Intrinsics should come from `$CALIBRATION_CONTRACT`; per-frame UniDepth intrinsics are measurement evidence used to build the contract, not the default rendered-state calibration. A DROID camera NPZ is a separate fresh camera candidate; pass it with `--prefer-camera-npz` only after estimating an explicit DROID↔HaWoR world alignment. If SAM2 ran on A800 and its track JSON contains server-absolute `mask_path` values, `--remote-root/--local-root` localizes those paths after the SAM2 output directory is copied into the local run root; this preserves the same mask measurement and avoids a local-only path contract error. The compatibility field names used by existing MANO solvers are present, but their data source is the fresh V19 HaWoR/camera run.
+The script also writes `v19_mano_bridge_from_hawor_world.npz`, `v19_base_physical_state.json`, and `v19_base_annotations_report.json`. It fails if no real camera/world pose source is supplied. When HaWoR world MANO is the hand source, the default camera pose should be HaWoR's `R_c2w/t_c2w` so camera and MANO vertices stay in the same world frame. Intrinsics should come from `$CALIBRATION_CONTRACT`; per-frame UniDepth intrinsics are measurement evidence used to build the contract, not the default rendered-state calibration. P08 compares the inherited full-image HaWoR K with the active `source_rgb` K; a legacy archive's source K is `[img_focal,img_focal,width/2,height/2]`, matching upstream HaWoR. If focal or principal point differs, P08 writes `active_contract_reinference_required=true` into report/camera/hand state and preserves source HaWoR K separately from active V19 K. Replacing camera metadata does not recalibrate frozen MANO/camera trajectories. A DROID camera NPZ is a separate fresh camera candidate; pass it with `--prefer-camera-npz` only after estimating an explicit DROID↔HaWoR world alignment. If SAM2 ran on A800 and its track JSON contains server-absolute `mask_path` values, `--remote-root/--local-root` localizes those paths after the SAM2 output directory is copied into the local run root; this preserves the same mask measurement and avoids a local-only path contract error. The compatibility field names used by existing MANO solvers are present, but their data source is the fresh V19 HaWoR/camera run.
 
 ## 7. Lift masks to visible metric surfaces
 
@@ -464,12 +491,14 @@ python "$REPO_ROOT/scripts/build_v19_visible_geometry_from_sam2_depth.py" \
   --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
   --base-annotations "$BASE_ANNOTATIONS" \
   --sam2-track-json "$RUN_ROOT/measurements/object_tracks/sam2_agent_points/$TRACK_ID/sam2/sam2_track.json" \
-  --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "$CAMERA_BOUND_DEPTH" \
   --calibration-contract "$CALIBRATION_CONTRACT" \
   --object-plan "$RUN_ROOT/measurements/object_candidates/object_plan_agent.json" \
   --output-dir "$RUN_ROOT/measurements/object_geometry/anchor_candidates_<track_id>" \
   --frame-start "$FRAME_START" \
   --frame-end "$FRAME_END" \
+  --depth-image-plane source_rgb \
+  --mask-image-plane sam2_mask \
   --propose-anchor-candidates-only \
   --anchor-candidate-count 12
 ```
@@ -486,17 +515,19 @@ python "$REPO_ROOT/scripts/build_v19_visible_geometry_from_sam2_depth.py" \
   --raw-frame-manifest "$RAW_FRAME_MANIFEST" \
   --base-annotations "$BASE_ANNOTATIONS" \
   --sam2-track-json "$RUN_ROOT/measurements/object_tracks/sam2_agent_points/$TRACK_ID/sam2/sam2_track.json" \
-  --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "$CAMERA_BOUND_DEPTH" \
   --calibration-contract "$CALIBRATION_CONTRACT" \
   --object-plan "$RUN_ROOT/measurements/object_candidates/object_plan_agent.json" \
   --output-dir "$RUN_ROOT/measurements/object_geometry/visible_geometry_<track_id>" \
   --frame-start "$FRAME_START" \
   --frame-end "$FRAME_END" \
+  --depth-image-plane source_rgb \
+  --mask-image-plane sam2_mask \
   --anchor-frame "<agent_selected_full_object_frame>" \
   --require-anchor-frame
 ```
 
-The `--base-annotations` input must be the V19-generated base annotation file above. When HaWoR MANO is the active hand state, use its camera poses from the base annotations unless a camera NPZ has been explicitly aligned into the same HaWoR/MANO world frame; do not mix DROID and HaWoR worlds by default. Mask/depth backprojection must use `$CALIBRATION_CONTRACT` or the same intrinsics already recorded in base annotations; do not silently fall back to per-frame UniDepth `K` after a contract exists. The script writes:
+The `--base-annotations` input must be the V19-generated base annotation file above. When HaWoR MANO is the active hand state, use its camera poses from the base annotations unless a camera NPZ has been explicitly aligned into the same HaWoR/MANO world frame; do not mix DROID and HaWoR worlds by default. Mask/depth backprojection must use `$CALIBRATION_CONTRACT` or the same intrinsics already recorded in base annotations; do not silently fall back to per-frame UniDepth `K` after a contract exists. If mask and depth rasters differ, use `cv2.INTER_NEAREST_EXACT`: it follows the declared OpenCV half-pixel affine, whereas legacy `cv2.INTER_NEAREST` uses corner-origin sampling. The script writes:
 
 ```text
 annotations_v19_visible_geometry.json
@@ -518,7 +549,7 @@ python "$REPO_ROOT/scripts/reconstruct_object_mesh_v2.py" \
   --annotations "$RUN_ROOT/measurements/object_geometry/visible_geometry_<track_id>/annotations_v19_visible_geometry.json" \
   --droid-npz "$RUN_ROOT/measurements/depth_slam/droid/droid_dense_trajectory.npz" \
   --droid-reconstruction "$RUN_ROOT/measurements/depth_slam/droid/droid_keyframe_reconstruction.pth" \
-  --metric-depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --metric-depth-npz "$CAMERA_BOUND_DEPTH" \
   --output-dir "$RUN_ROOT/measurements/object_geometry/reconstruct_object_mesh_v2" \
   --droid-to-meters "<estimated_or_calibrated_scale>"
 ```
@@ -800,7 +831,7 @@ python "$REPO_ROOT/scripts/solve_v18_joint_mano_interval_trajectory.py" \
   --annotations "<sanitized_annotations_with_hands_and_pose.json>" \
   --pose-report "$RUN_ROOT/measurements/pose_fits/rigid_<track_id>/v18_compact_rigid_object_pose_fit_report.json" \
   --completed-mesh "<completed_mesh_labeled.ply>" \
-  --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "$CAMERA_BOUND_DEPTH" \
   --output-dir "$RUN_ROOT/measurements/interval_mano" \
   --start-frame "<interval_start>" \
   --end-frame "<interval_end>" \
@@ -829,7 +860,7 @@ python "$REPO_ROOT/scripts/build_v18_compact_rigid_hidden_volume_depth_validatio
   --annotations "<annotations_with_hands_and_pose.json>" \
   --pose-report "$RUN_ROOT/measurements/pose_fits/rigid_<track_id>/v18_compact_rigid_object_pose_fit_report.json" \
   --completed-mesh "<completed_mesh_labeled.ply>" \
-  --depth-npz "$RUN_ROOT/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "$CAMERA_BOUND_DEPTH" \
   --temporal-mano-state "$RUN_ROOT/measurements/interval_mano/$CASE_ID/v18_joint_mano_interval_trajectory_state.json" \
   --output-dir "$RUN_ROOT/measurements/contact_nonpenetration/hidden_volume_<track_id>"
 ```

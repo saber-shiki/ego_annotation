@@ -1,0 +1,441 @@
+{
+  "schema": "v19_camera_image_transform_contract_v2",
+  "status": "ok",
+  "method": "resolve_v19_camera_contract",
+  "case": "hot3d_clip001851_keyboard_pinhole_estimated_fallback_control_v9",
+  "claim_scope": "estimated camera fallback from robust UniDepth intrinsics; same downstream contract as sensor calibration",
+  "calibration_authority": "estimated_from_rgb_depth_model",
+  "source_contract": null,
+  "fallback": {
+    "used": true,
+    "reason": "controlled fallback path: sensor metadata intentionally omitted",
+    "method": "robust_unidepth_video_constant"
+  },
+  "inputs": {
+    "raw_frame_manifest": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/input/raw_frame_manifest/manifest.json",
+    "sensor_calibration_contract": null,
+    "unidepth_npz": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz"
+  },
+  "outputs": {
+    "contract_json": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_estimated_fallback_control/v19_camera_calibration_contract.json",
+    "intrinsics_npz": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_estimated_fallback_control/v19_camera_calibration_intrinsics.npz"
+  },
+  "frame_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149
+  ],
+  "intrinsics_model": "constant_pinhole_fx_fy_cx_cy",
+  "intrinsics_coordinate_plane": "calibration",
+  "intrinsics_vary_per_frame": false,
+  "calibration_plane": {
+    "width": 1408,
+    "height": 1408,
+    "pixel_center_convention": "integer_pixel_centers_opencv",
+    "camera_coordinate_convention": "x_right_y_down_z_forward",
+    "depth_convention": "camera_z_meters"
+  },
+  "intrinsics_fx_fy_cx_cy": [
+    537.0213035603387,
+    537.0213035603387,
+    722.2881469726562,
+    720.8964233398438
+  ],
+  "K": [
+    [
+      537.0213035603387,
+      0.0,
+      722.2881469726562
+    ],
+    [
+      0.0,
+      537.0213035603387,
+      720.8964233398438
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "focal_px": 537.0213035603387,
+  "focal_geom_px": 537.0213035603387,
+  "fov_degrees": {
+    "horizontal": 105.32618399672425,
+    "vertical": 105.32618399672425
+  },
+  "intrinsics_source": "v19_calibration_contract_unidepth_robust_video_constant",
+  "aggregation": {
+    "method": "median",
+    "trim_low_quantile": null,
+    "trim_high_quantile": null,
+    "used_frame_count": 150,
+    "input_frame_count": 150
+  },
+  "image_planes": {
+    "calibration": {
+      "plane_name": "calibration",
+      "width": 1408,
+      "height": 1408,
+      "A_plane_from_calibration": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "identity",
+      "interpolation": null,
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "source_rgb": {
+      "plane_name": "source_rgb",
+      "width": 1408,
+      "height": 1408,
+      "A_plane_from_calibration": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "explicit_source_image_transform",
+      "interpolation": "dataset_or_video_adapter_declared",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "manifest_rgb": {
+      "plane_name": "manifest_rgb",
+      "width": 960,
+      "height": 960,
+      "A_plane_from_calibration": [
+        [
+          0.6818181818181818,
+          0.0,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.6818181818181818,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "source_to_manifest_resize",
+      "interpolation": "cv2.INTER_AREA_for_RGB",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "sam2_mask": {
+      "plane_name": "sam2_mask",
+      "width": 960,
+      "height": 960,
+      "A_plane_from_calibration": [
+        [
+          0.6818181818181818,
+          0.0,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.6818181818181818,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "source_to_manifest_resize",
+      "interpolation": "nearest_for_masks",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "render": {
+      "plane_name": "render",
+      "width": 960,
+      "height": 960,
+      "A_plane_from_calibration": [
+        [
+          0.6818181818181818,
+          0.0,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.6818181818181818,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "explicit_render_from_source_transform",
+      "interpolation": "renderer_raster",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    }
+  },
+  "image_transform_contract": {
+    "formula": "K_plane = A_plane_from_calibration @ K_calibration",
+    "source_affine_reason": "identity_estimator_and_source_plane",
+    "no_implicit_crop_pad_rotation": true
+  },
+  "diagnostics": {
+    "selected_frame_count": 150,
+    "selected_stats": {
+      "fx": {
+        "count": 150,
+        "min": 479.915771484375,
+        "p01": 481.3146044921875,
+        "p05": 488.1169372558594,
+        "p10": 495.87632446289064,
+        "p25": 506.0265808105469,
+        "median": 518.1531677246094,
+        "p75": 545.3447723388672,
+        "p90": 561.6540100097657,
+        "p95": 567.3743194580078,
+        "p99": 577.5136041259765,
+        "max": 579.171630859375,
+        "mean": 524.6821836344401,
+        "std": 24.81446816627002,
+        "mad": 17.899856567382812,
+        "relative_mad_fraction": 0.03454549288193548,
+        "relative_p05_p95_fraction": 0.15296130013099235
+      },
+      "fy": {
+        "count": 150,
+        "min": 504.91583251953125,
+        "p01": 509.59007141113284,
+        "p05": 515.8810424804688,
+        "p10": 527.0071960449219,
+        "p25": 542.8209381103516,
+        "median": 556.5765075683594,
+        "p75": 586.7145690917969,
+        "p90": 606.6999755859375,
+        "p95": 615.9232177734375,
+        "p99": 623.5067907714844,
+        "max": 629.299072265625,
+        "mean": 563.2379711914062,
+        "std": 29.767509183979264,
+        "mad": 21.04180908203125,
+        "relative_mad_fraction": 0.03780578015044386,
+        "relative_p05_p95_fraction": 0.17974559459946565
+      },
+      "cx": {
+        "count": 150,
+        "min": 712.5462646484375,
+        "p01": 717.417236328125,
+        "p05": 718.8088989257812,
+        "p10": 719.5047607421875,
+        "p25": 720.2005615234375,
+        "median": 722.2881469726562,
+        "p75": 722.9839477539062,
+        "p90": 723.6798095703125,
+        "p95": 723.6798095703125,
+        "p99": 724.7305609130859,
+        "max": 725.767333984375,
+        "mean": 721.5737247721354,
+        "std": 1.7911674105217268,
+        "mad": 0.69586181640625,
+        "relative_mad_fraction": 0.0009634130358124142,
+        "relative_p05_p95_fraction": 0.006743722245681056
+      },
+      "cy": {
+        "count": 150,
+        "min": 711.8504638671875,
+        "p01": 716.0115954589844,
+        "p05": 718.113037109375,
+        "p10": 718.7393127441406,
+        "p25": 719.5047607421875,
+        "median": 720.8964233398438,
+        "p75": 725.071533203125,
+        "p90": 730.7078308105469,
+        "p95": 732.7953826904296,
+        "p99": 736.9147961425781,
+        "max": 741.075927734375,
+        "mean": 722.9190238444011,
+        "std": 5.0794164478269375,
+        "mad": 1.7396240234375,
+        "relative_mad_fraction": 0.002413140039422015,
+        "relative_p05_p95_fraction": 0.020366789327421995
+      }
+    }
+  },
+  "provenance": {
+    "dataset_name": "HOT3D-Clips",
+    "sensor_stream": "214-1",
+    "calibration_is_prediction_side_metadata": false,
+    "evaluator_gt_consumed": false
+  }
+}

@@ -71,13 +71,16 @@ with phase id, missing component, blocked state variable, evidence, and next req
 - `{FRAME_END}`: last frame index from P01 manifest.
 - `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
 - `{GPU_ID}`: selected A800 GPU from P02.
+- `{SENSOR_CALIBRATION_METADATA}`: launcher-supplied prediction-side camera metadata path, or the empty string when the dataset/input provides none. The runtime must not search evaluator or benchmark directories for it.
+- `{SENSOR_SOURCE_VIDEO}`: launcher-supplied local path to the exact RGB video associated with `{SENSOR_CALIBRATION_METADATA}`. Sensor-first resolution hashes it against `{INPUT_VIDEO}` and rejects a mismatch.
+- `{SENSOR_CALIBRATION_AUTHORITY}`: one of `dataset_sensor_calibration`, `prediction_side_sensor_metadata`, or `explicit_user_calibration` when metadata is supplied.
+- `{SENSOR_FRAME_INTRINSICS_KEY}`: optional per-frame `[fx,fy,cx,cy]` field name; empty when the supplied metadata has a top-level K.
 - `{REMOTE_MODEL_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`, a launch-preflighted A800 model interpreter used for UniDepth/SAM2 Python phases.
 - `{OWLV2_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/hunyuan3d_v3_env/bin/python`, a launch-preflighted A800 interpreter used only for OWLv2 detector-box prompting.
 - `{OBJECT_ID}`: object id chosen in P05.
 - `{TRACK_ID}`: SAM2 track id for `{OBJECT_ID}`.
 - `{ANCHOR_FRAME}`: selected clean object evidence frame.
 - `{INTERVAL_START}`, `{INTERVAL_END}`: selected physical interval for MANO/object correction.
-- `<calibration_contract>`: chosen calibration contract JSON filename under `{RUN_ROOT}/state/calibration/`.
 - `<completed_mesh_ply>`: completed mesh path from P13.
 - `<visible_contact_ownership_factor_report>`: factor report from P17.
 - `<render_branch_overlay_mp4>`, `<render_branch_world_mp4>`, `<render_branch_side_by_side_mp4>`: P19 render outputs.
@@ -143,31 +146,72 @@ CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_unidepth_ful
 
 Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` written directly under the A800/truenas run root.
 
-## P03b calibration contract
+## P03b source-neutral camera/image-transform contract
 
-If prediction-side calibration metadata is present next to the input, copy it to `{RUN_ROOT}/state/calibration/` and record the source. Otherwise run:
+Script: `scripts/resolve_v19_camera_contract.py`
 
-Script: `scripts/build_v19_calibration_contract.py`
+The launcher binds `{SENSOR_CALIBRATION_METADATA}`; the runtime must not discover calibration in evaluator/GT roots. If prediction-side sensor metadata is supplied, resolve it into the canonical V2 contract. A supplied-but-missing, malformed, variable-K, wrong-size, or wrong-timeline sensor contract is a P03b implementation/input failure and must not silently fall back. Only when the launcher explicitly supplies no sensor metadata may the original robust UniDepth aggregation be used as fallback.
 
 ```bash
-"{REMOTE_MODEL_PYTHON}" scripts/build_v19_calibration_contract.py \
+SENSOR_METADATA='{SENSOR_CALIBRATION_METADATA}'
+SENSOR_INTRINSICS_KEY='{SENSOR_FRAME_INTRINSICS_KEY}'
+CAMERA_ARGS=()
+if [[ -n "$SENSOR_METADATA" ]]; then
+  CAMERA_ARGS+=(
+    --sensor-calibration-contract "$SENSOR_METADATA"
+    --sensor-calibration-authority '{SENSOR_CALIBRATION_AUTHORITY}'
+    --prediction-source-video '{INPUT_VIDEO}'
+    --sensor-source-video '{SENSOR_SOURCE_VIDEO}'
+  )
+  if [[ -n "$SENSOR_INTRINSICS_KEY" ]]; then
+    CAMERA_ARGS+=(--sensor-frame-intrinsics-key "$SENSOR_INTRINSICS_KEY")
+  fi
+else
+  CAMERA_ARGS+=(
+    --unidepth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz"
+    --fallback-reason "launcher supplied no prediction-side sensor calibration"
+    --aggregation median
+    --square-focal
+  )
+fi
+
+"{REMOTE_MODEL_PYTHON}" scripts/resolve_v19_camera_contract.py \
   --case "{CASE_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
-  --unidepth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
   --output-dir "{RUN_ROOT}/state/calibration" \
-  --aggregation median \
-  --square-focal
+  "${CAMERA_ARGS[@]}"
 ```
 
-Required output: one calibration contract JSON under `{RUN_ROOT}/state/calibration/`.
+Required outputs:
 
-The canonical runtime-generated filename is `{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json`. If a copied prediction-side contract uses another filename, record that path and use that same copied contract for P04/P08/P09.
+- `{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json`
+- `{RUN_ROOT}/state/calibration/v19_camera_calibration_intrinsics.npz`
+
+Both sensor-first and estimated-fallback modes use schema `v19_camera_image_transform_contract_v2`. In sensor-first mode, the resolver must prove exact prediction/sensor source-video SHA256 identity and matching frame/time timeline before accepting K; same frame count alone is insufficient. The contract declares native calibration K plus explicit `calibration`, `source_rgb`, `manifest_rgb`, `sam2_mask`, and `render` planes under `K_plane = A_plane_from_calibration @ K_calibration`. The fallback mode reuses `build_v19_calibration_contract.py` aggregation functions; the legacy builder remains available but is no longer the source-neutral runtime entry point.
+
+## P03c bind metric depth to the resolved camera plane
+
+Script: `scripts/adapt_v19_depth_to_camera_contract.py`
+
+```bash
+"{REMOTE_MODEL_PYTHON}" scripts/adapt_v19_depth_to_camera_contract.py \
+  --source-depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --camera-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
+  --depth-plane source_rgb \
+  --output-dir "{RUN_ROOT}/state/calibration/depth_camera_contract"
+```
+
+Required output:
+
+`{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz`
+
+The adapter must prove that depth values, dtype, frame IDs, and raster size are unchanged while preserving the original estimated K under `source_estimated_intrinsics_fx_fy_cx_cy`. It embeds the resolved contract SHA256, named depth plane, K, and `A_depth_from_calibration`. P09 must fail closed unless those fields exactly match the supplied V2 contract; passing an unbound or differently bound depth archive is an implementation/input failure. All downstream metric backprojection/depth projection must consume this camera-bound archive. This stage does not claim that monocular depth itself became more accurate; it removes the mixed-ray/K contract.
 
 ## P04 MANO hand measurement
 
 Script: `scripts/remote_run_hawor_export.sh` (calls `scripts/export_hawor_world.py`)
 
-Extract the HaWoR focal only from the chosen calibration value, never from diagnostics, outlier tables, review statistics, or `largest_selected_focal_deviations`. Use this exact extraction priority: top-level `focal_px`, top-level `focal_geom_px`, top-level `intrinsics_fx_fy_cx_cy[0]`, then `intrinsics.fx`. If none exists, stop with a P04 blocker before running HaWoR.
+Extract the HaWoR focal from the chosen contract's `source_rgb` image plane, never from native calibration-plane K when an image affine is present and never from diagnostics/outlier tables. Prefer top-level `source_plane_intrinsics_fx_fy_cx_cy`; legacy contracts may fall back to top-level `focal_px`, `focal_geom_px`, `intrinsics_fx_fy_cx_cy[0]`, then `intrinsics.fx`. If none exists, stop with a P04 blocker before running HaWoR.
 
 ```bash
 CONTRACT='{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json'
@@ -178,8 +222,11 @@ from pathlib import Path
 path = Path(sys.argv[1])
 data = json.loads(path.read_text())
 value = None
+source_plane = data.get("source_plane_intrinsics_fx_fy_cx_cy")
+if isinstance(source_plane, list) and len(source_plane) >= 2 and all(isinstance(v, (int, float)) for v in source_plane[:2]):
+    value = float((float(source_plane[0]) * float(source_plane[1])) ** 0.5)
 for key in ("focal_px", "focal_geom_px"):
-    if isinstance(data.get(key), (int, float)):
+    if value is None and isinstance(data.get(key), (int, float)):
         value = float(data[key])
         break
 if value is None:
@@ -281,11 +328,13 @@ Script: `scripts/build_v19_base_annotations.py`
   --hawor-npz "{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
   --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
   --sam2-output-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
+  --calibration-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
   --output-dir "{RUN_ROOT}/state/base_annotations"
 ```
 
 Required output: `{RUN_ROOT}/state/base_annotations/annotations_v19_base.json`, `v19_base_physical_state.json`, and `v19_mano_bridge_from_hawor_world.npz`.
+
+If P04 HaWoR was not rerun under the active camera contract (for example, an additive camera-only experiment intentionally inherits a frozen HaWoR archive), P08 must compare the inherited full-image HaWoR K with the active `source_rgb` K. For legacy HaWoR archives, reconstruct the source K as `[img_focal,img_focal,width/2,height/2]`, matching upstream HaWoR's full-image center convention. Any focal or principal-point mismatch must set `active_contract_reinference_required=true` in the base report and camera/hand rows. Hand state must retain the source HaWoR K separately from the active V19 K; replacing K metadata does not recalibrate frozen MANO/camera trajectories. Downstream MANO/contact promotion remains blocked until P04 is rerun or independently aligned.
 
 ## P09 visible metric geometry and anchor proposal
 
@@ -300,10 +349,12 @@ P09 is intentionally two-step. First propose anchor candidates from the same SAM
   --object-id "{OBJECT_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
   --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz" \
   --output-dir "{RUN_ROOT}/measurements/object_geometry/anchor_candidates/{OBJECT_ID}" \
   --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
-  --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
+  --calibration-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
+  --depth-image-plane source_rgb \
+  --mask-image-plane sam2_mask \
   --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
   --preserve-source-index \
   --exclude-hand-bboxes \
@@ -329,10 +380,12 @@ Then run canonical visible geometry with the selected anchor. This second comman
   --object-id "{OBJECT_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
   --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz" \
   --output-dir "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}" \
   --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
-  --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
+  --calibration-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
+  --depth-image-plane source_rgb \
+  --mask-image-plane sam2_mask \
   --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
   --anchor-frame "{ANCHOR_FRAME}" \
   --require-anchor-frame \
@@ -341,7 +394,7 @@ Then run canonical visible geometry with the selected anchor. This second comman
   --hand-bbox-exclusion-pad-px 12
 ```
 
-Required output: `v19_visible_geometry_depth_fused_report.json` and visible-geometry annotations. P09 must treat hand-owned pixels as occlusion/uncertainty, not visible object surface; if same-frame hand boxes are available, subtract them before depth lifting and record the removed support in `object_surface_ownership_filter`. The per-object `mask_path` written to annotations must be the object-owned mask after this subtraction, because P11/P12 evidence crops and TRELLIS conditioning must not consume hand-owned pixels as object appearance.
+Required output: `v19_visible_geometry_depth_fused_report.json` and visible-geometry annotations. P09 must treat hand-owned pixels as occlusion/uncertainty, not visible object surface; if same-frame hand boxes are available, subtract them before depth lifting and record the removed support in `object_surface_ownership_filter`. The per-object `mask_path` written to annotations must be the object-owned mask after this subtraction, because P11/P12 evidence crops and TRELLIS conditioning must not consume hand-owned pixels as object appearance. When mask and depth rasters differ, P09 must use `cv2.INTER_NEAREST_EXACT` so discrete mask samples follow the V2 OpenCV half-pixel affine; legacy `cv2.INTER_NEAREST` uses a corner-origin sampler and is not valid for this contract.
 
 ## P10 branch decision
 
@@ -466,7 +519,7 @@ Script: `scripts/filter_v19_rigid_completion_multiview_support.py`
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --completion-report "$P13_COMPLETION_REPORT" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit/v18_compact_rigid_object_pose_fit_report.json" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz" \
   --object-id "{OBJECT_ID}" \
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/{OBJECT_ID}_multiview_support"
 
@@ -578,7 +631,7 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
   --completed-mesh "$POSE_HYPOTHESIS_MESH_PLY" \
   --completion-report "$COMPLETION_REPORT" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz" \
   --wilor-root third_party/WiLoR \
   --wilor-mano-left third_party/WiLoR/mano_data/MANO_LEFT.pkl \
   --output-dir "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}" \

@@ -1,0 +1,400 @@
+{
+  "schema": "v19_camera_image_transform_contract_v2",
+  "status": "ok",
+  "method": "resolve_v19_camera_contract",
+  "case": "hot3d_clip001851_keyboard_pinhole_sensor_first_v9",
+  "claim_scope": "prediction-side camera calibration and explicit image-plane transforms only; no object/hand/CAD/pose/contact/evaluator labels are consumed",
+  "calibration_authority": "prediction_side_sensor_metadata",
+  "source_contract": {
+    "path": "/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/v19_inputs_pinhole/clip-001851/input/raw_frame_manifest/manifest_for_eval.json",
+    "sha256": "c8fd1e1663eb8c263a6a3deab2db0d75d7c7942ba441001cbfb2198e668d42bd",
+    "method": null,
+    "schema": "v19_hot3d_pinhole_raw_frame_manifest_v1"
+  },
+  "fallback": {
+    "used": false,
+    "reason": null
+  },
+  "inputs": {
+    "raw_frame_manifest": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/input/raw_frame_manifest/manifest.json",
+    "sensor_calibration_contract": "/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/v19_inputs_pinhole/clip-001851/input/raw_frame_manifest/manifest_for_eval.json",
+    "unidepth_npz": null
+  },
+  "outputs": {
+    "contract_json": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_contract.json",
+    "intrinsics_npz": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_intrinsics.npz"
+  },
+  "raw_video": {
+    "fps": 30.0,
+    "width": 1408,
+    "height": 1408,
+    "frame_count": 150,
+    "duration_s": 5.0
+  },
+  "frame_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149
+  ],
+  "intrinsics_model": "constant_pinhole_fx_fy_cx_cy",
+  "intrinsics_coordinate_plane": "calibration",
+  "intrinsics_vary_per_frame": false,
+  "calibration_plane": {
+    "width": 1408,
+    "height": 1408,
+    "pixel_center_convention": "integer_pixel_centers_opencv",
+    "camera_coordinate_convention": "x_right_y_down_z_forward",
+    "depth_convention": "camera_z_meters"
+  },
+  "intrinsics_fx_fy_cx_cy": [
+    609.85009765625,
+    609.85009765625,
+    707.4874877929688,
+    702.32177734375
+  ],
+  "K": [
+    [
+      609.85009765625,
+      0.0,
+      707.4874877929688
+    ],
+    [
+      0.0,
+      609.85009765625,
+      702.32177734375
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "focal_px": 609.85009765625,
+  "focal_geom_px": 609.85009765625,
+  "fov_degrees": {
+    "horizontal": 98.19756658182777,
+    "vertical": 98.19756658182777
+  },
+  "intrinsics_source": "prediction_side_sensor_calibration",
+  "image_planes": {
+    "calibration": {
+      "plane_name": "calibration",
+      "width": 1408,
+      "height": 1408,
+      "A_plane_from_calibration": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "identity",
+      "interpolation": null,
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "source_rgb": {
+      "plane_name": "source_rgb",
+      "width": 1408,
+      "height": 1408,
+      "A_plane_from_calibration": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "explicit_source_image_transform",
+      "interpolation": "dataset_or_video_adapter_declared",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "manifest_rgb": {
+      "plane_name": "manifest_rgb",
+      "width": 960,
+      "height": 960,
+      "A_plane_from_calibration": [
+        [
+          0.6818181818181818,
+          0.0,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.6818181818181818,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "source_to_manifest_resize",
+      "interpolation": "cv2.INTER_AREA_for_RGB",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "sam2_mask": {
+      "plane_name": "sam2_mask",
+      "width": 960,
+      "height": 960,
+      "A_plane_from_calibration": [
+        [
+          0.6818181818181818,
+          0.0,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.6818181818181818,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "source_to_manifest_resize",
+      "interpolation": "nearest_for_masks",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    },
+    "render": {
+      "plane_name": "render",
+      "width": 960,
+      "height": 960,
+      "A_plane_from_calibration": [
+        [
+          0.6818181818181818,
+          0.0,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.6818181818181818,
+          -0.15909090909090912
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "transform_kind": "explicit_render_from_source_transform",
+      "interpolation": "renderer_raster",
+      "pixel_center_convention": "integer_pixel_centers_opencv"
+    }
+  },
+  "image_transform_contract": {
+    "formula": "K_plane = A_plane_from_calibration @ K_calibration",
+    "source_affine_reason": "identity_same_calibration_and_source_plane",
+    "no_implicit_crop_pad_rotation": true
+  },
+  "source_plane_intrinsics_fx_fy_cx_cy": [
+    609.85009765625,
+    609.85009765625,
+    707.4874877929688,
+    702.32177734375
+  ],
+  "provenance": {
+    "dataset_name": "HOT3D-Clips",
+    "sensor_stream": "214-1",
+    "calibration_is_prediction_side_metadata": true,
+    "evaluator_gt_consumed": false,
+    "intrinsics_extraction": {
+      "mode": "per_frame_metadata_fixed_pinhole_median",
+      "frame_intrinsics_key": "hot3d_pinhole_fx_fy_cx_cy",
+      "frame_count": 150,
+      "max_abs_delta_from_median_px": [
+        0.000732421875,
+        0.000732421875,
+        0.00018310546875,
+        0.0003662109375
+      ],
+      "fixed_intrinsics_tolerance_px": 0.01
+    },
+    "source_timeline_validation": {
+      "status": "exact_source_video_hash_and_frame_time_timeline_match",
+      "prediction_source_video": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_inputs/hot3d_clip001851_keyboard_pinhole/input.mp4",
+        "sha256": "7a9baf0553e5dcfb4411b6cfabbe3a734f815ee4c5b014bdd965b9e547ec2310"
+      },
+      "sensor_metadata_source_video": {
+        "path": "/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/v19_inputs_pinhole/clip-001851/input/clip-001851_214_1_pinhole.mp4",
+        "sha256": "7a9baf0553e5dcfb4411b6cfabbe3a734f815ee4c5b014bdd965b9e547ec2310"
+      },
+      "frame_count": 150,
+      "sensor_metadata_frame_rows_present": true,
+      "frame_ids_exact": true,
+      "time_s_tolerance": 1e-09,
+      "time_s_rows_checked": 150,
+      "time_s_max_abs_delta": 0.0,
+      "time_s_all_available_rows_match": true
+    }
+  }
+}

@@ -1,0 +1,160 @@
+{
+  "status": "ok",
+  "method": "adapt_v19_depth_to_camera_contract",
+  "claim_scope": "camera metadata adaptation only; metric depth values, frame rows, raster size, and dtype are unchanged; no evaluator/object/hand labels are consumed",
+  "inputs": {
+    "source_depth_npz": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz",
+    "camera_contract": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_contract.json"
+  },
+  "outputs": {
+    "depth_npz": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/depth_sensor_first/unidepth_full_frame_depth_camera_contract_v2.npz",
+    "report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/depth_sensor_first/v19_depth_camera_contract_adapter_report.json"
+  },
+  "frame_count": 150,
+  "depth_shape": [
+    150,
+    1408,
+    1408
+  ],
+  "depth_dtype": "float16",
+  "depth_plane": "source_rgb",
+  "resolved_intrinsics_fx_fy_cx_cy": [
+    609.85009765625,
+    609.85009765625,
+    707.4874877929688,
+    702.32177734375
+  ],
+  "camera_contract": {
+    "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_contract.json",
+    "sha256": "9ac89275007d36fce062bd2022cd9f6b04a7b72db802142af3d26131280616af",
+    "schema": "v19_camera_image_transform_contract_v2",
+    "calibration_authority": "prediction_side_sensor_metadata",
+    "intrinsics_model": "constant_pinhole_fx_fy_cx_cy",
+    "intrinsics_coordinate_plane": "calibration",
+    "intrinsics_fx_fy_cx_cy": [
+      609.85009765625,
+      609.85009765625,
+      707.4874877929688,
+      702.32177734375
+    ],
+    "calibration_size_wh": [
+      1408,
+      1408
+    ],
+    "image_plane_names": [
+      "calibration",
+      "manifest_rgb",
+      "render",
+      "sam2_mask",
+      "source_rgb"
+    ],
+    "intrinsics_source": "prediction_side_sensor_calibration",
+    "source_contract": {
+      "path": "/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/v19_inputs_pinhole/clip-001851/input/raw_frame_manifest/manifest_for_eval.json",
+      "sha256": "c8fd1e1663eb8c263a6a3deab2db0d75d7c7942ba441001cbfb2198e668d42bd",
+      "method": null,
+      "schema": "v19_hot3d_pinhole_raw_frame_manifest_v1"
+    },
+    "fallback": {
+      "used": false,
+      "reason": null
+    }
+  },
+  "image_transform": {
+    "calibration_authority": "prediction_side_sensor_metadata",
+    "intrinsics_source": "prediction_side_sensor_calibration",
+    "calibration_plane_size_wh": [
+      1408,
+      1408
+    ],
+    "declared_plane_name": "source_rgb",
+    "declared_plane_size_wh": [
+      1408,
+      1408
+    ],
+    "actual_plane_size_wh": [
+      1408,
+      1408
+    ],
+    "A_declared_plane_from_calibration": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "A_actual_plane_from_declared_plane": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "A_actual_plane_from_calibration": [
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "implicit_resize_compatibility_override": false,
+    "pixel_center_convention": "integer_pixel_centers_opencv",
+    "transform_kind": "explicit_source_image_transform"
+  },
+  "source_estimated_intrinsics_delta_from_resolved": {
+    "median_fx_fy_cx_cy": [
+      -91.69692993164062,
+      -53.273590087890625,
+      14.8006591796875,
+      18.57464599609375
+    ],
+    "max_abs_fx_fy_cx_cy": [
+      129.934326171875,
+      104.93426513671875,
+      18.27984619140625,
+      38.754150390625
+    ]
+  },
+  "array_invariants": {
+    "depth_array_equal": true,
+    "depth_array_sha256_equal": true,
+    "frame_idx_equal": true,
+    "frame_idx_sha256_equal": true,
+    "source_size_equal": true,
+    "source_intrinsics_preserved": true,
+    "output_intrinsics_equal_contract_plane": true
+  },
+  "source_depth_archive_sha256": "7c8841a04c75d8f2ea422e5bbbbbd4eafd592fca260ae928acff4e356c867045",
+  "output_depth_archive_sha256": "510a75d8d45634380c84ce4e3eb80cbed9177607f715770edf9082069e8df72d",
+  "downstream_contract": "Visible geometry and any metric backprojection must consume this output or resolve the same camera contract plane directly."
+}

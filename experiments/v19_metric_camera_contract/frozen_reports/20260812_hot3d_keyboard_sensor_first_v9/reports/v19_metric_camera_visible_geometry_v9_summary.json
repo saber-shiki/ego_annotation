@@ -1,0 +1,223 @@
+{
+  "status": "ok",
+  "method": "v19_metric_camera_contract_visible_geometry_scheme_a_steps_1_2",
+  "claim_scope": "prediction-side camera contract, camera-bound depth metadata, and visible metric geometry only; no object/hand/pose/contact evaluator GT consumed; no object trajectory or backend rerun",
+  "experiment_version": "v9_final_source_video_bound_sensor_contract_depth_bound_exact_sampler_hawor_k_mismatch",
+  "sensor_first": {
+    "calibration_authority": "prediction_side_sensor_metadata",
+    "intrinsics_coordinate_plane": "calibration",
+    "calibration_intrinsics_fx_fy_cx_cy": [
+      609.85009765625,
+      609.85009765625,
+      707.4874877929688,
+      702.32177734375
+    ],
+    "source_rgb_intrinsics_fx_fy_cx_cy": [
+      609.85009765625,
+      609.85009765625,
+      707.4874877929688,
+      702.32177734375
+    ],
+    "fallback": {
+      "used": false,
+      "reason": null
+    },
+    "evaluator_gt_consumed": false,
+    "source_timeline_validation": {
+      "status": "exact_source_video_hash_and_frame_time_timeline_match",
+      "prediction_source_video": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_inputs/hot3d_clip001851_keyboard_pinhole/input.mp4",
+        "sha256": "7a9baf0553e5dcfb4411b6cfabbe3a734f815ee4c5b014bdd965b9e547ec2310"
+      },
+      "sensor_metadata_source_video": {
+        "path": "/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/v19_inputs_pinhole/clip-001851/input/clip-001851_214_1_pinhole.mp4",
+        "sha256": "7a9baf0553e5dcfb4411b6cfabbe3a734f815ee4c5b014bdd965b9e547ec2310"
+      },
+      "frame_count": 150,
+      "sensor_metadata_frame_rows_present": true,
+      "frame_ids_exact": true,
+      "time_s_tolerance": 1e-09,
+      "time_s_rows_checked": 150,
+      "time_s_max_abs_delta": 0.0,
+      "time_s_all_available_rows_match": true
+    }
+  },
+  "estimated_fallback_control": {
+    "calibration_authority": "estimated_from_rgb_depth_model",
+    "intrinsics_fx_fy_cx_cy": [
+      537.0213035603387,
+      537.0213035603387,
+      722.2881469726562,
+      720.8964233398438
+    ],
+    "fallback": {
+      "used": true,
+      "reason": "controlled fallback path: sensor metadata intentionally omitted",
+      "method": "robust_unidepth_video_constant"
+    }
+  },
+  "depth_array_invariants": {
+    "depth_array_equal": true,
+    "depth_array_sha256_equal": true,
+    "frame_idx_equal": true,
+    "frame_idx_sha256_equal": true,
+    "source_size_equal": true,
+    "source_intrinsics_preserved": true,
+    "output_intrinsics_equal_contract_plane": true
+  },
+  "shared_state_invariants": {
+    "camera_pose_exact_frame_count": 150,
+    "camera_pose_frame_count": 150,
+    "full_mano_bridge_all_arrays_exact": true,
+    "base_frame_camera_sensor_k_count": 150,
+    "visible_frame_camera_sensor_k_count": 150,
+    "inherited_hawor_camera_mano_alignment": {
+      "status": "inherited_hawor_state_intrinsics_mismatch",
+      "source_hawor_img_focal_px": 537.0213012695312,
+      "source_hawor_image_size_wh": [
+        1408,
+        1408
+      ],
+      "source_hawor_intrinsics_fx_fy_cx_cy": [
+        537.0213012695312,
+        537.0213012695312,
+        704.0,
+        704.0
+      ],
+      "source_hawor_intrinsics_model": "square_focal_full_image_center",
+      "source_hawor_principal_point_convention": "img_center=[width/2,height/2] as used by upstream HaWoR",
+      "active_camera_intrinsics_fx_fy_cx_cy_median": [
+        609.85009765625,
+        609.85009765625,
+        707.4874877929688,
+        702.32177734375
+      ],
+      "active_camera_intrinsics_max_abs_deviation_px": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "active_minus_hawor_intrinsics_fx_fy_cx_cy_px": [
+        72.82879638671875,
+        72.82879638671875,
+        3.48748779296875,
+        -1.67822265625
+      ],
+      "active_camera_focal_geom_px_median": 609.85009765625,
+      "active_camera_focal_geom_px_max_deviation": 0.0,
+      "active_minus_hawor_focal_abs_px": 72.82879638671875,
+      "active_to_hawor_focal_ratio": 1.1356162152498415,
+      "focal_match_tolerance_px": 0.01,
+      "source_hawor_focal_matches_active_contract": false,
+      "source_hawor_principal_point_matches_active_contract": false,
+      "source_hawor_state_intrinsics_match_active_contract": false,
+      "source_hawor_camera_and_mano_share_intrinsics": true,
+      "builder_reestimated_hawor_camera_or_mano": false,
+      "active_contract_reinference_required": true,
+      "hawor_camera_mano_intrinsics_consistent": true,
+      "hawor_camera_mano_intrinsics_consistent_with_active_contract": false,
+      "claim_scope": "The builder preserves inherited HaWoR camera poses and MANO geometry under the source HaWoR K. A full [fx,fy,cx,cy] mismatch with the active camera contract is explicit uncertainty; replacing projection metadata does not recalibrate the inherited state and blocks promotion to a shared camera/MANO metric state."
+    },
+    "camera_rows_with_reinference_warning": 150,
+    "hand_rows_with_reinference_warning": 300,
+    "camera_rows_with_exact_alignment_payload": 150,
+    "hand_rows_with_exact_alignment_payload": 300,
+    "hand_rows_with_uncertainty_warning": 300,
+    "hand_rows_preserving_source_hawor_k": 300,
+    "hand_rows_recording_active_v19_k": 300
+  },
+  "visible_geometry": {
+    "frame_count": 150,
+    "sensor_k_row_count": 150,
+    "mask_depth_contract_consistent_row_count": 150,
+    "mask_depth_exact_sampler_row_count": 150,
+    "depth_camera_contract_binding_validation": {
+      "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_contract.json",
+      "sha256": "9ac89275007d36fce062bd2022cd9f6b04a7b72db802142af3d26131280616af",
+      "plane": "source_rgb",
+      "A_depth_from_calibration": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "intrinsics_source": "prediction_side_sensor_calibration",
+      "calibration_authority": "prediction_side_sensor_metadata",
+      "status": "exact_camera_contract_hash_plane_intrinsics_and_affine_match",
+      "supplied_contract_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_contract.json",
+      "supplied_contract_sha256": "9ac89275007d36fce062bd2022cd9f6b04a7b72db802142af3d26131280616af"
+    },
+    "anchor_frame_idx": 109,
+    "annotation_adapter_anchor_frame_idx": 109,
+    "anchor_centroid_world_m": [
+      0.1835396501442842,
+      -0.11123623131993245,
+      0.4470900474221193
+    ],
+    "anchor_extent_world_m": [
+      0.08354962611473843,
+      0.4562746182688678,
+      0.1874766516333145
+    ],
+    "old_to_new_centroid_delta_m": {
+      "median": 0.04558355222613055,
+      "p95": 0.06462982972096294,
+      "max": 0.06719125302053494
+    }
+  },
+  "prediction_only_reprojection_review": {
+    "old_projected_with_sensor_k_median": 0.557568058076225,
+    "old_projected_with_sensor_k_p10": 0.2116187451417624,
+    "new_projected_with_sensor_k_median": 1.0,
+    "new_projected_with_sensor_k_p10": 1.0,
+    "new_minus_old_median": 0.442431941923775,
+    "new_better_frame_count": 150,
+    "equal_frame_count": 0
+  },
+  "all_object_owned_masks_byte_equal": true,
+  "outputs": {
+    "camera_contract": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_contract.json",
+    "fallback_contract": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_estimated_fallback_control/v19_camera_calibration_contract.json",
+    "depth_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/depth_sensor_first/v19_depth_camera_contract_adapter_report.json",
+    "base_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/base_annotations_sensor_first/v19_base_annotations_report.json",
+    "visible_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_sensor_first_full/v19_visible_geometry_adapter_report.json",
+    "ab_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_camera_contract_ab/camera_contract_visible_geometry_ab_report.json",
+    "ab_video": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_camera_contract_ab/old_estimated_k_vs_sensor_k_visible_geometry_reprojection.mp4",
+    "multiframe_qc": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_camera_contract_ab/multiframe_reprojection_qc.jpg"
+  },
+  "immutable_legacy_artifacts": {
+    "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/state/calibration/v19_camera_calibration_contract.json": "c5e2a18010eed66b014c31fc129fd038ef9edd0f162fc0210d42f5280e5214c0",
+    "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/state/base_annotations/v19_mano_bridge_from_hawor_world.npz": "a146b28287f3d9758b5fd53c27014d8838d9571b3aa87659657cd312f74ac7e9",
+    "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/object_geometry/visible_geometry/keyboard/v19_visible_geometry_adapter_report.json": "db44f544fac2242d931da429e5194bbd115043bb5e6ee3f295c356850b2bb19b"
+  },
+  "required_checks": {
+    "sensor_fallback_unused": true,
+    "sensor_source_video_and_timeline_exact": true,
+    "fallback_control_used": true,
+    "depth_invariants_all": true,
+    "depth_archive_contract_binding_exact": true,
+    "camera_poses_exact": true,
+    "full_mano_bridge_exact": true,
+    "inherited_hawor_intrinsics_mismatch_explicit_without_silent_relabel": true,
+    "base_frame_camera_sensor_k_all": true,
+    "visible_frame_camera_sensor_k_all": true,
+    "visible_sensor_k_all": true,
+    "mask_depth_contract_all": true,
+    "mask_depth_exact_sampler_all": true,
+    "adapter_anchor_frame_preserved": true,
+    "owned_masks_unchanged": true,
+    "new_reprojection_better_all_frames": true
+  }
+}

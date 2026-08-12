@@ -11,7 +11,18 @@ from typing import Any
 
 import cv2
 import numpy as np
-import open3d as o3d
+
+try:
+    import open3d as o3d
+except ImportError:  # Contract resolution/backprojection helpers remain CPU-testable without Open3D.
+    o3d = None
+
+from v19_camera_contract import SCHEMA as CAMERA_CONTRACT_V2_SCHEMA
+from v19_camera_contract import load_contract as load_camera_contract_v2
+from v19_camera_contract import plane_intrinsics as camera_contract_plane_intrinsics
+from v19_camera_contract import resize_affine as camera_contract_resize_affine
+from v19_camera_contract import sha256_file as camera_contract_sha256_file
+from v19_camera_contract import summarize_contract as summarize_camera_contract_v2
 
 
 def load_json(path: Path) -> Any:
@@ -52,6 +63,8 @@ def export_anchor_visible_surface_mesh(
     anchor-frame visible centroid rather than written in world coordinates.
     """
     points_world = np.asarray(anchor_points_world_m, dtype=np.float64)
+    if o3d is None:
+        raise RuntimeError("Open3D is required to export anchor visible-surface artifacts")
     centroid = np.asarray(anchor_centroid_world_m, dtype=np.float64)
     if points_world.ndim != 2 or points_world.shape[1] != 3 or len(points_world) < 30:
         return {
@@ -157,6 +170,13 @@ def raw_frame_map(manifest_path: Path) -> tuple[dict[int, dict[str, Any]], dict[
     return out, payload
 
 
+def scalar_text(value: np.ndarray, label: str) -> str:
+    array = np.asarray(value)
+    if array.size != 1:
+        raise RuntimeError(f"{label} must be a scalar string, got shape {array.shape}")
+    return str(array.reshape(-1)[0])
+
+
 def load_depth_npz(path: Path) -> dict[str, Any]:
     blob = np.load(path, allow_pickle=True)
     required = {"frame_idx", "depth", "intrinsics_fx_fy_cx_cy"}
@@ -171,35 +191,134 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
     if len(frame_idx) != depth.shape[0] or len(frame_idx) != intr.shape[0]:
         raise RuntimeError(f"{path} has inconsistent frame/depth/intrinsics rows")
     source_size = np.asarray(blob["source_size"], dtype=float) if "source_size" in blob.files else None
+    camera_contract_binding = None
+    binding_keys = {
+        "camera_contract_path",
+        "camera_contract_sha256",
+        "camera_contract_plane",
+        "A_depth_from_calibration",
+        "intrinsics_source",
+        "calibration_authority",
+    }
+    present_binding_keys = binding_keys.intersection(blob.files)
+    if present_binding_keys and present_binding_keys != binding_keys:
+        raise RuntimeError(
+            f"{path} has an incomplete camera-contract binding; missing={sorted(binding_keys.difference(blob.files))}"
+        )
+    if present_binding_keys:
+        affine = np.asarray(blob["A_depth_from_calibration"], dtype=np.float64)
+        if affine.shape != (3, 3) or not np.isfinite(affine).all():
+            raise RuntimeError(f"{path} has invalid A_depth_from_calibration")
+        camera_contract_binding = {
+            "path": scalar_text(blob["camera_contract_path"], "camera_contract_path"),
+            "sha256": scalar_text(blob["camera_contract_sha256"], "camera_contract_sha256"),
+            "plane": scalar_text(blob["camera_contract_plane"], "camera_contract_plane"),
+            "A_depth_from_calibration": affine.tolist(),
+            "intrinsics_source": scalar_text(blob["intrinsics_source"], "intrinsics_source"),
+            "calibration_authority": scalar_text(blob["calibration_authority"], "calibration_authority"),
+        }
     return {
         "path": str(path),
         "frame_idx": frame_idx,
         "depth": depth,
         "intrinsics": intr,
         "source_size": source_size,
+        "camera_contract_binding": camera_contract_binding,
         "frame_to_i": {int(idx): int(i) for i, idx in enumerate(frame_idx)},
     }
 
 
-def load_calibration_contract(path: Path | None) -> tuple[np.ndarray | None, str | None, dict[str, Any] | None]:
+def load_calibration_contract(
+    path: Path | None,
+    *,
+    frame_ids: list[int] | None = None,
+) -> tuple[np.ndarray | None, str | None, dict[str, Any] | None, dict[str, Any] | None]:
     if path is None:
-        return None, None, None
+        return None, None, None, None
     if not path.exists():
         raise FileNotFoundError(f"missing calibration contract: {path}")
     payload = load_json(path)
+    v2_declared = payload.get("schema") == CAMERA_CONTRACT_V2_SCHEMA
+    v2_fields_present = "calibration_plane" in payload or "image_planes" in payload
+    if v2_declared or v2_fields_present:
+        full_payload, normalized = load_camera_contract_v2(path, expected_frame_ids=frame_ids)
+        source = str(full_payload.get("intrinsics_source") or full_payload.get("method") or "v19_camera_contract")
+        summary = summarize_camera_contract_v2(path, full_payload, normalized)
+        return None, f"camera_contract:{source}", summary, {
+            "payload": full_payload,
+            "normalized": normalized,
+        }
     intr = np.asarray(payload.get("intrinsics_fx_fy_cx_cy"), dtype=float).reshape(-1)
     if intr.shape != (4,) or not np.isfinite(intr).all() or float(intr[0]) <= 0.0 or float(intr[1]) <= 0.0:
         raise RuntimeError(f"calibration contract has invalid intrinsics_fx_fy_cx_cy: {path}")
     source = str(payload.get("intrinsics_source") or payload.get("method") or "v19_calibration_contract")
-    source = f"calibration_contract:{source}"
+    source = f"legacy_calibration_contract:{source}"
     summary = {
         "path": str(path),
+        "schema": payload.get("schema"),
+        "calibration_authority": payload.get("calibration_authority") or "legacy_unspecified",
         "intrinsics_fx_fy_cx_cy": [float(v) for v in intr.tolist()],
         "intrinsics_source": source,
         "fov_degrees": payload.get("fov_degrees"),
         "aggregation": payload.get("aggregation"),
+        "legacy_contract_without_explicit_image_planes": True,
     }
-    return intr.astype(float), source, summary
+    return intr.astype(float), source, summary, None
+
+
+def validate_depth_camera_contract_binding(
+    *,
+    depth: dict[str, Any],
+    camera_contract_v2: dict[str, Any] | None,
+    calibration_contract_path: Path | None,
+    depth_image_plane: str,
+    allow_implicit_depth_resize: bool,
+) -> dict[str, Any]:
+    if camera_contract_v2 is None:
+        return {
+            "status": "not_required_without_v2_camera_contract",
+            "archive_binding": depth.get("camera_contract_binding"),
+        }
+    if calibration_contract_path is None:
+        raise RuntimeError("internal error: V2 camera contract has no source path")
+    binding = depth.get("camera_contract_binding")
+    if not isinstance(binding, dict):
+        raise RuntimeError(
+            "a V2 camera contract requires a depth archive produced by adapt_v19_depth_to_camera_contract.py; "
+            "the archive has no complete camera-contract binding"
+        )
+    expected_contract_hash = camera_contract_sha256_file(calibration_contract_path)
+    if binding["sha256"] != expected_contract_hash:
+        raise RuntimeError(
+            "depth archive camera-contract hash disagrees with --calibration-contract: "
+            f"depth={binding['sha256']} supplied={expected_contract_hash}"
+        )
+    if binding["plane"] != depth_image_plane:
+        raise RuntimeError(
+            f"depth archive is bound to plane {binding['plane']!r}, not requested {depth_image_plane!r}"
+        )
+    expected_depth_intrinsics, expected_depth_transform = camera_contract_plane_intrinsics(
+        camera_contract_v2["payload"],
+        camera_contract_v2["normalized"],
+        plane_name=depth_image_plane,
+        actual_size_wh=(int(depth["depth"].shape[2]), int(depth["depth"].shape[1])),
+        allow_implicit_resize=bool(allow_implicit_depth_resize),
+    )
+    if not np.allclose(depth["intrinsics"], expected_depth_intrinsics[None, :], atol=1.0e-6, rtol=0.0):
+        raise RuntimeError("depth archive intrinsics rows disagree with the requested V2 contract plane")
+    if not np.allclose(
+        np.asarray(binding["A_depth_from_calibration"], dtype=np.float64),
+        np.asarray(expected_depth_transform["A_actual_plane_from_calibration"], dtype=np.float64),
+        atol=1.0e-9,
+        rtol=0.0,
+    ):
+        raise RuntimeError("depth archive A_depth_from_calibration disagrees with the requested V2 contract plane")
+    return {
+        **binding,
+        "status": "exact_camera_contract_hash_plane_intrinsics_and_affine_match",
+        "supplied_contract_path": str(calibration_contract_path),
+        "supplied_contract_sha256": expected_contract_hash,
+    }
 
 
 def load_camera_npz(path: Path | None) -> dict[int, tuple[np.ndarray, str]]:
@@ -380,16 +499,26 @@ def bbox_xyxy_from_mask(mask: np.ndarray, source_width: int, source_height: int)
     return [float(xs.min() * sx), float(ys.min() * sy), float((xs.max() + 1) * sx), float((ys.max() + 1) * sy)]
 
 
-def scaled_intrinsics_for_depth(intr: np.ndarray, depth_shape: tuple[int, int], source_size: np.ndarray | None) -> np.ndarray:
+def scaled_intrinsics_for_depth(
+    intr: np.ndarray,
+    depth_shape: tuple[int, int],
+    source_size: np.ndarray | None,
+    *,
+    explicit_source_size_wh: tuple[int, int] | None = None,
+) -> np.ndarray:
     fx, fy, cx, cy = np.asarray(intr, dtype=float).tolist()
     h, w = depth_shape
-    if source_size is not None and source_size.size >= 2:
+    if explicit_source_size_wh is not None:
+        source_w, source_h = [float(v) for v in explicit_source_size_wh]
+    elif source_size is not None and source_size.size >= 2:
         source_w = float(source_size[0])
         source_h = float(source_size[1])
-        if source_w > 0 and source_h > 0 and (abs(source_w - w) > 1e-6 or abs(source_h - h) > 1e-6):
-            sx = float(w) / source_w
-            sy = float(h) / source_h
-            return np.asarray([fx * sx, fy * sy, cx * sx, cy * sy], dtype=float)
+    else:
+        source_w = source_h = 0.0
+    if source_w > 0 and source_h > 0 and (abs(source_w - w) > 1e-6 or abs(source_h - h) > 1e-6):
+        sx = float(w) / source_w
+        sy = float(h) / source_h
+        return np.asarray([fx * sx, fy * sy, cx * sx, cy * sy], dtype=float)
     return np.asarray([fx, fy, cx, cy], dtype=float)
 
 
@@ -790,7 +919,17 @@ def remove_existing_object(objects: list[Any], object_id: str, track_id: str) ->
 def build(args: argparse.Namespace) -> dict[str, Any]:
     raw_frames, raw_payload = raw_frame_map(args.raw_frame_manifest)
     depth = load_depth_npz(args.depth_npz)
-    calibration_intrinsics, calibration_source, calibration_summary = load_calibration_contract(args.calibration_contract)
+    calibration_intrinsics, calibration_source, calibration_summary, camera_contract_v2 = load_calibration_contract(
+        args.calibration_contract,
+        frame_ids=sorted(raw_frames),
+    )
+    depth_contract_binding_validation = validate_depth_camera_contract_binding(
+        depth=depth,
+        camera_contract_v2=camera_contract_v2,
+        calibration_contract_path=args.calibration_contract,
+        depth_image_plane=args.depth_image_plane,
+        allow_implicit_depth_resize=bool(args.allow_implicit_depth_resize),
+    )
     camera_poses = load_camera_npz(args.camera_npz)
     base_frames = load_base_annotations(args.base_annotations)
     sam2, sam2_path = load_sam2_track(args)
@@ -832,12 +971,70 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         if not cv2.imwrite(str(owned_mask_path), mask_owned.astype(np.uint8) * 255):
             raise RuntimeError(f"failed to write object-owned mask: {owned_mask_path}")
         if mask_owned.shape != depth_m.shape:
-            mask_depth_owned = cv2.resize(mask_owned.astype(np.uint8), (depth_m.shape[1], depth_m.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+            A_depth_from_mask = camera_contract_resize_affine(
+                (int(mask_owned.shape[1]), int(mask_owned.shape[0])),
+                (int(depth_m.shape[1]), int(depth_m.shape[0])),
+                pixel_center_convention=args.pixel_center_convention,
+            )
+            mask_depth_owned = cv2.resize(
+                mask_owned.astype(np.uint8),
+                (depth_m.shape[1], depth_m.shape[0]),
+                interpolation=cv2.INTER_NEAREST_EXACT,
+            ) > 0
         else:
+            A_depth_from_mask = np.eye(3, dtype=np.float64)
             mask_depth_owned = mask_owned
-        if calibration_intrinsics is not None:
+        mask_depth_transform_contract = {
+            "mask_image_plane": args.mask_image_plane,
+            "depth_image_plane": args.depth_image_plane,
+            "mask_size_wh": [int(mask_owned.shape[1]), int(mask_owned.shape[0])],
+            "depth_size_wh": [int(depth_m.shape[1]), int(depth_m.shape[0])],
+            "A_depth_from_mask_coordinate_model": A_depth_from_mask.tolist(),
+            "raster_resampling": "cv2.resize INTER_NEAREST_EXACT; discrete samples follow the declared OpenCV half-pixel coordinate model",
+            "interpolation": "cv2.INTER_NEAREST_EXACT",
+            "pixel_center_convention": args.pixel_center_convention,
+        }
+        intrinsics_transform_contract: dict[str, Any]
+        if camera_contract_v2 is not None:
+            raw_intrinsics, intrinsics_transform_contract = camera_contract_plane_intrinsics(
+                camera_contract_v2["payload"],
+                camera_contract_v2["normalized"],
+                plane_name=args.depth_image_plane,
+                actual_size_wh=(int(depth_m.shape[1]), int(depth_m.shape[0])),
+                allow_implicit_resize=bool(args.allow_implicit_depth_resize),
+            )
+            intr = np.asarray(raw_intrinsics, dtype=float)
+            intrinsics_source = calibration_source or "camera_contract_v2"
+            _, mask_plane_transform_contract = camera_contract_plane_intrinsics(
+                camera_contract_v2["payload"],
+                camera_contract_v2["normalized"],
+                plane_name=args.mask_image_plane,
+                actual_size_wh=(int(mask_owned.shape[1]), int(mask_owned.shape[0])),
+                allow_implicit_resize=bool(args.allow_implicit_mask_resize),
+            )
+            A_depth_from_calibration = np.asarray(
+                intrinsics_transform_contract["A_actual_plane_from_calibration"], dtype=np.float64
+            )
+            A_mask_from_calibration = np.asarray(
+                mask_plane_transform_contract["A_actual_plane_from_calibration"], dtype=np.float64
+            )
+            expected_A_depth_from_mask = A_depth_from_calibration @ np.linalg.inv(A_mask_from_calibration)
+            if not np.allclose(A_depth_from_mask, expected_A_depth_from_mask, atol=1.0e-9, rtol=0.0):
+                raise RuntimeError(
+                    "declared camera-contract mask/depth planes disagree with the actual cv2 mask resize: "
+                    f"actual={A_depth_from_mask.tolist()} expected={expected_A_depth_from_mask.tolist()}"
+                )
+            mask_depth_transform_contract["camera_contract_consistent"] = True
+            mask_depth_transform_contract["mask_plane_transform"] = mask_plane_transform_contract
+        elif calibration_intrinsics is not None:
             raw_intrinsics = calibration_intrinsics
-            intrinsics_source = calibration_source or "calibration_contract"
+            intrinsics_source = calibration_source or "legacy_calibration_contract"
+            intr = scaled_intrinsics_for_depth(raw_intrinsics, depth_m.shape, depth["source_size"])
+            intrinsics_transform_contract = {
+                "mode": "legacy_source_size_scaling",
+                "depth_image_plane": args.depth_image_plane,
+                "legacy_contract_without_explicit_image_planes": True,
+            }
         else:
             base_intr = base_camera_intrinsics(base_frame)
             if base_intr is not None:
@@ -845,7 +1042,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 raw_intrinsics = depth["intrinsics"][depth_i]
                 intrinsics_source = "depth_npz_intrinsics_fx_fy_cx_cy"
-        intr = scaled_intrinsics_for_depth(raw_intrinsics, depth_m.shape, depth["source_size"])
+            intr = scaled_intrinsics_for_depth(raw_intrinsics, depth_m.shape, depth["source_size"])
+            intrinsics_transform_contract = {
+                "mode": "legacy_no_camera_contract_fallback",
+                "depth_image_plane": args.depth_image_plane,
+                "source_size": depth["source_size"].astype(float).tolist() if depth["source_size"] is not None else None,
+            }
         valid = mask_depth_owned & np.isfinite(depth_m) & (depth_m >= float(args.min_depth_m)) & (depth_m <= float(args.max_depth_m))
         if int(valid.sum()) < int(args.min_valid_points):
             skipped_rows.append({"frame_idx": idx, "status": "too_few_valid_mask_depth_pixels", "valid_pixels": int(valid.sum())})
@@ -873,6 +1075,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "world_points": world_points,
             "intrinsics": intr,
             "intrinsics_source": intrinsics_source,
+            "intrinsics_transform_contract": intrinsics_transform_contract,
+            "mask_depth_transform_contract": mask_depth_transform_contract,
             "T_world_camera": T_world_camera,
             "camera_source": camera_source,
             "sample_summary": sample_summary,
@@ -1007,9 +1211,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             else "systematic_mask_extent_inconsistent_with_selected_anchor_rigid_object_probable_hand_background_leakage"
         )
         raw_mask = read_mask(Path(vis["mask_path"]))
-        bbox = vis["track_row"].get("bbox_xyxy")
-        if not isinstance(bbox, list) or len(bbox) < 4:
-            bbox = bbox_xyxy_from_mask(raw_mask, int(frame["source_width"]), int(frame["source_height"]))
+        owned_bbox = bbox_xyxy_from_mask(raw_mask, int(frame["source_width"]), int(frame["source_height"]))
+        owned_area_source_px = float(
+            int(raw_mask.sum())
+            * float(frame["source_width"]) / float(max(1, raw_mask.shape[1]))
+            * float(frame["source_height"]) / float(max(1, raw_mask.shape[0]))
+        )
+        if not owned_bbox:
+            raise RuntimeError(f"frame {idx} object-owned mask unexpectedly has no support")
         pose = {
             "rotation_world_from_canonical_matrix": np.eye(3, dtype=float).tolist(),
             "translation_world_m": centroid.astype(float).tolist(),
@@ -1034,6 +1243,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "camera_pose_source": vis["camera_source"],
             "intrinsics_fx_fy_cx_cy": np.asarray(vis["intrinsics"], dtype=float).tolist(),
             "intrinsics_source": vis.get("intrinsics_source"),
+            "intrinsics_transform_contract": vis.get("intrinsics_transform_contract"),
+            "mask_depth_transform_contract": vis.get("mask_depth_transform_contract"),
             "vertex_count": int(len(world_points)),
             "world_vertices_sample_m": world_points.astype(float).tolist(),
             "camera_vertices_sample_m": cam_points.astype(float).tolist(),
@@ -1059,8 +1270,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "status": "visible_metric_surface_measurement",
             "visible": True,
             "mask_path": str(vis["mask_path"]),
-            "bbox_xyxy": [float(x) for x in bbox[:4]],
-            "area_px": float(vis["track_row"].get("area_px", raw_mask.sum())),
+            "bbox_xyxy": [float(x) for x in owned_bbox[:4]],
+            "area_px": owned_area_source_px,
+            "raw_sam2_bbox_xyxy": vis["track_row"].get("bbox_xyxy"),
+            "raw_sam2_area_px": vis["track_row"].get("area_px"),
+            "mask_metadata_coordinate_frame": "source_image_pixels_recomputed_from_object_owned_mask",
             "depth_m": float(vis["depth_median_m"]),
             "visible_geometry_candidate": geom,
             "reconstructed_geometry_pose": pose,
@@ -1077,6 +1291,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "visible_metric_surface_measurement",
                 "vertex_count": int(len(world_points)),
                 "mask_path": str(vis["mask_path"]),
+                "owned_mask_area_source_px": owned_area_source_px,
+                "owned_mask_bbox_source_xyxy": [float(x) for x in owned_bbox[:4]],
                 "depth_median_m": float(vis["depth_median_m"]),
                 "centroid_world_m": centroid.astype(float).tolist(),
                 "world_extent_m": world_extent_m.astype(float).tolist(),
@@ -1086,6 +1302,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "rigid_pose_observation_reason": rigid_pose_observation_reason,
                 "camera_pose_source": vis["camera_source"],
                 "intrinsics_source": vis.get("intrinsics_source"),
+                "intrinsics_transform_contract": vis.get("intrinsics_transform_contract"),
+                "mask_depth_transform_contract": vis.get("mask_depth_transform_contract"),
             }
         )
 
@@ -1102,6 +1320,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "base_annotations": str(args.base_annotations) if args.base_annotations else None,
             "camera_npz": str(args.camera_npz) if args.camera_npz else None,
             "calibration_contract": str(args.calibration_contract) if args.calibration_contract else None,
+            "depth_image_plane": args.depth_image_plane,
+            "mask_image_plane": args.mask_image_plane,
+            "pixel_center_convention": args.pixel_center_convention,
+            "depth_camera_contract_binding_validation": depth_contract_binding_validation,
             "anchor_frame_idx": int(anchor),
             "claim_scope": "visible metric surfel and initial-pose adapter for rigid branch; downstream completion/pose/interval solvers must produce the physical object pose claim",
         },
@@ -1122,7 +1344,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "measurement_type": "sam2_mask_with_metric_depth_support",
             "mask_path": str(row["mask_path"]),
             "saved_mask_path": str(row["mask_path"]),
-            "mask_area_px": None if sam2.get(int(row["frame_idx"]), {}).get("area_px") is None else float(sam2[int(row["frame_idx"])] ["area_px"]),
+            "mask_area_px": row.get("owned_mask_area_source_px"),
+            "mask_bbox_xyxy": row.get("owned_mask_bbox_source_xyxy"),
+            "raw_sam2_mask_area_px": None if sam2.get(int(row["frame_idx"]), {}).get("area_px") is None else float(sam2[int(row["frame_idx"])] ["area_px"]),
             "depth_median_m": row.get("depth_median_m"),
             "visible_vertex_count": row.get("vertex_count"),
             "coordinate_frame": "source_image_mask_plus_metric_depth",
@@ -1156,6 +1380,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_npz": str(args.depth_npz),
             "base_annotations": str(args.base_annotations) if args.base_annotations else None,
             "camera_npz": str(args.camera_npz) if args.camera_npz else None,
+            "calibration_contract": str(args.calibration_contract) if args.calibration_contract else None,
+            "depth_image_plane": args.depth_image_plane,
+            "mask_image_plane": args.mask_image_plane,
+            "pixel_center_convention": args.pixel_center_convention,
             "object_plan": str(args.object_plan) if args.object_plan else None,
             "remote_root": str(args.remote_root) if args.remote_root else None,
             "local_root": str(args.local_root) if args.local_root else None,
@@ -1181,7 +1409,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "camera_pose_source_counts": dict(camera_source_counts),
         "intrinsics_source_counts": dict(Counter(str(vis.get("intrinsics_source")) for vis in visible_data.values())),
         "calibration_contract": calibration_summary,
+        "depth_camera_contract_binding_validation": depth_contract_binding_validation,
         "parameters": {
+            "allow_implicit_depth_resize": bool(args.allow_implicit_depth_resize),
+            "allow_implicit_mask_resize": bool(args.allow_implicit_mask_resize),
+            "depth_image_plane": args.depth_image_plane,
+            "mask_image_plane": args.mask_image_plane,
+            "pixel_center_convention": args.pixel_center_convention,
             "pixel_stride": int(args.pixel_stride),
             "max_points": int(args.max_points),
             "min_valid_points": int(args.min_valid_points),
@@ -1240,7 +1474,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--base-annotations", type=Path, default=None)
     parser.add_argument("--camera-npz", type=Path, default=None)
-    parser.add_argument("--calibration-contract", type=Path, default=None, help="V19 camera calibration contract JSON. When supplied, its constant intrinsics override base/depth per-frame intrinsics for mask-depth lifting.")
+    parser.add_argument("--calibration-contract", type=Path, default=None, help="V19 camera contract. V2 contracts explicitly map calibration pixels into the selected depth image plane; legacy constant-K contracts remain supported.")
+    parser.add_argument("--depth-image-plane", default="source_rgb", help="Named image plane in a V2 camera contract corresponding to the depth raster.")
+    parser.add_argument("--mask-image-plane", default="sam2_mask", help="Named image plane in a V2 camera contract corresponding to the SAM2/object-owned mask raster.")
+    parser.add_argument("--pixel-center-convention", choices=["integer_pixel_centers_opencv", "pixel_corner_origin"], default="integer_pixel_centers_opencv")
+    parser.add_argument("--allow-implicit-depth-resize", action="store_true", help="Compatibility override when the actual depth raster differs from the declared plane. Prefer an explicit image plane in the contract.")
+    parser.add_argument("--allow-implicit-mask-resize", action="store_true", help="Compatibility override when the actual mask raster differs from the declared plane. Prefer an explicit image plane in the contract.")
     parser.add_argument("--object-plan", type=Path, default=None)
     parser.add_argument("--remote-root", type=Path, default=None, help="Remote path prefix to localize mask/raw paths from server-produced manifests")
     parser.add_argument("--local-root", type=Path, default=None, help="Local path prefix corresponding to --remote-root")

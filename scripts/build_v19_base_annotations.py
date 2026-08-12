@@ -17,6 +17,11 @@ from typing import Any
 
 import numpy as np
 
+from v19_camera_contract import SCHEMA as CAMERA_CONTRACT_V2_SCHEMA
+from v19_camera_contract import load_contract as load_camera_contract_v2
+from v19_camera_contract import plane_intrinsics as camera_contract_plane_intrinsics
+from v19_camera_contract import summarize_contract as summarize_camera_contract_v2
+
 
 def load_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -141,18 +146,40 @@ def load_calibration_contract(path: Path | None, frame_ids: list[int]) -> tuple[
     if not path.exists():
         raise FileNotFoundError(f"missing calibration contract: {path}")
     payload = load_json(path)
+    v2_declared = payload.get("schema") == CAMERA_CONTRACT_V2_SCHEMA
+    v2_fields_present = "calibration_plane" in payload or "image_planes" in payload
+    if v2_declared or v2_fields_present:
+        full_payload, normalized = load_camera_contract_v2(path, expected_frame_ids=frame_ids)
+        source_intrinsics, transform = camera_contract_plane_intrinsics(
+            full_payload,
+            normalized,
+            plane_name="source_rgb",
+            actual_size_wh=None,
+            allow_implicit_resize=False,
+        )
+        source = str(full_payload.get("intrinsics_source") or full_payload.get("method") or "v19_camera_contract")
+        source = f"camera_contract_source_rgb:{source}"
+        rows = {int(idx): ([float(v) for v in source_intrinsics.tolist()], source) for idx in frame_ids}
+        summary = summarize_camera_contract_v2(path, full_payload, normalized)
+        summary["consumed_image_plane"] = "source_rgb"
+        summary["consumed_intrinsics_fx_fy_cx_cy"] = source_intrinsics.tolist()
+        summary["image_transform"] = transform
+        return rows, summary
     intr = np.asarray(payload.get("intrinsics_fx_fy_cx_cy"), dtype=float).reshape(-1)
     if intr.shape != (4,) or not np.isfinite(intr).all() or float(intr[0]) <= 0.0 or float(intr[1]) <= 0.0:
         raise RuntimeError(f"calibration contract has invalid intrinsics_fx_fy_cx_cy: {path}")
     source = str(payload.get("intrinsics_source") or payload.get("method") or "v19_calibration_contract")
-    source = f"calibration_contract:{source}"
+    source = f"legacy_calibration_contract:{source}"
     rows = {int(idx): ([float(v) for v in intr.tolist()], source) for idx in frame_ids}
     summary = {
         "path": str(path),
+        "schema": payload.get("schema"),
+        "calibration_authority": payload.get("calibration_authority") or "legacy_unspecified",
         "intrinsics_fx_fy_cx_cy": [float(v) for v in intr.tolist()],
         "intrinsics_source": source,
         "fov_degrees": payload.get("fov_degrees"),
         "aggregation": payload.get("aggregation"),
+        "legacy_contract_without_explicit_image_planes": True,
     }
     return rows, summary
 
@@ -196,6 +223,185 @@ def camera_from_hawor(arrays: dict[str, np.ndarray]) -> dict[int, tuple[np.ndarr
         if np.all(np.isfinite(mat)):
             out[int(idx)] = (mat, "hawor_npz_R_c2w_t_c2w")
     return out
+
+
+def source_hawor_intrinsics(
+    arrays: dict[str, np.ndarray],
+    *,
+    source_image_size_wh: tuple[int, int] | None,
+) -> np.ndarray | None:
+    """Recover the full-image K actually supplied to the inherited HaWoR run."""
+    if not arrays:
+        return None
+    if "camera_intrinsics_fx_fy_cx_cy" in arrays:
+        value = np.asarray(arrays["camera_intrinsics_fx_fy_cx_cy"], dtype=np.float64)
+        if value.ndim == 2:
+            if value.shape[1] != 4 or not np.allclose(value, value[0][None, :], atol=1.0e-6, rtol=0.0):
+                raise RuntimeError("HaWoR archive camera intrinsics must be one fixed Nx4 pinhole K")
+            value = value[0]
+        value = value.reshape(-1)
+        if value.shape != (4,) or not np.isfinite(value).all() or np.any(value[:2] <= 0.0):
+            raise RuntimeError("HaWoR archive has invalid camera_intrinsics_fx_fy_cx_cy")
+        return value
+    if "img_focal" not in arrays or source_image_size_wh is None:
+        return None
+    focal_values = np.asarray(arrays["img_focal"], dtype=np.float64).reshape(-1)
+    if focal_values.size == 0 or not np.isfinite(focal_values).all() or np.any(focal_values <= 0.0):
+        return None
+    if not np.allclose(focal_values, focal_values[0], atol=1.0e-6, rtol=0.0):
+        raise RuntimeError("HaWoR archive img_focal must be fixed")
+    width, height = [int(v) for v in source_image_size_wh]
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"invalid source HaWoR image size: {source_image_size_wh}")
+    return np.asarray([focal_values[0], focal_values[0], width / 2.0, height / 2.0], dtype=np.float64)
+
+
+def hawor_active_camera_contract_alignment(
+    hawor_focal_px: float | None,
+    active_intrinsics_rows: list[list[float]],
+    *,
+    source_hawor_state_present: bool,
+    source_hawor_image_size_wh: tuple[int, int] | None = None,
+    source_hawor_intrinsics_fx_fy_cx_cy: np.ndarray | list[float] | None = None,
+    tolerance_px: float = 0.01,
+) -> dict[str, Any]:
+    """Describe, but never silently repair, inherited HaWoR camera/K state.
+
+    Upstream HaWoR consumes one square ``img_focal`` and sets
+    ``img_center=[width/2,height/2]`` on its full input video.  The active V19
+    contract may use a different full pinhole K.  Preserve both K values and
+    require all four components to match before calling the inherited state
+    aligned.  Merely writing the active K into annotations is not reinference.
+    """
+    empty = {
+        "source_hawor_img_focal_px": None,
+        "source_hawor_image_size_wh": None,
+        "source_hawor_intrinsics_fx_fy_cx_cy": None,
+        "source_hawor_intrinsics_model": "square_focal_full_image_center",
+        "source_hawor_principal_point_convention": "img_center=[width/2,height/2] as used by upstream HaWoR",
+        "active_camera_intrinsics_fx_fy_cx_cy_median": None,
+        "active_camera_intrinsics_max_abs_deviation_px": None,
+        "active_minus_hawor_intrinsics_fx_fy_cx_cy_px": None,
+        "active_camera_focal_geom_px_median": None,
+        "active_camera_focal_geom_px_max_deviation": None,
+        "active_minus_hawor_focal_abs_px": None,
+        "active_to_hawor_focal_ratio": None,
+        "focal_match_tolerance_px": float(tolerance_px),
+        "source_hawor_focal_matches_active_contract": None,
+        "source_hawor_principal_point_matches_active_contract": None,
+        "source_hawor_state_intrinsics_match_active_contract": None,
+        "source_hawor_camera_and_mano_share_intrinsics": None,
+        "builder_reestimated_hawor_camera_or_mano": False,
+        "active_contract_reinference_required": False,
+        "hawor_camera_mano_intrinsics_consistent": None,
+        "hawor_camera_mano_intrinsics_consistent_with_active_contract": None,
+    }
+    if not source_hawor_state_present:
+        return {
+            "status": "no_source_hawor_state",
+            **empty,
+            "claim_scope": "No inherited HaWoR state was supplied; no HaWoR camera/MANO alignment claim is made.",
+        }
+
+    tolerance = float(tolerance_px)
+    if not np.isfinite(tolerance) or tolerance < 0.0:
+        raise RuntimeError("HaWoR/active-camera intrinsics tolerance must be finite and nonnegative")
+    hawor_value = float(hawor_focal_px) if hawor_focal_px is not None and np.isfinite(hawor_focal_px) else None
+    hawor_size = None
+    if source_hawor_image_size_wh is not None:
+        width, height = [int(v) for v in source_hawor_image_size_wh]
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"invalid source HaWoR image size: {source_hawor_image_size_wh}")
+        hawor_size = [width, height]
+    source_intrinsics = None
+    if source_hawor_intrinsics_fx_fy_cx_cy is not None:
+        source_intrinsics = np.asarray(source_hawor_intrinsics_fx_fy_cx_cy, dtype=np.float64).reshape(-1)
+        if source_intrinsics.shape != (4,) or not np.isfinite(source_intrinsics).all() or np.any(source_intrinsics[:2] <= 0.0):
+            raise RuntimeError("source HaWoR intrinsics must be finite [fx,fy,cx,cy]")
+        if hawor_value is None:
+            hawor_value = float(np.sqrt(source_intrinsics[0] * source_intrinsics[1]))
+    elif hawor_value is not None and hawor_size is not None:
+        source_intrinsics = np.asarray(
+            [hawor_value, hawor_value, float(hawor_size[0]) / 2.0, float(hawor_size[1]) / 2.0],
+            dtype=np.float64,
+        )
+
+    active_array = np.asarray(active_intrinsics_rows, dtype=np.float64)
+    if active_array.size == 0:
+        active_array = np.empty((0, 4), dtype=np.float64)
+    if active_array.ndim != 2 or active_array.shape[1:] != (4,) or not np.isfinite(active_array).all():
+        raise RuntimeError(f"active camera intrinsics rows must be finite Nx4, got {active_array.shape}")
+    active_median = np.median(active_array, axis=0) if len(active_array) else None
+    active_max_deviation = (
+        np.max(np.abs(active_array - active_median[None, :]), axis=0) if active_median is not None else None
+    )
+    active_stable = bool(active_max_deviation is not None and np.all(active_max_deviation <= tolerance))
+    component_delta = active_median - source_intrinsics if active_median is not None and source_intrinsics is not None else None
+    intrinsics_match = bool(
+        active_stable
+        and component_delta is not None
+        and np.all(np.abs(component_delta) <= tolerance)
+    )
+
+    active_focals = (
+        np.sqrt(np.maximum(1.0e-12, active_array[:, 0] * active_array[:, 1]))
+        if len(active_array)
+        else np.empty((0,), dtype=np.float64)
+    )
+    active_focal_median = float(np.median(active_focals)) if active_focals.size else None
+    active_focal_max_deviation = (
+        float(np.max(np.abs(active_focals - active_focal_median))) if active_focals.size else None
+    )
+    focal_match = bool(
+        hawor_value is not None
+        and active_focal_median is not None
+        and active_focal_max_deviation is not None
+        and active_focal_max_deviation <= tolerance
+        and abs(hawor_value - active_focal_median) <= tolerance
+    )
+    principal_point_match = bool(
+        source_intrinsics is not None
+        and active_median is not None
+        and active_stable
+        and np.all(np.abs(active_median[2:] - source_intrinsics[2:]) <= tolerance)
+    )
+    abs_focal_delta = (
+        abs(hawor_value - active_focal_median)
+        if hawor_value is not None and active_focal_median is not None
+        else None
+    )
+    ratio = (
+        active_focal_median / hawor_value
+        if hawor_value not in {None, 0.0} and active_focal_median is not None
+        else None
+    )
+    return {
+        "status": "source_hawor_intrinsics_match_active_camera_contract" if intrinsics_match else "inherited_hawor_state_intrinsics_mismatch",
+        **empty,
+        "source_hawor_img_focal_px": hawor_value,
+        "source_hawor_image_size_wh": hawor_size,
+        "source_hawor_intrinsics_fx_fy_cx_cy": source_intrinsics.tolist() if source_intrinsics is not None else None,
+        "active_camera_intrinsics_fx_fy_cx_cy_median": active_median.tolist() if active_median is not None else None,
+        "active_camera_intrinsics_max_abs_deviation_px": active_max_deviation.tolist() if active_max_deviation is not None else None,
+        "active_minus_hawor_intrinsics_fx_fy_cx_cy_px": component_delta.tolist() if component_delta is not None else None,
+        "active_camera_focal_geom_px_median": active_focal_median,
+        "active_camera_focal_geom_px_max_deviation": active_focal_max_deviation,
+        "active_minus_hawor_focal_abs_px": abs_focal_delta,
+        "active_to_hawor_focal_ratio": ratio,
+        "source_hawor_focal_matches_active_contract": focal_match,
+        "source_hawor_principal_point_matches_active_contract": principal_point_match,
+        "source_hawor_state_intrinsics_match_active_contract": intrinsics_match,
+        "source_hawor_camera_and_mano_share_intrinsics": source_intrinsics is not None,
+        "builder_reestimated_hawor_camera_or_mano": False,
+        "active_contract_reinference_required": bool(not intrinsics_match),
+        "hawor_camera_mano_intrinsics_consistent": source_intrinsics is not None,
+        "hawor_camera_mano_intrinsics_consistent_with_active_contract": intrinsics_match,
+        "claim_scope": (
+            "The builder preserves inherited HaWoR camera poses and MANO geometry under the source HaWoR K. "
+            "A full [fx,fy,cx,cy] mismatch with the active camera contract is explicit uncertainty; replacing projection metadata "
+            "does not recalibrate the inherited state and blocks promotion to a shared camera/MANO metric state."
+        ),
+    }
 
 
 def default_intrinsics_from_raw(frame: dict[str, Any], focal: float | None, source: str) -> tuple[list[float], str] | None:
@@ -433,12 +639,20 @@ def build_hand_row(
     bridge_row_index: dict[tuple[int, str], int],
     T_world_camera: np.ndarray,
     intrinsics: list[float] | None,
+    intrinsics_source: str | None,
+    camera_hand_contract_alignment: dict[str, Any],
 ) -> dict[str, Any]:
+    alignment_warning = (
+        ["hawor_camera_mano_intrinsics_differ_from_active_camera_contract_reinference_required"]
+        if camera_hand_contract_alignment.get("active_contract_reinference_required")
+        else []
+    )
     base = {
         "hand_side": side,
         "visibility_state": "not_measured",
         "confidence": 0.0,
-        "uncertainty": ["fresh_v19_base_no_valid_hawor_row"],
+        "uncertainty": ["fresh_v19_base_no_valid_hawor_row"] + alignment_warning,
+        "camera_contract_alignment": camera_hand_contract_alignment,
     }
     if not arrays or hawor_pos is None or hawor_path is None or f"{side}_valid" not in arrays:
         return base
@@ -453,7 +667,7 @@ def build_hand_row(
             {
                 "visibility_state": "hawor_invalid_or_not_visible",
                 "same_frame_detection": detected,
-                "uncertainty": ["hawor_export_invalid_for_frame_side"],
+                "uncertainty": ["hawor_export_invalid_for_frame_side"] + alignment_warning,
             }
         )
         return base
@@ -513,9 +727,17 @@ def build_hand_row(
         "vertices_world_sample_m": verts_sample_w.astype(float).tolist(),
         "vertices_camera_sample_m": verts_sample_c.astype(float).tolist(),
         "vertices_sample_indices": sample_ids.astype(int).tolist(),
-        "current_v18_camera_intrinsics_fx_fy_cx_cy": intrinsics,
+        "current_v18_camera_intrinsics_fx_fy_cx_cy": camera_hand_contract_alignment.get(
+            "source_hawor_intrinsics_fx_fy_cx_cy"
+        ),
+        "current_v18_camera_intrinsics_source": "source_hawor_img_focal_full_image_center",
+        "source_hawor_camera_intrinsics_fx_fy_cx_cy": camera_hand_contract_alignment.get(
+            "source_hawor_intrinsics_fx_fy_cx_cy"
+        ),
         "v19_camera_intrinsics_fx_fy_cx_cy": intrinsics,
-        "same_frame_detection": detected,
+        "v19_camera_intrinsics_source": intrinsics_source,
+        "active_camera_contract_intrinsics_fx_fy_cx_cy": intrinsics,
+        "camera_contract_alignment": camera_hand_contract_alignment,
         "support_state": source_tag,
     }
     base.update(
@@ -526,12 +748,15 @@ def build_hand_row(
             "hawor_same_frame_detection": detected,
             "hawor_candidate_present": True,
             "confidence": 0.65 if detected else 0.45,
-            "uncertainty": [
-                "fresh_hawor_world_candidate_not_final_interval_corrected_state"
-            ] if "wilor" not in source_tag else [
-                "wilor_visible_root_relative_geometry_on_hawor_metric_trajectory",
-                "not_a_contact_or_nonpenetration_claim",
-            ],
+            "uncertainty": (
+                ["fresh_hawor_world_candidate_not_final_interval_corrected_state"]
+                if "wilor" not in source_tag
+                else [
+                    "wilor_visible_root_relative_geometry_on_hawor_metric_trajectory",
+                    "not_a_contact_or_nonpenetration_claim",
+                ]
+            )
+            + alignment_warning,
             "metric_mano_state": metric,
             "hand_geometry_source": source_tag,
         }
@@ -574,6 +799,34 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         arr = np.asarray(hawor_arrays["img_focal"], dtype=float).reshape(-1)
         if arr.size:
             hawor_focal = float(arr[0])
+    source_sizes = {
+        (
+            int(raw.get("source_width") or raw.get("manifest_width") or 0),
+            int(raw.get("source_height") or raw.get("manifest_height") or 0),
+        )
+        for raw in raw_by_idx.values()
+    }
+    if hawor_arrays and (len(source_sizes) != 1 or next(iter(source_sizes))[0] <= 0 or next(iter(source_sizes))[1] <= 0):
+        raise RuntimeError(f"inherited HaWoR state requires one valid raw source image size, got {sorted(source_sizes)}")
+    hawor_source_size = next(iter(source_sizes)) if hawor_arrays else None
+    hawor_intrinsics = source_hawor_intrinsics(
+        hawor_arrays,
+        source_image_size_wh=hawor_source_size,
+    )
+    active_intrinsics_rows: list[list[float]] = []
+    for idx, raw in raw_by_idx.items():
+        pair = calibration_intr.get(idx) or depth_intr.get(idx) or camera_intr.get(idx) or default_intrinsics_from_raw(
+            raw, hawor_focal, "hawor_img_focal_center_prior"
+        )
+        if pair is not None:
+            active_intrinsics_rows.append(pair[0])
+    camera_hand_contract_alignment = hawor_active_camera_contract_alignment(
+        hawor_focal,
+        active_intrinsics_rows,
+        source_hawor_state_present=bool(hawor_arrays),
+        source_hawor_image_size_wh=hawor_source_size,
+        source_hawor_intrinsics_fx_fy_cx_cy=hawor_intrinsics,
+    )
 
     output_frames: list[dict[str, Any]] = []
     counts: Counter[str] = Counter()
@@ -594,6 +847,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "v19_camera_pose_source": camera_source,
             "intrinsics_fx_fy_cx_cy": intrinsics,
             "intrinsics_source": intr_source,
+            "inherited_hand_camera_contract_alignment": camera_hand_contract_alignment,
         }
         hawor_pos = hawor_frame_pos.get(idx)
         hands = [
@@ -608,6 +862,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 bridge_row_index=bridge_rows,
                 T_world_camera=T_world_camera,
                 intrinsics=intrinsics,
+                intrinsics_source=intr_source,
+                camera_hand_contract_alignment=camera_hand_contract_alignment,
             )
             for side in ("left", "right")
         ]
@@ -671,6 +927,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "object_plan": str(args.object_plan) if args.object_plan else None,
             "sam2_tracks": {track_id: "loaded" for track_id in sam2_tracks},
             "mano_bridge_npz": str(bridge_path) if bridge_rows and bridge_path is not None else None,
+            "camera_hand_contract_alignment": camera_hand_contract_alignment,
         },
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -688,6 +945,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "hand_state_source": "fresh_hawor_world_npz" if hawor_arrays else "none",
         "object_roster": sorted(object_plan),
         "mano_bridge": bridge_report,
+        "camera_hand_contract_alignment": camera_hand_contract_alignment,
         "claim_scope": "base physical measurement backbone only; final pose/contact/occlusion/interval correction state must be added by later V19 components",
     }
     state_path = args.output_dir / "v19_base_physical_state.json"
@@ -705,6 +963,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_track_count": int(len(object_plan)),
         "sam2_track_count": int(len(sam2_tracks)),
         "mano_bridge": bridge_report,
+        "camera_hand_contract_alignment": camera_hand_contract_alignment,
     }
     write_json(args.output_dir / "v19_base_annotations_report.json", report)
     return report

@@ -1,0 +1,8 @@
+{
+  "status": "ok",
+  "exit_code": 0,
+  "started_unix_s": 1786521243,
+  "ended_unix_s": 1786521353,
+  "elapsed_s": 110,
+  "output_root": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9"
+}

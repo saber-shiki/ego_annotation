@@ -1,0 +1,192 @@
+{
+  "status": "ok",
+  "method": "build_v19_base_annotations",
+  "case": "hot3d_clip001851_keyboard_pinhole_sensor_first_v9",
+  "outputs": {
+    "annotations": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/base_annotations_sensor_first/annotations_v19_base.json",
+    "physical_state": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/base_annotations_sensor_first/v19_base_physical_state.json",
+    "mano_bridge": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/base_annotations_sensor_first/v19_mano_bridge_from_hawor_world.npz"
+  },
+  "frame_count": 150,
+  "camera_source_count": {
+    "hawor_npz_R_c2w_t_c2w": 150
+  },
+  "intrinsics_source_count": {
+    "camera_contract_source_rgb:prediction_side_sensor_calibration": 150
+  },
+  "calibration_contract": {
+    "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/camera_contract_sensor_first/v19_camera_calibration_contract.json",
+    "sha256": "9ac89275007d36fce062bd2022cd9f6b04a7b72db802142af3d26131280616af",
+    "schema": "v19_camera_image_transform_contract_v2",
+    "calibration_authority": "prediction_side_sensor_metadata",
+    "intrinsics_model": "constant_pinhole_fx_fy_cx_cy",
+    "intrinsics_coordinate_plane": "calibration",
+    "intrinsics_fx_fy_cx_cy": [
+      609.85009765625,
+      609.85009765625,
+      707.4874877929688,
+      702.32177734375
+    ],
+    "calibration_size_wh": [
+      1408,
+      1408
+    ],
+    "image_plane_names": [
+      "calibration",
+      "manifest_rgb",
+      "render",
+      "sam2_mask",
+      "source_rgb"
+    ],
+    "intrinsics_source": "prediction_side_sensor_calibration",
+    "source_contract": {
+      "path": "/mnt/truenas-user-home/yiwen/ego_annotation_outputs/v19_benchmarks/hot3d_clips/v19_inputs_pinhole/clip-001851/input/raw_frame_manifest/manifest_for_eval.json",
+      "sha256": "c8fd1e1663eb8c263a6a3deab2db0d75d7c7942ba441001cbfb2198e668d42bd",
+      "method": null,
+      "schema": "v19_hot3d_pinhole_raw_frame_manifest_v1"
+    },
+    "fallback": {
+      "used": false,
+      "reason": null
+    },
+    "consumed_image_plane": "source_rgb",
+    "consumed_intrinsics_fx_fy_cx_cy": [
+      609.85009765625,
+      609.85009765625,
+      707.4874877929688,
+      702.32177734375
+    ],
+    "image_transform": {
+      "calibration_authority": "prediction_side_sensor_metadata",
+      "intrinsics_source": "prediction_side_sensor_calibration",
+      "calibration_plane_size_wh": [
+        1408,
+        1408
+      ],
+      "declared_plane_name": "source_rgb",
+      "declared_plane_size_wh": [
+        1408,
+        1408
+      ],
+      "actual_plane_size_wh": [
+        1408,
+        1408
+      ],
+      "A_declared_plane_from_calibration": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "A_actual_plane_from_declared_plane": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "A_actual_plane_from_calibration": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "implicit_resize_compatibility_override": false,
+      "pixel_center_convention": "integer_pixel_centers_opencv",
+      "transform_kind": "explicit_source_image_transform"
+    }
+  },
+  "counts": {
+    "hand::left::hawor_valid_world_mano": 150,
+    "hand::right::hawor_valid_world_mano": 150,
+    "object::keyboard::visible_mask_measurement": 150
+  },
+  "object_track_count": 1,
+  "sam2_track_count": 1,
+  "mano_bridge": {
+    "status": "ok",
+    "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/base_annotations_sensor_first/v19_mano_bridge_from_hawor_world.npz",
+    "rows": 300,
+    "claim_scope": "V19 compatibility bridge from freshly exported HaWoR world vertices/joints; no cached V18 bridge root consumed"
+  },
+  "camera_hand_contract_alignment": {
+    "status": "inherited_hawor_state_intrinsics_mismatch",
+    "source_hawor_img_focal_px": 537.0213012695312,
+    "source_hawor_image_size_wh": [
+      1408,
+      1408
+    ],
+    "source_hawor_intrinsics_fx_fy_cx_cy": [
+      537.0213012695312,
+      537.0213012695312,
+      704.0,
+      704.0
+    ],
+    "source_hawor_intrinsics_model": "square_focal_full_image_center",
+    "source_hawor_principal_point_convention": "img_center=[width/2,height/2] as used by upstream HaWoR",
+    "active_camera_intrinsics_fx_fy_cx_cy_median": [
+      609.85009765625,
+      609.85009765625,
+      707.4874877929688,
+      702.32177734375
+    ],
+    "active_camera_intrinsics_max_abs_deviation_px": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "active_minus_hawor_intrinsics_fx_fy_cx_cy_px": [
+      72.82879638671875,
+      72.82879638671875,
+      3.48748779296875,
+      -1.67822265625
+    ],
+    "active_camera_focal_geom_px_median": 609.85009765625,
+    "active_camera_focal_geom_px_max_deviation": 0.0,
+    "active_minus_hawor_focal_abs_px": 72.82879638671875,
+    "active_to_hawor_focal_ratio": 1.1356162152498415,
+    "focal_match_tolerance_px": 0.01,
+    "source_hawor_focal_matches_active_contract": false,
+    "source_hawor_principal_point_matches_active_contract": false,
+    "source_hawor_state_intrinsics_match_active_contract": false,
+    "source_hawor_camera_and_mano_share_intrinsics": true,
+    "builder_reestimated_hawor_camera_or_mano": false,
+    "active_contract_reinference_required": true,
+    "hawor_camera_mano_intrinsics_consistent": true,
+    "hawor_camera_mano_intrinsics_consistent_with_active_contract": false,
+    "claim_scope": "The builder preserves inherited HaWoR camera poses and MANO geometry under the source HaWoR K. A full [fx,fy,cx,cy] mismatch with the active camera contract is explicit uncertainty; replacing projection metadata does not recalibrate the inherited state and blocks promotion to a shared camera/MANO metric state."
+  }
+}

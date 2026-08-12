@@ -1,0 +1,52 @@
+{
+  "method": "build_v19_visible_geometry_from_sam2_depth_depth_fused_compat_report",
+  "status": "ok",
+  "case": "hot3d_clip001851_keyboard_pinhole_sensor_first_v9",
+  "claim": "Compatibility report for V18 rigid evidence bundle. Visible geometry lives in annotations; no hidden geometry is claimed here.",
+  "object_rows": [
+    {
+      "object_id": "keyboard",
+      "track_id": "keyboard",
+      "frame_surface_rows": 150,
+      "visible_geometry_adapter_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_sensor_first_full/v19_visible_geometry_adapter_report.json",
+      "visible_mask_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_sensor_first_full/v19_visible_mask_report.json",
+      "annotations": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_sensor_first_full/annotations_v19_visible_geometry.json",
+      "mesh_reconstruction": {
+        "status": "anchor_visible_surface_mesh_exported",
+        "coordinate_frame": "object_canonical_anchor_centroid_frame",
+        "canonical_coordinate_source": "selected_anchor_frame_visible_surfels_minus_anchor_centroid_world_m",
+        "anchor_frame_idx": 109,
+        "anchor_centroid_world_m": [
+          0.1835396501442842,
+          -0.11123623131993245,
+          0.4470900474221193
+        ],
+        "point_count_input": 2500,
+        "point_count_downsampled": 1495,
+        "voxel_size_m": 0.006253930791509659,
+        "canonical_bbox_min_m": [
+          -0.04708718835880327,
+          -0.245391540407562,
+          -0.08746642657901368
+        ],
+        "canonical_bbox_max_m": [
+          0.035711753344362974,
+          0.210274273019634,
+          0.09980784804938131
+        ],
+        "fused_point_cloud_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_sensor_first_full/anchor_visible_surface_mesh/keyboard/frame_000109_keyboard_anchor_visible_points_canonical.ply",
+        "poisson_mesh_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_sensor_first_full/anchor_visible_surface_mesh/keyboard/frame_000109_keyboard_anchor_poisson_visible_mesh.ply",
+        "convex_hull_mesh_path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/v19_metric_camera_contract_visible_geometry_v9/visible_geometry_sensor_first_full/anchor_visible_surface_mesh/keyboard/frame_000109_keyboard_anchor_convex_hull_visible_candidate.ply",
+        "blockers": [],
+        "claim_scope": "selected-frame metric visible surface for TRELLIS alignment; not complete hidden object geometry",
+        "convex_hull_vertices": 72,
+        "convex_hull_faces": 140,
+        "poisson_vertices": 2375,
+        "poisson_faces": 4576
+      },
+      "object_geometry_complete": false,
+      "hidden_geometry_reconstructed": false,
+      "complete_object_pose_ready": false
+    }
+  ]
+}
