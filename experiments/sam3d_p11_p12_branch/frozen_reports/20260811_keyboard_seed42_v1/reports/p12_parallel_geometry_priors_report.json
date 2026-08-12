@@ -1,0 +1,216 @@
+{
+  "schema": "v19_experimental_p12_parallel_geometry_priors_v1",
+  "status": "ok",
+  "method": "run_experimental_p12_parallel_geometry_priors",
+  "claim_scope": "raw P12 geometry priors only; no metric alignment, canonical-frame conversion, observed-surface fusion, pose fitting, collision promotion, or canonical mutation",
+  "p11_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/p11_dual_geometry_inputs_report.json",
+  "case": "hot3d_clip001851_keyboard_pinhole",
+  "object_id": "keyboard",
+  "selected_frame_idx": 109,
+  "seed": 42,
+  "candidates": {
+    "trellis": {
+      "source_model": "trellis",
+      "status": "frozen_existing_raw_prior_reference",
+      "runner_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/geometry_completion/trellis_keyboard_seed42/qc_trellis_shape_v3.json",
+      "conditioning": {
+        "input_kind": "object_isolated_rgba_crop",
+        "image": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/trellis_conditioning_rgba.png",
+          "sha256": "f6fa2dafea833157b6106dd31a86b3db89ad00a90ed364f726c1b52bc4801adf",
+          "bytes": 107806
+        },
+        "input_binding": {
+          "report_image": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/geometry_completion/rigid_evidence/hot3d_clip001851_keyboard_pinhole/keyboard/evidence_bundle/crops/frame_000109_keyboard_rgba.png",
+          "byte_identical": true
+        }
+      },
+      "native_outputs": {
+        "raw_mesh": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/geometry_completion/trellis_keyboard_seed42/trellis_mesh.ply",
+          "sha256": "e770a47f2665bf01f8ef837024a95258b7585b2da46636b7befba70c01acd1bf",
+          "bytes": 5231573
+        },
+        "gaussian": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/geometry_completion/trellis_keyboard_seed42/trellis_gaussian.ply",
+          "sha256": "f5d9cf57a5c33edbc69c7a60684931d3e14d8c89e06c360ab6a48f2d331ef8d9",
+          "bytes": 9579168
+        },
+        "glb": null,
+        "mesh_stats": {
+          "vertices": 137674,
+          "faces": 275328,
+          "extent_model_units": [
+            0.990922600030899,
+            0.17405817657709122,
+            0.9782931506633759
+          ],
+          "center_model_units": [
+            -0.009020917429834213,
+            -0.0022625900262680425,
+            -0.00216314462966625
+          ]
+        }
+      },
+      "semantics": {
+        "mesh_frame": "trellis_native_local_object_frame",
+        "metric_scale_ready": false,
+        "v19_canonical_frame_ready": false,
+        "collision_surface_ready": false,
+        "allowed_use": "frozen baseline raw geometry prior reference"
+      },
+      "source_artifacts_mutated": false
+    },
+    "sam3d_objects": {
+      "source_model": "sam3d_objects",
+      "status": "generated_native_raw_prior",
+      "runner_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native/hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109/qc_sam3d_objects_mesh_v7.json",
+      "conditioning": {
+        "input_kind": "full_scene_rgb_plus_binary_object_owned_mask",
+        "image": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg",
+          "sha256": "be0eced83e929c7d75e6e6f62769d7a79462b3a9a987e113a40d6eb595f82708",
+          "bytes": 174159
+        },
+        "mask": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png",
+          "sha256": "6ea425d33d5be18ee076e6c3bd8c83f15724c74136ddcf8b72ec9fe6267fb490",
+          "bytes": 4235
+        },
+        "external_pointmap": null,
+        "pre_model_crop": null,
+        "pre_model_rotation": null,
+        "pre_model_rectification": null
+      },
+      "input_binding": {
+        "image": {
+          "expected": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg",
+          "actual": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg",
+          "expected_sha256": "be0eced83e929c7d75e6e6f62769d7a79462b3a9a987e113a40d6eb595f82708",
+          "actual_sha256": "be0eced83e929c7d75e6e6f62769d7a79462b3a9a987e113a40d6eb595f82708",
+          "byte_identical": true
+        },
+        "mask": {
+          "expected": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png",
+          "actual": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png",
+          "expected_sha256": "6ea425d33d5be18ee076e6c3bd8c83f15724c74136ddcf8b72ec9fe6267fb490",
+          "actual_sha256": "6ea425d33d5be18ee076e6c3bd8c83f15724c74136ddcf8b72ec9fe6267fb490",
+          "byte_identical": true
+        }
+      },
+      "native_outputs": {
+        "raw_mesh": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native/hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109/sam3d_mesh.ply",
+          "sha256": "a3f6c3b545169ce7971659c2671afa638dc45cbafd1c16f68bd6e0239e1c9e79",
+          "bytes": 5779574
+        },
+        "glb": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native/hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109/sam3d_mesh.glb",
+          "sha256": "a4dc827d237c112c5315b91247a2a5db0ee7e2466af702dd6a47f37e3f25c591",
+          "bytes": 5505052
+        },
+        "gaussian": {
+          "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native/hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109/sam3d_gaussian.ply",
+          "sha256": "1a2b301e8306c5749b437af514f14076e86301af1bac24d055eb2f5b91210864",
+          "bytes": 15151904
+        },
+        "mesh_stats": {
+          "vertices": 137598,
+          "faces": 275208,
+          "extent_model_units": [
+            0.9994843006134033,
+            0.38356591761112213,
+            0.10400628671050072
+          ],
+          "center_model_units": [
+            0.002706432900002321,
+            0.00276872637901052,
+            0.005548443844700349
+          ],
+          "watertight": true,
+          "winding_consistent": true
+        },
+        "native_pose": {
+          "rotation": [
+            0.16197793185710907,
+            -0.7093797326087952,
+            -0.6029427647590637,
+            -0.3271138072013855
+          ],
+          "translation": [
+            -0.3289189338684082,
+            0.08303087204694748,
+            0.6147744655609131
+          ],
+          "scale": [
+            0.511941134929657,
+            0.511941134929657,
+            0.511941134929657
+          ]
+        }
+      },
+      "invocation": {
+        "mode": "external_unmodified_sam3d_runner",
+        "command": [
+          "/mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects/bin/python3.11",
+          "/mnt/user-home/kupingxin/ego_annotation/scripts/remote_run_sam3d_objects_mesh_v7.py",
+          "--repo",
+          "/mnt/user-home/kupingxin/sam3d-objects/src",
+          "--config",
+          "/mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml",
+          "--case",
+          "hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109|/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg|/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png|42",
+          "--output-dir",
+          "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native"
+        ],
+        "command_shell_escaped": "/mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects/bin/python3.11 /mnt/user-home/kupingxin/ego_annotation/scripts/remote_run_sam3d_objects_mesh_v7.py --repo /mnt/user-home/kupingxin/sam3d-objects/src --config /mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml --case 'hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109|/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg|/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png|42' --output-dir /mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native",
+        "elapsed_s": 217.36281896405853,
+        "log": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_runner.log",
+        "python": "/mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects/bin/python3.11",
+        "runner": {
+          "path": "/mnt/user-home/kupingxin/ego_annotation/scripts/remote_run_sam3d_objects_mesh_v7.py",
+          "sha256": "60d36ce393efefd03d1c1cfaf8e1fe346716c2b3f0235d4c8ffd36add31a8acd",
+          "bytes": 6838
+        },
+        "repo": "/mnt/user-home/kupingxin/sam3d-objects/src",
+        "repo_git_head": "f91db411c50efee93d8db7aeb323885650f6f722",
+        "config": {
+          "path": "/mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml",
+          "sha256": "53c3d226b21df85c0bb3d16e6e4fa63abde0d6167525765eb929d02bfa9d358c",
+          "bytes": 3548
+        },
+        "compile": false,
+        "seed": 42,
+        "cuda_visible_devices": "7",
+        "gpu_preflight": {
+          "physical_gpu_id": 7,
+          "name": "NVIDIA A800-SXM4-40GB",
+          "used_mib_before_launch": 4231,
+          "free_mib_before_launch": 36211,
+          "utilization_percent_before_launch": 38,
+          "required_free_mib": 30000,
+          "passed": true
+        }
+      },
+      "semantics": {
+        "mesh_frame": "sam3d_native_local_object_frame",
+        "native_pose_frame": "sam3d_local_to_camera_unverified_bridge",
+        "metric_scale_ready": false,
+        "v19_canonical_frame_ready": false,
+        "collision_surface_ready": false,
+        "allowed_use": "raw geometry prior evaluation and later explicit P13 adapter only"
+      }
+    }
+  },
+  "backend_neutral_contract": {
+    "candidate_kind": "single_image_generated_raw_geometry_prior",
+    "metric_alignment_applied": false,
+    "observed_surface_fusion_applied": false,
+    "pose_fit_applied": false,
+    "multiview_support_applied": false,
+    "collision_ready": false,
+    "next_stage": "experimental source-neutral P13 adapter"
+  },
+  "canonical_trellis_rerun": false,
+  "source_artifacts_mutated": false
+}

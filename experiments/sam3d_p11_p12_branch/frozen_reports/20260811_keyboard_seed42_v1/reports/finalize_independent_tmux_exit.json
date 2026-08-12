@@ -1,0 +1,8 @@
+{
+  "status": "ok",
+  "exit_code": 0,
+  "started_unix_s": 1786468900,
+  "ended_unix_s": 1786468935,
+  "elapsed_s": 35,
+  "sentinel": "FINALIZATION_DONE"
+}

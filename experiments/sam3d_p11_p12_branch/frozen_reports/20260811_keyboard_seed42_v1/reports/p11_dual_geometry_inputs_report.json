@@ -1,0 +1,89 @@
+{
+  "schema": "v19_experimental_p11_dual_geometry_inputs_v1",
+  "status": "ok",
+  "method": "build_experimental_p11_dual_geometry_inputs",
+  "claim_scope": "additive P11 conditioning split only; canonical evidence and model outputs are read-only",
+  "source_evidence_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/geometry_completion/rigid_evidence/hot3d_clip001851_keyboard_pinhole/keyboard/evidence_bundle/evidence_bundle_report.json",
+  "case": "hot3d_clip001851_keyboard_pinhole",
+  "object_id": "keyboard",
+  "selected_frame_idx": 109,
+  "selection_rule": "documented_selected_frame_override_due_invalid_top_mask_or_conditioning_evidence",
+  "selection_note": "agent-selected anchor from state/anchor_decisions/keyboard.json",
+  "mask_provenance": {
+    "selected_mask": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/object_geometry/visible_geometry/keyboard/object_owned_masks/000109_keyboard_object_owned_mask.png",
+    "visible_geometry_mask": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/object_geometry/visible_geometry/keyboard/object_owned_masks/000109_keyboard_object_owned_mask.png",
+    "selected_sha256": "6ea425d33d5be18ee076e6c3bd8c83f15724c74136ddcf8b72ec9fe6267fb490",
+    "visible_geometry_sha256": "6ea425d33d5be18ee076e6c3bd8c83f15724c74136ddcf8b72ec9fe6267fb490",
+    "byte_identical": true
+  },
+  "selected_input_summary": {
+    "image_shape_h_w": [
+      960,
+      960
+    ],
+    "mask_area_px": 63861,
+    "mask_bbox_xyxy": [
+      678,
+      222,
+      868,
+      630
+    ]
+  },
+  "conditioning_contracts": {
+    "trellis_native": {
+      "input_kind": "object_isolated_rgba_crop",
+      "image": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/trellis_conditioning_rgba.png",
+      "source_copy": {
+        "source": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/geometry_completion/rigid_evidence/hot3d_clip001851_keyboard_pinhole/keyboard/evidence_bundle/crops/frame_000109_keyboard_rgba.png",
+        "copy": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/trellis_conditioning_rgba.png",
+        "sha256": "f6fa2dafea833157b6106dd31a86b3db89ad00a90ed364f726c1b52bc4801adf",
+        "bytes": 107806,
+        "byte_identical": true
+      },
+      "external_depth_or_pointmap": null,
+      "pre_model_transform": "canonical_P11_crop_only"
+    },
+    "sam3d_objects_native": {
+      "input_kind": "full_scene_rgb_plus_binary_object_owned_mask",
+      "image": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg",
+      "mask": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png",
+      "image_source_copy": {
+        "source": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/input/raw_frame_manifest/rgb/000109.jpg",
+        "copy": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg",
+        "sha256": "be0eced83e929c7d75e6e6f62769d7a79462b3a9a987e113a40d6eb595f82708",
+        "bytes": 174159,
+        "byte_identical": true
+      },
+      "mask_source_copy": {
+        "source": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/object_geometry/visible_geometry/keyboard/object_owned_masks/000109_keyboard_object_owned_mask.png",
+        "copy": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png",
+        "sha256": "6ea425d33d5be18ee076e6c3bd8c83f15724c74136ddcf8b72ec9fe6267fb490",
+        "bytes": 4235,
+        "byte_identical": true
+      },
+      "external_pointmap": null,
+      "pre_model_crop": null,
+      "pre_model_rotation": null,
+      "pre_model_rectification": null,
+      "model_internal_preprocessing": "unmodified_SAM3D_internal_MoGe_then_joint_mask_crop"
+    }
+  },
+  "comparison_mask_diagnostic": {
+    "reference": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/object_geometry/visible_geometry/keyboard/object_owned_masks/000109_keyboard_object_owned_mask.png",
+    "comparison": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/measurements/object_tracks/sam2_owlv2_box_points/keyboard/sam2/sam2_masks/000109.png",
+    "same_shape": true,
+    "shape_h_w": [
+      960,
+      960
+    ],
+    "reference_pixels": 63861,
+    "comparison_pixels": 67917,
+    "xor_pixels": 4056,
+    "intersection_pixels": 63861,
+    "union_pixels": 67917,
+    "iou": 0.9402800477052873,
+    "byte_identical": false
+  },
+  "review": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/review/sam3d_native_input_mask_review.png",
+  "source_artifacts_mutated": false
+}

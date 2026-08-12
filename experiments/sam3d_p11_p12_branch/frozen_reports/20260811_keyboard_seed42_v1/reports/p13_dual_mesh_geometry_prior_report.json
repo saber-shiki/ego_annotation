@@ -1,0 +1,128 @@
+{
+  "schema": "v19_experimental_p13_dual_mesh_geometry_prior_v1",
+  "status": "ok",
+  "method": "build_experimental_p13_dual_mesh_geometry_prior",
+  "claim_scope": "static dual-mesh pose/render hypothesis; raw generated topology is preserved and observed metric geometry remains a separate overlay/collision surface. No temporal pose, signed collision, or annotation-readiness claim.",
+  "controlled_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/p13_controlled_geometry_prior_ab_report.json",
+  "candidate": "sam3d_new_object_owned_mask",
+  "source_model": "SAM3D Objects object-owned-mask",
+  "metric_alignment_matrix_model_to_canonical": [
+    [
+      -0.021894639620191496,
+      0.20201280991774873,
+      0.42942530800330503,
+      -0.01104511613034265
+    ],
+    [
+      -0.4734745577539058,
+      -0.03847038211732877,
+      -0.006043064469782273,
+      -0.011752688480882248
+    ],
+    [
+      0.03220424947644623,
+      -0.42825868362191805,
+      0.203105962459935,
+      0.007627648018801618
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "inputs": {
+    "raw_prior": {
+      "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native/hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109/sam3d_mesh.ply",
+      "sha256": "a3f6c3b545169ce7971659c2671afa638dc45cbafd1c16f68bd6e0239e1c9e79"
+    },
+    "legacy_cut_pose_hypothesis": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/sam3d_new_object_owned_mask/legacy_builder_output/keyboard_compact_rigid_completed_mesh_labeled.ply",
+    "observed_metric_surface": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/sam3d_new_object_owned_mask/legacy_builder_output/keyboard_collision_eligible_surface_labeled.ply"
+  },
+  "topology": {
+    "raw_prior": {
+      "vertices": 137598,
+      "faces": 275208,
+      "boundary_edges": 0,
+      "connected_components": 2,
+      "watertight": true,
+      "winding_consistent": true,
+      "euler_number": -6
+    },
+    "aligned_raw_render_prior": {
+      "vertices": 137598,
+      "faces": 275208,
+      "boundary_edges": 0,
+      "connected_components": 2,
+      "watertight": true,
+      "winding_consistent": true,
+      "euler_number": -6
+    },
+    "legacy_cut_pose_hypothesis": {
+      "vertices": 68175,
+      "faces": 129950,
+      "boundary_edges": 6318,
+      "connected_components": 137,
+      "watertight": false,
+      "winding_consistent": true,
+      "euler_number": 41
+    },
+    "observed_metric_surface": {
+      "vertices": 2394,
+      "faces": 4598,
+      "boundary_edges": 188,
+      "connected_components": 1,
+      "watertight": false,
+      "winding_consistent": true,
+      "euler_number": 1
+    }
+  },
+  "invariants": {
+    "raw_face_count_preserved": true,
+    "raw_vertex_count_preserved": true,
+    "raw_watertightness_preserved": true,
+    "generated_face_deletion_applied": false,
+    "generated_faces_collision_eligible": false
+  },
+  "render_contract": {
+    "world_center": [
+      -0.0017348352380862511,
+      -0.009807984108912916,
+      0.0021835317712280288
+    ],
+    "observed_pca_basis_rows": [
+      [
+        -0.060615763019867444,
+        -0.9928034557765336,
+        0.10328130262390937
+      ],
+      [
+        -0.4834871046380148,
+        0.11972635849192727,
+        0.8671250306218888
+      ],
+      [
+        -0.8732502212552073,
+        0.002626267395895365,
+        -0.48726497288159015
+      ]
+    ],
+    "bounds_center": [
+      0.0031625119962885445,
+      0.009133203873201233,
+      0.005934165811762839
+    ],
+    "longest_extent_m": 0.4770698464216645,
+    "target_faces": 60000,
+    "panel_size": 540
+  },
+  "outputs": {
+    "aligned_raw_render_prior": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_dual_mesh_new_owned/generated_aligned_raw_render_prior_intact.ply",
+    "observed_metric_surface": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_dual_mesh_new_owned/observed_metric_surface.ply",
+    "collision_eligible_observed_surface": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_dual_mesh_new_owned/collision_eligible_observed_surface.ply",
+    "dual_mesh_scene_glb": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_dual_mesh_new_owned/dual_mesh_render_scene.glb",
+    "render_state": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_dual_mesh_new_owned/dual_mesh_render_state.json",
+    "comparison_review": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_dual_mesh_new_owned/dual_mesh_vs_legacy_observed_first.png"
+  }
+}

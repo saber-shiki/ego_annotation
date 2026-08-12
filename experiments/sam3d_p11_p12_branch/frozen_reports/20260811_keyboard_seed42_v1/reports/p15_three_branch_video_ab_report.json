@@ -1,0 +1,347 @@
+{
+  "schema": "v19_experimental_p15_three_branch_video_ab_v1",
+  "status": "ok",
+  "method": "compose_experimental_p15_three_branch_video_ab",
+  "claim_scope": "Controlled visual A/B only. All branches share observed-only object trajectory, camera, full source MANO, projection, render budgets, and observed collision surface. Geometry source/integration is the sole branch variable. The videos do not establish signed contact, collision, nonpenetration, or GT accuracy.",
+  "inputs": {
+    "adapter_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/p14_p15_layered_render_state_adapter_report.json",
+    "adapter_report_sha256": "7ea50685dcbfe5066e4e830360b6988399cc7ca10fb6ef8ba4506bef79607034",
+    "render_manifests": [
+      {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/sam3d_owned_dual_mesh/full_video/p14_p15_layered_full_mano_render_manifest.json",
+        "sha256": "3c63798c5e31666b0fd9f68f665cf60a642d0e673ea1f7f0823e0dc9aac73d19",
+        "branch": "sam3d_owned_dual_mesh"
+      },
+      {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/sam3d_owned_legacy_cut/full_video/p14_p15_layered_full_mano_render_manifest.json",
+        "sha256": "1ee9786a6ef51e381cc64391e366ccf3f68f6beae9ab19ec6a5953d5e50767da",
+        "branch": "sam3d_owned_legacy_cut"
+      },
+      {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/trellis_frozen_legacy_cut/full_video/p14_p15_layered_full_mano_render_manifest.json",
+        "sha256": "00c6dbec5b6921b8f279fa1ea98c66e46176aba5dbdb7ea23f4ea026949618a6",
+        "branch": "trellis_frozen_legacy_cut"
+      }
+    ]
+  },
+  "validation": {
+    "branch_order": [
+      "sam3d_owned_dual_mesh",
+      "sam3d_owned_legacy_cut",
+      "trellis_frozen_legacy_cut"
+    ],
+    "frame_count": 150,
+    "source_frame_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      120,
+      121,
+      122,
+      123,
+      124,
+      125,
+      126,
+      127,
+      128,
+      129,
+      130,
+      131,
+      132,
+      133,
+      134,
+      135,
+      136,
+      137,
+      138,
+      139,
+      140,
+      141,
+      142,
+      143,
+      144,
+      145,
+      146,
+      147,
+      148,
+      149
+    ],
+    "controlled_invariants": {
+      "annotations_sha256": [
+        "b2db10ce69ac493db0ba7725fb9c15d63dcf79268cb9d761aa97b8195faeaa94",
+        "b2db10ce69ac493db0ba7725fb9c15d63dcf79268cb9d761aa97b8195faeaa94",
+        "b2db10ce69ac493db0ba7725fb9c15d63dcf79268cb9d761aa97b8195faeaa94"
+      ],
+      "shared_observed_physical_surface_sha256": [
+        "8ce880caeca94177020442b1db7f6ddec1e820f944690ca4547836e4fd6105bb",
+        "8ce880caeca94177020442b1db7f6ddec1e820f944690ca4547836e4fd6105bb",
+        "8ce880caeca94177020442b1db7f6ddec1e820f944690ca4547836e4fd6105bb"
+      ],
+      "generated_face_budget": [
+        8000,
+        8000,
+        8000
+      ],
+      "observed_face_budget": [
+        0,
+        0,
+        0
+      ],
+      "mano_face_budget": [
+        0,
+        0,
+        0
+      ],
+      "observed_object_ownership_override": [
+        true,
+        true,
+        true
+      ],
+      "mano_archive_contract": [
+        "ca0aa2f89addf628fd29b3c8bc9dadc236159f011795937d11f7baeee17ae33d",
+        "ca0aa2f89addf628fd29b3c8bc9dadc236159f011795937d11f7baeee17ae33d",
+        "ca0aa2f89addf628fd29b3c8bc9dadc236159f011795937d11f7baeee17ae33d"
+      ]
+    },
+    "per_frame_intrinsics_value_sha256": "2cedce7240821cb248b497a063fabe107da9f11f3ba968d2b718eba76169ae8b",
+    "per_frame_world_bounds_value_sha256": "0edf87a32beb635bf39f54f256d40a1c2fa72696cf0dbf4d336cfd354517c044",
+    "adapter_shared_state_value_sha256": {
+      "annotation_backbone": "f522adef77352ee169de50662038bd4c3f0f3b2cd9b809c121ea84d5f3d45062",
+      "object_pose_trajectory": "d73b67c85b61c7d4f95d724663391bb818416e500e3a01ae436e44d1bd1791bd",
+      "mano_constraint_state": "57880951c68f244fc07b0091a114dbbd7783754687ac7eb62bdaedac1669d20d",
+      "temporal_mano_state": "897479edba6f6a6c5b179e011706c97f81d181ac59bd1e450def64094c7af810",
+      "hidden_volume_validation": "4e00b1583beb00d1272b6bc1009db9d882e74faaca624953b7c5bcbad4346d40",
+      "projection_contract": "11839da6e252894b2bac394950f20772ef33af0c8b9aef04af54b84ff7fb270d"
+    }
+  },
+  "visible_pixel_summary_by_branch_and_role": {
+    "sam3d_owned_dual_mesh": {
+      "generated_complete_prior_underlay": {
+        "count": 150,
+        "median": 1578.5,
+        "p05": 1108.8,
+        "p95": 2308.249999999998,
+        "min": 425.0,
+        "max": 2918.0
+      },
+      "observed_metric_surface_overlay": {
+        "count": 150,
+        "median": 44401.5,
+        "p05": 31572.95,
+        "p95": 93434.15,
+        "min": 27460.0,
+        "max": 123535.0
+      },
+      "mano_left_full_surface": {
+        "count": 150,
+        "median": 13595.5,
+        "p05": 2975.6,
+        "p95": 14799.35,
+        "min": 0.0,
+        "max": 16291.0
+      },
+      "mano_right_full_surface": {
+        "count": 150,
+        "median": 26448.0,
+        "p05": 10552.9,
+        "p95": 30070.0,
+        "min": 8999.0,
+        "max": 30872.0
+      }
+    },
+    "sam3d_owned_legacy_cut": {
+      "generated_complete_prior_underlay": {
+        "count": 150,
+        "median": 1041.5,
+        "p05": 763.35,
+        "p95": 1494.8999999999996,
+        "min": 481.0,
+        "max": 1776.0
+      },
+      "observed_metric_surface_overlay": {
+        "count": 150,
+        "median": 44401.5,
+        "p05": 31572.95,
+        "p95": 93434.15,
+        "min": 27460.0,
+        "max": 123535.0
+      },
+      "mano_left_full_surface": {
+        "count": 150,
+        "median": 13617.0,
+        "p05": 3269.05,
+        "p95": 14799.35,
+        "min": 0.0,
+        "max": 16302.0
+      },
+      "mano_right_full_surface": {
+        "count": 150,
+        "median": 26448.0,
+        "p05": 10715.15,
+        "p95": 30070.0,
+        "min": 8999.0,
+        "max": 30872.0
+      }
+    },
+    "trellis_frozen_legacy_cut": {
+      "generated_complete_prior_underlay": {
+        "count": 150,
+        "median": 3138.5,
+        "p05": 2031.55,
+        "p95": 5311.3499999999985,
+        "min": 1728.0,
+        "max": 6037.0
+      },
+      "observed_metric_surface_overlay": {
+        "count": 150,
+        "median": 44401.5,
+        "p05": 31572.95,
+        "p95": 93434.15,
+        "min": 27460.0,
+        "max": 123535.0
+      },
+      "mano_left_full_surface": {
+        "count": 150,
+        "median": 13613.0,
+        "p05": 3280.9500000000003,
+        "p95": 14799.35,
+        "min": 0.0,
+        "max": 16302.0
+      },
+      "mano_right_full_surface": {
+        "count": 150,
+        "median": 26448.0,
+        "p05": 10823.5,
+        "p95": 30070.0,
+        "min": 8999.0,
+        "max": 30872.0
+      }
+    }
+  },
+  "outputs": {
+    "camera_overlay_ab_video": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/full_video_three_branch_ab/p15_three_branch_camera_overlay_ab.mp4",
+    "overlay_world_side_ab_video": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/full_video_three_branch_ab/p15_three_branch_overlay_world_side_ab.mp4",
+    "review_frame": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/full_video_three_branch_ab/frame_000109_three_branch_overlay_world_side.png",
+    "matrix_frames": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/full_video_three_branch_ab/matrix_frames",
+    "overlay_ab_frames": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/full_video_three_branch_ab/overlay_ab_frames",
+    "report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p14_p15_layered_geometry_ab_v1/full_video_three_branch_ab/p15_three_branch_video_ab_report.json"
+  },
+  "visual_inspection_required": true
+}

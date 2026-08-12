@@ -1,0 +1,266 @@
+{
+  "schema": "v19_experimental_p13_controlled_seam_diagnostic_v1",
+  "status": "ok",
+  "method": "evaluate_experimental_p13_controlled_seams",
+  "claim_scope": "unsigned observed/generated boundary proximity diagnostic; does not establish watertightness, signed geometry, contact, or collision readiness",
+  "controlled_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/p13_controlled_geometry_prior_ab_report.json",
+  "thresholds_m": [
+    0.001,
+    0.002,
+    0.005,
+    0.01,
+    0.02,
+    0.03
+  ],
+  "candidates": [
+    {
+      "name": "trellis_frozen",
+      "source_model": "TRELLIS",
+      "pose_hypothesis_mesh": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/trellis_frozen/legacy_builder_output/keyboard_compact_rigid_completed_mesh_labeled.ply",
+      "face_labels": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/trellis_frozen/legacy_builder_output/completed_mesh_face_labels.json",
+      "whole_pose_hypothesis_topology": {
+        "vertices": 12822,
+        "faces": 22758,
+        "boundary_edges": 2818,
+        "boundary_vertices": 2760,
+        "connected_components": 93,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "observed_submesh_topology": {
+        "vertices": 2394,
+        "faces": 4598,
+        "boundary_edges": 188,
+        "boundary_vertices": 188,
+        "connected_components": 1,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "generated_submesh_topology": {
+        "vertices": 10428,
+        "faces": 18160,
+        "boundary_edges": 2630,
+        "boundary_vertices": 2572,
+        "connected_components": 92,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "observed_boundary_to_generated_surface": {
+        "count": 188,
+        "mean_m": 0.013162471728425542,
+        "median_m": 0.0068384194120245725,
+        "p90_m": 0.038874204215846565,
+        "p95_m": 0.04982095075835595,
+        "max_m": 0.07628848849518478,
+        "fraction_within": {
+          "1mm": 0.02127659574468085,
+          "2mm": 0.09574468085106383,
+          "5mm": 0.3776595744680851,
+          "10mm": 0.6276595744680851,
+          "20mm": 0.8297872340425532,
+          "30mm": 0.8723404255319149
+        }
+      },
+      "generated_boundary_to_observed_surface": {
+        "count": 2572,
+        "mean_m": 0.009881509549729875,
+        "median_m": 0.008926814757379161,
+        "p90_m": 0.022861768051307754,
+        "p95_m": 0.025489674724337767,
+        "max_m": 0.030710543297835836,
+        "fraction_within": {
+          "1mm": 0.04393468118195956,
+          "2mm": 0.12830482115085537,
+          "5mm": 0.3324261275272162,
+          "10mm": 0.5653188180404355,
+          "20mm": 0.8701399688958009,
+          "30mm": 0.999611197511664
+        }
+      },
+      "symmetric_boundary_to_counterpart_surface": {
+        "count": 2760,
+        "mean_m": 0.010104995379293203,
+        "median_m": 0.008870642515012211,
+        "p90_m": 0.0230837531382444,
+        "p95_m": 0.02595079412391491,
+        "max_m": 0.07628848849518478,
+        "fraction_within": {
+          "1mm": 0.042391304347826085,
+          "2mm": 0.12608695652173912,
+          "5mm": 0.3355072463768116,
+          "10mm": 0.5695652173913044,
+          "20mm": 0.8673913043478261,
+          "30mm": 0.9909420289855072
+        }
+      },
+      "interpretation": "Boundary distances include true observed/generated interfaces and any cut/free-space boundary elsewhere. Fractions are diagnostics, not readiness gates."
+    },
+    {
+      "name": "sam3d_old_raw_sam2_mask",
+      "source_model": "SAM3D Objects raw-SAM2-mask",
+      "pose_hypothesis_mesh": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/sam3d_old_raw_sam2_mask/legacy_builder_output/keyboard_compact_rigid_completed_mesh_labeled.ply",
+      "face_labels": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/sam3d_old_raw_sam2_mask/legacy_builder_output/completed_mesh_face_labels.json",
+      "whole_pose_hypothesis_topology": {
+        "vertices": 63154,
+        "faces": 120571,
+        "boundary_edges": 5657,
+        "boundary_vertices": 5583,
+        "connected_components": 126,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "observed_submesh_topology": {
+        "vertices": 2394,
+        "faces": 4598,
+        "boundary_edges": 188,
+        "boundary_vertices": 188,
+        "connected_components": 1,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "generated_submesh_topology": {
+        "vertices": 60760,
+        "faces": 115973,
+        "boundary_edges": 5469,
+        "boundary_vertices": 5395,
+        "connected_components": 125,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "observed_boundary_to_generated_surface": {
+        "count": 188,
+        "mean_m": 0.01238766559513198,
+        "median_m": 0.010608595644625666,
+        "p90_m": 0.020543601833266832,
+        "p95_m": 0.03394593195421732,
+        "max_m": 0.0451156454268889,
+        "fraction_within": {
+          "1mm": 0.010638297872340425,
+          "2mm": 0.03723404255319149,
+          "5mm": 0.14893617021276595,
+          "10mm": 0.4095744680851064,
+          "20mm": 0.8936170212765957,
+          "30mm": 0.9414893617021277
+        }
+      },
+      "generated_boundary_to_observed_surface": {
+        "count": 5395,
+        "mean_m": 0.011016129982910874,
+        "median_m": 0.011294731563843268,
+        "p90_m": 0.012571977773926395,
+        "p95_m": 0.01399093936532376,
+        "max_m": 0.028738968784994753,
+        "fraction_within": {
+          "1mm": 0.003336422613531047,
+          "2mm": 0.007970342910101947,
+          "5mm": 0.04040778498609824,
+          "10mm": 0.223725671918443,
+          "20mm": 0.9742354031510658,
+          "30mm": 1.0
+        }
+      },
+      "symmetric_boundary_to_counterpart_surface": {
+        "count": 5583,
+        "mean_m": 0.01106231459603958,
+        "median_m": 0.01128656149324755,
+        "p90_m": 0.012670653692199019,
+        "p95_m": 0.015012976987389777,
+        "max_m": 0.0451156454268889,
+        "fraction_within": {
+          "1mm": 0.0035823034210997673,
+          "2mm": 0.008955758552749419,
+          "5mm": 0.04406233207952714,
+          "10mm": 0.22998387963460504,
+          "20mm": 0.9715206878022569,
+          "30mm": 0.9980297331183952
+        }
+      },
+      "interpretation": "Boundary distances include true observed/generated interfaces and any cut/free-space boundary elsewhere. Fractions are diagnostics, not readiness gates."
+    },
+    {
+      "name": "sam3d_new_object_owned_mask",
+      "source_model": "SAM3D Objects object-owned-mask",
+      "pose_hypothesis_mesh": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/sam3d_new_object_owned_mask/legacy_builder_output/keyboard_compact_rigid_completed_mesh_labeled.ply",
+      "face_labels": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_geometry_prior_ab_retry1/sam3d_new_object_owned_mask/legacy_builder_output/completed_mesh_face_labels.json",
+      "whole_pose_hypothesis_topology": {
+        "vertices": 68175,
+        "faces": 129950,
+        "boundary_edges": 6318,
+        "boundary_vertices": 6239,
+        "connected_components": 137,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "observed_submesh_topology": {
+        "vertices": 2394,
+        "faces": 4598,
+        "boundary_edges": 188,
+        "boundary_vertices": 188,
+        "connected_components": 1,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "generated_submesh_topology": {
+        "vertices": 65781,
+        "faces": 125352,
+        "boundary_edges": 6130,
+        "boundary_vertices": 6051,
+        "connected_components": 136,
+        "watertight": false,
+        "winding_consistent": true
+      },
+      "observed_boundary_to_generated_surface": {
+        "count": 188,
+        "mean_m": 0.011730611502082091,
+        "median_m": 0.00992554828191782,
+        "p90_m": 0.020130445165092003,
+        "p95_m": 0.03340787939011364,
+        "max_m": 0.041172146974902506,
+        "fraction_within": {
+          "1mm": 0.031914893617021274,
+          "2mm": 0.0425531914893617,
+          "5mm": 0.14893617021276595,
+          "10mm": 0.5053191489361702,
+          "20mm": 0.8936170212765957,
+          "30mm": 0.9414893617021277
+        }
+      },
+      "generated_boundary_to_observed_surface": {
+        "count": 6051,
+        "mean_m": 0.011039164311280542,
+        "median_m": 0.011324228491503795,
+        "p90_m": 0.012595619859071337,
+        "p95_m": 0.013680791983449556,
+        "max_m": 0.030647963068692732,
+        "fraction_within": {
+          "1mm": 0.004627334324904975,
+          "2mm": 0.011568335812262435,
+          "5mm": 0.037514460419765326,
+          "10mm": 0.22012890431333665,
+          "20mm": 0.9765328044951248,
+          "30mm": 0.999008428358949
+        }
+      },
+      "symmetric_boundary_to_counterpart_surface": {
+        "count": 6239,
+        "mean_m": 0.011059999713087031,
+        "median_m": 0.01131244551638814,
+        "p90_m": 0.012656204597535713,
+        "p95_m": 0.014038123083851078,
+        "max_m": 0.041172146974902506,
+        "fraction_within": {
+          "1mm": 0.005449591280653951,
+          "2mm": 0.012502003526206123,
+          "5mm": 0.04087193460490463,
+          "10mm": 0.2287225516909761,
+          "20mm": 0.9740343003686488,
+          "30mm": 0.997275204359673
+        }
+      },
+      "interpretation": "Boundary distances include true observed/generated interfaces and any cut/free-space boundary elsewhere. Fractions are diagnostics, not readiness gates."
+    }
+  ],
+  "outputs": {
+    "cdf_plot": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p13_controlled_seams/p13_controlled_seam_cdf.png"
+  }
+}

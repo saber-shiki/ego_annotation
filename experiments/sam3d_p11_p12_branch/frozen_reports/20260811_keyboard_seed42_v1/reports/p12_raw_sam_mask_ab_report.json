@@ -1,0 +1,639 @@
+{
+  "schema": "v19_experimental_p12_raw_sam_mask_ab_v1",
+  "status": "ok",
+  "method": "render_experimental_p12_raw_sam_mask_ab",
+  "claim_scope": "P12 raw local-shape and native-layout delta only; longest-axis-normalized shape views are not metric placement, P13 alignment, temporal pose, or collision evidence",
+  "inputs": {
+    "old_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_vs_trellis_20260803/sam3d_raw/keyboard_anchor/qc_sam3d_objects_mesh_v7.json",
+    "new_p12_report": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/p12_parallel_geometry_priors_report.json",
+    "rgb": {
+      "old": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_vs_trellis_20260803/input/frame_000109.jpg",
+      "new": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/full_rgb.jpg",
+      "sha256": "be0eced83e929c7d75e6e6f62769d7a79462b3a9a987e113a40d6eb595f82708",
+      "byte_identical": true
+    },
+    "masks": {
+      "old_raw_sam2": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_vs_trellis_20260803/input/frame_000109_mask.png",
+        "sha256": "34b47ced861d96918795d26ae70cd58e04723864b7593a261c7e0dd4ab294c14",
+        "shape_h_w": [
+          960,
+          960
+        ],
+        "pixels": 67917
+      },
+      "new_object_owned": {
+        "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p11_dual_inputs/inputs/object_owned_mask.png",
+        "sha256": "6ea425d33d5be18ee076e6c3bd8c83f15724c74136ddcf8b72ec9fe6267fb490",
+        "shape_h_w": [
+          960,
+          960
+        ],
+        "pixels": 63861
+      },
+      "intersection_pixels": 63861,
+      "union_pixels": 67917,
+      "xor_pixels": 4056,
+      "iou": 0.9402800477052873
+    },
+    "seed": 42
+  },
+  "old_raw_sam2_mask_mesh": {
+    "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_vs_trellis_20260803/sam3d_raw/keyboard_anchor/sam3d_mesh.ply",
+    "sha256": "96dd0bb7ec96b407f61c2091fb0a5d82ab9f979971e1da4e8f6812c83a22bf1f",
+    "summary": {
+      "vertices": 133510,
+      "faces": 267008,
+      "extent_model_units": [
+        1.0000731348991394,
+        0.3811510354280472,
+        0.11039308086037636
+      ],
+      "center_used_for_shape_normalization": [
+        -0.0002359449863433838,
+        -0.0005232915282249451,
+        -0.00304492749273777
+      ],
+      "longest_extent_used_for_shape_normalization": 1.0000731348991394,
+      "relative_extents": [
+        1.0,
+        0.38112316202403285,
+        0.11038500786395973
+      ],
+      "surface_area_model_units2": 1.7878230021767603,
+      "normalized_surface_area": 1.7875615263517355,
+      "signed_volume_model_units3": 0.01127778239906483,
+      "normalized_abs_volume": 0.011275308362515663,
+      "watertight": true,
+      "winding_consistent": true,
+      "connected_components": 4,
+      "euler_number": 6
+    },
+    "native_pose": {
+      "rotation": [
+        0.18134146928787231,
+        -0.7140500545501709,
+        -0.568677544593811,
+        -0.3658602237701416
+      ],
+      "translation": [
+        -0.3276709020137787,
+        0.09200817346572876,
+        0.6523116827011108
+      ],
+      "scale": [
+        0.5395135879516602,
+        0.5395135879516602,
+        0.5395135879516602
+      ]
+    }
+  },
+  "new_object_owned_mask_mesh": {
+    "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_parallel_priors/sam3d_objects_native/hot3d_clip001851_keyboard_pinhole_keyboard_frame_000109/sam3d_mesh.ply",
+    "sha256": "a3f6c3b545169ce7971659c2671afa638dc45cbafd1c16f68bd6e0239e1c9e79",
+    "summary": {
+      "vertices": 137598,
+      "faces": 275208,
+      "extent_model_units": [
+        0.9994843006134033,
+        0.38356591761112213,
+        0.10400628671050072
+      ],
+      "center_used_for_shape_normalization": [
+        -0.0002557039260864258,
+        0.0009373053908348083,
+        0.0004944782704114914
+      ],
+      "longest_extent_used_for_shape_normalization": 0.9994843006134033,
+      "relative_extents": [
+        1.0,
+        0.3837638243799529,
+        0.10405995036307224
+      ],
+      "surface_area_model_units2": 1.8312640843070302,
+      "normalized_surface_area": 1.833154309893534,
+      "signed_volume_model_units3": 0.011371438075120461,
+      "normalized_abs_volume": 0.01138904896676952,
+      "watertight": true,
+      "winding_consistent": true,
+      "connected_components": 2,
+      "euler_number": -6
+    },
+    "native_pose": {
+      "rotation": [
+        0.16197793185710907,
+        -0.7093797326087952,
+        -0.6029427647590637,
+        -0.3271138072013855
+      ],
+      "translation": [
+        -0.3289189338684082,
+        0.08303087204694748,
+        0.6147744655609131
+      ],
+      "scale": [
+        0.511941134929657,
+        0.511941134929657,
+        0.511941134929657
+      ]
+    }
+  },
+  "shape_comparison": {
+    "normalization": "independent_bbox_center_and_longest_local_extent",
+    "surface_samples_per_mesh": 60000,
+    "old_to_new_nearest_distance_normalized": {
+      "count": 60000,
+      "mean": 0.004415183685852482,
+      "median": 0.004192585904554595,
+      "p95": 0.007893674273873894,
+      "max": 0.020274740348242063
+    },
+    "new_to_old_nearest_distance_normalized": {
+      "count": 60000,
+      "mean": 0.004517605130369556,
+      "median": 0.004170407722108458,
+      "p95": 0.008155170972790485,
+      "max": 0.025096740788893162
+    },
+    "symmetric_chamfer_mean_normalized": 0.004466394408111019,
+    "per_view_normalized_silhouette": [
+      {
+        "view": "top XY / thin axis Z",
+        "normalized_silhouette_iou": 0.9883590721712915,
+        "old_only_pixels": 117,
+        "new_only_pixels": 829
+      },
+      {
+        "view": "long side XZ",
+        "normalized_silhouette_iou": 0.9179411454487924,
+        "old_only_pixels": 744,
+        "new_only_pixels": 812
+      },
+      {
+        "view": "end YZ",
+        "normalized_silhouette_iou": 0.8923802042419482,
+        "old_only_pixels": 264,
+        "new_only_pixels": 421
+      }
+    ],
+    "old_axis_profiles": [
+      {
+        "bin": 0,
+        "x_low": -0.5,
+        "x_high": -0.4583333333333333,
+        "x_center": -0.47916666666666663,
+        "samples": 2971,
+        "width_y": 0.37455923369403665,
+        "thickness_z": 0.08321489982865785
+      },
+      {
+        "bin": 1,
+        "x_low": -0.4583333333333333,
+        "x_high": -0.4166666666666667,
+        "x_center": -0.4375,
+        "samples": 2575,
+        "width_y": 0.37856744387556823,
+        "thickness_z": 0.10494498601319158
+      },
+      {
+        "bin": 2,
+        "x_low": -0.4166666666666667,
+        "x_high": -0.375,
+        "x_center": -0.39583333333333337,
+        "samples": 2339,
+        "width_y": 0.37823341130907107,
+        "thickness_z": 0.0831086747954461
+      },
+      {
+        "bin": 3,
+        "x_low": -0.375,
+        "x_high": -0.33333333333333337,
+        "x_center": -0.3541666666666667,
+        "samples": 2384,
+        "width_y": 0.37977396088028886,
+        "thickness_z": 0.0831420542802752
+      },
+      {
+        "bin": 4,
+        "x_low": -0.33333333333333337,
+        "x_high": -0.2916666666666667,
+        "x_center": -0.3125,
+        "samples": 2451,
+        "width_y": 0.3797135851872573,
+        "thickness_z": 0.08297327500952142
+      },
+      {
+        "bin": 5,
+        "x_low": -0.2916666666666667,
+        "x_high": -0.25,
+        "x_center": -0.27083333333333337,
+        "samples": 2516,
+        "width_y": 0.37904614191904695,
+        "thickness_z": 0.08297000354083503
+      },
+      {
+        "bin": 6,
+        "x_low": -0.25,
+        "x_high": -0.20833333333333337,
+        "x_center": -0.22916666666666669,
+        "samples": 2412,
+        "width_y": 0.3793624118703083,
+        "thickness_z": 0.08309558813468967
+      },
+      {
+        "bin": 7,
+        "x_low": -0.20833333333333337,
+        "x_high": -0.16666666666666669,
+        "x_center": -0.18750000000000003,
+        "samples": 2512,
+        "width_y": 0.37928187363630345,
+        "thickness_z": 0.0836610568846877
+      },
+      {
+        "bin": 8,
+        "x_low": -0.16666666666666669,
+        "x_high": -0.125,
+        "x_center": -0.14583333333333334,
+        "samples": 2426,
+        "width_y": 0.379345287989565,
+        "thickness_z": 0.08447010191969803
+      },
+      {
+        "bin": 9,
+        "x_low": -0.125,
+        "x_high": -0.08333333333333337,
+        "x_center": -0.10416666666666669,
+        "samples": 2401,
+        "width_y": 0.3795448682950813,
+        "thickness_z": 0.08444588055119531
+      },
+      {
+        "bin": 10,
+        "x_low": -0.08333333333333337,
+        "x_high": -0.041666666666666685,
+        "x_center": -0.06250000000000003,
+        "samples": 2461,
+        "width_y": 0.37867951421621276,
+        "thickness_z": 0.08419000656736624
+      },
+      {
+        "bin": 11,
+        "x_low": -0.041666666666666685,
+        "x_high": 0.0,
+        "x_center": -0.020833333333333343,
+        "samples": 2454,
+        "width_y": 0.3795730402109381,
+        "thickness_z": 0.0839699157450116
+      },
+      {
+        "bin": 12,
+        "x_low": 0.0,
+        "x_high": 0.04166666666666663,
+        "x_center": 0.020833333333333315,
+        "samples": 2430,
+        "width_y": 0.3794862746022859,
+        "thickness_z": 0.08412650097407434
+      },
+      {
+        "bin": 13,
+        "x_low": 0.04166666666666663,
+        "x_high": 0.08333333333333326,
+        "x_center": 0.062499999999999944,
+        "samples": 2485,
+        "width_y": 0.37932764738682606,
+        "thickness_z": 0.08413608124879159
+      },
+      {
+        "bin": 14,
+        "x_low": 0.08333333333333326,
+        "x_high": 0.125,
+        "x_center": 0.10416666666666663,
+        "samples": 2443,
+        "width_y": 0.3790155354576764,
+        "thickness_z": 0.08404357521839624
+      },
+      {
+        "bin": 15,
+        "x_low": 0.125,
+        "x_high": 0.16666666666666663,
+        "x_center": 0.14583333333333331,
+        "samples": 2375,
+        "width_y": 0.37871791998871907,
+        "thickness_z": 0.08405941920342355
+      },
+      {
+        "bin": 16,
+        "x_low": 0.16666666666666663,
+        "x_high": 0.20833333333333326,
+        "x_center": 0.18749999999999994,
+        "samples": 2420,
+        "width_y": 0.37874109188270894,
+        "thickness_z": 0.0841001631917371
+      },
+      {
+        "bin": 17,
+        "x_low": 0.20833333333333326,
+        "x_high": 0.25,
+        "x_center": 0.22916666666666663,
+        "samples": 2443,
+        "width_y": 0.3776582214193413,
+        "thickness_z": 0.08365969874803253
+      },
+      {
+        "bin": 18,
+        "x_low": 0.25,
+        "x_high": 0.29166666666666663,
+        "x_center": 0.2708333333333333,
+        "samples": 2520,
+        "width_y": 0.37853193897816684,
+        "thickness_z": 0.07834279599893533
+      },
+      {
+        "bin": 19,
+        "x_low": 0.29166666666666663,
+        "x_high": 0.33333333333333326,
+        "x_center": 0.31249999999999994,
+        "samples": 2513,
+        "width_y": 0.3795671638739743,
+        "thickness_z": 0.08467606510012671
+      },
+      {
+        "bin": 20,
+        "x_low": 0.33333333333333326,
+        "x_high": 0.375,
+        "x_center": 0.35416666666666663,
+        "samples": 2482,
+        "width_y": 0.37846303563109623,
+        "thickness_z": 0.08482145311085303
+      },
+      {
+        "bin": 21,
+        "x_low": 0.375,
+        "x_high": 0.41666666666666663,
+        "x_center": 0.3958333333333333,
+        "samples": 2574,
+        "width_y": 0.37685859038628566,
+        "thickness_z": 0.08470967489516318
+      },
+      {
+        "bin": 22,
+        "x_low": 0.41666666666666663,
+        "x_high": 0.45833333333333326,
+        "x_center": 0.43749999999999994,
+        "samples": 2760,
+        "width_y": 0.3766964055838311,
+        "thickness_z": 0.10486187795965865
+      },
+      {
+        "bin": 23,
+        "x_low": 0.45833333333333326,
+        "x_high": 0.5,
+        "x_center": 0.47916666666666663,
+        "samples": 2653,
+        "width_y": 0.3722489970276682,
+        "thickness_z": 0.07510461768547591
+      }
+    ],
+    "new_axis_profiles": [
+      {
+        "bin": 0,
+        "x_low": -0.5,
+        "x_high": -0.4583333333333333,
+        "x_center": -0.47916666666666663,
+        "samples": 2897,
+        "width_y": 0.3717474207023841,
+        "thickness_z": 0.08320081389745321
+      },
+      {
+        "bin": 1,
+        "x_low": -0.4583333333333333,
+        "x_high": -0.4166666666666667,
+        "x_center": -0.4375,
+        "samples": 2489,
+        "width_y": 0.380751030526467,
+        "thickness_z": 0.09911654869322034
+      },
+      {
+        "bin": 2,
+        "x_low": -0.4166666666666667,
+        "x_high": -0.375,
+        "x_center": -0.39583333333333337,
+        "samples": 2322,
+        "width_y": 0.3820883933465683,
+        "thickness_z": 0.08354326098138334
+      },
+      {
+        "bin": 3,
+        "x_low": -0.375,
+        "x_high": -0.33333333333333337,
+        "x_center": -0.3541666666666667,
+        "samples": 2352,
+        "width_y": 0.38171844830985463,
+        "thickness_z": 0.08341379592318121
+      },
+      {
+        "bin": 4,
+        "x_low": -0.33333333333333337,
+        "x_high": -0.2916666666666667,
+        "x_center": -0.3125,
+        "samples": 2426,
+        "width_y": 0.38196115612730275,
+        "thickness_z": 0.0833284790981067
+      },
+      {
+        "bin": 5,
+        "x_low": -0.2916666666666667,
+        "x_high": -0.25,
+        "x_center": -0.27083333333333337,
+        "samples": 2521,
+        "width_y": 0.3816042088696056,
+        "thickness_z": 0.08331519020059545
+      },
+      {
+        "bin": 6,
+        "x_low": -0.25,
+        "x_high": -0.20833333333333337,
+        "x_center": -0.22916666666666669,
+        "samples": 2413,
+        "width_y": 0.38232572269237275,
+        "thickness_z": 0.0832722745635889
+      },
+      {
+        "bin": 7,
+        "x_low": -0.20833333333333337,
+        "x_high": -0.16666666666666669,
+        "x_center": -0.18750000000000003,
+        "samples": 2510,
+        "width_y": 0.3802136870786598,
+        "thickness_z": 0.08384740949962852
+      },
+      {
+        "bin": 8,
+        "x_low": -0.16666666666666669,
+        "x_high": -0.125,
+        "x_center": -0.14583333333333334,
+        "samples": 2416,
+        "width_y": 0.3808620433801845,
+        "thickness_z": 0.08420974288815947
+      },
+      {
+        "bin": 9,
+        "x_low": -0.125,
+        "x_high": -0.08333333333333337,
+        "x_center": -0.10416666666666669,
+        "samples": 2395,
+        "width_y": 0.38122568197731166,
+        "thickness_z": 0.0841711985671829
+      },
+      {
+        "bin": 10,
+        "x_low": -0.08333333333333337,
+        "x_high": -0.041666666666666685,
+        "x_center": -0.06250000000000003,
+        "samples": 2480,
+        "width_y": 0.38092882017890833,
+        "thickness_z": 0.08389397139110069
+      },
+      {
+        "bin": 11,
+        "x_low": -0.041666666666666685,
+        "x_high": 0.0,
+        "x_center": -0.020833333333333343,
+        "samples": 2498,
+        "width_y": 0.3813681556724988,
+        "thickness_z": 0.08372159732944595
+      },
+      {
+        "bin": 12,
+        "x_low": 0.0,
+        "x_high": 0.04166666666666663,
+        "x_center": 0.020833333333333315,
+        "samples": 2450,
+        "width_y": 0.3824789016044151,
+        "thickness_z": 0.08373125284797768
+      },
+      {
+        "bin": 13,
+        "x_low": 0.04166666666666663,
+        "x_high": 0.08333333333333326,
+        "x_center": 0.062499999999999944,
+        "samples": 2453,
+        "width_y": 0.3820031224138807,
+        "thickness_z": 0.08352367840200214
+      },
+      {
+        "bin": 14,
+        "x_low": 0.08333333333333326,
+        "x_high": 0.125,
+        "x_center": 0.10416666666666663,
+        "samples": 2489,
+        "width_y": 0.3809982010989322,
+        "thickness_z": 0.083595196854447
+      },
+      {
+        "bin": 15,
+        "x_low": 0.125,
+        "x_high": 0.16666666666666663,
+        "x_center": 0.14583333333333331,
+        "samples": 2466,
+        "width_y": 0.38094620864892165,
+        "thickness_z": 0.08366724787767417
+      },
+      {
+        "bin": 16,
+        "x_low": 0.16666666666666663,
+        "x_high": 0.20833333333333326,
+        "x_center": 0.18749999999999994,
+        "samples": 2391,
+        "width_y": 0.38085081005640575,
+        "thickness_z": 0.08388757793787993
+      },
+      {
+        "bin": 17,
+        "x_low": 0.20833333333333326,
+        "x_high": 0.25,
+        "x_center": 0.22916666666666663,
+        "samples": 2456,
+        "width_y": 0.3808416587855674,
+        "thickness_z": 0.08403604873643122
+      },
+      {
+        "bin": 18,
+        "x_low": 0.25,
+        "x_high": 0.29166666666666663,
+        "x_center": 0.2708333333333333,
+        "samples": 2539,
+        "width_y": 0.379857751683115,
+        "thickness_z": 0.08388374809695978
+      },
+      {
+        "bin": 19,
+        "x_low": 0.29166666666666663,
+        "x_high": 0.33333333333333326,
+        "x_center": 0.31249999999999994,
+        "samples": 2685,
+        "width_y": 0.38011276204315714,
+        "thickness_z": 0.08421668152175021
+      },
+      {
+        "bin": 20,
+        "x_low": 0.33333333333333326,
+        "x_high": 0.375,
+        "x_center": 0.35416666666666663,
+        "samples": 2517,
+        "width_y": 0.3801153147944791,
+        "thickness_z": 0.08414663760288815
+      },
+      {
+        "bin": 21,
+        "x_low": 0.375,
+        "x_high": 0.41666666666666663,
+        "x_center": 0.3958333333333333,
+        "samples": 2469,
+        "width_y": 0.38044506969695396,
+        "thickness_z": 0.08467884606356911
+      },
+      {
+        "bin": 22,
+        "x_low": 0.41666666666666663,
+        "x_high": 0.45833333333333326,
+        "x_center": 0.43749999999999994,
+        "samples": 2602,
+        "width_y": 0.3791804636844289,
+        "thickness_z": 0.09945878691345503
+      },
+      {
+        "bin": 23,
+        "x_low": 0.45833333333333326,
+        "x_high": 0.5,
+        "x_center": 0.47916666666666663,
+        "samples": 2764,
+        "width_y": 0.3651273751579235,
+        "thickness_z": 0.08367041229267813
+      }
+    ]
+  },
+  "native_layout_delta_not_metric_v19": {
+    "quaternion_angular_delta_degrees": 6.352275892528052,
+    "translation_delta_native_units": [
+      -0.0012480318546295166,
+      -0.00897730141878128,
+      -0.037537217140197754
+    ],
+    "translation_delta_l2_native_units": 0.038615957775305514,
+    "uniform_scale_old": 0.5395135879516602,
+    "uniform_scale_new": 0.511941134929657,
+    "uniform_scale_ratio_new_over_old": 0.9488938672950094
+  },
+  "renderer": {
+    "kind": "same_orthographic_software_renderer",
+    "target_faces_per_mesh": 60000,
+    "old_render_faces": 60000,
+    "new_render_faces": 60000,
+    "panel_size": 560
+  },
+  "outputs": {
+    "three_view_contact_sheet": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_raw_mask_ab/p12_raw_sam_mask_ab_three_views.png",
+    "axis_profiles": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/v19_runs/20260803_hot3d_clip001851_keyboard_pinhole_kupingxin_v2/experiments/sam3d_p11_p12_native_owned_mask_v1/p12_raw_mask_ab/p12_raw_sam_mask_ab_axis_profiles.png"
+  }
+}
