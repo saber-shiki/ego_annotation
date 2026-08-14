@@ -74,13 +74,16 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
         actual_size_wh=depth_size,
         allow_implicit_resize=bool(args.allow_implicit_depth_resize),
     )
-    resolved_rows = np.repeat(intrinsics[None, :], depth.shape[0], axis=0).astype(np.float32)
+    # Camera contracts are JSON/float64 authorities.  Do not quantize active K
+    # rows to float32: at focal lengths around 1k px, a valid float32 round trip
+    # can move K by O(1e-5) px and violate the downstream exact V2 binding.
+    resolved_rows = np.repeat(intrinsics[None, :], depth.shape[0], axis=0).astype(np.float64)
     depth_hash_before = array_sha256(depth)
     frame_hash_before = array_sha256(frame_idx)
 
     payload["source_estimated_intrinsics_fx_fy_cx_cy"] = np.asarray(payload["intrinsics_fx_fy_cx_cy"])
     payload["intrinsics_fx_fy_cx_cy"] = resolved_rows
-    payload["focal_px"] = np.repeat(np.float32(np.sqrt(intrinsics[0] * intrinsics[1])), depth.shape[0])
+    payload["focal_px"] = np.repeat(np.float64(np.sqrt(intrinsics[0] * intrinsics[1])), depth.shape[0])
     payload["intrinsics_source"] = np.asarray(str(contract.get("intrinsics_source") or contract.get("method")))
     payload["calibration_authority"] = np.asarray(str(normalized["calibration_authority"]))
     payload["camera_contract_path"] = np.asarray(str(contract_path))
@@ -88,7 +91,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
     payload["camera_contract_plane"] = np.asarray(args.depth_plane)
     payload["A_depth_from_calibration"] = np.asarray(transform["A_actual_plane_from_calibration"], dtype=np.float64)
     payload["intrinsics_override_applied"] = np.asarray(
-        not np.array_equal(source_intrinsics.astype(np.float32), resolved_rows)
+        not np.array_equal(source_intrinsics, resolved_rows)
     )
     payload["source_depth_archive_sha256"] = np.asarray(sha256_file(source))
     np.savez_compressed(output_path, **payload)
@@ -106,6 +109,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
         "frame_idx_sha256_equal": bool(frame_hash_before == array_sha256(output_frame_idx)),
         "source_size_equal": bool(np.array_equal(source_size, output_source_size)),
         "source_intrinsics_preserved": bool(np.array_equal(source_intrinsics, archived_source_intrinsics)),
+        "output_intrinsics_float64": bool(output_intrinsics.dtype == np.dtype(np.float64)),
         "output_intrinsics_equal_contract_plane": bool(np.array_equal(output_intrinsics, resolved_rows)),
     }
     if not all(invariants.values()):
@@ -129,6 +133,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
         "frame_count": int(depth.shape[0]),
         "depth_shape": list(depth.shape),
         "depth_dtype": str(depth.dtype),
+        "active_intrinsics_dtype": str(resolved_rows.dtype),
         "depth_plane": args.depth_plane,
         "resolved_intrinsics_fx_fy_cx_cy": intrinsics.tolist(),
         "camera_contract": summarize_contract(contract_path, contract, normalized),
@@ -141,7 +146,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
         "source_depth_archive_sha256": sha256_file(source),
         "output_depth_archive_sha256": sha256_file(output_path),
         "downstream_contract": (
-            "Visible geometry and any metric backprojection must consume this output or resolve the same camera contract plane directly."
+            "Visible geometry and any metric backprojection must consume this output or resolve the same camera contract plane directly; active K rows retain float64 contract precision."
         ),
     }
     write_json(report_path, report)

@@ -503,6 +503,78 @@ class CameraContractTest(unittest.TestCase):
                     allow_implicit_depth_resize=False,
                 )
 
+    def test_depth_adapter_preserves_non_float32_camera_contract_precision(self) -> None:
+        """Regression: official K values need not be exactly representable as float32."""
+        with tempfile.TemporaryDirectory(prefix="v19_depth_camera_precision_") as temp:
+            root = Path(temp)
+            manifest = make_manifest(root / "input")
+            depth_path = make_depth(root)
+            official_intrinsics = np.asarray(
+                [975.0954101562501, 975.0954101562501, 49.123456789, 39.987654321],
+                dtype=np.float64,
+            )
+            self.assertGreater(
+                float(np.max(np.abs(official_intrinsics - official_intrinsics.astype(np.float32)))),
+                1.0e-6,
+            )
+            sensor = root / "sensor.json"
+            write_json(
+                sensor,
+                {
+                    "image_width": 100,
+                    "image_height": 80,
+                    "intrinsics_fx_fy_cx_cy": official_intrinsics.tolist(),
+                    "intrinsics_source": "synthetic non-float32 official sensor K",
+                },
+            )
+            resolver.resolve(
+                resolve_args(
+                    raw_frame_manifest=manifest,
+                    sensor_calibration_contract=sensor,
+                    sensor_source_video=manifest_source_video(manifest),
+                    output_dir=root / "contract",
+                )
+            )
+            contract_path = root / "contract" / "v19_camera_calibration_contract.json"
+            output_dir = root / "adapted"
+            report = depth_adapter.adapt(
+                SimpleNamespace(
+                    source_depth_npz=depth_path,
+                    camera_contract=contract_path,
+                    depth_plane="source_rgb",
+                    output_dir=output_dir,
+                    output_name="adapted.npz",
+                    allow_implicit_depth_resize=False,
+                    replace=False,
+                )
+            )
+            adapted_path = output_dir / "adapted.npz"
+            with np.load(adapted_path, allow_pickle=False) as adapted:
+                rows = np.asarray(adapted["intrinsics_fx_fy_cx_cy"])
+            self.assertEqual(rows.dtype, np.dtype(np.float64))
+            np.testing.assert_array_equal(
+                rows,
+                np.repeat(official_intrinsics[None, :], 2, axis=0),
+            )
+            self.assertTrue(report["array_invariants"]["output_intrinsics_float64"])
+            self.assertEqual(report["active_intrinsics_dtype"], "float64")
+
+            loaded_depth = visible_geometry.load_depth_npz(adapted_path)
+            _, _, _, contract_v2 = visible_geometry.load_calibration_contract(
+                contract_path, frame_ids=[0, 1]
+            )
+            binding = visible_geometry.validate_depth_camera_contract_binding(
+                depth=loaded_depth,
+                camera_contract_v2=contract_v2,
+                calibration_contract_path=contract_path,
+                depth_image_plane="source_rgb",
+                allow_implicit_depth_resize=False,
+            )
+            self.assertEqual(
+                binding["status"],
+                "exact_camera_contract_hash_plane_intrinsics_and_affine_match",
+            )
+
     def test_depth_adapter_changes_only_camera_metadata(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v19_depth_camera_adapter_") as temp:
             root = Path(temp)
