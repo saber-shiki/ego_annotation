@@ -1,0 +1,361 @@
+# HOT3D five-clip controlled SAM3D / TRELLIS runtime spec
+
+This document is authoritative for the controlled dual-backend run.  Execute one
+case per fresh run root.  The geometry backend is the only branch variable.
+
+## Bound launch values
+
+The launch prompt binds all of these values explicitly:
+
+- `{INPUT_VIDEO}`: the exact 150-frame, 1408x1408, 30 FPS pinhole RGB clip.
+- `{RUN_ROOT}`: fresh prediction output root.
+- `{CASE_ID}`: stable clip id.
+- `{OBJECT_ID}` and `{TRACK_ID}`: stable target object id.
+- `{GPU_ID}`: dedicated physical A800 id for this case.
+- `{SENSOR_CALIBRATION_METADATA}`: prediction-side official pinhole camera contract.
+- `{TARGET_HINT}` and `{TARGET_EXCLUSIONS}`: semantic hints only, never masks or poses.
+
+The launch also binds:
+
+- `{SENSOR_SOURCE_VIDEO}={INPUT_VIDEO}`
+- `{SENSOR_CALIBRATION_AUTHORITY}=prediction_side_sensor_metadata`
+- `{SENSOR_FRAME_INTRINSICS_KEY}` is empty because the supplied contract has one top-level K.
+- general Python: `/mnt/user-home/kupingxin/ego_annotation/.venv/bin/python`
+- SAM3D Python: `/mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects/bin/python`
+- SAM3D repository: `/mnt/user-home/kupingxin/sam3d-objects`
+- SAM3D config: `/mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml`
+- TRELLIS Python/repository/model and all common assets are those declared by `runtime/v19_runtime_spec.md`.
+
+## Isolation and fairness rules
+
+1. Do not inspect or consume reference-label state directories, CAD models, reference poses,
+   foreground reference depth, MANO reference state, or any sibling run output.
+2. Official K is allowed only through the launcher-supplied prediction-side sensor contract.
+3. Execute P00 through P11 from `runtime/v19_runtime_spec.md` exactly.  Do not execute
+   its canonical P12 through P21; replace that tail with this document.
+4. P05 must inspect the raw contact sheet as an image.  P07 must inspect OWLv2/SAM2
+   review imagery.  P09 must inspect the anchor-candidate review image and write the
+   explicit anchor decision.  The launch target hint must be visually confirmed.
+5. Use one shared P11 evidence report, anchor RGB, object-owned mask, observed metric
+   surface, camera/HaWoR state, and observed-only object trajectory for both branches.
+6. SAM3D receives full RGB plus the binary object-owned mask and no external pointmap.
+   TRELLIS receives its native P11 object-isolated RGBA crop.  These native conditioning
+   formats are intentional; neither backend may receive another hidden source.
+7. Generated faces are render-only.  They are never collision, sign, contact, or pose
+   observations.  Preserve uncertainty in the final state.
+8. Run commands from the isolated bundle.  Do not edit scripts during a run.  If a named
+   command fails, write `{RUN_ROOT}/state/runtime_blockers/<PHASE>.json` and stop.
+9. Keep `{RUN_ROOT}/logs/harness_events.jsonl` append-only.  After every completed phase,
+   append a timestamped event and update `{RUN_ROOT}/state/suite_case_progress.json`.
+10. Do not run scoring or backend ranking in the prediction process.
+
+## Common P00-P11
+
+Read `runtime/v19_runtime_spec.md`, bind the launch values above, and execute only P00,
+P01, P02, P03, P03b, P03c, P04, P05, P06, P07, P08, P09, P10, and P11 in order.
+Use the dedicated `{GPU_ID}` unless a live probe shows it is no longer safe; do not take
+another case's declared GPU.  The target should remain rigid even when local evidence is
+missing; record missing evidence as uncertainty rather than broadening the object mask.
+
+Before continuing, bind and validate:
+
+```bash
+set -euo pipefail
+MAIN_PYTHON=/mnt/user-home/kupingxin/ego_annotation/.venv/bin/python
+EXP_ROOT='{RUN_ROOT}/experiments/sam3d_trellis_controlled'
+EVIDENCE_REPORT='{RUN_ROOT}/measurements/geometry_completion/rigid_evidence/{CASE_ID}/{OBJECT_ID}/evidence_bundle/evidence_bundle_report.json'
+ANNOTATIONS='{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json'
+HAWOR_NPZ='{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz'
+DEPTH_NPZ='{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
+test -s "$EVIDENCE_REPORT"
+test -s "$ANNOTATIONS"
+test -s "$HAWOR_NPZ"
+test -s "$DEPTH_NPZ"
+mkdir -p "$EXP_ROOT"
+```
+
+## D11 native dual-conditioning contract
+
+Materialize byte-bound native inputs from the one selected P11 evidence row:
+
+```bash
+"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/build_p11_dual_geometry_inputs.py \
+  --evidence-report "$EVIDENCE_REPORT" \
+  --output-dir "$EXP_ROOT/P11_dual_inputs"
+
+P11_DUAL_REPORT="$EXP_ROOT/P11_dual_inputs/p11_dual_geometry_inputs_report.json"
+test -s "$P11_DUAL_REPORT"
+```
+
+Inspect `P11_dual_inputs/review/sam3d_native_input_mask_review.png` as an image.  Stop if
+it contains broad hand, sleeve, table, or unrelated-object ownership.
+
+## D12 TRELLIS and SAM3D raw geometry priors
+
+Resolve and run TRELLIS with the native isolated crop:
+
+```bash
+EVIDENCE_CROP_RGBA=$("$MAIN_PYTHON" scripts/resolve_v19_trellis_conditioning_image.py \
+  --evidence-report "$EVIDENCE_REPORT")
+test -s "$EVIDENCE_CROP_RGBA"
+
+CUDA_VISIBLE_DEVICES='{GPU_ID}' \
+TORCH_HOME=/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub \
+ATTN_BACKEND=xformers SPCONV_ALGO=native \
+/mnt/user-home/kupingxin/ego_annotation/.runtime/trellis_work/.venv_trellis/bin/python \
+  scripts/remote_run_trellis_shape_v3.py \
+  --repo /mnt/user-home/kupingxin/ego_annotation/.runtime/trellis_work/TRELLIS \
+  --model /mnt/truenas-user-home/kupingxin/ego_annotation_models/trellis-image-large-25e0d31f \
+  --image "$EVIDENCE_CROP_RGBA" \
+  --output-dir "$EXP_ROOT/P12_trellis" \
+  --seed 42
+
+TRELLIS_REPORT="$EXP_ROOT/P12_trellis/qc_trellis_shape_v3.json"
+test -s "$TRELLIS_REPORT"
+```
+
+Run the frozen SAM3D Objects runner through the native P11 full-RGB + owned-mask
+contract.  `pointmap=None` is enforced by the D11/D12 report adapter:
+
+```bash
+"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/run_p12_parallel_geometry_priors.py \
+  --p11-report "$P11_DUAL_REPORT" \
+  --trellis-report "$TRELLIS_REPORT" \
+  --output-dir "$EXP_ROOT/P12_parallel" \
+  --case-name '{CASE_ID}_{OBJECT_ID}_anchor' \
+  --seed 42 \
+  --sam3d-python /mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects/bin/python \
+  --sam3d-runner scripts/remote_run_sam3d_objects_mesh_v7.py \
+  --sam3d-repo /mnt/user-home/kupingxin/sam3d-objects \
+  --sam3d-config /mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml \
+  --cuda-visible-device '{GPU_ID}' \
+  --min-free-mib 30000
+
+P12_REPORT="$EXP_ROOT/P12_parallel/p12_parallel_geometry_priors_report.json"
+test -s "$P12_REPORT"
+```
+
+Bind exact raw mesh paths from reports, never by globbing:
+
+```bash
+eval "$("$MAIN_PYTHON" - "$P12_REPORT" "$TRELLIS_REPORT" <<'PY'
+import json, shlex, sys
+from pathlib import Path
+p12 = json.loads(Path(sys.argv[1]).read_text())
+trellis = json.loads(Path(sys.argv[2]).read_text())
+sam = (((p12.get('candidates') or {}).get('sam3d_objects') or {}).get('native_outputs') or {}).get('raw_mesh') or {}
+values = {
+    'SAM3D_RAW_MESH': sam.get('path'),
+    'TRELLIS_RAW_MESH': trellis.get('mesh'),
+}
+for key, value in values.items():
+    if not value or not Path(value).is_file() or Path(value).stat().st_size <= 0:
+        raise SystemExit(f'missing {key}: {value!r}')
+    print(f'{key}={shlex.quote(str(value))}')
+PY
+)"
+```
+
+## D13 controlled common adaptation
+
+Run both raw priors through the same unmodified metric alignment/completion adapter and
+one shared P11 evidence report:
+
+```bash
+"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/run_p13_controlled_geometry_prior_ab.py \
+  --evidence-report "$EVIDENCE_REPORT" \
+  --builder-script scripts/build_v18_compact_rigid_trellis_completion.py \
+  --python "$MAIN_PYTHON" \
+  --candidate "sam3d_new_object_owned_mask|sam3d_objects|$SAM3D_RAW_MESH|$P12_REPORT" \
+  --candidate "trellis_frozen|trellis|$TRELLIS_RAW_MESH|$TRELLIS_REPORT" \
+  --output-dir "$EXP_ROOT/P13_controlled" \
+  --silhouette-dilate-px 16 \
+  --planar-slab-eigenvalue-ratio-max 0.04 \
+  --planar-slab-min-band-m 0.018 \
+  --planar-slab-max-band-m 0.055
+
+CONTROLLED_REPORT="$EXP_ROOT/P13_controlled/p13_controlled_geometry_prior_ab_report.json"
+test -s "$CONTROLLED_REPORT"
+```
+
+Preserve the tuned SAM3D generated topology as a separate render underlay while keeping
+the observed metric surface separate and physically authoritative:
+
+```bash
+"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/build_p13_dual_mesh_geometry_prior.py \
+  --controlled-report "$CONTROLLED_REPORT" \
+  --candidate sam3d_new_object_owned_mask \
+  --output-dir "$EXP_ROOT/P13_sam3d_dual"
+
+DUAL_REPORT="$EXP_ROOT/P13_sam3d_dual/p13_dual_mesh_geometry_prior_report.json"
+DUAL_STATE="$EXP_ROOT/P13_sam3d_dual/dual_mesh_render_state.json"
+OBSERVED_MESH="$EXP_ROOT/P13_sam3d_dual/collision_eligible_observed_surface.ply"
+test -s "$DUAL_REPORT"
+test -s "$DUAL_STATE"
+test -s "$OBSERVED_MESH"
+```
+
+## D14-D16 shared observed-only object trajectory and unsigned MANO state
+
+Write the common observed-only pose body contract:
+
+```bash
+OBSERVED_COMPLETION="$EXP_ROOT/P14_observed_completion/observed_only_completion_report.json"
+"$MAIN_PYTHON" scripts/build_v19_observed_only_completion_reference.py \
+  --case '{CASE_ID}' \
+  --object-id '{OBJECT_ID}' \
+  --controlled-report "$CONTROLLED_REPORT" \
+  --candidate sam3d_new_object_owned_mask \
+  --observed-mesh "$OBSERVED_MESH" \
+  --output "$OBSERVED_COMPLETION"
+```
+
+Fit visible direct poses and complete one shared full timeline.  Do not lower the default
+trusted-support threshold and do not include explicitly ineligible rows:
+
+```bash
+"$MAIN_PYTHON" scripts/fit_v18_compact_rigid_object_pose.py \
+  --annotations "$ANNOTATIONS" \
+  --completion-report "$OBSERVED_COMPLETION" \
+  --object-id '{OBJECT_ID}' \
+  --output-dir "$EXP_ROOT/P14_observed_pose_fit"
+
+POSE_FIT="$EXP_ROOT/P14_observed_pose_fit/v18_compact_rigid_object_pose_fit_report.json"
+"$MAIN_PYTHON" scripts/solve_v19_rigid_object_pose_graph.py \
+  --annotations "$ANNOTATIONS" \
+  --pose-report "$POSE_FIT" \
+  --completion-report "$OBSERVED_COMPLETION" \
+  --object-id '{OBJECT_ID}' \
+  --complete-full-timeline-rigid-pose \
+  --output-dir "$EXP_ROOT/P15_observed_pose_graph"
+
+POSE_GRAPH="$EXP_ROOT/P15_observed_pose_graph/v19_rigid_object_pose_graph_report.json"
+test -s "$POSE_GRAPH"
+```
+
+Read the pose report.  The tuned layered-state adapter requires `annotation_ready:true`,
+`graph_support.sufficient:true`, exactly 150 accepted pose rows, and zero
+`nonpenetration_target_frame_count`.  If trusted support is insufficient, preserve the
+report, write a D15 blocker, and stop rather than relabeling interpolation as evidence.
+
+Build an unsigned observed-surface MANO/object measurement state:
+
+```bash
+"$MAIN_PYTHON" scripts/build_v18_mano_object_constraint_state.py \
+  --annotations "$ANNOTATIONS" \
+  --hawor-npz "$HAWOR_NPZ" \
+  --pose-report "$POSE_GRAPH" \
+  --completion-report "$OBSERVED_COMPLETION" \
+  --skip-signed-distance \
+  --output-dir "$EXP_ROOT/P16_unsigned_mano_object" \
+  --object-id '{OBJECT_ID}'
+
+CONSTRAINT_REPORT="$EXP_ROOT/P16_unsigned_mano_object/v18_mano_object_constraint_state.json"
+test -s "$CONSTRAINT_REPORT"
+```
+
+## D17 branch render states
+
+Build the shared source state without applying geometry-dependent hand correction, then
+clone only the geometry layers for SAM3D and TRELLIS:
+
+```bash
+SOURCE_STATE="$EXP_ROOT/P17_source_state/observed_only_rigid_render_state.json"
+"$MAIN_PYTHON" scripts/build_v19_rigid_render_state.py \
+  --case '{CASE_ID}' \
+  --object-id '{OBJECT_ID}' \
+  --object-label '{OBJECT_ID} shared observed pose' \
+  --annotations "$ANNOTATIONS" \
+  --pose-report "$POSE_GRAPH" \
+  --completion-report "$OBSERVED_COMPLETION" \
+  --completed-mesh "$OBSERVED_MESH" \
+  --constraint-report "$CONSTRAINT_REPORT" \
+  --output "$SOURCE_STATE"
+
+"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/build_p14_p15_layered_render_states.py \
+  --source-render-state "$SOURCE_STATE" \
+  --dual-mesh-state "$DUAL_STATE" \
+  --dual-mesh-report "$DUAL_REPORT" \
+  --controlled-report "$CONTROLLED_REPORT" \
+  --sam-candidate sam3d_new_object_owned_mask \
+  --trellis-candidate trellis_frozen \
+  --output-dir "$EXP_ROOT/P15_layered_states"
+
+STATE_ADAPTER_REPORT="$EXP_ROOT/P15_layered_states/p14_p15_layered_render_state_adapter_report.json"
+SAM3D_STATE="$EXP_ROOT/P15_layered_states/sam3d_owned_dual_mesh/experimental_layered_render_state.json"
+TRELLIS_STATE="$EXP_ROOT/P15_layered_states/trellis_frozen_legacy_cut/experimental_layered_render_state.json"
+test -s "$STATE_ADAPTER_REPORT"
+test -s "$SAM3D_STATE"
+test -s "$TRELLIS_STATE"
+```
+
+## D18 complete-duration final renders
+
+Read `{RUN_ROOT}/state/anchor_decisions/{OBJECT_ID}.json` to bind the exact
+`{ANCHOR_FRAME}`.  Render all 150 source frames for each requested backend:
+
+```bash
+"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/render_p14_p15_layered_state.py \
+  --render-state "$SAM3D_STATE" \
+  --output-dir "$EXP_ROOT/renders/sam3d" \
+  --generated-face-budget 12000 \
+  --observed-face-budget 0 \
+  --mano-face-budget 0 \
+  --export-glb-frame '{ANCHOR_FRAME}' \
+  --fps 30 \
+  --replace
+
+"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/render_p14_p15_layered_state.py \
+  --render-state "$TRELLIS_STATE" \
+  --output-dir "$EXP_ROOT/renders/trellis" \
+  --generated-face-budget 12000 \
+  --observed-face-budget 0 \
+  --mano-face-budget 0 \
+  --export-glb-frame '{ANCHOR_FRAME}' \
+  --fps 30 \
+  --replace
+
+SAM3D_RENDER_MANIFEST="$EXP_ROOT/renders/sam3d/p14_p15_layered_full_mano_render_manifest.json"
+TRELLIS_RENDER_MANIFEST="$EXP_ROOT/renders/trellis/p14_p15_layered_full_mano_render_manifest.json"
+test -s "$SAM3D_RENDER_MANIFEST"
+test -s "$TRELLIS_RENDER_MANIFEST"
+```
+
+Inspect each anchor review PNG as an image.  Confirm that the object follows the same
+observed trajectory in both branches, the generated geometry appears as an underlay,
+the green observed surface owns measured support, and full MANO surfaces remain visibly
+labeled.  Record any drift, handedness concern, or unresolved contact in
+`{RUN_ROOT}/state/v19_agent_evidence.md`; do not change state to hide it.
+
+## D19 final result publication
+
+This finalizer validates all four 150-frame, 30 FPS videos per backend, publishes stable
+names, links meshes/state/reports, and writes `SUITE_DONE.json` last:
+
+```bash
+"$MAIN_PYTHON" scripts/finalize_hot3d_dual_backend_case.py \
+  --case '{CASE_ID}' \
+  --object-id '{OBJECT_ID}' \
+  --run-root '{RUN_ROOT}' \
+  --sam3d-render-manifest "$SAM3D_RENDER_MANIFEST" \
+  --trellis-render-manifest "$TRELLIS_RENDER_MANIFEST" \
+  --controlled-report "$CONTROLLED_REPORT" \
+  --dual-report "$DUAL_REPORT" \
+  --state-adapter-report "$STATE_ADAPTER_REPORT" \
+  --output-dir '{RUN_ROOT}/final_results' \
+  --expected-frame-count 150 \
+  --expected-fps 30
+
+test -s '{RUN_ROOT}/SUITE_DONE.json'
+test -s '{RUN_ROOT}/final_results/case_result_manifest.json'
+```
+
+Final stable outputs are:
+
+- `{RUN_ROOT}/final_results/sam3d/videos/{camera_overlay,world_view,side_world_view,side_by_side}.mp4`
+- `{RUN_ROOT}/final_results/trellis/videos/{camera_overlay,world_view,side_world_view,side_by_side}.mp4`
+- per-backend `geometry/`, `state/`, `reports/`, and `backend_result.json`
+- `{RUN_ROOT}/final_results/case_result_manifest.json`
+
+Append one final harness event and a concise uncertainty statement.  Do not run any
+additional backend, rerank geometry, or consume reference-label sidecars after D19.

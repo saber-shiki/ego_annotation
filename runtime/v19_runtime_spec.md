@@ -71,7 +71,7 @@ with phase id, missing component, blocked state variable, evidence, and next req
 - `{FRAME_END}`: last frame index from P01 manifest.
 - `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
 - `{GPU_ID}`: selected A800 GPU from P02.
-- `{SENSOR_CALIBRATION_METADATA}`: launcher-supplied prediction-side camera metadata path, or the empty string when the dataset/input provides none. The runtime must not search evaluator or benchmark directories for it.
+- `{SENSOR_CALIBRATION_METADATA}`: launcher-supplied prediction-side camera metadata path, or the empty string when the dataset/input provides none. The runtime must not search unrelated data roots for it.
 - `{SENSOR_SOURCE_VIDEO}`: launcher-supplied local path to the exact RGB video associated with `{SENSOR_CALIBRATION_METADATA}`. Sensor-first resolution hashes it against `{INPUT_VIDEO}` and rejects a mismatch.
 - `{SENSOR_CALIBRATION_AUTHORITY}`: one of `dataset_sensor_calibration`, `prediction_side_sensor_metadata`, or `explicit_user_calibration` when metadata is supplied.
 - `{SENSOR_FRAME_INTRINSICS_KEY}`: optional per-frame `[fx,fy,cx,cy]` field name; empty when the supplied metadata has a top-level K.
@@ -150,7 +150,7 @@ Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidept
 
 Script: `scripts/resolve_v19_camera_contract.py`
 
-The launcher binds `{SENSOR_CALIBRATION_METADATA}`; the runtime must not discover calibration in evaluator/GT roots. If prediction-side sensor metadata is supplied, resolve it into the canonical V2 contract. A supplied-but-missing, malformed, variable-K, wrong-size, or wrong-timeline sensor contract is a P03b implementation/input failure and must not silently fall back. Only when the launcher explicitly supplies no sensor metadata may the original robust UniDepth aggregation be used as fallback.
+The launcher binds `{SENSOR_CALIBRATION_METADATA}`; the runtime must not discover calibration outside the declared prediction input. If prediction-side sensor metadata is supplied, resolve it into the canonical V2 contract. A supplied-but-missing, malformed, variable-K, wrong-size, or wrong-timeline sensor contract is a P03b implementation/input failure and must not silently fall back. Only when the launcher explicitly supplies no sensor metadata may the original robust UniDepth aggregation be used as fallback.
 
 ```bash
 SENSOR_METADATA='{SENSOR_CALIBRATION_METADATA}'
