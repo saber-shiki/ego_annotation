@@ -21,9 +21,10 @@ The launch also binds:
 - `{SENSOR_CALIBRATION_AUTHORITY}=prediction_side_sensor_metadata`
 - `{SENSOR_FRAME_INTRINSICS_KEY}` is empty because the supplied contract has one top-level K.
 - general Python: `/mnt/user-home/kupingxin/ego_annotation/.venv/bin/python`
-- SAM3D Python: `/mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects/bin/python`
-- SAM3D repository: `/mnt/user-home/kupingxin/sam3d-objects`
-- SAM3D config: `/mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml`
+- SAM3D Python: resolved from `/mnt/user-home/kupingxin/sam3d-objects/activate.sh` as `$CONDA_PREFIX/bin/python`.
+- SAM3D repository: `/mnt/user-home/kupingxin/sam3d-objects/src`.
+- SAM3D config: `/mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml`.
+- Launch preflight must source the activation script and prove `from inference import Inference` with the declared repository before any case is launched.
 - TRELLIS Python/repository/model and all common assets are those declared by `runtime/v19_runtime_spec.md`.
 
 ## Isolation and fairness rules
@@ -118,15 +119,22 @@ Run the frozen SAM3D Objects runner through the native P11 full-RGB + owned-mask
 contract.  `pointmap=None` is enforced by the D11/D12 report adapter:
 
 ```bash
+BUNDLE_ROOT=$(pwd)
+set +u
+source /mnt/user-home/kupingxin/sam3d-objects/activate.sh
+set -u
+SAM3D_PYTHON="$CONDA_PREFIX/bin/python"
+cd "$BUNDLE_ROOT"
+
 "$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/run_p12_parallel_geometry_priors.py \
   --p11-report "$P11_DUAL_REPORT" \
   --trellis-report "$TRELLIS_REPORT" \
   --output-dir "$EXP_ROOT/P12_parallel" \
   --case-name '{CASE_ID}_{OBJECT_ID}_anchor' \
   --seed 42 \
-  --sam3d-python /mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects/bin/python \
+  --sam3d-python "$SAM3D_PYTHON" \
   --sam3d-runner scripts/remote_run_sam3d_objects_mesh_v7.py \
-  --sam3d-repo /mnt/user-home/kupingxin/sam3d-objects \
+  --sam3d-repo /mnt/user-home/kupingxin/sam3d-objects/src \
   --sam3d-config /mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml \
   --cuda-visible-device '{GPU_ID}' \
   --min-free-mib 30000

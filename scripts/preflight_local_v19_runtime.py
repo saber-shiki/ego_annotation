@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -21,6 +22,8 @@ EXPECTED_HASHES = {
     "mano_left": "c4022f7083f2ca7c78b2b3d595abbab52debd32b09d372b16923a801f0ea6a30",
     "mano_right": "45d60aa3b27ef9107a7afd4e00808f307fd91111e1cfa35afd5c4a62de264767",
 }
+EXPECTED_SAM3D_CONFIG_SHA256 = "53c3d226b21df85c0bb3d16e6e4fa63abde0d6167525765eb929d02bfa9d358c"
+EXPECTED_SAM3D_REPO_REVISION = "f91db411c50efee93d8db7aeb323885650f6f722"
 FORBIDDEN_WORDS = ("yiwen", "Workbench", ".memory", "EPISTEMIC", "parent", "GT", "evaluation", "evaluator", "ablation")
 FORBIDDEN_BUNDLE_PATHS = ("/mnt/user-home/yiwen", "/mnt/truenas-user-home/yiwen", "/home/yiwen")
 TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"}
@@ -59,6 +62,66 @@ def require_hash(path: Path, expected: str) -> dict[str, Any]:
         "actual_sha256": actual,
         "status": "ok" if actual == expected else "hash_mismatch",
     }
+
+
+def sam3d_contract_check(args: argparse.Namespace) -> dict[str, Any]:
+    python = args.sam3d_python.expanduser().resolve()
+    repo = args.sam3d_repo.expanduser().resolve()
+    config = args.sam3d_config.expanduser().resolve()
+    activation = args.sam3d_activation.expanduser().resolve()
+    inference_module = repo / "notebook/inference.py"
+    revision_result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+    )
+    revision = revision_result.stdout.strip() if revision_result.returncode == 0 else None
+    config_sha256 = sha256_file(config) if config.is_file() else None
+    checks = {
+        "python_executable": bool(python.is_file() and os.access(python, os.X_OK)),
+        "repo_directory": repo.is_dir(),
+        "inference_module": inference_module.is_file(),
+        "activation_script": activation.is_file(),
+        "repo_revision": revision == EXPECTED_SAM3D_REPO_REVISION,
+        "config_sha256": config_sha256 == EXPECTED_SAM3D_CONFIG_SHA256,
+    }
+    return {
+        "status": "ok" if all(checks.values()) else "failed",
+        "python": str(python),
+        "repo": str(repo),
+        "inference_module": str(inference_module),
+        "activation": str(activation),
+        "config": str(config),
+        "expected_repo_revision": EXPECTED_SAM3D_REPO_REVISION,
+        "actual_repo_revision": revision,
+        "expected_config_sha256": EXPECTED_SAM3D_CONFIG_SHA256,
+        "actual_config_sha256": config_sha256,
+        "checks": checks,
+    }
+
+
+def sam3d_import_command(args: argparse.Namespace) -> list[str]:
+    python = args.sam3d_python.expanduser().resolve()
+    repo = args.sam3d_repo.expanduser().resolve()
+    activation = args.sam3d_activation.expanduser().resolve()
+    code = (
+        "import sys; from pathlib import Path; "
+        f"repo=Path({str(repo)!r}); "
+        "sys.path.insert(0,str(repo)); sys.path.insert(0,str(repo/'notebook')); "
+        "from inference import Inference; print('SAM3D_IMPORT_OK', Inference.__module__)"
+    )
+    shell = "\n".join(
+        [
+            "set -euo pipefail",
+            "set +u",
+            f"source {shlex.quote(str(activation))}",
+            "set -u",
+            f"test \"$(readlink -f \"$CONDA_PREFIX/bin/python\")\" = {shlex.quote(str(python.resolve()))}",
+            f"cd {shlex.quote(str(repo))}",
+            f"CUDA_VISIBLE_DEVICES='' {shlex.quote(str(python))} -c {shlex.quote(code)}",
+        ]
+    )
+    return ["bash", "-lc", shell]
 
 
 def verify_bundle_manifest(bundle: Path) -> dict[str, Any]:
@@ -205,6 +268,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "expected_sha256": EXPECTED_DINOV2_SHA256,
         "sha256": dino_hash,
     }
+    if args.sam3d_python is not None:
+        checks["sam3d_contract"] = sam3d_contract_check(args)
 
     import_commands = {
         "main": [str(args.main_python), "-c", "import cv2,open3d,smplx,torch,transformers,trimesh; from PIL import Image; print(torch.__version__, cv2.__version__, open3d.__version__, transformers.__version__)"],
@@ -212,6 +277,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "hawor": [str(args.hawor_python), "-c", f"import sys; sys.path.insert(0,{str(args.hawor_repo)!r}); import torch; import cv2,droid_backends,lietorch,mmcv,pytorch3d,smplx; print(torch.__version__,cv2.__version__)"],
         "trellis": [str(args.trellis_python), "-c", "import kaolin,spconv,torch,transformers,trimesh,xformers; print(torch.__version__,transformers.__version__,kaolin.__version__,spconv.__version__)"],
     }
+    if args.sam3d_python is not None:
+        import_commands["sam3d"] = sam3d_import_command(args)
     import_results = {name: command_result(command, bundle) for name, command in import_commands.items()}
     checks["interpreter_imports"] = {
         "status": "ok" if all(row["returncode"] == 0 for row in import_results.values()) else "failed",
@@ -275,13 +342,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torch-home", type=Path, required=True)
     parser.add_argument("--sam2-checkpoint", type=Path, required=True)
     parser.add_argument("--owlv2-model", type=Path, required=True)
+    parser.add_argument("--sam3d-python", type=Path, default=None)
+    parser.add_argument("--sam3d-repo", type=Path, default=None)
+    parser.add_argument("--sam3d-config", type=Path, default=None)
+    parser.add_argument("--sam3d-activation", type=Path, default=None)
     parser.add_argument("--expected-input-sha256", default=EXPECTED_INPUT_SHA256, help="Expected input hash, or 'none'/'skip' to disable the hash check")
     parser.add_argument("--expected-width", type=int, default=1408)
     parser.add_argument("--expected-height", type=int, default=1408)
     parser.add_argument("--expected-fps", type=float, default=30.0)
     parser.add_argument("--expected-frame-count", type=int, default=150)
     parser.add_argument("--allow-input-sidecar", action="append", default=[], help="Additional prediction-side sensor/provenance filename allowed next to input.mp4")
-    return parser.parse_args()
+    args = parser.parse_args()
+    sam3d_fields = ("sam3d_python", "sam3d_repo", "sam3d_config", "sam3d_activation")
+    supplied = [getattr(args, name) is not None for name in sam3d_fields]
+    if any(supplied) and not all(supplied):
+        missing = ["--" + name.replace("_", "-") for name, present in zip(sam3d_fields, supplied) if not present]
+        parser.error(f"partial SAM3D preflight contract; missing: {', '.join(missing)}")
+    return args
 
 
 if __name__ == "__main__":

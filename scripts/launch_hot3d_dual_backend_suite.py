@@ -81,6 +81,15 @@ def validate_case(case: dict[str, Any], bundle: Path) -> dict[str, Any]:
         raise RuntimeError(f"run root is not fresh: {run_root}")
     if preflight.get("status") != "ready_for_runtime_agent_launch":
         raise RuntimeError(f"preflight is not ready for {case['case_id']}: {preflight.get('status')}")
+    preflight_checks = preflight.get("checks") if isinstance(preflight.get("checks"), dict) else {}
+    sam3d_contract = preflight_checks.get("sam3d_contract") if isinstance(preflight_checks.get("sam3d_contract"), dict) else {}
+    interpreter_imports = preflight_checks.get("interpreter_imports") if isinstance(preflight_checks.get("interpreter_imports"), dict) else {}
+    import_results = interpreter_imports.get("results") if isinstance(interpreter_imports.get("results"), dict) else {}
+    sam3d_import = import_results.get("sam3d") if isinstance(import_results.get("sam3d"), dict) else {}
+    if sam3d_contract.get("status") != "ok" or int(sam3d_import.get("returncode", -1)) != 0:
+        raise RuntimeError(
+            f"preflight lacks a passing frozen SAM3D repository/activation/import contract for {case['case_id']}"
+        )
     for key, expected in (("bundle", bundle), ("input_video", input_video), ("run_root", run_root)):
         if not same_path(preflight.get(key, ""), expected):
             raise RuntimeError(f"preflight {key} mismatch for {case['case_id']}: {preflight.get(key)} != {expected}")
