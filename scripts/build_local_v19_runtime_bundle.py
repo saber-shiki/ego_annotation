@@ -127,6 +127,7 @@ def adapt_runtime_spec(source: str, bundle_root: Path) -> str:
     trellis_old = """PYTHONPATH="/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/trellis_work/.venv_trellis/lib/python3.10/site-packages:${PYTHONPATH:-}" \\
 "{REMOTE_MODEL_PYTHON}" scripts/remote_run_trellis_shape_v3.py \\
   --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work/TRELLIS \\
+  --dinov2-repo /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main \\
   --image "$EVIDENCE_CROP_RGBA" \\
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42" \\
   --seed 42"""
