@@ -737,6 +737,9 @@ def robust_first_surface_depth_ownership(
     confidence_seed_percentile: float = 95.0,
     local_depth_step_max_m: float = 0.005,
     max_removed_distance_inside_mask_px: float = 10.0,
+    max_confidence_flagged_interior_fraction: float = 0.015,
+    min_interior_confidence_flagged_fraction: float = 0.95,
+    max_unexplained_interior_pixels: int = 5,
     min_component_pixels: int = 20,
     max_small_component_fraction: float = 0.01,
 ) -> tuple[np.ndarray, dict[str, Any]]:
@@ -749,8 +752,12 @@ def robust_first_surface_depth_ownership(
     percentile. This preserves coherent surfaces while stopping edge bleeding.
 
     Removed pixels are accepted as quarantined (rather than making the frame fail)
-    only when support remains high and every removed pixel is localized near an
-    object-mask boundary. The original P11 appearance mask is never rewritten.
+    only when support remains high. Rejection beyond the ordinary boundary band is
+    allowed solely for a tiny number of isolated samples, or for a sparse region
+    whose UniDepth predicted-error proxy is overwhelmingly worse than the robust
+    seed. This explicitly covers texture/glare-induced interior depth holes without
+    treating a coherent second surface as background. The original P11 appearance
+    mask is never rewritten.
     """
     mask_bool = np.asarray(mask, dtype=bool)
     depth_m = np.asarray(depth, dtype=np.float64)
@@ -790,6 +797,7 @@ def robust_first_surface_depth_ownership(
         failure_reasons.append("invalid_unidepth_confidence")
 
     accepted = np.zeros_like(valid)
+    confidence_threshold_map = np.full(depth_m.shape, np.nan, dtype=np.float64)
     component_rows: list[dict[str, Any]] = []
     small_component_pixels = 0
     component_count, labels, stats, _ = cv2.connectedComponentsWithStats(valid.astype(np.uint8), 8)
@@ -816,6 +824,8 @@ def robust_first_surface_depth_ownership(
             component_rows.append({"label": label, "pixels": area, "state": "invalid_seed"})
             continue
         confidence_threshold = float(np.percentile(local_confidence[seed], confidence_seed_percentile))
+        threshold_view = confidence_threshold_map[y : y + h, x : x + w]
+        threshold_view[component] = confidence_threshold
         traversable = component & (local_confidence <= confidence_threshold)
         keep = seed.copy()
         iterations = 0
@@ -862,6 +872,35 @@ def robust_first_surface_depth_ownership(
     distance_inside = cv2.distanceTransform(mask_bool.astype(np.uint8), cv2.DIST_L2, 5)
     removed_distances = distance_inside[removed]
     max_removed_distance = float(np.max(removed_distances)) if removed_distances.size else 0.0
+    interior_removed = removed & (distance_inside > float(max_removed_distance_inside_mask_px))
+    interior_removed_count = int(np.count_nonzero(interior_removed))
+    interior_removed_fraction = float(interior_removed_count / max(1, values.size))
+    interior_confidence = confidence_m[interior_removed]
+    interior_confidence_threshold = confidence_threshold_map[interior_removed]
+    confidence_flagged_interior = (
+        np.isfinite(interior_confidence)
+        & np.isfinite(interior_confidence_threshold)
+        & (interior_confidence > interior_confidence_threshold)
+    )
+    confidence_flagged_interior_count = int(np.count_nonzero(confidence_flagged_interior))
+    confidence_flagged_interior_fraction = float(
+        confidence_flagged_interior_count / max(1, interior_removed_count)
+    )
+    interior_quarantine_mode = "none"
+    interior_quarantine_validated = interior_removed_count == 0
+    if 0 < interior_removed_count <= int(max_unexplained_interior_pixels):
+        interior_quarantine_validated = True
+        interior_quarantine_mode = "isolated_raster_samples"
+    elif interior_removed_count > 0:
+        interior_quarantine_validated = bool(
+            interior_removed_fraction <= float(max_confidence_flagged_interior_fraction)
+            and confidence_flagged_interior_fraction >= float(min_interior_confidence_flagged_fraction)
+        )
+        interior_quarantine_mode = (
+            "sparse_unidepth_predicted_error_flagged_interior_holes"
+            if interior_quarantine_validated else
+            "unresolved_interior_rejection"
+        )
     small_component_fraction = float(small_component_pixels / max(1, values.size))
 
     raw_extent = backprojected_extent(valid, depth_m, intrinsics)
@@ -875,14 +914,16 @@ def robust_first_surface_depth_ownership(
         failure_reasons.append("invalid_accepted_backprojected_extent")
     if small_component_fraction > float(max_small_component_fraction):
         failure_reasons.append("too_much_support_in_dropped_small_components")
-    if max_removed_distance > float(max_removed_distance_inside_mask_px):
-        failure_reasons.append("rejected_depth_not_boundary_localized")
+    if not interior_quarantine_validated:
+        failure_reasons.append("rejected_interior_depth_not_sparse_and_confidence_flagged")
     tail_dominates_raw_extent = bool(raw_to_accepted_ratio > float(fail_raw_to_robust_extent_ratio))
     return accepted, {
         "enabled": True,
         "state": (
             "fail_closed_depth_ownership_unresolved"
             if failure_reasons else
+            "validated_sparse_interior_and_boundary_depth_quarantined"
+            if interior_removed_count else
             "validated_boundary_depth_tail_quarantined"
             if removed_count else
             "all_owned_depth_coherent"
@@ -901,6 +942,9 @@ def robust_first_surface_depth_ownership(
         "confidence_seed_percentile": float(confidence_seed_percentile),
         "local_depth_step_max_m": float(local_depth_step_max_m),
         "max_removed_distance_inside_mask_px": float(max_removed_distance_inside_mask_px),
+        "max_confidence_flagged_interior_fraction": float(max_confidence_flagged_interior_fraction),
+        "min_interior_confidence_flagged_fraction": float(min_interior_confidence_flagged_fraction),
+        "max_unexplained_interior_pixels": int(max_unexplained_interior_pixels),
         "component_count": int(component_count - 1),
         "component_rows": component_rows,
         "small_component_pixels": int(small_component_pixels),
@@ -911,8 +955,24 @@ def robust_first_surface_depth_ownership(
         "robust_backprojected_extent_diag_m": accepted_diag,
         "raw_to_robust_extent_diag_ratio": raw_to_accepted_ratio,
         "fail_raw_to_robust_extent_ratio": float(fail_raw_to_robust_extent_ratio),
-        "raw_tail_dominates_extent_but_is_quarantined": tail_dominates_raw_extent,
+        "raw_rejected_depth_dominates_extent": tail_dominates_raw_extent,
+        "raw_tail_dominates_extent_but_is_quarantined": bool(tail_dominates_raw_extent and not failure_reasons),
         "removed_pixel_distance_inside_owned_mask_px": numeric_summary(removed_distances),
+        "interior_rejection_quarantine": {
+            "boundary_band_distance_px": float(max_removed_distance_inside_mask_px),
+            "interior_removed_pixels": interior_removed_count,
+            "interior_removed_fraction_of_valid_owned_depth": interior_removed_fraction,
+            "interior_removed_depth_summary_m": numeric_summary(depth_m[interior_removed]),
+            "interior_removed_confidence_summary": numeric_summary(interior_confidence),
+            "confidence_flagged_interior_pixels": confidence_flagged_interior_count,
+            "confidence_flagged_interior_fraction": confidence_flagged_interior_fraction,
+            "max_confidence_flagged_interior_fraction": float(max_confidence_flagged_interior_fraction),
+            "min_interior_confidence_flagged_fraction": float(min_interior_confidence_flagged_fraction),
+            "max_unexplained_interior_pixels": int(max_unexplained_interior_pixels),
+            "validated": bool(interior_quarantine_validated),
+            "mode": interior_quarantine_mode,
+            "semantics": "Pixels beyond the ordinary boundary band remain excluded only when isolated or when a sparse region is overwhelmingly marked by UniDepth as higher predicted error than its component seed. This is explicit unresolved-depth quarantine, not object-mask erosion.",
+        },
         "fail_closed": bool(failure_reasons),
         "failure_reasons": failure_reasons,
         "claim_scope": "Depth first-surface surfel ownership only. Excluded owned depth remains unresolved; the P11 RGB/mask appearance contract is not eroded or rewritten.",
@@ -1451,6 +1511,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             confidence_seed_percentile=float(args.first_surface_confidence_seed_percentile),
             local_depth_step_max_m=float(args.first_surface_local_depth_step_max_m),
             max_removed_distance_inside_mask_px=float(args.first_surface_max_removed_distance_inside_mask_px),
+            max_confidence_flagged_interior_fraction=float(args.first_surface_max_confidence_flagged_interior_fraction),
+            min_interior_confidence_flagged_fraction=float(args.first_surface_min_interior_confidence_flagged_fraction),
+            max_unexplained_interior_pixels=int(args.first_surface_max_unexplained_interior_pixels),
             min_component_pixels=int(args.first_surface_min_component_pixels),
             max_small_component_fraction=float(args.first_surface_max_small_component_fraction),
         )
@@ -1850,6 +1913,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "first_surface_confidence_seed_percentile": float(args.first_surface_confidence_seed_percentile),
             "first_surface_local_depth_step_max_m": float(args.first_surface_local_depth_step_max_m),
             "first_surface_max_removed_distance_inside_mask_px": float(args.first_surface_max_removed_distance_inside_mask_px),
+            "first_surface_max_confidence_flagged_interior_fraction": float(args.first_surface_max_confidence_flagged_interior_fraction),
+            "first_surface_min_interior_confidence_flagged_fraction": float(args.first_surface_min_interior_confidence_flagged_fraction),
+            "first_surface_max_unexplained_interior_pixels": int(args.first_surface_max_unexplained_interior_pixels),
             "first_surface_min_component_pixels": int(args.first_surface_min_component_pixels),
             "first_surface_max_small_component_fraction": float(args.first_surface_max_small_component_fraction),
             "first_surface_fail_raw_to_robust_extent_ratio": float(args.first_surface_fail_raw_to_robust_extent_ratio),
@@ -1946,7 +2012,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--first-surface-min-retained-fraction", type=float, default=0.90, help="Fail closed when validated depth-coherent support retains less than this fraction of valid owned depth.")
     parser.add_argument("--first-surface-confidence-seed-percentile", type=float, default=95.0, help="Maximum traversable UniDepth error proxy is derived from this percentile of each component seed.")
     parser.add_argument("--first-surface-local-depth-step-max-m", type=float, default=0.005, help="Maximum adjacent-pixel depth step during geodesic support growth.")
-    parser.add_argument("--first-surface-max-removed-distance-inside-mask-px", type=float, default=10.0, help="Fail closed if rejected depth is not localized near an object-mask boundary.")
+    parser.add_argument("--first-surface-max-removed-distance-inside-mask-px", type=float, default=10.0, help="Distance defining the ordinary boundary quarantine band; deeper rejection must pass sparse/confidence-flagged interior gates.")
+    parser.add_argument("--first-surface-max-confidence-flagged-interior-fraction", type=float, default=0.015, help="Maximum fraction of valid owned depth that may be quarantined beyond the boundary band when UniDepth flags it as high predicted error.")
+    parser.add_argument("--first-surface-min-interior-confidence-flagged-fraction", type=float, default=0.95, help="Required fraction of nontrivial interior rejection whose UniDepth predicted-error proxy exceeds its component seed threshold.")
+    parser.add_argument("--first-surface-max-unexplained-interior-pixels", type=int, default=5, help="Permit only this many isolated interior raster samples without the confidence-flagged proof.")
     parser.add_argument("--first-surface-min-component-pixels", type=int, default=20)
     parser.add_argument("--first-surface-max-small-component-fraction", type=float, default=0.01)
     parser.add_argument("--first-surface-fail-raw-to-robust-extent-ratio", type=float, default=2.0, help="Diagnostic tail-dominance ratio; a larger raw extent is accepted only when support and boundary-localization quarantine gates pass.")

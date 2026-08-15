@@ -426,11 +426,14 @@ P09 must also record `first_surface_depth_ownership` before backprojection. A gl
 percentile/MAD crop is forbidden because it can delete a real sloped face or a disconnected
 rigid part. The accepted surfels must come from per-component MAD seeds expanded through
 UniDepth-confidence and local-depth geodesic support. Support below 90%, missing confidence,
-small-component loss above the fixed gate, or rejected pixels farther than 10 px inside the
-owned mask fails the frame closed. A raw/accepted extent ratio above 2 is allowed only when
-the report explicitly proves high-support boundary-tail quarantine; it must never influence
-voxel/RMS scale. Do not lower these gates or choose a contaminated anchor to keep the run
-moving. When mask and depth rasters differ, use `cv2.INTER_NEAREST_EXACT` so
+or small-component loss above the fixed gate fails the frame closed. Rejection farther than
+10 px inside the owned mask is not automatically background: it passes only for at most five
+isolated raster samples, or when it is at most 1.5% of valid owned depth and at least 95% of
+those pixels have a UniDepth predicted-error proxy above their component seed threshold.
+Otherwise the frame fails closed, preserving possible real thickness as unresolved. A
+raw/accepted extent ratio above 2 is allowed only when the report explicitly proves this
+high-support boundary/interior uncertainty quarantine; it must never influence voxel/RMS
+scale. Do not lower these gates or choose a contaminated anchor to keep the run moving. When mask and depth rasters differ, use `cv2.INTER_NEAREST_EXACT` so
 discrete mask samples follow the V2 OpenCV half-pixel affine; legacy
 `cv2.INTER_NEAREST` is invalid for this contract.
 

@@ -291,6 +291,16 @@ def run(args: argparse.Namespace) -> dict:
         "stills_dir": str(still_dir),
         "review_resolution": [int(rgb.shape[1]), int(rgb.shape[0])],
         "depth_archive_source_size": [int(args.source_width), int(args.source_height)],
+        "depth_ray_geometry_reprojected": bool(camera_conditioning is not None),
+        "depth_output_quantity": (
+            "camera_z_m_from_metric_radius_on_exact_contract_rays"
+            if camera_conditioning is not None else
+            "camera_z_m_from_model_inferred_rays"
+        ),
+        "camera_output_plane": (
+            str(camera_conditioning["camera_output_plane"])
+            if camera_conditioning is not None else None
+        ),
         "camera_conditioning": camera_conditioning,
         "camera_ray_contract": (
             "UniDepth depth head consumed the supplied camera rays. The model's metric radius is resized and explicitly projected onto exact output-plane contract rays to produce camera-z meters; model camera-head K remains diagnostic only."

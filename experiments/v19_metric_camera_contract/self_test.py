@@ -509,7 +509,58 @@ class CameraContractTest(unittest.TestCase):
             max_removed_distance_inside_mask_px=10.0,
         )
         self.assertTrue(diagnostic["fail_closed"])
-        self.assertIn("rejected_depth_not_boundary_localized", diagnostic["failure_reasons"])
+        self.assertIn("rejected_interior_depth_not_sparse_and_confidence_flagged", diagnostic["failure_reasons"])
+
+    def test_first_surface_depth_ownership_quarantines_sparse_confidence_flagged_interior_hole(self) -> None:
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[5:55, 5:55] = True
+        depth = np.zeros(mask.shape, dtype=np.float32)
+        depth[mask] = 0.40
+        depth[28:32, 28:32] = 0.90
+        confidence = np.ones(mask.shape, dtype=np.float32)
+        confidence[28:32, 28:32] = 10.0
+        robust, diagnostic = visible_geometry.robust_first_surface_depth_ownership(
+            mask,
+            depth,
+            enabled=True,
+            mad_sigma=2.5,
+            min_half_width_m=0.03,
+            min_retained_fraction=0.90,
+            fail_raw_to_robust_extent_ratio=2.0,
+            intrinsics=np.asarray([50.0, 50.0, 29.5, 29.5]),
+            confidence=confidence,
+            max_removed_distance_inside_mask_px=10.0,
+        )
+        quarantine = diagnostic["interior_rejection_quarantine"]
+        self.assertFalse(diagnostic["fail_closed"])
+        self.assertEqual(diagnostic["state"], "validated_sparse_interior_and_boundary_depth_quarantined")
+        self.assertEqual(quarantine["interior_removed_pixels"], 16)
+        self.assertTrue(quarantine["validated"])
+        self.assertEqual(quarantine["mode"], "sparse_unidepth_predicted_error_flagged_interior_holes")
+        self.assertTrue(np.all(~robust[28:32, 28:32]))
+
+    def test_first_surface_depth_ownership_rejects_unexplained_sparse_interior_surface(self) -> None:
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[5:55, 5:55] = True
+        depth = np.zeros(mask.shape, dtype=np.float32)
+        depth[mask] = 0.40
+        depth[28:32, 28:32] = 0.90
+        confidence = np.ones(mask.shape, dtype=np.float32)
+        _robust, diagnostic = visible_geometry.robust_first_surface_depth_ownership(
+            mask,
+            depth,
+            enabled=True,
+            mad_sigma=2.5,
+            min_half_width_m=0.03,
+            min_retained_fraction=0.90,
+            fail_raw_to_robust_extent_ratio=2.0,
+            intrinsics=np.asarray([50.0, 50.0, 29.5, 29.5]),
+            confidence=confidence,
+            max_removed_distance_inside_mask_px=10.0,
+        )
+        self.assertTrue(diagnostic["fail_closed"])
+        self.assertFalse(diagnostic["interior_rejection_quarantine"]["validated"])
+        self.assertIn("rejected_interior_depth_not_sparse_and_confidence_flagged", diagnostic["failure_reasons"])
 
     def test_visible_geometry_rejects_depth_bound_to_another_contract(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v19_visible_depth_binding_") as temp:
@@ -664,6 +715,9 @@ class CameraContractTest(unittest.TestCase):
                 full_depth.load_model = original_load_model
 
             self.assertEqual(report["camera_conditioning"]["mode"], "provided_pinhole_intrinsics")
+            self.assertTrue(report["depth_ray_geometry_reprojected"])
+            self.assertEqual(report["depth_output_quantity"], "camera_z_m_from_metric_radius_on_exact_contract_rays")
+            self.assertEqual(report["camera_output_plane"], "source_rgb")
             self.assertEqual(len(fake.cameras), 2)
             np.testing.assert_allclose(fake.cameras[0][0, 0], 40.0)
             archive_path = Path(report["depth_archive"])
