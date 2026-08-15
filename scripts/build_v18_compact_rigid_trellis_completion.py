@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import math
@@ -19,6 +20,14 @@ import trimesh
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def safe_id(value: str) -> str:
@@ -181,6 +190,64 @@ def align_trellis_to_observed(trellis: trimesh.Trimesh, observed_points: np.ndar
         "observed_to_trellis_stats_final": final_stats_obs_to_model,
         "trellis_to_observed_stats_final": final_stats_model_to_obs,
         "icp_refinement_stats": refinement_stats,
+    }
+
+
+def identity_metric_canonical_alignment(
+    generated: trimesh.Trimesh,
+    observed_points: np.ndarray,
+    input_report: dict[str, Any],
+    mesh_path: Path,
+    max_samples: int = 20000,
+) -> dict[str, Any]:
+    if input_report.get("schema") != "v19_metric_canonical_generated_prior_input_v1":
+        raise RuntimeError("--input-mesh-already-metric-canonical requires the strict metric-canonical input schema")
+    if input_report.get("status") != "verified_sam3d_native_sensor_metric_canonical_render_prior":
+        raise RuntimeError("metric-canonical generated input is not a verified SAM3D native bridge")
+    contract = input_report.get("metric_canonical_input_contract")
+    if not isinstance(contract, dict):
+        raise RuntimeError("metric-canonical generated input lacks its contract")
+    required_true = (
+        "alignment_must_be_identity",
+        "generated_faces_render_only",
+        "native_orientation_preserved",
+        "camera_origin_scene_similarity_applied",
+    )
+    if any(contract.get(key) is not True for key in required_true):
+        raise RuntimeError(f"metric-canonical generated input contract is incomplete: {contract}")
+    if str(input_report.get("mesh_sha256") or "") != sha256_file(mesh_path):
+        raise RuntimeError("metric-canonical generated mesh hash disagrees with its input contract")
+    bridge_path = Path(str(input_report.get("bridge_report") or "")).expanduser().resolve()
+    if not bridge_path.is_file() or sha256_file(bridge_path) != str(input_report.get("bridge_report_sha256") or ""):
+        raise RuntimeError("SAM3D metric bridge report is missing or hash-mismatched")
+    bridge = load_json(bridge_path)
+    if bridge.get("schema") != "v19_sam3d_native_sensor_metric_canonical_bridge_v1" or not str(bridge.get("status") or "").startswith("ok_"):
+        raise RuntimeError("SAM3D metric bridge report is not successful")
+    output_mesh = Path(str((bridge.get("outputs") or {}).get("metric_canonical_render_prior") or "")).expanduser().resolve()
+    if output_mesh != mesh_path.expanduser().resolve():
+        raise RuntimeError("SAM3D metric bridge output path disagrees with P13 input mesh")
+
+    samples = deterministic_sample_mesh(generated, min(max_samples, max(2000, len(generated.faces))))
+    observed_to_generated = nearest_stats(observed_points, samples)
+    generated_to_observed = nearest_stats(samples, observed_points)
+    return {
+        "mode": "verified_pre_aligned_metric_canonical_identity",
+        "scale": 1.0,
+        "rotation": np.eye(3, dtype=float).tolist(),
+        "translation": [0.0, 0.0, 0.0],
+        "matrix_model_to_canonical": np.eye(4, dtype=float).tolist(),
+        "initial_scale_from_rms_radius": None,
+        "observed_pca_eigenvalues": None,
+        "trellis_pca_eigenvalues": None,
+        "observed_to_trellis_stats_initial": observed_to_generated,
+        "observed_to_trellis_stats_final": observed_to_generated,
+        "trellis_to_observed_stats_final": generated_to_observed,
+        "icp_refinement_stats": [],
+        "native_orientation_preserved": True,
+        "pca_axis_permutation_used": False,
+        "icp_rotation_or_scale_used": False,
+        "bridge_report": str(bridge_path),
+        "bridge_report_sha256": sha256_file(bridge_path),
     }
 
 
@@ -382,6 +449,11 @@ def main() -> None:
     parser.add_argument("--evidence-report", type=Path, required=True)
     parser.add_argument("--trellis-report", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--input-mesh-already-metric-canonical",
+        action="store_true",
+        help="Require a verified SAM3D native metric-canonical input and preserve it with identity alignment; no RMS/PCA/ICP.",
+    )
     parser.add_argument("--observed-band-scale", type=float, default=math.sqrt(3.0), help="multiplier on depth-fusion voxel size; sqrt(3) covers one voxel diagonal")
     parser.add_argument("--silhouette-free-space-filter", action=argparse.BooleanOptionalAction, default=True, help="Reject TRELLIS hidden faces whose evidence-frame projection falls outside the object-owned mask silhouette.")
     parser.add_argument("--silhouette-dilate-px", type=int, default=16, help="Dilation radius in evidence-mask pixels before silhouette/free-space rejection.")
@@ -398,6 +470,8 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.input_mesh_already_metric_canonical and args.promote_single_view_hidden_prior_to_collision:
+        raise RuntimeError("verified generated render priors cannot be promoted to collision geometry")
 
     evidence = load_json(args.evidence_report)
     trellis_report = load_json(args.trellis_report)
@@ -421,8 +495,12 @@ def main() -> None:
     voxel_size_m = float(mesh_recon.get("voxel_size_m") or 0.006)
     observed_band_m = voxel_size_m * float(args.observed_band_scale)
 
-    align = align_trellis_to_observed(trellis, observed_points)
-    trellis_canonical = transform_mesh(trellis, align)
+    if args.input_mesh_already_metric_canonical:
+        align = identity_metric_canonical_alignment(trellis, observed_points, trellis_report, trellis_mesh_path)
+        trellis_canonical = trellis.copy()
+    else:
+        align = align_trellis_to_observed(trellis, observed_points)
+        trellis_canonical = transform_mesh(trellis, align)
 
     obs_d, obs_near = face_center_labels(observed_mesh, observed_points, observed_band_m)
     observed_labels = ["observed_depth_surface" if x else "unsupported_uncertain" for x in obs_near]
@@ -535,14 +613,23 @@ def main() -> None:
         "case": evidence.get("case"),
         "object_id": evidence.get("object_id"),
         "claim_scope": (
-            "Historical diagnostic override explicitly promoted the single-view TRELLIS hidden prior into collision geometry. This reproduces legacy behavior only; it does not create independent hidden-surface evidence or annotation readiness."
-            if args.promote_single_view_hidden_prior_to_collision
-            else "TRELLIS is metric-aligned as an RGB hidden-surface pose/render hypothesis. Observed depth-fused surfels remain the source of truth for physical surface regions. Single-view silhouette consistency is not independent hidden-geometry support, so generated hidden faces are excluded from collision/sign geometry by default."
+            (
+                "A verified SAM3D native-pose bridge supplied a sensor-metric canonical generated render prior. "
+                "This stage preserves that native orientation/scale with identity alignment and only applies shared observed-region/free-space labeling. "
+                "Generated hidden faces remain excluded from collision/sign geometry."
+            )
+            if args.input_mesh_already_metric_canonical else
+            (
+                "Historical diagnostic override explicitly promoted the single-view TRELLIS hidden prior into collision geometry. This reproduces legacy behavior only; it does not create independent hidden-surface evidence or annotation readiness."
+                if args.promote_single_view_hidden_prior_to_collision else
+                "TRELLIS is metric-aligned as an RGB hidden-surface pose/render hypothesis. Observed depth-fused surfels remain the source of truth for physical surface regions. Single-view silhouette consistency is not independent hidden-geometry support, so generated hidden faces are excluded from collision/sign geometry by default."
+            )
         ),
         "inputs": {
             "evidence_report": str(args.evidence_report),
             "trellis_report": str(args.trellis_report),
             "trellis_mesh": str(trellis_mesh_path),
+            "input_mesh_already_metric_canonical": bool(args.input_mesh_already_metric_canonical),
             "observed_fused_points": str(fused_points_path),
             "observed_poisson_mesh": str(poisson_path),
         },

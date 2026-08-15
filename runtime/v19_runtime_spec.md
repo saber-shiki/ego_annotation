@@ -127,14 +127,27 @@ nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --for
 
 Required output: append a log event to `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}` and successful A800 host probe. There is no per-phase bundle sync or raw-frame-manifest staging because Pi, the input video, and the run root are already on the A800 host.
 
-## P03 depth and intrinsics measurement
+## P03 camera-conditioned depth measurement
 
 Script: `scripts/run_unidepth_full_frame_v3.py`
+
+**Execution dependency:** when prediction-side sensor metadata is supplied (including every
+HOT3D dual-backend case), execute P03b first, then run the final P03 command below. UniDepth
+must consume the resolved `manifest_rgb` rays in its depth head. Its predicted camera-head K
+is diagnostic only: the final source-plane camera-z raster is formed by resizing the metric
+radius and explicitly projecting it onto exact `source_rgb` contract rays. P03c is not allowed
+to relabel a disagreeing unchanged z raster after the fact. If no sensor metadata is supplied, run one
+unconditioned intrinsics-probe pass into
+`{RUN_ROOT}/measurements/depth_slam/unidepth_intrinsics_probe`, resolve P03b from that probe,
+then run this final camera-conditioned P03 pass into the path below.
 
 ```bash
 CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_unidepth_full_frame_v3.py \
   --manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
   --output-dir '{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame' \
+  --camera-contract '{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json' \
+  --camera-input-plane manifest_rgb \
+  --camera-output-plane source_rgb \
   --frame-start 0 \
   --frame-end {FRAME_END} \
   --unidepth-repo /mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/unidepth_work/UniDepth \
@@ -144,7 +157,7 @@ CUDA_VISIBLE_DEVICES='{GPU_ID}' '{REMOTE_MODEL_PYTHON}' scripts/run_unidepth_ful
   --source-height {SOURCE_HEIGHT}
 ```
 
-Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` written directly under the A800/truenas run root.
+Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` written directly under the A800/truenas run root. The report must declare `depth_ray_geometry_reprojected:true`, the radius-to-exact-ray conversion, and a maximum internal conditioned-ray discrepancy no greater than the fixed 1° gate; camera-head K disagreement is retained as a diagnostic rather than made active.
 
 ## P03b source-neutral camera/image-transform contract
 
@@ -168,7 +181,7 @@ if [[ -n "$SENSOR_METADATA" ]]; then
   fi
 else
   CAMERA_ARGS+=(
-    --unidepth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz"
+    --unidepth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_intrinsics_probe/unidepth_full_frame_depth_v3.npz"
     --fallback-reason "launcher supplied no prediction-side sensor calibration"
     --aggregation median
     --square-focal
@@ -205,7 +218,13 @@ Required output:
 
 `{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz`
 
-The adapter must prove that depth values, dtype, frame IDs, and raster size are unchanged while preserving the original estimated K under `source_estimated_intrinsics_fx_fy_cx_cy`. It embeds the resolved contract SHA256, named depth plane, K, and `A_depth_from_calibration`. P09 must fail closed unless those fields exactly match the supplied V2 contract; passing an unbound or differently bound depth archive is an implementation/input failure. All downstream metric backprojection/depth projection must consume this camera-bound archive. This stage does not claim that monocular depth itself became more accurate; it removes the mixed-ray/K contract.
+The adapter must prove that depth values, dtype, frame IDs, and raster size are unchanged,
+that source K already equals the requested `source_rgb` K, and—when P03 declares camera
+conditioning—that the inference contract hash and output plane match. It preserves the
+source K under `source_estimated_intrinsics_fx_fy_cx_cy` and embeds the resolved contract
+SHA256, plane, K, and `A_depth_from_calibration`. A metadata-only K relabel is a hard blocker:
+the forensic `--allow-metadata-only-ray-relabel` option is forbidden in production and P09
+rejects such an archive. All metric backprojection must consume this camera-bound archive.
 
 ## P04 MANO hand measurement
 
@@ -357,8 +376,8 @@ P09 is intentionally two-step. First propose anchor candidates from the same SAM
   --mask-image-plane sam2_mask \
   --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
   --preserve-source-index \
-  --exclude-hand-bboxes \
-  --hand-bbox-exclusion-pad-px 12 \
+  --exclude-hand-regions \
+  --hand-bbox-exclusion-pad-px 4 \
   --propose-anchor-candidates-only \
   --anchor-candidate-count 12
 ```
@@ -390,11 +409,30 @@ Then run canonical visible geometry with the selected anchor. This second comman
   --anchor-frame "{ANCHOR_FRAME}" \
   --require-anchor-frame \
   --preserve-source-index \
-  --exclude-hand-bboxes \
-  --hand-bbox-exclusion-pad-px 12
+  --exclude-hand-regions \
+  --hand-bbox-exclusion-pad-px 4
 ```
 
-Required output: `v19_visible_geometry_depth_fused_report.json` and visible-geometry annotations. P09 must treat hand-owned pixels as occlusion/uncertainty, not visible object surface; if same-frame hand boxes are available, subtract them before depth lifting and record the removed support in `object_surface_ownership_filter`. The per-object `mask_path` written to annotations must be the object-owned mask after this subtraction, because P11/P12 evidence crops and TRELLIS conditioning must not consume hand-owned pixels as object appearance. When mask and depth rasters differ, P09 must use `cv2.INTER_NEAREST_EXACT` so discrete mask samples follow the V2 OpenCV half-pixel affine; legacy `cv2.INTER_NEAREST` uses a corner-origin sampler and is not valid for this contract.
+Required output: `v19_visible_geometry_depth_fused_report.json` and visible-geometry
+annotations. P09 must treat hand-owned pixels as occlusion/uncertainty, not visible object
+surface. It must project the full prediction-side HaWoR/MANO camera vertices and triangle
+faces referenced by P08, subtract that triangle silhouette, and record the result under
+`object_surface_ownership_filter`. A hand bbox is diagnostic only: it may never remove or
+retain surfels, and missing/malformed MANO geometry fails that frame closed. The per-object
+`mask_path` written to annotations must be this object-owned mask, so P11 native inputs do
+not include hand pixels.
+
+P09 must also record `first_surface_depth_ownership` before backprojection. A global
+percentile/MAD crop is forbidden because it can delete a real sloped face or a disconnected
+rigid part. The accepted surfels must come from per-component MAD seeds expanded through
+UniDepth-confidence and local-depth geodesic support. Support below 90%, missing confidence,
+small-component loss above the fixed gate, or rejected pixels farther than 10 px inside the
+owned mask fails the frame closed. A raw/accepted extent ratio above 2 is allowed only when
+the report explicitly proves high-support boundary-tail quarantine; it must never influence
+voxel/RMS scale. Do not lower these gates or choose a contaminated anchor to keep the run
+moving. When mask and depth rasters differ, use `cv2.INTER_NEAREST_EXACT` so
+discrete mask samples follow the V2 OpenCV half-pixel affine; legacy
+`cv2.INTER_NEAREST` is invalid for this contract.
 
 ## P10 branch decision
 
@@ -437,6 +475,7 @@ EVIDENCE_CROP_RGBA=$("{REMOTE_MODEL_PYTHON}" scripts/resolve_v19_trellis_conditi
 PYTHONPATH="/mnt/truenas-user-home/yiwen/a800_migrated_home/ego_annotation_remote/trellis_work/.venv_trellis/lib/python3.10/site-packages:${PYTHONPATH:-}" \
 "{REMOTE_MODEL_PYTHON}" scripts/remote_run_trellis_shape_v3.py \
   --repo /mnt/user-home/yiwen/ego_annotation_remote/trellis_work/TRELLIS \
+  --dinov2-repo /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main \
   --image "$EVIDENCE_CROP_RGBA" \
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42" \
   --seed 42

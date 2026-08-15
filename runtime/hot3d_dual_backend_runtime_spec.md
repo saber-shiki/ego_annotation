@@ -32,8 +32,9 @@ The launch also binds:
 1. Do not inspect or consume reference-label state directories, CAD models, reference poses,
    foreground reference depth, MANO reference state, or any sibling run output.
 2. Official K is allowed only through the launcher-supplied prediction-side sensor contract.
-3. Execute P00 through P11 from `runtime/v19_runtime_spec.md` exactly.  Do not execute
-   its canonical P12 through P21; replace that tail with this document.
+3. Execute common phases from `runtime/v19_runtime_spec.md`, but apply its declared
+   sensor-first dependency: P00, P01, P02, **P03b, P03, P03c**, then P04 through P11.
+   Do not execute its canonical P12 through P21; replace that tail with this document.
 4. P05 must inspect the raw contact sheet as an image.  P07 must inspect OWLv2/SAM2
    review imagery.  P09 must inspect the anchor-candidate review image and write the
    explicit anchor decision.  The launch target hint must be visually confirmed.
@@ -53,7 +54,9 @@ The launch also binds:
 ## Common P00-P11
 
 Read `runtime/v19_runtime_spec.md`, bind the launch values above, and execute only P00,
-P01, P02, P03, P03b, P03c, P04, P05, P06, P07, P08, P09, P10, and P11 in order.
+P01, P02, **P03b, P03, P03c**, P04, P05, P06, P07, P08, P09, P10, and P11 in that
+sensor-first order. P03 must pass the resolved contract to UniDepth; a metadata-only K
+relabel or the forensic compatibility override is forbidden.
 Use the dedicated `{GPU_ID}` unless a live probe shows it is no longer safe; do not take
 another case's declared GPU.  The target should remain rigid even when local evidence is
 missing; record missing evidence as uncertainty rather than broadening the object mask.
@@ -107,6 +110,7 @@ ATTN_BACKEND=xformers SPCONV_ALGO=native \
   scripts/remote_run_trellis_shape_v3.py \
   --repo /mnt/user-home/kupingxin/ego_annotation/.runtime/trellis_work/TRELLIS \
   --model /mnt/truenas-user-home/kupingxin/ego_annotation_models/trellis-image-large-25e0d31f \
+  --dinov2-repo /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main \
   --image "$EVIDENCE_CROP_RGBA" \
   --output-dir "$EXP_ROOT/P12_trellis" \
   --seed 42
@@ -173,6 +177,7 @@ one shared P11 evidence report:
 "$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/run_p13_controlled_geometry_prior_ab.py \
   --evidence-report "$EVIDENCE_REPORT" \
   --builder-script scripts/build_v18_compact_rigid_trellis_completion.py \
+  --sam3d-bridge-script experiments/sam3d_p11_p12_branch/build_p13_sam3d_native_metric_bridge.py \
   --python "$MAIN_PYTHON" \
   --candidate "sam3d_new_object_owned_mask|sam3d_objects|$SAM3D_RAW_MESH|$P12_REPORT" \
   --candidate "trellis_frozen|trellis|$TRELLIS_RAW_MESH|$TRELLIS_REPORT" \
@@ -186,8 +191,11 @@ CONTROLLED_REPORT="$EXP_ROOT/P13_controlled/p13_controlled_geometry_prior_ab_rep
 test -s "$CONTROLLED_REPORT"
 ```
 
-Preserve the tuned SAM3D generated topology as a separate render underlay while keeping
-the observed metric surface separate and physically authoritative:
+For SAM3D, D13 must preserve the native quaternion/local-to-camera pose, bridge the whole
+camera-origin scene similarity to robust sensor depth, and then use identity canonical
+alignment. It must not fall back to TRELLIS RMS/PCA permutations/ICP. Preserve the resulting
+metric-canonical SAM3D topology as a separate render underlay while keeping the observed
+metric surface physically authoritative:
 
 ```bash
 "$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/build_p13_dual_mesh_geometry_prior.py \
@@ -241,10 +249,12 @@ POSE_GRAPH="$EXP_ROOT/P15_observed_pose_graph/v19_rigid_object_pose_graph_report
 test -s "$POSE_GRAPH"
 ```
 
-Read the pose report.  The tuned layered-state adapter requires `annotation_ready:true`,
-`graph_support.sufficient:true`, exactly 150 accepted pose rows, and zero
-`nonpenetration_target_frame_count`.  If trusted support is insufficient, preserve the
-report, write a D15 blocker, and stop rather than relabeling interpolation as evidence.
+Read the pose report. The layered-state adapter requires `annotation_ready:true`,
+`graph_support.sufficient:true`, `temporal_readiness.ready:true`, exactly 150 accepted pose
+rows, and zero `nonpenetration_target_frame_count`. The temporal gate enforces direct-pose
+fraction, bounded direct/interpolation/hold gaps, rotation observability, and bounded
+per-frame SE(3) jumps. If any gate fails, preserve the report, write a D15 blocker, and stop;
+do not relabel interpolation/nearest holds or optimizer success as evidence.
 
 Build an unsigned observed-surface MANO/object measurement state:
 

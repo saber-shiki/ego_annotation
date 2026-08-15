@@ -15,6 +15,7 @@ from typing import Any
 
 EXPECTED_INPUT_SHA256 = "7a9baf0553e5dcfb4411b6cfabbe3a734f815ee4c5b014bdd965b9e547ec2310"
 EXPECTED_DINOV2_SHA256 = "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51"
+EXPECTED_DINOV2_HUBCONF_SHA256 = "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64"
 EXPECTED_HASHES = {
     "sam2": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
     "owlv2": "e1e130b9e404cf91a75ad45644c1da9d7fa5284085eecc864266a6923efb99e7",
@@ -104,12 +105,39 @@ def sam3d_import_command(args: argparse.Namespace) -> list[str]:
     python = args.sam3d_python.expanduser().resolve()
     repo = args.sam3d_repo.expanduser().resolve()
     activation = args.sam3d_activation.expanduser().resolve()
-    code = (
-        "import sys; from pathlib import Path; "
-        f"repo=Path({str(repo)!r}); "
-        "sys.path.insert(0,str(repo)); sys.path.insert(0,str(repo/'notebook')); "
-        "from inference import Inference; print('SAM3D_IMPORT_OK', Inference.__module__)"
-    )
+    runner = args.bundle.expanduser().resolve() / "scripts/remote_run_sam3d_objects_mesh_v7.py"
+    code = f"""
+import importlib.util
+import sys
+from pathlib import Path
+import numpy as np
+import torch
+repo = Path({str(repo)!r})
+sys.path.insert(0, str(repo))
+sys.path.insert(0, str(repo / 'notebook'))
+from inference import Inference
+from pytorch3d.transforms import quaternion_to_matrix
+from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
+spec = importlib.util.spec_from_file_location('frozen_sam3d_runner', {str(runner)!r})
+runner_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner_module)
+vertices = np.asarray([[0.2, -0.3, 0.4], [-0.7, 0.1, 0.5]], dtype=np.float64)
+q = np.asarray([0.75, -0.2, 0.3, 0.55], dtype=np.float64)
+q /= np.linalg.norm(q)
+t = np.asarray([0.13, -0.21, 0.94], dtype=np.float64)
+s = np.asarray([0.17, 0.21, 0.14], dtype=np.float64)
+actual, actual_cv, _ = runner_module.apply_native_pose(vertices, q, t, s)
+transform = compose_transform(
+    torch.tensor(s[None], dtype=torch.float64),
+    quaternion_to_matrix(torch.tensor(q[None], dtype=torch.float64)),
+    torch.tensor(t[None], dtype=torch.float64),
+)
+expected = transform.transform_points(torch.tensor(vertices[None], dtype=torch.float64))[0].numpy()
+error = float(np.max(np.abs(actual - expected)))
+assert error < 1.0e-12, error
+assert np.allclose(actual_cv, actual @ np.diag([-1.0, -1.0, 1.0]))
+print('SAM3D_IMPORT_AND_NATIVE_POSE_OK', Inference.__module__, error)
+"""
     shell = "\n".join(
         [
             "set -euo pipefail",
@@ -268,14 +296,36 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "expected_sha256": EXPECTED_DINOV2_SHA256,
         "sha256": dino_hash,
     }
+    dino_repo = args.torch_home / "hub/facebookresearch_dinov2_main"
+    dino_hubconf = dino_repo / "hubconf.py"
+    dino_hubconf_hash = sha256_file(dino_hubconf) if dino_hubconf.is_file() else None
+    checks["trellis_dinov2_offline_source"] = {
+        "path": str(dino_repo),
+        "hubconf": str(dino_hubconf),
+        "expected_hubconf_sha256": EXPECTED_DINOV2_HUBCONF_SHA256,
+        "hubconf_sha256": dino_hubconf_hash,
+        "status": "ok" if dino_hubconf_hash == EXPECTED_DINOV2_HUBCONF_SHA256 else "missing_incomplete_or_hash_mismatch",
+        "network_resolution_allowed": False,
+    }
     if args.sam3d_python is not None:
         checks["sam3d_contract"] = sam3d_contract_check(args)
 
+    trellis_offline_code = (
+        "import importlib.util; from pathlib import Path; "
+        f"p=Path({str(bundle / 'scripts/remote_run_trellis_shape_v3.py')!r}); "
+        "s=importlib.util.spec_from_file_location('trellis_runner_preflight',p); "
+        "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+        f"state=m.install_offline_dinov2_hub(Path({str(dino_repo)!r})); "
+        "assert state['network_resolution_allowed'] is False; "
+        "assert state['required_entry']=='dinov2_vitl14_reg'; "
+        "print('TRELLIS_DINOV2_OFFLINE_SOURCE_OK',state['hubconf_sha256'])"
+    )
     import_commands = {
         "main": [str(args.main_python), "-c", "import cv2,open3d,smplx,torch,transformers,trimesh; from PIL import Image; print(torch.__version__, cv2.__version__, open3d.__version__, transformers.__version__)"],
         "unidepth": [str(args.unidepth_python), "-c", f"import sys,torch,numpy,cv2; sys.path.insert(0,{str(args.unidepth_repo)!r}); import unidepth; print(torch.__version__,numpy.__version__,cv2.__version__)"],
         "hawor": [str(args.hawor_python), "-c", f"import sys; sys.path.insert(0,{str(args.hawor_repo)!r}); import torch; import cv2,droid_backends,lietorch,mmcv,pytorch3d,smplx; print(torch.__version__,cv2.__version__)"],
         "trellis": [str(args.trellis_python), "-c", "import kaolin,spconv,torch,transformers,trimesh,xformers; print(torch.__version__,transformers.__version__,kaolin.__version__,spconv.__version__)"],
+        "trellis_dinov2_offline_source": [str(args.trellis_python), "-c", trellis_offline_code],
     }
     if args.sam3d_python is not None:
         import_commands["sam3d"] = sam3d_import_command(args)
@@ -287,8 +337,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     bundle_manifest = json.loads((bundle / "RUNTIME_BUNDLE_MANIFEST.json").read_text())
     help_results = []
-    for name in bundle_manifest.get("scripts", []):
-        path = bundle / "scripts" / name
+    cli_entries = [("scripts", name) for name in bundle_manifest.get("scripts", [])]
+    cli_entries.extend(
+        ("experiment", str(relative))
+        for relative in bundle_manifest.get("suite_experiment_files", [])
+    )
+    for kind, name in cli_entries:
+        path = bundle / "scripts" / name if kind == "scripts" else bundle / name
         if path.suffix == ".sh":
             result = command_result(["bash", "-n", str(path)], bundle)
         else:
@@ -301,6 +356,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 python = args.trellis_python
             result = command_result([str(python), str(path), "--help"], bundle)
         result["script"] = name
+        result["kind"] = kind
         help_results.append(result)
     checks["script_cli_contracts"] = {
         "status": "ok" if all(row["returncode"] == 0 for row in help_results) else "failed",

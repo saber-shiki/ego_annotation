@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import re
 from collections import Counter
 from pathlib import Path
@@ -191,6 +192,9 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
     if len(frame_idx) != depth.shape[0] or len(frame_idx) != intr.shape[0]:
         raise RuntimeError(f"{path} has inconsistent frame/depth/intrinsics rows")
     source_size = np.asarray(blob["source_size"], dtype=float) if "source_size" in blob.files else None
+    confidence = np.asarray(blob["confidence"], dtype=np.float32) if "confidence" in blob.files else None
+    if confidence is not None and confidence.shape != depth.shape:
+        raise RuntimeError(f"{path} confidence shape {confidence.shape} disagrees with depth {depth.shape}")
     camera_contract_binding = None
     binding_keys = {
         "camera_contract_path",
@@ -199,6 +203,8 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
         "A_depth_from_calibration",
         "intrinsics_source",
         "calibration_authority",
+        "depth_ray_geometry_reprojected",
+        "metadata_only_ray_relabel_override",
     }
     present_binding_keys = binding_keys.intersection(blob.files)
     if present_binding_keys and present_binding_keys != binding_keys:
@@ -216,13 +222,21 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
             "A_depth_from_calibration": affine.tolist(),
             "intrinsics_source": scalar_text(blob["intrinsics_source"], "intrinsics_source"),
             "calibration_authority": scalar_text(blob["calibration_authority"], "calibration_authority"),
+            "depth_ray_geometry_reprojected": bool(np.asarray(blob["depth_ray_geometry_reprojected"]).reshape(-1)[0]),
+            "metadata_only_ray_relabel_override": bool(np.asarray(blob["metadata_only_ray_relabel_override"]).reshape(-1)[0]),
         }
     return {
         "path": str(path),
         "frame_idx": frame_idx,
         "depth": depth,
+        "confidence": confidence,
         "intrinsics": intr,
         "source_size": source_size,
+        "source_estimated_intrinsics": (
+            np.asarray(blob["source_estimated_intrinsics_fx_fy_cx_cy"], dtype=np.float64)
+            if "source_estimated_intrinsics_fx_fy_cx_cy" in blob.files
+            else None
+        ),
         "camera_contract_binding": camera_contract_binding,
         "frame_to_i": {int(idx): int(i) for i, idx in enumerate(frame_idx)},
     }
@@ -313,6 +327,20 @@ def validate_depth_camera_contract_binding(
         rtol=0.0,
     ):
         raise RuntimeError("depth archive A_depth_from_calibration disagrees with the requested V2 contract plane")
+    if binding.get("metadata_only_ray_relabel_override") is True or binding.get("depth_ray_geometry_reprojected") is not True:
+        # A byte-identical z raster with a changed K is not a geometric camera
+        # adaptation. The only safe unchanged-raster case is exact source/resolved
+        # K equality, represented by intrinsics_override_applied=false.
+        source_intrinsics = depth.get("source_estimated_intrinsics")
+        same_rays = bool(
+            source_intrinsics is not None
+            and np.asarray(source_intrinsics).shape == np.asarray(depth["intrinsics"]).shape
+            and np.allclose(source_intrinsics, depth["intrinsics"], atol=1.0e-6, rtol=0.0)
+        )
+        if not same_rays:
+            raise RuntimeError(
+                "depth archive only relabeled K metadata: dense z was not reprojected onto the requested camera rays"
+            )
     return {
         **binding,
         "status": "exact_camera_contract_hash_plane_intrinsics_and_affine_match",
@@ -522,6 +550,104 @@ def scaled_intrinsics_for_depth(
     return np.asarray([fx, fy, cx, cy], dtype=float)
 
 
+def load_npz_array_cached(path: Path, key: str) -> np.ndarray:
+    cache = getattr(load_npz_array_cached, "_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(load_npz_array_cached, "_cache", cache)
+    cache_key = (str(path.expanduser().resolve()), str(key))
+    if cache_key not in cache:
+        path = path.expanduser().resolve()
+        if not path.is_file():
+            raise RuntimeError(f"missing hand geometry archive: {path}")
+        with np.load(path, allow_pickle=False) as archive:
+            if key not in archive.files:
+                raise RuntimeError(f"hand geometry archive {path} lacks {key}")
+            cache[cache_key] = np.asarray(archive[key]).copy()
+    return cache[cache_key]
+
+
+def projected_mano_hand_silhouette(
+    hand: dict[str, Any],
+    *,
+    mask_shape: tuple[int, int],
+    source_width: int,
+    source_height: int,
+    pad_px: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    state = hand.get("metric_mano_state")
+    if not isinstance(state, dict):
+        raise RuntimeError("hand row lacks metric_mano_state")
+    reference = state.get("vertices_reference")
+    if not isinstance(reference, dict):
+        raise RuntimeError("hand metric state lacks vertices_reference")
+    bridge_path = Path(str(reference.get("bridge_npz") or ""))
+    bridge_key = str(reference.get("bridge_vertices_camera_array") or "")
+    row_index = int(reference.get("bridge_row_index", -1))
+    vertices_rows = load_npz_array_cached(bridge_path, bridge_key)
+    if vertices_rows.ndim != 3 or vertices_rows.shape[1:] != (778, 3) or not (0 <= row_index < len(vertices_rows)):
+        raise RuntimeError(f"invalid bridge MANO camera vertices {vertices_rows.shape} row={row_index}")
+    vertices = np.asarray(vertices_rows[row_index], dtype=np.float64)
+    side = str(hand.get("hand_side") or "").lower()
+    if side not in {"left", "right"}:
+        raise RuntimeError(f"invalid hand side {side!r}")
+    source_hawor = Path(str(reference.get("source_hawor_npz") or ""))
+    faces = np.asarray(load_npz_array_cached(source_hawor, f"{side}_faces"), dtype=np.int64)
+    if faces.ndim != 2 or faces.shape[1] != 3 or len(faces) == 0 or faces.min() < 0 or faces.max() >= len(vertices):
+        raise RuntimeError(f"invalid {side} MANO faces {faces.shape}")
+    intrinsics = np.asarray(
+        state.get("current_v18_camera_intrinsics_fx_fy_cx_cy")
+        or state.get("source_hawor_camera_intrinsics_fx_fy_cx_cy")
+        or [],
+        dtype=np.float64,
+    ).reshape(-1)
+    if intrinsics.shape != (4,) or not np.isfinite(intrinsics).all() or np.any(intrinsics[:2] <= 0.0):
+        raise RuntimeError(f"invalid {side} MANO camera intrinsics: {intrinsics}")
+    z = vertices[:, 2]
+    positive_faces = np.all(np.isfinite(vertices[faces]), axis=(1, 2)) & np.all(z[faces] > 0.0, axis=1)
+    faces = faces[positive_faces]
+    if len(faces) == 0:
+        raise RuntimeError(f"{side} MANO mesh has no finite positive-depth faces")
+    used_vertices = np.unique(faces.reshape(-1))
+    fx, fy, cx, cy = intrinsics.tolist()
+    uv = np.full((len(vertices), 2), np.nan, dtype=np.float64)
+    uv[used_vertices, 0] = fx * vertices[used_vertices, 0] / z[used_vertices] + cx
+    uv[used_vertices, 1] = fy * vertices[used_vertices, 1] / z[used_vertices] + cy
+    mask_h, mask_w = mask_shape
+    sx = float(mask_w) / float(max(1, source_width))
+    sy = float(mask_h) / float(max(1, source_height))
+    uv[:, 0] *= sx
+    uv[:, 1] *= sy
+    if not np.isfinite(uv[used_vertices]).all():
+        raise RuntimeError(f"{side} MANO projection has non-finite pixels")
+    polygons = np.rint(uv[faces]).astype(np.int32)
+    silhouette = np.zeros((mask_h, mask_w), dtype=np.uint8)
+    cv2.fillPoly(silhouette, list(polygons), 1, lineType=cv2.LINE_8)
+    if int(np.count_nonzero(silhouette)) == 0:
+        raise RuntimeError(f"{side} MANO projected silhouette is empty")
+    pad = int(max(0, pad_px))
+    if pad:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1, 2 * pad + 1))
+        silhouette = cv2.dilate(silhouette, kernel, iterations=1)
+    ys, xs = np.where(silhouette > 0)
+    projected_bbox = [int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1)]
+    return silhouette > 0, {
+        "hand_side": side,
+        "bridge_npz": str(bridge_path.expanduser().resolve()),
+        "bridge_vertices_camera_array": bridge_key,
+        "bridge_row_index": row_index,
+        "source_hawor_npz": str(source_hawor.expanduser().resolve()),
+        "faces_array": f"{side}_faces",
+        "vertices": int(len(vertices)),
+        "faces": int(len(faces)),
+        "source_camera_intrinsics_fx_fy_cx_cy": intrinsics.tolist(),
+        "projected_silhouette_bbox_mask_xyxy": projected_bbox,
+        "projected_silhouette_pixels_with_padding": int(np.count_nonzero(silhouette)),
+        "padding_px_in_mask_coordinates": pad,
+        "source_bbox_xyxy_diagnostic_only": hand.get("bbox_xyxy"),
+    }
+
+
 def subtract_hand_owned_bbox_regions(
     mask: np.ndarray,
     base_frame: dict[str, Any],
@@ -531,56 +657,306 @@ def subtract_hand_owned_bbox_regions(
     pad_px: int,
     enabled: bool,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Remove image regions owned by visible hands before lifting object depth.
+    """Subtract projected HaWoR/MANO hand silhouettes, never coarse bboxes.
 
-    A semantic object mask can cover pixels where a hand occludes the object. Those
-    pixels are not visible object surface.  This conservative ownership filter
-    uses available hand detections from base annotations; it is intentionally
-    category-agnostic and records how much support was removed.
+    Rectangular hand boxes erase visible object pixels and still fail to describe
+    fingers at object boundaries. Full prediction-side MANO vertices/faces provide
+    a tighter ownership silhouette. Missing or malformed geometry fails the frame
+    closed rather than falling back to a box or treating hand pixels as object.
     """
     if not enabled:
-        return mask, {"state": "disabled", "input_mask_pixels": int(mask.sum()), "output_mask_pixels": int(mask.sum())}
+        return mask, {
+            "state": "disabled",
+            "input_mask_pixels": int(mask.sum()),
+            "output_mask_pixels": int(mask.sum()),
+            "fail_closed": False,
+        }
     out = mask.copy()
-    h, w = out.shape[:2]
-    sx = float(w) / float(max(1, int(source_width)))
-    sy = float(h) / float(max(1, int(source_height)))
-    removed_total = 0
-    boxes: list[dict[str, Any]] = []
-    for hand in as_list(base_frame.get("hands")):
-        if not isinstance(hand, dict):
-            continue
-        if hand.get("same_frame_detection") is False and not hand.get("hawor_candidate_present"):
-            continue
-        box = hand.get("bbox_xyxy")
-        if not (isinstance(box, list) and len(box) >= 4):
-            continue
-        x1, y1, x2, y2 = [float(v) for v in box[:4]]
-        pad = int(max(0, pad_px))
-        xi1 = max(0, int(np.floor(x1 * sx - pad)))
-        yi1 = max(0, int(np.floor(y1 * sy - pad)))
-        xi2 = min(w, int(np.ceil(x2 * sx + pad)))
-        yi2 = min(h, int(np.ceil(y2 * sy + pad)))
-        if xi2 <= xi1 or yi2 <= yi1:
-            continue
-        before = int(out.sum())
-        out[yi1:yi2, xi1:xi2] = False
-        removed = before - int(out.sum())
-        removed_total += int(removed)
-        boxes.append({
-            "hand_side": hand.get("hand_side"),
-            "source_bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
-            "mask_bbox_xyxy": [int(xi1), int(yi1), int(xi2), int(yi2)],
-            "removed_mask_pixels": int(removed),
-        })
+    input_pixels = int(mask.sum())
+    hand_rows = [
+        hand for hand in as_list(base_frame.get("hands"))
+        if isinstance(hand, dict)
+        and not (hand.get("same_frame_detection") is False and not hand.get("hawor_candidate_present"))
+    ]
+    records: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for hand in hand_rows:
+        try:
+            silhouette, record = projected_mano_hand_silhouette(
+                hand,
+                mask_shape=out.shape[:2],
+                source_width=source_width,
+                source_height=source_height,
+                pad_px=pad_px,
+            )
+            before = int(out.sum())
+            out[silhouette] = False
+            record["removed_object_mask_pixels"] = before - int(out.sum())
+            records.append(record)
+        except Exception as exc:
+            failures.append({"hand_side": hand.get("hand_side"), "reason": str(exc)})
+    fail_closed = bool(failures)
+    if fail_closed:
+        # Do not return a partially-owned mask when one detected hand could not be
+        # represented. The caller records diagnostics and rejects this frame.
+        out[:] = False
+    output_pixels = int(out.sum())
     return out, {
-        "state": "hand_owned_bbox_regions_subtracted" if boxes else "no_hand_bboxes_available",
-        "input_mask_pixels": int(mask.sum()),
-        "output_mask_pixels": int(out.sum()),
-        "removed_mask_pixels": int(removed_total),
-        "hand_boxes": boxes,
-        "pad_px_in_mask_coordinates": int(max(0, pad_px)),
-        "claim_scope": "Pixels inside visible hand support are not lifted as visible object surface; uncertain occluded object surface remains unobserved.",
+        "state": (
+            "failed_closed_missing_projected_mano_hand_silhouette"
+            if fail_closed else
+            "projected_mano_hand_silhouettes_subtracted"
+            if records else
+            "no_detected_hands_to_subtract"
+        ),
+        "ownership_primitive": "projected_full_mano_triangle_silhouette",
+        "bbox_subtraction_used": False,
+        "input_mask_pixels": input_pixels,
+        "output_mask_pixels": output_pixels,
+        "removed_mask_pixels": input_pixels - output_pixels,
+        "detected_hand_rows": int(len(hand_rows)),
+        "projected_hand_silhouettes": records,
+        "failures": failures,
+        "fail_closed": fail_closed,
+        "padding_px_in_mask_coordinates": int(max(0, pad_px)),
+        "claim_scope": "Only projected prediction-side MANO triangle silhouettes are removed. Hand bboxes are diagnostic and never ownership masks.",
     }
+
+
+def robust_first_surface_depth_ownership(
+    mask: np.ndarray,
+    depth: np.ndarray,
+    *,
+    enabled: bool,
+    mad_sigma: float,
+    min_half_width_m: float,
+    min_retained_fraction: float,
+    fail_raw_to_robust_extent_ratio: float,
+    intrinsics: np.ndarray | None = None,
+    confidence: np.ndarray | None = None,
+    confidence_seed_percentile: float = 95.0,
+    local_depth_step_max_m: float = 0.005,
+    max_removed_distance_inside_mask_px: float = 10.0,
+    min_component_pixels: int = 20,
+    max_small_component_fraction: float = 0.01,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Select depth-coherent first-surface support, with strict quarantine gates.
+
+    A global percentile/MAD crop can delete real sloped surfaces or disconnected
+    rigid parts. Instead, each 2D object-owned component gets a robust depth seed;
+    support grows from that seed only through locally continuous depth and through
+    pixels whose UniDepth error proxy is no worse than the seed's configured
+    percentile. This preserves coherent surfaces while stopping edge bleeding.
+
+    Removed pixels are accepted as quarantined (rather than making the frame fail)
+    only when support remains high and every removed pixel is localized near an
+    object-mask boundary. The original P11 appearance mask is never rewritten.
+    """
+    mask_bool = np.asarray(mask, dtype=bool)
+    depth_m = np.asarray(depth, dtype=np.float64)
+    valid = mask_bool & np.isfinite(depth_m) & (depth_m > 0.0)
+    values = depth_m[valid]
+    if values.size == 0:
+        return valid, {
+            "enabled": bool(enabled),
+            "state": "no_valid_owned_depth",
+            "input_valid_depth_pixels": 0,
+            "retained_depth_pixels": 0,
+            "retained_fraction": 0.0,
+            "fail_closed": True,
+            "failure_reasons": ["no_valid_owned_depth"],
+        }
+    global_median = float(np.median(values))
+    global_mad = float(np.median(np.abs(values - global_median)))
+    if not enabled:
+        return valid, {
+            "enabled": False,
+            "state": "disabled",
+            "input_valid_depth_pixels": int(values.size),
+            "retained_depth_pixels": int(values.size),
+            "retained_fraction": 1.0,
+            "median_depth_m": global_median,
+            "median_absolute_deviation_m": global_mad,
+            "fail_closed": False,
+            "failure_reasons": [],
+        }
+
+    confidence_m = None if confidence is None else np.asarray(confidence, dtype=np.float64)
+    failure_reasons: list[str] = []
+    if confidence_m is None or confidence_m.shape != depth_m.shape:
+        failure_reasons.append("missing_or_mismatched_unidepth_confidence")
+        confidence_m = np.full(depth_m.shape, np.inf, dtype=np.float64)
+    elif not np.isfinite(confidence_m[valid]).all() or np.any(confidence_m[valid] <= 0.0):
+        failure_reasons.append("invalid_unidepth_confidence")
+
+    accepted = np.zeros_like(valid)
+    component_rows: list[dict[str, Any]] = []
+    small_component_pixels = 0
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(valid.astype(np.uint8), 8)
+    height, width = valid.shape
+    neighbor_offsets = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
+    for label in range(1, component_count):
+        x, y, w, h, area = [int(value) for value in stats[label]]
+        component = labels[y : y + h, x : x + w] == label
+        if area < int(min_component_pixels):
+            small_component_pixels += area
+            component_rows.append({"label": label, "pixels": area, "state": "dropped_small_component"})
+            continue
+        local_depth = depth_m[y : y + h, x : x + w]
+        local_confidence = confidence_m[y : y + h, x : x + w]
+        component_values = local_depth[component]
+        median = float(np.median(component_values))
+        mad = float(np.median(np.abs(component_values - median)))
+        robust_sigma = float(1.4826 * mad)
+        half_width = float(max(min_half_width_m, mad_sigma * robust_sigma))
+        seed = component & (np.abs(local_depth - median) <= half_width)
+        seed_count = int(np.count_nonzero(seed))
+        if seed_count < 3 or not np.isfinite(local_confidence[seed]).all():
+            failure_reasons.append(f"component_{label}_invalid_seed")
+            component_rows.append({"label": label, "pixels": area, "state": "invalid_seed"})
+            continue
+        confidence_threshold = float(np.percentile(local_confidence[seed], confidence_seed_percentile))
+        traversable = component & (local_confidence <= confidence_threshold)
+        keep = seed.copy()
+        iterations = 0
+        for iterations in range(max(1, w + h)):
+            previous_count = int(np.count_nonzero(keep))
+            adjacent = np.zeros_like(keep)
+            for dy, dx in neighbor_offsets:
+                source_y = slice(max(0, dy), min(h, h + dy))
+                target_y = slice(max(0, -dy), min(h, h - dy))
+                source_x = slice(max(0, dx), min(w, w + dx))
+                target_x = slice(max(0, -dx), min(w, w - dx))
+                adjacent[target_y, target_x] |= (
+                    keep[source_y, source_x]
+                    & (np.abs(local_depth[target_y, target_x] - local_depth[source_y, source_x]) <= float(local_depth_step_max_m))
+                )
+            keep |= traversable & adjacent
+            if int(np.count_nonzero(keep)) == previous_count:
+                break
+        accepted[y : y + h, x : x + w] |= keep
+        keep_count = int(np.count_nonzero(keep))
+        component_rows.append({
+            "label": label,
+            "bbox_xywh": [x, y, w, h],
+            "pixels": area,
+            "median_depth_m": median,
+            "median_absolute_deviation_m": mad,
+            "robust_sigma_m": robust_sigma,
+            "seed_half_width_m": half_width,
+            "seed_pixels": seed_count,
+            "seed_fraction": float(seed_count / max(1, area)),
+            "confidence_seed_percentile": float(confidence_seed_percentile),
+            "confidence_threshold": confidence_threshold,
+            "retained_pixels": keep_count,
+            "retained_fraction": float(keep_count / max(1, area)),
+            "growth_iterations": int(iterations),
+            "accepted_depth_summary_m": numeric_summary(local_depth[keep]),
+            "state": "depth_confidence_geodesic_support",
+        })
+
+    retained = int(np.count_nonzero(accepted))
+    retained_fraction = float(retained / max(1, values.size))
+    removed = valid & ~accepted
+    removed_count = int(np.count_nonzero(removed))
+    distance_inside = cv2.distanceTransform(mask_bool.astype(np.uint8), cv2.DIST_L2, 5)
+    removed_distances = distance_inside[removed]
+    max_removed_distance = float(np.max(removed_distances)) if removed_distances.size else 0.0
+    small_component_fraction = float(small_component_pixels / max(1, values.size))
+
+    raw_extent = backprojected_extent(valid, depth_m, intrinsics)
+    accepted_extent = backprojected_extent(accepted, depth_m, intrinsics)
+    raw_diag = float(np.linalg.norm(raw_extent))
+    accepted_diag = float(np.linalg.norm(accepted_extent))
+    raw_to_accepted_ratio = float(raw_diag / max(accepted_diag, 1.0e-12))
+    if retained < 3 or retained_fraction < float(min_retained_fraction):
+        failure_reasons.append("insufficient_depth_coherent_first_surface_support")
+    if not np.isfinite(accepted_diag) or accepted_diag <= 0.0:
+        failure_reasons.append("invalid_accepted_backprojected_extent")
+    if small_component_fraction > float(max_small_component_fraction):
+        failure_reasons.append("too_much_support_in_dropped_small_components")
+    if max_removed_distance > float(max_removed_distance_inside_mask_px):
+        failure_reasons.append("rejected_depth_not_boundary_localized")
+    tail_dominates_raw_extent = bool(raw_to_accepted_ratio > float(fail_raw_to_robust_extent_ratio))
+    return accepted, {
+        "enabled": True,
+        "state": (
+            "fail_closed_depth_ownership_unresolved"
+            if failure_reasons else
+            "validated_boundary_depth_tail_quarantined"
+            if removed_count else
+            "all_owned_depth_coherent"
+        ),
+        "method": "per_component_mad_seed_confidence_geodesic_growth",
+        "input_valid_depth_pixels": int(values.size),
+        "retained_depth_pixels": retained,
+        "removed_depth_pixels": removed_count,
+        "retained_fraction": retained_fraction,
+        "removed_fraction": float(removed_count / max(1, values.size)),
+        "median_depth_m": global_median,
+        "median_absolute_deviation_m": global_mad,
+        "mad_sigma": float(mad_sigma),
+        "minimum_half_width_m": float(min_half_width_m),
+        "confidence_semantics": "UniDepth exp(logconfidence); larger values predict larger depth error",
+        "confidence_seed_percentile": float(confidence_seed_percentile),
+        "local_depth_step_max_m": float(local_depth_step_max_m),
+        "max_removed_distance_inside_mask_px": float(max_removed_distance_inside_mask_px),
+        "component_count": int(component_count - 1),
+        "component_rows": component_rows,
+        "small_component_pixels": int(small_component_pixels),
+        "small_component_fraction": small_component_fraction,
+        "raw_backprojected_extent_m": raw_extent.astype(float).tolist(),
+        "raw_backprojected_extent_diag_m": raw_diag,
+        "robust_backprojected_extent_m": accepted_extent.astype(float).tolist(),
+        "robust_backprojected_extent_diag_m": accepted_diag,
+        "raw_to_robust_extent_diag_ratio": raw_to_accepted_ratio,
+        "fail_raw_to_robust_extent_ratio": float(fail_raw_to_robust_extent_ratio),
+        "raw_tail_dominates_extent_but_is_quarantined": tail_dominates_raw_extent,
+        "removed_pixel_distance_inside_owned_mask_px": numeric_summary(removed_distances),
+        "fail_closed": bool(failure_reasons),
+        "failure_reasons": failure_reasons,
+        "claim_scope": "Depth first-surface surfel ownership only. Excluded owned depth remains unresolved; the P11 RGB/mask appearance contract is not eroded or rewritten.",
+    }
+
+
+def numeric_summary(values: np.ndarray) -> dict[str, Any]:
+    array = np.asarray(values, dtype=np.float64).reshape(-1)
+    array = array[np.isfinite(array)]
+    if not array.size:
+        return {"count": 0, "min": None, "median": None, "p95": None, "max": None}
+    return {
+        "count": int(array.size),
+        "min": float(np.min(array)),
+        "median": float(np.median(array)),
+        "p95": float(np.percentile(array, 95.0)),
+        "max": float(np.max(array)),
+    }
+
+
+def backprojected_extent(
+    mask: np.ndarray,
+    depth: np.ndarray,
+    intrinsics: np.ndarray | None = None,
+) -> np.ndarray:
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return np.zeros(3, dtype=np.float64)
+    z = depth[ys, xs].astype(np.float64)
+    if intrinsics is None:
+        # Tests and proposal-only diagnostics may use normalized rays. Production
+        # P09 passes the exact active depth-plane K below.
+        h, w = depth.shape
+        fx = fy = max(1.0, float(w))
+        cx, cy = 0.5 * (w - 1), 0.5 * (h - 1)
+    else:
+        intr = np.asarray(intrinsics, dtype=np.float64).reshape(-1)
+        if intr.shape != (4,) or not np.isfinite(intr).all() or intr[0] <= 0.0 or intr[1] <= 0.0:
+            raise RuntimeError(f"invalid intrinsics for depth ownership: {intr}")
+        fx, fy, cx, cy = intr.tolist()
+    x = (xs.astype(np.float64) - cx) * z / fx
+    y = (ys.astype(np.float64) - cy) * z / fy
+    points = np.column_stack((x, y, z))
+    return points.max(axis=0) - points.min(axis=0)
 
 
 def choose_visible_points(
@@ -970,6 +1346,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         owned_mask_path.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(owned_mask_path), mask_owned.astype(np.uint8) * 255):
             raise RuntimeError(f"failed to write object-owned mask: {owned_mask_path}")
+        if ownership_summary.get("fail_closed") is True:
+            skipped_rows.append({
+                "frame_idx": idx,
+                "status": "projected_mano_hand_ownership_failed_closed",
+                "object_surface_ownership_filter": ownership_summary,
+                "owned_mask_path": str(owned_mask_path),
+            })
+            continue
         if mask_owned.shape != depth_m.shape:
             A_depth_from_mask = camera_contract_resize_affine(
                 (int(mask_owned.shape[1]), int(mask_owned.shape[0])),
@@ -1049,6 +1433,35 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "source_size": depth["source_size"].astype(float).tolist() if depth["source_size"] is not None else None,
             }
         valid = mask_depth_owned & np.isfinite(depth_m) & (depth_m >= float(args.min_depth_m)) & (depth_m <= float(args.max_depth_m))
+        confidence_m = (
+            np.asarray(depth["confidence"][depth_i], dtype=float)
+            if depth.get("confidence") is not None
+            else None
+        )
+        robust_valid, depth_ownership_summary = robust_first_surface_depth_ownership(
+            valid,
+            depth_m,
+            enabled=bool(args.robust_first_surface_depth_ownership),
+            mad_sigma=float(args.first_surface_mad_sigma),
+            min_half_width_m=float(args.first_surface_min_half_width_m),
+            min_retained_fraction=float(args.first_surface_min_retained_fraction),
+            fail_raw_to_robust_extent_ratio=float(args.first_surface_fail_raw_to_robust_extent_ratio),
+            intrinsics=intr,
+            confidence=confidence_m,
+            confidence_seed_percentile=float(args.first_surface_confidence_seed_percentile),
+            local_depth_step_max_m=float(args.first_surface_local_depth_step_max_m),
+            max_removed_distance_inside_mask_px=float(args.first_surface_max_removed_distance_inside_mask_px),
+            min_component_pixels=int(args.first_surface_min_component_pixels),
+            max_small_component_fraction=float(args.first_surface_max_small_component_fraction),
+        )
+        if depth_ownership_summary.get("fail_closed") is True:
+            skipped_rows.append({
+                "frame_idx": idx,
+                "status": "first_surface_depth_ownership_failed_closed",
+                "depth_ownership": depth_ownership_summary,
+            })
+            continue
+        valid = robust_valid
         if int(valid.sum()) < int(args.min_valid_points):
             skipped_rows.append({"frame_idx": idx, "status": "too_few_valid_mask_depth_pixels", "valid_pixels": int(valid.sum())})
             continue
@@ -1087,6 +1500,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "raw_sam2_mask_shape": list(mask.shape),
             "depth_shape": list(depth_m.shape),
             "object_surface_ownership_filter": ownership_summary,
+            "first_surface_depth_ownership": depth_ownership_summary,
             "source_width": int(source_width),
             "source_height": int(source_height),
         }
@@ -1260,7 +1674,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_p95_m": float(vis["depth_p95_m"]),
             "sample_summary": vis["sample_summary"],
             "object_surface_ownership_filter": vis.get("object_surface_ownership_filter"),
-            "claim_scope": "visible metric surface measurement only; hand-owned pixels are excluded from object surface before metric lifting; not hidden geometry and not final object pose",
+            "first_surface_depth_ownership": vis.get("first_surface_depth_ownership"),
+            "claim_scope": "visible metric surface measurement only; hand-owned and non-first-surface depth pixels are excluded before metric lifting; not hidden geometry and not final object pose",
         }
         row_obj = {
             "object_id": object_id,
@@ -1424,8 +1839,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "allow_camera_frame_world": bool(args.allow_camera_frame_world),
             "carry_invisible_pose": bool(args.carry_invisible_pose),
             "preserve_source_index": bool(args.preserve_source_index),
-            "exclude_hand_bboxes": bool(args.exclude_hand_bboxes),
-            "hand_bbox_exclusion_pad_px": int(args.hand_bbox_exclusion_pad_px),
+            "exclude_hand_regions": bool(args.exclude_hand_bboxes),
+            "hand_ownership_primitive": "projected_full_hawor_mano_triangle_silhouette",
+            "hand_bbox_subtraction_used": False,
+            "hand_silhouette_exclusion_pad_px": int(args.hand_bbox_exclusion_pad_px),
+            "robust_first_surface_depth_ownership": bool(args.robust_first_surface_depth_ownership),
+            "first_surface_mad_sigma": float(args.first_surface_mad_sigma),
+            "first_surface_min_half_width_m": float(args.first_surface_min_half_width_m),
+            "first_surface_min_retained_fraction": float(args.first_surface_min_retained_fraction),
+            "first_surface_confidence_seed_percentile": float(args.first_surface_confidence_seed_percentile),
+            "first_surface_local_depth_step_max_m": float(args.first_surface_local_depth_step_max_m),
+            "first_surface_max_removed_distance_inside_mask_px": float(args.first_surface_max_removed_distance_inside_mask_px),
+            "first_surface_min_component_pixels": int(args.first_surface_min_component_pixels),
+            "first_surface_max_small_component_fraction": float(args.first_surface_max_small_component_fraction),
+            "first_surface_fail_raw_to_robust_extent_ratio": float(args.first_surface_fail_raw_to_robust_extent_ratio),
             "rigid_extent_ratio_max": float(args.rigid_extent_ratio_max),
             "rigid_extent_axis_ratio_max": float(args.rigid_extent_axis_ratio_max),
             "anchor_candidate_count": int(args.anchor_candidate_count),
@@ -1499,8 +1926,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-camera-frame-world", action="store_true", help="Explicitly use each camera frame as its own world frame when no world camera pose is available. This is not valid for temporal metric world claims.")
     parser.add_argument("--carry-invisible-pose", action="store_true", help="Carry the nearest visible centroid pose into invisible frames as an uncertain initialization only.")
     parser.add_argument("--preserve-source-index", action=argparse.BooleanOptionalAction, default=True, help="Write one output frame row per raw source frame so annotations['frames'][frame_idx] remains valid for V18 rigid tools.")
-    parser.add_argument("--exclude-hand-bboxes", action=argparse.BooleanOptionalAction, default=True, help="Subtract same-frame hand support boxes from object masks before lifting visible object depth; hand-owned pixels remain occlusion/uncertainty, not object surface.")
-    parser.add_argument("--hand-bbox-exclusion-pad-px", type=int, default=12, help="Padding, in mask/depth pixels, around projected hand boxes removed from object visible-surface support.")
+    parser.add_argument(
+        "--exclude-hand-bboxes",
+        "--exclude-hand-regions",
+        dest="exclude_hand_bboxes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Subtract projected full HaWoR/MANO triangle silhouettes before lifting object depth; coarse hand bboxes are never ownership masks.",
+    )
+    parser.add_argument(
+        "--hand-bbox-exclusion-pad-px",
+        type=int,
+        default=4,
+        help="Legacy option name: padding in mask pixels around projected MANO hand silhouettes (not bboxes).",
+    )
+    parser.add_argument("--robust-first-surface-depth-ownership", action=argparse.BooleanOptionalAction, default=True, help="Select confidence/depth-geodesic first-surface surfels per connected object component; appearance masks remain unchanged.")
+    parser.add_argument("--first-surface-mad-sigma", type=float, default=2.5, help="Per connected component: MAD sigma used only for the initial depth seed before confidence/geodesic growth.")
+    parser.add_argument("--first-surface-min-half-width-m", type=float, default=0.03, help="Minimum per-component seed half-width in meters.")
+    parser.add_argument("--first-surface-min-retained-fraction", type=float, default=0.90, help="Fail closed when validated depth-coherent support retains less than this fraction of valid owned depth.")
+    parser.add_argument("--first-surface-confidence-seed-percentile", type=float, default=95.0, help="Maximum traversable UniDepth error proxy is derived from this percentile of each component seed.")
+    parser.add_argument("--first-surface-local-depth-step-max-m", type=float, default=0.005, help="Maximum adjacent-pixel depth step during geodesic support growth.")
+    parser.add_argument("--first-surface-max-removed-distance-inside-mask-px", type=float, default=10.0, help="Fail closed if rejected depth is not localized near an object-mask boundary.")
+    parser.add_argument("--first-surface-min-component-pixels", type=int, default=20)
+    parser.add_argument("--first-surface-max-small-component-fraction", type=float, default=0.01)
+    parser.add_argument("--first-surface-fail-raw-to-robust-extent-ratio", type=float, default=2.0, help="Diagnostic tail-dominance ratio; a larger raw extent is accepted only when support and boundary-localization quarantine gates pass.")
     parser.add_argument("--seed", type=int, default=1901)
     parser.add_argument("--anchor-mesh-min-voxel-m", type=float, default=0.002)
     parser.add_argument("--anchor-mesh-voxel-divisor", type=float, default=80.0)

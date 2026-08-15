@@ -15,7 +15,9 @@ Hard rules:
 - Do not inspect sibling runs, source repositories, reference-label sidecars, CAD assets,
   hidden object/hand poses, or foreground reference depth.
 - The launch-supplied official pinhole camera contract is prediction-side sensor metadata
-  and must be resolved through P03b; it is not permission to inspect other state files.
+  and must be resolved through P03b **before P03**; P03 must condition UniDepth on that K.
+  P03c may verify/bind matching rays but must never relabel an unchanged depth raster with
+  a disagreeing K. This metadata is not permission to inspect other state files.
 - The semantic target hint is not a mask, box, pose, or acceptance decision.  Confirm it
   from raw/review imagery.
 - Use the image read tool for P05, P07, P09, D11, and D18 visual checks.  Numeric reports

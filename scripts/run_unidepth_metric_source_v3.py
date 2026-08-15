@@ -79,11 +79,19 @@ def to_numpy(value: object, name: str) -> np.ndarray:
     return arr.astype(np.float32)
 
 
-def infer_unidepth(model: object, image: Image.Image, device: torch.device) -> tuple[np.ndarray, np.ndarray | None]:
+def infer_unidepth(
+    model: object,
+    image: Image.Image,
+    device: torch.device,
+    camera_K: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     rgb = np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
     image_t = torch.from_numpy(rgb).permute(2, 0, 1).to(device)
+    camera_t = None
+    if camera_K is not None:
+        camera_t = torch.as_tensor(camera_K, dtype=torch.float32, device=device)
     with torch.no_grad():
-        prediction = model.infer(image_t)
+        prediction = model.infer(image_t, camera=camera_t)
     if not isinstance(prediction, dict):
         raise RuntimeError(f"UniDepth infer returned {type(prediction)}")
     depth_key = "depth" if "depth" in prediction else "depths" if "depths" in prediction else None
@@ -102,7 +110,28 @@ def infer_unidepth(model: object, image: Image.Image, device: torch.device) -> t
             if candidate.size == 9:
                 intrinsics = candidate.reshape(3, 3).astype(np.float64)
                 break
-    return depth, intrinsics
+    rays = None
+    if "rays" in prediction:
+        candidate = to_numpy(prediction["rays"], "rays")
+        if candidate.ndim == 3 and candidate.shape[0] == 3:
+            rays = candidate.astype(np.float64)
+        elif candidate.ndim == 3 and candidate.shape[-1] == 3:
+            rays = np.moveaxis(candidate, -1, 0).astype(np.float64)
+        else:
+            raise RuntimeError(f"UniDepth rays have invalid shape {candidate.shape}")
+    radius = None
+    if "radius" in prediction:
+        candidate = to_numpy(prediction["radius"], "radius")
+        if candidate.ndim != 2:
+            raise RuntimeError(f"UniDepth radius has invalid shape {candidate.shape}")
+        radius = candidate.astype(np.float64)
+    confidence = None
+    if "confidence" in prediction:
+        candidate = to_numpy(prediction["confidence"], "confidence")
+        if candidate.ndim != 2:
+            raise RuntimeError(f"UniDepth confidence has invalid shape {candidate.shape}")
+        confidence = candidate.astype(np.float64)
+    return depth, intrinsics, rays, radius, confidence
 
 
 def resize_depth(depth: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
@@ -180,7 +209,7 @@ def run(args: argparse.Namespace) -> dict:
         if "depth" in entry and entry["depth"]:
             manifest_depth_path = localize_path(str(entry["depth"]), args.remote_root, args.local_root)
         image = Image.open(rgb_path).convert("RGB")
-        depth_raw, intrinsics = infer_unidepth(model, image, device)
+        depth_raw, intrinsics, _rays, _radius, _confidence = infer_unidepth(model, image, device)
         depth = resize_depth(depth_raw, (int(args.source_height), int(args.source_width)))
         if intrinsics is None:
             raise RuntimeError(f"UniDepth returned no intrinsics for frame {frame_idx}")

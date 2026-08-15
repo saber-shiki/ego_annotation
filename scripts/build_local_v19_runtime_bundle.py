@@ -134,6 +134,7 @@ def adapt_runtime_spec(source: str, bundle_root: Path) -> str:
 "{TRELLIS_PYTHON}" scripts/remote_run_trellis_shape_v3.py \\
   --repo "{TRELLIS_REPO}" \\
   --model "{TRELLIS_MODEL}" \\
+  --dinov2-repo /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main \\
   --image "$EVIDENCE_CROP_RGBA" \\
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/trellis_{OBJECT_ID}_seed42" \\
   --seed 42"""

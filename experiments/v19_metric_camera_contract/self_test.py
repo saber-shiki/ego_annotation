@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,7 @@ import adapt_v19_depth_to_camera_contract as depth_adapter  # noqa: E402
 import build_v19_base_annotations as base_annotations  # noqa: E402
 import build_v19_visible_geometry_from_sam2_depth as visible_geometry  # noqa: E402
 import resolve_v19_camera_contract as resolver  # noqa: E402
+import run_unidepth_full_frame_v3 as full_depth  # noqa: E402
 from v19_camera_contract import plane_intrinsics, resize_affine, validate_contract  # noqa: E402
 
 
@@ -68,17 +70,24 @@ def manifest_source_video(manifest: Path) -> Path:
     return Path(payload["input_video"])
 
 
-def make_depth(root: Path, *, count: int = 2, size: tuple[int, int] = (100, 80)) -> Path:
+def make_depth(
+    root: Path,
+    *,
+    count: int = 2,
+    size: tuple[int, int] = (100, 80),
+    intrinsics: tuple[float, float, float, float] = (70.0, 72.0, 49.0, 39.0),
+) -> Path:
     width, height = size
     depth = np.arange(count * height * width, dtype=np.float16).reshape(count, height, width) / np.float16(1000.0)
+    intrinsics_row = np.asarray(intrinsics, dtype=np.float64)
     path = root / "depth.npz"
     np.savez_compressed(
         path,
         frame_idx=np.arange(count, dtype=np.int32),
         depth=depth,
         source_size=np.asarray([width, height], dtype=np.int32),
-        focal_px=np.asarray([70.0] * count, dtype=np.float32),
-        intrinsics_fx_fy_cx_cy=np.asarray([[70.0, 72.0, 49.0, 39.0]] * count, dtype=np.float32),
+        focal_px=np.asarray([math.sqrt(intrinsics_row[0] * intrinsics_row[1])] * count, dtype=np.float64),
+        intrinsics_fx_fy_cx_cy=np.repeat(intrinsics_row[None, :], count, axis=0),
     )
     return path
 
@@ -432,11 +441,81 @@ class CameraContractTest(unittest.TestCase):
             np.testing.assert_allclose(world, camera)
             self.assertEqual(sampling["sampled_points"], 1)
 
+    def test_first_surface_depth_ownership_rejects_sparse_boundary_tail(self) -> None:
+        mask = np.zeros((40, 50), dtype=bool)
+        mask[5:35, 5:45] = True
+        depth = np.zeros(mask.shape, dtype=np.float32)
+        depth[mask] = 0.40
+        # A gradual in-mask boundary tail defeats a single largest-gap split but
+        # must not own metric surfels or reconstruction scale.
+        depth[5, 5:45] = np.linspace(0.55, 1.40, 40, dtype=np.float32)
+        confidence = np.ones(mask.shape, dtype=np.float32)
+        confidence[5, 5:45] = 10.0
+        robust, diagnostic = visible_geometry.robust_first_surface_depth_ownership(
+            mask,
+            depth,
+            enabled=True,
+            mad_sigma=2.5,
+            min_half_width_m=0.03,
+            min_retained_fraction=0.90,
+            fail_raw_to_robust_extent_ratio=2.0,
+            intrinsics=np.asarray([40.0, 41.0, 24.75, 19.75]),
+            confidence=confidence,
+        )
+        self.assertFalse(diagnostic["fail_closed"])
+        self.assertTrue(diagnostic["raw_tail_dominates_extent_but_is_quarantined"])
+        self.assertGreater(diagnostic["removed_depth_pixels"], 0)
+        self.assertTrue(np.all(~robust[5, 5:45]))
+        self.assertGreater(diagnostic["raw_to_robust_extent_diag_ratio"], 2.0)
+
+    def test_first_surface_depth_ownership_preserves_supported_object_thickness(self) -> None:
+        mask = np.zeros((40, 50), dtype=bool)
+        mask[5:35, 5:45] = True
+        depth = np.zeros(mask.shape, dtype=np.float32)
+        depth[mask] = np.tile(np.linspace(0.38, 0.46, 40, dtype=np.float32), 30)
+        robust, diagnostic = visible_geometry.robust_first_surface_depth_ownership(
+            mask,
+            depth,
+            enabled=True,
+            mad_sigma=2.5,
+            min_half_width_m=0.03,
+            min_retained_fraction=0.90,
+            fail_raw_to_robust_extent_ratio=2.0,
+            intrinsics=np.asarray([40.0, 41.0, 24.75, 19.75]),
+            confidence=np.ones(mask.shape, dtype=np.float32),
+        )
+        self.assertFalse(diagnostic["fail_closed"])
+        self.assertEqual(int(np.count_nonzero(robust)), int(np.count_nonzero(mask)))
+        self.assertAlmostEqual(diagnostic["retained_fraction"], 1.0)
+
+    def test_first_surface_depth_ownership_fails_when_rejection_is_interior(self) -> None:
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[5:55, 5:55] = True
+        depth = np.zeros(mask.shape, dtype=np.float32)
+        depth[mask] = 0.40
+        depth[25:35, 25:35] = 0.90
+        confidence = np.ones(mask.shape, dtype=np.float32)
+        confidence[25:35, 25:35] = 10.0
+        _robust, diagnostic = visible_geometry.robust_first_surface_depth_ownership(
+            mask,
+            depth,
+            enabled=True,
+            mad_sigma=2.5,
+            min_half_width_m=0.03,
+            min_retained_fraction=0.90,
+            fail_raw_to_robust_extent_ratio=2.0,
+            intrinsics=np.asarray([50.0, 50.0, 29.5, 29.5]),
+            confidence=confidence,
+            max_removed_distance_inside_mask_px=10.0,
+        )
+        self.assertTrue(diagnostic["fail_closed"])
+        self.assertIn("rejected_depth_not_boundary_localized", diagnostic["failure_reasons"])
+
     def test_visible_geometry_rejects_depth_bound_to_another_contract(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v19_visible_depth_binding_") as temp:
             root = Path(temp)
             manifest = make_manifest(root / "input")
-            depth_path = make_depth(root)
+            depth_path = make_depth(root, intrinsics=(80.0, 82.0, 50.0, 40.0))
             sensor = root / "sensor.json"
             write_json(
                 sensor,
@@ -474,6 +553,7 @@ class CameraContractTest(unittest.TestCase):
                     output_dir=root / "adapted",
                     output_name="adapted.npz",
                     allow_implicit_depth_resize=False,
+                    allow_metadata_only_ray_relabel=False,
                     replace=False,
                 )
             )
@@ -503,16 +583,125 @@ class CameraContractTest(unittest.TestCase):
                     allow_implicit_depth_resize=False,
                 )
 
+    def test_unidepth_full_frame_consumes_camera_contract_before_depth_decode(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v19_unidepth_conditioned_") as temp:
+            root = Path(temp)
+            manifest = make_manifest(root / "input")
+            sensor = root / "sensor.json"
+            write_json(
+                sensor,
+                {
+                    "image_width": 100,
+                    "image_height": 80,
+                    "intrinsics_fx_fy_cx_cy": [80.0, 82.0, 50.0, 40.0],
+                    "intrinsics_source": "synthetic official sensor K",
+                },
+            )
+            resolver.resolve(
+                resolve_args(
+                    raw_frame_manifest=manifest,
+                    sensor_calibration_contract=sensor,
+                    sensor_source_video=manifest_source_video(manifest),
+                    output_dir=root / "contract",
+                )
+            )
+            contract_path = root / "contract" / "v19_camera_calibration_contract.json"
+
+            class FakeUniDepth:
+                def __init__(self) -> None:
+                    self.cameras: list[np.ndarray] = []
+
+                def infer(self, image, camera=None):
+                    self.assert_camera(camera)
+                    self.cameras.append(camera.detach().cpu().numpy().copy())
+                    height, width = int(image.shape[-2]), int(image.shape[-1])
+                    ys, xs = full_depth.torch.meshgrid(
+                        full_depth.torch.arange(height, dtype=full_depth.torch.float32, device=image.device),
+                        full_depth.torch.arange(width, dtype=full_depth.torch.float32, device=image.device),
+                        indexing="ij",
+                    )
+                    homogeneous = full_depth.torch.stack((xs, ys, full_depth.torch.ones_like(xs)), dim=0).reshape(3, -1)
+                    rays = (full_depth.torch.linalg.inv(camera) @ homogeneous).reshape(3, height, width)
+                    rays = rays / full_depth.torch.linalg.norm(rays, dim=0, keepdim=True)
+                    return {
+                        "depth": full_depth.torch.ones((1, 1, height, width), device=image.device),
+                        "confidence": full_depth.torch.ones((1, 1, height, width), device=image.device),
+                        "radius": (1.0 / rays[2].clamp(min=1.0e-6))[None, None, ...],
+                        "intrinsics": camera[None, ...],
+                        "rays": rays[None, ...],
+                    }
+
+                @staticmethod
+                def assert_camera(camera) -> None:
+                    if camera is None:
+                        raise AssertionError("camera K was not supplied to UniDepth")
+
+            fake = FakeUniDepth()
+            original_load_model = full_depth.load_model
+            full_depth.load_model = lambda model_id, device: fake
+            try:
+                report = full_depth.run(
+                    SimpleNamespace(
+                        manifest=manifest,
+                        output_dir=root / "depth",
+                        camera_contract=contract_path,
+                        camera_input_plane="manifest_rgb",
+                        camera_output_plane="source_rgb",
+                        camera_rays_validation_max_angle_deg=0.05,
+                        frame_start=0,
+                        frame_end=1,
+                        unidepth_repo=None,
+                        remote_root=None,
+                        local_root=None,
+                        source_width=100,
+                        source_height=80,
+                        min_valid_pixels=1,
+                        model_id="synthetic",
+                        cpu=True,
+                    )
+                )
+            finally:
+                full_depth.load_model = original_load_model
+
+            self.assertEqual(report["camera_conditioning"]["mode"], "provided_pinhole_intrinsics")
+            self.assertEqual(len(fake.cameras), 2)
+            np.testing.assert_allclose(fake.cameras[0][0, 0], 40.0)
+            archive_path = Path(report["depth_archive"])
+            with np.load(archive_path, allow_pickle=False) as archive:
+                np.testing.assert_array_equal(
+                    archive["intrinsics_fx_fy_cx_cy"],
+                    np.asarray([[80.0, 82.0, 50.0, 40.0]] * 2, dtype=np.float64),
+                )
+                self.assertEqual(str(archive["camera_conditioning_mode"]), "provided_pinhole_intrinsics")
+
+            adapted = depth_adapter.adapt(
+                SimpleNamespace(
+                    source_depth_npz=archive_path,
+                    camera_contract=contract_path,
+                    depth_plane="source_rgb",
+                    output_dir=root / "adapted",
+                    output_name="adapted.npz",
+                    allow_implicit_depth_resize=False,
+                    allow_metadata_only_ray_relabel=False,
+                    replace=False,
+                )
+            )
+            self.assertTrue(adapted["source_and_resolved_rays_match"])
+            self.assertEqual(
+                adapted["source_depth_camera_conditioning"]["mode"],
+                "provided_pinhole_intrinsics",
+            )
+
     def test_depth_adapter_preserves_non_float32_camera_contract_precision(self) -> None:
         """Regression: official K values need not be exactly representable as float32."""
         with tempfile.TemporaryDirectory(prefix="v19_depth_camera_precision_") as temp:
             root = Path(temp)
             manifest = make_manifest(root / "input")
-            depth_path = make_depth(root)
             official_intrinsics = np.asarray(
                 [975.0954101562501, 975.0954101562501, 49.123456789, 39.987654321],
                 dtype=np.float64,
             )
+            depth_path = make_depth(root, intrinsics=tuple(official_intrinsics.tolist()))
             self.assertGreater(
                 float(np.max(np.abs(official_intrinsics - official_intrinsics.astype(np.float32)))),
                 1.0e-6,
@@ -545,6 +734,7 @@ class CameraContractTest(unittest.TestCase):
                     output_dir=output_dir,
                     output_name="adapted.npz",
                     allow_implicit_depth_resize=False,
+                    allow_metadata_only_ray_relabel=False,
                     replace=False,
                 )
             )
@@ -600,6 +790,19 @@ class CameraContractTest(unittest.TestCase):
             )
             contract_path = root / "contract" / "v19_camera_calibration_contract.json"
             output_dir = root / "adapted"
+            with self.assertRaisesRegex(RuntimeError, "cannot reproject it onto new sensor rays"):
+                depth_adapter.adapt(
+                    SimpleNamespace(
+                        source_depth_npz=depth_path,
+                        camera_contract=contract_path,
+                        depth_plane="source_rgb",
+                        output_dir=output_dir,
+                        output_name="adapted.npz",
+                        allow_implicit_depth_resize=False,
+                        allow_metadata_only_ray_relabel=False,
+                        replace=False,
+                    )
+                )
             report = depth_adapter.adapt(
                 SimpleNamespace(
                     source_depth_npz=depth_path,
@@ -608,10 +811,12 @@ class CameraContractTest(unittest.TestCase):
                     output_dir=output_dir,
                     output_name="adapted.npz",
                     allow_implicit_depth_resize=False,
+                    allow_metadata_only_ray_relabel=True,
                     replace=False,
                 )
             )
-            self.assertTrue(all(report["array_invariants"].values()))
+            self.assertTrue(report["metadata_only_ray_relabel_override"])
+            self.assertFalse(report["depth_ray_geometry_reprojected"])
             with np.load(depth_path, allow_pickle=False) as source, np.load(output_dir / "adapted.npz", allow_pickle=False) as adapted:
                 self.assertTrue(np.array_equal(source["depth"], adapted["depth"], equal_nan=True))
                 np.testing.assert_allclose(adapted["intrinsics_fx_fy_cx_cy"], [[80.0, 82.0, 50.0, 40.0]] * 2)

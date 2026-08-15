@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 P11_SCHEMA = "v19_experimental_p11_dual_geometry_inputs_v1"
-P12_SCHEMA = "v19_experimental_p12_parallel_geometry_priors_v1"
+P12_SCHEMA = "v19_experimental_p12_parallel_geometry_priors_v2"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -174,6 +174,19 @@ def sam3d_candidate_record(
     glb = require_file(Path(str(case.get("glb", ""))), "SAM3D raw GLB")
     gaussian_text = str(case.get("gaussian") or "")
     gaussian = require_file(Path(gaussian_text), "SAM3D Gaussian") if gaussian_text else None
+    native_p3d = require_file(
+        Path(str(case.get("native_pose_mesh_pytorch3d_camera") or "")),
+        "SAM3D native-pose PyTorch3D-camera mesh",
+    )
+    native_opencv = require_file(
+        Path(str(case.get("native_pose_mesh_opencv_camera") or "")),
+        "SAM3D native-pose OpenCV-camera mesh",
+    )
+    native_contract = case.get("native_pose_contract")
+    if not isinstance(native_contract, dict) or native_contract.get("quaternion_order") != "wxyz_scalar_first_pytorch3d":
+        raise RuntimeError("SAM3D runner lacks the verified native pose coordinate contract")
+    if native_contract.get("metric_status") != "native_monocular_scene_units_not_sensor_meters":
+        raise RuntimeError("SAM3D runner incorrectly claims native pose is sensor metric")
     return {
         "source_model": "sam3d_objects",
         "status": "generated_native_raw_prior",
@@ -192,13 +205,17 @@ def sam3d_candidate_record(
             "raw_mesh": file_record(mesh, "SAM3D raw mesh"),
             "glb": file_record(glb, "SAM3D GLB"),
             "gaussian": file_record(gaussian, "SAM3D Gaussian") if gaussian is not None else None,
+            "native_pose_mesh_pytorch3d_camera": file_record(native_p3d, "SAM3D native P3D mesh"),
+            "native_pose_mesh_opencv_camera": file_record(native_opencv, "SAM3D native OpenCV mesh"),
             "mesh_stats": case.get("mesh_stats"),
             "native_pose": case.get("pose"),
+            "native_pose_contract": native_contract,
         },
         "invocation": invocation,
         "semantics": {
-            "mesh_frame": "sam3d_native_local_object_frame",
-            "native_pose_frame": "sam3d_local_to_camera_unverified_bridge",
+            "mesh_frame": "sam3d_native_local_generator_frame",
+            "native_pose_frame": "verified_pytorch3d_camera_then_explicit_opencv_bridge",
+            "native_pose_metric_status": "native_monocular_scene_units_not_sensor_meters",
             "metric_scale_ready": False,
             "v19_canonical_frame_ready": False,
             "collision_surface_ready": False,
@@ -409,7 +426,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "pose_fit_applied": False,
             "multiview_support_applied": False,
             "collision_ready": False,
-            "next_stage": "experimental source-neutral P13 adapter",
+            "next_stage": "backend-correct P13 adapters with shared observed evidence and render-only semantics",
         },
         "canonical_trellis_rerun": False,
         "source_artifacts_mutated": False,

@@ -126,6 +126,11 @@ def validate_source_state(source: dict[str, Any], source_path: Path, common_coll
     pose_report = load_json(pose_report_path)
     if pose_report.get("annotation_ready") is not True:
         raise RuntimeError(f"pose report is not annotation-ready: {pose_report_path}")
+    temporal_readiness = pose_report.get("temporal_readiness")
+    if not isinstance(temporal_readiness, dict) or temporal_readiness.get("ready") is not True:
+        raise RuntimeError("pose report lacks a passing temporal coverage/observability/SE(3)-jump gate")
+    if int(temporal_readiness.get("accepted_full_timeline_pose_count") or 0) != int(temporal_readiness.get("timeline_frame_count") or -1):
+        raise RuntimeError("pose report temporal gate does not cover the exact full timeline")
     if int(pose_report.get("nonpenetration_target_frame_count", -1)) != 0:
         raise RuntimeError("pose trajectory is not observed-only: nonpenetration targets are present")
     completed_mesh = require_file(
@@ -155,6 +160,7 @@ def validate_source_state(source: dict[str, Any], source_path: Path, common_coll
         "pose_frame_count": len(frame_ids),
         "pose_frame_range": [min(frame_ids), max(frame_ids)],
         "pose_nonpenetration_target_frame_count": 0,
+        "temporal_readiness": temporal_readiness,
         "pose_canonical_observed_mesh": str(completed_mesh),
         "pose_canonical_observed_geometry": pose_geometry,
         "annotation_path": str(annotation_path),

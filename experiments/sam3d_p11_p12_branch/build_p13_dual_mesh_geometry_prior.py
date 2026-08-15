@@ -15,7 +15,7 @@ import trimesh
 
 from render_p12_raw_sam_mask_ab import add_title, render_mesh_panel, simplify
 
-SCHEMA = "v19_experimental_p13_dual_mesh_geometry_prior_v1"
+SCHEMA = "v19_experimental_p13_dual_mesh_geometry_prior_v2"
 VIEWS = [
     ("observed PCA plane", (0, 1, 2)),
     ("PCA long side", (0, 2, 1)),
@@ -226,18 +226,40 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         Path(str(candidate.get("source_neutral_outputs", {}).get("collision_eligible_mesh", ""))),
         "observed-only collision surface",
     )
+    builder_report = load_json(Path(str(candidate["legacy_builder_report"])))
     matrix = np.asarray(
-        load_json(Path(str(candidate["legacy_builder_report"])))
-        .get("metric_alignment", {})
-        .get("matrix_model_to_canonical"),
+        builder_report.get("metric_alignment", {}).get("matrix_model_to_canonical"),
         dtype=np.float64,
     )
     if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
         raise RuntimeError("candidate has invalid P13 model-to-canonical matrix")
+    native_bridge = candidate.get("native_metric_bridge")
+    if candidate.get("source_model") == "sam3d_objects":
+        if not isinstance(native_bridge, dict) or not str(native_bridge.get("status") or "").startswith("ok_"):
+            raise RuntimeError("SAM3D dual prior requires a successful native metric bridge")
+        bridge_report_path = require_file(Path(str(native_bridge.get("report") or "")), "SAM3D native metric bridge report")
+        if sha256_file(bridge_report_path) != str(native_bridge.get("report_sha256") or ""):
+            raise RuntimeError("SAM3D native metric bridge report hash mismatch")
+        bridge_report = load_json(bridge_report_path)
+        metric_canonical_prior_path = require_file(
+            Path(str((bridge_report.get("outputs") or {}).get("metric_canonical_render_prior") or "")),
+            "SAM3D metric-canonical intact render prior",
+        )
+        if not np.allclose(matrix, np.eye(4), atol=1.0e-12, rtol=0.0):
+            raise RuntimeError("SAM3D native metric bridge must enter the labeling builder with identity alignment")
+        alignment_source = "verified_sam3d_native_sensor_metric_canonical_bridge"
+    else:
+        bridge_report_path = None
+        metric_canonical_prior_path = None
+        alignment_source = "generic_model_to_canonical_matrix"
 
     output_dir = prepare_output(args.output_dir)
     raw_mesh = load_mesh(raw_mesh_path)
-    aligned_raw = transform_mesh_preserve_topology(raw_mesh, matrix)
+    aligned_raw = (
+        load_mesh(metric_canonical_prior_path)
+        if metric_canonical_prior_path is not None
+        else transform_mesh_preserve_topology(raw_mesh, matrix)
+    )
     legacy_cut = load_mesh(legacy_path)
     observed = load_mesh(observed_source_path)
     raw_topology = topology(raw_mesh)
@@ -313,9 +335,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "controlled_report": str(controlled_path),
         "candidate": args.candidate,
         "source_model": candidate.get("source_model"),
+        "alignment_source": alignment_source,
         "metric_alignment_matrix_model_to_canonical": matrix.tolist(),
         "inputs": {
             "raw_prior": {"path": str(raw_mesh_path), "sha256": sha256_file(raw_mesh_path)},
+            "native_metric_bridge_report": str(bridge_report_path) if bridge_report_path is not None else None,
+            "metric_canonical_intact_prior": str(metric_canonical_prior_path) if metric_canonical_prior_path is not None else None,
             "legacy_cut_pose_hypothesis": str(legacy_path),
             "observed_metric_surface": str(observed_source_path),
         },

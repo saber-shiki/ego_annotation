@@ -346,6 +346,157 @@ def correction_summary(x: np.ndarray, observations: list[PoseObservation]) -> di
     }
 
 
+def rotation_observability_summary(
+    observations: list[PoseObservation],
+    minimum_score: float,
+) -> dict[str, Any]:
+    rows = []
+    for observation in observations:
+        centered = observation.observed_points_world - observation.observed_points_world.mean(axis=0, keepdims=True)
+        covariance = centered.T @ centered / max(1, len(centered) - 1)
+        eigenvalues = np.linalg.eigvalsh(covariance)[::-1]
+        largest = max(float(eigenvalues[0]), 1.0e-12)
+        normalized = eigenvalues / largest
+        # Distinct adjacent principal spreads are a conservative proxy for
+        # whether a one-sided rigid fit can observe all three rotation axes.
+        score = float(min(normalized[0] - normalized[1], normalized[1] - normalized[2]))
+        rows.append({
+            "frame_idx": int(observation.frame_idx),
+            "normalized_covariance_eigenvalues": normalized.astype(float).tolist(),
+            "rotation_observability_score": score,
+            "observable": bool(score >= float(minimum_score)),
+        })
+    observable_count = int(sum(row["observable"] for row in rows))
+    return {
+        "minimum_score": float(minimum_score),
+        "observable_frame_count": observable_count,
+        "observation_frame_count": int(len(rows)),
+        "observable_fraction": float(observable_count / max(1, len(rows))),
+        "score_summary": numeric_summary([row["rotation_observability_score"] for row in rows]),
+        "rows": rows,
+        "interpretation": "Conservative covariance-eigenvalue proxy; symmetric, line-like, or near-planar-isotropic visible support cannot establish all rotation axes.",
+    }
+
+
+def temporal_readiness_diagnostics(
+    *,
+    pose_rows: list[dict[str, Any]],
+    annotations: dict[str, Any],
+    observations: list[PoseObservation],
+    full_timeline_completion: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    timeline = sorted(
+        int(frame["frame_idx"])
+        for frame in annotations.get("frames", [])
+        if isinstance(frame, dict)
+        and frame.get("frame_idx") is not None
+        and (args.frame_start is None or int(frame["frame_idx"]) >= int(args.frame_start))
+        and (args.frame_end is None or int(frame["frame_idx"]) <= int(args.frame_end))
+    )
+    timeline_set = set(timeline)
+    accepted = []
+    for row in pose_rows:
+        idx = int(row.get("frame_idx", -1))
+        if idx not in timeline_set or row.get("status") not in {CORRECTED_POSE_STATUS, COMPLETED_POSE_STATUS}:
+            continue
+        rotation = np.asarray(row.get("rotation_world_from_completed_canonical_matrix"), dtype=np.float64)
+        translation = np.asarray(row.get("translation_world_m"), dtype=np.float64)
+        if rotation.shape != (3, 3) or translation.shape != (3,) or not np.isfinite(rotation).all() or not np.isfinite(translation).all():
+            continue
+        accepted.append((idx, rotation, translation, row))
+    accepted.sort(key=lambda value: value[0])
+    direct_frames = sorted(int(observation.frame_idx) for observation in observations if observation.frame_idx in timeline_set)
+    direct_fraction = float(len(direct_frames) / max(1, len(timeline)))
+    internal_gaps = [direct_frames[i] - direct_frames[i - 1] for i in range(1, len(direct_frames))]
+    max_direct_gap = max(internal_gaps) if internal_gaps else (0 if direct_frames else None)
+    leading_gap = direct_frames[0] - timeline[0] if direct_frames and timeline else None
+    trailing_gap = timeline[-1] - direct_frames[-1] if direct_frames and timeline else None
+
+    rotation_steps_deg = []
+    translation_steps_m = []
+    step_rows = []
+    for previous, current in zip(accepted[:-1], accepted[1:]):
+        prev_idx, prev_rotation, prev_translation, _ = previous
+        idx, rotation, translation, _ = current
+        relative = rotation @ prev_rotation.T
+        rotation_deg = float(np.degrees(np.linalg.norm(Rotation.from_matrix(relative).as_rotvec())))
+        translation_m = float(np.linalg.norm(translation - prev_translation))
+        rotation_steps_deg.append(rotation_deg)
+        translation_steps_m.append(translation_m)
+        step_rows.append({
+            "from_frame_idx": int(prev_idx),
+            "to_frame_idx": int(idx),
+            "frame_gap": int(idx - prev_idx),
+            "rotation_step_deg": rotation_deg,
+            "translation_step_m": translation_m,
+        })
+
+    mode_counts = full_timeline_completion.get("mode_counts") if isinstance(full_timeline_completion.get("mode_counts"), dict) else {}
+    completed_count = int(full_timeline_completion.get("completed_row_count") or 0)
+    hold_count = int(mode_counts.get("nearest_visible_pose_hold") or 0)
+    completed_fraction = float(completed_count / max(1, len(timeline)))
+    hold_fraction = float(hold_count / max(1, len(timeline)))
+    observability = rotation_observability_summary(observations, float(args.min_rotation_observability_score))
+
+    max_rotation_step = max(rotation_steps_deg) if rotation_steps_deg else 0.0
+    max_translation_step = max(translation_steps_m) if translation_steps_m else 0.0
+    failure_reasons = []
+    if len(accepted) != len(timeline):
+        failure_reasons.append("incomplete_full_timeline_pose_rows")
+    if direct_fraction < float(args.min_direct_pose_fraction):
+        failure_reasons.append("insufficient_direct_pose_fraction")
+    if max_direct_gap is None or max_direct_gap > int(args.max_direct_pose_gap_frames):
+        failure_reasons.append("direct_pose_gap_too_large")
+    if leading_gap is None or leading_gap > int(args.max_rigid_pose_extrapolation_gap_frames):
+        failure_reasons.append("leading_pose_extrapolation_too_large")
+    if trailing_gap is None or trailing_gap > int(args.max_rigid_pose_extrapolation_gap_frames):
+        failure_reasons.append("trailing_pose_extrapolation_too_large")
+    if completed_fraction > float(args.max_completed_pose_fraction):
+        failure_reasons.append("completed_pose_fraction_too_large")
+    if hold_fraction > float(args.max_nearest_hold_fraction):
+        failure_reasons.append("nearest_hold_fraction_too_large")
+    if max_rotation_step > float(args.max_rotation_step_deg):
+        failure_reasons.append("rotation_step_jump")
+    if max_translation_step > float(args.max_translation_step_m):
+        failure_reasons.append("translation_step_jump")
+    if observability["observable_fraction"] < float(args.min_rotation_observable_fraction):
+        failure_reasons.append("insufficient_rotation_observability")
+    return {
+        "ready": not failure_reasons,
+        "failure_reasons": failure_reasons,
+        "timeline_frame_count": int(len(timeline)),
+        "accepted_full_timeline_pose_count": int(len(accepted)),
+        "direct_pose_count": int(len(direct_frames)),
+        "direct_pose_fraction": direct_fraction,
+        "direct_frame_span": [direct_frames[0], direct_frames[-1]] if direct_frames else None,
+        "max_direct_frame_gap": max_direct_gap,
+        "leading_direct_frame_gap": leading_gap,
+        "trailing_direct_frame_gap": trailing_gap,
+        "completed_pose_count": completed_count,
+        "completed_pose_fraction": completed_fraction,
+        "nearest_hold_count": hold_count,
+        "nearest_hold_fraction": hold_fraction,
+        "completion_mode_counts": mode_counts,
+        "rotation_step_deg": numeric_summary(rotation_steps_deg),
+        "translation_step_m": numeric_summary(translation_steps_m),
+        "max_rotation_step_deg": max_rotation_step,
+        "max_translation_step_m": max_translation_step,
+        "rotation_observability": observability,
+        "thresholds": {
+            "min_direct_pose_fraction": float(args.min_direct_pose_fraction),
+            "max_direct_pose_gap_frames": int(args.max_direct_pose_gap_frames),
+            "max_completed_pose_fraction": float(args.max_completed_pose_fraction),
+            "max_nearest_hold_fraction": float(args.max_nearest_hold_fraction),
+            "max_rotation_step_deg": float(args.max_rotation_step_deg),
+            "max_translation_step_m": float(args.max_translation_step_m),
+            "min_rotation_observable_fraction": float(args.min_rotation_observable_fraction),
+            "min_rotation_observability_score": float(args.min_rotation_observability_score),
+        },
+        "step_rows": step_rows,
+    }
+
+
 def surface_metrics(observations: list[PoseObservation], mesh_samples: np.ndarray, x: np.ndarray) -> dict[str, Any]:
     rot_delta, trans_delta = unpack(x, len(observations))
     obs_to_mesh_medians: list[float] = []
@@ -545,6 +696,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         args,
         graph_support_sufficient,
     )
+    temporal_readiness = temporal_readiness_diagnostics(
+        pose_rows=pose_rows,
+        annotations=annotations,
+        observations=observations,
+        full_timeline_completion=full_timeline_completion,
+        args=args,
+    )
+    correction_is_exact_zero = bool(np.array_equal(result.x, np.zeros_like(result.x)))
+    no_active_nonpenetration_targets = not any(
+        observation.nonpenetration_target_world_m is not None and observation.nonpenetration_weight > 0.0
+        for observation in observations
+    )
+    optimization_effect = {
+        "correction_is_exact_zero": correction_is_exact_zero,
+        "no_active_nonpenetration_targets": no_active_nonpenetration_targets,
+        "zero_correction_is_structural_objective_minimum": bool(
+            correction_is_exact_zero and no_active_nonpenetration_targets
+        ),
+        "physical_trajectory_smoothed_directly": False,
+        "interpretation": (
+            "The objective regularizes only correction deltas. With no nonzero external target, all-zero deltas are the exact minimum; temporal readiness must therefore be established from direct coverage, observability, and SE(3) jump diagnostics, not optimizer success."
+        ),
+    }
     surface_before_med = before_surface["observed_to_mesh_median_m"]["median"]
     surface_after_med = after_surface["observed_to_mesh_median_m"]["median"]
     target_before_med = before_target["target_residual_norm_m"]["median"]
@@ -556,6 +730,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     surface_preserved = surface_degraded_m is None or surface_degraded_m <= float(args.max_surface_median_degradation_m)
     if not graph_support_sufficient:
         status = "completed_uncertain_insufficient_trusted_pose_graph_support"
+    elif not temporal_readiness["ready"]:
+        status = "completed_unready_temporal_coverage_observability_or_se3_jump"
     elif result.success and surface_preserved and target_improved:
         status = "corrected_pose_graph_surface_preserved_nonpenetration_pressure_improved"
     elif result.success and surface_preserved:
@@ -564,7 +740,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         status = "corrected_pose_graph_surface_degraded_untrusted"
     else:
         status = "corrected_pose_graph_optimizer_incomplete"
-    annotation_ready = bool(result.success and surface_preserved and graph_support_sufficient)
+    annotation_ready = bool(
+        result.success
+        and surface_preserved
+        and graph_support_sufficient
+        and temporal_readiness["ready"]
+    )
     for row in pose_rows:
         if row.get("status") in {CORRECTED_POSE_STATUS, COMPLETED_POSE_STATUS}:
             row["annotation_ready"] = annotation_ready
@@ -572,7 +753,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "method": "solve_v19_rigid_object_pose_graph",
         "status": status,
         "annotation_ready": annotation_ready,
-        "claim_scope": "Temporal rigid-object pose correction over eligible visible-frame SE(3) measurements. Visible-surface ICP rows are pose observations; nonpenetration rows exert only clipped soft pressure. If trusted graph support is below the configured minimum, full-timeline rows remain an explicitly unresolved interpolation/nearest-hold hypothesis rather than an annotation-ready trajectory.",
+        "claim_scope": "Temporal rigid-object pose correction over eligible visible-frame SE(3) measurements. Visible-surface ICP rows are pose observations; nonpenetration rows exert only clipped soft pressure. Annotation readiness additionally requires full timeline coverage, direct-observation density, bounded gaps/holds, conservative rotation observability, and bounded per-frame SE(3) steps. Optimizer success alone is insufficient.",
         "object_id": args.object_id,
         "inputs": {
             "annotations": str(args.annotations),
@@ -638,6 +819,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "complete_full_timeline_rigid_pose": bool(args.complete_full_timeline_rigid_pose),
             "max_rigid_pose_interpolation_gap_frames": int(args.max_rigid_pose_interpolation_gap_frames),
             "max_rigid_pose_extrapolation_gap_frames": int(args.max_rigid_pose_extrapolation_gap_frames),
+            "min_direct_pose_fraction": float(args.min_direct_pose_fraction),
+            "max_direct_pose_gap_frames": int(args.max_direct_pose_gap_frames),
+            "max_completed_pose_fraction": float(args.max_completed_pose_fraction),
+            "max_nearest_hold_fraction": float(args.max_nearest_hold_fraction),
+            "max_rotation_step_deg": float(args.max_rotation_step_deg),
+            "max_translation_step_m": float(args.max_translation_step_m),
+            "min_rotation_observable_fraction": float(args.min_rotation_observable_fraction),
+            "min_rotation_observability_score": float(args.min_rotation_observability_score),
         },
         "optimizer": {
             "success": bool(result.success),
@@ -648,6 +837,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "residual_rms_after": float(np.sqrt(np.mean(after * after))),
         },
         "correction_summary": correction_summary(result.x, observations),
+        "optimization_effect": optimization_effect,
+        "temporal_readiness": temporal_readiness,
         "nonpenetration_target_before": before_target,
         "nonpenetration_target_after": after_target,
         "surface_before": before_surface,
@@ -665,7 +856,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     write_json(args.output_dir / "v19_rigid_object_pose_graph_report.json", report)
     # Same payload under the legacy name lets existing V18 render/constraint tools consume corrected rows.
     write_json(args.output_dir / "v18_compact_rigid_object_pose_fit_report.json", report)
-    print(json.dumps({k: report[k] for k in ["status", "annotation_ready", "graph_frame_count", "nonpenetration_target_frame_count", "optimizer", "correction_summary", "full_timeline_rigid_pose_completion", "nonpenetration_target_before", "nonpenetration_target_after", "surface_observed_to_mesh_median_degradation_m"]}, indent=2))
+    print(json.dumps({k: report[k] for k in ["status", "annotation_ready", "graph_frame_count", "nonpenetration_target_frame_count", "optimizer", "correction_summary", "optimization_effect", "temporal_readiness", "full_timeline_rigid_pose_completion", "nonpenetration_target_before", "nonpenetration_target_after", "surface_observed_to_mesh_median_degradation_m"]}, indent=2))
     return report
 
 
@@ -701,8 +892,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sigma-rotation-delta-accel-rad", type=float, default=0.050)
     p.add_argument("--max-surface-median-degradation-m", type=float, default=0.003)
     p.add_argument("--complete-full-timeline-rigid-pose", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--max-rigid-pose-interpolation-gap-frames", type=int, default=240)
-    p.add_argument("--max-rigid-pose-extrapolation-gap-frames", type=int, default=240)
+    p.add_argument("--max-rigid-pose-interpolation-gap-frames", type=int, default=10)
+    p.add_argument("--max-rigid-pose-extrapolation-gap-frames", type=int, default=10)
+    p.add_argument("--min-direct-pose-fraction", type=float, default=0.80)
+    p.add_argument("--max-direct-pose-gap-frames", type=int, default=10)
+    p.add_argument("--max-completed-pose-fraction", type=float, default=0.20)
+    p.add_argument("--max-nearest-hold-fraction", type=float, default=0.05)
+    p.add_argument("--max-rotation-step-deg", type=float, default=15.0)
+    p.add_argument("--max-translation-step-m", type=float, default=0.05)
+    p.add_argument("--min-rotation-observable-fraction", type=float, default=0.80)
+    p.add_argument("--min-rotation-observability-score", type=float, default=0.02)
     p.add_argument("--surface-metric-sample-count", type=int, default=2500)
     p.add_argument("--max-nfev", type=int, default=80)
     p.add_argument("--seed", type=int, default=1907)

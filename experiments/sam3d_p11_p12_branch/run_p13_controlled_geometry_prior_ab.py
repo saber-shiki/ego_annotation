@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run a controlled, additive P13 comparison over raw geometry priors.
+"""Run a controlled P13 comparison with backend-correct geometry adapters.
 
-All candidates consume the same canonical evidence report and the same unmodified
-legacy P13 builder. Compatibility source reports are isolated under the experiment
-root; source-neutral aliases and metrics are written separately.
+Both candidates consume the same canonical observed evidence and the same
+render-only face-labeling builder. TRELLIS keeps its generic RMS/PCA/ICP adapter;
+SAM3D must first pass the native-pose sensor-metric bridge and then enters the
+builder as a verified metric-canonical mesh with identity alignment.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "v19_experimental_p13_controlled_geometry_prior_ab_v1"
+SCHEMA = "v19_experimental_p13_controlled_geometry_prior_ab_v2"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -104,6 +105,7 @@ def source_neutral_summary(
     elapsed_s: float,
     stdout_path: Path,
     stderr_path: Path,
+    native_metric_bridge: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     report = load_json(builder_report_path)
     status = str(report.get("status") or "")
@@ -158,10 +160,11 @@ def source_neutral_summary(
         "legacy_builder_report": str(builder_report_path),
         "legacy_builder_status": status,
         "legacy_field_notice": (
-            "The unmodified legacy builder writes trellis_* names for every source. "
-            "They are compatibility labels here, not source attribution."
+            "The shared V18 labeling builder retains trellis_* field names for compatibility. "
+            "For SAM3D, metric alignment is a verified identity because the native bridge already produced canonical meters; labels are not source attribution."
         ),
         "metric_alignment": {
+            "mode": alignment.get("mode", "legacy_generic_rms_pca_icp"),
             "scale": alignment.get("scale"),
             "rotation": alignment.get("rotation"),
             "translation": alignment.get("translation"),
@@ -177,6 +180,7 @@ def source_neutral_summary(
             ),
             "icp_refinement_stats": alignment.get("icp_refinement_stats"),
         },
+        "native_metric_bridge": native_metric_bridge,
         "face_semantics": {
             "raw_legacy_counts": all_candidate_counts,
             "source_neutral_fraction_by_label": fraction_by_label,
@@ -210,7 +214,8 @@ def source_neutral_summary(
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     evidence_report = require_file(args.evidence_report, "canonical P11 evidence report")
-    builder_script = require_file(args.builder_script, "unmodified P13 builder")
+    builder_script = require_file(args.builder_script, "P13 labeling/alignment builder")
+    sam3d_bridge_script = require_file(args.sam3d_bridge_script, "SAM3D native metric bridge")
     python = require_executable_preserve_symlink(args.python, "P13 Python interpreter")
     candidates = [parse_candidate(raw) for raw in args.candidate]
     names = [candidate["name"] for candidate in candidates]
@@ -222,24 +227,74 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     output_dir = prepare_output(args.output_dir)
     evidence_hash_before = sha256_file(evidence_report)
     builder_hash_before = sha256_file(builder_script)
+    sam3d_bridge_hash_before = sha256_file(sam3d_bridge_script)
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
         candidate_dir = output_dir / candidate["name"]
         candidate_dir.mkdir(parents=True)
         compatibility_report_path = candidate_dir / "p12_source_legacy_builder_compatibility.json"
-        compatibility = {
-            "schema": "v19_experimental_p12_source_legacy_p13_compatibility_v1",
-            "status": "ok",
-            "method": "write_isolated_legacy_p13_source_adapter",
-            "source_model": candidate["source_model"],
-            "mesh": str(candidate["mesh"]),
-            "raw_source_report": str(candidate["source_report"]),
-            "claim_scope": (
-                "compatibility input for the unmodified legacy P13 builder only; "
-                "trellis field naming is not source attribution"
-            ),
-        }
-        compatibility_report_path.write_text(json.dumps(compatibility, indent=2), encoding="utf-8")
+        native_metric_bridge_summary = None
+        if candidate["source_model"] == "sam3d_objects":
+            bridge_output = candidate_dir / "sam3d_native_metric_bridge"
+            bridge_stdout = candidate_dir / "sam3d_native_metric_bridge_stdout.json"
+            bridge_stderr = candidate_dir / "sam3d_native_metric_bridge_stderr.txt"
+            bridge_command = [
+                str(python),
+                str(sam3d_bridge_script),
+                "--evidence-report",
+                str(evidence_report),
+                "--p12-report",
+                str(candidate["source_report"]),
+                "--output-dir",
+                str(bridge_output),
+            ]
+            bridge_start = time.perf_counter()
+            bridge_completed = subprocess.run(bridge_command, capture_output=True, text=True)
+            bridge_elapsed_s = time.perf_counter() - bridge_start
+            bridge_stdout.write_text(bridge_completed.stdout, encoding="utf-8")
+            bridge_stderr.write_text(bridge_completed.stderr, encoding="utf-8")
+            if bridge_completed.returncode != 0:
+                raise RuntimeError(
+                    f"SAM3D native metric bridge failed with code {bridge_completed.returncode}: {bridge_stderr}"
+                )
+            bridge_report_path = require_file(
+                bridge_output / "sam3d_native_sensor_metric_canonical_bridge_report.json",
+                "SAM3D native metric bridge report",
+            )
+            bridge_report = load_json(bridge_report_path)
+            compatibility_report_path = require_file(
+                bridge_output / "p13_metric_canonical_input.json",
+                "SAM3D metric-canonical P13 input",
+            )
+            bridge_raw_mesh = Path(str((bridge_report.get("inputs") or {}).get("raw_mesh") or "")).resolve()
+            if bridge_raw_mesh != candidate["mesh"].resolve() or str((bridge_report.get("inputs") or {}).get("raw_mesh_sha256")) != sha256_file(candidate["mesh"]):
+                raise RuntimeError("SAM3D native metric bridge did not consume the declared controlled raw mesh")
+            native_metric_bridge_summary = {
+                "status": bridge_report.get("status"),
+                "report": str(bridge_report_path),
+                "report_sha256": sha256_file(bridge_report_path),
+                "command": bridge_command,
+                "elapsed_s": float(bridge_elapsed_s),
+                "stdout": str(bridge_stdout),
+                "stderr": str(bridge_stderr),
+                "projection_validation": bridge_report.get("projection_validation"),
+                "sensor_metric_scene_similarity": bridge_report.get("sensor_metric_scene_similarity"),
+                "geometry_validation": bridge_report.get("geometry_validation"),
+            }
+        else:
+            compatibility = {
+                "schema": "v19_experimental_p12_source_legacy_p13_compatibility_v1",
+                "status": "ok",
+                "method": "write_isolated_legacy_p13_source_adapter",
+                "source_model": candidate["source_model"],
+                "mesh": str(candidate["mesh"]),
+                "raw_source_report": str(candidate["source_report"]),
+                "claim_scope": (
+                    "compatibility input for the TRELLIS generic P13 adapter only; "
+                    "trellis field naming is not source attribution"
+                ),
+            }
+            compatibility_report_path.write_text(json.dumps(compatibility, indent=2), encoding="utf-8")
         builder_output = candidate_dir / "legacy_builder_output"
         command = [
             str(python),
@@ -263,6 +318,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "--planar-slab-max-band-m",
             str(float(args.planar_slab_max_band_m)),
         ]
+        if candidate["source_model"] == "sam3d_objects":
+            command.append("--input-mesh-already-metric-canonical")
         stdout_path = candidate_dir / "builder_stdout.json"
         stderr_path = candidate_dir / "builder_stderr.txt"
         start = time.perf_counter()
@@ -302,6 +359,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 elapsed_s,
                 stdout_path,
                 stderr_path,
+                native_metric_bridge_summary,
             )
         )
 
@@ -309,21 +367,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("canonical evidence report changed during controlled P13 run")
     if sha256_file(builder_script) != builder_hash_before:
         raise RuntimeError("P13 builder script changed during controlled P13 run")
+    if sha256_file(sam3d_bridge_script) != sam3d_bridge_hash_before:
+        raise RuntimeError("SAM3D native metric bridge script changed during controlled P13 run")
 
     report = {
         "schema": SCHEMA,
         "status": "ok",
         "method": "run_experimental_p13_controlled_geometry_prior_ab",
         "claim_scope": (
-            "controlled P13 adapter comparison only; every raw prior consumed the same canonical "
-            "object-owned evidence and unmodified builder. Results are pose/render hypotheses, "
-            "not native-model, temporal-pose, collision, or annotation-readiness claims."
+            "Controlled backend-correct P13 comparison: candidates share canonical observed evidence and face-labeling semantics, "
+            "while each uses its declared geometry adapter. TRELLIS uses generic metric alignment; SAM3D preserves its native pose "
+            "through a fail-closed sensor-metric bridge and identity canonical ingestion. Generated faces are render hypotheses only."
         ),
         "common_contract": {
             "evidence_report": str(evidence_report),
             "evidence_sha256": evidence_hash_before,
             "builder_script": str(builder_script),
             "builder_sha256": builder_hash_before,
+            "sam3d_native_metric_bridge_script": str(sam3d_bridge_script),
+            "sam3d_native_metric_bridge_sha256": sam3d_bridge_hash_before,
             "python": str(python),
             "parameters": {
                 "observed_band_scale": float(args.observed_band_scale),
@@ -371,6 +433,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence-report", type=Path, required=True)
     parser.add_argument("--builder-script", type=Path, required=True)
+    parser.add_argument("--sam3d-bridge-script", type=Path, required=True)
     parser.add_argument("--python", type=Path, required=True)
     parser.add_argument("--candidate", action="append", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
