@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +93,17 @@ def copy_required(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def make_tree_owner_writable(root: Path) -> None:
+    """Make only the copied destination writable, preserving an immutable base."""
+    paths = [root, *sorted(root.rglob("*"))]
+    for path in paths:
+        mode = path.stat().st_mode
+        if path.is_dir():
+            path.chmod(mode | stat.S_IWUSR | stat.S_IXUSR)
+        elif path.is_file() and not path.is_symlink():
+            path.chmod(mode | stat.S_IWUSR)
+
+
 def rewrite_bundle_root(bundle: Path, old: str, new: str) -> int:
     changed = 0
     for path in sorted(item for item in bundle.rglob("*") if item.is_file() and not item.is_symlink()):
@@ -140,6 +152,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError(f"bundle root exists: {output}")
         shutil.rmtree(output)
     shutil.copytree(base, output, symlinks=False)
+    # Immutable released bundles may be used as a base. copytree preserves their
+    # read-only modes, so grant owner-write only to the new destination before
+    # overlays and root rewriting; the caller locks the completed bundle again.
+    make_tree_owner_writable(output)
     for cache in output.rglob("__pycache__"):
         if cache.is_dir():
             shutil.rmtree(cache)
