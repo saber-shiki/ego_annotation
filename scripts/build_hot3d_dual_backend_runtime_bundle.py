@@ -21,6 +21,10 @@ EXPERIMENT_FILES = [
     "build_p14_p15_layered_render_states.py",
     "render_p14_p15_layered_state.py",
 ]
+SELF_TEST_FILES = [
+    ("experiments/sam3d_p11_p12_branch/self_test.py", "experiments/sam3d_p11_p12_branch/self_test.py"),
+    ("experiments/v19_metric_camera_contract/self_test.py", "experiments/v19_metric_camera_contract/self_test.py"),
+]
 SCRIPT_FILES = [
     "run_unidepth_metric_source_v3.py",
     "run_unidepth_full_frame_v3.py",
@@ -145,12 +149,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         copy_required(experiment_source / name, experiment_destination / name)
     for name in SCRIPT_FILES:
         copy_required(source / "scripts" / name, output / "scripts" / name)
-    for source_relative, destination_relative in EXTRA_FILES:
+    for source_relative, destination_relative in [*SELF_TEST_FILES, *EXTRA_FILES]:
         copy_required(source / source_relative, output / destination_relative)
 
     source_bound_paths = {
         *[f"experiments/sam3d_p11_p12_branch/{name}" for name in EXPERIMENT_FILES],
         *[f"scripts/{name}" for name in SCRIPT_FILES],
+        *[destination_relative for _source_relative, destination_relative in SELF_TEST_FILES],
         *[destination_relative for _source_relative, destination_relative in EXTRA_FILES],
     }
     committed_failures = []
@@ -188,6 +193,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "suite_runtime_spec": "runtime/hot3d_dual_backend_runtime_spec.md",
         "suite_system_prompt": "configs/hot3d_dual_backend_agent_system_prompt.md",
         "suite_experiment_files": [f"experiments/sam3d_p11_p12_branch/{name}" for name in EXPERIMENT_FILES],
+        "bundle_self_tests": [destination for _source, destination in SELF_TEST_FILES],
         "offline_model_assets": {
             "dinov2_source_hubconf": {
                 "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main/hubconf.py",
@@ -218,6 +224,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "file_count": len(rows),
         "scripts": len(scripts),
         "experiment_files": len(EXPERIMENT_FILES),
+        "self_tests": len(SELF_TEST_FILES),
         "bundle_root_rewritten_text_file_count": rewritten_files,
     }
     print(json.dumps(compact, indent=2))

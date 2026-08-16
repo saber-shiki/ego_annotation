@@ -42,6 +42,7 @@ def sha256_file(path: Path) -> str:
 def command_result(command: list[str], cwd: Path, timeout: int = 120) -> dict[str, Any]:
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = ""
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     started = time.monotonic()
     proc = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout)
     return {
@@ -182,6 +183,18 @@ def verify_bundle_manifest(bundle: Path) -> dict[str, Any]:
         return {"status": "missing_manifest", "path": str(manifest_path)}
     manifest = json.loads(manifest_path.read_text())
     failures = []
+    declared_paths = {
+        str(row.get("path")) for row in manifest.get("files", []) if isinstance(row, dict)
+    }
+    actual_paths = {
+        str(path.relative_to(bundle))
+        for path in bundle.rglob("*")
+        if path.is_file() and not path.is_symlink() and path.name != "RUNTIME_BUNDLE_MANIFEST.json"
+    }
+    for undeclared in sorted(actual_paths - declared_paths):
+        failures.append({"path": undeclared, "reason": "undeclared_file"})
+    for missing_declared in sorted(declared_paths - actual_paths):
+        failures.append({"path": missing_declared, "reason": "declared_file_missing"})
     for row in manifest.get("files", []):
         path = bundle / row["path"]
         if not path.is_file():
@@ -410,6 +423,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "failures": [row for row in help_results if row["returncode"] != 0],
         "checked": len(help_results),
     }
+
+    self_test_results = []
+    for relative in bundle_manifest.get("bundle_self_tests", []):
+        path = bundle / str(relative)
+        result = command_result([str(args.main_python), str(path)], bundle, timeout=600)
+        result["self_test"] = str(relative)
+        self_test_results.append(result)
+    checks["bundle_self_tests"] = {
+        "status": "ok" if self_test_results and all(row["returncode"] == 0 for row in self_test_results) else "failed",
+        "results": self_test_results,
+        "checked": len(self_test_results),
+    }
+
+    # Every preflight command must leave the immutable bundle byte-identical and
+    # free of undeclared caches/artifacts.
+    checks["bundle_integrity_after_checks"] = verify_bundle_manifest(bundle)
 
     failed = [name for name, row in checks.items() if row.get("status") != "ok"]
     report = {

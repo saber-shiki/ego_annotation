@@ -47,6 +47,18 @@ def verify_bundle(bundle: Path) -> dict[str, Any]:
     manifest_path = require_file(bundle / "RUNTIME_BUNDLE_MANIFEST.json", "runtime bundle manifest")
     manifest = load_json(manifest_path)
     failures = []
+    declared_paths = {
+        str(row.get("path")) for row in manifest.get("files", []) if isinstance(row, dict)
+    }
+    actual_paths = {
+        str(path.relative_to(bundle))
+        for path in bundle.rglob("*")
+        if path.is_file() and not path.is_symlink() and path.name != "RUNTIME_BUNDLE_MANIFEST.json"
+    }
+    for undeclared in sorted(actual_paths - declared_paths):
+        failures.append({"path": undeclared, "reason": "undeclared_file"})
+    for missing_declared in sorted(declared_paths - actual_paths):
+        failures.append({"path": missing_declared, "reason": "declared_file_missing"})
     for row in manifest.get("files", []):
         path = bundle / str(row.get("path"))
         if not path.is_file():
@@ -84,6 +96,8 @@ def validate_case(case: dict[str, Any], bundle: Path) -> dict[str, Any]:
     preflight_checks = preflight.get("checks") if isinstance(preflight.get("checks"), dict) else {}
     checks = {
         "bundle_integrity": preflight_checks.get("bundle_integrity", {}).get("status") == "ok",
+        "bundle_integrity_after_checks": preflight_checks.get("bundle_integrity_after_checks", {}).get("status") == "ok",
+        "bundle_self_tests": preflight_checks.get("bundle_self_tests", {}).get("status") == "ok",
         "fixed_asset_hashes": preflight_checks.get("fixed_asset_hashes", {}).get("status") == "ok",
         "dinov2_checkpoint": preflight_checks.get("trellis_dinov2_cache", {}).get("status") == "ok",
         "dinov2_source": preflight_checks.get("trellis_dinov2_offline_source", {}).get("status") == "ok",
