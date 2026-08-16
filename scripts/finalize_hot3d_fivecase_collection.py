@@ -4,8 +4,8 @@
 This is a post-prediction collection finalizer. It never writes inside a case run
 root and never supplies evidence to prediction. It validates D19 manifests,
 actually decodes every published video, byte-checks artifacts, verifies that the
-two backends share pose/MANO/camera state, and then updates collection links and
-reports atomically.
+two backends share pose/MANO/camera state, and then publishes validated collection
+links plus atomically replaced JSON/Markdown reports.
 """
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ import cv2
 
 VIDEO_KEYS = ("camera_overlay", "world_view", "side_world_view", "side_by_side")
 BACKENDS = ("sam3d", "trellis")
+MAX_COMPLETED_POSE_FRACTION = 0.20
+READINESS_NUMERIC_EPSILON = 1.0e-12
 SHARED_STATE_KEYS = (
     "annotation_backbone",
     "object_pose_trajectory",
@@ -167,15 +169,104 @@ def parse_case_binding(value: str) -> tuple[str, Path]:
     return name, Path(path).expanduser().resolve()
 
 
-def replace_symlink(path: Path, target: Path) -> None:
+def resolved_symlink_target(path: Path, *, strict: bool) -> Path:
+    raw_target = Path(os.readlink(path))
+    joined = raw_target if raw_target.is_absolute() else path.parent / raw_target
+    return joined.resolve(strict=strict)
+
+
+def validate_symlink(path: Path, target: Path) -> str:
+    expected = target.expanduser().resolve(strict=True)
+    if not path.is_symlink():
+        raise RuntimeError(f"collection link is not a symlink: {path}")
+    if not path.exists():
+        raise RuntimeError(f"collection link is dangling: {path} -> {os.readlink(path)!r}")
+    actual = resolved_symlink_target(path, strict=True)
+    if actual != expected:
+        raise RuntimeError(f"collection link resolves to {actual}, expected {expected}: {path}")
+    return os.readlink(path)
+
+
+def replace_symlink(
+    path: Path,
+    target: Path,
+    *,
+    allow_empty_link_stub_repair: bool = False,
+) -> dict[str, Any]:
+    """Publish and validate a portable relative symlink.
+
+    Symlink rename is deliberately not used. CIFS ``nounix`` mounts can convert a
+    symlink renamed with ``os.replace`` into a zero-byte regular file, and can
+    strip the leading slash from absolute symlink targets. A direct relative
+    symlink is capability-probed first, then published and resolved back to the
+    exact target. Existing non-symlinks fail closed; repairing a zero-byte stub
+    left by the affected older finalizer requires an explicit CLI opt-in.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and not path.is_symlink():
-        raise RuntimeError(f"refusing to replace non-symlink collection path: {path}")
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    if temporary.exists() or temporary.is_symlink():
-        temporary.unlink()
-    os.symlink(str(target), str(temporary), target_is_directory=True)
-    os.replace(temporary, path)
+    target = target.expanduser().resolve(strict=True)
+    if not target.is_dir():
+        raise RuntimeError(f"collection link target is not a directory: {target}")
+    relative_target = os.path.relpath(str(target), str(path.parent.resolve(strict=True)))
+
+    probe = path.with_name(f".{path.name}.symlink-probe-{os.getpid()}")
+    if os.path.lexists(probe):
+        raise RuntimeError(f"refusing to replace existing symlink capability probe: {probe}")
+    try:
+        os.symlink(relative_target, probe, target_is_directory=True)
+        validate_symlink(probe, target)
+    finally:
+        if os.path.lexists(probe):
+            probe.unlink()
+
+    old_link_text: str | None = None
+    old_link_target: Path | None = None
+    repaired_empty_stub = False
+    if os.path.lexists(path):
+        if path.is_symlink():
+            old_link_text = os.readlink(path)
+            old_link_target = resolved_symlink_target(path, strict=False)
+        elif (
+            allow_empty_link_stub_repair
+            and path.is_file()
+            and int(path.stat().st_size) == 0
+        ):
+            repaired_empty_stub = True
+        else:
+            raise RuntimeError(f"refusing to replace non-symlink collection path: {path}")
+        path.unlink()
+
+    try:
+        os.symlink(relative_target, path, target_is_directory=True)
+        published_text = validate_symlink(path, target)
+    except Exception as error:
+        if os.path.lexists(path):
+            path.unlink()
+        try:
+            if old_link_target is not None:
+                rollback_text = os.path.relpath(
+                    str(old_link_target), str(path.parent.resolve(strict=True))
+                )
+                os.symlink(rollback_text, path, target_is_directory=True)
+            elif repaired_empty_stub:
+                path.touch(exist_ok=False)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"collection link publication and rollback both failed for {path}: "
+                f"publication={error}; rollback={rollback_error}"
+            ) from error
+        raise
+
+    return {
+        "path": str(path),
+        "target": str(target),
+        "link_text": published_text,
+        "target_is_relative": not Path(published_text).is_absolute(),
+        "update_mode": "validated_direct_relative_symlink",
+        "atomic_symlink_rename_used": False,
+        "repaired_empty_link_stub": repaired_empty_stub,
+        "validated": True,
+        "previous_link_text": old_link_text,
+    }
 
 
 def candidate_geometry_rows(run_root: Path) -> tuple[int | None, dict[str, dict[str, Any]], Path]:
@@ -335,6 +426,18 @@ def validate_case(name: str, run_root: Path, expected_frames: int, expected_fps:
     temporal = shared.get("temporal_readiness") if isinstance(shared.get("temporal_readiness"), dict) else {}
     if temporal.get("ready") is not True or int(temporal.get("accepted_full_timeline_pose_count") or 0) != expected_frames:
         raise RuntimeError(f"{name} lacks a ready exact full-timeline shared pose")
+    completed_pose_fraction = temporal.get("completed_pose_fraction")
+    if not isinstance(completed_pose_fraction, (int, float)):
+        raise RuntimeError(f"{name} lacks a numeric completed-pose fraction")
+    completed_pose_fraction = float(completed_pose_fraction)
+    completed_pose_fraction_passed = (
+        completed_pose_fraction <= MAX_COMPLETED_POSE_FRACTION + READINESS_NUMERIC_EPSILON
+    )
+    if not completed_pose_fraction_passed:
+        raise RuntimeError(
+            f"{name} completed-pose fraction {completed_pose_fraction} exceeds the inclusive "
+            f"maximum {MAX_COMPLETED_POSE_FRACTION}"
+        )
     pose_path = require_file(Path(str(shared.get("pose_report") or "")), f"{name} shared pose report")
     if sha256_file(pose_path) != shared.get("pose_report_sha256"):
         raise RuntimeError(f"{name} shared pose report hash mismatch")
@@ -486,7 +589,13 @@ def validate_case(name: str, run_root: Path, expected_frames: int, expected_fps:
         "direct_pose_fraction": temporal.get("direct_pose_fraction"),
         "max_direct_frame_gap": temporal.get("max_direct_frame_gap"),
         "completed_pose_count": temporal.get("completed_pose_count"),
-        "completed_pose_fraction": temporal.get("completed_pose_fraction"),
+        "completed_pose_fraction": completed_pose_fraction,
+        "completed_pose_fraction_gate": {
+            "comparison": "less_than_or_equal",
+            "maximum": MAX_COMPLETED_POSE_FRACTION,
+            "inclusive_boundary": True,
+            "passed": completed_pose_fraction_passed,
+        },
         "nearest_hold_count": temporal.get("nearest_hold_count"),
         "nearest_hold_fraction": temporal.get("nearest_hold_fraction"),
         "max_rotation_step_deg": temporal.get("max_rotation_step_deg"),
@@ -696,6 +805,8 @@ def readme_markdown(cases: list[dict[str, Any]], geometry: dict[str, Any]) -> st
         "",
         "每例每后端包含 `camera_overlay.mp4`、`world_view.mp4`、`side_world_view.mp4`、`side_by_side.mp4`，",
         "本 collection finalizer 已逐帧实际解码全部 40 个视频。",
+        f"Temporal audit 使用 inclusive gate `completed_pose_fraction <= {MAX_COMPLETED_POSE_FRACTION:.2f}`；",
+        "Spatula 的 `30/150 = 0.20` 位于允许边界并判定通过。",
         "",
         "## 公平性与语义",
         "",
@@ -741,17 +852,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("collection does not contain exactly four videos per backend per case")
 
     collection_root.mkdir(parents=True, exist_ok=True)
+    collection_links: list[dict[str, Any]] = []
     if args.replace_links:
         for case in cases:
-            replace_symlink(collection_root / "runs" / case["name"], Path(case["run_root"]))
-            replace_symlink(
-                collection_root / "final_results" / case["name"],
-                Path(case["run_root"]) / "final_results",
+            collection_links.append(
+                replace_symlink(
+                    collection_root / "runs" / case["name"],
+                    Path(case["run_root"]),
+                    allow_empty_link_stub_repair=bool(args.repair_empty_link_stubs),
+                )
+            )
+            collection_links.append(
+                replace_symlink(
+                    collection_root / "final_results" / case["name"],
+                    Path(case["run_root"]) / "final_results",
+                    allow_empty_link_stub_repair=bool(args.repair_empty_link_stubs),
+                )
             )
         for stale_name in ("remaining4_suite", "live_progress"):
             stale = collection_root / stale_name
             if stale.is_symlink():
                 stale.unlink()
+        for row in collection_links:
+            validate_symlink(Path(row["path"]), Path(row["target"]))
 
     geometry_json = collection_root / "BACKEND_GEOMETRY_COMPARISON.json"
     geometry_md = collection_root / "BACKEND_GEOMETRY_COMPARISON_ZH.md"
@@ -798,6 +921,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "expected_frame_count_per_video": int(args.expected_frame_count),
         "expected_fps": float(args.expected_fps),
         "all_videos_actually_decoded": True,
+        "readiness_policy": {
+            "completed_pose_fraction": {
+                "comparison": "less_than_or_equal",
+                "maximum": MAX_COMPLETED_POSE_FRACTION,
+                "inclusive_boundary": True,
+                "all_cases_passed": all(
+                    bool(case["trajectory"]["completed_pose_fraction_gate"]["passed"])
+                    for case in cases
+                ),
+                "decision_provenance": (
+                    "Operator accepted an exact completed-pose fraction of 0.20 as passing; "
+                    "the collection audit therefore applies <= 0.20."
+                ),
+            }
+        },
         "fairness_contract": {
             "shared_prediction_evidence": True,
             "shared_anchor_per_case": True,
@@ -812,6 +950,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "primary_backend": "sam3d",
         "comparison_backend": "trellis",
+        "finalizer_implementation": file_record(Path(__file__).resolve()),
+        "collection_links": {
+            "requested": bool(args.replace_links),
+            "validated": bool(args.replace_links) and all(
+                bool(row.get("validated")) for row in collection_links
+            ),
+            "link_count": len(collection_links),
+            "update_mode": (
+                "validated_direct_relative_symlink" if args.replace_links else "not_requested"
+            ),
+            "atomic_symlink_rename_used": False,
+            "reason": (
+                "Relative symlinks are published directly and resolved back to their exact "
+                "targets; symlink rename is not assumed safe on CIFS nounix mounts."
+            ),
+            "empty_link_stub_repair_enabled": bool(args.repair_empty_link_stubs),
+            "links": collection_links,
+        },
         "cases": cases,
         "reports": report_records,
         "post_prediction_aggregation_only": True,
@@ -841,6 +997,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "sha256sums_sha256": sha256_file(sums_path),
         "case_count": len(cases),
         "video_count": len(videos),
+        "collection_link_count": len(collection_links),
+        "collection_links_validated": bool(manifest["collection_links"]["validated"]),
+        "completed_pose_fraction_maximum": MAX_COMPLETED_POSE_FRACTION,
+        "completed_pose_fraction_boundary_inclusive": True,
+        "finalizer_sha256": manifest["finalizer_implementation"]["sha256"],
         "completed_utc": datetime.now(timezone.utc).isoformat(),
     }
     done_path = collection_root / "COLLECTION_DONE.json"
@@ -857,6 +1018,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-frame-count", type=int, default=150)
     parser.add_argument("--expected-fps", type=float, default=30.0)
     parser.add_argument("--replace-links", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--repair-empty-link-stubs",
+        action="store_true",
+        help=(
+            "Explicitly allow replacement of zero-byte regular files at expected collection-link "
+            "paths. This is only for repairing stubs produced by the older CIFS-unsafe symlink "
+            "rename implementation; other non-symlinks still fail closed."
+        ),
+    )
     return parser.parse_args()
 
 
