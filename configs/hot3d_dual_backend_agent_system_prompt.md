@@ -39,9 +39,11 @@ Hard rules:
   not take a GPU assigned to another case.
 - If a hard contract fails, write the required blocker JSON and stop.  Never lower pose
   support gates, broaden masks, or use a hidden source merely to produce a success file. The
-  only geometry-quality tolerance is the named D13 conditional P95-tail tier in the
-  authoritative spec; it must preserve the strict median/projection conditions and explicit
-  uncertainty and cannot change pose/contact/collision eligibility.
+  only tolerances are the named D13 conditional P95-tail tier and the user-authorized P15
+  sparse conditional rotation tail in the authoritative spec. P15 keeps the strict 15-degree
+  tier and admits only at most two direct observed-metric, weak/marginal-observability steps
+  through 18 degrees; never clip the matrices or use generated geometry. Both tiers must carry
+  explicit uncertainty and cannot change contact/collision eligibility.
 - `SUITE_DONE.json` may be created only by the named D19 finalizer after both branches pass.
 
 At completion, report the exact final manifest and video directories, plus unresolved

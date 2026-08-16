@@ -548,6 +548,30 @@ def title_panel(image: np.ndarray, title: str, subtitle: str, frame_idx: int) ->
     canonical.put_text_with_bg(image, f"frame {frame_idx:04d} | {subtitle}"[:150], (14, 53), font_scale=0.40, color=(225, 225, 225), thickness=1, bg_alpha=0.64)
 
 
+def conditional_pose_warning(image: np.ndarray, payload: dict[str, Any] | None) -> None:
+    if payload is None:
+        return
+    if payload.get("acceptance_mode") != "conditional_sparse_underobservable_rotation_tail":
+        raise RuntimeError(f"malformed conditional rotation-tail payload: {payload}")
+    if payload.get("trajectory_values_modified_or_clipped") is not False:
+        raise RuntimeError("conditional rotation-tail render row was modified or clipped")
+    if payload.get("generated_geometry_pose_evidence_consumed") is not False:
+        raise RuntimeError("conditional rotation-tail render row consumed generated pose evidence")
+    text = (
+        f"LOW-CONFIDENCE ROTATION TAIL {float(payload.get('rotation_step_deg')):.2f} deg "
+        f"from f{int(payload.get('from_frame_idx')):04d} | observed-metric; not clipped"
+    )
+    canonical.put_text_with_bg(
+        image,
+        text[:150],
+        (14, 78),
+        font_scale=0.40,
+        color=(40, 220, 255),
+        thickness=1,
+        bg_alpha=0.76,
+    )
+
+
 def legend_panel(image: np.ndarray) -> None:
     labels = [
         ("magenta: generated complete render prior (no collision)", ROLE_COLORS["generated_complete_prior_underlay"]),
@@ -629,6 +653,16 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("no frames selected")
 
     poses = canonical.pose_map(state)
+    pose_state = (
+        state.get("object_pose_trajectory")
+        if isinstance(state.get("object_pose_trajectory"), dict)
+        else {}
+    )
+    pose_rows_by_idx = {
+        int(row["frame_idx"]): row
+        for row in pose_state.get("pose_rows", [])
+        if isinstance(row, dict) and row.get("frame_idx") is not None
+    }
     selected_ids = [canonical.frame_id(frame, pos) for pos, frame in enumerate(frames)]
     missing_poses = [idx for idx in selected_ids if idx not in poses]
     if missing_poses:
@@ -673,6 +707,12 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError(f"annotation row {output_index} is not an object")
             frame_idx = canonical.frame_id(frame, output_index)
             rotation, translation, pose_status = poses[frame_idx]
+            pose_row = pose_rows_by_idx.get(frame_idx, {})
+            conditional_rotation_uncertainty = (
+                pose_row.get("conditional_rotation_step_uncertainty")
+                if isinstance(pose_row.get("conditional_rotation_step_uncertainty"), dict)
+                else None
+            )
             raw_path = canonical.rewrite_path(frame.get("raw_frame_path"), rewrites)
             if raw_path is None:
                 raise RuntimeError(f"frame {frame_idx} lacks raw RGB path")
@@ -702,6 +742,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 camera_projected.append((np.c_[u, v], depth))
             overlay, overlay_stats, overlay_labels = rasterize_scene(rgb, scene_layers, camera_projected)
             title_panel(overlay, f"{branch_id} | camera overlay", f"{source_model} | {integration}", frame_idx)
+            conditional_pose_warning(overlay, conditional_rotation_uncertainty)
             legend_panel(overlay)
 
             low, high = shared_frame_bounds(
@@ -721,6 +762,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 world, T_world_camera, camera_path, low, high, (0, 2), float(args.camera_frustum_depth_m)
             )
             title_panel(world, f"{branch_id} | local metric world X-Z", "shared observed/MANO framing + camera frustum", frame_idx)
+            conditional_pose_warning(world, conditional_rotation_uncertainty)
             legend_panel(world)
 
             side_background = np.full((720, 1280, 3), 16, dtype=np.uint8)
@@ -733,6 +775,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 side, T_world_camera, camera_path, low, high, (1, 2), float(args.camera_frustum_depth_m)
             )
             title_panel(side, f"{branch_id} | local metric side Y-Z", "same pose/camera/MANO; alternate world axis", frame_idx)
+            conditional_pose_warning(side, conditional_rotation_uncertainty)
             legend_panel(side)
 
             triptych = np.hstack([resize_height(overlay, 720), world, side])
@@ -758,6 +801,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                     "output_frame_index": output_index,
                     "source_frame_idx": frame_idx,
                     "pose_status": pose_status,
+                    "conditional_rotation_step_uncertainty": conditional_rotation_uncertainty,
                     "intrinsics": intrinsics_report,
                     "mano": mano_provenance,
                     "overlay": overlay_stats,
@@ -864,6 +908,11 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         "mano_full_surface": mano_summary,
         "frame_count": len(frames),
         "source_frame_ids": selected_ids,
+        "conditional_rotation_tail_frames": [
+            int(row["source_frame_idx"])
+            for row in frame_rows
+            if isinstance(row.get("conditional_rotation_step_uncertainty"), dict)
+        ],
         "visible_pixel_summary_by_role": role_summary,
         "outputs": outputs,
         "visual_inspection_required": True,

@@ -131,6 +131,20 @@ def validate_source_state(source: dict[str, Any], source_path: Path, common_coll
         raise RuntimeError("pose report lacks a passing temporal coverage/observability/SE(3)-jump gate")
     if int(temporal_readiness.get("accepted_full_timeline_pose_count") or 0) != int(temporal_readiness.get("timeline_frame_count") or -1):
         raise RuntimeError("pose report temporal gate does not cover the exact full timeline")
+    rotation_step_gate = (
+        temporal_readiness.get("rotation_step_gate")
+        if isinstance(temporal_readiness.get("rotation_step_gate"), dict)
+        else {}
+    )
+    if rotation_step_gate.get("gate_passed") is not True:
+        raise RuntimeError("pose report rotation-step gate is not explicitly passed")
+    if rotation_step_gate.get("conditional_tier_applied") is True:
+        if rotation_step_gate.get("acceptance_mode") != "conditional_sparse_underobservable_rotation_tail":
+            raise RuntimeError("pose report has malformed conditional rotation-tail mode")
+        if rotation_step_gate.get("trajectory_values_modified_or_clipped") is not False:
+            raise RuntimeError("conditional rotation-tail trajectory was modified or clipped")
+        if rotation_step_gate.get("generated_geometry_pose_evidence_consumed") is not False:
+            raise RuntimeError("conditional rotation-tail consumed generated pose evidence")
     if int(pose_report.get("nonpenetration_target_frame_count", -1)) != 0:
         raise RuntimeError("pose trajectory is not observed-only: nonpenetration targets are present")
     completed_mesh = require_file(
@@ -161,6 +175,9 @@ def validate_source_state(source: dict[str, Any], source_path: Path, common_coll
         "pose_frame_range": [min(frame_ids), max(frame_ids)],
         "pose_nonpenetration_target_frame_count": 0,
         "temporal_readiness": temporal_readiness,
+        "annotation_readiness_mode": pose_report.get("annotation_readiness_mode"),
+        "rotation_step_acceptance_mode": rotation_step_gate.get("acceptance_mode"),
+        "conditional_temporal_uncertainty": pose_report.get("conditional_temporal_uncertainty"),
         "pose_canonical_observed_mesh": str(completed_mesh),
         "pose_canonical_observed_geometry": pose_geometry,
         "annotation_path": str(annotation_path),

@@ -28,6 +28,7 @@ import fit_v18_compact_rigid_object_pose as observed_pose  # noqa: E402
 import solve_v19_rigid_object_pose_graph as pose_graph  # noqa: E402
 import render_p14_p15_layered_state as p15_render  # noqa: E402
 import run_p12_parallel_geometry_priors as p12  # noqa: E402
+import run_hot3d_dual_backend_d18_renders as d18_runner  # noqa: E402
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -746,6 +747,12 @@ class P11P12BranchTest(unittest.TestCase):
                 max_completed_pose_fraction=0.20,
                 max_nearest_hold_fraction=0.05,
                 max_rotation_step_deg=15.0,
+                allow_sparse_conditional_rotation_tail=False,
+                conditional_max_rotation_step_deg=18.0,
+                conditional_max_rotation_step_count=2,
+                conditional_max_rotation_step_fraction=0.015,
+                conditional_max_rotation_step_translation_m=0.020,
+                conditional_max_endpoint_rotation_observability_score=0.030,
                 max_translation_step_m=0.05,
                 min_rotation_observable_fraction=0.80,
             ),
@@ -754,6 +761,145 @@ class P11P12BranchTest(unittest.TestCase):
         self.assertIn("rotation_step_jump", diagnostics["failure_reasons"])
         self.assertAlmostEqual(diagnostics["max_rotation_step_deg"], 30.0, places=6)
         self.assertGreater(diagnostics["rotation_observability"]["observable_fraction"], 0.8)
+        self.assertFalse(diagnostics["rotation_step_gate"]["conditional_tier_applied"])
+
+    def test_pose_graph_sparse_underobservable_rotation_tail_is_bounded_and_explicit(self) -> None:
+        rows = []
+        observability_rows = []
+        increments = [4.0] * 149
+        increments[38] = 17.8
+        increments[45] = 17.45
+        rotations = [0.0]
+        for increment in increments:
+            rotations.append(rotations[-1] + increment)
+        for frame_idx, angle in enumerate(rotations):
+            rows.append({
+                "frame_idx": frame_idx,
+                "status": pose_graph.CORRECTED_POSE_STATUS,
+                "direct_pose_observation_source": "adjacent_observed_metric_surfel_registration",
+                "rigid_pose_observation_eligible": True,
+                "generated_geometry_pose_evidence_consumed": False,
+                "rotation_world_from_completed_canonical_matrix": pose_graph.Rotation.from_euler(
+                    "z", angle, degrees=True
+                ).as_matrix().tolist(),
+                "translation_world_m": [0.005 * frame_idx, 0.0, 0.45],
+            })
+            observability_rows.append({
+                "frame_idx": frame_idx,
+                "rotation_observability_score": 0.025,
+                "observable": True,
+            })
+        steps = []
+        for previous, current in zip(rows[:-1], rows[1:]):
+            a = np.asarray(previous["rotation_world_from_completed_canonical_matrix"])
+            b = np.asarray(current["rotation_world_from_completed_canonical_matrix"])
+            steps.append({
+                "from_frame_idx": previous["frame_idx"],
+                "to_frame_idx": current["frame_idx"],
+                "frame_gap": 1,
+                "rotation_step_deg": float(
+                    np.degrees(pose_graph.Rotation.from_matrix(b @ a.T).magnitude())
+                ),
+                "translation_step_m": 0.005,
+            })
+        args = argparse.Namespace(
+            max_rotation_step_deg=15.0,
+            allow_sparse_conditional_rotation_tail=True,
+            conditional_max_rotation_step_deg=18.0,
+            conditional_max_rotation_step_count=2,
+            conditional_max_rotation_step_fraction=0.015,
+            conditional_max_rotation_step_translation_m=0.020,
+            conditional_max_endpoint_rotation_observability_score=0.030,
+        )
+        accepted = pose_graph.sparse_conditional_rotation_tail_decision(
+            step_rows=steps,
+            accepted_rows_by_idx={row["frame_idx"]: row for row in rows},
+            observability={"rows": observability_rows},
+            args=args,
+        )
+        self.assertTrue(accepted["gate_passed"])
+        self.assertTrue(accepted["conditional_tier_applied"])
+        self.assertEqual(accepted["strict_exceedance_count"], 2)
+        self.assertEqual(
+            accepted["acceptance_mode"],
+            "conditional_sparse_underobservable_rotation_tail",
+        )
+        self.assertFalse(accepted["trajectory_values_modified_or_clipped"])
+        self.assertFalse(accepted["generated_geometry_pose_evidence_consumed"])
+
+        over_limit = [dict(row) for row in steps]
+        over_limit[1]["rotation_step_deg"] = 18.01
+        rejected = pose_graph.sparse_conditional_rotation_tail_decision(
+            step_rows=over_limit,
+            accepted_rows_by_idx={row["frame_idx"]: row for row in rows},
+            observability={"rows": observability_rows},
+            args=args,
+        )
+        self.assertFalse(rejected["gate_passed"])
+
+        generated_rows = {row["frame_idx"]: dict(row) for row in rows}
+        generated_rows[39]["generated_geometry_pose_evidence_consumed"] = True
+        rejected_generated = pose_graph.sparse_conditional_rotation_tail_decision(
+            step_rows=steps,
+            accepted_rows_by_idx=generated_rows,
+            observability={"rows": observability_rows},
+            args=args,
+        )
+        self.assertFalse(rejected_generated["gate_passed"])
+
+        for widened_name, widened_value in (
+            ("conditional_max_rotation_step_deg", 18.01),
+            ("conditional_max_rotation_step_count", 3),
+            ("conditional_max_rotation_step_fraction", 0.01501),
+            ("conditional_max_rotation_step_translation_m", 0.02001),
+            ("conditional_max_endpoint_rotation_observability_score", 0.03001),
+        ):
+            widened_args = argparse.Namespace(**vars(args))
+            setattr(widened_args, widened_name, widened_value)
+            with self.subTest(widened_name=widened_name):
+                with self.assertRaisesRegex(RuntimeError, "immutable policy ceilings"):
+                    pose_graph.sparse_conditional_rotation_tail_decision(
+                        step_rows=steps,
+                        accepted_rows_by_idx={row["frame_idx"]: row for row in rows},
+                        observability={"rows": observability_rows},
+                        args=widened_args,
+                    )
+        lowered_strict_args = argparse.Namespace(**vars(args))
+        lowered_strict_args.max_rotation_step_deg = 14.99
+        with self.assertRaisesRegex(RuntimeError, "fixed 15-degree strict tier"):
+            pose_graph.sparse_conditional_rotation_tail_decision(
+                step_rows=steps,
+                accepted_rows_by_idx={row["frame_idx"]: row for row in rows},
+                observability={"rows": observability_rows},
+                args=lowered_strict_args,
+            )
+
+    def test_d18_conditional_warning_rows_are_byte_bound_and_fail_closed(self) -> None:
+        payload = {
+            "acceptance_mode": "conditional_sparse_underobservable_rotation_tail",
+            "from_frame_idx": 38,
+            "rotation_step_deg": 17.88,
+            "trajectory_values_modified_or_clipped": False,
+            "generated_geometry_pose_evidence_consumed": False,
+        }
+        manifest = {
+            "conditional_rotation_tail_frames": [39],
+            "frame_rows": [
+                {
+                    "source_frame_idx": 39,
+                    "conditional_rotation_step_uncertainty": payload,
+                }
+            ],
+        }
+        self.assertEqual(d18_runner.validate_conditional_warning_rows(manifest, [39]), [39])
+        with self.assertRaisesRegex(RuntimeError, "warning frames mismatch"):
+            d18_runner.validate_conditional_warning_rows(manifest, [46])
+        clipped = json.loads(json.dumps(manifest))
+        clipped["frame_rows"][0]["conditional_rotation_step_uncertainty"][
+            "trajectory_values_modified_or_clipped"
+        ] = True
+        with self.assertRaisesRegex(RuntimeError, "pose clipping"):
+            d18_runner.validate_conditional_warning_rows(clipped, [39])
 
     def test_p15_observed_object_ownership_preserves_mano_depth_winner(self) -> None:
         background = np.zeros((80, 100, 3), dtype=np.uint8)
@@ -810,6 +956,29 @@ class P11P12BranchTest(unittest.TestCase):
         self.assertGreater(stats["layers"][1]["visible_pixels"], 0)
         self.assertGreater(stats["layers"][2]["visible_pixels"], 0)
         self.assertIn("mano_depth_winners_preserved", stats["depth_order_method"])
+
+    def test_p15_conditional_pose_warning_is_visible_and_fail_closed(self) -> None:
+        image = np.zeros((120, 640, 3), dtype=np.uint8)
+        payload = {
+            "acceptance_mode": "conditional_sparse_underobservable_rotation_tail",
+            "from_frame_idx": 38,
+            "rotation_step_deg": 17.88,
+            "translation_step_m": 0.013,
+            "trajectory_values_modified_or_clipped": False,
+            "generated_geometry_pose_evidence_consumed": False,
+        }
+        p15_render.conditional_pose_warning(image, payload)
+        self.assertGreater(int(np.count_nonzero(image)), 0)
+        with self.assertRaisesRegex(RuntimeError, "modified or clipped"):
+            p15_render.conditional_pose_warning(
+                image,
+                {**payload, "trajectory_values_modified_or_clipped": True},
+            )
+        with self.assertRaisesRegex(RuntimeError, "generated pose evidence"):
+            p15_render.conditional_pose_warning(
+                image,
+                {**payload, "generated_geometry_pose_evidence_consumed": True},
+            )
 
     def test_p15_contiguous_face_selection_is_exact(self) -> None:
         faces = np.arange(30, dtype=np.int32).reshape(10, 3)

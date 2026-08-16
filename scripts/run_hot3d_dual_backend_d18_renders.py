@@ -69,12 +69,48 @@ def video_info(path: Path) -> dict[str, Any]:
         capture.release()
 
 
+def validate_conditional_warning_rows(
+    manifest: dict[str, Any], expected_frames: list[int]
+) -> list[int]:
+    actual_frames = [
+        int(value) for value in manifest.get("conditional_rotation_tail_frames") or []
+    ]
+    if actual_frames != expected_frames:
+        raise RuntimeError(
+            "D18 conditional rotation-tail warning frames mismatch: "
+            f"{actual_frames} != {expected_frames}"
+        )
+    rows = manifest.get("frame_rows") if isinstance(manifest.get("frame_rows"), list) else []
+    warned_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("conditional_rotation_step_uncertainty"), dict)
+    ]
+    warned_row_frames = [int(row["source_frame_idx"]) for row in warned_rows]
+    if warned_row_frames != expected_frames:
+        raise RuntimeError(
+            "D18 frame rows do not preserve exact conditional warning payloads: "
+            f"{warned_row_frames} != {expected_frames}"
+        )
+    for row in warned_rows:
+        payload = row["conditional_rotation_step_uncertainty"]
+        if payload.get("acceptance_mode") != "conditional_sparse_underobservable_rotation_tail":
+            raise RuntimeError("D18 frame row has malformed conditional warning mode")
+        if payload.get("trajectory_values_modified_or_clipped") is not False:
+            raise RuntimeError("D18 conditional warning row reports pose clipping")
+        if payload.get("generated_geometry_pose_evidence_consumed") is not False:
+            raise RuntimeError("D18 conditional warning row consumed generated pose evidence")
+    return actual_frames
+
+
 def validate_render_manifest(
     path: Path,
     *,
     expected_frame_count: int,
     expected_fps: float,
     expected_source_model: str,
+    expected_conditional_rotation_tail_frames: list[int],
 ) -> dict[str, Any]:
     manifest = load_json(path)
     if manifest.get("status") != "ok":
@@ -88,6 +124,9 @@ def validate_render_manifest(
         raise RuntimeError(
             f"D18 source model mismatch: {branch.get('source_model')} != {expected_source_model}"
         )
+    actual_conditional_frames = validate_conditional_warning_rows(
+        manifest, expected_conditional_rotation_tail_frames
+    )
     shared_consumption = (
         manifest.get("shared_state_consumption")
         if isinstance(manifest.get("shared_state_consumption"), dict)
@@ -128,6 +167,7 @@ def validate_render_manifest(
         "generated_faces_contact_eligible": shared_consumption[
             "generated_faces_contact_eligible"
         ],
+        "conditional_rotation_tail_frames": actual_conditional_frames,
     }
 
 
@@ -212,6 +252,37 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("D17 adapter recomputed branch-dependent contact/collision")
     if len(adapter.get("shared_state_value_sha256") or {}) != len(required_identical):
         raise RuntimeError("D17 adapter lacks all six byte-bound shared-state hashes")
+    source_validation = (
+        adapter.get("source_validation")
+        if isinstance(adapter.get("source_validation"), dict)
+        else {}
+    )
+    temporal_readiness = (
+        source_validation.get("temporal_readiness")
+        if isinstance(source_validation.get("temporal_readiness"), dict)
+        else {}
+    )
+    rotation_step_gate = (
+        temporal_readiness.get("rotation_step_gate")
+        if isinstance(temporal_readiness.get("rotation_step_gate"), dict)
+        else {}
+    )
+    if rotation_step_gate.get("gate_passed") is not True:
+        raise RuntimeError("D17 adapter lacks an explicit passing rotation-step gate")
+    conditional_applied = rotation_step_gate.get("conditional_tier_applied") is True
+    if conditional_applied:
+        if rotation_step_gate.get("acceptance_mode") != "conditional_sparse_underobservable_rotation_tail":
+            raise RuntimeError("D17 adapter has malformed conditional rotation-tail mode")
+        if rotation_step_gate.get("trajectory_values_modified_or_clipped") is not False:
+            raise RuntimeError("D17 conditional trajectory was modified or clipped")
+        if rotation_step_gate.get("generated_geometry_pose_evidence_consumed") is not False:
+            raise RuntimeError("D17 conditional trajectory consumed generated pose evidence")
+    expected_conditional_frames = [
+        int(row["to_frame_idx"])
+        for row in rotation_step_gate.get("conditional_transitions") or []
+    ] if conditional_applied else []
+    if len(expected_conditional_frames) != len(set(expected_conditional_frames)):
+        raise RuntimeError("D17 conditional rotation-tail target frames are duplicated")
 
     branches = {
         "sam3d": {
@@ -246,6 +317,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             expected_frame_count=int(args.expected_frame_count),
             expected_fps=float(args.expected_fps),
             expected_source_model=str(row["source_model"]),
+            expected_conditional_rotation_tail_frames=expected_conditional_frames,
         )
         if results[name]["generated_faces_collision_eligible"]:
             raise RuntimeError(f"D18 {name} manifest promoted generated collision geometry")
@@ -268,6 +340,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "expected_frame_count": int(args.expected_frame_count),
         "expected_fps": float(args.expected_fps),
         "geometry_is_sole_branch_variable": True,
+        "rotation_step_acceptance_mode": rotation_step_gate.get("acceptance_mode"),
+        "conditional_rotation_tail_frames": expected_conditional_frames,
+        "conditional_temporal_uncertainty": temporal_readiness.get(
+            "conditional_temporal_uncertainty"
+        ),
         "branches": results,
     }
     report_path = exp_root / "D18_dual_backend_render_report.json"

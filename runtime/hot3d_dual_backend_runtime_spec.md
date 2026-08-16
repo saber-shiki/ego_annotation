@@ -272,8 +272,14 @@ script's fail-closed projected-MANO-subtracted RGB optical-flow + exact-camera P
 does not reinstate rejected depth. Each bridge records its own rotation observability, but a
 line-like bridge may remain explicitly underobservable only when the unchanged downstream
 score/fraction timeline gate still passes. Do not lower the default support, gap, reprojection,
-observability-fraction, or temporal-readiness thresholds and do not include explicitly
-ineligible metric rows:
+observability-fraction thresholds and do not include explicitly ineligible metric rows. The
+strict rotation-step tier remains `15°`. User-authorized recovery permits only the named sparse
+conditional tail below: at most two adjacent transitions (`<=1.5%` of timeline steps), each at
+most `18°` with translation step `<=0.020 m`, both endpoints direct eligible
+`adjacent_observed_metric_surfel_registration` rows, no generated pose evidence, and endpoint
+rotation-observability scores `<=0.030`. The solver must preserve the original matrices without
+clipping and record `conditional_sparse_underobservable_rotation_tail` on the report and target
+rows. Any transition outside those conditions remains a D15 blocker:
 
 ```bash
 "$MAIN_PYTHON" scripts/fit_v18_compact_rigid_object_pose.py \
@@ -289,6 +295,12 @@ POSE_FIT="$EXP_ROOT/P14_observed_pose_fit/v18_compact_rigid_object_pose_fit_repo
   --completion-report "$OBSERVED_COMPLETION" \
   --object-id '{OBJECT_ID}' \
   --complete-full-timeline-rigid-pose \
+  --allow-sparse-conditional-rotation-tail \
+  --conditional-max-rotation-step-deg 18 \
+  --conditional-max-rotation-step-count 2 \
+  --conditional-max-rotation-step-fraction 0.015 \
+  --conditional-max-rotation-step-translation-m 0.020 \
+  --conditional-max-endpoint-rotation-observability-score 0.030 \
   --output-dir "$EXP_ROOT/P15_observed_pose_graph"
 
 POSE_GRAPH="$EXP_ROOT/P15_observed_pose_graph/v19_rigid_object_pose_graph_report.json"
@@ -302,7 +314,10 @@ The layered-state adapter requires `annotation_ready:true`, `graph_support.suffi
 `nonpenetration_target_frame_count`. The temporal gate enforces direct-pose fraction, bounded
 direct/interpolation/hold gaps, rotation observability, and bounded per-frame SE(3) jumps. If
 any gate fails, preserve the report, write a D15 blocker, and stop; do not relabel interpolation,
-nearest holds, optimizer success, or a rejected depth row as evidence.
+nearest holds, optimizer success, or a rejected depth row as evidence. If the sparse conditional
+rotation tier is applied, record its exact transitions in `state/v19_agent_evidence.md`, inspect
+those transition frames during D18, and retain them as low-confidence trajectory uncertainty in
+the final publication; do not call the estimated step a ground-truth angular velocity.
 
 Build an unsigned observed-surface MANO/object measurement state:
 

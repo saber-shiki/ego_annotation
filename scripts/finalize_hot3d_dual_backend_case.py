@@ -249,6 +249,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     shared = adapter.get("source_validation") if isinstance(adapter.get("source_validation"), dict) else {}
+    temporal_readiness = (
+        shared.get("temporal_readiness")
+        if isinstance(shared.get("temporal_readiness"), dict)
+        else {}
+    )
+    rotation_step_gate = (
+        temporal_readiness.get("rotation_step_gate")
+        if isinstance(temporal_readiness.get("rotation_step_gate"), dict)
+        else {}
+    )
+    conditional_rotation_tail = {
+        "applied": rotation_step_gate.get("conditional_tier_applied") is True,
+        "acceptance_mode": rotation_step_gate.get("acceptance_mode"),
+        "strict_max_rotation_step_deg": rotation_step_gate.get("strict_max_rotation_step_deg"),
+        "conditional_max_rotation_step_deg": rotation_step_gate.get("conditional_max_rotation_step_deg"),
+        "strict_exceedance_count": rotation_step_gate.get("strict_exceedance_count"),
+        "transitions": rotation_step_gate.get("conditional_transitions") or [],
+        "trajectory_values_modified_or_clipped": rotation_step_gate.get(
+            "trajectory_values_modified_or_clipped"
+        ),
+        "generated_geometry_pose_evidence_consumed": rotation_step_gate.get(
+            "generated_geometry_pose_evidence_consumed"
+        ),
+        "uncertainty": temporal_readiness.get("conditional_temporal_uncertainty"),
+    }
+    if conditional_rotation_tail["applied"]:
+        if conditional_rotation_tail["acceptance_mode"] != "conditional_sparse_underobservable_rotation_tail":
+            raise RuntimeError("malformed conditional rotation-tail acceptance mode")
+        if conditional_rotation_tail["trajectory_values_modified_or_clipped"] is not False:
+            raise RuntimeError("conditional rotation-tail trajectory was modified or clipped")
+        if conditional_rotation_tail["generated_geometry_pose_evidence_consumed"] is not False:
+            raise RuntimeError("conditional rotation-tail consumed generated pose evidence")
     report = {
         "schema": "hot3d_sam3d_trellis_dual_backend_case_result_v1",
         "status": "complete",
@@ -269,6 +301,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "released_reference_labels_consumed_by_prediction": False,
         },
         "shared_state": shared,
+        "trajectory_uncertainty": {
+            "annotation_readiness_mode": shared.get("annotation_readiness_mode"),
+            "rotation_step_acceptance_mode": shared.get("rotation_step_acceptance_mode"),
+            "conditional_rotation_tail": conditional_rotation_tail,
+            "estimated_rotation_is_not_ground_truth_angular_velocity": True,
+        },
         "source_reports": {
             "controlled_p13": file_record(controlled_path),
             "sam3d_dual_mesh": file_record(dual_path),
