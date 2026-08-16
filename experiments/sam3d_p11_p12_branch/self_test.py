@@ -21,6 +21,7 @@ import build_p11_dual_geometry_inputs as p11  # noqa: E402
 import build_p13_sam3d_native_metric_bridge as sam3d_bridge  # noqa: E402
 import build_v18_compact_rigid_evidence_bundle as evidence_bundle  # noqa: E402
 import remote_run_sam3d_objects_mesh_v7 as sam3d_runner  # noqa: E402
+import remote_run_trellis_shape_v3 as trellis_runner  # noqa: E402
 import build_v18_compact_rigid_trellis_completion as completion  # noqa: E402
 import build_v19_visible_geometry_from_sam2_depth as visible_geometry  # noqa: E402
 import fit_v18_compact_rigid_object_pose as observed_pose  # noqa: E402
@@ -308,6 +309,13 @@ class P11P12BranchTest(unittest.TestCase):
             sam3d_runner.install_offline_dinov2_hub(
                 Path("/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main"),
                 self.root / "missing_dinov2_checkpoint.pth",
+            )
+
+    def test_trellis_offline_dinov2_binding_requires_explicit_checkpoint(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "missing offline DINOv2 checkpoint"):
+            trellis_runner.install_offline_dinov2_hub(
+                Path("/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main"),
+                self.root / "missing_trellis_dinov2_checkpoint.pth",
             )
 
     def test_atomic_anchor_binding_rejects_mixed_frame_surface(self) -> None:

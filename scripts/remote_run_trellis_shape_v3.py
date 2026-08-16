@@ -26,12 +26,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def install_offline_dinov2_hub(local_repo: Path) -> dict:
-    """Route only the frozen DINOv2 hub request to a local source checkout."""
+def install_offline_dinov2_hub(local_repo: Path, local_checkpoint: Path) -> dict:
+    """Route only the frozen DINOv2 hub request to byte-bound local assets."""
     local_repo = local_repo.expanduser().resolve()
+    local_checkpoint = local_checkpoint.expanduser().resolve()
     hubconf = local_repo / "hubconf.py"
     if not hubconf.is_file():
         raise RuntimeError(f"missing offline DINOv2 hubconf: {hubconf}")
+    if not local_checkpoint.is_file():
+        raise RuntimeError(f"missing offline DINOv2 checkpoint: {local_checkpoint}")
+    actual_hubconf_sha256 = sha256_file(hubconf)
+    expected_hubconf_sha256 = "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64"
+    if actual_hubconf_sha256 != expected_hubconf_sha256:
+        raise RuntimeError(f"offline DINOv2 hubconf hash mismatch: {hubconf}")
     imported_entries = {
         alias.asname or alias.name
         for node in ast.walk(ast.parse(hubconf.read_text(encoding="utf-8"), filename=str(hubconf)))
@@ -41,18 +48,21 @@ def install_offline_dinov2_hub(local_repo: Path) -> dict:
     if "dinov2_vitl14_reg" not in imported_entries:
         raise RuntimeError(f"offline DINOv2 source lacks dinov2_vitl14_reg: {local_repo}")
     original_load = torch.hub.load
-    original_state_dict_loader = torch.hub.load_state_dict_from_url
     expected_checkpoint_sha256 = "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51"
+    actual_checkpoint_sha256 = sha256_file(local_checkpoint)
+    if actual_checkpoint_sha256 != expected_checkpoint_sha256:
+        raise RuntimeError(f"offline DINOv2 checkpoint hash mismatch: {local_checkpoint}")
     state = {
         "source": "local",
         "repo": str(local_repo),
-        "hubconf_sha256": sha256_file(hubconf),
+        "hubconf_sha256": actual_hubconf_sha256,
+        "expected_hubconf_sha256": expected_hubconf_sha256,
         "required_entry": "dinov2_vitl14_reg",
         "available_entry_count": int(len(imported_entries)),
         "intercepted_load_calls": 0,
         "intercepted_checkpoint_load_calls": 0,
-        "checkpoint_path": None,
-        "checkpoint_sha256": None,
+        "checkpoint_path": str(local_checkpoint),
+        "checkpoint_sha256": actual_checkpoint_sha256,
         "expected_checkpoint_sha256": expected_checkpoint_sha256,
         "network_resolution_allowed": False,
     }
@@ -65,13 +75,13 @@ def install_offline_dinov2_hub(local_repo: Path) -> dict:
             load_kwargs.pop("source", None)
             load_kwargs.pop("skip_validation", None)
             return original_load(str(local_repo), model, *load_args, source="local", **load_kwargs)
-        return original_load(repo_or_dir, model, *load_args, **load_kwargs)
+        raise RuntimeError(f"undeclared torch.hub resolution is forbidden in TRELLIS: {repo_or_dir}/{model}")
 
     def offline_state_dict_from_url(url, *load_args, **load_kwargs):
         filename = str(load_kwargs.get("file_name") or Path(urlparse(str(url)).path).name)
         if filename != "dinov2_vitl14_reg4_pretrain.pth":
-            return original_state_dict_loader(url, *load_args, **load_kwargs)
-        checkpoint = Path(torch.hub.get_dir()) / "checkpoints" / filename
+            raise RuntimeError(f"undeclared torch checkpoint URL is forbidden in TRELLIS: {url}")
+        checkpoint = local_checkpoint
         if not checkpoint.is_file():
             raise RuntimeError(f"offline DINOv2 checkpoint is missing; network download is forbidden: {checkpoint}")
         actual_hash = sha256_file(checkpoint)
@@ -137,8 +147,10 @@ def load_image_pipeline(repo: Path):
 def run(args: argparse.Namespace) -> dict:
     os.environ["ATTN_BACKEND"] = args.attn_backend
     os.environ["SPCONV_ALGO"] = args.spconv_algo
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     sys.path.insert(0, str(args.repo))
-    dinov2_offline = install_offline_dinov2_hub(args.dinov2_repo)
+    dinov2_offline = install_offline_dinov2_hub(args.dinov2_repo, args.dinov2_checkpoint)
 
     # Load the image pipeline without executing TRELLIS package initializers.
     # Those initializers import the text pipeline and Open3D, unused here.
@@ -188,6 +200,11 @@ def run(args: argparse.Namespace) -> dict:
         "repo": str(args.repo),
         "model": args.model,
         "dinov2_offline_hub": dinov2_offline,
+        "huggingface_offline": {
+            "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
+            "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
+            "network_resolution_allowed": False,
+        },
         "image": str(args.image),
         "seed": int(args.seed),
         "sparse_steps": int(args.sparse_steps),
@@ -220,6 +237,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model", default="microsoft/TRELLIS-image-large")
     parser.add_argument("--dinov2-repo", type=Path, required=True)
+    parser.add_argument("--dinov2-checkpoint", type=Path, required=True)
     parser.add_argument("--mesh-name", default="trellis_mesh.ply")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sparse-steps", type=int, default=12)

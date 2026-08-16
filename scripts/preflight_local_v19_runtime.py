@@ -375,10 +375,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         f"p=Path({str(bundle / 'scripts/remote_run_trellis_shape_v3.py')!r}); "
         "s=importlib.util.spec_from_file_location('trellis_runner_preflight',p); "
         "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
-        f"state=m.install_offline_dinov2_hub(Path({str(dino_repo)!r})); "
+        f"state=m.install_offline_dinov2_hub(Path({str(dino_repo)!r}), Path({str(dino)!r})); "
         "assert state['network_resolution_allowed'] is False; "
         "assert state['required_entry']=='dinov2_vitl14_reg'; "
-        "print('TRELLIS_DINOV2_OFFLINE_SOURCE_OK',state['hubconf_sha256'])"
+        f"assert state['checkpoint_sha256']=={EXPECTED_DINOV2_SHA256!r}; "
+        f"assert state['hubconf_sha256']=={EXPECTED_DINOV2_HUBCONF_SHA256!r}; "
+        "print('TRELLIS_DINOV2_OFFLINE_SOURCE_OK',state['hubconf_sha256'],state['checkpoint_sha256'])"
     )
     import_commands = {
         "main": [str(args.main_python), "-c", "import cv2,open3d,smplx,torch,transformers,trimesh; from PIL import Image; print(torch.__version__, cv2.__version__, open3d.__version__, transformers.__version__)"],

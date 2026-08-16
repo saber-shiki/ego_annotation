@@ -128,6 +128,7 @@ ATTN_BACKEND=xformers SPCONV_ALGO=native \
   --repo /mnt/user-home/kupingxin/ego_annotation/.runtime/trellis_work/TRELLIS \
   --model /mnt/truenas-user-home/kupingxin/ego_annotation_models/trellis-image-large-25e0d31f \
   --dinov2-repo /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main \
+  --dinov2-checkpoint /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/checkpoints/dinov2_vitl14_reg4_pretrain.pth \
   --image "$EVIDENCE_CROP_RGBA" \
   --output-dir "$EXP_ROOT/P12_trellis" \
   --seed 42
