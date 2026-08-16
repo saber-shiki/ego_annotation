@@ -1103,6 +1103,61 @@ def candidate_mask_summary(mask: np.ndarray, source_width: int, source_height: i
     }
 
 
+def anchor_conditioning_coherence(
+    row: dict[str, Any],
+    *,
+    maximum_mask_area_px: float,
+    maximum_visible_depth_points: float,
+    minimum_population_fraction: float = 0.20,
+    minimum_mask_area_px: int = 1000,
+    minimum_visible_depth_points: int = 100,
+) -> dict[str, Any]:
+    """Identify coherent single-image completion anchors without choosing one.
+
+    A MANO-subtracted mask may legitimately become disconnected and remains
+    valid appearance/metric evidence.  For a single-image completion model,
+    however, a supported one-component alternative is less ambiguous than two
+    object fragments separated by a hand.  This category-agnostic signal only
+    prioritizes the review list; visual inspection still owns the decision.
+    """
+    area_threshold = max(
+        int(minimum_mask_area_px),
+        int(np.ceil(float(minimum_population_fraction) * max(maximum_mask_area_px, 0.0))),
+    )
+    point_threshold = max(
+        int(minimum_visible_depth_points),
+        int(
+            np.ceil(
+                float(minimum_population_fraction)
+                * max(maximum_visible_depth_points, 0.0)
+            )
+        ),
+    )
+    component_count = int(row.get("component_count") or 0)
+    mask_area = int(row.get("mask_area_px") or 0)
+    visible_points = int(row.get("visible_depth_vertex_count") or 0)
+    one_component = component_count == 1
+    support_sufficient = bool(
+        mask_area >= area_threshold and visible_points >= point_threshold
+    )
+    non_border = not bool(row.get("touches_or_near_image_border"))
+    return {
+        "preferred": bool(one_component and support_sufficient and non_border),
+        "one_owned_component": one_component,
+        "support_sufficient": support_sufficient,
+        "non_border": non_border,
+        "mask_area_px": mask_area,
+        "minimum_mask_area_px": area_threshold,
+        "visible_depth_points": visible_points,
+        "minimum_visible_depth_points": point_threshold,
+        "minimum_population_fraction": float(minimum_population_fraction),
+        "semantics": (
+            "Review prioritization for native single-image completion conditioning only; "
+            "not metric-surface, pose, mask, or anchor acceptance."
+        ),
+    }
+
+
 def build_anchor_candidate_proposals(
     *,
     args: argparse.Namespace,
@@ -1175,6 +1230,13 @@ def build_anchor_candidate_proposals(
     area_hi = float(area_values.max()) if area_values.size else 1.0
     point_hi = float(point_values.max()) if point_values.size else 1.0
     for r in rows:
+        coherence = anchor_conditioning_coherence(
+            r,
+            maximum_mask_area_px=area_hi,
+            maximum_visible_depth_points=point_hi,
+        )
+        r["conditioning_coherence"] = coherence
+        r["conditioning_coherence_preferred"] = bool(coherence["preferred"])
         area_score = float(r["mask_area_px"]) / max(area_hi, 1.0)
         point_score = float(r["visible_depth_vertex_count"]) / max(point_hi, 1.0)
         hand_clean_score = 1.0 - float(np.clip(r["hand_owned_removed_fraction"], 0.0, 1.0))
@@ -1205,7 +1267,17 @@ def build_anchor_candidate_proposals(
             "depth_stability_score": float(depth_score),
         }
         r["score_interpretation"] = "heuristic proposal score only; agent visual/geometric judgment must choose the anchor"
-    ranked = sorted(rows, key=lambda r: (-float(r["proposal_score"]), int(r["frame_idx"])))
+    preferred_count = int(
+        sum(bool(row["conditioning_coherence_preferred"]) for row in rows)
+    )
+    ranked = sorted(
+        rows,
+        key=lambda r: (
+            0 if bool(r["conditioning_coherence_preferred"]) else 1,
+            -float(r["proposal_score"]),
+            int(r["frame_idx"]),
+        ),
+    )
     top_k = max(1, int(args.anchor_candidate_count))
     min_gap = max(0, int(args.anchor_candidate_min_gap))
     review_rows: list[dict[str, Any]] = []
@@ -1236,8 +1308,26 @@ def build_anchor_candidate_proposals(
         "track_id": args.track_id,
         "claim_scope": "Anchor candidates for agent subjective selection. This report does not choose or accept an anchor frame.",
         "selection_required": True,
-        "selection_instruction": "Inspect anchor_candidate_review.jpg and ranked_candidates; write an agent anchor decision before running P09/P11 with --anchor-frame/--selected-frame-idx.",
-        "proposal_score_policy": "weighted heuristic over owned mask area, visible depth support, low hand-owned removal, non-border support, metric extent consistency, component count, and depth stability; score is not an acceptance gate.",
+        "selection_instruction": (
+            "Inspect anchor_candidate_review.jpg and ranked_candidates; write an agent anchor decision before "
+            "running P09/P11 with --anchor-frame/--selected-frame-idx. When supported single-component "
+            "conditioning_coherence_preferred candidates exist, choose among them unless image inspection "
+            "finds wrong ownership or inadequate target identity; disconnected rows remain valid evidence but "
+            "are ambiguous single-image completion anchors."
+        ),
+        "proposal_score_policy": (
+            "Supported non-border one-component owned masks are reviewed first, then a weighted heuristic over "
+            "owned mask area, visible depth support, low hand-owned removal, non-border support, metric extent "
+            "consistency, component count, and depth stability; neither ordering nor score is an acceptance gate."
+        ),
+        "conditioning_coherence_policy": {
+            "preferred_candidate_count": preferred_count,
+            "review_order": "supported_single_owned_component_first_then_proposal_score",
+            "minimum_population_fraction": 0.20,
+            "minimum_mask_area_px_floor": 1000,
+            "minimum_visible_depth_points_floor": 100,
+            "claim_scope": "single-image completion conditioning review priority only",
+        },
         "candidate_count": int(len(rows)),
         "review_candidate_count": int(len(review_rows)),
         "review_diversity_min_frame_gap": int(min_gap),
@@ -1292,7 +1382,12 @@ def render_anchor_candidate_review(*, review_rows: list[dict[str, Any]], review_
         panel[:ph] = panel_img
         def put(line: str, y: int, color: tuple[int, int, int] = (0, 0, 0)) -> None:
             cv2.putText(panel, line[:72], (6, ph + y), cv2.FONT_HERSHEY_SIMPLEX, 0.36, color, 1, cv2.LINE_AA)
-        put(f"rank {rank} frame {row.get('frame_idx')} score {float(row.get('proposal_score',0.0)):.3f}", 16)
+        preferred = bool(row.get("conditioning_coherence_preferred"))
+        put(
+            f"rank {rank} frame {row.get('frame_idx')} score {float(row.get('proposal_score',0.0)):.3f} coherent {preferred}",
+            16,
+            (20, 120, 20) if preferred else (0, 0, 0),
+        )
         put(f"mask {int(row.get('mask_area_px',0))}px pts {int(row.get('visible_depth_vertex_count',0))} border {bool(row.get('touches_or_near_image_border'))}", 34)
         put(f"hand_removed {100.0*float(row.get('hand_owned_removed_fraction',0.0)):.1f}% comps {int(row.get('component_count',0))}", 52)
         ext = row.get("world_extent_m") if isinstance(row.get("world_extent_m"), list) else []

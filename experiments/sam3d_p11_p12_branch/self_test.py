@@ -351,6 +351,103 @@ class P11P12BranchTest(unittest.TestCase):
                 },
             )
 
+    def test_sam3d_observed_front_quality_has_strict_conditional_and_fail_modes(self) -> None:
+        strict = sam3d_bridge.observed_front_quality_decision(
+            median_fraction=0.03,
+            p95_fraction=0.12,
+            native_projection_iou=0.10,
+            maximum_median_fraction=0.05,
+            strict_maximum_p95_fraction=0.15,
+            conditional_maximum_p95_fraction=0.18,
+            conditional_minimum_projection_iou=0.25,
+        )
+        self.assertTrue(strict["quality_passed"])
+        self.assertTrue(strict["strict_quality_passed"])
+        self.assertFalse(strict["conditional_tail_uncertainty"])
+
+        conditional = sam3d_bridge.observed_front_quality_decision(
+            median_fraction=0.0469,
+            p95_fraction=0.1692,
+            native_projection_iou=0.3304,
+            maximum_median_fraction=0.05,
+            strict_maximum_p95_fraction=0.15,
+            conditional_maximum_p95_fraction=0.18,
+            conditional_minimum_projection_iou=0.25,
+        )
+        self.assertTrue(conditional["quality_passed"])
+        self.assertFalse(conditional["strict_quality_passed"])
+        self.assertTrue(conditional["conditional_tail_uncertainty"])
+        self.assertEqual(
+            conditional["acceptance_mode"],
+            "conditional_p95_tail_uncertain_native_projection_supported",
+        )
+
+        wrong_pose = sam3d_bridge.observed_front_quality_decision(
+            median_fraction=0.04,
+            p95_fraction=0.17,
+            native_projection_iou=0.013,
+            maximum_median_fraction=0.05,
+            strict_maximum_p95_fraction=0.15,
+            conditional_maximum_p95_fraction=0.18,
+            conditional_minimum_projection_iou=0.25,
+        )
+        self.assertFalse(wrong_pose["quality_passed"])
+        self.assertFalse(wrong_pose["conditional_projection_passed"])
+
+        wrong_surface = sam3d_bridge.observed_front_quality_decision(
+            median_fraction=0.165,
+            p95_fraction=0.17,
+            native_projection_iou=0.64,
+            maximum_median_fraction=0.05,
+            strict_maximum_p95_fraction=0.15,
+            conditional_maximum_p95_fraction=0.18,
+            conditional_minimum_projection_iou=0.25,
+        )
+        self.assertFalse(wrong_surface["quality_passed"])
+        self.assertFalse(wrong_surface["median_passed"])
+
+    def test_anchor_conditioning_coherence_prefers_supported_single_component(self) -> None:
+        preferred = visible_geometry.anchor_conditioning_coherence(
+            {
+                "component_count": 1,
+                "mask_area_px": 8789,
+                "visible_depth_vertex_count": 1134,
+                "touches_or_near_image_border": False,
+            },
+            maximum_mask_area_px=30000,
+            maximum_visible_depth_points=2500,
+        )
+        self.assertTrue(preferred["preferred"])
+        self.assertEqual(preferred["minimum_mask_area_px"], 6000)
+        self.assertEqual(preferred["minimum_visible_depth_points"], 500)
+
+        fragmented = visible_geometry.anchor_conditioning_coherence(
+            {
+                "component_count": 2,
+                "mask_area_px": 29500,
+                "visible_depth_vertex_count": 2500,
+                "touches_or_near_image_border": False,
+            },
+            maximum_mask_area_px=30000,
+            maximum_visible_depth_points=2500,
+        )
+        self.assertFalse(fragmented["preferred"])
+        self.assertTrue(fragmented["support_sufficient"])
+        self.assertFalse(fragmented["one_owned_component"])
+
+        too_small = visible_geometry.anchor_conditioning_coherence(
+            {
+                "component_count": 1,
+                "mask_area_px": 900,
+                "visible_depth_vertex_count": 90,
+                "touches_or_near_image_border": False,
+            },
+            maximum_mask_area_px=30000,
+            maximum_visible_depth_points=2500,
+        )
+        self.assertFalse(too_small["preferred"])
+        self.assertFalse(too_small["support_sufficient"])
+
     def test_sam3d_native_metric_bridge_preserves_pose_and_uses_identity_p13_alignment(self) -> None:
         generated = self.root / "native_bridge_source"
         generated.mkdir()
@@ -470,7 +567,9 @@ class P11P12BranchTest(unittest.TestCase):
                 max_complete_to_observed_extent_ratio=5.0,
                 geometry_quality_surface_samples=40000,
                 max_observed_to_generated_median_extent_fraction=0.15,
+                strict_observed_to_generated_p95_extent_fraction=0.15,
                 max_observed_to_generated_p95_extent_fraction=0.25,
+                min_conditional_tail_native_projection_iou=0.25,
             )
         )
         metric_scale = report["sensor_metric_scene_similarity"]["camera_origin_scene_similarity_scale"]

@@ -37,6 +37,7 @@ SCRIPT_FILES = [
     "remote_run_trellis_shape_v3.py",
     "remote_run_sam3d_objects_mesh_v7.py",
     "build_v19_observed_only_completion_reference.py",
+    "run_hot3d_dual_backend_d18_renders.py",
     "finalize_hot3d_dual_backend_case.py",
     "monitor_hot3d_dual_backend_suite.py",
     "preflight_local_v19_runtime.py",

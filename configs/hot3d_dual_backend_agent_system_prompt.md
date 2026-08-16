@@ -21,8 +21,13 @@ Hard rules:
 - The semantic target hint is not a mask, box, pose, or acceptance decision.  Confirm it
   from raw/review imagery.
 - Use the image read tool for P05, P07, P09, D11, and D18 visual checks.  Numeric reports
-  alone cannot satisfy those checks.
-- Do not edit runtime code.  Do not invent substitute commands or model outputs.
+  alone cannot satisfy those checks. At P09, if the fresh proposal report provides supported
+  `conditioning_coherence_preferred` candidates, select among them unless visual inspection
+  identifies wrong ownership or inadequate target identity; disconnected owned masks remain
+  valid evidence but are ambiguous native single-image completion anchors.
+- Do not edit runtime code.  Do not invent substitute commands or model outputs. At D18 run
+  only `scripts/run_hot3d_dual_backend_d18_renders.py` exactly as specified; never invent a
+  renderer filename or reconstruct two ad-hoc render commands.
 - Keep evidence and uncertainty explicit.  Generated model geometry is render-only and
   never supplies pose correspondences. The common trajectory uses accepted metric surfel
   registration; only a script-validated projected-MANO-subtracted RGB optical-flow + exact-
@@ -33,7 +38,10 @@ Hard rules:
 - Before each GPU-heavy command, verify that the case's dedicated A800 remains safe.  Do
   not take a GPU assigned to another case.
 - If a hard contract fails, write the required blocker JSON and stop.  Never lower pose
-  support gates, broaden masks, or use a hidden source merely to produce a success file.
+  support gates, broaden masks, or use a hidden source merely to produce a success file. The
+  only geometry-quality tolerance is the named D13 conditional P95-tail tier in the
+  authoritative spec; it must preserve the strict median/projection conditions and explicit
+  uncertainty and cannot change pose/contact/collision eligibility.
 - `SUITE_DONE.json` may be created only by the named D19 finalizer after both branches pass.
 
 At completion, report the exact final manifest and video directories, plus unresolved

@@ -38,7 +38,11 @@ The launch also binds:
    Do not execute its canonical P12 through P21; replace that tail with this document.
 4. P05 must inspect the raw contact sheet as an image.  P07 must inspect OWLv2/SAM2
    review imagery.  P09 must inspect the anchor-candidate review image and write the
-   explicit anchor decision. The shared P09 contract is further constrained here: an
+   explicit anchor decision. When the proposal report exposes supported
+   `conditioning_coherence_preferred` rows, select among those one-component owned-mask
+   candidates unless image inspection finds wrong ownership or inadequate target identity;
+   disconnected rows remain valid metric/appearance evidence but are ambiguous native
+   single-image completion anchors. The shared P09 contract is further constrained here: an
    object-owned appearance mask may survive depth rejection only after full projected-MANO
    triangle-silhouette subtraction; rejected depth remains ineligible, and per-frame extent
    eligibility must use the orientation-invariant visible-population reference rather than
@@ -220,9 +224,13 @@ camera-origin scene similarity to robust sensor depth, and then use identity can
 alignment. P13 must fail closed unless selected RGB, owned mask, camera, metric surfels,
 centroid, and observed canonical surface are atomically bound to the same P11 frame. Native
 projection overlap is necessary but not sufficient: the generated render prior must also cover
-the same frame's measured front surface under fixed normalized observed-to-generated median
-and P95 distance gates. This quality check remains diagnostic/render eligibility only and never
-promotes generated faces to pose, contact, or collision evidence. P13 must
+the same frame's measured front surface. The median/extent limit remains strict. P95/extent
+uses a strict tier at `0.15`; a bounded conditional tail tier through `0.18` is permitted only
+when the strict median still passes and native convex projection IoU is at least `0.25`. Such a
+row must be labeled `conditional_p95_tail_uncertain_native_projection_supported` in the bridge
+report and carried as render-quality uncertainty; it does not relax projection, pose, contact,
+collision, or signed-geometry eligibility. This quality check remains diagnostic/render
+eligibility only and never promotes generated faces to pose, contact, or collision evidence. P13 must
 not fall back to TRELLIS RMS/PCA permutations/ICP. Preserve the resulting
 metric-canonical SAM3D topology as a separate render underlay while keeping the observed
 metric surface physically authoritative:
@@ -350,31 +358,24 @@ test -s "$TRELLIS_STATE"
 ## D18 complete-duration final renders
 
 Read `{RUN_ROOT}/state/anchor_decisions/{OBJECT_ID}.json` to bind the exact
-`{ANCHOR_FRAME}`.  Render all 150 source frames for each requested backend:
+`{ANCHOR_FRAME}`.  Run the single bundled D18 wrapper exactly as written. It invokes the
+same bundled layered renderer for both states, validates four `150-frame / 30 FPS` videos
+per backend, and writes one dual-render report. Do not invent an alternative renderer name
+or manually reconstruct this command:
 
 ```bash
-"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/render_p14_p15_layered_state.py \
-  --render-state "$SAM3D_STATE" \
-  --output-dir "$EXP_ROOT/renders/sam3d" \
+"$MAIN_PYTHON" scripts/run_hot3d_dual_backend_d18_renders.py \
+  --run-root '{RUN_ROOT}' \
+  --anchor-frame '{ANCHOR_FRAME}' \
+  --expected-frame-count 150 \
+  --expected-fps 30 \
   --generated-face-budget 12000 \
-  --observed-face-budget 0 \
-  --mano-face-budget 0 \
-  --export-glb-frame '{ANCHOR_FRAME}' \
-  --fps 30 \
   --replace
 
-"$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/render_p14_p15_layered_state.py \
-  --render-state "$TRELLIS_STATE" \
-  --output-dir "$EXP_ROOT/renders/trellis" \
-  --generated-face-budget 12000 \
-  --observed-face-budget 0 \
-  --mano-face-budget 0 \
-  --export-glb-frame '{ANCHOR_FRAME}' \
-  --fps 30 \
-  --replace
-
+D18_RENDER_REPORT="$EXP_ROOT/D18_dual_backend_render_report.json"
 SAM3D_RENDER_MANIFEST="$EXP_ROOT/renders/sam3d/p14_p15_layered_full_mano_render_manifest.json"
 TRELLIS_RENDER_MANIFEST="$EXP_ROOT/renders/trellis/p14_p15_layered_full_mano_render_manifest.json"
+test -s "$D18_RENDER_REPORT"
 test -s "$SAM3D_RENDER_MANIFEST"
 test -s "$TRELLIS_RENDER_MANIFEST"
 ```

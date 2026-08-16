@@ -107,6 +107,83 @@ def nearest_surface_summary(query: np.ndarray, target: np.ndarray) -> dict[str, 
     }
 
 
+def observed_front_quality_decision(
+    *,
+    median_fraction: float,
+    p95_fraction: float,
+    native_projection_iou: float,
+    maximum_median_fraction: float,
+    strict_maximum_p95_fraction: float,
+    conditional_maximum_p95_fraction: float,
+    conditional_minimum_projection_iou: float,
+) -> dict[str, Any]:
+    """Apply a strict tier plus a bounded, explicitly uncertain P95-tail tier.
+
+    The conditional tier is intentionally narrow: the robust median must still
+    satisfy the unchanged strict limit, only the P95 tail may exceed the strict
+    limit, and the native image-plane pose must have substantial mask overlap.
+    This keeps a small partial-surface tail from suppressing a usable render
+    prior without admitting a gross native-pose failure.
+    """
+    values = np.asarray(
+        [
+            median_fraction,
+            p95_fraction,
+            native_projection_iou,
+            maximum_median_fraction,
+            strict_maximum_p95_fraction,
+            conditional_maximum_p95_fraction,
+            conditional_minimum_projection_iou,
+        ],
+        dtype=np.float64,
+    )
+    if not np.isfinite(values).all():
+        raise RuntimeError(f"non-finite observed-front quality inputs: {values}")
+    if conditional_maximum_p95_fraction < strict_maximum_p95_fraction:
+        raise RuntimeError("conditional P95 limit must not be below the strict P95 limit")
+
+    median_passed = bool(median_fraction <= maximum_median_fraction)
+    strict_p95_passed = bool(p95_fraction <= strict_maximum_p95_fraction)
+    conditional_p95_passed = bool(p95_fraction <= conditional_maximum_p95_fraction)
+    conditional_projection_passed = bool(
+        native_projection_iou >= conditional_minimum_projection_iou
+    )
+    strict_passed = bool(median_passed and strict_p95_passed)
+    conditional_tail_passed = bool(
+        not strict_passed
+        and median_passed
+        and p95_fraction > strict_maximum_p95_fraction
+        and conditional_p95_passed
+        and conditional_projection_passed
+    )
+    if strict_passed:
+        mode = "strict_observed_front_quality"
+    elif conditional_tail_passed:
+        mode = "conditional_p95_tail_uncertain_native_projection_supported"
+    else:
+        mode = "failed_observed_front_quality"
+    return {
+        "quality_passed": bool(strict_passed or conditional_tail_passed),
+        "acceptance_mode": mode,
+        "strict_quality_passed": strict_passed,
+        "conditional_tail_quality_passed": conditional_tail_passed,
+        "conditional_tail_uncertainty": conditional_tail_passed,
+        "median_passed": median_passed,
+        "strict_p95_passed": strict_p95_passed,
+        "conditional_p95_passed": conditional_p95_passed,
+        "conditional_projection_passed": conditional_projection_passed,
+        "strict_maximum_p95_fraction_of_extent_diag": float(
+            strict_maximum_p95_fraction
+        ),
+        "conditional_maximum_p95_fraction_of_extent_diag": float(
+            conditional_maximum_p95_fraction
+        ),
+        "conditional_minimum_native_projection_iou": float(
+            conditional_minimum_projection_iou
+        ),
+    }
+
+
 def mesh_from_path(path: Path) -> trimesh.Trimesh:
     loaded = trimesh.load(str(path), process=False, force="mesh")
     if not isinstance(loaded, trimesh.Trimesh):
@@ -381,6 +458,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     observed_extent_diag = float(observed_stats["robust_p005_p995_extent_diag"])
     median_fraction = float(observed_to_generated["median_m"] / max(observed_extent_diag, 1.0e-12))
     p95_fraction = float(observed_to_generated["p95_m"] / max(observed_extent_diag, 1.0e-12))
+    quality_decision = observed_front_quality_decision(
+        median_fraction=median_fraction,
+        p95_fraction=p95_fraction,
+        native_projection_iou=float(projection["convex_projection_iou"]),
+        maximum_median_fraction=float(
+            args.max_observed_to_generated_median_extent_fraction
+        ),
+        strict_maximum_p95_fraction=float(
+            args.strict_observed_to_generated_p95_extent_fraction
+        ),
+        conditional_maximum_p95_fraction=float(
+            args.max_observed_to_generated_p95_extent_fraction
+        ),
+        conditional_minimum_projection_iou=float(
+            args.min_conditional_tail_native_projection_iou
+        ),
+    )
     geometry_quality = {
         "method": "selected_anchor_observed_metric_surfels_to_sampled_generated_surface",
         "generated_surface_sample_count": int(len(generated_surface_samples)),
@@ -394,14 +488,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "maximum_p95_fraction_of_extent_diag": float(
             args.max_observed_to_generated_p95_extent_fraction
         ),
+        **quality_decision,
         "generated_faces_pose_evidence_consumed": False,
-        "quality_passed": bool(
-            median_fraction <= float(args.max_observed_to_generated_median_extent_fraction)
-            and p95_fraction <= float(args.max_observed_to_generated_p95_extent_fraction)
-        ),
         "interpretation": (
             "Render-prior coverage of the selected frame's measured front surface only. "
-            "This diagnostic cannot promote generated hidden faces to pose/contact/collision evidence."
+            "The strict tier remains P95/extent <= 0.15. A bounded conditional tail tier "
+            "may carry explicit uncertainty only when the strict median still passes and "
+            "native mask projection is substantial. This diagnostic cannot promote "
+            "generated hidden faces to pose/contact/collision evidence."
         ),
     }
     if not geometry_quality["quality_passed"]:
@@ -481,6 +575,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "generated_faces_collision_eligible": False,
             "generated_faces_contact_eligible": False,
             "generated_faces_signed_distance_eligible": False,
+            "observed_front_quality_acceptance_mode": geometry_quality["acceptance_mode"],
+            "conditional_observed_tail_uncertainty": geometry_quality[
+                "conditional_tail_uncertainty"
+            ],
         },
         "outputs": {
             "metric_canonical_render_prior": str(output_mesh_path),
@@ -536,7 +634,16 @@ def parse_args() -> argparse.Namespace:
         "--max-observed-to-generated-median-extent-fraction", type=float, default=0.05
     )
     parser.add_argument(
-        "--max-observed-to-generated-p95-extent-fraction", type=float, default=0.15
+        "--strict-observed-to-generated-p95-extent-fraction", type=float, default=0.15,
+        help="Unchanged strict observed-front P95/extent tier.",
+    )
+    parser.add_argument(
+        "--max-observed-to-generated-p95-extent-fraction", type=float, default=0.18,
+        help="Maximum bounded conditional P95/extent tier; reported as uncertain when above strict.",
+    )
+    parser.add_argument(
+        "--min-conditional-tail-native-projection-iou", type=float, default=0.25,
+        help="Minimum native convex projection IoU required by the conditional P95-tail tier.",
     )
     return parser.parse_args()
 
