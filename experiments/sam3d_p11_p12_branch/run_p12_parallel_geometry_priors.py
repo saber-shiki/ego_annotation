@@ -167,7 +167,30 @@ def sam3d_candidate_record(
     invocation: dict[str, Any],
 ) -> dict[str, Any]:
     payload = load_json(report_path)
+    if payload.get("status") != "ok":
+        raise RuntimeError(f"SAM3D runner report is not ok: {report_path}")
+    moge_offline = payload.get("moge_offline") if isinstance(payload.get("moge_offline"), dict) else {}
+    dinov2_offline = payload.get("dinov2_offline") if isinstance(payload.get("dinov2_offline"), dict) else {}
+    hf_offline = payload.get("huggingface_offline") if isinstance(payload.get("huggingface_offline"), dict) else {}
+    expected_moge_sha256 = "da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f"
+    expected_dinov2_sha256 = "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51"
+    expected_hubconf_sha256 = "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64"
+    if (
+        moge_offline.get("checkpoint_sha256") != expected_moge_sha256
+        or moge_offline.get("network_resolution_allowed") is not False
+        or dinov2_offline.get("checkpoint_sha256") != expected_dinov2_sha256
+        or dinov2_offline.get("hubconf_sha256") != expected_hubconf_sha256
+        or dinov2_offline.get("network_resolution_allowed") is not False
+        or hf_offline.get("HF_HUB_OFFLINE") != "1"
+        or hf_offline.get("TRANSFORMERS_OFFLINE") != "1"
+        or hf_offline.get("network_resolution_allowed") is not False
+    ):
+        raise RuntimeError("SAM3D runner lacks byte-bound offline MoGe/DINOv2 provenance")
     case = resolve_case_report(payload, expected_name)
+    case_moge = case.get("moge_offline") if isinstance(case.get("moge_offline"), dict) else {}
+    case_dinov2 = case.get("dinov2_offline") if isinstance(case.get("dinov2_offline"), dict) else {}
+    if case_moge != moge_offline or case_dinov2 != dinov2_offline:
+        raise RuntimeError("SAM3D case report offline asset binding differs from its aggregate runner report")
     if case.get("status") != "ok":
         raise RuntimeError(f"SAM3D candidate report is not ok: {report_path}")
     mesh = require_file(Path(str(case.get("mesh", ""))), "SAM3D raw mesh")
@@ -201,6 +224,11 @@ def sam3d_candidate_record(
             "pre_model_rectification": None,
         },
         "input_binding": validate_input_binding(case, expected_image, expected_mask),
+        "offline_asset_binding": {
+            "moge": moge_offline,
+            "dinov2": dinov2_offline,
+            "huggingface_offline": hf_offline,
+        },
         "native_outputs": {
             "raw_mesh": file_record(mesh, "SAM3D raw mesh"),
             "glb": file_record(glb, "SAM3D GLB"),
@@ -339,6 +367,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if not sam_repo.is_dir():
             raise RuntimeError(f"missing SAM3D repository: {sam_repo}")
         sam_config = require_file(args.sam3d_config, "SAM3D pipeline config")
+        sam_moge_checkpoint = require_file(
+            args.sam3d_moge_checkpoint, "immutable offline SAM3D MoGe checkpoint"
+        )
+        sam_dinov2_repo = args.sam3d_dinov2_repo.expanduser().resolve()
+        if not sam_dinov2_repo.is_dir():
+            raise RuntimeError(f"missing immutable offline SAM3D DINOv2 repository: {sam_dinov2_repo}")
+        sam_dinov2_checkpoint = require_file(
+            args.sam3d_dinov2_checkpoint, "immutable offline SAM3D DINOv2 checkpoint"
+        )
+        expected_moge_sha256 = "da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f"
+        expected_dinov2_sha256 = "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51"
+        expected_dinov2_hubconf_sha256 = "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64"
+        if sha256_file(sam_moge_checkpoint) != expected_moge_sha256:
+            raise RuntimeError(f"offline SAM3D MoGe checkpoint hash mismatch: {sam_moge_checkpoint}")
+        if sha256_file(sam_dinov2_checkpoint) != expected_dinov2_sha256:
+            raise RuntimeError(f"offline SAM3D DINOv2 checkpoint hash mismatch: {sam_dinov2_checkpoint}")
+        sam_dinov2_hubconf = require_file(
+            sam_dinov2_repo / "hubconf.py", "immutable offline SAM3D DINOv2 hubconf"
+        )
+        if sha256_file(sam_dinov2_hubconf) != expected_dinov2_hubconf_sha256:
+            raise RuntimeError(f"offline SAM3D DINOv2 hubconf hash mismatch: {sam_dinov2_hubconf}")
         sam_output_root = output_dir / "sam3d_objects_native"
         command = [
             str(sam_python),
@@ -347,6 +396,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             str(sam_repo),
             "--config",
             str(sam_config),
+            "--moge-checkpoint",
+            str(sam_moge_checkpoint),
+            "--dinov2-repo",
+            str(sam_dinov2_repo),
+            "--dinov2-checkpoint",
+            str(sam_dinov2_checkpoint),
             "--case",
             f"{case_name}|{sam_image}|{sam_mask}|{int(args.seed)}",
             "--output-dir",
@@ -386,6 +441,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "repo": str(sam_repo),
             "repo_git_head": git_head(sam_repo),
             "config": file_record(sam_config, "SAM3D config"),
+            "moge_checkpoint": file_record(
+                sam_moge_checkpoint, "immutable offline SAM3D MoGe checkpoint"
+            ),
+            "dinov2_repo": str(sam_dinov2_repo),
+            "dinov2_hubconf": file_record(
+                sam_dinov2_hubconf, "immutable offline SAM3D DINOv2 hubconf"
+            ),
+            "dinov2_checkpoint": file_record(
+                sam_dinov2_checkpoint, "immutable offline SAM3D DINOv2 checkpoint"
+            ),
             "compile": bool(args.compile),
             "seed": int(args.seed),
             "cuda_visible_devices": str(int(args.cuda_visible_device)),
@@ -449,6 +514,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam3d-runner", type=Path, default=None)
     parser.add_argument("--sam3d-repo", type=Path, default=None)
     parser.add_argument("--sam3d-config", type=Path, default=None)
+    parser.add_argument("--sam3d-moge-checkpoint", type=Path, default=None)
+    parser.add_argument("--sam3d-dinov2-repo", type=Path, default=None)
+    parser.add_argument("--sam3d-dinov2-checkpoint", type=Path, default=None)
     parser.add_argument("--cuda-visible-device", type=int, default=None)
     parser.add_argument(
         "--min-free-mib",
@@ -466,6 +534,9 @@ def parse_args() -> argparse.Namespace:
                 "sam3d_runner",
                 "sam3d_repo",
                 "sam3d_config",
+                "sam3d_moge_checkpoint",
+                "sam3d_dinov2_repo",
+                "sam3d_dinov2_checkpoint",
                 "cuda_visible_device",
             ]
             if getattr(args, name) is None

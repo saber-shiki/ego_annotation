@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import shutil
@@ -10,6 +11,11 @@ from typing import Any
 
 import numpy as np
 from PIL import Image
+
+try:
+    import open3d as o3d
+except ImportError:  # Evidence selection remains importable for lightweight contract tests.
+    o3d = None
 
 
 def load_json(path: Path) -> Any:
@@ -97,6 +103,167 @@ def find_depth_fused_object(report_path: Path, object_id: str) -> dict[str, Any]
     return {}
 
 
+def build_selected_anchor_mesh_reconstruction(
+    *,
+    selected: dict[str, Any],
+    output_dir: Path,
+    object_id: str,
+    min_voxel_m: float = 0.002,
+    voxel_divisor: float = 80.0,
+    poisson_depth: int = 7,
+    poisson_density_quantile: float = 0.02,
+) -> dict[str, Any]:
+    """Materialize canonical observed geometry from the exact selected P11 row.
+
+    An anchor override is atomic: RGB, mask, camera, metric surfels, centroid,
+    and canonical observed mesh must all name the same frame. Reusing P09's mesh
+    for another frame mixes object poses and invalidates P13 alignment/residuals.
+    """
+    if o3d is None:
+        raise RuntimeError("Open3D is required to bind the selected P11 canonical surface")
+    frame_idx = int(selected["frame_idx"])
+    geom = selected.get("visible_geometry_candidate")
+    if not isinstance(geom, dict):
+        raise RuntimeError("selected P11 row lacks visible_geometry_candidate")
+    geom_frame_idx = int(geom.get("frame_idx", -1))
+    if geom_frame_idx != frame_idx:
+        raise RuntimeError(
+            f"selected P11 frame {frame_idx} disagrees with visible geometry frame {geom_frame_idx}"
+        )
+    if geom.get("rigid_pose_observation_eligible") is not True:
+        raise RuntimeError("selected P11 row is not eligible metric-surface evidence")
+    points_world = np.asarray(geom.get("world_vertices_sample_m") or [], dtype=np.float64)
+    centroid_world = np.asarray(geom.get("centroid_world_m") or [], dtype=np.float64).reshape(-1)
+    if (
+        points_world.ndim != 2
+        or points_world.shape[1] != 3
+        or len(points_world) < 30
+        or not np.isfinite(points_world).all()
+    ):
+        raise RuntimeError("selected P11 row lacks at least 30 finite world surfels")
+    if centroid_world.shape != (3,) or not np.isfinite(centroid_world).all():
+        raise RuntimeError("selected P11 row lacks a finite metric centroid")
+    recomputed_centroid = points_world.mean(axis=0)
+    centroid_error_m = float(np.linalg.norm(recomputed_centroid - centroid_world))
+    if centroid_error_m > 1.0e-6:
+        raise RuntimeError(
+            f"selected P11 centroid disagrees with its world surfels by {centroid_error_m} m"
+        )
+
+    points_canonical = points_world - centroid_world[None, :]
+    mesh_dir = output_dir / "selected_anchor_visible_surface_mesh" / safe_id(object_id)
+    mesh_dir.mkdir(parents=True, exist_ok=True)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points_canonical)
+    bbox = pcd.get_axis_aligned_bounding_box()
+    extent = np.asarray(bbox.get_extent(), dtype=np.float64)
+    diag = float(np.linalg.norm(extent))
+    voxel_size_m = max(float(min_voxel_m), diag / max(float(voxel_divisor), 1.0))
+    pcd = pcd.voxel_down_sample(voxel_size_m)
+    down_points = np.asarray(pcd.points, dtype=np.float64)
+    if len(down_points) < 30:
+        raise RuntimeError("selected P11 surfels collapse below 30 points after fixed voxelization")
+
+    stem = f"frame_{frame_idx:06d}_{safe_id(object_id)}_selected_anchor"
+    pcd_path = mesh_dir / f"{stem}_visible_points_canonical.ply"
+    if not o3d.io.write_point_cloud(str(pcd_path), pcd, write_ascii=False, compressed=False):
+        raise RuntimeError(f"failed to write selected P11 point cloud: {pcd_path}")
+
+    hull, _ = pcd.compute_convex_hull()
+    hull.compute_vertex_normals()
+    hull_path = mesh_dir / f"{stem}_convex_hull_visible_candidate.ply"
+    if not o3d.io.write_triangle_mesh(str(hull_path), hull, write_ascii=False, compressed=False):
+        raise RuntimeError(f"failed to write selected P11 convex hull: {hull_path}")
+
+    poisson_path: Path | None = None
+    poisson_error: str | None = None
+    try:
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                radius=max(voxel_size_m * 4.0, float(min_voxel_m) * 4.0), max_nn=30
+            )
+        )
+        pcd.orient_normals_consistent_tangent_plane(20)
+        poisson, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+            pcd, depth=int(poisson_depth)
+        )
+        poisson = poisson.crop(bbox)
+        density = np.asarray(densities)
+        if density.size and len(poisson.vertices) == len(density):
+            threshold = float(np.quantile(density, float(poisson_density_quantile)))
+            poisson.remove_vertices_by_mask(density < threshold)
+        poisson.remove_degenerate_triangles()
+        poisson.remove_duplicated_triangles()
+        poisson.remove_duplicated_vertices()
+        poisson.remove_non_manifold_edges()
+        if len(poisson.vertices) == 0 or len(poisson.triangles) == 0:
+            raise RuntimeError("empty Poisson result")
+        poisson.compute_vertex_normals()
+        poisson_path = mesh_dir / f"{stem}_poisson_visible_mesh.ply"
+        if not o3d.io.write_triangle_mesh(str(poisson_path), poisson, write_ascii=False, compressed=False):
+            raise RuntimeError("Open3D write_triangle_mesh returned false")
+    except Exception as exc:
+        poisson_error = f"{type(exc).__name__}:{exc}"
+        poisson_path = None
+
+    return {
+        "status": (
+            "selected_p11_anchor_visible_surface_mesh_exported"
+            if poisson_path is not None
+            else "selected_p11_anchor_visible_surface_hull_only_poisson_failed"
+        ),
+        "coordinate_frame": "object_canonical_selected_anchor_centroid_frame",
+        "canonical_coordinate_source": (
+            "selected P11 frame world_vertices_sample_m minus that same row centroid_world_m"
+        ),
+        "atomic_anchor_binding": True,
+        "anchor_frame_idx": frame_idx,
+        "anchor_centroid_world_m": centroid_world.astype(float).tolist(),
+        "centroid_recomputed_error_m": centroid_error_m,
+        "point_count_input": int(len(points_world)),
+        "point_count_downsampled": int(len(down_points)),
+        "voxel_size_m": float(voxel_size_m),
+        "canonical_bbox_min_m": down_points.min(axis=0).astype(float).tolist(),
+        "canonical_bbox_max_m": down_points.max(axis=0).astype(float).tolist(),
+        "fused_point_cloud_path": str(pcd_path),
+        "poisson_mesh_path": str(poisson_path) if poisson_path is not None else None,
+        "convex_hull_mesh_path": str(hull_path),
+        "poisson_error": poisson_error,
+        "claim_scope": "selected-frame partial metric observed surface; no hidden geometry",
+    }
+
+
+def validate_selected_anchor_binding(
+    *, selected: dict[str, Any], mesh_reconstruction: dict[str, Any]
+) -> dict[str, Any]:
+    frame_idx = int(selected["frame_idx"])
+    geom = selected.get("visible_geometry_candidate") or {}
+    selected_centroid = np.asarray(geom.get("centroid_world_m") or [], dtype=np.float64)
+    mesh_centroid = np.asarray(mesh_reconstruction.get("anchor_centroid_world_m") or [], dtype=np.float64)
+    centroid_error_m = (
+        float(np.linalg.norm(selected_centroid - mesh_centroid))
+        if selected_centroid.shape == (3,) and mesh_centroid.shape == (3,)
+        else float("inf")
+    )
+    binding = {
+        "selected_frame_idx": frame_idx,
+        "visible_geometry_frame_idx": int(geom.get("frame_idx", -1)),
+        "canonical_surface_frame_idx": int(mesh_reconstruction.get("anchor_frame_idx", -1)),
+        "selected_vs_canonical_centroid_error_m": centroid_error_m,
+        "required_same_frame": True,
+        "required_centroid_tolerance_m": 1.0e-6,
+    }
+    if (
+        binding["visible_geometry_frame_idx"] != frame_idx
+        or binding["canonical_surface_frame_idx"] != frame_idx
+        or not np.isfinite(centroid_error_m)
+        or centroid_error_m > 1.0e-6
+    ):
+        raise RuntimeError(f"non-atomic selected P11 anchor binding: {binding}")
+    binding["validated"] = True
+    return binding
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", required=True)
@@ -166,12 +333,28 @@ def main() -> None:
     selected["trellis_conditioning_crop"] = make_rgba_crop(Path(selected["raw_frame_path"]), Path(selected["mask_path"]), selected_crop)
 
     depth_fused = find_depth_fused_object(args.depth_fused_report, args.object_id)
-    partial_mesh_paths = {}
-    if isinstance(depth_fused.get("mesh_reconstruction"), dict):
-        for key in ["fused_point_cloud_path", "poisson_mesh_path", "convex_hull_mesh_path"]:
-            value = depth_fused["mesh_reconstruction"].get(key)
-            if value:
-                partial_mesh_paths[key] = value
+    selected_mesh_reconstruction = build_selected_anchor_mesh_reconstruction(
+        selected=selected,
+        output_dir=out_dir,
+        object_id=args.object_id,
+    )
+    anchor_binding = validate_selected_anchor_binding(
+        selected=selected,
+        mesh_reconstruction=selected_mesh_reconstruction,
+    )
+    depth_fused_selected = copy.deepcopy(depth_fused)
+    original_mesh_reconstruction = (
+        copy.deepcopy(depth_fused.get("mesh_reconstruction"))
+        if isinstance(depth_fused.get("mesh_reconstruction"), dict)
+        else None
+    )
+    depth_fused_selected["mesh_reconstruction"] = selected_mesh_reconstruction
+    depth_fused_selected["original_p09_mesh_reconstruction_diagnostic_only"] = original_mesh_reconstruction
+    partial_mesh_paths = {
+        key: selected_mesh_reconstruction[key]
+        for key in ["fused_point_cloud_path", "poisson_mesh_path", "convex_hull_mesh_path"]
+        if selected_mesh_reconstruction.get(key)
+    }
     report = {
         "method": "build_v18_compact_rigid_evidence_bundle",
         "status": "ok",
@@ -181,6 +364,7 @@ def main() -> None:
         "selection_rule": selection_rule,
         "selection_note": args.selection_note,
         "selected_frame_idx": int(selected["frame_idx"]),
+        "selected_anchor_atomic_binding": anchor_binding,
         "selected": selected,
         "candidate_count": len(candidates),
         "candidate_summary": {
@@ -188,7 +372,7 @@ def main() -> None:
             "visible_depth_vertex_count_median": float(np.median([c["visible_depth_vertex_count"] for c in candidates])),
             "mask_area_px_max": int(max(c["mask_area_px"] for c in candidates)),
         },
-        "depth_fused_object_row": depth_fused,
+        "depth_fused_object_row": depth_fused_selected,
         "partial_metric_geometry_paths": partial_mesh_paths,
         "all_candidate_frames": [
             {k: c[k] for k in ["frame_idx", "visible_depth_vertex_count", "mask_area_px", "raw_frame_path", "mask_path"]}

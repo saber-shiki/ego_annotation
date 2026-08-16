@@ -20,6 +20,7 @@ from scipy.spatial.transform import Rotation, Slerp
 POSE_MEASUREMENT_STATUSES = {
     "fit_to_visible_depth_samples",
     "fit_to_visible_depth_archive_vertices",
+    "fit_to_object_owned_rgb_calibrated_pnp",
 }
 CORRECTED_POSE_STATUS = "corrected_temporal_rigid_pose_graph"
 COMPLETED_POSE_STATUS = "completed_temporal_rigid_pose_uncertain"
@@ -193,7 +194,7 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
                 {
                     "frame_idx": idx,
                     "reason": "explicit upstream rigid_pose_observation_eligible=false",
-                    "policy": "hard rejected unless --include-ineligible-rigid-pose-observations is explicitly enabled for historical reproduction",
+                    "policy": "hard rejected; the production CLI rejects the historical override flag",
                 }
             )
             continue
@@ -210,8 +211,25 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
                 raise RuntimeError("annotation object missing")
             geom = obj.get("visible_geometry_candidate") if isinstance(obj.get("visible_geometry_candidate"), dict) else {}
             observed = np.asarray(geom.get("world_vertices_sample_m") or [], dtype=float)
+            observed_evidence_source = "current_frame_accepted_metric_surfels"
             if observed.ndim != 2 or observed.shape[1] != 3 or len(observed) < int(args.min_visible_points) or not np.isfinite(observed).all():
-                raise RuntimeError(f"insufficient visible surfels: {observed.shape}")
+                tracked_evidence = np.asarray(row.get("direct_pose_evidence_world_points_m") or [], dtype=float)
+                tracked_kind = str(row.get("direct_pose_evidence_kind") or "")
+                direct_source = str(row.get("direct_pose_observation_source") or "")
+                generated_consumed = row.get("generated_geometry_pose_evidence_consumed")
+                if (
+                    direct_source == "object_owned_rgb_optical_flow_calibrated_pnp"
+                    and tracked_kind == "tracked_source_metric_surfels_at_target_rgb_frame"
+                    and generated_consumed is False
+                    and tracked_evidence.ndim == 2
+                    and tracked_evidence.shape[1] == 3
+                    and len(tracked_evidence) >= int(args.min_visible_points)
+                    and np.isfinite(tracked_evidence).all()
+                ):
+                    observed = tracked_evidence
+                    observed_evidence_source = "source_metric_surfels_tracked_to_current_object_owned_rgb_by_calibrated_pnp"
+                else:
+                    raise RuntimeError(f"insufficient visible surfels: {observed.shape}")
             sigma_t, sigma_r = pose_row_sigma(row, radius, args)
             target_tuple = targets.get(idx)
             if target_tuple is None:
@@ -221,7 +239,7 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
             observations.append(
                 PoseObservation(
                     frame_idx=idx,
-                    source_row=row,
+                    source_row={**row, "solver_observed_evidence_source": observed_evidence_source},
                     rotation_world_from_canonical=rot,
                     translation_world_m=trans,
                     translation_sigma_m=sigma_t,
@@ -237,6 +255,16 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
             skipped.append({"frame_idx": idx, "reason": str(exc)})
     if not observations:
         raise RuntimeError(f"no usable pose observations; skipped={skipped[:8]}")
+    measurement_row_count = sum(
+        str(row.get("status") or "") in POSE_MEASUREMENT_STATUSES
+        for row in pose_report.get("pose_rows", [])
+        if isinstance(row, dict)
+    )
+    if len(observations) != measurement_row_count:
+        raise RuntimeError(
+            "P15 fail-closed observation validation rejected one or more declared direct P14 rows; "
+            f"accepted={len(observations)} declared={measurement_row_count} skipped={skipped[:8]}"
+        )
     if len(observations) < int(args.min_graph_frames) and not args.complete_full_timeline_rigid_pose:
         raise RuntimeError(
             f"only {len(observations)} usable pose observations below min_graph_frames={args.min_graph_frames}; "
@@ -651,6 +679,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         and (args.frame_end is None or int(row.get("frame_idx", -1)) <= int(args.frame_end))
     ]
     completion = load_json(args.completion_report) if args.completion_report else {}
+    if args.completion_report:
+        pose_binding = pose_report.get("selected_anchor_atomic_binding")
+        completion_binding = (
+            (completion.get("inputs") or {}).get("selected_anchor_atomic_binding")
+            if isinstance(completion.get("inputs"), dict)
+            else None
+        )
+        pose_evidence_sha256 = str(pose_report.get("selected_anchor_evidence_report_sha256") or "")
+        completion_evidence_sha256 = str(
+            (completion.get("inputs") or {}).get("candidate_evidence_report_sha256") or ""
+        )
+        if (
+            not isinstance(pose_binding, dict)
+            or pose_binding.get("validated") is not True
+            or pose_binding != completion_binding
+            or not pose_evidence_sha256
+            or pose_evidence_sha256 != completion_evidence_sha256
+        ):
+            raise RuntimeError("P15 pose/completion reports do not share one byte-bound atomic selected anchor")
     completion_outputs = completion.get("outputs") if isinstance(completion.get("outputs"), dict) else {}
     completion_geometry_readiness = completion.get("geometry_readiness") if isinstance(completion.get("geometry_readiness"), dict) else {}
     completion_collision_mesh = completion_outputs.get("collision_eligible_mesh_labeled")
@@ -875,7 +922,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--include-ineligible-rigid-pose-observations",
         action="store_true",
-        help="Historical-reproduction override: admit P14 rows that still carry explicit rigid_pose_observation_eligible=false",
+        help="Forbidden production flag retained only so historical commands fail closed explicitly",
     )
     p.add_argument("--min-visible-points", type=int, default=20)
     p.add_argument("--min-pose-sigma-m", type=float, default=0.004)
@@ -906,7 +953,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-nfev", type=int, default=80)
     p.add_argument("--seed", type=int, default=1907)
     p.add_argument("--verbose", action="store_true")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.include_ineligible_rigid_pose_observations:
+        raise RuntimeError(
+            "--include-ineligible-rigid-pose-observations is forbidden by the production observed-only pose contract"
+        )
+    return args
 
 
 if __name__ == "__main__":

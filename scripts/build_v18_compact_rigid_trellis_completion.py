@@ -293,17 +293,34 @@ def color_for_labels(labels: list[str]) -> np.ndarray:
 
 
 def resolve_anchor_centroid_world(evidence: dict[str, Any]) -> np.ndarray:
+    binding = evidence.get("selected_anchor_atomic_binding")
+    if not isinstance(binding, dict) or binding.get("validated") is not True:
+        raise RuntimeError("evidence lacks a validated atomic selected-anchor binding")
+    selected = evidence.get("selected") if isinstance(evidence.get("selected"), dict) else {}
+    vg = selected.get("visible_geometry_candidate") if isinstance(selected.get("visible_geometry_candidate"), dict) else {}
     row = evidence.get("depth_fused_object_row") if isinstance(evidence.get("depth_fused_object_row"), dict) else {}
     mesh_recon = row.get("mesh_reconstruction") if isinstance(row.get("mesh_reconstruction"), dict) else {}
-    for value in (
-        mesh_recon.get("anchor_centroid_world_m"),
-        (evidence.get("selected") or {}).get("visible_geometry_candidate", {}).get("anchor_centroid_world_m") if isinstance(evidence.get("selected"), dict) else None,
-        (evidence.get("selected") or {}).get("visible_geometry_candidate", {}).get("centroid_world_m") if isinstance(evidence.get("selected"), dict) else None,
+    selected_frame_idx = int(evidence.get("selected_frame_idx", -1))
+    if (
+        int(selected.get("frame_idx", -2)) != selected_frame_idx
+        or int(vg.get("frame_idx", -2)) != selected_frame_idx
+        or int(mesh_recon.get("anchor_frame_idx", -2)) != selected_frame_idx
+        or mesh_recon.get("atomic_anchor_binding") is not True
     ):
-        arr = np.asarray(value if value is not None else [], dtype=float).reshape(-1)
-        if arr.shape == (3,) and np.isfinite(arr).all():
-            return arr
-    raise RuntimeError("evidence report lacks anchor_centroid_world_m/centroid_world_m needed for silhouette free-space filtering")
+        raise RuntimeError("selected mask/camera/surfels/canonical mesh are not bound to one frame")
+    selected_centroid = np.asarray(vg.get("centroid_world_m") or [], dtype=float).reshape(-1)
+    mesh_centroid = np.asarray(mesh_recon.get("anchor_centroid_world_m") or [], dtype=float).reshape(-1)
+    if (
+        selected_centroid.shape != (3,)
+        or mesh_centroid.shape != (3,)
+        or not np.isfinite(selected_centroid).all()
+        or not np.isfinite(mesh_centroid).all()
+    ):
+        raise RuntimeError("atomic selected-anchor evidence lacks finite centroids")
+    error_m = float(np.linalg.norm(selected_centroid - mesh_centroid))
+    if error_m > 1.0e-6:
+        raise RuntimeError(f"selected visible/canonical centroids disagree by {error_m} m")
+    return selected_centroid
 
 
 def world_points_to_camera(points_world: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
@@ -474,6 +491,9 @@ def main() -> None:
         raise RuntimeError("verified generated render priors cannot be promoted to collision geometry")
 
     evidence = load_json(args.evidence_report)
+    binding = evidence.get("selected_anchor_atomic_binding")
+    if not isinstance(binding, dict) or binding.get("validated") is not True:
+        raise RuntimeError("P13 requires a validated atomic P11 selected-anchor binding")
     trellis_report = load_json(args.trellis_report)
     partial_paths = evidence.get("partial_metric_geometry_paths", {})
     fused_points_path = Path(partial_paths.get("fused_point_cloud_path") or "")

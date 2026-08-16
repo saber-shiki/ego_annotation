@@ -82,6 +82,19 @@ def validate_case(case: dict[str, Any], bundle: Path) -> dict[str, Any]:
     if preflight.get("status") != "ready_for_runtime_agent_launch":
         raise RuntimeError(f"preflight is not ready for {case['case_id']}: {preflight.get('status')}")
     preflight_checks = preflight.get("checks") if isinstance(preflight.get("checks"), dict) else {}
+    checks = {
+        "bundle_integrity": preflight_checks.get("bundle_integrity", {}).get("status") == "ok",
+        "fixed_asset_hashes": preflight_checks.get("fixed_asset_hashes", {}).get("status") == "ok",
+        "dinov2_checkpoint": preflight_checks.get("trellis_dinov2_cache", {}).get("status") == "ok",
+        "dinov2_source": preflight_checks.get("trellis_dinov2_offline_source", {}).get("status") == "ok",
+        "script_cli_contracts": preflight_checks.get("script_cli_contracts", {}).get("status") == "ok",
+        "fresh_run_root": preflight_checks.get("fresh_run_root", {}).get("status") == "ok",
+    }
+    failed_checks = [name for name, passed in checks.items() if not passed]
+    if failed_checks:
+        raise RuntimeError(
+            f"preflight lacks required immutable/offline/fresh launch checks for {case['case_id']}: {failed_checks}"
+        )
     sam3d_contract = preflight_checks.get("sam3d_contract") if isinstance(preflight_checks.get("sam3d_contract"), dict) else {}
     interpreter_imports = preflight_checks.get("interpreter_imports") if isinstance(preflight_checks.get("interpreter_imports"), dict) else {}
     import_results = interpreter_imports.get("results") if isinstance(interpreter_imports.get("results"), dict) else {}
@@ -89,6 +102,13 @@ def validate_case(case: dict[str, Any], bundle: Path) -> dict[str, Any]:
     if sam3d_contract.get("status") != "ok" or int(sam3d_import.get("returncode", -1)) != 0:
         raise RuntimeError(
             f"preflight lacks a passing frozen SAM3D repository/activation/import contract for {case['case_id']}"
+        )
+    if (
+        sam3d_contract.get("checks", {}).get("moge_checkpoint") is not True
+        or "SAM3D_IMPORT_NATIVE_POSE_AND_OFFLINE_ASSETS_OK" not in str(sam3d_import.get("stdout_tail") or "")
+    ):
+        raise RuntimeError(
+            f"preflight lacks hash-bound offline MoGe/DINOv2 proof for {case['case_id']}"
         )
     for key, expected in (("bundle", bundle), ("input_video", input_video), ("run_root", run_root)):
         if not same_path(preflight.get(key, ""), expected):
@@ -125,9 +145,12 @@ SENSOR_CALIBRATION_AUTHORITY=prediction_side_sensor_metadata
 SENSOR_FRAME_INTRINSICS_KEY=<empty>
 TARGET_HINT={case['target_hint']}
 TARGET_EXCLUSIONS={case['target_exclusions']}
+ANCHOR_GUIDANCE={case.get('anchor_guidance', 'none; select only after inspecting this fresh run P09 review')}
 LAUNCH_PREFLIGHT_REPORT={case['preflight_report']}
 
 The target hint is semantic only. Confirm it from your own raw/review image inspection.
+Anchor guidance, when present, names a frame to scrutinize in this fresh run; it is not an
+artifact, mask, pose, or permission to skip the fresh P09 candidate review and decision.
 Use the dedicated GPU above; another case owns every other declared suite GPU. Do not stop
 after planning and do not execute the common document's P12-P21. Finish only when the D19
 finalizer writes {case['run_root']}/SUITE_DONE.json, or after writing a named hard blocker.

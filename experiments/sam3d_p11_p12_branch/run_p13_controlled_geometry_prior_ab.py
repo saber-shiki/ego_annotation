@@ -226,6 +226,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     output_dir = prepare_output(args.output_dir)
     evidence_hash_before = sha256_file(evidence_report)
+    evidence_payload = load_json(evidence_report)
+    selected_frame_idx = int(evidence_payload.get("selected_frame_idx", -1))
+    binding = evidence_payload.get("selected_anchor_atomic_binding")
+    if (
+        selected_frame_idx < 0
+        or not isinstance(binding, dict)
+        or binding.get("validated") is not True
+        or int(binding.get("canonical_surface_frame_idx", -1)) != selected_frame_idx
+    ):
+        raise RuntimeError(f"controlled P13 requires atomic selected-anchor evidence: {binding}")
     builder_hash_before = sha256_file(builder_script)
     sam3d_bridge_hash_before = sha256_file(sam3d_bridge_script)
     rows: list[dict[str, Any]] = []
@@ -374,6 +384,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema": SCHEMA,
         "status": "ok",
         "method": "run_experimental_p13_controlled_geometry_prior_ab",
+        "selected_frame_idx": selected_frame_idx,
+        "selected_anchor_atomic_binding": binding,
         "claim_scope": (
             "Controlled backend-correct P13 comparison: candidates share canonical observed evidence and face-labeling semantics, "
             "while each uses its declared geometry adapter. TRELLIS uses generic metric alignment; SAM3D preserves its native pose "

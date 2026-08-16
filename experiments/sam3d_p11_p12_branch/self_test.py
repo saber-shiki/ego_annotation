@@ -19,8 +19,11 @@ sys.path.insert(0, str(SCRIPTS))
 
 import build_p11_dual_geometry_inputs as p11  # noqa: E402
 import build_p13_sam3d_native_metric_bridge as sam3d_bridge  # noqa: E402
+import build_v18_compact_rigid_evidence_bundle as evidence_bundle  # noqa: E402
+import remote_run_sam3d_objects_mesh_v7 as sam3d_runner  # noqa: E402
 import build_v18_compact_rigid_trellis_completion as completion  # noqa: E402
 import build_v19_visible_geometry_from_sam2_depth as visible_geometry  # noqa: E402
+import fit_v18_compact_rigid_object_pose as observed_pose  # noqa: E402
 import solve_v19_rigid_object_pose_graph as pose_graph  # noqa: E402
 import render_p14_p15_layered_state as p15_render  # noqa: E402
 import run_p12_parallel_geometry_priors as p12  # noqa: E402
@@ -183,6 +186,20 @@ class P11P12BranchTest(unittest.TestCase):
             sam_report,
             {
                 "status": "ok",
+                "moge_offline": {
+                    "checkpoint_sha256": "da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f",
+                    "network_resolution_allowed": False,
+                },
+                "dinov2_offline": {
+                    "checkpoint_sha256": "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51",
+                    "hubconf_sha256": "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64",
+                    "network_resolution_allowed": False,
+                },
+                "huggingface_offline": {
+                    "HF_HUB_OFFLINE": "1",
+                    "TRANSFORMERS_OFFLINE": "1",
+                    "network_resolution_allowed": False,
+                },
                 "name": case_name,
                 "image": sam_contract["image"],
                 "mask": sam_contract["mask"],
@@ -206,6 +223,20 @@ class P11P12BranchTest(unittest.TestCase):
                     "quaternion_order": "wxyz_scalar_first_pytorch3d",
                     "row_vector_formula": "p_p3d_camera = (p_raw_local * scale_xyz) @ quaternion_to_matrix(q_wxyz) + translation_xyz",
                     "metric_status": "native_monocular_scene_units_not_sensor_meters",
+                },
+                "moge_offline": {
+                    "checkpoint_sha256": "da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f",
+                    "network_resolution_allowed": False,
+                },
+                "dinov2_offline": {
+                    "checkpoint_sha256": "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51",
+                    "hubconf_sha256": "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64",
+                    "network_resolution_allowed": False,
+                },
+                "huggingface_offline": {
+                    "HF_HUB_OFFLINE": "1",
+                    "TRANSFORMERS_OFFLINE": "1",
+                    "network_resolution_allowed": False,
                 },
             },
         )
@@ -242,6 +273,9 @@ class P11P12BranchTest(unittest.TestCase):
                 sam3d_runner=None,
                 sam3d_repo=None,
                 sam3d_config=None,
+                sam3d_moge_checkpoint=None,
+                sam3d_dinov2_repo=None,
+                sam3d_dinov2_checkpoint=None,
                 cuda_visible_device=None,
                 min_free_mib=30000,
                 compile=False,
@@ -262,6 +296,52 @@ class P11P12BranchTest(unittest.TestCase):
         )
         self.assertFalse(report["backend_neutral_contract"]["collision_ready"])
         self.assertFalse(report["canonical_trellis_rerun"])
+
+    def test_sam3d_offline_moge_binding_rejects_wrong_hash(self) -> None:
+        checkpoint = self.root / "wrong_moge_model.pt"
+        checkpoint.write_bytes(b"not-the-frozen-moge-checkpoint")
+        with self.assertRaisesRegex(RuntimeError, "offline MoGe checkpoint hash mismatch"):
+            sam3d_runner.install_offline_moge_checkpoint(checkpoint)
+
+    def test_sam3d_offline_dinov2_binding_requires_explicit_checkpoint(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "missing offline DINOv2 checkpoint"):
+            sam3d_runner.install_offline_dinov2_hub(
+                Path("/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main"),
+                self.root / "missing_dinov2_checkpoint.pth",
+            )
+
+    def test_atomic_anchor_binding_rejects_mixed_frame_surface(self) -> None:
+        selected = {
+            "frame_idx": 55,
+            "visible_geometry_candidate": {
+                "frame_idx": 55,
+                "centroid_world_m": [0.1, 0.2, 0.3],
+            },
+        }
+        valid_mesh = {
+            "anchor_frame_idx": 55,
+            "anchor_centroid_world_m": [0.1, 0.2, 0.3],
+        }
+        binding = evidence_bundle.validate_selected_anchor_binding(
+            selected=selected, mesh_reconstruction=valid_mesh
+        )
+        self.assertTrue(binding["validated"])
+        with self.assertRaisesRegex(RuntimeError, "non-atomic selected P11 anchor binding"):
+            evidence_bundle.validate_selected_anchor_binding(
+                selected=selected,
+                mesh_reconstruction={
+                    "anchor_frame_idx": 83,
+                    "anchor_centroid_world_m": [0.1, 0.2, 0.3],
+                },
+            )
+        with self.assertRaisesRegex(RuntimeError, "non-atomic selected P11 anchor binding"):
+            evidence_bundle.validate_selected_anchor_binding(
+                selected=selected,
+                mesh_reconstruction={
+                    "anchor_frame_idx": 55,
+                    "anchor_centroid_world_m": [0.2, 0.2, 0.3],
+                },
+            )
 
     def test_sam3d_native_metric_bridge_preserves_pose_and_uses_identity_p13_alignment(self) -> None:
         generated = self.root / "native_bridge_source"
@@ -298,11 +378,20 @@ class P11P12BranchTest(unittest.TestCase):
                 "status": "ok",
                 "case": "synthetic_bridge",
                 "object_id": "box",
+                "selected_frame_idx": 0,
+                "selected_anchor_atomic_binding": {
+                    "selected_frame_idx": 0,
+                    "visible_geometry_frame_idx": 0,
+                    "canonical_surface_frame_idx": 0,
+                    "selected_vs_canonical_centroid_error_m": 0.0,
+                    "validated": True,
+                },
                 "selected": {
                     "frame_idx": 0,
                     "mask_path": str(mask_path),
                     "camera": {"T_world_camera_metric": np.eye(4).tolist()},
                     "visible_geometry_candidate": {
+                        "frame_idx": 0,
                         "mask_path": str(mask_path),
                         "intrinsics_fx_fy_cx_cy": [100.0, 100.0, 50.0, 50.0],
                         "camera_vertices_sample_m": observed.tolist(),
@@ -322,7 +411,11 @@ class P11P12BranchTest(unittest.TestCase):
                     },
                 },
                 "depth_fused_object_row": {
-                    "mesh_reconstruction": {"anchor_centroid_world_m": centroid.tolist()}
+                    "mesh_reconstruction": {
+                        "anchor_frame_idx": 0,
+                        "anchor_centroid_world_m": centroid.tolist(),
+                        "atomic_anchor_binding": True,
+                    }
                 },
             },
         )
@@ -367,11 +460,21 @@ class P11P12BranchTest(unittest.TestCase):
                 max_scene_similarity_scale=5.0,
                 min_complete_to_observed_extent_ratio=0.25,
                 max_complete_to_observed_extent_ratio=5.0,
+                geometry_quality_surface_samples=40000,
+                max_observed_to_generated_median_extent_fraction=0.15,
+                max_observed_to_generated_p95_extent_fraction=0.25,
             )
         )
         metric_scale = report["sensor_metric_scene_similarity"]["camera_origin_scene_similarity_scale"]
         self.assertAlmostEqual(metric_scale, 0.45 / 0.96, places=5)
         self.assertTrue(report["sensor_metric_scene_similarity"]["translation_and_object_scale_scaled_together"])
+        self.assertTrue(
+            report["geometry_validation"]["observed_front_surface_quality"]["quality_passed"]
+        )
+        self.assertFalse(
+            report["geometry_validation"]["observed_front_surface_quality"]
+            ["generated_faces_pose_evidence_consumed"]
+        )
         self.assertGreater(report["projection_validation"]["convex_projection_iou"], 0.5)
         output_mesh = trimesh.load(report["outputs"]["metric_canonical_render_prior"], force="mesh", process=False)
         expected_vertices = native_cv * metric_scale - centroid[None, :]
@@ -390,6 +493,19 @@ class P11P12BranchTest(unittest.TestCase):
         np.testing.assert_array_equal(identity["matrix_model_to_canonical"], np.eye(4))
         self.assertFalse(identity["pca_axis_permutation_used"])
         self.assertFalse(identity["icp_rotation_or_scale_used"])
+
+    def test_extent_consistency_is_anchor_rotation_invariant(self) -> None:
+        physical_extent = np.asarray([0.40, 0.25, 0.12], dtype=float)
+        rotated_anchor_extent = np.asarray([0.12, 0.40, 0.25], dtype=float)
+        population_reference = np.sort(physical_extent)[::-1]
+        sorted_anchor = np.sort(rotated_anchor_extent)[::-1]
+        ratio = np.maximum(
+            sorted_anchor / population_reference,
+            population_reference / sorted_anchor,
+        )
+        np.testing.assert_allclose(ratio, np.ones(3), atol=1.0e-12)
+        # Camera-axis division would falsely flag this same rigid extent.
+        self.assertGreater(float(np.max(physical_extent / rotated_anchor_extent)), 3.0)
 
     def test_hand_ownership_uses_projected_mano_silhouette_not_bbox(self) -> None:
         geometry = self.root / "hand_geometry"
@@ -436,6 +552,46 @@ class P11P12BranchTest(unittest.TestCase):
         self.assertGreater(removed, 500)
         self.assertLess(removed, 2000)
         self.assertGreater(int(np.count_nonzero(owned)), 8000)
+
+    def test_observed_temporal_pose_pairwise_registration_recovers_small_rigid_motion(self) -> None:
+        rng = np.random.default_rng(1801)
+        source = rng.normal(size=(1200, 3)) * np.asarray([0.08, 0.04, 0.018])
+        expected_rotation = observed_pose.Rotation.from_euler(
+            "zyx", [4.0, -2.0, 1.0], degrees=True
+        ).as_matrix()
+        expected_translation = np.asarray([0.006, -0.004, 0.003])
+        target = observed_pose.apply_pose(source, expected_rotation, expected_translation)
+        target += rng.normal(scale=0.0002, size=target.shape)
+        rotation, translation, report = observed_pose.register_adjacent_observed_surfaces(
+            source,
+            target,
+            frame_gap=1,
+            iterations=12,
+            trim_fraction=0.65,
+            max_correspondence_m=0.035,
+            min_matches=30,
+            max_median_residual_m=0.015,
+        )
+        rotation_error = observed_pose.rotation_angle_deg(rotation @ expected_rotation.T)
+        self.assertTrue(report["quality_passed"])
+        self.assertLess(rotation_error, 0.25)
+        self.assertLess(float(np.linalg.norm(translation - expected_translation)), 0.001)
+        self.assertLess(report["residual_m"]["median"], 0.001)
+
+    def test_observed_temporal_rotation_correction_has_chain_prior_not_gate_clipping(self) -> None:
+        measurements = np.zeros((30, 3), dtype=float)
+        measurements[15, 2] = 1.0
+        regularized = observed_pose.regularize_translation_timeline(
+            measurements,
+            np.ones(30, dtype=float),
+            velocity_weight=6.0,
+            acceleration_weight=4.0,
+            zero_prior_weight=0.75,
+        )
+        self.assertGreater(float(np.max(np.abs(regularized[:, 2]))), 0.01)
+        self.assertLess(float(np.max(np.abs(regularized[:, 2]))), 0.25)
+        self.assertGreater(int(np.count_nonzero(np.abs(regularized[:, 2]) > 1.0e-5)), 1)
+        self.assertEqual(observed_pose.bridge_positions_for_gap(56, 72, 10), [64])
 
     def test_pose_graph_readiness_rejects_rotation_jump_even_when_optimizer_could_succeed(self) -> None:
         rng = np.random.default_rng(9)

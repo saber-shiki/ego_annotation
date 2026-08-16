@@ -18,6 +18,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from scipy.spatial import cKDTree
 import trimesh
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
@@ -82,6 +83,30 @@ def robust_point_stats(points: np.ndarray) -> dict[str, Any]:
     }
 
 
+def deterministic_sample_mesh(mesh: trimesh.Trimesh, count: int) -> np.ndarray:
+    rng = np.random.default_rng(1313)
+    points, _ = trimesh.sample.sample_surface(
+        mesh,
+        min(int(count), max(1, int(len(mesh.faces)) * 2)),
+        seed=rng,
+    )
+    return np.asarray(points, dtype=np.float64)
+
+
+def nearest_surface_summary(query: np.ndarray, target: np.ndarray) -> dict[str, Any]:
+    distances, _ = cKDTree(np.asarray(target, dtype=np.float64)).query(
+        np.asarray(query, dtype=np.float64), k=1, workers=-1
+    )
+    return {
+        "count": int(len(distances)),
+        "median_m": float(np.median(distances)),
+        "p90_m": float(np.percentile(distances, 90)),
+        "p95_m": float(np.percentile(distances, 95)),
+        "mean_m": float(np.mean(distances)),
+        "max_m": float(np.max(distances)),
+    }
+
+
 def mesh_from_path(path: Path) -> trimesh.Trimesh:
     loaded = trimesh.load(str(path), process=False, force="mesh")
     if not isinstance(loaded, trimesh.Trimesh):
@@ -133,17 +158,35 @@ def resolve_sam3d_candidate(p12: dict[str, Any]) -> dict[str, Any]:
 
 
 def resolve_anchor_centroid_world(evidence: dict[str, Any], visible: dict[str, Any]) -> np.ndarray:
+    binding = evidence.get("selected_anchor_atomic_binding")
+    if not isinstance(binding, dict) or binding.get("validated") is not True:
+        raise RuntimeError("evidence lacks a validated atomic selected-anchor binding")
+    selected_frame_idx = int(evidence.get("selected_frame_idx", -1))
+    if (
+        int(binding.get("selected_frame_idx", -2)) != selected_frame_idx
+        or int(binding.get("visible_geometry_frame_idx", -2)) != selected_frame_idx
+        or int(binding.get("canonical_surface_frame_idx", -2)) != selected_frame_idx
+    ):
+        raise RuntimeError(f"selected-anchor frame binding is inconsistent: {binding}")
     row = evidence.get("depth_fused_object_row") if isinstance(evidence.get("depth_fused_object_row"), dict) else {}
     reconstruction = row.get("mesh_reconstruction") if isinstance(row.get("mesh_reconstruction"), dict) else {}
-    for value in (
-        reconstruction.get("anchor_centroid_world_m"),
-        visible.get("anchor_centroid_world_m"),
-        visible.get("centroid_world_m"),
-    ):
-        array = np.asarray(value if value is not None else [], dtype=np.float64).reshape(-1)
-        if array.shape == (3,) and np.isfinite(array).all():
-            return array
-    raise RuntimeError("evidence lacks a finite shared anchor centroid")
+    if reconstruction.get("atomic_anchor_binding") is not True:
+        raise RuntimeError("selected mesh reconstruction is not atomically bound to the P11 row")
+    mesh_frame_idx = int(reconstruction.get("anchor_frame_idx", -1))
+    visible_frame_idx = int(visible.get("frame_idx", -1))
+    if mesh_frame_idx != selected_frame_idx or visible_frame_idx != selected_frame_idx:
+        raise RuntimeError(
+            f"SAM3D bridge received mixed anchor frames: selected={selected_frame_idx}, "
+            f"visible={visible_frame_idx}, canonical_surface={mesh_frame_idx}"
+        )
+    mesh_centroid = finite_vector(
+        reconstruction.get("anchor_centroid_world_m"), 3, "selected canonical-surface centroid"
+    )
+    visible_centroid = finite_vector(visible.get("centroid_world_m"), 3, "selected visible centroid")
+    error_m = float(np.linalg.norm(mesh_centroid - visible_centroid))
+    if error_m > 1.0e-6:
+        raise RuntimeError(f"selected visible/canonical centroids disagree by {error_m} m")
+    return visible_centroid
 
 
 def resolve_mask_intrinsics(visible: dict[str, Any], mask_size_wh: tuple[int, int]) -> tuple[np.ndarray, dict[str, Any]]:
@@ -309,6 +352,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     anchor_centroid_world = resolve_anchor_centroid_world(evidence, visible)
     metric_world = metric_camera @ T_world_camera[:3, :3].T + T_world_camera[:3, 3][None, :]
     canonical = metric_world - anchor_centroid_world[None, :]
+    observed_metric_canonical = (
+        observed_camera @ T_world_camera[:3, :3].T
+        + T_world_camera[:3, 3][None, :]
+        - anchor_centroid_world[None, :]
+    )
 
     generated_stats = robust_point_stats(canonical)
     observed_stats = robust_point_stats(observed_camera)
@@ -319,13 +367,52 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if not (float(args.min_complete_to_observed_extent_ratio) <= extent_ratio <= float(args.max_complete_to_observed_extent_ratio)):
         raise RuntimeError(f"SAM3D complete/observed robust extent ratio outside contract: {extent_ratio}")
 
+    metric_mesh = trimesh.Trimesh(
+        vertices=canonical,
+        faces=np.asarray(raw_mesh.faces, dtype=np.int64),
+        process=False,
+    )
+    generated_surface_samples = deterministic_sample_mesh(
+        metric_mesh, int(args.geometry_quality_surface_samples)
+    )
+    observed_to_generated = nearest_surface_summary(
+        observed_metric_canonical, generated_surface_samples
+    )
+    observed_extent_diag = float(observed_stats["robust_p005_p995_extent_diag"])
+    median_fraction = float(observed_to_generated["median_m"] / max(observed_extent_diag, 1.0e-12))
+    p95_fraction = float(observed_to_generated["p95_m"] / max(observed_extent_diag, 1.0e-12))
+    geometry_quality = {
+        "method": "selected_anchor_observed_metric_surfels_to_sampled_generated_surface",
+        "generated_surface_sample_count": int(len(generated_surface_samples)),
+        "observed_to_generated": observed_to_generated,
+        "observed_robust_extent_diag_m": observed_extent_diag,
+        "observed_to_generated_median_fraction_of_extent_diag": median_fraction,
+        "observed_to_generated_p95_fraction_of_extent_diag": p95_fraction,
+        "maximum_median_fraction_of_extent_diag": float(
+            args.max_observed_to_generated_median_extent_fraction
+        ),
+        "maximum_p95_fraction_of_extent_diag": float(
+            args.max_observed_to_generated_p95_extent_fraction
+        ),
+        "generated_faces_pose_evidence_consumed": False,
+        "quality_passed": bool(
+            median_fraction <= float(args.max_observed_to_generated_median_extent_fraction)
+            and p95_fraction <= float(args.max_observed_to_generated_p95_extent_fraction)
+        ),
+        "interpretation": (
+            "Render-prior coverage of the selected frame's measured front surface only. "
+            "This diagnostic cannot promote generated hidden faces to pose/contact/collision evidence."
+        ),
+    }
+    if not geometry_quality["quality_passed"]:
+        raise RuntimeError(f"SAM3D observed-front geometry quality failed: {geometry_quality}")
+
     output_dir = args.output_dir.expanduser().resolve()
     if output_dir.exists() and any(output_dir.iterdir()):
         raise RuntimeError(f"refusing to overwrite nonempty output: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_mesh_path = output_dir / "sam3d_native_sensor_metric_canonical_render_prior.ply"
-    output_mesh = raw_mesh.copy()
-    output_mesh.vertices = canonical
+    output_mesh = metric_mesh.copy()
     output_mesh.export(str(output_mesh_path))
 
     report_path = output_dir / "sam3d_native_sensor_metric_canonical_bridge_report.json"
@@ -382,6 +469,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "observed_robust_camera_surface": observed_stats,
             "generated_metric_canonical": generated_stats,
             "complete_to_observed_robust_extent_diag_ratio": extent_ratio,
+            "observed_front_surface_quality": geometry_quality,
             "allowed_extent_ratio": [
                 float(args.min_complete_to_observed_extent_ratio),
                 float(args.max_complete_to_observed_extent_ratio),
@@ -443,6 +531,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-scene-similarity-scale", type=float, default=5.0)
     parser.add_argument("--min-complete-to-observed-extent-ratio", type=float, default=0.25)
     parser.add_argument("--max-complete-to-observed-extent-ratio", type=float, default=5.0)
+    parser.add_argument("--geometry-quality-surface-samples", type=int, default=40000)
+    parser.add_argument(
+        "--max-observed-to-generated-median-extent-fraction", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--max-observed-to-generated-p95-extent-fraction", type=float, default=0.15
+    )
     return parser.parse_args()
 
 

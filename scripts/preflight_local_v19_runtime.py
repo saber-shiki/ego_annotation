@@ -16,6 +16,7 @@ from typing import Any
 EXPECTED_INPUT_SHA256 = "7a9baf0553e5dcfb4411b6cfabbe3a734f815ee4c5b014bdd965b9e547ec2310"
 EXPECTED_DINOV2_SHA256 = "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51"
 EXPECTED_DINOV2_HUBCONF_SHA256 = "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64"
+EXPECTED_MOGE_SHA256 = "da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f"
 EXPECTED_HASHES = {
     "sam2": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
     "owlv2": "e1e130b9e404cf91a75ad45644c1da9d7fa5284085eecc864266a6923efb99e7",
@@ -70,6 +71,7 @@ def sam3d_contract_check(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.sam3d_repo.expanduser().resolve()
     config = args.sam3d_config.expanduser().resolve()
     activation = args.sam3d_activation.expanduser().resolve()
+    moge_checkpoint = args.sam3d_moge_checkpoint.expanduser().resolve()
     inference_module = repo / "notebook/inference.py"
     revision_result = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -85,6 +87,9 @@ def sam3d_contract_check(args: argparse.Namespace) -> dict[str, Any]:
         "activation_script": activation.is_file(),
         "repo_revision": revision == EXPECTED_SAM3D_REPO_REVISION,
         "config_sha256": config_sha256 == EXPECTED_SAM3D_CONFIG_SHA256,
+        "moge_checkpoint": bool(
+            moge_checkpoint.is_file() and sha256_file(moge_checkpoint) == EXPECTED_MOGE_SHA256
+        ),
     }
     return {
         "status": "ok" if all(checks.values()) else "failed",
@@ -97,6 +102,9 @@ def sam3d_contract_check(args: argparse.Namespace) -> dict[str, Any]:
         "actual_repo_revision": revision,
         "expected_config_sha256": EXPECTED_SAM3D_CONFIG_SHA256,
         "actual_config_sha256": config_sha256,
+        "moge_checkpoint": str(moge_checkpoint),
+        "expected_moge_sha256": EXPECTED_MOGE_SHA256,
+        "actual_moge_sha256": sha256_file(moge_checkpoint) if moge_checkpoint.is_file() else None,
         "checks": checks,
     }
 
@@ -106,6 +114,9 @@ def sam3d_import_command(args: argparse.Namespace) -> list[str]:
     repo = args.sam3d_repo.expanduser().resolve()
     activation = args.sam3d_activation.expanduser().resolve()
     runner = args.bundle.expanduser().resolve() / "scripts/remote_run_sam3d_objects_mesh_v7.py"
+    moge_checkpoint = args.sam3d_moge_checkpoint.expanduser().resolve()
+    dino_repo = args.torch_home.expanduser().resolve() / "hub/facebookresearch_dinov2_main"
+    dino_checkpoint = args.torch_home.expanduser().resolve() / "hub/checkpoints/dinov2_vitl14_reg4_pretrain.pth"
     code = f"""
 import importlib.util
 import sys
@@ -121,6 +132,19 @@ from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
 spec = importlib.util.spec_from_file_location('frozen_sam3d_runner', {str(runner)!r})
 runner_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner_module)
+moge_state = runner_module.install_offline_moge_checkpoint(Path({str(moge_checkpoint)!r}))
+dino_state = runner_module.install_offline_dinov2_hub(Path({str(dino_repo)!r}), Path({str(dino_checkpoint)!r}))
+assert moge_state['network_resolution_allowed'] is False
+assert moge_state['checkpoint_sha256'] == {EXPECTED_MOGE_SHA256!r}
+assert dino_state['network_resolution_allowed'] is False
+assert dino_state['checkpoint_sha256'] == {EXPECTED_DINOV2_SHA256!r}
+assert dino_state['expected_hubconf_sha256'] == {EXPECTED_DINOV2_HUBCONF_SHA256!r}
+try:
+    runner_module.install_offline_dinov2_hub(Path({str(dino_repo)!r}), Path('/definitely/missing/dino.pth'))
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('missing explicit DINO checkpoint did not fail closed')
 vertices = np.asarray([[0.2, -0.3, 0.4], [-0.7, 0.1, 0.5]], dtype=np.float64)
 q = np.asarray([0.75, -0.2, 0.3, 0.55], dtype=np.float64)
 q /= np.linalg.norm(q)
@@ -136,7 +160,7 @@ expected = transform.transform_points(torch.tensor(vertices[None], dtype=torch.f
 error = float(np.max(np.abs(actual - expected)))
 assert error < 1.0e-12, error
 assert np.allclose(actual_cv, actual @ np.diag([-1.0, -1.0, 1.0]))
-print('SAM3D_IMPORT_AND_NATIVE_POSE_OK', Inference.__module__, error)
+print('SAM3D_IMPORT_NATIVE_POSE_AND_OFFLINE_ASSETS_OK', Inference.__module__, error, moge_state['checkpoint_sha256'], dino_state['hubconf_sha256'])
 """
     shell = "\n".join(
         [
@@ -166,10 +190,31 @@ def verify_bundle_manifest(bundle: Path) -> dict[str, Any]:
         actual = sha256_file(path)
         if actual != row["sha256"]:
             failures.append({"path": row["path"], "reason": "hash_mismatch", "actual": actual, "expected": row["sha256"]})
+    if manifest.get("source_worktree_dirty") is not False:
+        failures.append({"path": "source_worktree_dirty", "reason": "immutable_bundle_not_clean"})
+    offline_assets = manifest.get("offline_model_assets") if isinstance(manifest.get("offline_model_assets"), dict) else {}
+    expected_assets = {
+        "dinov2_source_hubconf": EXPECTED_DINOV2_HUBCONF_SHA256,
+        "dinov2_checkpoint": EXPECTED_DINOV2_SHA256,
+        "sam3d_moge_checkpoint": EXPECTED_MOGE_SHA256,
+    }
+    for name, expected in expected_assets.items():
+        row = offline_assets.get(name) if isinstance(offline_assets.get(name), dict) else {}
+        path = Path(str(row.get("path") or ""))
+        if row.get("sha256") != expected:
+            failures.append({"path": f"offline_model_assets.{name}", "reason": "declared_sha256_mismatch"})
+        elif not path.is_file():
+            failures.append({"path": str(path), "reason": "offline_asset_missing"})
+        elif sha256_file(path) != expected:
+            failures.append({"path": str(path), "reason": "offline_asset_sha256_mismatch"})
+    if offline_assets.get("network_resolution_allowed") is not False:
+        failures.append({"path": "offline_model_assets", "reason": "network_resolution_not_forbidden"})
     return {
         "status": "ok" if not failures else "failed",
         "path": str(manifest_path),
         "source_revision": manifest.get("source_revision"),
+        "source_worktree_dirty": manifest.get("source_worktree_dirty"),
+        "offline_model_assets": offline_assets,
         "wilor_source_revision": manifest.get("wilor_source_revision"),
         "declared_file_count": manifest.get("file_count"),
         "failures": failures,
@@ -181,6 +226,8 @@ def prompt_isolation(bundle: Path) -> dict[str, Any]:
         bundle / "runtime" / "v19_runtime_spec.md",
         bundle / "configs" / "v19_agent_system_prompt.md",
         bundle / ".pi" / "prompts" / "v19-run.md",
+        bundle / "runtime" / "hot3d_dual_backend_runtime_spec.md",
+        bundle / "configs" / "hot3d_dual_backend_agent_system_prompt.md",
     ]
     findings = []
     for path in paths:
@@ -402,6 +449,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam3d-repo", type=Path, default=None)
     parser.add_argument("--sam3d-config", type=Path, default=None)
     parser.add_argument("--sam3d-activation", type=Path, default=None)
+    parser.add_argument("--sam3d-moge-checkpoint", type=Path, default=None)
     parser.add_argument("--expected-input-sha256", default=EXPECTED_INPUT_SHA256, help="Expected input hash, or 'none'/'skip' to disable the hash check")
     parser.add_argument("--expected-width", type=int, default=1408)
     parser.add_argument("--expected-height", type=int, default=1408)
@@ -409,7 +457,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-frame-count", type=int, default=150)
     parser.add_argument("--allow-input-sidecar", action="append", default=[], help="Additional prediction-side sensor/provenance filename allowed next to input.mp4")
     args = parser.parse_args()
-    sam3d_fields = ("sam3d_python", "sam3d_repo", "sam3d_config", "sam3d_activation")
+    sam3d_fields = (
+        "sam3d_python",
+        "sam3d_repo",
+        "sam3d_config",
+        "sam3d_activation",
+        "sam3d_moge_checkpoint",
+    )
     supplied = [getattr(args, name) is not None for name in sam3d_fields]
     if any(supplied) and not all(supplied):
         missing = ["--" + name.replace("_", "-") for name, present in zip(sam3d_fields, supplied) if not present]

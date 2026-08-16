@@ -14,6 +14,7 @@ The launch prompt binds all of these values explicitly:
 - `{GPU_ID}`: dedicated physical A800 id for this case.
 - `{SENSOR_CALIBRATION_METADATA}`: prediction-side official pinhole camera contract.
 - `{TARGET_HINT}` and `{TARGET_EXCLUSIONS}`: semantic hints only, never masks or poses.
+- optional `{ANCHOR_GUIDANCE}`: a previously diagnosed frame to scrutinize, never an artifact or permission to skip fresh P09 review.
 
 The launch also binds:
 
@@ -37,7 +38,11 @@ The launch also binds:
    Do not execute its canonical P12 through P21; replace that tail with this document.
 4. P05 must inspect the raw contact sheet as an image.  P07 must inspect OWLv2/SAM2
    review imagery.  P09 must inspect the anchor-candidate review image and write the
-   explicit anchor decision.  The launch target hint must be visually confirmed.
+   explicit anchor decision. The shared P09 contract is further constrained here: an
+   object-owned appearance mask may survive depth rejection only after full projected-MANO
+   triangle-silhouette subtraction; rejected depth remains ineligible, and per-frame extent
+   eligibility must use the orientation-invariant visible-population reference rather than
+   one anchor's camera-axis AABB. The launch target hint must be visually confirmed.
 5. Use one shared P11 evidence report, anchor RGB, object-owned mask, observed metric
    surface, camera/HaWoR state, and observed-only object trajectory for both branches.
 6. SAM3D receives full RGB plus the binary object-owned mask and no external pointmap.
@@ -75,6 +80,18 @@ test -s "$EVIDENCE_REPORT"
 test -s "$ANNOTATIONS"
 test -s "$HAWOR_NPZ"
 test -s "$DEPTH_NPZ"
+"$MAIN_PYTHON" - "$EVIDENCE_REPORT" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+d = json.loads(p.read_text())
+b = d.get('selected_anchor_atomic_binding')
+f = int(d.get('selected_frame_idx', -1))
+if not isinstance(b, dict) or b.get('validated') is not True:
+    raise SystemExit('P11 selected anchor is not atomically bound')
+if any(int(b.get(k, -2)) != f for k in ('selected_frame_idx', 'visible_geometry_frame_idx', 'canonical_surface_frame_idx')):
+    raise SystemExit(f'P11 selected anchor frame mismatch: selected={f} binding={b}')
+PY
 mkdir -p "$EXP_ROOT"
 ```
 
@@ -120,7 +137,10 @@ test -s "$TRELLIS_REPORT"
 ```
 
 Run the frozen SAM3D Objects runner through the native P11 full-RGB + owned-mask
-contract.  `pointmap=None` is enforced by the D11/D12 report adapter:
+contract. SAM3D checkpoint loading is fail-closed offline: MoGe
+`Ruicheng/moge-vitl/model.pt` and the DINOv2 source/checkpoint must be local,
+hash-bound, and reported with `network_resolution_allowed:false`; any undeclared Hugging
+Face resolution is a D12 blocker. `pointmap=None` is enforced by the D11/D12 report adapter:
 
 ```bash
 BUNDLE_ROOT=$(pwd)
@@ -140,6 +160,9 @@ cd "$BUNDLE_ROOT"
   --sam3d-runner scripts/remote_run_sam3d_objects_mesh_v7.py \
   --sam3d-repo /mnt/user-home/kupingxin/sam3d-objects/src \
   --sam3d-config /mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml \
+  --sam3d-moge-checkpoint /mnt/user-home/kupingxin/sam3d-objects/hf-cache/hub/models--Ruicheng--moge-vitl/blobs/da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f \
+  --sam3d-dinov2-repo /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main \
+  --sam3d-dinov2-checkpoint /mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/checkpoints/dinov2_vitl14_reg4_pretrain.pth \
   --cuda-visible-device '{GPU_ID}' \
   --min-free-mib 30000
 
@@ -193,7 +216,13 @@ test -s "$CONTROLLED_REPORT"
 
 For SAM3D, D13 must preserve the native quaternion/local-to-camera pose, bridge the whole
 camera-origin scene similarity to robust sensor depth, and then use identity canonical
-alignment. It must not fall back to TRELLIS RMS/PCA permutations/ICP. Preserve the resulting
+alignment. P13 must fail closed unless selected RGB, owned mask, camera, metric surfels,
+centroid, and observed canonical surface are atomically bound to the same P11 frame. Native
+projection overlap is necessary but not sufficient: the generated render prior must also cover
+the same frame's measured front surface under fixed normalized observed-to-generated median
+and P95 distance gates. This quality check remains diagnostic/render eligibility only and never
+promotes generated faces to pose, contact, or collision evidence. P13 must
+not fall back to TRELLIS RMS/PCA permutations/ICP. Preserve the resulting
 metric-canonical SAM3D topology as a separate render underlay while keeping the observed
 metric surface physically authoritative:
 
@@ -226,8 +255,16 @@ OBSERVED_COMPLETION="$EXP_ROOT/P14_observed_completion/observed_only_completion_
   --output "$OBSERVED_COMPLETION"
 ```
 
-Fit visible direct poses and complete one shared full timeline.  Do not lower the default
-trusted-support threshold and do not include explicitly ineligible rows:
+Fit direct poses from observed evidence and complete one shared full timeline. Rotation must
+come from adjacent accepted metric-surface registration plus the selected anchor's observed
+surfels, never from generated completion faces. Translation uses the same observed anchor
+surface and the fixed temporal prior. A long strict-depth gap may be bridged only by the
+script's fail-closed projected-MANO-subtracted RGB optical-flow + exact-camera PnP path; this
+does not reinstate rejected depth. Each bridge records its own rotation observability, but a
+line-like bridge may remain explicitly underobservable only when the unchanged downstream
+score/fraction timeline gate still passes. Do not lower the default support, gap, reprojection,
+observability-fraction, or temporal-readiness thresholds and do not include explicitly
+ineligible metric rows:
 
 ```bash
 "$MAIN_PYTHON" scripts/fit_v18_compact_rigid_object_pose.py \
@@ -249,12 +286,14 @@ POSE_GRAPH="$EXP_ROOT/P15_observed_pose_graph/v19_rigid_object_pose_graph_report
 test -s "$POSE_GRAPH"
 ```
 
-Read the pose report. The layered-state adapter requires `annotation_ready:true`,
-`graph_support.sufficient:true`, `temporal_readiness.ready:true`, exactly 150 accepted pose
-rows, and zero `nonpenetration_target_frame_count`. The temporal gate enforces direct-pose
-fraction, bounded direct/interpolation/hold gaps, rotation observability, and bounded
-per-frame SE(3) jumps. If any gate fails, preserve the report, write a D15 blocker, and stop;
-do not relabel interpolation/nearest holds or optimizer success as evidence.
+Read both pose reports. P14 must state `generated_faces_pose_eligible:false`, identify every
+direct metric-surface and RGB-PnP row, and prove that generated geometry was diagnostic-only.
+The layered-state adapter requires `annotation_ready:true`, `graph_support.sufficient:true`,
+`temporal_readiness.ready:true`, exactly 150 accepted pose rows, and zero
+`nonpenetration_target_frame_count`. The temporal gate enforces direct-pose fraction, bounded
+direct/interpolation/hold gaps, rotation observability, and bounded per-frame SE(3) jumps. If
+any gate fails, preserve the report, write a D15 blocker, and stop; do not relabel interpolation,
+nearest holds, optimizer success, or a rejected depth row as evidence.
 
 Build an unsigned observed-surface MANO/object measurement state:
 

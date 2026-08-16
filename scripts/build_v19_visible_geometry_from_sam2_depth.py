@@ -1376,6 +1376,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     rng = np.random.default_rng(int(args.seed))
 
     visible_data: dict[int, dict[str, Any]] = {}
+    appearance_data: dict[int, dict[str, Any]] = {}
     skipped_rows: list[dict[str, Any]] = []
     for idx in indices:
         track_row = sam2.get(idx, {})
@@ -1414,6 +1415,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "owned_mask_path": str(owned_mask_path),
             })
             continue
+        appearance_data[idx] = {
+            "mask_path": str(owned_mask_path),
+            "source_mask_path": source_mask_path,
+            "object_surface_ownership_filter": ownership_summary,
+            "ownership_contract": {
+                "mano_subtraction_completed": True,
+                "ownership_primitive": ownership_summary.get("ownership_primitive"),
+                "bbox_subtraction_used": False,
+                "fail_closed": False,
+            },
+            "source_width": int(source_width),
+            "source_height": int(source_height),
+            "claim_scope": (
+                "Prediction-side RGB/object appearance support after projected MANO silhouette subtraction. "
+                "This support remains valid when metric depth ownership fails and does not promote rejected depth."
+            ),
+        }
         if mask_owned.shape != depth_m.shape:
             A_depth_from_mask = camera_contract_resize_affine(
                 (int(mask_owned.shape[1]), int(mask_owned.shape[0])),
@@ -1522,6 +1540,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "frame_idx": idx,
                 "status": "first_surface_depth_ownership_failed_closed",
                 "depth_ownership": depth_ownership_summary,
+                "owned_mask_path": str(owned_mask_path),
+                "appearance_support_preserved": True,
             })
             continue
         valid = robust_valid
@@ -1606,6 +1626,25 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     anchor_diag_m = float(np.linalg.norm(anchor_extent_m))
     if anchor_diag_m <= 0.0 or not np.isfinite(anchor_diag_m):
         raise RuntimeError(f"anchor frame {anchor} has invalid metric extent")
+    population_extents = np.asarray(
+        [
+            np.ptp(np.asarray(row["world_points"], dtype=float), axis=0)
+            for row in visible_data.values()
+        ],
+        dtype=float,
+    )
+    population_sorted_extents = np.sort(population_extents, axis=1)[:, ::-1]
+    population_sorted_extent_median = np.median(population_sorted_extents, axis=0)
+    population_diag = np.linalg.norm(population_extents, axis=1)
+    population_diag_median = float(np.median(population_diag))
+    if (
+        population_sorted_extent_median.shape != (3,)
+        or not np.isfinite(population_sorted_extent_median).all()
+        or np.any(population_sorted_extent_median <= 0.0)
+        or not np.isfinite(population_diag_median)
+        or population_diag_median <= 0.0
+    ):
+        raise RuntimeError("visible metric extent population is invalid")
     anchor_mesh_reconstruction = export_anchor_visible_surface_mesh(
         output_dir=args.output_dir,
         object_id=object_id,
@@ -1646,13 +1685,29 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         vis = visible_data.get(idx)
         if vis is None:
             track_row = sam2.get(idx, {})
+            appearance = appearance_data.get(idx)
+            appearance_mask = (
+                str(appearance.get("mask_path"))
+                if isinstance(appearance, dict) and appearance.get("mask_path")
+                else (str(track_row.get("mask_path")) if track_row.get("mask_path") else None)
+            )
             row = object_row_not_visible(
                 object_id,
                 args.track_id,
                 "not_visible_or_no_metric_depth",
-                "SAM2/depth did not provide a visible metric surface for this frame",
-                str(track_row.get("mask_path")) if track_row.get("mask_path") else None,
+                "SAM2/depth did not provide an accepted visible metric surface for this frame",
+                appearance_mask,
             )
+            if isinstance(appearance, dict):
+                row["appearance_observation"] = {
+                    **appearance,
+                    "status": "object_owned_rgb_appearance_support_without_accepted_metric_depth",
+                    "metric_depth_pose_eligible": False,
+                    "rgb_tracking_pose_evidence_eligible": True,
+                }
+                row["object_surface_ownership_filter"] = appearance.get("object_surface_ownership_filter")
+                row["mask_path"] = appearance_mask
+                row["mask_semantics"] = "projected_mano_subtracted_object_owned_appearance_mask"
             if bool(args.carry_invisible_pose) and last_pose is not None:
                 row["reconstructed_geometry_pose"] = {
                     **last_pose,
@@ -1668,12 +1723,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         cam_points = np.asarray(vis["camera_points"], dtype=float)
         centroid = world_points.mean(axis=0)
         world_extent_m = world_points.max(axis=0) - world_points.min(axis=0)
-        extent_ratio_diag = float(np.linalg.norm(world_extent_m) / max(anchor_diag_m, 1.0e-9))
-        extent_ratio_axis = np.divide(
-            world_extent_m,
-            np.maximum(anchor_extent_m, 1.0e-6),
-            out=np.full(3, np.inf, dtype=float),
-            where=np.maximum(anchor_extent_m, 1.0e-6) > 0,
+        sorted_extent_m = np.sort(world_extent_m)[::-1]
+        extent_ratio_diag = float(
+            max(
+                np.linalg.norm(world_extent_m) / max(population_diag_median, 1.0e-9),
+                population_diag_median / max(np.linalg.norm(world_extent_m), 1.0e-9),
+            )
+        )
+        extent_ratio_axis = np.maximum(
+            sorted_extent_m / np.maximum(population_sorted_extent_median, 1.0e-6),
+            population_sorted_extent_median / np.maximum(sorted_extent_m, 1.0e-6),
         )
         max_extent_ratio_axis = float(np.max(extent_ratio_axis))
         rigid_pose_observation_eligible = bool(
@@ -1683,9 +1742,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             and max_extent_ratio_axis <= float(args.rigid_extent_axis_ratio_max)
         )
         rigid_pose_observation_reason = (
-            "metric_extent_consistent_with_selected_anchor_rigid_object"
+            "metric_extent_consistent_with_orientation_invariant_visible_population_reference"
             if rigid_pose_observation_eligible
-            else "systematic_mask_extent_inconsistent_with_selected_anchor_rigid_object_probable_hand_background_leakage"
+            else "systematic_mask_extent_inconsistent_with_orientation_invariant_visible_population_reference_probable_hand_background_leakage"
         )
         raw_mask = read_mask(Path(vis["mask_path"]))
         owned_bbox = bbox_xyxy_from_mask(raw_mask, int(frame["source_width"]), int(frame["source_height"]))
@@ -1728,8 +1787,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "centroid_world_m": centroid.astype(float).tolist(),
             "world_extent_m": world_extent_m.astype(float).tolist(),
             "anchor_extent_world_m": anchor_extent_m.astype(float).tolist(),
-            "extent_ratio_to_anchor_diag": extent_ratio_diag,
-            "extent_ratio_to_anchor_axis": extent_ratio_axis.astype(float).tolist(),
+            "extent_population_sorted_axis_median_m": population_sorted_extent_median.astype(float).tolist(),
+            "extent_population_diag_median_m": population_diag_median,
+            "extent_consistency_basis": "frame-population median of orientation-invariant sorted extents and extent diagonal",
+            "extent_ratio_to_population_diag": extent_ratio_diag,
+            "extent_ratio_to_population_sorted_axis": extent_ratio_axis.astype(float).tolist(),
             "rigid_pose_observation_eligible": rigid_pose_observation_eligible,
             "rigid_pose_observation_reason": rigid_pose_observation_reason,
             "depth_median_m": float(vis["depth_median_m"]),
@@ -1774,8 +1836,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "depth_median_m": float(vis["depth_median_m"]),
                 "centroid_world_m": centroid.astype(float).tolist(),
                 "world_extent_m": world_extent_m.astype(float).tolist(),
-                "extent_ratio_to_anchor_diag": extent_ratio_diag,
-                "extent_ratio_to_anchor_axis_max": max_extent_ratio_axis,
+                "extent_ratio_to_population_diag": extent_ratio_diag,
+                "extent_ratio_to_population_sorted_axis_max": max_extent_ratio_axis,
                 "rigid_pose_observation_eligible": rigid_pose_observation_eligible,
                 "rigid_pose_observation_reason": rigid_pose_observation_reason,
                 "camera_pose_source": vis["camera_source"],
@@ -1883,6 +1945,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "anchor_frame_idx": int(anchor),
         "anchor_centroid_world_m": anchor_centroid.astype(float).tolist(),
         "anchor_extent_world_m": anchor_extent_m.astype(float).tolist(),
+        "extent_consistency_reference": {
+            "method": "orientation_invariant_visible_population_median",
+            "sorted_axis_extent_median_m": population_sorted_extent_median.astype(float).tolist(),
+            "extent_diag_median_m": population_diag_median,
+            "frame_count": int(len(population_extents)),
+            "anchor_not_used_as_extent_gate_reference": True,
+        },
         "anchor_visible_surface_mesh_reconstruction": anchor_mesh_reconstruction,
         "camera_pose_source_counts": dict(camera_source_counts),
         "intrinsics_source_counts": dict(Counter(str(vis.get("intrinsics_source")) for vis in visible_data.values())),
@@ -2024,7 +2093,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anchor-mesh-voxel-divisor", type=float, default=80.0)
     parser.add_argument("--anchor-mesh-poisson-depth", type=int, default=7)
     parser.add_argument("--anchor-mesh-poisson-density-quantile", type=float, default=0.02)
-    parser.add_argument("--rigid-extent-ratio-max", type=float, default=2.75, help="Mark visible surfaces with diagonal extent more than this multiple of the selected anchor as ineligible for rigid pose fitting; they remain mask/depth measurements with systematic leakage uncertainty.")
+    parser.add_argument("--rigid-extent-ratio-max", type=float, default=2.75, help="Mark visible surfaces whose orientation-invariant extent diagonal differs from the robust visible-population median by more than this factor as ineligible for rigid pose fitting.")
     parser.add_argument("--rigid-extent-axis-ratio-max", type=float, default=3.25, help="Axis-wise companion to --rigid-extent-ratio-max for detecting elongated hand/background leakage.")
     return parser.parse_args()
 

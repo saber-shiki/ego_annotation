@@ -71,6 +71,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     controlled = load_json(controlled_path)
     if controlled.get("status") != "ok":
         raise RuntimeError(f"controlled P13 report is not ok: {controlled_path}")
+    if int(controlled.get("selected_frame_idx", -1)) < 0:
+        raise RuntimeError("controlled P13 report lacks a selected frame")
     candidate = candidate_by_name(controlled, args.candidate)
     candidate_outputs = (
         candidate.get("source_neutral_outputs")
@@ -94,6 +96,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         Path(str(candidate.get("legacy_builder_report", ""))), "candidate P13 builder report"
     )
     builder = load_json(builder_report_path)
+    builder_evidence_path = require_file(
+        Path(str((builder.get("inputs") or {}).get("evidence_report") or "")),
+        "candidate P13 evidence report",
+    )
+    builder_evidence = load_json(builder_evidence_path)
+    binding = builder_evidence.get("selected_anchor_atomic_binding")
+    selected_frame_idx = int(controlled.get("selected_frame_idx"))
+    if (
+        not isinstance(binding, dict)
+        or binding.get("validated") is not True
+        or int(binding.get("selected_frame_idx", -1)) != selected_frame_idx
+        or int(binding.get("canonical_surface_frame_idx", -1)) != selected_frame_idx
+    ):
+        raise RuntimeError(
+            f"observed-only completion lacks a validated atomic selected-anchor binding: {binding}"
+        )
     observed_band_m = float(builder.get("observed_band_m") or 0.0)
     summary = mesh_summary(observed_mesh)
     output = args.output.expanduser().resolve()
@@ -116,6 +134,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "controlled_report": str(controlled_path),
             "controlled_candidate": str(args.candidate),
             "candidate_builder_report": str(builder_report_path),
+            "candidate_evidence_report": str(builder_evidence_path),
+            "candidate_evidence_report_sha256": sha256_file(builder_evidence_path),
+            "selected_anchor_atomic_binding": binding,
             "candidate_collision_surface": str(candidate_collision),
             "shared_observed_mesh": str(observed_mesh),
         },

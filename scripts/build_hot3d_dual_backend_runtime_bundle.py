@@ -26,13 +26,16 @@ SCRIPT_FILES = [
     "run_unidepth_full_frame_v3.py",
     "adapt_v19_depth_to_camera_contract.py",
     "build_v19_visible_geometry_from_sam2_depth.py",
+    "build_v18_compact_rigid_evidence_bundle.py",
     "build_v18_compact_rigid_trellis_completion.py",
+    "fit_v18_compact_rigid_object_pose.py",
     "solve_v19_rigid_object_pose_graph.py",
     "remote_run_trellis_shape_v3.py",
     "remote_run_sam3d_objects_mesh_v7.py",
     "build_v19_observed_only_completion_reference.py",
     "finalize_hot3d_dual_backend_case.py",
     "monitor_hot3d_dual_backend_suite.py",
+    "preflight_local_v19_runtime.py",
 ]
 EXTRA_FILES = [
     ("runtime/hot3d_dual_backend_runtime_spec.md", "runtime/hot3d_dual_backend_runtime_spec.md"),
@@ -115,6 +118,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     base = args.base_bundle.expanduser().resolve()
     source = args.source_root.expanduser().resolve()
     output = args.bundle_root.expanduser().resolve()
+    if output == base or output == source or base in output.parents or source in output.parents:
+        raise RuntimeError("bundle root must be a distinct path outside the base bundle and source worktree")
+    revision = git_value(source, "rev-parse", "HEAD")
+    dirty = git_value(source, "status", "--short") or ""
+    if not revision:
+        raise RuntimeError(f"source root is not a readable Git revision: {source}")
+    if dirty:
+        raise RuntimeError(
+            "immutable HOT3D runtime bundles require a committed clean source worktree; "
+            f"dirty entries: {dirty.splitlines()}"
+        )
     base_manifest = verify_manifest(base)
     if output.exists():
         if not args.replace:
@@ -134,11 +148,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for source_relative, destination_relative in EXTRA_FILES:
         copy_required(source / source_relative, output / destination_relative)
 
+    source_bound_paths = {
+        *[f"experiments/sam3d_p11_p12_branch/{name}" for name in EXPERIMENT_FILES],
+        *[f"scripts/{name}" for name in SCRIPT_FILES],
+        *[destination_relative for _source_relative, destination_relative in EXTRA_FILES],
+    }
+    committed_failures = []
+    for relative in sorted(source_bound_paths):
+        source_relative = relative
+        source_path = source / source_relative
+        result = subprocess.run(
+            ["git", "-C", str(source), "show", f"HEAD:{source_relative}"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            committed_failures.append({"path": source_relative, "reason": "not_in_source_revision"})
+        elif hashlib.sha256(result.stdout).hexdigest() != sha256_file(source_path):
+            committed_failures.append({"path": source_relative, "reason": "working_tree_differs_from_source_revision"})
+    if committed_failures:
+        shutil.rmtree(output)
+        raise RuntimeError(f"bundle source files are not byte-bound to revision {revision}: {committed_failures}")
+
     old_root = str(base)
     new_root = str(output)
     rewritten_files = rewrite_bundle_root(output, old_root, new_root)
-    revision = git_value(source, "rev-parse", "HEAD")
-    dirty = git_value(source, "status", "--short") or ""
     rows = file_rows(output)
     scripts = sorted(set(base_manifest.get("scripts", [])).union(SCRIPT_FILES))
     manifest = {
@@ -150,11 +183,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "base_bundle_source_revision": base_manifest.get("source_revision"),
         "source_repo": str(source),
         "source_revision": revision,
-        "source_worktree_dirty": bool(dirty),
-        "source_worktree_status": dirty.splitlines(),
+        "source_worktree_dirty": False,
+        "source_worktree_status": [],
         "suite_runtime_spec": "runtime/hot3d_dual_backend_runtime_spec.md",
         "suite_system_prompt": "configs/hot3d_dual_backend_agent_system_prompt.md",
         "suite_experiment_files": [f"experiments/sam3d_p11_p12_branch/{name}" for name in EXPERIMENT_FILES],
+        "offline_model_assets": {
+            "dinov2_source_hubconf": {
+                "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main/hubconf.py",
+                "sha256": "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64",
+            },
+            "dinov2_checkpoint": {
+                "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/checkpoints/dinov2_vitl14_reg4_pretrain.pth",
+                "sha256": "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51",
+            },
+            "sam3d_moge_checkpoint": {
+                "path": "/mnt/user-home/kupingxin/sam3d-objects/hf-cache/hub/models--Ruicheng--moge-vitl/blobs/da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f",
+                "sha256": "da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f",
+            },
+            "network_resolution_allowed": False,
+        },
         "scripts": scripts,
         "bundle_root_rewritten_text_file_count": rewritten_files,
         "file_count": len(rows),
@@ -166,7 +214,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "status": manifest["status"],
         "bundle_root": str(output),
         "source_revision": revision,
-        "source_worktree_dirty": bool(dirty),
+        "source_worktree_dirty": False,
         "file_count": len(rows),
         "scripts": len(scripts),
         "experiment_files": len(EXPERIMENT_FILES),

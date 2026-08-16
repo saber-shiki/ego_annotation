@@ -23,9 +23,11 @@ Hard rules:
 - Use the image read tool for P05, P07, P09, D11, and D18 visual checks.  Numeric reports
   alone cannot satisfy those checks.
 - Do not edit runtime code.  Do not invent substitute commands or model outputs.
-- Keep evidence and uncertainty explicit.  Generated model geometry is render-only; only
-  the shared prediction-side observed surface supplies the common trajectory and unsigned
-  physical support.
+- Keep evidence and uncertainty explicit.  Generated model geometry is render-only and
+  never supplies pose correspondences. The common trajectory uses accepted metric surfel
+  registration; only a script-validated projected-MANO-subtracted RGB optical-flow + exact-
+  camera PnP bridge may span a strict-depth gap, and it must not reinstate rejected depth.
+  Unsigned physical support remains observed-surface-only.
 - Run long commands directly with unbuffered output so the tmux tee log remains live.
   Do not sleep, poll, or launch detached child jobs.
 - Before each GPU-heavy command, verify that the case's dedicated A800 remains safe.  Do
