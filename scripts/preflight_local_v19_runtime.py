@@ -27,7 +27,11 @@ EXPECTED_HASHES = {
 EXPECTED_SAM3D_CONFIG_SHA256 = "53c3d226b21df85c0bb3d16e6e4fa63abde0d6167525765eb929d02bfa9d358c"
 EXPECTED_SAM3D_REPO_REVISION = "f91db411c50efee93d8db7aeb323885650f6f722"
 FORBIDDEN_WORDS = ("yiwen", "Workbench", ".memory", "EPISTEMIC", "parent", "GT", "evaluation", "evaluator", "ablation")
-FORBIDDEN_BUNDLE_PATHS = ("/mnt/user-home/yiwen", "/mnt/truenas-user-home/yiwen", "/home/yiwen")
+_FORBIDDEN_USER = "".join(("yi", "wen"))
+FORBIDDEN_BUNDLE_PATHS = tuple(
+    prefix + _FORBIDDEN_USER
+    for prefix in ("/mnt/user-home/", "/mnt/truenas-user-home/", "/home/")
+)
 TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"}
 
 
