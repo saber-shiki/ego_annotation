@@ -1,0 +1,29 @@
+{
+  "schema": "hot3d_dual_backend_suite_manifest_v1",
+  "suite_id": "YYYYMMDDTHHMMSSZ_hot3d_dual_backend_v1",
+  "suite_root": "/ABS/PATH/outputs/backend_tests/YYYYMMDDTHHMMSSZ_hot3d_dual_backend_v1",
+  "bundle": "/ABS/PATH/immutable_hot3d_dual_backend_bundle",
+  "tmux_session": "hot3d_dual_backend_YYYYMMDD_v1",
+  "pi_executable": "/ABS/PATH/bin/pi",
+  "pi_provider": "YOUR_PI_PROVIDER",
+  "pi_model": "YOUR_PI_MODEL",
+  "pi_thinking": "max",
+  "cases": [
+    {
+      "case_id": "HOT3D_CASE_ID",
+      "object_id": "stable_target_object_id",
+      "window": "case_short_name",
+      "gpu_id": 0,
+      "input_video": "/ABS/PATH/case/input/input.mp4",
+      "expected_input_sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "sensor_calibration_metadata": "/ABS/PATH/case/state/calibration/v19_camera_calibration_contract.json",
+      "run_root": "/ABS/PATH/fresh_run_root/HOT3D_CASE_ID",
+      "preflight_report": "/ABS/PATH/suite/preflight/HOT3D_CASE_ID.json",
+      "log": "/ABS/PATH/suite/logs/HOT3D_CASE_ID.log",
+      "agent_done": "/ABS/PATH/suite/logs/HOT3D_CASE_ID.agent.done",
+      "target_hint": "semantic target description only; not a mask, box, pose, or acceptance decision",
+      "target_exclusions": "hands, arms, scene support, unrelated objects, and all non-target pixels",
+      "anchor_guidance": "none; select only after inspecting this fresh run P09 review"
+    }
+  ]
+}
