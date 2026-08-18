@@ -93,7 +93,7 @@ print(*(float(v) for v in k))
 PY
 )
 CUDA_VISIBLE_DEVICES='{GPU_ID}' \
-EGO_HAWOR_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work \
+EGO_HAWOR_ROOT=/mnt/user-home/kupingxin/ego_annotation/.runtime/hawor_work \
 EGO_HAWOR_CASE='{CASE_ID}' \
 EGO_HAWOR_CLIP='{INPUT_VIDEO}' \
 EGO_HAWOR_OUTPUT_DIR='{RUN_ROOT}/measurements/hand_candidates/hawor_world' \
