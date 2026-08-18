@@ -804,6 +804,37 @@ def static_background_probe(
     }
 
 
+def recorded_extent_ratio(geom: dict[str, Any]) -> dict[str, Any]:
+    """Read the saved P09 extent schema without upgrading legacy provenance."""
+    if geom.get("extent_ratio_to_population_diag") is not None:
+        axis = np.asarray(
+            geom.get("extent_ratio_to_population_sorted_axis"), dtype=np.float64
+        ).reshape(-1)
+        if axis.shape != (3,) or not np.isfinite(axis).all():
+            raise RuntimeError("malformed modern population-relative extent ratio")
+        return {
+            "extent_reference_mode": "orientation_invariant_visible_population_median",
+            "recorded_extent_ratio_diag": float(
+                geom["extent_ratio_to_population_diag"]
+            ),
+            "recorded_extent_ratio_axis_max": float(np.max(axis)),
+            "modern_population_relative_schema": True,
+        }
+    if geom.get("extent_ratio_to_anchor_diag") is not None:
+        axis = np.asarray(
+            geom.get("extent_ratio_to_anchor_axis"), dtype=np.float64
+        ).reshape(-1)
+        if axis.shape != (3,) or not np.isfinite(axis).all():
+            raise RuntimeError("malformed legacy anchor-relative extent ratio")
+        return {
+            "extent_reference_mode": "selected_anchor_legacy_schema",
+            "recorded_extent_ratio_diag": float(geom["extent_ratio_to_anchor_diag"]),
+            "recorded_extent_ratio_axis_max": float(np.max(axis)),
+            "modern_population_relative_schema": False,
+        }
+    raise RuntimeError("visible geometry has no recognized saved extent-ratio schema")
+
+
 def temporal_frame_row(
     frame_idx: int,
     frames: dict[int, dict[str, Any]],
@@ -845,6 +876,7 @@ def temporal_frame_row(
         obj, depth, confidence, parameters
     )
     camera_points = np.asarray(geom["camera_vertices_sample_m"], dtype=np.float64)
+    extent = recorded_extent_ratio(geom)
     row.update(
         {
             "metric_surface_available": True,
@@ -858,12 +890,7 @@ def temporal_frame_row(
             "camera_surface_centroid_m": camera_points.mean(axis=0).tolist(),
             "world_surface_centroid_m": geom["centroid_world_m"],
             "world_surface_extent_m": geom["world_extent_m"],
-            "extent_ratio_to_population_diag": geom[
-                "extent_ratio_to_population_diag"
-            ],
-            "extent_ratio_to_population_sorted_axis_max": float(
-                np.max(geom["extent_ratio_to_population_sorted_axis"])
-            ),
+            **extent,
             "rigid_pose_observation_eligible": geom[
                 "rigid_pose_observation_eligible"
             ],
@@ -1058,9 +1085,9 @@ def build_case_timeline(
             depth_median[row_index] = float(geom["depth_median_m"])
             ownership = geom.get("first_surface_depth_ownership") or {}
             component_count[row_index] = float(ownership.get("component_count", np.nan))
-            axis_extent_ratio[row_index] = float(
-                np.max(geom["extent_ratio_to_population_sorted_axis"])
-            )
+            axis_extent_ratio[row_index] = recorded_extent_ratio(geom)[
+                "recorded_extent_ratio_axis_max"
+            ]
         ab_row = ab_rows.get(int(frame_idx), {})
         if ab_row.get("measurement_to_p14_temporal_translation_regularization_m") is not None:
             temporal_adjustment[row_index] = float(
@@ -1093,7 +1120,7 @@ def build_case_timeline(
     twin = axes[1].twinx()
     twin.plot(frame_ids, depth_curvature * 1000.0, color="tab:red", label="depth curvature")
     twin.set_ylabel("curvature (mm)", color="tab:red")
-    axes[2].plot(frame_ids, axis_extent_ratio, label="P09 sorted-axis extent ratio")
+    axes[2].plot(frame_ids, axis_extent_ratio, label="P09 saved max axis extent ratio")
     axes[2].plot(frame_ids, component_count, label="P09 component count", alpha=0.75)
     axes[2].axhline(3.25, color="black", linestyle="--", alpha=0.5, label="extent gate")
     axes[2].set_ylabel("P09 diagnostics")
@@ -1426,6 +1453,9 @@ def main() -> None:
             focus=FOCUS_FRAMES[case_name],
             output_path=timeline_path,
         )
+        modern_extent_reference = isinstance(
+            adapter_report.get("extent_consistency_reference"), dict
+        )
         case_reports.append(
             {
                 "case": case_name,
@@ -1450,8 +1480,19 @@ def main() -> None:
                 "p03c_depth_adapter_created_or_changed_depth_values": False,
                 "p09_contract": {
                     "depth_ownership_method": "per_component_mad_seed_confidence_geodesic_growth",
+                    "extent_reference_mode": (
+                        "orientation_invariant_visible_population_median"
+                        if modern_extent_reference
+                        else "selected_anchor_legacy_schema"
+                    ),
+                    "modern_population_relative_schema": modern_extent_reference,
+                    "legacy_schema_replayed_or_upgraded": False,
                     "rigid_pose_eligibility": (
                         "orientation-invariant population extent ratios only; no temporal depth, RGB-PnP, "
+                        "component-rigidity, or SE3-step consistency gate"
+                        if modern_extent_reference
+                        else
+                        "legacy selected-anchor-relative extent ratios only; no temporal depth, RGB-PnP, "
                         "component-rigidity, or SE3-step consistency gate"
                     ),
                     "rigid_extent_ratio_max": parameters["rigid_extent_ratio_max"],
