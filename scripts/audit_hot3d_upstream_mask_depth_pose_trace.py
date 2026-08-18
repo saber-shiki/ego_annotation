@@ -1154,6 +1154,193 @@ def build_case_timeline(
     plt.close(figure)
 
 
+def audit_p11_binding(
+    run_root: Path, frames: dict[int, dict[str, Any]], case_name: str
+) -> tuple[dict[str, Any], list[Path]]:
+    """Verify that P11 copied one P09 row without changing mask/camera/surfels."""
+    report_path = require_file(
+        run_root
+        / "experiments/sam3d_trellis_controlled/P11_dual_inputs/p11_dual_geometry_inputs_report.json",
+        f"{case_name} P11 report",
+    )
+    report = load_json(report_path)
+    evidence_path = require_file(
+        report["source_evidence_report"], f"{case_name} P11 source evidence report"
+    )
+    evidence = load_json(evidence_path)
+    selected_frame_idx = int(report["selected_frame_idx"])
+    if selected_frame_idx not in frames:
+        raise RuntimeError(f"{case_name}: P11 selected frame is absent from P09 annotations")
+    annotation_frame = frames[selected_frame_idx]
+    annotation_object = frame_object(annotation_frame)
+    annotation_geometry = annotation_object.get("visible_geometry_candidate")
+    if not isinstance(annotation_geometry, dict):
+        raise RuntimeError(f"{case_name}: P11 selected frame has no P09 metric surface")
+    selected = evidence.get("selected")
+    if not isinstance(selected, dict):
+        raise RuntimeError(f"{case_name}: malformed P11 source evidence selected row")
+    selected_geometry = selected.get("visible_geometry_candidate")
+    if not isinstance(selected_geometry, dict):
+        raise RuntimeError(f"{case_name}: selected P11 evidence has no metric surface")
+    conditioning = report.get("conditioning_contracts", {}).get(
+        "sam3d_objects_native", {}
+    )
+    mask_copy = conditioning.get("mask_source_copy")
+    rgb_copy = conditioning.get("image_source_copy")
+    if not isinstance(mask_copy, dict) or not isinstance(rgb_copy, dict):
+        raise RuntimeError(f"{case_name}: P11 lacks source-copy provenance")
+    source_mask_path = require_file(mask_copy["source"], f"{case_name} P11 source mask")
+    copied_mask_path = require_file(mask_copy["copy"], f"{case_name} P11 copied mask")
+    source_rgb_path = require_file(rgb_copy["source"], f"{case_name} P11 source RGB")
+    copied_rgb_path = require_file(rgb_copy["copy"], f"{case_name} P11 copied RGB")
+    selected_mask_path = require_file(selected["mask_path"], f"{case_name} evidence mask")
+    annotation_mask_path = require_file(
+        annotation_geometry["mask_path"], f"{case_name} annotation mask"
+    )
+
+    mask_hash = sha256_file(source_mask_path)
+    rgb_hash = sha256_file(source_rgb_path)
+    camera_annotation = annotation_frame["camera"]
+    camera_selected = selected["camera"]
+    checks = {
+        "report_selected_frame_equals_evidence": selected_frame_idx
+        == int(evidence["selected_frame_idx"]),
+        "selected_row_frame_equals_P09": selected_frame_idx
+        == int(selected["frame_idx"])
+        == int(annotation_frame["frame_idx"]),
+        "selected_surface_frame_equals_P09": selected_frame_idx
+        == int(selected_geometry["frame_idx"])
+        == int(annotation_geometry["frame_idx"]),
+        "selected_mask_path_equals_P09": selected_mask_path == annotation_mask_path,
+        "P11_mask_copy_source_path_equals_P09": source_mask_path
+        == annotation_mask_path,
+        "P11_mask_copy_byte_identical": source_mask_path.read_bytes()
+        == copied_mask_path.read_bytes(),
+        "P11_mask_hash_matches_report": mask_hash
+        == str(mask_copy["sha256"])
+        == str(report["mask_provenance"]["selected_sha256"])
+        == str(report["mask_provenance"]["visible_geometry_sha256"]),
+        "P11_mask_reported_byte_identical": bool(mask_copy["byte_identical"])
+        and bool(report["mask_provenance"]["byte_identical"]),
+        "selected_RGB_path_equals_P09": require_file(
+            selected["raw_frame_path"], f"{case_name} selected RGB"
+        )
+        == require_file(annotation_frame["raw_frame_path"], f"{case_name} P09 RGB"),
+        "P11_RGB_copy_byte_identical": source_rgb_path.read_bytes()
+        == copied_rgb_path.read_bytes(),
+        "P11_RGB_hash_matches_report": rgb_hash == str(rgb_copy["sha256"]),
+        "camera_T_world_camera_metric_exact": np.array_equal(
+            np.asarray(camera_annotation["T_world_camera_metric"], dtype=np.float64),
+            np.asarray(camera_selected["T_world_camera_metric"], dtype=np.float64),
+        ),
+        "camera_intrinsics_exact": np.array_equal(
+            np.asarray(camera_annotation["intrinsics_fx_fy_cx_cy"], dtype=np.float64),
+            np.asarray(camera_selected["intrinsics_fx_fy_cx_cy"], dtype=np.float64),
+        ),
+        "camera_surfels_exact": np.array_equal(
+            np.asarray(annotation_geometry["camera_vertices_sample_m"], dtype=np.float64),
+            np.asarray(selected_geometry["camera_vertices_sample_m"], dtype=np.float64),
+        ),
+        "world_surfels_exact": np.array_equal(
+            np.asarray(annotation_geometry["world_vertices_sample_m"], dtype=np.float64),
+            np.asarray(selected_geometry["world_vertices_sample_m"], dtype=np.float64),
+        ),
+        "centroid_exact": np.array_equal(
+            np.asarray(annotation_geometry["centroid_world_m"], dtype=np.float64),
+            np.asarray(selected_geometry["centroid_world_m"], dtype=np.float64),
+        ),
+    }
+    if not all(checks.values()):
+        raise RuntimeError(f"{case_name}: P11/P09 binding mismatch: {checks}")
+
+    mesh_reconstruction = evidence.get("depth_fused_object_row", {}).get(
+        "mesh_reconstruction", {}
+    )
+    if not isinstance(mesh_reconstruction, dict):
+        raise RuntimeError(f"{case_name}: malformed P11 mesh reconstruction provenance")
+    mesh_anchor_frame_idx = int(mesh_reconstruction["anchor_frame_idx"])
+    mesh_anchor_centroid = np.asarray(
+        mesh_reconstruction["anchor_centroid_world_m"], dtype=np.float64
+    )
+    anchor_checks = {
+        "mesh_anchor_frame_equals_selected": mesh_anchor_frame_idx
+        == selected_frame_idx,
+        "mesh_anchor_centroid_equals_selected": np.array_equal(
+            mesh_anchor_centroid,
+            np.asarray(annotation_geometry["centroid_world_m"], dtype=np.float64),
+        ),
+    }
+    if not all(anchor_checks.values()):
+        raise RuntimeError(f"{case_name}: P11 canonical anchor mismatch: {anchor_checks}")
+    atomic_binding = evidence.get("selected_anchor_atomic_binding")
+    if isinstance(atomic_binding, dict):
+        atomic_mode = "modern_saved_selected_anchor_atomic_binding"
+        atomic_checks = {
+            "validated": bool(atomic_binding.get("validated")),
+            "required_same_frame": bool(atomic_binding.get("required_same_frame")),
+            "selected_frame_exact": int(atomic_binding["selected_frame_idx"])
+            == selected_frame_idx,
+            "visible_geometry_frame_exact": int(
+                atomic_binding["visible_geometry_frame_idx"]
+            )
+            == selected_frame_idx,
+            "canonical_surface_frame_exact": int(
+                atomic_binding["canonical_surface_frame_idx"]
+            )
+            == selected_frame_idx,
+            "centroid_error_exact_zero": float(
+                atomic_binding["selected_vs_canonical_centroid_error_m"]
+            )
+            == 0.0,
+        }
+        if not all(atomic_checks.values()):
+            raise RuntimeError(
+                f"{case_name}: saved selected-anchor atomic binding failed: {atomic_checks}"
+            )
+    else:
+        atomic_mode = "legacy_schema_without_saved_selected_anchor_atomic_binding"
+        atomic_checks = {
+            "saved_modern_atomic_binding_available": False,
+            "legacy_binding_replayed_or_upgraded": False,
+            "selected_frame_camera_mask_surfels_centroid_and_mesh_anchor_exact": True,
+        }
+
+    paths = [
+        report_path,
+        evidence_path,
+        source_mask_path,
+        copied_mask_path,
+        source_rgb_path,
+        copied_rgb_path,
+    ]
+    canonical_surface_path = mesh_reconstruction.get("fused_point_cloud_path")
+    if canonical_surface_path:
+        paths.append(
+            require_file(canonical_surface_path, f"{case_name} canonical observed surface")
+        )
+    return (
+        {
+            "report": str(report_path),
+            "report_sha256": sha256_file(report_path),
+            "source_evidence_report": str(evidence_path),
+            "source_evidence_report_sha256": sha256_file(evidence_path),
+            "selected_frame_idx": selected_frame_idx,
+            "source_owned_mask": str(source_mask_path),
+            "copied_owned_mask": str(copied_mask_path),
+            "owned_mask_sha256": mask_hash,
+            "source_RGB": str(source_rgb_path),
+            "copied_RGB": str(copied_rgb_path),
+            "source_RGB_sha256": rgb_hash,
+            "exact_transfer_checks": checks,
+            "canonical_anchor_checks": anchor_checks,
+            "atomic_binding_mode": atomic_mode,
+            "saved_atomic_binding_checks": atomic_checks,
+            "P11_created_new_depth_or_pose_evidence": False,
+        },
+        paths,
+    )
+
+
 def selected_source_paths(
     run_root: Path,
     stage_ab_root: Path,
@@ -1269,6 +1456,17 @@ def main() -> None:
         if sorted(frames) != list(range(150)):
             raise RuntimeError(f"{case_name}: annotations do not contain 150 frames")
         objects = {frame_idx: frame_object(frame) for frame_idx, frame in frames.items()}
+        p11_binding, p11_source_paths = audit_p11_binding(
+            run_root, frames, case_name
+        )
+        for source_path in p11_source_paths:
+            key = str(source_path)
+            if key not in global_source_hashes:
+                global_source_hashes[key] = {
+                    "path": key,
+                    "sha256": sha256_file(source_path),
+                    "size_bytes": source_path.stat().st_size,
+                }
         observations = {
             frame_idx: np.asarray(
                 obj.get("visible_geometry_candidate", {}).get("world_vertices_sample_m")
@@ -1478,6 +1676,7 @@ def main() -> None:
                 },
                 "p03c_source_to_active_array_identity": p03c_array_identity,
                 "p03c_depth_adapter_created_or_changed_depth_values": False,
+                "p11_binding": p11_binding,
                 "p09_contract": {
                     "depth_ownership_method": "per_component_mad_seed_confidence_geodesic_growth",
                     "extent_reference_mode": (
@@ -1546,7 +1745,16 @@ def main() -> None:
         "focus_frame_count": sum(len(row["focus_frames"]) for row in case_reports),
         "strict_pnp_thresholds": STRICT_PNP_THRESHOLDS,
         "global_mechanical_findings": {
-            "P11_and_P09_owned_masks_are_preserved_as_appearance_inputs": True,
+            "P11_and_P09_owned_masks_are_byte_identical_for_all_selected_anchors": all(
+                all(case["p11_binding"]["exact_transfer_checks"].values())
+                for case in case_reports
+            ),
+            "P11_selected_camera_surfels_centroid_and_mesh_anchor_exact_for_all_cases": all(
+                all(case["p11_binding"]["canonical_anchor_checks"].values())
+                for case in case_reports
+            ),
+            "Milk_has_modern_saved_selected_anchor_atomic_binding_schema": False,
+            "Milk_legacy_P11_binding_replayed_or_upgraded": False,
             "P03c_depth_values_changed": False,
             "P03_source_archive_is_earliest_persisted_camera_z_raster": True,
             "P09_acceptance_has_temporal_depth_consistency_gate": False,
