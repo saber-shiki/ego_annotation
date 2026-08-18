@@ -35,7 +35,12 @@ The launch also binds:
 2. Official K is allowed only through the launcher-supplied prediction-side sensor contract.
 3. Execute common phases from `runtime/v19_runtime_spec.md`, but apply its declared
    sensor-first dependency: P00, P01, P02, **P03b, P03, P03c**, then P04 through P11.
-   Do not execute its canonical P12 through P21; replace that tail with this document.
+   P04 is strengthened below to bind the complete active source-plane K through an exact
+   image affine into a same-size centered HaWoR inference plane. HaWoR regression, projected
+   hand masks, and HaWoR SLAM consume that centered plane; the inverse affine binds outputs
+   back to source RGB pixels. Do not
+   execute canonical P12-P21 as a separate tail; D16-P18 below explicitly restore one
+   shared P17/P18/P18b before the geometry-only D17 branch.
 4. P05 must inspect the raw contact sheet as an image.  P07 must inspect OWLv2/SAM2
    review imagery.  P09 must inspect the anchor-candidate review image and write the
    explicit anchor decision. When the proposal report exposes supported
@@ -69,6 +74,109 @@ relabel or the forensic compatibility override is forbidden.
 Use the dedicated `{GPU_ID}` unless a live probe shows it is no longer safe; do not take
 another case's declared GPU.  The target should remain rigid even when local evidence is
 missing; record missing evidence as uncertainty rather than broadening the object mask.
+
+Before P04, extract the complete `source_rgb` K and pass it to the strengthened HaWoR
+export. The exporter materializes and hash-binds the centered inference image plane; it does
+not inject an off-center principal point into the upstream left-hand flip path. Do not use the canonical focal-only P04 command for this runtime:
+
+```bash
+CONTRACT='{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json'
+read -r HAWOR_FX HAWOR_FY HAWOR_CX HAWOR_CY < <("{REMOTE_MODEL_PYTHON}" - "$CONTRACT" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+d = json.loads(p.read_text())
+k = d.get('source_plane_intrinsics_fx_fy_cx_cy')
+if not isinstance(k, list) or len(k) != 4:
+    raise SystemExit(f'missing source-plane full K in {p}')
+print(*(float(v) for v in k))
+PY
+)
+CUDA_VISIBLE_DEVICES='{GPU_ID}' \
+EGO_HAWOR_ROOT=/mnt/user-home/yiwen/ego_annotation_remote/hawor_work \
+EGO_HAWOR_CASE='{CASE_ID}' \
+EGO_HAWOR_CLIP='{INPUT_VIDEO}' \
+EGO_HAWOR_OUTPUT_DIR='{RUN_ROOT}/measurements/hand_candidates/hawor_world' \
+EGO_HAWOR_IMG_FOCAL="$HAWOR_FX" \
+EGO_HAWOR_CAMERA_INTRINSICS_FX_FY_CX_CY="$HAWOR_FX $HAWOR_FY $HAWOR_CX $HAWOR_CY" \
+EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH=1 \
+bash scripts/remote_run_hawor_export.sh
+```
+
+P04 is complete only when `qc_hawor_world_hands.json` declares
+`camera_intrinsics_exactly_bound:true` and the NPZ contains
+`camera_intrinsics_fx_fy_cx_cy` equal to the active source-plane K. A historical
+center-principal-point archive is not reusable for P17/P18. Verify this mechanically:
+
+```bash
+HAWOR_NPZ='{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz'
+HAWOR_QC='{RUN_ROOT}/measurements/hand_candidates/hawor_world/qc_hawor_world_hands.json'
+test -s "$HAWOR_NPZ"
+test -s "$HAWOR_QC"
+"{REMOTE_MODEL_PYTHON}" - "$CONTRACT" "$HAWOR_NPZ" "$HAWOR_QC" <<'PY'
+import json, sys
+from pathlib import Path
+import numpy as np
+contract = json.loads(Path(sys.argv[1]).read_text())
+expected = np.asarray(contract.get('source_plane_intrinsics_fx_fy_cx_cy'), dtype=np.float64)
+qc = json.loads(Path(sys.argv[3]).read_text())
+with np.load(sys.argv[2], allow_pickle=False) as archive:
+    actual = np.asarray(archive['camera_intrinsics_fx_fy_cx_cy'], dtype=np.float64)
+    mode = str(np.asarray(archive['camera_intrinsics_contract_mode']).reshape(-1)[0])
+    inference_rows = np.asarray(archive['hawor_inference_intrinsics_fx_fy_cx_cy'], dtype=np.float64)
+    A_npz = np.asarray(archive['A_hawor_inference_from_source'], dtype=np.float64)
+    A_inv_npz = np.asarray(archive['A_source_from_hawor_inference'], dtype=np.float64)
+    plane_path = Path(str(np.asarray(archive['camera_image_plane_contract_path']).reshape(-1)[0]))
+    plane_sha = str(np.asarray(archive['camera_image_plane_contract_sha256']).reshape(-1)[0])
+if expected.shape != (4,) or actual.shape != (150, 4) or inference_rows.shape != (150, 4):
+    raise SystemExit(f'invalid source/inference K shapes expected={expected.shape} actual={actual.shape} inference={inference_rows.shape}')
+if not np.allclose(actual, expected[None, :], atol=1e-6, rtol=0.0):
+    raise SystemExit('HaWoR NPZ full K differs from the active source-plane K')
+if mode != 'explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam':
+    raise SystemExit(f'HaWoR NPZ does not prove source-K/centered-inference binding: {mode!r}')
+if qc.get('camera_intrinsics_exactly_bound') is not True:
+    raise SystemExit('HaWoR QC does not bind the exact camera intrinsics')
+inference = np.asarray(qc.get('hawor_inference_intrinsics_fx_fy_cx_cy'), dtype=np.float64)
+if not np.allclose(inference_rows, inference[None, :], atol=1e-6, rtol=0.0):
+    raise SystemExit('HaWoR NPZ inference K differs from QC centered inference-plane K')
+if not np.allclose(np.asarray(qc.get('slam_intrinsics_fx_fy_cx_cy'), dtype=np.float64), inference, atol=1e-6, rtol=0.0):
+    raise SystemExit('HaWoR SLAM K differs from the centered inference-plane K')
+plane = qc.get('camera_image_plane_contract')
+if not isinstance(plane, dict) or plane.get('status') != 'exact_source_to_centered_hawor_image_plane':
+    raise SystemExit('HaWoR QC lacks the source-to-centered inference image-plane contract')
+A = np.asarray(plane.get('A_hawor_inference_from_source'), dtype=np.float64)
+A_inv = np.asarray(plane.get('A_source_from_hawor_inference'), dtype=np.float64)
+if not plane_path.is_file():
+    raise SystemExit(f'HaWoR image-plane contract file missing: {plane_path}')
+import hashlib
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open('rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+if sha256(plane_path) != plane_sha:
+    raise SystemExit('HaWoR NPZ image-plane contract hash mismatch')
+if not np.allclose(A_npz, A, atol=1e-9, rtol=0.0) or not np.allclose(A_inv_npz, A_inv, atol=1e-9, rtol=0.0):
+    raise SystemExit('HaWoR NPZ and QC image-plane affines differ')
+if not np.allclose(A_inv @ A, np.eye(3), atol=1e-10, rtol=0.0):
+    raise SystemExit('HaWoR image-plane affines are not exact inverses')
+K_source = np.asarray([[expected[0],0,expected[2]],[0,expected[1],expected[3]],[0,0,1]], dtype=np.float64)
+K_inference = np.asarray([[inference[0],0,inference[2]],[0,inference[1],inference[3]],[0,0,1]], dtype=np.float64)
+if A.shape != (3,3) or not np.allclose(A @ K_source, K_inference, atol=1e-9, rtol=0.0):
+    raise SystemExit('HaWoR centered image-plane affine does not bind source K to inference K')
+rectified_dir = Path(str(plane.get('inference_extracted_frames') or ''))
+rectified = sorted(rectified_dir.glob('*.jpg')) if rectified_dir.is_dir() else []
+if len(rectified) != 150:
+    raise SystemExit(f'HaWoR rectified input timeline has {len(rectified)} frames')
+aggregate = hashlib.sha256()
+for frame_path in rectified:
+    aggregate.update(frame_path.name.encode('utf-8'))
+    aggregate.update(bytes.fromhex(sha256(frame_path)))
+if aggregate.hexdigest() != plane.get('inference_frames_aggregate_sha256'):
+    raise SystemExit('HaWoR rectified input frame aggregate hash mismatch')
+PY
+```
 
 Before continuing, bind and validate:
 
@@ -335,10 +443,61 @@ CONSTRAINT_REPORT="$EXP_ROOT/P16_unsigned_mano_object/v18_mano_object_constraint
 test -s "$CONSTRAINT_REPORT"
 ```
 
+## D16b shared P17-P18-P18b MANO tail
+
+P17 remains an agent visual judgment. After inspecting prediction-side raw/review imagery,
+write exactly one full-interval judgment at:
+
+```text
+{RUN_ROOT}/state/agent_interaction_judgments/{OBJECT_ID}_0_149.json
+```
+
+Use the canonical P17 `interaction_judgments` schema: separate left/right segments,
+complete frame-span coverage, explicit contact/occlusion/depth-reliability uncertainty,
+and no distance-derived contact labels. Then run one shared tail before backend branching:
+
+```bash
+INTERACTION_JUDGMENT='{RUN_ROOT}/state/agent_interaction_judgments/{OBJECT_ID}_0_149.json'
+SHARED_TAIL_ROOT="$EXP_ROOT/P16b_shared_p17_p18_tail"
+CUDA_VISIBLE_DEVICES='{GPU_ID}' \
+"$MAIN_PYTHON" scripts/run_hot3d_shared_p17_p18_tail.py \
+  --case '{CASE_ID}' \
+  --object-id '{OBJECT_ID}' \
+  --annotations "$ANNOTATIONS" \
+  --pose-report "$POSE_GRAPH" \
+  --completion-report "$OBSERVED_COMPLETION" \
+  --depth-npz "$DEPTH_NPZ" \
+  --hawor-npz "$HAWOR_NPZ" \
+  --interaction-judgment "$INTERACTION_JUDGMENT" \
+  --wilor-root third_party/WiLoR \
+  --wilor-mano-left third_party/WiLoR/mano_data/MANO_LEFT.pkl \
+  --wilor-mano-right third_party/WiLoR/mano_data/MANO_RIGHT.pkl \
+  --output-root "$SHARED_TAIL_ROOT" \
+  --start-frame 0 \
+  --end-frame 149 \
+  --sides left right \
+  --review-frames 0 30 60 90 120 149 \
+  --device cuda
+
+SHARED_TAIL_REPORT="$SHARED_TAIL_ROOT/shared_p17_p18_tail_report.json"
+SHARED_P18B_STATE="$SHARED_TAIL_ROOT/P18b_shared_surface_hypothesis_metric_mano/{CASE_ID}/v18_joint_mano_interval_trajectory_state.json"
+test -s "$SHARED_TAIL_REPORT"
+test -s "$SHARED_P18B_STATE"
+```
+
+The runner must prove all of the following before returning success:
+
+- P04 MANO is bound to active source K through the exact centered-inference-plane affine; old `active_contract_reinference_required=true` rows fail closed;
+- P17 mask membership uses the exact P09 source-to-mask affine while depth lookup stays in source coordinates;
+- D14 physical input is the exact observed-only surface and generated faces are absent;
+- D15 is the unique full-timeline object-pose authority;
+- P18 runs with `--no-optimize-object-translation`, every private object delta is zero, and signed geometry remains inactive;
+- P18b preserves metric MANO and carries only uncertain surface samples.
+
 ## D17 branch render states
 
-Build the shared source state without applying geometry-dependent hand correction, then
-clone only the geometry layers for SAM3D and TRELLIS:
+Build the shared source state with the one shared P18b temporal state, then clone only the
+geometry layers for SAM3D and TRELLIS:
 
 ```bash
 SOURCE_STATE="$EXP_ROOT/P17_source_state/observed_only_rigid_render_state.json"
@@ -351,6 +510,7 @@ SOURCE_STATE="$EXP_ROOT/P17_source_state/observed_only_rigid_render_state.json"
   --completion-report "$OBSERVED_COMPLETION" \
   --completed-mesh "$OBSERVED_MESH" \
   --constraint-report "$CONSTRAINT_REPORT" \
+  --temporal-mano-state "$SHARED_P18B_STATE" \
   --output "$SOURCE_STATE"
 
 "$MAIN_PYTHON" experiments/sam3d_p11_p12_branch/build_p14_p15_layered_render_states.py \
@@ -395,10 +555,12 @@ test -s "$SAM3D_RENDER_MANIFEST"
 test -s "$TRELLIS_RENDER_MANIFEST"
 ```
 
-Inspect each anchor review PNG as an image.  Confirm that the object follows the same
+Inspect each anchor review PNG as an image. Confirm that the object follows the same
 observed trajectory in both branches, the generated geometry appears as an underlay,
-the green observed surface owns measured support, and full MANO surfaces remain visibly
-labeled.  Record any drift, handedness concern, or unresolved contact in
+the green observed surface owns measured support, full source metric MANO surfaces remain
+visible, and yellow shared P18b uncertain surface samples appear when the state contains
+samples. The yellow samples are not accepted contact. Record any drift, handedness concern,
+render/physical-surface disagreement, or unresolved contact in
 `{RUN_ROOT}/state/v19_agent_evidence.md`; do not change state to hide it.
 
 ## D19 final result publication
@@ -416,6 +578,7 @@ names, links meshes/state/reports, and writes `SUITE_DONE.json` last:
   --controlled-report "$CONTROLLED_REPORT" \
   --dual-report "$DUAL_REPORT" \
   --state-adapter-report "$STATE_ADAPTER_REPORT" \
+  --shared-tail-report "$SHARED_TAIL_REPORT" \
   --output-dir '{RUN_ROOT}/final_results' \
   --expected-frame-count 150 \
   --expected-fps 30
@@ -429,6 +592,7 @@ Final stable outputs are:
 - `{RUN_ROOT}/final_results/sam3d/videos/{camera_overlay,world_view,side_world_view,side_by_side}.mp4`
 - `{RUN_ROOT}/final_results/trellis/videos/{camera_overlay,world_view,side_world_view,side_by_side}.mp4`
 - per-backend `geometry/`, `state/`, `reports/`, and `backend_result.json`
+- shared `state/{p18b_temporal_mano_state,raw_p18_mano_interval_state}.json`, P17 report/judgment, and `shared_state_manifest.json`
 - `{RUN_ROOT}/final_results/case_result_manifest.json`
 
 Append one final harness event and a concise uncertainty statement.  Do not run any

@@ -25,11 +25,13 @@ EXPERIMENT_FILES = [
 SELF_TEST_FILES = [
     ("experiments/sam3d_p11_p12_branch/self_test.py", "experiments/sam3d_p11_p12_branch/self_test.py"),
     ("experiments/v19_metric_camera_contract/self_test.py", "experiments/v19_metric_camera_contract/self_test.py"),
+    ("experiments/hot3d_shared_p18_reintegration/self_test.py", "experiments/hot3d_shared_p18_reintegration/self_test.py"),
 ]
 SCRIPT_FILES = [
     "run_unidepth_metric_source_v3.py",
     "run_unidepth_full_frame_v3.py",
     "adapt_v19_depth_to_camera_contract.py",
+    "build_v19_base_annotations.py",
     "build_v19_visible_geometry_from_sam2_depth.py",
     "build_v18_compact_rigid_evidence_bundle.py",
     "build_v18_compact_rigid_trellis_completion.py",
@@ -38,6 +40,13 @@ SCRIPT_FILES = [
     "remote_run_trellis_shape_v3.py",
     "remote_run_sam3d_objects_mesh_v7.py",
     "build_v19_observed_only_completion_reference.py",
+    "export_hawor_world.py",
+    "remote_run_hawor_export.sh",
+    "build_v19_visible_contact_ownership_factor.py",
+    "solve_v18_joint_mano_interval_trajectory.py",
+    "build_v19_mano_surface_hypothesis_state.py",
+    "build_v19_rigid_render_state.py",
+    "run_hot3d_shared_p17_p18_tail.py",
     "run_hot3d_dual_backend_d18_renders.py",
     "finalize_hot3d_dual_backend_case.py",
     "monitor_hot3d_dual_backend_suite.py",

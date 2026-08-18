@@ -290,19 +290,35 @@ class CameraContractTest(unittest.TestCase):
             [72.8288, 72.8288, 3.4875, -1.6782],
             atol=1.0e-4,
         )
-        explicit_source = base_annotations.hawor_active_camera_contract_alignment(
+        numeric_only = base_annotations.hawor_active_camera_contract_alignment(
             None,
             [[80.0, 82.0, 50.0, 40.0]] * 2,
             source_hawor_state_present=True,
             source_hawor_image_size_wh=(100, 80),
             source_hawor_intrinsics_fx_fy_cx_cy=[80.0, 82.0, 50.0, 40.0],
         )
+        self.assertTrue(numeric_only["source_hawor_intrinsics_numerically_match_active_contract"])
+        self.assertTrue(numeric_only["source_hawor_state_intrinsics_match_active_contract"])
+        self.assertFalse(numeric_only["active_contract_reinference_required"])
+        self.assertFalse(numeric_only["source_hawor_full_K_bound_to_inference"])
+        explicit_source = base_annotations.hawor_active_camera_contract_alignment(
+            None,
+            [[80.0, 82.0, 50.0, 40.0]] * 2,
+            source_hawor_state_present=True,
+            source_hawor_image_size_wh=(100, 80),
+            source_hawor_intrinsics_fx_fy_cx_cy=[80.0, 82.0, 50.0, 40.0],
+            source_hawor_camera_contract_mode="explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam",
+            source_hawor_camera_image_plane_contract_validated=True,
+        )
         self.assertTrue(explicit_source["source_hawor_state_intrinsics_match_active_contract"])
+        self.assertTrue(explicit_source["source_hawor_full_K_bound_to_inference"])
         match = base_annotations.hawor_active_camera_contract_alignment(
             609.8501,
             [[609.8501, 609.8501, 704.0, 704.0]] * 2,
             source_hawor_state_present=True,
             source_hawor_image_size_wh=(1408, 1408),
+            source_hawor_camera_contract_mode="explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam",
+            source_hawor_camera_image_plane_contract_validated=True,
         )
         self.assertFalse(match["active_contract_reinference_required"])
         self.assertTrue(match["source_hawor_state_intrinsics_match_active_contract"])

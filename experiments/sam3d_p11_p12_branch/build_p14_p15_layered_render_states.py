@@ -110,6 +110,139 @@ def candidate_by_name(controlled: dict[str, Any], name: str) -> dict[str, Any]:
     return rows[0]
 
 
+def same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.samefile(right)
+    except OSError:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def validate_shared_temporal_mano(
+    source: dict[str, Any],
+    *,
+    pose_report_path: Path,
+    common_collision: Path,
+    frame_ids: list[int],
+) -> dict[str, Any]:
+    block = (
+        source.get("temporal_mano_state")
+        if isinstance(source.get("temporal_mano_state"), dict)
+        else {}
+    )
+    payload = block.get("payload") if isinstance(block.get("payload"), dict) else None
+    if payload is None:
+        raise RuntimeError("source state lacks the required shared P18b temporal MANO payload")
+    temporal_path = require_file(
+        Path(str(block.get("path") or "")), "shared P18b temporal MANO state"
+    )
+    if value_sha256(load_json(temporal_path)) != value_sha256(payload):
+        raise RuntimeError("embedded P18b payload differs from its bound state file")
+    rows = [
+        row for row in payload.get("per_frame_states") or [] if isinstance(row, dict)
+    ]
+    expected_keys = {
+        (int(frame_idx), side) for frame_idx in frame_ids for side in ("left", "right")
+    }
+    actual_keys = {(int(row["frame_idx"]), str(row["hand_side"])) for row in rows}
+    if actual_keys != expected_keys or len(rows) != len(actual_keys):
+        raise RuntimeError(
+            f"shared P18b timeline mismatch: rows={len(rows)} unique={len(actual_keys)} expected={len(expected_keys)}"
+        )
+    p18b_private_object_delta_max = 0.0
+    sample_rows = 0
+    sample_points = 0
+    for row in rows:
+        if "metric_mano_preserved" not in str(row.get("joint_state_policy") or ""):
+            raise RuntimeError("shared P18b row does not preserve the metric MANO state")
+        delta = np.asarray(
+            row.get("optimized_object_translation_world_m") or [0.0, 0.0, 0.0],
+            dtype=np.float64,
+        )
+        if delta.shape != (3,) or not np.isfinite(delta).all():
+            raise RuntimeError("shared P18b row has invalid object translation delta")
+        p18b_private_object_delta_max = max(
+            p18b_private_object_delta_max, float(np.linalg.norm(delta))
+        )
+        samples = np.asarray(
+            row.get("contact_surface_vertices_world_sample_m") or [], dtype=np.float64
+        )
+        if samples.size:
+            if samples.ndim != 2 or samples.shape[1] != 3 or not np.isfinite(samples).all():
+                raise RuntimeError("shared P18b row has invalid uncertain surface samples")
+            sample_rows += 1
+            sample_points += int(len(samples))
+    if p18b_private_object_delta_max > 1.0e-10:
+        raise RuntimeError(
+            f"shared P18b contains private object motion up to {p18b_private_object_delta_max} m"
+        )
+
+    p18_path = require_file(
+        Path(str((payload.get("inputs") or {}).get("contact_state") or "")),
+        "raw shared P18 state",
+    )
+    p18 = load_json(p18_path)
+    p18_inputs = p18.get("inputs") if isinstance(p18.get("inputs"), dict) else {}
+    p18_parameters = (
+        p18.get("parameters") if isinstance(p18.get("parameters"), dict) else {}
+    )
+    p18_pose = require_file(
+        Path(str(p18_inputs.get("pose_report") or "")), "P18 D15 pose authority"
+    )
+    if not same_file(p18_pose, pose_report_path):
+        raise RuntimeError("shared P18 did not consume the source state's D15 pose authority")
+    p18_surface = require_file(
+        Path(str(p18_inputs.get("physical_surface_mesh") or "")),
+        "P18 observed physical surface",
+    )
+    if geometry_digest(p18_surface)["geometry_sha256_f64_i64"] != geometry_digest(
+        common_collision
+    )["geometry_sha256_f64_i64"]:
+        raise RuntimeError("shared P18 physical surface differs from the observed-only surface")
+    if p18_parameters.get("optimize_object_translation") is not False:
+        raise RuntimeError("shared P18 did not explicitly disable object translation")
+    raw_rows = [
+        row for row in p18.get("per_frame_states") or [] if isinstance(row, dict)
+    ]
+    if len(raw_rows) != len(expected_keys):
+        raise RuntimeError(
+            f"raw shared P18 timeline has {len(raw_rows)} rows, expected {len(expected_keys)}"
+        )
+    p18_private_object_delta_max = 0.0
+    for row in raw_rows:
+        delta = np.asarray(
+            row.get("optimized_object_translation_world_m") or [], dtype=np.float64
+        )
+        if delta.shape != (3,) or not np.isfinite(delta).all():
+            raise RuntimeError("raw shared P18 row has invalid object translation delta")
+        p18_private_object_delta_max = max(
+            p18_private_object_delta_max, float(np.linalg.norm(delta))
+        )
+    if p18_private_object_delta_max > 1.0e-10:
+        raise RuntimeError(
+            f"raw shared P18 privately moved the object by {p18_private_object_delta_max} m"
+        )
+    return {
+        "status": "shared_prebranch_P18b_bound_to_D15_and_observed_surface",
+        "temporal_state": str(temporal_path),
+        "temporal_state_sha256": sha256_file(temporal_path),
+        "temporal_state_value_sha256": value_sha256(payload),
+        "raw_p18_state": str(p18_path),
+        "raw_p18_state_sha256": sha256_file(p18_path),
+        "row_count": len(rows),
+        "surface_sample_row_count": sample_rows,
+        "surface_sample_point_count": sample_points,
+        "metric_mano_preserved": True,
+        "P18_object_translation_optimized": False,
+        "P18_max_private_object_translation_delta_m": p18_private_object_delta_max,
+        "P18b_max_private_object_translation_delta_m": p18b_private_object_delta_max,
+        "pose_authority": str(pose_report_path),
+        "pose_authority_sha256": sha256_file(pose_report_path),
+        "physical_surface": str(common_collision),
+        "physical_surface_sha256": sha256_file(common_collision),
+        "generated_geometry_consumed": False,
+    }
+
+
 def validate_source_state(source: dict[str, Any], source_path: Path, common_collision: Path) -> dict[str, Any]:
     if not str(source.get("status") or "").startswith("ok"):
         raise RuntimeError(f"source render state is not ok: {source_path}")
@@ -168,6 +301,19 @@ def validate_source_state(source: dict[str, Any], source_path: Path, common_coll
         raise RuntimeError(
             f"annotation/pose frame-count mismatch: annotations={len(annotation_frames or [])} poses={len(frame_ids)}"
         )
+    annotation_frame_ids = [
+        int(frame.get("frame_idx", pos))
+        for pos, frame in enumerate(annotation_frames)
+        if isinstance(frame, dict)
+    ]
+    if sorted(annotation_frame_ids) != sorted(frame_ids):
+        raise RuntimeError("annotation and pose frame IDs differ")
+    shared_temporal_mano = validate_shared_temporal_mano(
+        source,
+        pose_report_path=pose_report_path,
+        common_collision=common_collision,
+        frame_ids=annotation_frame_ids,
+    )
     return {
         "pose_report": str(pose_report_path),
         "pose_report_sha256": sha256_file(pose_report_path),
@@ -183,6 +329,7 @@ def validate_source_state(source: dict[str, Any], source_path: Path, common_coll
         "annotation_path": str(annotation_path),
         "annotation_sha256": sha256_file(annotation_path),
         "annotation_frame_count": len(annotation_frames),
+        "shared_temporal_mano": shared_temporal_mano,
     }
 
 
@@ -295,9 +442,17 @@ def write_state(
         "geometry_report": str(geometry_report_path),
         "trajectory_policy": "frozen_observed_only_v19_pose_rows",
         "camera_policy": "frozen_annotation_backbone_camera_state",
-        "mano_policy": "source_full_778_vertex_metric_mano_from_annotation_references",
+        "mano_policy": (
+            "source_full_778_vertex_metric_mano_from_annotation_references_plus_"
+            "shared_p18b_uncertain_surface_samples"
+        ),
+        "temporal_mano_policy": (
+            "one_prebranch_P18b_state_rendered_as_uncertain_surface_samples_only; "
+            "metric full-MANO body remains the shared annotation source"
+        ),
         "inherited_constraint_payload_policy": (
-            "preserved_identically_for_provenance_but_not_rendered_or_recomputed_because_it_is_geometry_dependent"
+            "D16 constraint payload preserved identically for provenance but not rendered as signed physics; "
+            "shared P18b temporal surface hypothesis is rendered without branch recomputation"
         ),
         "render_contact_claim_enabled": False,
         "render_collision_claim_enabled": False,
@@ -481,6 +636,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "must_be_identical": list(SHARED_BLOCKS),
             "inherited_geometry_dependent_constraint_payload_rendered": False,
+            "shared_prebranch_temporal_mano_surface_hypothesis_rendered": True,
             "contact_or_collision_recomputed": False,
         },
         "branches": states,

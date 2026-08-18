@@ -421,6 +421,60 @@ def validate_case(name: str, run_root: Path, expected_frames: int, expected_fps:
             raise RuntimeError(f"{name} fairness contract lacks {key}=true")
     if fairness.get("generated_faces_collision_eligible") is not False:
         raise RuntimeError(f"{name} fairness contract promotes generated collision faces")
+    shared_p18_enabled = fairness.get("shared_prebranch_p17_p18_p18b_state") is True
+    if shared_p18_enabled and fairness.get("shared_p18_object_translation_optimized") is not False:
+        raise RuntimeError(f"{name} shared P18 did not freeze object translation")
+    shared_p18 = (
+        manifest.get("shared_p17_p18_p18b")
+        if isinstance(manifest.get("shared_p17_p18_p18b"), dict)
+        else {}
+    )
+    shared_p18b_payload_hash: str | None = None
+    shared_p18_artifacts: dict[str, Any] = {}
+    if shared_p18_enabled:
+        if shared_p18.get("status") != "ok":
+            raise RuntimeError(f"{name} lacks a published shared P17/P18/P18b result")
+        if shared_p18.get("generated_geometry_consumed_by_shared_tail") is not False:
+            raise RuntimeError(f"{name} shared P18 consumed generated backend geometry")
+        if shared_p18.get("signed_geometry_ready") is not False:
+            raise RuntimeError(f"{name} shared P18 incorrectly promotes signed geometry")
+        if float(shared_p18.get("p18_max_private_object_translation_delta_m", -1.0)) > 1.0e-10:
+            raise RuntimeError(f"{name} shared P18 contains private object motion")
+        shared_p18b_payload_hash = str(
+            shared_p18.get("p18b_payload_value_sha256") or ""
+        )
+        if not shared_p18b_payload_hash:
+            raise RuntimeError(f"{name} shared P18b payload hash is missing")
+        artifact_rows = (
+            shared_p18.get("artifacts")
+            if isinstance(shared_p18.get("artifacts"), dict)
+            else {}
+        )
+        required_shared_artifacts = {
+            "p18b_temporal_mano_state",
+            "raw_p18_mano_interval_state",
+            "p17_visible_contact_ownership_factor",
+            "p17_interaction_judgment",
+            "shared_tail_report",
+        }
+        if not required_shared_artifacts.issubset(artifact_rows):
+            raise RuntimeError(
+                f"{name} shared P18 publication lacks {sorted(required_shared_artifacts - set(artifact_rows))}"
+            )
+        for artifact_name in sorted(required_shared_artifacts):
+            artifact_path = verify_declared_file(
+                artifact_rows[artifact_name], f"{name}/shared/{artifact_name}"
+            )
+            shared_p18_artifacts[artifact_name] = file_record(artifact_path)
+        shared_manifest_row = shared_p18.get("manifest")
+        if not isinstance(shared_manifest_row, dict):
+            raise RuntimeError(f"{name} shared P18 publication manifest is missing")
+        shared_manifest_path = verify_declared_file(
+            shared_manifest_row, f"{name}/shared/state manifest"
+        )
+        shared_p18_artifacts["shared_state_manifest"] = file_record(
+            shared_manifest_path
+        )
 
     shared = manifest.get("shared_state") if isinstance(manifest.get("shared_state"), dict) else {}
     temporal = shared.get("temporal_readiness") if isinstance(shared.get("temporal_readiness"), dict) else {}
@@ -530,6 +584,30 @@ def validate_case(name: str, run_root: Path, expected_frames: int, expected_fps:
         for key in ("generated_faces_collision_eligible", "generated_faces_contact_eligible", "signed_geometry_ready"):
             if consumption.get(key) is not False:
                 raise RuntimeError(f"{name}/{backend} render manifest lacks {key}=false")
+        rendered_temporal = (
+            render_manifest.get("shared_p18b_temporal_surface")
+            if isinstance(render_manifest.get("shared_p18b_temporal_surface"), dict)
+            else {}
+        )
+        if shared_p18_enabled:
+            if rendered_temporal.get("value_sha256") != shared_p18b_payload_hash:
+                raise RuntimeError(
+                    f"{name}/{backend} did not consume the published shared P18b payload"
+                )
+            if int(rendered_temporal.get("row_count", 0)) != expected_frames * 2:
+                raise RuntimeError(
+                    f"{name}/{backend} shared P18b timeline is incomplete"
+                )
+            if int(rendered_temporal.get("surface_point_count", 0)) > 0:
+                for view_key in (
+                    "rendered_overlay_point_count",
+                    "rendered_world_point_count",
+                    "rendered_side_world_point_count",
+                ):
+                    if int(rendered_temporal.get(view_key, 0)) <= 0:
+                        raise RuntimeError(
+                            f"{name}/{backend} shared P18b samples are invisible in {view_key}"
+                        )
         actual_warning_frames = [int(value) for value in render_manifest.get("conditional_rotation_tail_frames") or []]
         if actual_warning_frames != conditional_frames:
             raise RuntimeError(
@@ -550,6 +628,7 @@ def validate_case(name: str, run_root: Path, expected_frames: int, expected_fps:
             "state": file_record(state_path),
             "render_manifest": file_record(render_manifest_path),
             "observed_metric_surface_sha256": observed.get("sha256"),
+            "shared_p18b_temporal_surface": rendered_temporal if shared_p18_enabled else None,
         }
     if len(observed_hashes) != 1:
         raise RuntimeError(f"{name} backends do not share one observed metric surface")
@@ -615,6 +694,20 @@ def validate_case(name: str, run_root: Path, expected_frames: int, expected_fps:
         "fairness_contract": fairness,
         "shared_observed_metric_surface_sha256": next(iter(observed_hashes)),
         "shared_state_value_sha256": shared_state_hashes,
+        "shared_p17_p18_p18b": (
+            {
+                "status": "validated",
+                "p18b_payload_value_sha256": shared_p18b_payload_hash,
+                "p18_max_private_object_translation_delta_m": shared_p18.get(
+                    "p18_max_private_object_translation_delta_m"
+                ),
+                "generated_geometry_consumed_by_shared_tail": False,
+                "signed_geometry_ready": False,
+                "artifacts": shared_p18_artifacts,
+            }
+            if shared_p18_enabled
+            else {"status": "not_present_historical_pre_shared_p18_case"}
+        ),
         "trajectory": trajectory,
         "hand_object_state": hand_state,
         "hand_object_state_report": file_record(hand_report_path),

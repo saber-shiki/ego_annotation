@@ -3,8 +3,9 @@
 
 This wrapper removes command-name ambiguity from the runtime agent.  It consumes
 only the already validated D17 layered states, calls the one bundled renderer
-for both branches, verifies 150-frame/30-FPS outputs, and writes a shared D18
-report.  It never changes camera, MANO, object pose, or branch geometry.
+for both branches, verifies 150-frame/30-FPS outputs and visible consumption of
+the shared P18b uncertain surface samples, and writes a shared D18 report. It
+never changes camera, metric MANO, object pose, or branch geometry.
 """
 from __future__ import annotations
 
@@ -132,6 +133,29 @@ def validate_render_manifest(
         if isinstance(manifest.get("shared_state_consumption"), dict)
         else {}
     )
+    temporal = (
+        manifest.get("shared_p18b_temporal_surface")
+        if isinstance(manifest.get("shared_p18b_temporal_surface"), dict)
+        else {}
+    )
+    if int(temporal.get("row_count", 0)) <= 0:
+        raise RuntimeError(f"D18 renderer did not consume shared P18b rows: {path}")
+    if not str(temporal.get("value_sha256") or ""):
+        raise RuntimeError(f"D18 manifest lacks shared P18b value hash: {path}")
+    if int(temporal.get("surface_point_count", 0)) > 0:
+        if int(temporal.get("rendered_frame_count_with_input_points", 0)) <= 0:
+            raise RuntimeError(f"D18 P18b samples were present but no frame consumed them: {path}")
+        if int(temporal.get("rendered_input_point_count", 0)) <= 0:
+            raise RuntimeError(f"D18 P18b samples were present but renderer input stayed empty: {path}")
+        for view_key in (
+            "rendered_overlay_point_count",
+            "rendered_world_point_count",
+            "rendered_side_world_point_count",
+        ):
+            if int(temporal.get(view_key, 0)) <= 0:
+                raise RuntimeError(
+                    f"D18 P18b samples did not change the {view_key} view: {path}"
+                )
     for key in (
         "generated_faces_collision_eligible",
         "generated_faces_contact_eligible",
@@ -168,6 +192,7 @@ def validate_render_manifest(
             "generated_faces_contact_eligible"
         ],
         "conditional_rotation_tail_frames": actual_conditional_frames,
+        "shared_p18b_temporal_surface": temporal,
     }
 
 
@@ -248,6 +273,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     if branch_policy.get("inherited_geometry_dependent_constraint_payload_rendered") is not False:
         raise RuntimeError("D17 adapter renders a geometry-dependent inherited constraint payload")
+    if branch_policy.get("shared_prebranch_temporal_mano_surface_hypothesis_rendered") is not True:
+        raise RuntimeError("D17 adapter does not route the shared pre-branch P18b state to D18")
     if branch_policy.get("contact_or_collision_recomputed") is not False:
         raise RuntimeError("D17 adapter recomputed branch-dependent contact/collision")
     if len(adapter.get("shared_state_value_sha256") or {}) != len(required_identical):
@@ -324,6 +351,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if results[name]["generated_faces_contact_eligible"]:
             raise RuntimeError(f"D18 {name} manifest promoted generated contact geometry")
 
+    temporal_hashes = {
+        str(row["shared_p18b_temporal_surface"].get("value_sha256"))
+        for row in results.values()
+    }
+    expected_temporal_hash = (adapter.get("shared_state_value_sha256") or {}).get(
+        "temporal_mano_state"
+    )
+    # Adapter hashes the complete temporal_mano_state block while renderers hash
+    # its payload. Equality between branches is mandatory; both hash scopes are
+    # retained explicitly rather than compared as if they represented one value.
+    if len(temporal_hashes) != 1 or "" in temporal_hashes or "None" in temporal_hashes:
+        raise RuntimeError(
+            f"D18 branches consumed different/empty P18b payload hashes: {sorted(temporal_hashes)}"
+        )
+    if not expected_temporal_hash:
+        raise RuntimeError("D17 adapter lacks temporal_mano_state shared-block hash")
+
     report = {
         "schema": SCHEMA,
         "status": "ok_dual_backend_full_timeline_renders",
@@ -340,6 +384,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "expected_frame_count": int(args.expected_frame_count),
         "expected_fps": float(args.expected_fps),
         "geometry_is_sole_branch_variable": True,
+        "shared_p18b_temporal_state": {
+            "branch_payload_value_sha256": next(iter(temporal_hashes)),
+            "d17_temporal_block_value_sha256": expected_temporal_hash,
+            "both_branches_identical": True,
+            "rendered_as_uncertain_surface_only": True,
+        },
         "rotation_step_acceptance_mode": rotation_step_gate.get("acceptance_mode"),
         "conditional_rotation_tail_frames": expected_conditional_frames,
         "conditional_temporal_uncertainty": temporal_readiness.get(

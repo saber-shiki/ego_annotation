@@ -2,8 +2,9 @@
 """Render an experimental layered P14/P15 state with full MANO surfaces.
 
 This is an additive renderer adapter.  It reuses the canonical V19 projection and
-video encoding helpers, but consumes source-neutral object layers and recovers the
-full 778-vertex metric MANO meshes from annotation references.  Object, observed
+video encoding helpers, but consumes source-neutral object layers, recovers the
+full 778-vertex metric MANO meshes from annotation references, and visibly overlays
+the one shared pre-branch P18b uncertain surface hypothesis. Object, observed
 surface, and hand triangles share one deterministic far-to-near painter order so
 hand/object depth order is visible in the diagnostic artifact.  The painter uses
 mean triangle depth and is a review renderer, not a metric z-buffer evaluator.
@@ -44,6 +45,7 @@ ROLE_ALPHA: dict[str, float] = {
     "mano_left_full_surface": 0.62,
     "mano_right_full_surface": 0.62,
 }
+TEMPORAL_SURFACE_COLOR = (0, 235, 255)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -484,9 +486,12 @@ def shared_frame_bounds(
     translation: np.ndarray,
     scene_layers: list[SceneLayer],
     padding: float,
+    temporal_surface_points: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     chunks = [reference_vertices[:: max(1, len(reference_vertices) // 3000)] @ rotation.T + translation[None, :]]
     chunks.extend(layer.vertices_world[:: max(1, len(layer.vertices_world) // 1200)] for layer in scene_layers if layer.role.startswith("mano_"))
+    if temporal_surface_points is not None and len(temporal_surface_points):
+        chunks.append(np.asarray(temporal_surface_points, dtype=np.float64))
     points = np.vstack(chunks)
     low = points.min(axis=0)
     high = points.max(axis=0)
@@ -495,6 +500,149 @@ def shared_frame_bounds(
     low = center - 0.5 * extent - float(padding)
     high = center + 0.5 * extent + float(padding)
     return low, high
+
+
+def temporal_surface_map(
+    state: dict[str, Any], rewrites: list[tuple[str, str]]
+) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
+    block = (
+        state.get("temporal_mano_state")
+        if isinstance(state.get("temporal_mano_state"), dict)
+        else {}
+    )
+    payload = block.get("payload") if isinstance(block.get("payload"), dict) else None
+    if payload is None:
+        raise RuntimeError(
+            "shared P18 reintegration requires render_state.temporal_mano_state.payload"
+        )
+    raw_path = block.get("path")
+    if raw_path:
+        path = canonical.rewrite_path(raw_path, rewrites)
+        if path is None:
+            raise RuntimeError("temporal MANO state path could not be resolved")
+        path = require_file(path, "shared P18b temporal MANO state")
+        path_payload = canonical.load_json(path)
+        if json.dumps(path_payload, sort_keys=True, separators=(",", ":")) != json.dumps(payload, sort_keys=True, separators=(",", ":")):
+            raise RuntimeError(
+                "embedded temporal MANO payload differs from its bound P18b state file"
+            )
+        path_value = str(path)
+        path_hash = sha256_file(path)
+    else:
+        path_value = None
+        path_hash = None
+    rows = payload.get("per_frame_states")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("shared P18b state has no per_frame_states")
+    out: dict[tuple[int, str], dict[str, Any]] = {}
+    surface_row_count = 0
+    surface_point_count = 0
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        key = (int(raw["frame_idx"]), str(raw["hand_side"]))
+        if key in out:
+            raise RuntimeError(f"duplicate shared P18b row {key}")
+        policy = str(raw.get("joint_state_policy") or "")
+        if "metric_mano_preserved" not in policy:
+            raise RuntimeError(f"shared P18b row {key} does not preserve metric MANO")
+        object_delta = np.asarray(
+            raw.get("optimized_object_translation_world_m") or [0.0, 0.0, 0.0],
+            dtype=np.float64,
+        )
+        if object_delta.shape != (3,) or float(np.linalg.norm(object_delta)) > 1.0e-10:
+            raise RuntimeError(f"shared P18b row {key} contains private object motion")
+        samples = np.asarray(
+            raw.get("contact_surface_vertices_world_sample_m")
+            or raw.get("optimized_vertices_world_sample_m")
+            or [],
+            dtype=np.float64,
+        )
+        if samples.size:
+            if samples.ndim != 2 or samples.shape[1] != 3 or not np.isfinite(samples).all():
+                raise RuntimeError(f"shared P18b row {key} has invalid surface samples")
+            surface_row_count += 1
+            surface_point_count += int(len(samples))
+        out[key] = raw
+    return out, {
+        "path": path_value,
+        "path_sha256": path_hash,
+        "status": payload.get("status"),
+        "row_count": len(out),
+        "surface_row_count": surface_row_count,
+        "surface_point_count": surface_point_count,
+        "value_sha256": hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def temporal_surface_points(row: dict[str, Any] | None) -> np.ndarray:
+    if not isinstance(row, dict):
+        return np.zeros((0, 3), dtype=np.float64)
+    points = np.asarray(
+        row.get("contact_surface_vertices_world_sample_m")
+        or row.get("optimized_vertices_world_sample_m")
+        or [],
+        dtype=np.float64,
+    )
+    if points.size == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
+        raise RuntimeError("invalid shared P18b temporal surface points")
+    return points
+
+
+def draw_camera_temporal_surface(
+    image: np.ndarray,
+    points_world: np.ndarray,
+    T_world_camera: np.ndarray,
+    intrinsics: tuple[float, float, float, float],
+) -> int:
+    if len(points_world) == 0:
+        return 0
+    points_camera = canonical.world_points_to_camera(points_world, T_world_camera)
+    u, v, _depth, valid = canonical.project_camera_points(
+        points_camera, intrinsics, image.shape[1], image.shape[0]
+    )
+    drawn = 0
+    for x, y, ok in zip(u, v, valid):
+        if ok and 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+            cv2.circle(
+                image,
+                (int(round(x)), int(round(y))),
+                2,
+                TEMPORAL_SURFACE_COLOR,
+                -1,
+                cv2.LINE_AA,
+            )
+            drawn += 1
+    return drawn
+
+
+def draw_world_temporal_surface(
+    image: np.ndarray,
+    points_world: np.ndarray,
+    low: np.ndarray,
+    high: np.ndarray,
+    axes: tuple[int, int],
+) -> int:
+    if len(points_world) == 0:
+        return 0
+    uv = points_to_uv(points_world, low, high, (image.shape[1], image.shape[0]), axes)
+    drawn = 0
+    for point in uv:
+        if np.isfinite(point).all() and 0 <= point[0] < image.shape[1] and 0 <= point[1] < image.shape[0]:
+            cv2.circle(
+                image,
+                tuple(np.round(point).astype(int)),
+                2,
+                TEMPORAL_SURFACE_COLOR,
+                -1,
+                cv2.LINE_AA,
+            )
+            drawn += 1
+    return drawn
 
 
 def points_to_uv(
@@ -577,9 +725,10 @@ def legend_panel(image: np.ndarray) -> None:
         ("magenta: generated complete render prior (no collision)", ROLE_COLORS["generated_complete_prior_underlay"]),
         ("green: observed metric surface / only collision-eligible layer", ROLE_COLORS["observed_metric_surface_overlay"]),
         ("blue + orange: full 778-vertex source metric MANO surfaces", (245, 205, 85)),
+        ("yellow: shared P18b uncertain surface hypothesis (not accepted contact)", TEMPORAL_SURFACE_COLOR),
         ("triangle depth order shown; signed contact/nonpenetration disabled", (220, 220, 220)),
     ]
-    y = image.shape[0] - 82
+    y = image.shape[0] - 102
     for text, color in labels:
         canonical.put_text_with_bg(image, text, (14, y), font_scale=0.35, color=color, thickness=1, bg_alpha=0.58)
         y += 20
@@ -653,6 +802,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("no frames selected")
 
     poses = canonical.pose_map(state)
+    temporal_rows, temporal_summary = temporal_surface_map(state, rewrites)
     pose_state = (
         state.get("object_pose_trajectory")
         if isinstance(state.get("object_pose_trajectory"), dict)
@@ -734,6 +884,13 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 int(args.observed_face_budget),
             )
             mano_provenance = add_mano_layers(scene_layers, frame_idx, frame, mano_cache, int(args.mano_face_budget))
+            temporal_points_by_side = {
+                side: temporal_surface_points(temporal_rows.get((frame_idx, side)))
+                for side in ("left", "right")
+            }
+            temporal_points = np.vstack(
+                [points for points in temporal_points_by_side.values() if len(points)]
+            ) if any(len(points) for points in temporal_points_by_side.values()) else np.zeros((0, 3), dtype=np.float64)
 
             camera_projected: list[tuple[np.ndarray, np.ndarray]] = []
             for layer in scene_layers:
@@ -741,6 +898,9 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 u, v, depth, _valid = canonical.project_camera_points(camera_vertices, intrinsics, width, height)
                 camera_projected.append((np.c_[u, v], depth))
             overlay, overlay_stats, overlay_labels = rasterize_scene(rgb, scene_layers, camera_projected)
+            temporal_overlay_points = draw_camera_temporal_surface(
+                overlay, temporal_points, T_world_camera, intrinsics
+            )
             title_panel(overlay, f"{branch_id} | camera overlay", f"{source_model} | {integration}", frame_idx)
             conditional_pose_warning(overlay, conditional_rotation_uncertainty)
             legend_panel(overlay)
@@ -751,6 +911,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 translation,
                 scene_layers,
                 float(args.local_world_padding_m),
+                temporal_points,
             )
             world_background = np.full((720, 1280, 3), 16, dtype=np.uint8)
             world_projected = [
@@ -758,6 +919,9 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 for layer in scene_layers
             ]
             world, world_stats, world_labels = rasterize_scene(world_background, scene_layers, world_projected)
+            temporal_world_points = draw_world_temporal_surface(
+                world, temporal_points, low, high, (0, 2)
+            )
             draw_camera_state(
                 world, T_world_camera, camera_path, low, high, (0, 2), float(args.camera_frustum_depth_m)
             )
@@ -771,6 +935,9 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                 for layer in scene_layers
             ]
             side, side_stats, side_labels = rasterize_scene(side_background, scene_layers, side_projected)
+            temporal_side_points = draw_world_temporal_surface(
+                side, temporal_points, low, high, (1, 2)
+            )
             draw_camera_state(
                 side, T_world_camera, camera_path, low, high, (1, 2), float(args.camera_frustum_depth_m)
             )
@@ -804,6 +971,18 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
                     "conditional_rotation_step_uncertainty": conditional_rotation_uncertainty,
                     "intrinsics": intrinsics_report,
                     "mano": mano_provenance,
+                    "shared_p18b_temporal_surface": {
+                        "input_points_by_side": {
+                            side: int(len(points))
+                            for side, points in temporal_points_by_side.items()
+                        },
+                        "input_point_count": int(len(temporal_points)),
+                        "overlay_drawn_point_count": int(temporal_overlay_points),
+                        "world_drawn_point_count": int(temporal_world_points),
+                        "side_world_drawn_point_count": int(temporal_side_points),
+                        "accepted_contact": False,
+                        "collision_eligible": False,
+                    },
                     "overlay": overlay_stats,
                     "world": world_stats,
                     "side_world": side_stats,
@@ -899,13 +1078,48 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "camera": "annotation_backbone.frame.camera.T_world_camera_metric",
             "mano": "annotation metric_mano_state.vertices_reference full bridge 778 vertices + HaWoR face arrays",
             "inherited_mano_constraint_payload_rendered": False,
-            "inherited_temporal_contact_hypothesis_rendered": False,
+            "shared_p18b_temporal_surface_hypothesis": temporal_summary,
+            "inherited_temporal_contact_hypothesis_rendered": True,
+            "temporal_hypothesis_semantics": "uncertain surface samples only; metric MANO body remains source full-778; not accepted contact",
             "generated_faces_contact_eligible": False,
             "generated_faces_collision_eligible": False,
             "signed_geometry_ready": False,
         },
         "reference_surface": reference_summary,
         "mano_full_surface": mano_summary,
+        "shared_p18b_temporal_surface": {
+            **temporal_summary,
+            "rendered_frame_count_with_input_points": int(
+                sum(
+                    int(row["shared_p18b_temporal_surface"]["input_point_count"]) > 0
+                    for row in frame_rows
+                )
+            ),
+            "rendered_input_point_count": int(
+                sum(
+                    int(row["shared_p18b_temporal_surface"]["input_point_count"])
+                    for row in frame_rows
+                )
+            ),
+            "rendered_overlay_point_count": int(
+                sum(
+                    int(row["shared_p18b_temporal_surface"]["overlay_drawn_point_count"])
+                    for row in frame_rows
+                )
+            ),
+            "rendered_world_point_count": int(
+                sum(
+                    int(row["shared_p18b_temporal_surface"]["world_drawn_point_count"])
+                    for row in frame_rows
+                )
+            ),
+            "rendered_side_world_point_count": int(
+                sum(
+                    int(row["shared_p18b_temporal_surface"]["side_world_drawn_point_count"])
+                    for row in frame_rows
+                )
+            ),
+        },
         "frame_count": len(frames),
         "source_frame_ids": selected_ids,
         "conditional_rotation_tail_frames": [

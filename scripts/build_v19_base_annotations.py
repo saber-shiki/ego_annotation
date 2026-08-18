@@ -10,6 +10,7 @@ annotation root is consumed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -21,6 +22,222 @@ from v19_camera_contract import SCHEMA as CAMERA_CONTRACT_V2_SCHEMA
 from v19_camera_contract import load_contract as load_camera_contract_v2
 from v19_camera_contract import plane_intrinsics as camera_contract_plane_intrinsics
 from v19_camera_contract import summarize_contract as summarize_camera_contract_v2
+
+FULL_K_RECTIFIED_MODE = (
+    "explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam"
+)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def aggregate_file_sha256(paths: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(bytes.fromhex(sha256_file(path)))
+    return digest.hexdigest()
+
+
+def K_from_intrinsics(value: Any, label: str) -> np.ndarray:
+    intrinsics = np.asarray(value, dtype=np.float64).reshape(-1)
+    if (
+        intrinsics.shape != (4,)
+        or not np.isfinite(intrinsics).all()
+        or np.any(intrinsics[:2] <= 0.0)
+    ):
+        raise RuntimeError(f"{label} must be finite [fx,fy,cx,cy]")
+    fx, fy, cx, cy = intrinsics.tolist()
+    return np.asarray(
+        [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+
+
+def validate_hawor_camera_image_plane_contract(
+    arrays: dict[str, np.ndarray],
+    *,
+    source_intrinsics: np.ndarray | None,
+    source_size_wh: tuple[int, int] | None,
+    source_video: Path | None,
+    expected_source_video: Path | None = None,
+) -> dict[str, Any]:
+    mode_values = np.asarray(
+        arrays.get("camera_intrinsics_contract_mode", np.asarray([]))
+    ).reshape(-1)
+    mode = str(mode_values[0]) if mode_values.size else None
+    if mode != FULL_K_RECTIFIED_MODE:
+        return {
+            "status": "legacy_or_unproven_hawor_camera_image_plane",
+            "mode": mode,
+            "validated": False,
+        }
+    if source_intrinsics is None or source_size_wh is None or source_video is None:
+        raise RuntimeError(
+            "full-K rectified HaWoR archive lacks source K, source size, or source video binding"
+        )
+    if not source_video.is_file():
+        raise RuntimeError(f"HaWoR source video is missing: {source_video}")
+    source_video_sha256 = sha256_file(source_video)
+    if expected_source_video is not None:
+        if not expected_source_video.is_file():
+            raise RuntimeError(
+                f"raw-manifest source video is missing: {expected_source_video}"
+            )
+        expected_source_sha256 = sha256_file(expected_source_video)
+        if expected_source_sha256 != source_video_sha256:
+            raise RuntimeError(
+                "HaWoR source video is not byte-identical to the raw-manifest input video"
+            )
+    else:
+        expected_source_sha256 = None
+    archive_video_hashes = np.asarray(
+        arrays.get("video_sha256", np.asarray([]))
+    ).reshape(-1)
+    if (
+        not archive_video_hashes.size
+        or str(archive_video_hashes[0]) != source_video_sha256
+    ):
+        raise RuntimeError("HaWoR NPZ source-video SHA256 binding mismatch")
+    frame_count = len(np.asarray(arrays.get("frame_idx", [])))
+    source_rows = np.asarray(
+        arrays.get("camera_intrinsics_fx_fy_cx_cy", []), dtype=np.float64
+    )
+    inference_rows = np.asarray(
+        arrays.get("hawor_inference_intrinsics_fx_fy_cx_cy", []),
+        dtype=np.float64,
+    )
+    if source_rows.shape != (frame_count, 4) or inference_rows.shape != (
+        frame_count,
+        4,
+    ):
+        raise RuntimeError(
+            f"HaWoR source/inference K arrays have invalid shapes {source_rows.shape}/{inference_rows.shape}"
+        )
+    if not np.allclose(
+        source_rows, np.asarray(source_intrinsics)[None, :], atol=1.0e-6, rtol=0.0
+    ):
+        raise RuntimeError("HaWoR NPZ source K differs from active source K")
+    if not np.allclose(inference_rows, inference_rows[0][None, :], atol=1.0e-6, rtol=0.0):
+        raise RuntimeError("HaWoR inference-plane K is not fixed")
+    A_inference_from_source = np.asarray(
+        arrays.get("A_hawor_inference_from_source", []), dtype=np.float64
+    )
+    A_source_from_inference = np.asarray(
+        arrays.get("A_source_from_hawor_inference", []), dtype=np.float64
+    )
+    if A_inference_from_source.shape != (3, 3) or A_source_from_inference.shape != (
+        3,
+        3,
+    ):
+        raise RuntimeError("HaWoR NPZ lacks source/inference 3x3 affines")
+    if not np.allclose(
+        A_source_from_inference @ A_inference_from_source,
+        np.eye(3),
+        atol=1.0e-10,
+        rtol=0.0,
+    ):
+        raise RuntimeError("HaWoR source/inference affines are not exact inverses")
+    if not np.allclose(
+        A_inference_from_source @ K_from_intrinsics(source_rows[0], "source K"),
+        K_from_intrinsics(inference_rows[0], "inference K"),
+        atol=1.0e-9,
+        rtol=0.0,
+    ):
+        raise RuntimeError("HaWoR image affine does not map source K to inference K")
+    path_values = np.asarray(
+        arrays.get("camera_image_plane_contract_path", np.asarray([]))
+    ).reshape(-1)
+    hash_values = np.asarray(
+        arrays.get("camera_image_plane_contract_sha256", np.asarray([]))
+    ).reshape(-1)
+    if not path_values.size or not hash_values.size:
+        raise RuntimeError("HaWoR NPZ lacks camera image-plane contract path/hash")
+    contract_path = Path(str(path_values[0]))
+    if not contract_path.is_file() or sha256_file(contract_path) != str(hash_values[0]):
+        raise RuntimeError("HaWoR camera image-plane contract file/hash mismatch")
+    contract = load_json(contract_path)
+    if contract.get("status") != "exact_source_to_centered_hawor_image_plane":
+        raise RuntimeError("HaWoR camera image-plane contract is not exact/validated")
+    if contract.get("mode") != FULL_K_RECTIFIED_MODE:
+        raise RuntimeError("HaWoR camera image-plane contract mode mismatch")
+    if [int(value) for value in contract.get("source_size_wh") or []] != [
+        int(source_size_wh[0]),
+        int(source_size_wh[1]),
+    ]:
+        raise RuntimeError("HaWoR camera image-plane source size mismatch")
+    if int(contract.get("inference_frame_count", -1)) != frame_count:
+        raise RuntimeError("HaWoR rectified image-plane timeline mismatch")
+    if contract.get("source_video_sha256") != source_video_sha256:
+        raise RuntimeError("HaWoR rectified image-plane source video hash mismatch")
+    frame_dir = Path(str(contract.get("inference_extracted_frames") or ""))
+    rectified_frames = sorted(frame_dir.glob("*.jpg")) if frame_dir.is_dir() else []
+    if len(rectified_frames) != frame_count:
+        raise RuntimeError(
+            f"HaWoR rectified image-plane frames {len(rectified_frames)} != {frame_count}"
+        )
+    actual_frame_hash = aggregate_file_sha256(rectified_frames)
+    if actual_frame_hash != contract.get("inference_frames_aggregate_sha256"):
+        raise RuntimeError("HaWoR rectified image-plane frame hash mismatch")
+    if (
+        sha256_file(rectified_frames[0]) != contract.get("inference_first_frame_sha256")
+        or sha256_file(rectified_frames[-1]) != contract.get("inference_last_frame_sha256")
+    ):
+        raise RuntimeError("HaWoR rectified image-plane endpoint frame hash mismatch")
+    for actual, expected, label in (
+        (
+            contract.get("source_intrinsics_fx_fy_cx_cy"),
+            source_rows[0],
+            "source K",
+        ),
+        (
+            contract.get("hawor_inference_intrinsics_fx_fy_cx_cy"),
+            inference_rows[0],
+            "inference K",
+        ),
+        (
+            contract.get("A_hawor_inference_from_source"),
+            A_inference_from_source,
+            "source-to-inference affine",
+        ),
+        (
+            contract.get("A_source_from_hawor_inference"),
+            A_source_from_inference,
+            "inference-to-source affine",
+        ),
+    ):
+        if not np.allclose(
+            np.asarray(actual, dtype=np.float64),
+            np.asarray(expected, dtype=np.float64),
+            atol=1.0e-9,
+            rtol=0.0,
+        ):
+            raise RuntimeError(f"HaWoR NPZ/contract {label} mismatch")
+    return {
+        "status": "validated_source_K_affine_centered_hawor_inference_plane",
+        "mode": mode,
+        "validated": True,
+        "contract_path": str(contract_path),
+        "contract_sha256": sha256_file(contract_path),
+        "source_intrinsics_fx_fy_cx_cy": source_rows[0].tolist(),
+        "hawor_inference_intrinsics_fx_fy_cx_cy": inference_rows[0].tolist(),
+        "A_hawor_inference_from_source": A_inference_from_source.tolist(),
+        "A_source_from_hawor_inference": A_source_from_inference.tolist(),
+        "inference_frame_count": frame_count,
+        "source_video": str(source_video),
+        "source_video_sha256": source_video_sha256,
+        "raw_manifest_source_video": (
+            str(expected_source_video) if expected_source_video is not None else None
+        ),
+        "raw_manifest_source_video_sha256": expected_source_sha256,
+        "inference_frames_aggregate_sha256": actual_frame_hash,
+        "inference_extracted_frames": str(frame_dir),
+    }
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -263,6 +480,8 @@ def hawor_active_camera_contract_alignment(
     source_hawor_state_present: bool,
     source_hawor_image_size_wh: tuple[int, int] | None = None,
     source_hawor_intrinsics_fx_fy_cx_cy: np.ndarray | list[float] | None = None,
+    source_hawor_camera_contract_mode: str | None = None,
+    source_hawor_camera_image_plane_contract_validated: bool = False,
     tolerance_px: float = 0.01,
 ) -> dict[str, Any]:
     """Describe, but never silently repair, inherited HaWoR camera/K state.
@@ -273,12 +492,28 @@ def hawor_active_camera_contract_alignment(
     require all four components to match before calling the inherited state
     aligned.  Merely writing the active K into annotations is not reinference.
     """
+    explicit_full_k_consumed = bool(
+        str(source_hawor_camera_contract_mode or "") == FULL_K_RECTIFIED_MODE
+        and source_hawor_camera_image_plane_contract_validated is True
+    )
+    source_intrinsics_model = (
+        "explicit_source_full_pinhole_K_bound_through_affine_centered_hawor_inference_plane_and_slam"
+        if explicit_full_k_consumed
+        else "square_focal_full_image_center"
+    )
+    principal_point_convention = (
+        "explicit source-plane cx,cy transformed by a hash-bound affine to HaWoR image center; inverse affine returns projections to source pixels"
+        if explicit_full_k_consumed
+        else "img_center=[width/2,height/2] as used by legacy upstream HaWoR video wrapper"
+    )
     empty = {
         "source_hawor_img_focal_px": None,
         "source_hawor_image_size_wh": None,
         "source_hawor_intrinsics_fx_fy_cx_cy": None,
-        "source_hawor_intrinsics_model": "square_focal_full_image_center",
-        "source_hawor_principal_point_convention": "img_center=[width/2,height/2] as used by upstream HaWoR",
+        "source_hawor_camera_contract_mode": source_hawor_camera_contract_mode,
+        "source_hawor_full_K_bound_to_inference": explicit_full_k_consumed,
+        "source_hawor_intrinsics_model": source_intrinsics_model,
+        "source_hawor_principal_point_convention": principal_point_convention,
         "active_camera_intrinsics_fx_fy_cx_cy_median": None,
         "active_camera_intrinsics_max_abs_deviation_px": None,
         "active_minus_hawor_intrinsics_fx_fy_cx_cy_px": None,
@@ -337,11 +572,17 @@ def hawor_active_camera_contract_alignment(
     )
     active_stable = bool(active_max_deviation is not None and np.all(active_max_deviation <= tolerance))
     component_delta = active_median - source_intrinsics if active_median is not None and source_intrinsics is not None else None
-    intrinsics_match = bool(
+    numeric_intrinsics_match = bool(
         active_stable
         and component_delta is not None
         and np.all(np.abs(component_delta) <= tolerance)
     )
+    # Preserve the general P08 compatibility meaning: a legacy center-K run can
+    # numerically match an active K whose principal point is exactly centered.
+    # The shared HOT3D P17/P18 path separately requires
+    # source_hawor_full_K_bound_to_inference=true, so numeric equality alone
+    # cannot promote that stricter physical tail.
+    intrinsics_match = bool(numeric_intrinsics_match)
 
     active_focals = (
         np.sqrt(np.maximum(1.0e-12, active_array[:, 0] * active_array[:, 1]))
@@ -390,6 +631,7 @@ def hawor_active_camera_contract_alignment(
         "active_to_hawor_focal_ratio": ratio,
         "source_hawor_focal_matches_active_contract": focal_match,
         "source_hawor_principal_point_matches_active_contract": principal_point_match,
+        "source_hawor_intrinsics_numerically_match_active_contract": numeric_intrinsics_match,
         "source_hawor_state_intrinsics_match_active_contract": intrinsics_match,
         "source_hawor_camera_and_mano_share_intrinsics": source_intrinsics is not None,
         "builder_reestimated_hawor_camera_or_mano": False,
@@ -397,9 +639,13 @@ def hawor_active_camera_contract_alignment(
         "hawor_camera_mano_intrinsics_consistent": source_intrinsics is not None,
         "hawor_camera_mano_intrinsics_consistent_with_active_contract": intrinsics_match,
         "claim_scope": (
-            "The builder preserves inherited HaWoR camera poses and MANO geometry under the source HaWoR K. "
-            "A full [fx,fy,cx,cy] mismatch with the active camera contract is explicit uncertainty; replacing projection metadata "
-            "does not recalibrate the inherited state and blocks promotion to a shared camera/MANO metric state."
+            "The source HaWoR run consumed a hash-bound centered inference image plane obtained from the active source-plane [fx,fy,cx,cy] by an exact affine; MANO regression, projected hand masks, and HaWoR SLAM share the centered K, while the inverse affine binds exported projections back to source pixels."
+            if explicit_full_k_consumed and intrinsics_match
+            else (
+                "The builder preserves inherited HaWoR camera poses and MANO geometry under the source HaWoR K. "
+                "A full [fx,fy,cx,cy] mismatch with the active camera contract is explicit uncertainty; replacing projection metadata "
+                "does not recalibrate the inherited state and blocks promotion to a shared camera/MANO metric state."
+            )
         ),
     }
 
@@ -730,7 +976,9 @@ def build_hand_row(
         "current_v18_camera_intrinsics_fx_fy_cx_cy": camera_hand_contract_alignment.get(
             "source_hawor_intrinsics_fx_fy_cx_cy"
         ),
-        "current_v18_camera_intrinsics_source": "source_hawor_img_focal_full_image_center",
+        "current_v18_camera_intrinsics_source": camera_hand_contract_alignment.get(
+            "source_hawor_intrinsics_model"
+        ),
         "source_hawor_camera_intrinsics_fx_fy_cx_cy": camera_hand_contract_alignment.get(
             "source_hawor_intrinsics_fx_fy_cx_cy"
         ),
@@ -813,6 +1061,32 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         hawor_arrays,
         source_image_size_wh=hawor_source_size,
     )
+    hawor_camera_contract_mode = None
+    if hawor_arrays and "camera_intrinsics_contract_mode" in hawor_arrays:
+        raw_mode = np.asarray(hawor_arrays["camera_intrinsics_contract_mode"]).reshape(-1)
+        if raw_mode.size:
+            hawor_camera_contract_mode = str(raw_mode[0])
+    hawor_source_video = None
+    if hawor_arrays and "video_path" in hawor_arrays:
+        raw_video_paths = np.asarray(hawor_arrays["video_path"]).reshape(-1)
+        if raw_video_paths.size and str(raw_video_paths[0]):
+            hawor_source_video = Path(str(raw_video_paths[0]))
+    raw_input_video_value = raw_payload.get("input_video")
+    raw_input_video = (
+        Path(str(raw_input_video_value)) if raw_input_video_value else None
+    )
+    hawor_camera_image_plane_contract = validate_hawor_camera_image_plane_contract(
+        hawor_arrays,
+        source_intrinsics=hawor_intrinsics,
+        source_size_wh=hawor_source_size,
+        source_video=hawor_source_video,
+        expected_source_video=raw_input_video,
+    ) if hawor_arrays else {
+        "status": "no_source_hawor_state",
+        "validated": False,
+    }
+    if hawor_camera_contract_mode == FULL_K_RECTIFIED_MODE and hawor_camera_image_plane_contract.get("validated") is not True:
+        raise RuntimeError("HaWoR full-K mode lacks a validated source/inference image-plane contract")
     active_intrinsics_rows: list[list[float]] = []
     for idx, raw in raw_by_idx.items():
         pair = calibration_intr.get(idx) or depth_intr.get(idx) or camera_intr.get(idx) or default_intrinsics_from_raw(
@@ -826,6 +1100,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         source_hawor_state_present=bool(hawor_arrays),
         source_hawor_image_size_wh=hawor_source_size,
         source_hawor_intrinsics_fx_fy_cx_cy=hawor_intrinsics,
+        source_hawor_camera_contract_mode=hawor_camera_contract_mode,
+        source_hawor_camera_image_plane_contract_validated=(
+            hawor_camera_image_plane_contract.get("validated") is True
+        ),
+    )
+    camera_hand_contract_alignment["hawor_camera_image_plane_contract"] = (
+        hawor_camera_image_plane_contract
     )
 
     output_frames: list[dict[str, Any]] = []
@@ -928,6 +1209,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "sam2_tracks": {track_id: "loaded" for track_id in sam2_tracks},
             "mano_bridge_npz": str(bridge_path) if bridge_rows and bridge_path is not None else None,
             "camera_hand_contract_alignment": camera_hand_contract_alignment,
+            "hawor_camera_image_plane_contract": hawor_camera_image_plane_contract,
         },
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -946,6 +1228,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "object_roster": sorted(object_plan),
         "mano_bridge": bridge_report,
         "camera_hand_contract_alignment": camera_hand_contract_alignment,
+        "hawor_camera_image_plane_contract": hawor_camera_image_plane_contract,
         "claim_scope": "base physical measurement backbone only; final pose/contact/occlusion/interval correction state must be added by later V19 components",
     }
     state_path = args.output_dir / "v19_base_physical_state.json"
@@ -964,6 +1247,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "sam2_track_count": int(len(sam2_tracks)),
         "mano_bridge": bridge_report,
         "camera_hand_contract_alignment": camera_hand_contract_alignment,
+        "hawor_camera_image_plane_contract": hawor_camera_image_plane_contract,
     }
     write_json(args.output_dir / "v19_base_annotations_report.json", report)
     return report

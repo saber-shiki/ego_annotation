@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT="${EGO_HAWOR_ROOT:-$PROJECT_ROOT/.runtime/hawor_work}"
 CASE="${EGO_HAWOR_CASE:-runtime_case}"
 IMG_FOCAL="${EGO_HAWOR_IMG_FOCAL:-2304}"
+CAMERA_INTRINSICS="${EGO_HAWOR_CAMERA_INTRINSICS_FX_FY_CX_CY:-}"
 FORCE_FOCAL_CACHE_REFRESH="${EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH:-0}"
 
 if [ -z "${EGO_HAWOR_CLIP:-}" ]; then
@@ -57,8 +58,16 @@ EXTRA_ARGS=()
 if [ "$FORCE_FOCAL_CACHE_REFRESH" = "1" ] || [ "$FORCE_FOCAL_CACHE_REFRESH" = "true" ]; then
   EXTRA_ARGS+=(--force-focal-cache-refresh)
 fi
+if [ -n "$CAMERA_INTRINSICS" ]; then
+  read -r -a CAMERA_K_VALUES <<< "$CAMERA_INTRINSICS"
+  if [ "${#CAMERA_K_VALUES[@]}" -ne 4 ]; then
+    echo "EGO_HAWOR_CAMERA_INTRINSICS_FX_FY_CX_CY must contain exactly four values: fx fy cx cy" >&2
+    exit 2
+  fi
+  EXTRA_ARGS+=(--camera-intrinsics "${CAMERA_K_VALUES[@]}")
+fi
 
-echo "running HaWoR export case=$CASE clip=$CLIP output=$OUTPUT_DIR img_focal=$IMG_FOCAL force_focal_cache_refresh=$FORCE_FOCAL_CACHE_REFRESH" >&2
+echo "running HaWoR export case=$CASE clip=$CLIP output=$OUTPUT_DIR img_focal=$IMG_FOCAL camera_intrinsics=${CAMERA_INTRINSICS:-legacy_image_center} force_focal_cache_refresh=$FORCE_FOCAL_CACHE_REFRESH" >&2
 python "$SCRIPT_DIR/export_hawor_world.py" \
   --hawor-root "$HAWOR_ROOT" \
   --video_path "$CLIP" \

@@ -146,6 +146,7 @@ def publish_backend(
     output_root: Path,
     expected_frames: int,
     expected_fps: float,
+    expected_p18b_payload_value_sha256: str,
 ) -> dict[str, Any]:
     manifest = load_json(render_manifest_path)
     branch_id = BACKEND_BRANCHES[backend]
@@ -153,6 +154,32 @@ def publish_backend(
         raise RuntimeError(f"{backend} render manifest does not bind expected branch {branch_id}: {render_manifest_path}")
     if int(manifest.get("frame_count", -1)) != int(expected_frames):
         raise RuntimeError(f"{backend} manifest frame count mismatch")
+    temporal = (
+        manifest.get("shared_p18b_temporal_surface")
+        if isinstance(manifest.get("shared_p18b_temporal_surface"), dict)
+        else {}
+    )
+    if temporal.get("value_sha256") != expected_p18b_payload_value_sha256:
+        raise RuntimeError(
+            f"{backend} render did not consume the published shared P18b payload: "
+            f"{temporal.get('value_sha256')} != {expected_p18b_payload_value_sha256}"
+        )
+    if int(temporal.get("row_count", 0)) != int(expected_frames) * 2:
+        raise RuntimeError(
+            f"{backend} rendered P18b row count {temporal.get('row_count')} != {expected_frames * 2}"
+        )
+    if int(temporal.get("surface_point_count", 0)) > 0:
+        if int(temporal.get("rendered_frame_count_with_input_points", 0)) <= 0:
+            raise RuntimeError(f"{backend} P18b samples were not connected to rendered frames")
+        for view_key in (
+            "rendered_overlay_point_count",
+            "rendered_world_point_count",
+            "rendered_side_world_point_count",
+        ):
+            if int(temporal.get(view_key, 0)) <= 0:
+                raise RuntimeError(
+                    f"{backend} P18b samples were not visible in {view_key}"
+                )
 
     backend_root = output_root / backend
     videos_root = backend_root / "videos"
@@ -214,10 +241,117 @@ def publish_backend(
         "geometry": published_geometry,
         "state": {**file_record(state_destination), "publish_mode": state_mode, "source": str(render_state)},
         "render_manifest": {**file_record(manifest_destination), "publish_mode": manifest_mode, "source": str(render_manifest_path)},
+        "shared_p18b_temporal_surface": temporal,
     }
     report_path = backend_root / "backend_result.json"
     report_path.write_text(json.dumps(backend_report, indent=2) + "\n", encoding="utf-8")
     return {**backend_report, "backend_result": file_record(report_path)}
+
+
+def publish_shared_tail(
+    shared_tail_path: Path,
+    shared_tail: dict[str, Any],
+    output_root: Path,
+) -> dict[str, Any]:
+    if shared_tail.get("status") != "ok_shared_p17_p18_p18b_tail":
+        raise RuntimeError(f"shared P17/P18 tail is not ok: {shared_tail_path}")
+    outputs = shared_tail.get("outputs") if isinstance(shared_tail.get("outputs"), dict) else {}
+    inputs = shared_tail.get("inputs") if isinstance(shared_tail.get("inputs"), dict) else {}
+    p17 = require_file(Path(str(outputs.get("factor_report") or "")), "shared P17 factor report")
+    p18 = require_file(Path(str(outputs.get("p18_state") or "")), "shared raw P18 state")
+    p18b = require_file(Path(str(outputs.get("p18b_state") or "")), "shared P18b state")
+    judgment = require_file(
+        Path(str(inputs.get("interaction_judgment") or "")),
+        "shared P17 interaction judgment",
+    )
+    expected_records = {
+        "factor_report_sha256": (p17, outputs.get("factor_report_sha256")),
+        "p18_state_sha256": (p18, outputs.get("p18_state_sha256")),
+        "p18b_state_sha256": (p18b, outputs.get("p18b_state_sha256")),
+        "interaction_judgment_sha256": (
+            judgment,
+            inputs.get("interaction_judgment_sha256"),
+        ),
+    }
+    for label, (path, expected) in expected_records.items():
+        actual = sha256_file(path)
+        if not expected or actual != expected:
+            raise RuntimeError(
+                f"shared-tail {label} binding mismatch for {path}: {actual} != {expected}"
+            )
+    p18_payload = load_json(p18)
+    p18b_payload = load_json(p18b)
+    p18_parameters = (
+        p18_payload.get("parameters")
+        if isinstance(p18_payload.get("parameters"), dict)
+        else {}
+    )
+    if p18_parameters.get("optimize_object_translation") is not False:
+        raise RuntimeError("published shared P18 did not disable object translation")
+    max_object_delta = 0.0
+    for row in p18_payload.get("per_frame_states") or []:
+        if not isinstance(row, dict):
+            continue
+        delta = row.get("optimized_object_translation_world_m")
+        if not isinstance(delta, list) or len(delta) != 3:
+            raise RuntimeError("published shared P18 has malformed object delta")
+        max_object_delta = max(
+            max_object_delta,
+            sum(float(value) ** 2 for value in delta) ** 0.5,
+        )
+    if max_object_delta > 1.0e-10:
+        raise RuntimeError(
+            f"published shared P18 privately moved the object by {max_object_delta} m"
+        )
+    p18b_value_hash = hashlib.sha256(
+        json.dumps(
+            p18b_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    if p18b_value_hash != outputs.get("p18b_state_value_sha256"):
+        raise RuntimeError(
+            "shared P18b payload value hash differs from the shared-tail report"
+        )
+
+    shared_root = output_root / "shared"
+    state_root = shared_root / "state"
+    reports_root = shared_root / "reports"
+    source_root = shared_root / "source"
+    destinations = {
+        "p18b_temporal_mano_state": (p18b, state_root / "p18b_temporal_mano_state.json"),
+        "raw_p18_mano_interval_state": (p18, state_root / "raw_p18_mano_interval_state.json"),
+        "p17_visible_contact_ownership_factor": (p17, reports_root / "p17_visible_contact_ownership_factor.json"),
+        "p17_interaction_judgment": (judgment, source_root / "p17_interaction_judgment.json"),
+        "shared_tail_report": (shared_tail_path, reports_root / "shared_p17_p18_tail_report.json"),
+    }
+    published: dict[str, Any] = {}
+    for name, (source, destination) in destinations.items():
+        mode = link_or_copy(source, destination)
+        published[name] = {
+            **file_record(destination),
+            "publish_mode": mode,
+            "source": str(source),
+        }
+    manifest = {
+        "status": "ok",
+        "claim_scope": (
+            "Published shared pre-branch P17/P18/P18b provenance. P18 uses the D15 "
+            "observed-only pose authority with zero private object translation; P18b "
+            "surface samples remain uncertain and are not signed contact/collision."
+        ),
+        "p18b_payload_value_sha256": p18b_value_hash,
+        "p18_max_private_object_translation_delta_m": max_object_delta,
+        "generated_geometry_consumed_by_shared_tail": False,
+        "signed_geometry_ready": False,
+        "artifacts": published,
+    }
+    manifest_path = shared_root / "shared_state_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return {**manifest, "manifest": file_record(manifest_path)}
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -230,21 +364,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     controlled_path = require_file(args.controlled_report, "controlled P13 report")
     dual_path = require_file(args.dual_report, "SAM3D dual-mesh report")
     adapter_path = require_file(args.state_adapter_report, "layered state adapter report")
+    shared_tail_path = require_file(args.shared_tail_report, "shared P17/P18/P18b tail report")
     controlled = load_json(controlled_path)
     dual_report = load_json(dual_path)
     adapter = load_json(adapter_path)
+    shared_tail = load_json(shared_tail_path)
     if controlled.get("status") != "ok" or dual_report.get("status") != "ok" or adapter.get("status") != "ok":
         raise RuntimeError("controlled/dual/state-adapter reports must all be ok")
 
     output_root = prepare_output(args.output_dir, bool(args.replace))
+    shared_result = publish_shared_tail(shared_tail_path, shared_tail, output_root)
+    expected_p18b_hash = str(shared_result["p18b_payload_value_sha256"])
     backends = {
         "sam3d": publish_backend(
             "sam3d", sam_manifest, controlled, dual_report, adapter, output_root,
-            int(args.expected_frame_count), float(args.expected_fps),
+            int(args.expected_frame_count), float(args.expected_fps), expected_p18b_hash,
         ),
         "trellis": publish_backend(
             "trellis", trellis_manifest, controlled, dual_report, adapter, output_root,
-            int(args.expected_frame_count), float(args.expected_fps),
+            int(args.expected_frame_count), float(args.expected_fps), expected_p18b_hash,
         ),
     }
 
@@ -296,6 +434,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "shared_observed_metric_surface": True,
             "shared_observed_only_pose_trajectory": True,
             "shared_camera_and_metric_mano_state": True,
+            "shared_prebranch_p17_p18_p18b_state": True,
+            "shared_p18_object_translation_optimized": False,
             "backend_variable": "single-image generated render geometry prior and its integration",
             "generated_faces_collision_eligible": False,
             "released_reference_labels_consumed_by_prediction": False,
@@ -307,6 +447,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "conditional_rotation_tail": conditional_rotation_tail,
             "estimated_rotation_is_not_ground_truth_angular_velocity": True,
         },
+        "shared_p17_p18_p18b": shared_result,
         "source_reports": {
             "controlled_p13": file_record(controlled_path),
             "sam3d_dual_mesh": file_record(dual_path),
@@ -343,6 +484,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--controlled-report", type=Path, required=True)
     parser.add_argument("--dual-report", type=Path, required=True)
     parser.add_argument("--state-adapter-report", type=Path, required=True)
+    parser.add_argument("--shared-tail-report", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-frame-count", type=int, default=150)
     parser.add_argument("--expected-fps", type=float, default=30.0)

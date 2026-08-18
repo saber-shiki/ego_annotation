@@ -195,7 +195,7 @@ P02  base annotation skeleton
 P03b resolve prediction-side sensor camera contract
 P03  sensor-conditioned UniDepth
 P03c depth-camera ray binding validation
-P04  HaWoR/MANO prediction
+P04  active source-K → centered HaWoR inference plane → MANO/masked SLAM prediction
 P05  raw visual inspection
 P06  OWLv2 target detection
 P07  SAM2 full-timeline segmentation + visual inspection
@@ -209,7 +209,8 @@ D13  controlled metric adaptation + SAM3D dual mesh
 D14  observed-only completion reference and direct pose fit
 D15  shared observed-only 150-frame pose graph
 D16  unsigned MANO/object state
-D17  shared source state + geometry-only branch states
+D16b shared P17 ownership/contact prior + P18 MANO candidate + P18b metric-MANO split
+D17  shared P18b source state + geometry-only branch states
 D18  exact dual-backend full-duration renders
 D19  stable per-case publication and SUITE_DONE
 POST  optional multi-case collection finalization
@@ -220,6 +221,31 @@ POST  optional multi-case collection finalization
 ---
 
 ## 6. 关键修改内容
+
+### 6.0 Shared P18 安全回接（本分支 fresh-run 合同）
+
+本分支在 D15 与 D17 之间恢复一次共享的 P17→P18→P18b：
+
+```text
+D15 observed-only pose authority
+  -> D16 unsigned measurement
+  -> shared P17 visual interaction/ownership prior
+  -> shared P18 unsigned MANO candidate (object translation frozen)
+  -> shared P18b metric-MANO-preserved uncertain surface samples
+  -> D17 geometry-only SAM3D/TRELLIS split
+```
+
+安全约束：
+
+- P04 必须用显式 affine 将 active source K 绑定到 centered HaWoR inference plane，并用逆 affine回绑 source pixels；历史 center-K archive fail closed；
+- P17/P18 mask 使用 P09 exact source→mask affine，depth lookup 仍在 source plane；
+- P18 只消费 observed-only physical surface，SAM3D/TRELLIS generated faces 不进入求解；
+- D15 是唯一 object pose authority，P18 `optimize_object_translation=false` 且所有 delta 为零；
+- P18b 不覆盖 metric MANO joints/root，只保留黄色 uncertain surface samples；
+- D18 必须实际显示这些 samples，D19 必须发布其 provenance；
+- observed surface 仍为 partial/unsigned/non-watertight，不能宣称 signed contact/nonpenetration。
+
+完整设计见 `docs/hot3d_shared_p18_reintegration_design_zh.md`。
 
 ### 6.1 Sensor-first camera / depth contract
 
@@ -463,7 +489,7 @@ Preflight 会验证：
 - SAM2、OWLv2、UniDepth、MANO、DINOv2、MoGe hash；
 - 各 interpreter imports；
 - 全部 bundled CLI `--help`；
-- 两套 CPU self-tests；
+- camera、dual-backend 和 shared-P18 三套 CPU self-tests；
 - preflight 前后 bundle byte-identical。
 
 ### 6.12 唯一 D18 runner
@@ -483,6 +509,8 @@ scripts/run_hot3d_dual_backend_d18_renders.py
 - 150 frames；
 - 30 FPS；
 - 相同 shared state；
+- 同一 shared P18b payload value hash；
+- 有 P18b samples 时 renderer 实际消费并画入 full-duration frames；
 - generated collision/contact eligibility 为 false。
 
 直接调用底层 renderer 的诊断输出不得冒充正式 D18。
@@ -492,6 +520,8 @@ scripts/run_hot3d_dual_backend_d18_renders.py
 Per-case D19：
 
 - 验证两个 render manifests；
+- 验证并发布 shared P17、raw P18、P18b 和 interaction judgment；
+- 验证 P18 object translation 始终为零；
 - 发布稳定视频名；
 - 发布 geometry/state/reports；
 - 写 `case_result_manifest.json`；
@@ -667,6 +697,29 @@ MAIN_PYTHON=/ABS/PATH/ego_annotation/.venv/bin/python
 
 ## 11. D18、D19 与 collection 命令
 
+### 11.0 Shared D16b P17/P18/P18b
+
+正式命令以 `runtime/hot3d_dual_backend_runtime_spec.md` 为准：先由 runtime agent 基于 prediction-side 图像写完整左右手 interaction judgment，再运行：
+
+```bash
+"$MAIN_PYTHON" scripts/run_hot3d_shared_p17_p18_tail.py \
+  --case "$CASE_ID" \
+  --object-id "$OBJECT_ID" \
+  --annotations "$ANNOTATIONS" \
+  --pose-report "$POSE_GRAPH" \
+  --completion-report "$OBSERVED_COMPLETION" \
+  --depth-npz "$DEPTH_NPZ" \
+  --hawor-npz "$HAWOR_NPZ" \
+  --interaction-judgment "$INTERACTION_JUDGMENT" \
+  --wilor-root third_party/WiLoR \
+  --wilor-mano-left third_party/WiLoR/mano_data/MANO_LEFT.pkl \
+  --wilor-mano-right third_party/WiLoR/mano_data/MANO_RIGHT.pkl \
+  --output-root "$EXP_ROOT/P16b_shared_p17_p18_tail" \
+  --start-frame 0 --end-frame 149 --sides left right --device cuda
+```
+
+该 runner 在加载 MANO/GPU optimizer 前验证 source-K↔centered-HaWoR inference-plane 的 camera/MANO affine合同；执行后验证 exact mask affine、observed-only surface、D15 pose binding、零 object delta 和 P18b metric-MANO preservation。
+
 ### 11.1 D18
 
 ```bash
@@ -699,6 +752,7 @@ MAIN_PYTHON=/ABS/PATH/ego_annotation/.venv/bin/python
   --controlled-report "$CONTROLLED_REPORT" \
   --dual-report "$DUAL_REPORT" \
   --state-adapter-report "$STATE_ADAPTER_REPORT" \
+  --shared-tail-report "$SHARED_TAIL_REPORT" \
   --output-dir "$RUN_ROOT/final_results" \
   --expected-frame-count 150 \
   --expected-fps 30
@@ -849,13 +903,13 @@ git status --short
 ## 15. 已知限制
 
 1. **MANO 非 GT**：HaWoR/MANO 是 RGB prediction，遮挡和 infiller 帧有不确定性。
-2. **HaWoR 主点约定**：HaWoR image-center principal point 与 exact sensor K 约有 1–2 px 差异，细粒度投影/handedness alignment 保留 uncertainty。
+2. **HaWoR camera contract**：新 fresh run 要求 P04 将 active source K 通过显式 affine 转到 centered inference plane，并让 MANO regression、hand-mask projection 和 HaWoR SLAM 共同消费该 centered K，再用逆 affine 回绑 source pixels。历史五例仍是 image-center archive，不能直接晋级到 shared P17/P18；必须从 P04 重跑。
 3. **Observed surface partial**：不能提供全物体 signed SDF。
 4. **Generated hidden shape 非证据**：完整后侧形状是 backend-dependent render hypothesis。
 5. **Contact/nonpenetration unresolved**：unsigned proximity 不能解释为 signed contact 或无穿透。
 6. **Monocular symmetry**：即使 surface residual 很小，rotation 仍可能因对称/低观测而不确定。
 7. **RGB-PnP bridge 较低置信**：它是受严格 calibrated gates 约束的 direct bridge，但仍应在最终 uncertainty 中保留。
-8. **历史五例版本不同**：统一 collection 是对成功 D19 artifacts 的 post-prediction 聚合，不等价于同一最终 bundle 的五例全量重跑。
+8. **历史五例版本不同**：统一 collection 是对旧 D16/D17 成功 D19 artifacts 的 post-prediction 聚合，不包含本分支新增的 shared P17/P18/P18b；不等价于新 source-K/centered-HaWoR/shared-P18 bundle 的五例全量重跑。
 9. **路径需本机适配**：runtime spec 中的 A800/model 路径是已验证部署的绝对路径；迁移到新机器需要重新 provision、hash check、preflight 和 immutable bundle build。
 
 ---
@@ -929,9 +983,12 @@ scripts/run_hot3d_dual_backend_d18_renders.py
 8. `experiments/sam3d_p11_p12_branch/build_p13_sam3d_native_metric_bridge.py`
 9. `scripts/fit_v18_compact_rigid_object_pose.py`
 10. `scripts/solve_v19_rigid_object_pose_graph.py`
-11. `scripts/run_hot3d_dual_backend_d18_renders.py`
-12. `scripts/finalize_hot3d_dual_backend_case.py`
-13. `scripts/finalize_hot3d_fivecase_collection.py`
-14. 两套 `self_test.py`
+11. `scripts/run_hot3d_shared_p17_p18_tail.py`
+12. `scripts/solve_v18_joint_mano_interval_trajectory.py`
+13. `experiments/sam3d_p11_p12_branch/render_p14_p15_layered_state.py`
+14. `scripts/run_hot3d_dual_backend_d18_renders.py`
+15. `scripts/finalize_hot3d_dual_backend_case.py`
+16. `scripts/finalize_hot3d_fivecase_collection.py`
+17. 三套 `self_test.py`
 
 审查时应始终坚持：manifest/gate 是机制证据的记录，不是对视觉与物理机制本身的替代。

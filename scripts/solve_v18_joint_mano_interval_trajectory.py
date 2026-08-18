@@ -35,7 +35,7 @@ import torch
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_v18_mano_object_constraint_state import frame_intrinsics, project  # noqa: E402
+from build_v18_mano_object_constraint_state import project  # noqa: E402
 from build_v18_compact_rigid_hidden_volume_depth_validation import load_depth_sources  # noqa: E402
 from build_v18_observed_surface_mano_constraint_state import (  # noqa: E402
     VERTEX_OBSERVED_SUPPORTED,
@@ -129,6 +129,8 @@ class FrameHandRow:
     visible_ownership_object_owned_px: int
     visible_ownership_constraint_eligible_px: int
     visible_ownership_quarantined_face_count: int
+    visible_mask_A_mask_from_source: np.ndarray
+    visible_mask_image_plane_contract: dict[str, Any]
     visible_object_mask_path: str | None
     visible_object_mask_face_count_raw: int
     visible_object_mask_face_count: int
@@ -285,6 +287,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--visible-lid-depth-order-margin-m", dest="visible_surface_depth_order_margin_m", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p.add_argument("--visible-lid-depth-order-weight", dest="visible_surface_depth_order_weight", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     p.add_argument("--max-visible-lid-depth-vertices", dest="max_visible_surface_depth_vertices", type=int, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    p.add_argument(
+        "--require-active-full-K-mano-contract",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Fail before MANO model loading unless every interval hand row proves that HaWoR regression, "
+            "projected hand masks, and HaWoR SLAM consumed the exact affine-centered inference plane bound to active source [fx,fy,cx,cy]. "
+            "The controlled HOT3D shared tail enables this explicitly."
+        ),
+    )
     return p.parse_args()
 
 
@@ -378,10 +390,107 @@ def resolve_physical_surface_contract(
     return contract
 
 
-def project_world(points_world: np.ndarray, frame: dict[str, Any], side: str) -> np.ndarray | None:
-    intr = frame_intrinsics(frame, side)
-    if intr is None:
+def finite_intrinsics(value: Any, label: str) -> np.ndarray:
+    intrinsics = np.asarray(value, dtype=np.float64).reshape(-1)
+    if (
+        intrinsics.shape != (4,)
+        or not np.isfinite(intrinsics).all()
+        or np.any(intrinsics[:2] <= 0.0)
+    ):
+        raise RuntimeError(f"{label} must be finite [fx,fy,cx,cy], got {intrinsics}")
+    return intrinsics
+
+
+def active_frame_intrinsics(
+    frame: dict[str, Any], side: str, *, require_full_k: bool = False
+) -> list[float]:
+    """Return source projection K, optionally requiring exact centered-plane provenance."""
+    matching = [
+        hand
+        for hand in as_list(frame.get("hands"))
+        if isinstance(hand, dict) and str(hand.get("hand_side")) == str(side)
+    ]
+    if len(matching) != 1:
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')} {side}: expected exactly one MANO row, got {len(matching)}"
+        )
+    hand = matching[0]
+    metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    mano = finite_intrinsics(
+        metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy"),
+        "MANO inference intrinsics",
+    )
+    if not require_full_k:
+        return mano.astype(float).tolist()
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    active = finite_intrinsics(
+        camera.get("intrinsics_fx_fy_cx_cy"), "active frame camera intrinsics"
+    )
+    alignment = (
+        metric.get("camera_contract_alignment")
+        if isinstance(metric.get("camera_contract_alignment"), dict)
+        else hand.get("camera_contract_alignment")
+        if isinstance(hand.get("camera_contract_alignment"), dict)
+        else {}
+    )
+    if require_full_k:
+        if alignment.get("active_contract_reinference_required") is not False:
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {side}: active camera/MANO reinference is still required; refusing P18 promotion"
+            )
+        if alignment.get("source_hawor_state_intrinsics_match_active_contract") is not True:
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {side}: active source-K/centered-inference HaWoR binding is not explicitly proven"
+            )
+        if alignment.get("source_hawor_full_K_bound_to_inference") is not True:
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {side}: HaWoR source-K to centered-inference-plane binding is not proven"
+            )
+        plane = alignment.get("hawor_camera_image_plane_contract")
+        if (
+            not isinstance(plane, dict)
+            or plane.get("validated") is not True
+            or plane.get("status")
+            != "validated_source_K_affine_centered_hawor_inference_plane"
+        ):
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {side}: centered HaWoR image-plane binding is not validated"
+            )
+    if require_full_k and not np.allclose(active, mano, atol=0.01, rtol=0.0):
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')} {side}: active camera K {active.tolist()} != MANO K {mano.tolist()}"
+        )
+    return active.astype(float).tolist()
+
+
+def finite_image_affine(value: Any, label: str) -> np.ndarray:
+    affine = np.asarray(value, dtype=np.float64)
+    if affine.shape != (3, 3) or not np.isfinite(affine).all():
+        raise RuntimeError(f"{label} must be a finite 3x3 affine")
+    if not np.allclose(affine[2], [0.0, 0.0, 1.0], atol=1.0e-12, rtol=0.0):
+        raise RuntimeError(f"{label} must use homogeneous affine pixel coordinates")
+    if abs(float(np.linalg.det(affine))) < 1.0e-12:
+        raise RuntimeError(f"{label} is singular")
+    return affine
+
+
+def transform_source_uv_to_mask(
+    uv_source: np.ndarray | None, A_mask_from_source: np.ndarray
+) -> np.ndarray | None:
+    if uv_source is None:
         return None
+    uv = np.asarray(uv_source, dtype=np.float64)
+    if uv.ndim != 2 or uv.shape[1] != 2:
+        return uv
+    homogeneous = np.column_stack([uv, np.ones((len(uv),), dtype=np.float64)])
+    transformed = homogeneous @ finite_image_affine(
+        A_mask_from_source, "A_mask_from_source"
+    ).T
+    return transformed[:, :2] / transformed[:, 2:3]
+
+
+def project_world(points_world: np.ndarray, frame: dict[str, Any], side: str) -> np.ndarray | None:
+    intr = active_frame_intrinsics(frame, side)
     r_c2w, t_c2w = frame_camera_pose(frame)
     return project(points_world, r_c2w, t_c2w, intr)
 
@@ -581,10 +690,31 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
         raise FileNotFoundError(f"visible ownership row has no readable constraint_eligible_entity/adjusted_entity mask path: {constraint_raw}")
     non_object_mask = load_binary_mask(Path(non_object_raw), cache)
     constraint_mask = load_binary_mask(Path(constraint_raw), cache)
+    if non_object_mask.shape != constraint_mask.shape:
+        raise RuntimeError(
+            f"visible ownership mask shape mismatch: {non_object_mask.shape} != {constraint_mask.shape}"
+        )
+    plane = row.get("image_plane_transform")
+    if not isinstance(plane, dict) or plane.get("camera_contract_consistent") is not True:
+        raise RuntimeError(
+            "visible ownership row lacks an explicit camera-consistent image-plane transform"
+        )
+    mask_size = [int(v) for v in plane.get("mask_size_wh") or []]
+    actual_size = [int(non_object_mask.shape[1]), int(non_object_mask.shape[0])]
+    if mask_size != actual_size:
+        raise RuntimeError(
+            f"visible ownership mask raster {actual_size} disagrees with factor contract {mask_size}"
+        )
+    A_mask_from_source = finite_image_affine(
+        plane.get("A_mask_from_source_coordinate_model"),
+        "visible ownership A_mask_from_source",
+    )
     raw_counts = row.get("counts")
     counts = raw_counts if isinstance(raw_counts, dict) else {}
     return non_object_mask, constraint_mask, {
         "state": "ok",
+        "image_plane_transform": plane,
+        "A_mask_from_source_coordinate_model": A_mask_from_source.tolist(),
         "non_object_owned_mask_path": non_object_raw if isinstance(non_object_raw, str) else None,
         "constraint_eligible_entity_mask_path": constraint_raw if isinstance(constraint_raw, str) else None,
         "visible_object_owned_mask_path": visible_object_raw if isinstance(visible_object_raw, str) else None,
@@ -732,6 +862,7 @@ def visible_ownership_quarantine_faces(
     object_pose: tuple[np.ndarray, np.ndarray],
     face_strict_observed: np.ndarray,
     non_object_owned_mask: np.ndarray | None,
+    A_mask_from_source: np.ndarray,
     args: argparse.Namespace,
 ) -> tuple[np.ndarray, int]:
     strict = np.asarray(face_strict_observed, dtype=bool).copy()
@@ -756,8 +887,13 @@ def visible_ownership_quarantine_faces(
         axis=1,
     )
     samples_world = samples_obj.reshape(-1, 3) @ np.asarray(r_obj, dtype=float).T + np.asarray(t_obj, dtype=float)[None, :]
-    uv = project_world(samples_world, frame, side)
-    inside_flat = mask_membership(non_object_owned_mask, uv, int(args.visible_ownership_face_overlap_dilation_px))
+    uv_source = project_world(samples_world, frame, side)
+    inside_flat = mask_membership(
+        non_object_owned_mask,
+        uv_source,
+        int(args.visible_ownership_face_overlap_dilation_px),
+        A_mask_from_source=A_mask_from_source,
+    )
     if inside_flat.shape[0] != samples_world.shape[0]:
         return strict, 0
     inside = inside_flat.reshape(len(object_faces), -1).any(axis=1)
@@ -766,10 +902,20 @@ def visible_ownership_quarantine_faces(
     return strict, int(np.count_nonzero(q))
 
 
-def mask_membership(mask: np.ndarray, uv: np.ndarray | None, dilation_px: int = 0) -> np.ndarray:
+def mask_membership(
+    mask: np.ndarray,
+    uv: np.ndarray | None,
+    dilation_px: int = 0,
+    *,
+    A_mask_from_source: np.ndarray | None = None,
+) -> np.ndarray:
     if uv is None:
         return np.zeros((0,), dtype=bool)
     uv = np.asarray(uv, dtype=float)
+    if A_mask_from_source is not None:
+        transformed = transform_source_uv_to_mask(uv, A_mask_from_source)
+        assert transformed is not None
+        uv = transformed
     if uv.ndim != 2 or uv.shape[1] != 2:
         return np.zeros((len(uv),), dtype=bool)
     height, width = mask.shape
@@ -799,6 +945,7 @@ def visible_object_mask_face_gate(
     object_pose: tuple[np.ndarray, np.ndarray],
     face_strict_observed: np.ndarray,
     mask: np.ndarray | None,
+    A_mask_from_source: np.ndarray,
     args: argparse.Namespace,
 ) -> tuple[np.ndarray, int, int]:
     strict = np.asarray(face_strict_observed, dtype=bool).copy()
@@ -812,8 +959,13 @@ def visible_object_mask_face_gate(
         return strict, raw_count, raw_count
     r_obj, t_obj = object_pose
     face_centers_world = object_vertices[object_faces].mean(axis=1) @ np.asarray(r_obj, dtype=float).T + np.asarray(t_obj, dtype=float)[None, :]
-    uv = project_world(face_centers_world, frame, side)
-    inside = mask_membership(mask, uv, int(args.visible_object_mask_dilation_px))
+    uv_source = project_world(face_centers_world, frame, side)
+    inside = mask_membership(
+        mask,
+        uv_source,
+        int(args.visible_object_mask_dilation_px),
+        A_mask_from_source=A_mask_from_source,
+    )
     if inside.shape[0] == strict.shape[0]:
         strict &= inside
     return strict, raw_count, int(np.count_nonzero(strict))
@@ -826,6 +978,7 @@ def visible_surface_depth_order_constraints(
     vertices_world: np.ndarray,
     mask: np.ndarray | None,
     depth_row: dict[str, Any] | None,
+    A_mask_from_source: np.ndarray,
     args: argparse.Namespace,
     enabled: bool | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
@@ -861,7 +1014,14 @@ def visible_surface_depth_order_constraints(
             "depth_delta_hand_minus_surface_m": numeric_summary(empty),
         }
     height, width = depth.shape
-    inside = mask_membership(mask, uv, int(args.visible_object_mask_dilation_px))
+    # uv remains in source/depth coordinates for depth lookup. Only mask
+    # membership receives the exact source->mask affine from P17.
+    inside = mask_membership(
+        mask,
+        uv,
+        int(args.visible_object_mask_dilation_px),
+        A_mask_from_source=A_mask_from_source,
+    )
     cam = world_to_camera(vertices_world, frame)
     u = np.rint(uv[:, 0]).astype(int)
     v = np.rint(uv[:, 1]).astype(int)
@@ -1240,6 +1400,28 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         )
         ownership_row = visible_ownership_rows.get((frame_idx, side))
         ownership_non_object_mask, ownership_constraint_eligible_mask, ownership_diag = visible_ownership_masks_for_row(ownership_row, visible_mask_cache)
+        ownership_affine_raw = ownership_diag.get("A_mask_from_source_coordinate_model")
+        if ownership_affine_raw is None:
+            # No factor row means no ownership/constraint mask is consumed. The
+            # identity below is an explicitly inert internal placeholder, not a
+            # claim that source and mask rasters share coordinates.
+            if ownership_non_object_mask is not None or ownership_constraint_eligible_mask is not None:
+                raise RuntimeError(
+                    f"frame {frame_idx} {side}: ownership mask exists without an image-plane affine"
+                )
+            A_mask_from_source = np.eye(3, dtype=np.float64)
+            visible_mask_plane_contract: dict[str, Any] = {
+                "state": "not_consumed_missing_visible_ownership_factor_row",
+                "affine_placeholder_inert": True,
+            }
+        else:
+            A_mask_from_source = finite_image_affine(
+                ownership_affine_raw,
+                f"frame {frame_idx} {side} visible ownership A_mask_from_source",
+            )
+            visible_mask_plane_contract = dict(
+                ownership_diag.get("image_plane_transform") or {}
+            )
         strict, visible_ownership_quarantined = visible_ownership_quarantine_faces(
             frame=frame,
             side=side,
@@ -1248,6 +1430,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             object_pose=pose,
             face_strict_observed=strict,
             non_object_owned_mask=ownership_non_object_mask,
+            A_mask_from_source=A_mask_from_source,
             args=args,
         )
         visible_mask_path = visible_mask_paths.get(frame_idx)
@@ -1262,6 +1445,10 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             visible_mask_path = Path(str(visible_surface_diag.get("surface_mask_path")))
         if ownership_constraint_eligible_mask is not None:
             visible_mask = ownership_constraint_eligible_mask if visible_mask is None else (visible_mask & ownership_constraint_eligible_mask)
+        if visible_mask is not None and ownership_affine_raw is None:
+            raise RuntimeError(
+                f"frame {frame_idx} {side}: a visible mask would be consumed without an exact source-to-mask affine"
+            )
         strict, visible_mask_face_count_raw, visible_mask_face_count = visible_object_mask_face_gate(
             frame=frame,
             side=side,
@@ -1270,6 +1457,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             object_pose=pose,
             face_strict_observed=strict,
             mask=visible_mask,
+            A_mask_from_source=A_mask_from_source,
             args=args,
         )
         visible_surface_track_quarantined_face_count = 0
@@ -1336,6 +1524,7 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             vertices_world=current_vertices,
             mask=visible_mask,
             depth_row=depth_rows.get(frame_idx),
+            A_mask_from_source=A_mask_from_source,
             args=args,
             enabled=bool(args.visible_surface_depth_order_term) or bool(visible_surface_active),
         )
@@ -1422,6 +1611,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 visible_ownership_object_owned_px=int(ownership_diag.get("visible_object_owned_px", 0)),
                 visible_ownership_constraint_eligible_px=int(ownership_diag.get("constraint_eligible_entity_px", 0)),
                 visible_ownership_quarantined_face_count=int(visible_ownership_quarantined),
+                visible_mask_A_mask_from_source=A_mask_from_source.astype(float),
+                visible_mask_image_plane_contract=visible_mask_plane_contract,
                 visible_object_mask_path=None if visible_mask_path is None else str(visible_mask_path),
                 visible_object_mask_face_count_raw=int(visible_mask_face_count_raw),
                 visible_object_mask_face_count=int(visible_mask_face_count),
@@ -1823,8 +2014,14 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     contact_patch_margins_t: list[torch.Tensor] = []
     contact_patch_support_uncertainty_t: list[torch.Tensor] = []
     for row in rows:
-        intr = frame_intrinsics(row.frame, row.side)
-        intr_t.append(None if intr is None else torch.tensor(intr, dtype=torch.float32, device=device))
+        intr = active_frame_intrinsics(
+            row.frame,
+            row.side,
+            require_full_k=bool(
+                getattr(args, "require_active_full_K_mano_contract", False)
+            ),
+        )
+        intr_t.append(torch.tensor(intr, dtype=torch.float32, device=device))
         uv0 = project_world(row.current_joints_world, row.frame, row.side)
         base_uv.append(None if uv0 is None else torch.tensor(uv0, dtype=torch.float32, device=device))
         r_c2w, t_c2w = frame_camera_pose(row.frame)
@@ -2260,6 +2457,8 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "visible_ownership_object_owned_px": int(row.visible_ownership_object_owned_px),
                 "visible_ownership_constraint_eligible_px": int(row.visible_ownership_constraint_eligible_px),
                 "visible_ownership_quarantined_face_count": int(row.visible_ownership_quarantined_face_count),
+                "visible_mask_A_mask_from_source_coordinate_model": row.visible_mask_A_mask_from_source.astype(float).tolist(),
+                "visible_mask_image_plane_contract": row.visible_mask_image_plane_contract,
                 "visible_object_mask_path": row.visible_object_mask_path,
                 "visible_object_mask_face_count_raw": int(row.visible_object_mask_face_count_raw),
                 "visible_object_mask_face_count": int(row.visible_object_mask_face_count),
@@ -2414,6 +2613,50 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "dense_observed_constraint_count_final": numeric_summary(np.asarray([len(x) for x in dense_constraint_indices], dtype=float)),
     }
     return interval, states
+
+
+def validate_interval_camera_mano_contract(args: argparse.Namespace) -> dict[str, Any]:
+    annotations = load_json(args.annotations)
+    frames = {
+        int(frame.get("frame_idx", pos)): frame
+        for pos, frame in enumerate(as_list(annotations.get("frames")))
+        if isinstance(frame, dict)
+    }
+    checked = 0
+    unique_intrinsics: set[tuple[float, float, float, float]] = set()
+    missing: list[dict[str, Any]] = []
+    for frame_idx in range(int(args.start_frame), int(args.end_frame) + 1):
+        frame = frames.get(frame_idx)
+        if frame is None:
+            missing.append({"frame_idx": frame_idx, "reason": "missing_annotation_frame"})
+            continue
+        for side in args.sides:
+            try:
+                intr = active_frame_intrinsics(
+                    frame,
+                    side,
+                    require_full_k=bool(
+                        getattr(args, "require_active_full_K_mano_contract", False)
+                    ),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"P18 camera/MANO preflight failed before model loading at frame={frame_idx} side={side}: {exc}"
+                ) from exc
+            unique_intrinsics.add(tuple(float(value) for value in intr))
+            checked += 1
+    expected = (int(args.end_frame) - int(args.start_frame) + 1) * len(args.sides)
+    if missing or checked != expected:
+        raise RuntimeError(
+            f"P18 camera/MANO preflight covers {checked}/{expected} rows; missing={missing[:8]}"
+        )
+    return {
+        "status": "exact_source_K_affine_bound_to_centered_hawor_plane_for_all_interval_mano_rows",
+        "row_count": checked,
+        "expected_row_count": expected,
+        "unique_intrinsics_fx_fy_cx_cy": [list(row) for row in sorted(unique_intrinsics)],
+        "validated_before_mano_model_loading": True,
+    }
 
 
 def pose_graph_readiness(report: dict[str, Any]) -> dict[str, Any]:
@@ -2591,6 +2834,14 @@ def main() -> None:
     if pose_readiness["explicitly_unready"] and not args.include_unready_object_pose_for_diagnostic_optimization:
         quarantined_source_state(args, pose_readiness)
         return
+    args.camera_mano_contract_validation = (
+        validate_interval_camera_mano_contract(args)
+        if bool(getattr(args, "require_active_full_K_mano_contract", False))
+        else {
+            "status": "not_requested_generic_interval_compatibility",
+            "validated_before_mano_model_loading": False,
+        }
+    )
     physical_surface_probe = load_mesh(args.resolved_physical_surface_mesh)
     args.physical_surface_watertight = bool(physical_surface_probe.is_watertight)
     signed_geometry_declared_ready = surface_contract["signed_geometry_ready"] is True
@@ -2675,6 +2926,7 @@ def main() -> None:
         },
         "parameters": {k: ([str(x) for x in v] if k == "factor_report" and v is not None else (str(v) if isinstance(v, Path) else v)) for k, v in vars(args).items() if k not in {"depth_npz"}},
         "object_pose_readiness": pose_readiness,
+        "camera_mano_contract_validation": args.camera_mano_contract_validation,
         "physical_surface_contract": {
             "pose_hypothesis_mesh": str(args.completed_mesh),
             "physical_surface_mesh": str(args.resolved_physical_surface_mesh),

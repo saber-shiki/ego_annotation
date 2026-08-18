@@ -96,6 +96,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--agent-judgment-can-create-contact", action=argparse.BooleanOptionalAction, default=True, help="Allow a likely/possible agent contact judgment to emit a contact_patch prior even when the image-proximity pixel threshold is not met. The row still uses projected MANO/object geometry for targets; this only creates the prior/switch.")
     p.add_argument("--max-vertices", type=int, default=160)
     p.add_argument("--review-frames", type=int, nargs="*", default=[691, 700, 720, 725])
+    p.add_argument(
+        "--require-camera-mano-contract-aligned",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Fail closed unless every consumed MANO row was inferred on the exact centered HaWoR image plane affinely bound to the active source [fx,fy,cx,cy] camera contract. "
+            "A metadata-only K replacement is not accepted."
+        ),
+    )
     return p.parse_args()
 
 
@@ -293,34 +302,196 @@ def load_mask(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("L")) > 0
 
 
-def project_camera(points_camera: np.ndarray, intr: list[float], width: int, height: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def finite_intrinsics(value: Any, label: str) -> np.ndarray:
+    intrinsics = np.asarray(value, dtype=np.float64).reshape(-1)
+    if (
+        intrinsics.shape != (4,)
+        or not np.isfinite(intrinsics).all()
+        or np.any(intrinsics[:2] <= 0.0)
+    ):
+        raise RuntimeError(f"{label} must be finite [fx,fy,cx,cy], got {intrinsics}")
+    return intrinsics
+
+
+def finite_affine(value: Any, label: str) -> np.ndarray:
+    affine = np.asarray(value, dtype=np.float64)
+    if affine.shape != (3, 3) or not np.isfinite(affine).all():
+        raise RuntimeError(f"{label} must be a finite 3x3 affine")
+    if not np.allclose(affine[2], [0.0, 0.0, 1.0], atol=1.0e-12, rtol=0.0):
+        raise RuntimeError(f"{label} must use homogeneous affine pixel coordinates")
+    if abs(float(np.linalg.det(affine))) < 1.0e-12:
+        raise RuntimeError(f"{label} is singular")
+    return affine
+
+
+def mask_plane_contract(
+    frame: dict[str, Any], obj: dict[str, Any], mask_shape: tuple[int, int]
+) -> dict[str, Any]:
+    visible = (
+        obj.get("visible_geometry_candidate")
+        if isinstance(obj.get("visible_geometry_candidate"), dict)
+        else {}
+    )
+    transform = (
+        visible.get("mask_depth_transform_contract")
+        if isinstance(visible.get("mask_depth_transform_contract"), dict)
+        else {}
+    )
+    if transform.get("camera_contract_consistent") is not True:
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')}: object mask lacks a camera-consistent mask/depth transform"
+        )
+    mask_size = [int(v) for v in transform.get("mask_size_wh") or []]
+    depth_size = [int(v) for v in transform.get("depth_size_wh") or []]
+    actual_mask_size = [int(mask_shape[1]), int(mask_shape[0])]
+    source_size = [
+        int(frame.get("source_width") or 0),
+        int(frame.get("source_height") or 0),
+    ]
+    if mask_size != actual_mask_size:
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')}: mask raster {actual_mask_size} disagrees with contract {mask_size}"
+        )
+    # This controlled HOT3D path declares depth in source_rgb. If that changes,
+    # an explicit A_depth_from_source must be added rather than guessed here.
+    if depth_size != source_size or min(source_size) <= 0:
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')}: depth plane {depth_size} is not the source RGB plane {source_size}"
+        )
+    A_depth_from_mask = finite_affine(
+        transform.get("A_depth_from_mask_coordinate_model"),
+        "A_depth_from_mask_coordinate_model",
+    )
+    A_mask_from_source = np.linalg.inv(A_depth_from_mask)
+    pixel_center = str(transform.get("pixel_center_convention") or "")
+    if pixel_center != "integer_pixel_centers_opencv":
+        raise RuntimeError(
+            f"frame {frame.get('frame_idx')}: unsupported mask pixel-center convention {pixel_center!r}"
+        )
+    return {
+        "source_image_plane": "source_rgb",
+        "mask_image_plane": str(transform.get("mask_image_plane") or "sam2_mask"),
+        "depth_image_plane": str(transform.get("depth_image_plane") or "source_rgb"),
+        "source_size_wh": source_size,
+        "mask_size_wh": mask_size,
+        "depth_size_wh": depth_size,
+        "A_mask_from_source_coordinate_model": A_mask_from_source.tolist(),
+        "A_depth_from_mask_coordinate_model": A_depth_from_mask.tolist(),
+        "pixel_center_convention": pixel_center,
+        "raster_resampling": transform.get("raster_resampling"),
+        "camera_contract_consistent": True,
+    }
+
+
+def active_camera_mano_intrinsics(
+    frame: dict[str, Any], hand: dict[str, Any], *, require_aligned: bool
+) -> np.ndarray:
+    metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
+    mano = finite_intrinsics(
+        metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy"),
+        "MANO inference intrinsics",
+    )
+    if not require_aligned:
+        return mano
+    camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+    active = finite_intrinsics(
+        camera.get("intrinsics_fx_fy_cx_cy"), "active frame camera intrinsics"
+    )
+    alignment = (
+        metric.get("camera_contract_alignment")
+        if isinstance(metric.get("camera_contract_alignment"), dict)
+        else hand.get("camera_contract_alignment")
+        if isinstance(hand.get("camera_contract_alignment"), dict)
+        else {}
+    )
+    if require_aligned:
+        if alignment.get("active_contract_reinference_required") is not False:
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: MANO was not inferred on the centered image plane bound to the active source K"
+            )
+        if alignment.get("source_hawor_state_intrinsics_match_active_contract") is not True:
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: camera/MANO alignment is not explicitly proven"
+            )
+        if alignment.get("source_hawor_full_K_bound_to_inference") is not True:
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: HaWoR did not prove source-K to centered-inference-plane binding"
+            )
+        plane = alignment.get("hawor_camera_image_plane_contract")
+        if (
+            not isinstance(plane, dict)
+            or plane.get("validated") is not True
+            or plane.get("status")
+            != "validated_source_K_affine_centered_hawor_inference_plane"
+        ):
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: centered HaWoR image-plane binding is not validated"
+            )
+        if not np.allclose(active, mano, atol=0.01, rtol=0.0):
+            raise RuntimeError(
+                f"frame {frame.get('frame_idx')} {hand.get('hand_side')}: active K {active.tolist()} != MANO K {mano.tolist()}"
+            )
+    return active
+
+
+def transform_source_pixels(uv_source: np.ndarray, A_mask_from_source: np.ndarray) -> np.ndarray:
+    uv = np.asarray(uv_source, dtype=np.float64)
+    homogeneous = np.column_stack([uv, np.ones((len(uv),), dtype=np.float64)])
+    transformed = homogeneous @ np.asarray(A_mask_from_source, dtype=np.float64).T
+    return transformed[:, :2] / transformed[:, 2:3]
+
+
+def project_camera_to_mask(
+    points_camera: np.ndarray,
+    intr: np.ndarray,
+    A_mask_from_source: np.ndarray,
+    width: int,
+    height: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     pts = np.asarray(points_camera, dtype=float)
-    if pts.ndim != 2 or pts.shape[1] != 3 or len(intr) != 4:
+    if pts.ndim != 2 or pts.shape[1] != 3:
         return np.zeros((0,), dtype=int), np.zeros((0,), dtype=int), np.zeros((0,), dtype=bool)
-    fx, fy, cx, cy = [float(x) for x in intr]
+    fx, fy, cx, cy = finite_intrinsics(intr, "projection intrinsics")
     z = pts[:, 2]
     valid = np.isfinite(pts).all(axis=1) & (z > 1.0e-5)
-    u_float = fx * pts[:, 0] / np.maximum(z, 1.0e-6) + cx
-    v_float = fy * pts[:, 1] / np.maximum(z, 1.0e-6) + cy
-    # V19 review/mask frames may be a scaled version of source intrinsics.
-    scale_x = width / max(1.0, 2.0 * cx)
-    scale_y = height / max(1.0, 2.0 * cy)
-    u = np.rint(u_float * scale_x).astype(int)
-    v = np.rint(v_float * scale_y).astype(int)
-    valid &= (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    uv_source = np.column_stack(
+        [fx * pts[:, 0] / np.maximum(z, 1.0e-6) + cx, fy * pts[:, 1] / np.maximum(z, 1.0e-6) + cy]
+    )
+    uv_mask = transform_source_pixels(uv_source, A_mask_from_source)
+    u = np.rint(uv_mask[:, 0]).astype(int)
+    v = np.rint(uv_mask[:, 1]).astype(int)
+    valid &= np.isfinite(uv_mask).all(axis=1) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
     return u, v, valid
 
 
-def draw_hand_mask(hand: dict[str, Any], width: int, height: int, *, point_radius: int, line_radius: int) -> tuple[np.ndarray, dict[str, Any]]:
+def draw_hand_mask(
+    frame: dict[str, Any],
+    hand: dict[str, Any],
+    plane: dict[str, Any],
+    width: int,
+    height: int,
+    *,
+    point_radius: int,
+    line_radius: int,
+    require_camera_mano_aligned: bool,
+) -> tuple[np.ndarray, dict[str, Any]]:
     metric = hand.get("metric_mano_state") if isinstance(hand.get("metric_mano_state"), dict) else {}
-    intr = metric.get("current_v18_camera_intrinsics_fx_fy_cx_cy") or metric.get("v19_camera_intrinsics_fx_fy_cx_cy")
+    intr = active_camera_mano_intrinsics(
+        frame, hand, require_aligned=require_camera_mano_aligned
+    )
+    A_mask_from_source = finite_affine(
+        plane.get("A_mask_from_source_coordinate_model"),
+        "A_mask_from_source_coordinate_model",
+    )
     joints = np.asarray(metric.get("joints_current_v18_camera_m") or [], dtype=float)
     verts = np.asarray(metric.get("vertices_camera_sample_m") or [], dtype=float)
     mask = np.zeros((height, width), dtype=np.uint8)
     joint_u = joint_v = np.zeros((0,), dtype=int)
     joint_valid = np.zeros((0,), dtype=bool)
-    if joints.shape == (21, 3) and isinstance(intr, list) and len(intr) == 4:
-        joint_u, joint_v, joint_valid = project_camera(joints, intr, width, height)
+    if joints.shape == (21, 3):
+        joint_u, joint_v, joint_valid = project_camera_to_mask(
+            joints, intr, A_mask_from_source, width, height
+        )
         for a, b in HAND_EDGES:
             if a < len(joint_valid) and b < len(joint_valid) and joint_valid[a] and joint_valid[b]:
                 cv2.line(mask, (int(joint_u[a]), int(joint_v[a])), (int(joint_u[b]), int(joint_v[b])), 255, max(1, int(line_radius)))
@@ -328,8 +499,10 @@ def draw_hand_mask(hand: dict[str, Any], width: int, height: int, *, point_radiu
             if ok:
                 cv2.circle(mask, (int(u), int(v)), max(1, int(point_radius)), 255, -1)
     vert_valid_count = 0
-    if verts.ndim == 2 and verts.shape[1] == 3 and isinstance(intr, list) and len(intr) == 4:
-        vu, vv, vvld = project_camera(verts, intr, width, height)
+    if verts.ndim == 2 and verts.shape[1] == 3:
+        vu, vv, vvld = project_camera_to_mask(
+            verts, intr, A_mask_from_source, width, height
+        )
         vert_valid_count = int(np.count_nonzero(vvld))
         for u, v, ok in zip(vu, vv, vvld):
             if ok:
@@ -338,6 +511,8 @@ def draw_hand_mask(hand: dict[str, Any], width: int, height: int, *, point_radiu
         "joint_valid_count": int(np.count_nonzero(joint_valid)),
         "vertex_valid_count": int(vert_valid_count),
         "hand_support_px": int(np.count_nonzero(mask)),
+        "active_camera_intrinsics_fx_fy_cx_cy": intr.astype(float).tolist(),
+        "image_plane_transform": plane,
     }
 
 
@@ -432,6 +607,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             continue
         object_mask = load_mask(Path(mask_path_raw))
         height, width = object_mask.shape
+        plane_contract = mask_plane_contract(frame, obj, object_mask.shape)
         object_contact_band = dilate(object_mask, int(args.contact_image_band_px))
         for hand in as_list(frame.get("hands")):
             if not isinstance(hand, dict):
@@ -439,7 +615,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             side = str(hand.get("hand_side") or hand.get("side") or "")
             if side not in side_set:
                 continue
-            hand_mask, hand_diag = draw_hand_mask(hand, width, height, point_radius=int(args.hand_radius_px), line_radius=int(args.hand_line_radius_px))
+            hand_mask, hand_diag = draw_hand_mask(
+                frame,
+                hand,
+                plane_contract,
+                width,
+                height,
+                point_radius=int(args.hand_radius_px),
+                line_radius=int(args.hand_line_radius_px),
+                require_camera_mano_aligned=bool(
+                    getattr(args, "require_camera_mano_contract_aligned", False)
+                ),
+            )
             judgment = judgment_index.get((frame_idx, side))
             quarantine_mode = ownership_quarantine_mode(judgment)
             hand_for_ownership = dilate(hand_mask, int(args.ownership_dilation_px))
@@ -496,6 +683,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "agent_contact_state": judgment.get("contact_state") if isinstance(judgment, dict) else None,
                 "agent_occlusion_relation": judgment.get("occlusion_relation") if isinstance(judgment, dict) else None,
                 "agent_depth_reliability": judgment.get("depth_reliability") if isinstance(judgment, dict) else None,
+                "image_plane_transform": plane_contract,
                 "non_object_owned_mask_path": str(non_object_path),
                 "visible_object_owned_mask_path": str(visible_object_path),
                 "constraint_eligible_entity_mask_path": str(constraint_path),
@@ -546,6 +734,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "rendered_uncertainty_channel": "agent-judged contact/occlusion prior consumed as a soft graph switch; final render must still show posterior/uncertainty rather than treating the judgment as metric truth",
                     "state": str(contact_state),
                     "weight": float(active_weight),
+                    "image_plane_transform": plane_contract,
                     "contact_patch_base_weight": float(args.contact_weight),
                     "contact_patch_band_m": float(args.contact_patch_band_m),
                     "contact_patch_target_margin_m": float(args.contact_patch_target_margin_m),
@@ -609,6 +798,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "contact_patch_target_margin_m": float(args.contact_patch_target_margin_m),
             "contact_support_uncertainty_m": float(args.contact_support_uncertainty_m),
             "agent_judgment_can_create_contact": bool(args.agent_judgment_can_create_contact),
+            "require_camera_mano_contract_aligned": bool(
+                getattr(args, "require_camera_mano_contract_aligned", False)
+            ),
+            "projection_image_plane_policy": "project active K in source_rgb then apply exact P09 A_mask_from_source",
         },
         "agent_interaction_judgment_summary": judgment_summary,
         "summary": {

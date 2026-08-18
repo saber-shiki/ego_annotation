@@ -574,6 +574,7 @@ def projected_mano_hand_silhouette(
     source_width: int,
     source_height: int,
     pad_px: int,
+    A_mask_from_source: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     state = hand.get("metric_mano_state")
     if not isinstance(state, dict):
@@ -614,10 +615,30 @@ def projected_mano_hand_silhouette(
     uv[used_vertices, 0] = fx * vertices[used_vertices, 0] / z[used_vertices] + cx
     uv[used_vertices, 1] = fy * vertices[used_vertices, 1] / z[used_vertices] + cy
     mask_h, mask_w = mask_shape
-    sx = float(mask_w) / float(max(1, source_width))
-    sy = float(mask_h) / float(max(1, source_height))
-    uv[:, 0] *= sx
-    uv[:, 1] *= sy
+    if A_mask_from_source is None:
+        A_mask_from_source = camera_contract_resize_affine(
+            (int(source_width), int(source_height)),
+            (int(mask_w), int(mask_h)),
+            pixel_center_convention="integer_pixel_centers_opencv",
+        )
+    A_mask_from_source = np.asarray(A_mask_from_source, dtype=np.float64)
+    if (
+        A_mask_from_source.shape != (3, 3)
+        or not np.isfinite(A_mask_from_source).all()
+        or not np.allclose(
+            A_mask_from_source[2], [0.0, 0.0, 1.0], atol=1.0e-12, rtol=0.0
+        )
+        or abs(float(np.linalg.det(A_mask_from_source))) < 1.0e-12
+    ):
+        raise RuntimeError(
+            f"invalid source-to-mask projection affine: {A_mask_from_source}"
+        )
+    projected_source = uv[used_vertices]
+    homogeneous = np.column_stack(
+        [projected_source, np.ones((len(projected_source),), dtype=np.float64)]
+    )
+    projected_mask = homogeneous @ A_mask_from_source.T
+    uv[used_vertices] = projected_mask[:, :2] / projected_mask[:, 2:3]
     if not np.isfinite(uv[used_vertices]).all():
         raise RuntimeError(f"{side} MANO projection has non-finite pixels")
     polygons = np.rint(uv[faces]).astype(np.int32)
@@ -641,6 +662,8 @@ def projected_mano_hand_silhouette(
         "vertices": int(len(vertices)),
         "faces": int(len(faces)),
         "source_camera_intrinsics_fx_fy_cx_cy": intrinsics.tolist(),
+        "A_mask_from_source_coordinate_model": A_mask_from_source.tolist(),
+        "projection_policy": "project full MANO with source K then apply exact OpenCV source-to-mask affine",
         "projected_silhouette_bbox_mask_xyxy": projected_bbox,
         "projected_silhouette_pixels_with_padding": int(np.count_nonzero(silhouette)),
         "padding_px_in_mask_coordinates": pad,
@@ -656,6 +679,7 @@ def subtract_hand_owned_bbox_regions(
     source_height: int,
     pad_px: int,
     enabled: bool,
+    A_mask_from_source: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Subtract projected HaWoR/MANO hand silhouettes, never coarse bboxes.
 
@@ -688,6 +712,7 @@ def subtract_hand_owned_bbox_regions(
                 source_width=source_width,
                 source_height=source_height,
                 pad_px=pad_px,
+                A_mask_from_source=A_mask_from_source,
             )
             before = int(out.sum())
             out[silhouette] = False
@@ -1490,6 +1515,48 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         base_frame = copy.deepcopy(base_frames.get(idx, {"frame_idx": idx}))
         source_width = int(raw_row.get("source_width") or raw_payload.get("video", {}).get("width") or raw_row.get("manifest_width") or mask.shape[1])
         source_height = int(raw_row.get("source_height") or raw_payload.get("video", {}).get("height") or raw_row.get("manifest_height") or mask.shape[0])
+        A_mask_from_source_for_ownership = camera_contract_resize_affine(
+            (int(source_width), int(source_height)),
+            (int(mask.shape[1]), int(mask.shape[0])),
+            pixel_center_convention=args.pixel_center_convention,
+        )
+        if camera_contract_v2 is not None:
+            _, ownership_source_plane = camera_contract_plane_intrinsics(
+                camera_contract_v2["payload"],
+                camera_contract_v2["normalized"],
+                plane_name="source_rgb",
+                actual_size_wh=(int(source_width), int(source_height)),
+                allow_implicit_resize=False,
+            )
+            _, ownership_mask_plane = camera_contract_plane_intrinsics(
+                camera_contract_v2["payload"],
+                camera_contract_v2["normalized"],
+                plane_name=args.mask_image_plane,
+                actual_size_wh=(int(mask.shape[1]), int(mask.shape[0])),
+                allow_implicit_resize=bool(args.allow_implicit_mask_resize),
+            )
+            A_source_from_calibration = np.asarray(
+                ownership_source_plane["A_actual_plane_from_calibration"],
+                dtype=np.float64,
+            )
+            A_mask_from_calibration = np.asarray(
+                ownership_mask_plane["A_actual_plane_from_calibration"],
+                dtype=np.float64,
+            )
+            expected_A_mask_from_source = (
+                A_mask_from_calibration @ np.linalg.inv(A_source_from_calibration)
+            )
+            if not np.allclose(
+                A_mask_from_source_for_ownership,
+                expected_A_mask_from_source,
+                atol=1.0e-9,
+                rtol=0.0,
+            ):
+                raise RuntimeError(
+                    "P09 MANO ownership projection affine disagrees with the camera contract: "
+                    f"resize={A_mask_from_source_for_ownership.tolist()} "
+                    f"contract={expected_A_mask_from_source.tolist()}"
+                )
         mask_owned, ownership_summary = subtract_hand_owned_bbox_regions(
             mask,
             base_frame,
@@ -1497,6 +1564,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             source_height=source_height,
             pad_px=int(args.hand_bbox_exclusion_pad_px),
             enabled=bool(args.exclude_hand_bboxes),
+            A_mask_from_source=A_mask_from_source_for_ownership,
         )
         owned_mask_path = args.output_dir / "object_owned_masks" / f"{idx:06d}_{safe_name(object_id)}_object_owned_mask.png"
         owned_mask_path.parent.mkdir(parents=True, exist_ok=True)
