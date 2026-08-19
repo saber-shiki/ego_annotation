@@ -399,7 +399,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "d17_temporal_block_value_sha256": expected_temporal_hash,
             "both_branches_identical": True,
             "rendered_as_uncertain_surface_only": not all(
-                bool(row.get("signed_geometry_ready")) for row in results.values()
+                bool(row.get("signed_full_mano_accepted")) for row in results.values()
             ),
             "signed_geometry_ready": all(
                 bool(row.get("signed_geometry_ready")) for row in results.values()
