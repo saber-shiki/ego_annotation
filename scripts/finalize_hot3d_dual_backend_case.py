@@ -234,14 +234,16 @@ def publish_backend(
         "source_model": (manifest.get("branch") or {}).get("source_model"),
         "integration": (manifest.get("branch") or {}).get("integration"),
         "claim_scope": (
-            "Full-timeline visual annotation branch. Generated geometry is render-only; the shared observed metric "
-            "surface supplies the common pose reference and unsigned physical surface."
+            "Full-timeline visual annotation branch. Backend-generated geometry is render-only; the shared observed metric "
+            "surface supplies the common pose reference, while an independently reconstructed backend-neutral proxy may supply signed physics."
         ),
         "videos": published_videos,
         "geometry": published_geometry,
         "state": {**file_record(state_destination), "publish_mode": state_mode, "source": str(render_state)},
         "render_manifest": {**file_record(manifest_destination), "publish_mode": manifest_mode, "source": str(render_manifest_path)},
         "shared_p18b_temporal_surface": temporal,
+        "shared_signed_geometry_ready": bool(temporal.get("signed_geometry_ready")),
+        "shared_signed_full_mano_accepted": bool(temporal.get("accepted_signed_full_mano")),
     }
     report_path = backend_root / "backend_result.json"
     report_path.write_text(json.dumps(backend_report, indent=2) + "\n", encoding="utf-8")
@@ -327,6 +329,44 @@ def publish_shared_tail(
         "p17_interaction_judgment": (judgment, source_root / "p17_interaction_judgment.json"),
         "shared_tail_report": (shared_tail_path, reports_root / "shared_p17_p18_tail_report.json"),
     }
+    signed_completion_value = inputs.get("signed_completion_report")
+    if signed_completion_value:
+        signed_completion = require_file(
+            Path(str(signed_completion_value)), "shared signed completion report"
+        )
+        expected_signed_hash = inputs.get("signed_completion_report_sha256")
+        if not expected_signed_hash or sha256_file(signed_completion) != expected_signed_hash:
+            raise RuntimeError("shared signed completion report hash mismatch")
+        signed_payload = load_json(signed_completion)
+        signed_outputs = signed_payload.get("outputs") if isinstance(signed_payload.get("outputs"), dict) else {}
+        signed_candidate_value = signed_outputs.get("signed_geometry_candidate_mesh")
+        signed_collision_value = signed_outputs.get("collision_eligible_mesh_labeled")
+        destinations["shared_signed_completion_report"] = (
+            signed_completion,
+            reports_root / "shared_signed_geometry_completion_report.json",
+        )
+        if signed_collision_value:
+            destinations["shared_collision_eligible_surface"] = (
+                require_file(Path(str(signed_collision_value)), "shared signed/unsigned collision surface"),
+                shared_root / "geometry/shared_collision_eligible_surface.ply",
+            )
+        if signed_candidate_value:
+            destinations["shared_signed_geometry_candidate"] = (
+                require_file(Path(str(signed_candidate_value)), "shared signed geometry candidate"),
+                shared_root / "geometry/shared_signed_geometry_candidate.ply",
+            )
+    full_archive_value = p18_payload.get("full_mano_vertices_world_archive")
+    if full_archive_value:
+        full_archive = require_file(
+            Path(str(full_archive_value)), "shared P18 full MANO archive"
+        )
+        expected_archive_hash = p18_payload.get("full_mano_vertices_world_archive_sha256")
+        if not expected_archive_hash or sha256_file(full_archive) != expected_archive_hash:
+            raise RuntimeError("shared P18 full MANO archive hash mismatch")
+        destinations["p18_full_mano_vertices_world_archive"] = (
+            full_archive,
+            state_root / "p18_full_mano_vertices_world.npz",
+        )
     published: dict[str, Any] = {}
     for name, (source, destination) in destinations.items():
         mode = link_or_copy(source, destination)
@@ -335,17 +375,24 @@ def publish_shared_tail(
             "publish_mode": mode,
             "source": str(source),
         }
+    signed_geometry_ready = shared_tail.get("signed_geometry_ready") is True
+    full_acceptance = p18b_payload.get("full_mano_acceptance") if isinstance(p18b_payload.get("full_mano_acceptance"), dict) else {}
+    signed_full_mano_accepted = full_acceptance.get("accepted") is True
+    if signed_full_mano_accepted and not signed_geometry_ready:
+        raise RuntimeError("shared P18b accepted signed full MANO without signed geometry readiness")
     manifest = {
         "status": "ok",
         "claim_scope": (
             "Published shared pre-branch P17/P18/P18b provenance. P18 uses the D15 "
-            "observed-only pose authority with zero private object translation; P18b "
-            "surface samples remain uncertain and are not signed contact/collision."
+            "observed-only pose authority with zero private object translation. A backend-neutral shared signed proxy may activate "
+            "signed nonpenetration; full P18 MANO is published only when its independent acceptance checks pass."
         ),
         "p18b_payload_value_sha256": p18b_value_hash,
         "p18_max_private_object_translation_delta_m": max_object_delta,
         "generated_geometry_consumed_by_shared_tail": False,
-        "signed_geometry_ready": False,
+        "signed_geometry_ready": signed_geometry_ready,
+        "signed_full_mano_accepted": signed_full_mano_accepted,
+        "signed_full_mano_acceptance": full_acceptance,
         "artifacts": published,
     }
     manifest_path = shared_root / "shared_state_manifest.json"
@@ -436,6 +483,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "shared_camera_and_metric_mano_state": True,
             "shared_prebranch_p17_p18_p18b_state": True,
             "shared_p18_object_translation_optimized": False,
+            "shared_signed_geometry_ready": bool(shared_result.get("signed_geometry_ready")),
+            "shared_signed_full_mano_accepted": bool(shared_result.get("signed_full_mano_accepted")),
             "backend_variable": "single-image generated render geometry prior and its integration",
             "generated_faces_collision_eligible": False,
             "released_reference_labels_consumed_by_prediction": False,

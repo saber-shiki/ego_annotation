@@ -2,11 +2,12 @@
 """Run the shared HOT3D P17 -> P18 -> P18b tail exactly once.
 
 This orchestrator is deliberately upstream of the SAM3D/TRELLIS render split. It
-accepts one observed-only D14 surface and one D15 object trajectory, builds one
-P17 factor report from an agent-authored interaction judgment, runs one unsigned
-P18 MANO interval candidate with object translation disabled, and builds one P18b
-metric-MANO-preserved surface hypothesis. Generated backend geometry is not an
-input to this script.
+accepts one D14 pose body and one D15 object trajectory, builds one P17 factor
+report from an agent-authored interaction judgment, and runs one shared P18/P18b
+MANO state with object translation disabled. An optional backend-neutral signed
+completion report may replace only the physical surface consumed by P18; the
+D14 observed mesh remains the pose canonical body. Generated backend geometry is
+never an input to this script.
 """
 from __future__ import annotations
 
@@ -252,7 +253,7 @@ def validate_pose_graph(
 
 def validate_observed_surface(
     completion: dict[str, Any], pose: dict[str, Any]
-) -> tuple[Path, dict[str, Any]]:
+) -> tuple[Path, Path, dict[str, Any]]:
     outputs = completion.get("outputs") if isinstance(completion.get("outputs"), dict) else {}
     readiness = (
         completion.get("geometry_readiness")
@@ -286,7 +287,7 @@ def validate_observed_surface(
         # A watertight observed-only surface is not forbidden, but the current
         # completion contract still controls signed readiness. Keep it unsigned.
         physical_summary["watertight_but_signed_readiness_still_false"] = True
-    return physical, {
+    return pose_mesh, physical, {
         "status": "shared_observed_only_unsigned_physical_surface",
         **physical_summary,
         "pose_hypothesis_same_file": True,
@@ -295,6 +296,65 @@ def validate_observed_surface(
         "generated_faces_contact_eligible": False,
         "generated_faces_collision_eligible": False,
         "signed_geometry_ready": False,
+    }
+
+
+def validate_signed_completion(
+    signed_completion: dict[str, Any],
+    pose_mesh: Path,
+    observed_physical_surface: Path,
+    pose_report: Path,
+) -> tuple[Path, bool, dict[str, Any]]:
+    outputs = signed_completion.get("outputs") if isinstance(signed_completion.get("outputs"), dict) else {}
+    readiness = signed_completion.get("geometry_readiness") if isinstance(signed_completion.get("geometry_readiness"), dict) else {}
+    signed_pose = require_file(Path(str(outputs.get("pose_hypothesis_mesh_labeled") or "")), "signed completion pose hypothesis")
+    signed_surface = require_file(Path(str(outputs.get("collision_eligible_mesh_labeled") or "")), "signed completion collision surface")
+    if not same_path(signed_pose, pose_mesh):
+        raise RuntimeError("signed completion pose hypothesis differs from D14 canonical pose body")
+    signed_ready = readiness.get("signed_geometry_ready") is True
+    for key in (
+        "generated_hidden_surface_included",
+        "generated_faces_collision_eligible",
+        "generated_faces_contact_eligible",
+        "generated_faces_signed_distance_eligible",
+    ):
+        if readiness.get(key) is True:
+            raise RuntimeError(f"signed completion illegally promotes generated geometry: {key}")
+    mesh = trimesh.load(signed_surface, process=False)
+    if isinstance(mesh, trimesh.Scene):
+        meshes = [item for item in mesh.geometry.values() if isinstance(item, trimesh.Trimesh)]
+        if not meshes:
+            raise RuntimeError("signed completion surface scene has no mesh")
+        mesh = trimesh.util.concatenate(meshes)
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise RuntimeError("signed completion surface is not a triangle mesh")
+    if signed_ready and not bool(mesh.is_watertight and mesh.is_winding_consistent and mesh.is_volume):
+        raise RuntimeError("signed-ready completion surface is not a watertight winding-consistent volume")
+    if not signed_ready:
+        signed_hash, _ = mesh_geometry_sha256(signed_surface)
+        observed_hash, _ = mesh_geometry_sha256(observed_physical_surface)
+        if signed_hash != observed_hash:
+            raise RuntimeError("unready signed completion fallback differs from D14 observed physical surface")
+    signed_pose_report = signed_completion.get("inputs", {}).get("pose_report") if isinstance(signed_completion.get("inputs"), dict) else None
+    if not signed_pose_report or not same_path(Path(str(signed_pose_report)), pose_report):
+        raise RuntimeError("signed completion was not built from the shared D15 pose report")
+    return signed_surface, signed_ready, {
+        "status": (
+            "shared_backend_neutral_signed_physical_surface"
+            if signed_ready
+            else "shared_signed_geometry_attempt_unsigned_observed_fallback"
+        ),
+        "signed_geometry_ready": signed_ready,
+        "signed_completion_report_status": signed_completion.get("status"),
+        "signed_completion_report_sha256": None,
+        "signed_surface_mesh": str(signed_surface),
+        "signed_surface_watertight": bool(mesh.is_watertight),
+        "signed_surface_winding_consistent": bool(mesh.is_winding_consistent),
+        "signed_surface_is_volume": bool(mesh.is_volume),
+        "candidate_failure": signed_completion.get("candidate_failure"),
+        "candidate_validation": signed_completion.get("candidate_validation"),
+        "generated_geometry_consumed": False,
+        "pose_report": str(pose_report),
     }
 
 
@@ -433,7 +493,7 @@ def validate_p17_factor(
 
 
 def validate_p18(
-    state: dict[str, Any], *, expected_rows: int, pose_report: Path, physical_surface: Path
+    state: dict[str, Any], *, expected_rows: int, pose_report: Path, physical_surface: Path, signed_expected: bool = False
 ) -> dict[str, Any]:
     if state.get("optimization_skipped") is True:
         raise RuntimeError("P18 unexpectedly skipped optimization")
@@ -463,34 +523,46 @@ def validate_p18(
     max_delta = max(object_delta_norms, default=math.inf)
     if max_delta > 1.0e-10:
         raise RuntimeError(f"P18 privately moved the object by up to {max_delta} m")
-    signed_active = any(
-        str(row.get("signed_object_surface_factor_state") or "").startswith("active")
-        for row in rows
+    signed_states = [
+        str(row.get("signed_object_surface_factor_state") or "") for row in rows
+    ]
+    signed_active = bool(signed_states) and all(
+        state.startswith("active_explicit_signed_geometry_ready") for state in signed_states
     )
-    if signed_active:
+    if signed_expected and not signed_active:
+        raise RuntimeError("P18 did not activate the explicitly ready signed physical surface")
+    if not signed_expected and any(state.startswith("active") for state in signed_states):
         raise RuntimeError("P18 activated signed geometry on the unsigned observed surface")
     return {
-        "status": "shared_unsigned_mano_candidate_object_pose_frozen",
+        "status": (
+            "shared_signed_mano_candidate_object_pose_frozen"
+            if signed_expected
+            else "shared_unsigned_mano_candidate_object_pose_frozen"
+        ),
+        "signed_geometry_ready": bool(signed_expected),
         "row_count": len(rows),
         "max_object_translation_delta_m": max_delta,
-        "signed_object_surface_factor_active": False,
+        "signed_object_surface_factor_active": signed_active,
         "pose_report_sha256": sha256_file(pose_report),
         "physical_surface_sha256": sha256_file(physical_surface),
     }
 
 
 def validate_p18b(
-    state: dict[str, Any], *, expected_rows: int, p18_state_path: Path
+    state: dict[str, Any], *, expected_rows: int, p18_state_path: Path, signed_expected: bool = False
 ) -> dict[str, Any]:
     rows = [row for row in state.get("per_frame_states") or [] if isinstance(row, dict)]
     if len(rows) != expected_rows:
         raise RuntimeError(f"P18b state rows {len(rows)} != expected {expected_rows}")
     sample_rows = 0
     sample_points = 0
+    signed_full_rows = 0
     for row in rows:
         policy = str(row.get("joint_state_policy") or "")
-        if "metric_mano_preserved" not in policy:
-            raise RuntimeError("P18b row does not preserve metric MANO")
+        if "metric_mano_preserved" not in policy and "p18_signed_full_778_mano_accepted" not in policy:
+            raise RuntimeError("P18b row does not carry an accepted metric MANO policy")
+        if "p18_signed_full_778_mano_accepted" in policy:
+            signed_full_rows += 1
         delta = np.asarray(
             row.get("optimized_object_translation_world_m") or [0.0, 0.0, 0.0],
             dtype=np.float64,
@@ -511,11 +583,33 @@ def validate_p18b(
     )
     if not same_path(contact_input, p18_state_path):
         raise RuntimeError("P18b did not consume this run's shared P18 state")
+    if signed_full_rows not in (0, expected_rows):
+        raise RuntimeError(
+            f"P18b partially accepted full MANO on {signed_full_rows}/{expected_rows} rows"
+        )
+    if not signed_expected and signed_full_rows:
+        raise RuntimeError("unsigned P18b unexpectedly accepted signed full MANO")
+    acceptance = state.get("full_mano_acceptance") if isinstance(state.get("full_mano_acceptance"), dict) else {}
+    signed_full_accepted = signed_full_rows == expected_rows
+    if bool(acceptance.get("accepted")) != signed_full_accepted:
+        raise RuntimeError("P18b full-MANO acceptance flag differs from accepted row policy")
     return {
-        "status": "metric_mano_preserved_with_shared_uncertain_surface_hypothesis",
+        "status": (
+            "signed_full_778_mano_accepted"
+            if signed_full_accepted
+            else "signed_geometry_ready_source_mano_preserved_due_to_acceptance_blockers"
+            if signed_expected
+            else "metric_mano_preserved_with_shared_uncertain_surface_hypothesis"
+        ),
         "row_count": len(rows),
         "rows_with_surface_samples": sample_rows,
         "surface_sample_point_count": sample_points,
+        "signed_full_mano_accepted_row_count": signed_full_rows,
+        "signed_geometry_ready": bool(signed_expected),
+        "signed_full_mano_accepted": signed_full_accepted,
+        "signed_full_mano_acceptance_blockers": acceptance.get("blockers") or [],
+        "accepted_full_mano_vertices_world_archive": state.get("accepted_full_mano_vertices_world_archive"),
+        "accepted_full_mano_vertices_world_archive_sha256": state.get("accepted_full_mano_vertices_world_archive_sha256"),
         "temporal_state_value_sha256": value_sha256(state),
     }
 
@@ -524,6 +618,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     annotations_path = require_file(args.annotations, "P09 annotations")
     pose_path = require_file(args.pose_report, "D15 pose graph")
     completion_path = require_file(args.completion_report, "D14 completion report")
+    signed_completion_path = require_file(args.signed_completion_report, "shared signed completion report") if args.signed_completion_report is not None else None
     depth_path = require_file(args.depth_npz, "camera-bound depth NPZ")
     hawor_path = require_file(args.hawor_npz, "HaWoR world MANO NPZ")
     judgment_path = require_file(args.interaction_judgment, "P17 interaction judgment")
@@ -569,8 +664,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "pose": validate_pose_graph(pose, frame_ids),
     }
-    physical_surface, surface_report = validate_observed_surface(completion, pose)
+    pose_mesh, observed_physical_surface, surface_report = validate_observed_surface(completion, pose)
+    physical_surface = observed_physical_surface
+    signed_geometry_ready = False
+    if signed_completion_path is not None:
+        signed_completion = load_json(signed_completion_path, "shared signed completion report")
+        physical_surface, signed_geometry_ready, signed_report = validate_signed_completion(
+            signed_completion,
+            pose_mesh,
+            observed_physical_surface,
+            pose_path,
+        )
+        signed_report["signed_completion_report_path"] = str(signed_completion_path)
+        signed_report["signed_completion_report_sha256"] = sha256_file(signed_completion_path)
+        surface_report = {**surface_report, **signed_report}
     preflight["physical_surface"] = surface_report
+    signed_surface_uncertainty_m = float(
+        ((signed_completion.get("geometry_readiness") or {}).get("signed_geometry_support_uncertainty_m") or 0.0)
+        if signed_completion_path is not None
+        else 0.0
+    )
+    if signed_surface_uncertainty_m < 0.0 or not np.isfinite(signed_surface_uncertainty_m):
+        raise RuntimeError("signed completion has invalid support uncertainty")
     preflight["interaction_judgment"] = validate_interaction_judgment(
         judgment,
         case=str(args.case),
@@ -667,11 +782,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "--pose-report",
                 str(pose_path),
                 "--completed-mesh",
-                str(physical_surface),
+                str(pose_mesh),
                 "--physical-surface-mesh",
                 str(physical_surface),
                 "--completion-report",
-                str(completion_path),
+                str(signed_completion_path or completion_path),
                 "--depth-npz",
                 str(depth_path),
                 "--wilor-root",
@@ -695,6 +810,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "--gate-translation-with-visible-surface-support",
                 "--translation-gate-min-visible-surface-depth-vertices",
                 "0",
+                "--observed-surface-support-uncertainty-m",
+                str(signed_surface_uncertainty_m),
                 "--no-optimize-object-translation",
                 "--require-active-full-K-mano-contract",
                 "--device",
@@ -710,6 +827,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         expected_rows=expected_rows,
         pose_report=pose_path,
         physical_surface=physical_surface,
+        signed_expected=signed_geometry_ready,
     )
 
     commands.append(
@@ -729,6 +847,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 str(args.object_id).split(":", 1)[-1],
                 "--output",
                 str(p18b_path),
+                *(["--accept-signed-full-mano"] if signed_geometry_ready else ["--no-accept-signed-full-mano"]),
             ],
             label="P18b_shared_metric_mano_surface_hypothesis",
             dry_run=False,
@@ -736,16 +855,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     p18b = load_json(p18b_path, "P18b shared state")
     p18b_validation = validate_p18b(
-        p18b, expected_rows=expected_rows, p18_state_path=p18_path
+        p18b,
+        expected_rows=expected_rows,
+        p18_state_path=p18_path,
+        signed_expected=signed_geometry_ready,
     )
 
     report = {
         "schema": SCHEMA,
         "status": "ok_shared_p17_p18_p18b_tail",
         "claim_scope": (
-            "One pre-branch P17/P18/P18b state using only the D14 observed physical surface, "
-            "the D15 object trajectory, active-K MANO/depth, and an agent visual interaction prior. "
-            "Generated SAM3D/TRELLIS faces were not consumed; signed contact/nonpenetration remain unavailable."
+            "One pre-branch P17/P18/P18b state using the D14 canonical pose body, the D15 object trajectory, "
+            "active-K MANO/depth, an agent visual interaction prior, and an optional backend-neutral signed physical surface. "
+            "Generated SAM3D/TRELLIS faces were not consumed."
         ),
         "case": str(args.case),
         "object_id": str(args.object_id).split(":", 1)[-1],
@@ -768,8 +890,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ],
         },
         "physical_surface": surface_report,
+        "signed_surface_support_uncertainty_m": signed_surface_uncertainty_m,
         "generated_geometry_consumed": False,
-        "signed_geometry_ready": False,
+        "signed_geometry_ready": signed_geometry_ready,
         "commands": commands,
         "inputs": {
             "annotations": str(annotations_path),
@@ -778,6 +901,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "pose_report_sha256": sha256_file(pose_path),
             "completion_report": str(completion_path),
             "completion_report_sha256": sha256_file(completion_path),
+            "signed_completion_report": str(signed_completion_path) if signed_completion_path is not None else None,
+            "signed_completion_report_sha256": sha256_file(signed_completion_path) if signed_completion_path is not None else None,
             "depth_npz": str(depth_path),
             "depth_npz_sha256": sha256_file(depth_path),
             "hawor_npz": str(hawor_path),
@@ -810,6 +935,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "p18b_surface_sample_points": p18b_validation[
                     "surface_sample_point_count"
                 ],
+                "signed_geometry_ready": signed_geometry_ready,
             },
             indent=2,
         ),
@@ -825,6 +951,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--pose-report", type=Path, required=True)
     parser.add_argument("--completion-report", type=Path, required=True)
+    parser.add_argument("--signed-completion-report", type=Path, default=None, help="Optional backend-neutral D15b signed completion report")
     parser.add_argument("--depth-npz", type=Path, required=True)
     parser.add_argument("--hawor-npz", type=Path, required=True)
     parser.add_argument("--interaction-judgment", type=Path, required=True)

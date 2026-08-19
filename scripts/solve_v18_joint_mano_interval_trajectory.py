@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import hashlib
 import inspect
 import json
 import math
@@ -1336,6 +1337,19 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
     valid_face_normals = face_normal_norms > 1.0e-12
     face_normals_object[valid_face_normals] /= face_normal_norms[valid_face_normals, None]
     face_normals_object[~valid_face_normals] = 0.0
+    signed_geometry_active_for_faces = bool(
+        getattr(args, "signed_object_surface_factor_active", False)
+    )
+    signed_geometry_consumer_policy = str(
+        (getattr(args, "completion_geometry_readiness", {}) or {}).get(
+            "signed_geometry_consumer_policy", ""
+        )
+    )
+    all_signed_proxy_faces_eligible = bool(
+        signed_geometry_active_for_faces
+        and signed_geometry_consumer_policy
+        == "all_faces_of_validated_shared_proxy_signed_eligible"
+    )
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.core.Tensor(vertices_object.astype(np.float32)), o3d.core.Tensor(faces.astype(np.uint32)))
     depth_paths = list(args.depth_npz or [DEFAULT_DEPTH])
@@ -1372,7 +1386,11 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         )
         object_depth_summaries.append(obj_summary)
         prov = face_provenance(vertex_classes, faces)
-        strict_raw = np.asarray(prov["observed_supported_strict"], dtype=bool)
+        strict_raw = (
+            np.ones((len(faces),), dtype=bool)
+            if all_signed_proxy_faces_eligible
+            else np.asarray(prov["observed_supported_strict"], dtype=bool)
+        )
         hand = None
         for h in as_list(frame.get("hands")):
             if isinstance(h, dict) and str(h.get("hand_side")) == side:
@@ -1475,6 +1493,12 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 strict = surface_mask.astype(bool)
             else:
                 strict = strict & surface_mask.astype(bool)
+        if all_signed_proxy_faces_eligible:
+            # The backend-neutral D15b report validated the complete proxy as a
+            # conservative closed volume. P17 ownership remains visual/contact
+            # evidence; it must not punch holes in the signed barrier exactly
+            # where a hand occludes the object.
+            strict = np.ones((len(faces),), dtype=bool)
         surface_eligible_face_count = int(np.count_nonzero(surface_mask)) if surface_mask is not None else 0
         surface_applied_face_delta = int(np.count_nonzero(strict)) - surface_input_face_count
         observed_surface_support_uncertainty_m = float(surface_diag.get("observed_surface_support_uncertainty_m", args.observed_surface_support_uncertainty_m) or 0.0)
@@ -1668,6 +1692,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         "physical_surface_semantics": getattr(args, "physical_surface_semantics", "legacy_unknown"),
         "geometry_readiness": getattr(args, "completion_geometry_readiness", {}),
         "signed_object_surface_factor_active": bool(getattr(args, "signed_object_surface_factor_active", False)),
+        "all_validated_signed_proxy_faces_eligible": all_signed_proxy_faces_eligible,
+        "signed_geometry_consumer_policy": signed_geometry_consumer_policy,
     }
     return rows, meta, scene
 
@@ -1881,9 +1907,20 @@ def contact_patch_anchor_coherence(rows: list[FrameHandRow]) -> dict[str, Any]:
     }
 
 
-def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace, device: torch.device, scene: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def optimize_rows(
+    rows: list[FrameHandRow],
+    model: Any,
+    args: argparse.Namespace,
+    device: torch.device,
+    scene: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, np.ndarray]]:
     if not rows:
-        return {"status": "no_rows"}, []
+        return {"status": "no_rows"}, [], {
+            "frame_idx": np.zeros((0,), dtype=np.int32),
+            "hand_side": np.asarray([], dtype="<U5"),
+            "vertices_world_m": np.zeros((0, 778, 3), dtype=np.float32),
+            "joints_world_m": np.zeros((0, 21, 3), dtype=np.float32),
+        }
     b = len(rows)
     root = torch.tensor(np.stack([r.root_orient_axis_angle for r in rows]).reshape(b, 1, 3), dtype=torch.float32, device=device)
     pose = torch.tensor(np.stack([r.hand_pose_axis_angle for r in rows]).reshape(b, 15, 3), dtype=torch.float32, device=device)
@@ -2278,11 +2315,18 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
     output_translation_gate_applied_count = 0
     output_translation_gate_shift_norm: list[float] = []
     output_translation_gate_support_count: list[float] = []
+    full_state_vertices_world: list[np.ndarray] = []
+    full_state_joints_world: list[np.ndarray] = []
     corrected_frames = 0
     for i, row in enumerate(rows):
         if len(active_constraint_indices[i]):
             moved = hyp_vertices[i, active_constraint_indices[i]] - reference_vertices_np[i, active_constraint_indices[i]] - object_trans_np[i][None, :]
-            residual = np.maximum(0.0, active_constraint_depths[i] - np.sum(active_constraint_normals[i] * moved, axis=1))
+            residual = np.maximum(
+                0.0,
+                active_constraint_depths[i]
+                - float(row.observed_surface_support_uncertainty_m)
+                - np.sum(active_constraint_normals[i] * moved, axis=1),
+            )
         else:
             residual = np.zeros((0,), dtype=float)
         init_measure = reference_observed_measures[i]
@@ -2318,10 +2362,6 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
             surface_initial_in_front = int(np.count_nonzero(surface_initial_delta < -float(args.visible_surface_depth_order_margin_m)))
             surface_final_in_front = int(np.count_nonzero(surface_final_delta < -float(args.visible_surface_depth_order_margin_m)))
             surface_final_summary = numeric_summary(surface_final_delta)
-            visible_surface_depth_order_selected_count.append(float(surface_ids.size))
-            visible_surface_depth_order_initial_in_front_count.append(float(surface_initial_in_front))
-            visible_surface_depth_order_final_in_front_count.append(float(surface_final_in_front))
-            visible_surface_depth_order_final_delta_min.append(float(np.min(surface_final_delta)))
             additional_camera_z_to_clear = float(max(0.0, -float(args.visible_surface_depth_order_margin_m) - float(np.min(surface_final_delta))))
         else:
             surface_initial_delta = np.zeros((0,), dtype=float)
@@ -2342,7 +2382,6 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
             cp_targets = row.contact_patch_target_world_m + object_trans_np[i][None, :]
             cp_gap = np.sum((hyp_vertices[i, row.contact_patch_vertex_indices.astype(int)] - cp_targets) * row.contact_patch_normal_world, axis=1)
             cp_gap_summary = numeric_summary(cp_gap)
-            contact_patch_final_abs_normal_gap.extend(np.abs(cp_gap).astype(float).tolist())
         else:
             cp_gap_summary = numeric_summary(np.zeros((0,), dtype=float))
         tnorm = float(np.linalg.norm(trans_np[i]))
@@ -2353,12 +2392,6 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         if changed:
             corrected_frames += 1
         initial_obs_max.append(init_max)
-        final_linear_residual_max.append(final_max)
-        final_full_observed_max.append(full_post_max)
-        final_raw_observed_max.append(full_raw_post_max)
-        if np.isfinite(shift_max):
-            visible_max.append(shift_max)
-        depth_max.append(float(np.max(dshift)))
         trans_max.append(tnorm)
         object_trans_max.append(otnorm)
         root_max.append(rnorm)
@@ -2401,11 +2434,118 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
                 "applied_world_shift_norm_m": float(np.linalg.norm(gate_shift)),
                 "articulation_policy": "preserve optimized wrist-relative MANO articulation; preserve source HaWoR wrist/root translation",
             }
+        # All acceptance-facing measurements must describe the exact gate-adjusted
+        # full MANO written below, not the pre-gate optimizer tensors.
+        if len(active_constraint_indices[i]):
+            state_moved = (
+                state_vertices_world[active_constraint_indices[i]]
+                - reference_vertices_np[i, active_constraint_indices[i]]
+                - object_trans_np[i][None, :]
+            )
+            residual = np.maximum(
+                0.0,
+                active_constraint_depths[i]
+                - float(row.observed_surface_support_uncertainty_m)
+                - np.sum(active_constraint_normals[i] * state_moved, axis=1),
+            )
+        else:
+            residual = np.zeros((0,), dtype=float)
+        final_max = float(np.max(residual)) if residual.size else 0.0
+        if signed_surface_active:
+            full_post = full_observed_surface_measure(
+                state_vertices_world,
+                row,
+                scene,
+                float(args.penetration_epsilon_m),
+                object_trans_np[i],
+            )
+            full_raw_post = full_observed_surface_measure(
+                state_vertices_world,
+                row,
+                scene,
+                float(args.penetration_epsilon_m),
+                object_trans_np[i],
+                face_strict_observed=row.face_strict_observed_raw,
+            )
+        else:
+            full_post = inactive_signed_surface_measure(
+                row.frame_idx, row.observed_surface_support_uncertainty_m
+            )
+            full_raw_post = inactive_signed_surface_measure(
+                row.frame_idx, row.observed_surface_support_uncertainty_m
+            )
+        full_post_max = float(
+            (full_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0
+        )
+        full_raw_post_max = float(
+            (full_raw_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0
+        )
+        uv1 = project_world(state_joints_world, row.frame, row.side)
+        if uv0 is not None and uv1 is not None:
+            shift = np.linalg.norm(uv1 - uv0, axis=1)
+            shift_max = float(np.max(shift))
+            shift_med = float(np.median(shift))
+        else:
+            shift = np.zeros((0,), dtype=float)
+            shift_max = float("nan")
+            shift_med = float("nan")
+        cam1 = world_to_camera(state_joints_world, row.frame)
+        dshift = np.abs(cam1[:, 2] - cam0[:, 2])
+        if surface_ids.size:
+            state_cam_v = world_to_camera(
+                state_vertices_world[surface_ids], row.frame
+            )[:, 2]
+            surface_final_delta = (
+                state_cam_v.astype(float)
+                - row.visible_surface_depth_order_depth_m.astype(float)
+            )
+            surface_final_in_front = int(
+                np.count_nonzero(
+                    surface_final_delta
+                    < -float(args.visible_surface_depth_order_margin_m)
+                )
+            )
+            surface_final_summary = numeric_summary(surface_final_delta)
+            additional_camera_z_to_clear = float(
+                max(
+                    0.0,
+                    -float(args.visible_surface_depth_order_margin_m)
+                    - float(np.min(surface_final_delta)),
+                )
+            )
+        if len(row.contact_patch_vertex_indices):
+            cp_targets = row.contact_patch_target_world_m + object_trans_np[i][None, :]
+            cp_gap = np.sum(
+                (
+                    state_vertices_world[row.contact_patch_vertex_indices.astype(int)]
+                    - cp_targets
+                )
+                * row.contact_patch_normal_world,
+                axis=1,
+            )
+            cp_gap_summary = numeric_summary(cp_gap)
+        final_linear_residual_max.append(final_max)
+        final_full_observed_max.append(full_post_max)
+        final_raw_observed_max.append(full_raw_post_max)
+        if np.isfinite(shift_max):
+            visible_max.append(shift_max)
+        depth_max.append(float(np.max(dshift)))
+        if surface_ids.size:
+            visible_surface_depth_order_selected_count.append(float(surface_ids.size))
+            visible_surface_depth_order_initial_in_front_count.append(float(surface_initial_in_front))
+            visible_surface_depth_order_final_in_front_count.append(float(surface_final_in_front))
+            visible_surface_depth_order_final_delta_min.append(float(np.min(surface_final_delta)))
+        if len(row.contact_patch_vertex_indices):
+            contact_patch_final_abs_normal_gap.extend(
+                np.abs(cp_gap).astype(float).tolist()
+            )
         state_camera_z_shift_m = float(np.dot(state_translation_world, camera_z_axis_world))
         state_lateral_translation = state_translation_world - state_camera_z_shift_m * camera_z_axis_world
         state_lateral_norm = float(np.linalg.norm(state_lateral_translation))
         state_max_camera_z_inside_translation_bound = math.sqrt(max(0.0, max_translation * max_translation - state_lateral_norm * state_lateral_norm))
         state_translation_bound_remaining_camera_z_m = float(state_max_camera_z_inside_translation_bound - state_camera_z_shift_m)
+        full_state_vertices_world.append(state_vertices_world.astype(np.float32))
+        full_state_joints_world.append(state_joints_world.astype(np.float32))
         states.append(
             {
                 "frame_idx": int(row.frame_idx),
@@ -2612,7 +2752,13 @@ def optimize_rows(rows: list[FrameHandRow], model: Any, args: argparse.Namespace
         "signed_object_surface_factor_active": signed_surface_active,
         "dense_observed_constraint_count_final": numeric_summary(np.asarray([len(x) for x in dense_constraint_indices], dtype=float)),
     }
-    return interval, states
+    full_archive_rows = {
+        "frame_idx": np.asarray([int(row.frame_idx) for row in rows], dtype=np.int32),
+        "hand_side": np.asarray([str(row.side) for row in rows], dtype="<U5"),
+        "vertices_world_m": np.stack(full_state_vertices_world).astype(np.float32),
+        "joints_world_m": np.stack(full_state_joints_world).astype(np.float32),
+    }
+    return interval, states, full_archive_rows
 
 
 def validate_interval_camera_mano_contract(args: argparse.Namespace) -> dict[str, Any]:
@@ -2868,6 +3014,7 @@ def main() -> None:
     models = load_models(args, device)
     intervals: list[dict[str, Any]] = []
     per_frame_states: list[dict[str, Any]] = []
+    full_archive_rows: list[dict[str, np.ndarray]] = []
     build_meta: dict[str, Any] = {}
     for side in args.sides:
         rows, meta, scene = build_rows(args, side)
@@ -2875,12 +3022,34 @@ def main() -> None:
         if not rows:
             intervals.append({"hand_side": side, "start_frame": int(args.start_frame), "end_frame": int(args.end_frame), "frame_count": 0, "solver": "joint_root_translation_root_orientation_and_articulation", "state": "no_rows"})
             continue
-        interval, states = optimize_rows(rows, models[side], args, device, scene)
+        interval, states, archive_rows = optimize_rows(rows, models[side], args, device, scene)
+        full_archive_rows.append(archive_rows)
         interval["interval_id"] = f"{side}_{rows[0].frame_idx:04d}_{rows[-1].frame_idx:04d}_joint_mano"
         for st in states:
             st["interval_id"] = interval["interval_id"]
         intervals.append(interval)
         per_frame_states.extend(states)
+    out_dir = args.output_dir / str(args.case)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    full_archive_path = out_dir / "v18_joint_mano_interval_full_vertices_world.npz"
+    if full_archive_rows:
+        frame_idx = np.concatenate([row["frame_idx"] for row in full_archive_rows], axis=0)
+        hand_side = np.concatenate([row["hand_side"] for row in full_archive_rows], axis=0)
+        vertices_world_m = np.concatenate([row["vertices_world_m"] for row in full_archive_rows], axis=0)
+        joints_world_m = np.concatenate([row["joints_world_m"] for row in full_archive_rows], axis=0)
+    else:
+        frame_idx = np.zeros((0,), dtype=np.int32)
+        hand_side = np.asarray([], dtype="<U5")
+        vertices_world_m = np.zeros((0, 778, 3), dtype=np.float32)
+        joints_world_m = np.zeros((0, 21, 3), dtype=np.float32)
+    np.savez_compressed(
+        full_archive_path,
+        frame_idx=frame_idx,
+        hand_side=hand_side,
+        vertices_world_m=vertices_world_m,
+        joints_world_m=joints_world_m,
+    )
+    full_archive_sha256 = hashlib.sha256(full_archive_path.read_bytes()).hexdigest()
     report = {
         "method": "solve_v18_joint_mano_interval_trajectory",
         "status": (
@@ -2944,12 +3113,13 @@ def main() -> None:
         ),
         "build_meta": build_meta,
         "summary": {"interval_count": int(len(intervals)), "per_frame_state_count": int(len(per_frame_states)), "frame_span": [int(args.start_frame), int(args.end_frame)], "sides": list(args.sides)},
+        "full_mano_vertices_world_archive": str(full_archive_path),
+        "full_mano_vertices_world_archive_sha256": full_archive_sha256,
+        "full_mano_vertices_world_archive_rows": int(len(frame_idx)),
         "intervals": intervals,
         "per_frame_states": per_frame_states,
         "scientific_test": "If this sequence still looks incoherent after rendering, the remaining failure is not that the optimizer was missing root/articulation coupling; it is a conflict among hand observation, observed tomato geometry, camera/depth alignment, and interval observability.",
     }
-    out_dir = args.output_dir / str(args.case)
-    out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "v18_joint_mano_interval_trajectory_state.json"
     write_json(out, report)
     print(json.dumps({"output": str(out), "summary": report["summary"], "intervals": intervals}, indent=2)[:6000])

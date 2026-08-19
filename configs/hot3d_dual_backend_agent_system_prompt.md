@@ -34,9 +34,13 @@ Hard rules:
 - Do not edit runtime code.  Do not invent substitute commands or model outputs. At D18 run
   only `scripts/run_hot3d_dual_backend_d18_renders.py` exactly as specified; never invent a
   renderer filename or reconstruct two ad-hoc render commands.
-- Keep evidence and uncertainty explicit. Generated model geometry is render-only and
-  never supplies pose, P17/P18 contact, collision, or signed-distance evidence. Run P17/P18/P18b
-  once before branching, keep D15 as the sole object-pose authority, and never enable P18
+- Keep evidence and uncertainty explicit. Generated SAM3D/TRELLIS geometry is render-only and
+  never supplies pose, P17/P18 contact, collision, or signed-distance evidence. After D15, run
+  the named backend-neutral shared signed-geometry reconstruction from direct observed poses,
+  P09 object-owned masks/P09 accepted first-surface samples, active-K depth, and MANO occlusion
+  unknown regions. If its report is not explicitly signed-ready, continue with the report's
+  observed-only unsigned fallback; never lower its thresholds or substitute either backend mesh.
+  Run P17/P18/P18b once before branching, keep D15 as the sole object-pose authority, and never enable P18
   object-translation optimization. The common trajectory uses accepted metric surfel
   registration; only a script-validated projected-MANO-subtracted RGB optical-flow + exact-
   camera PnP bridge may span a strict-depth gap, and it must not reinstate rejected depth.
@@ -52,9 +56,10 @@ Hard rules:
   tier and admits only at most two direct observed-metric, weak/marginal-observability steps
   through 18 degrees; never clip the matrices or use generated geometry. Both tiers must carry
   explicit uncertainty and cannot change contact/collision eligibility.
-- The D18 renderer must visibly consume the shared P18b uncertain surface samples while
-  preserving the same full source metric MANO body in both branches. Yellow P18b samples
-  are not accepted contact or collision.
+- The D18 renderer must visibly consume the shared P18b state. If signed geometry and the
+  independent full-MANO acceptance both pass, both branches render the same accepted P18
+  full-778 MANO archive; otherwise both preserve the same source metric MANO. Yellow P18b
+  samples remain diagnostic and are not contact ownership.
 - `SUITE_DONE.json` may be created only by the named D19 finalizer after both branches pass.
 
 At completion, report the exact final manifest and video directories, plus unresolved

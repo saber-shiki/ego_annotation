@@ -188,6 +188,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     pose_trajectory_quarantined = bool(pose_annotation_ready is False or graph_support_sufficient is False)
 
     expected_mesh = completion_report_completed_mesh(completion_report_path, rewrites)
+    completion_outputs = completion_data.get("outputs") if isinstance(completion_data.get("outputs"), dict) else {}
+    completion_readiness = completion_data.get("geometry_readiness") if isinstance(completion_data.get("geometry_readiness"), dict) else {}
+    physical_surface = rewrite_path(
+        completion_outputs.get("collision_eligible_mesh_labeled") or expected_mesh,
+        rewrites,
+    )
+    if physical_surface is None:
+        raise RuntimeError("completion physical surface could not be resolved")
+    if not physical_surface.is_file() or physical_surface.stat().st_size <= 0:
+        raise RuntimeError(f"completion physical surface is missing or empty: {physical_surface}")
     completed_mesh = rewrite_path(args.completed_mesh, rewrites) if args.completed_mesh is not None else expected_mesh
     if completed_mesh is None:
         raise RuntimeError("completed mesh could not be resolved")
@@ -255,9 +265,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "state": "completed_canonical_rigid_mesh",
             "completed_mesh_path": str(completed_mesh),
             "completion_report_path": str(completion_report_path),
-            "completion_outputs": completion_data.get("outputs") if isinstance(completion_data.get("outputs"), dict) else {},
+            "completion_outputs": completion_outputs,
             "mesh_frame": "completed_canonical",
             "raw_trellis_mesh_is_renderable": False,
+            "observation_surface_path": str(completed_mesh),
+            "physical_surface": {
+                "mesh": str(physical_surface),
+                "source": completion_readiness.get("signed_geometry_source") or completion_readiness.get("collision_surface_source") or "completion_report_collision_surface",
+                "signed_geometry_ready": completion_readiness.get("signed_geometry_ready") is True,
+                "signed_geometry_consumer_policy": completion_readiness.get("signed_geometry_consumer_policy"),
+                "generated_faces_collision_eligible": completion_readiness.get("generated_faces_collision_eligible") is True,
+                "generated_faces_contact_eligible": completion_readiness.get("generated_faces_contact_eligible") is True,
+                "generated_faces_signed_distance_eligible": completion_readiness.get("generated_faces_signed_distance_eligible") is True,
+                "geometry_readiness": completion_readiness,
+            },
         },
         "object_pose_trajectory": {
             "state": "full_timeline_unresolved_sparse_support_hypothesis" if pose_trajectory_quarantined else ("full_timeline_rigid_pose_trajectory" if not missing_pose_frames else "rigid_pose_trajectory_with_explicit_missing_frames"),

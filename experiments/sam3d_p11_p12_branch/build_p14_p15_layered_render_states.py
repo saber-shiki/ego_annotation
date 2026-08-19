@@ -4,8 +4,9 @@
 The adapter keeps the observed-only object trajectory, annotation/camera backbone,
 MANO constraint payload, and temporal MANO payload byte-for-byte equivalent at the
 JSON-value level across branches.  Only the render geometry and branch provenance
-differ.  Generated faces remain render-only; every branch points at one shared
-observed-only collision surface and signed geometry stays disabled.
+differ.  Generated faces remain render-only. Every branch points at one shared observed
+render surface and, when independently reconstructed, one backend-neutral shared
+signed physical surface.
 """
 from __future__ import annotations
 
@@ -151,9 +152,13 @@ def validate_shared_temporal_mano(
     p18b_private_object_delta_max = 0.0
     sample_rows = 0
     sample_points = 0
+    signed_full_rows = 0
     for row in rows:
-        if "metric_mano_preserved" not in str(row.get("joint_state_policy") or ""):
-            raise RuntimeError("shared P18b row does not preserve the metric MANO state")
+        policy = str(row.get("joint_state_policy") or "")
+        if "metric_mano_preserved" not in policy and "p18_signed_full_778_mano_accepted" not in policy:
+            raise RuntimeError("shared P18b row lacks a recognized metric MANO policy")
+        if "p18_signed_full_778_mano_accepted" in policy:
+            signed_full_rows += 1
         delta = np.asarray(
             row.get("optimized_object_translation_world_m") or [0.0, 0.0, 0.0],
             dtype=np.float64,
@@ -192,12 +197,21 @@ def validate_shared_temporal_mano(
         raise RuntimeError("shared P18 did not consume the source state's D15 pose authority")
     p18_surface = require_file(
         Path(str(p18_inputs.get("physical_surface_mesh") or "")),
-        "P18 observed physical surface",
+        "P18 shared physical surface",
+    )
+    source_physical = require_file(
+        Path(
+            str(
+                (((source.get("object_geometry") or {}).get("physical_surface") or {}).get("mesh"))
+                or common_collision
+            )
+        ),
+        "source-state shared physical surface",
     )
     if geometry_digest(p18_surface)["geometry_sha256_f64_i64"] != geometry_digest(
-        common_collision
+        source_physical
     )["geometry_sha256_f64_i64"]:
-        raise RuntimeError("shared P18 physical surface differs from the observed-only surface")
+        raise RuntimeError("shared P18 physical surface differs from the source-state physical surface")
     if p18_parameters.get("optimize_object_translation") is not False:
         raise RuntimeError("shared P18 did not explicitly disable object translation")
     raw_rows = [
@@ -221,8 +235,17 @@ def validate_shared_temporal_mano(
         raise RuntimeError(
             f"raw shared P18 privately moved the object by {p18_private_object_delta_max} m"
         )
+    signed_geometry_ready = bool(
+        ((p18.get("physical_surface_contract") or {}).get("signed_geometry_declared_ready") is True)
+    )
+    if signed_full_rows not in (0, len(rows)):
+        raise RuntimeError(
+            f"shared P18b partially accepted full MANO on {signed_full_rows}/{len(rows)} rows"
+        )
+    if not signed_geometry_ready and signed_full_rows:
+        raise RuntimeError("unsigned shared P18b contains signed-accepted full MANO rows")
     return {
-        "status": "shared_prebranch_P18b_bound_to_D15_and_observed_surface",
+        "status": "shared_prebranch_P18b_bound_to_D15_and_physical_surface",
         "temporal_state": str(temporal_path),
         "temporal_state_sha256": sha256_file(temporal_path),
         "temporal_state_value_sha256": value_sha256(payload),
@@ -231,14 +254,17 @@ def validate_shared_temporal_mano(
         "row_count": len(rows),
         "surface_sample_row_count": sample_rows,
         "surface_sample_point_count": sample_points,
-        "metric_mano_preserved": True,
+        "metric_mano_preserved": not signed_geometry_ready,
+        "signed_geometry_ready": signed_geometry_ready,
+        "signed_full_mano_accepted": signed_full_rows == len(rows),
+        "signed_full_mano_accepted_row_count": signed_full_rows,
         "P18_object_translation_optimized": False,
         "P18_max_private_object_translation_delta_m": p18_private_object_delta_max,
         "P18b_max_private_object_translation_delta_m": p18b_private_object_delta_max,
         "pose_authority": str(pose_report_path),
         "pose_authority_sha256": sha256_file(pose_report_path),
-        "physical_surface": str(common_collision),
-        "physical_surface_sha256": sha256_file(common_collision),
+        "physical_surface": str(source_physical),
+        "physical_surface_sha256": sha256_file(source_physical),
         "generated_geometry_consumed": False,
     }
 
@@ -401,12 +427,30 @@ def write_state(
     source_state_path: Path,
 ) -> dict[str, Any]:
     state = copy.deepcopy(source)
-    state["status"] = "ok_experimental_layered_render_prior_physics_quarantined"
+    temporal_payload = (
+        ((source.get("temporal_mano_state") or {}).get("payload") or {})
+        if isinstance(source.get("temporal_mano_state"), dict)
+        else {}
+    )
+    signed_acceptance = temporal_payload.get("full_mano_acceptance") if isinstance(temporal_payload, dict) else {}
+    p18_path = Path(str((temporal_payload.get("inputs") or {}).get("contact_state") or "")) if isinstance(temporal_payload, dict) else Path("")
+    p18_payload = load_json(require_file(p18_path, "shared raw P18 state for signed readiness")) if p18_path.is_file() else {}
+    signed_geometry_ready = bool(
+        ((p18_payload.get("physical_surface_contract") or {}).get("signed_geometry_declared_ready") is True)
+    )
+    signed_full_mano_accepted = bool(
+        isinstance(signed_acceptance, dict) and signed_acceptance.get("accepted") is True
+    )
+    state["status"] = (
+        "ok_experimental_layered_render_prior_shared_signed_mano"
+        if signed_full_mano_accepted
+        else "ok_experimental_layered_render_prior_physics_quarantined"
+    )
     state["method"] = "build_experimental_p14_p15_layered_render_state_adapter"
     state["claim_scope"] = (
         "Full-timeline render-only geometry A/B using one frozen observed-only SE(3) trajectory, "
-        "camera/annotation backbone, and source metric MANO state. Generated faces are never "
-        "collision/sign/contact surfaces."
+        "camera/annotation backbone, and one shared source or signed-accepted metric MANO state. "
+        "Backend-generated faces are never collision/sign/contact surfaces."
     )
     state["object_label"] = label
     state["created_unix_s"] = time.time()
@@ -416,6 +460,24 @@ def write_state(
     inputs["experimental_geometry_report"] = str(geometry_report_path)
     inputs["shared_observed_collision_surface"] = str(common_collision)
     state["inputs"] = inputs
+    source_physical_payload = copy.deepcopy(
+        ((source.get("object_geometry") or {}).get("physical_surface") or {})
+    )
+    if not source_physical_payload.get("mesh"):
+        source_physical_payload = {
+            "mesh": str(common_collision),
+            "source": "prediction_side_observed_metric_surface_only",
+            "generated_faces_collision_eligible": False,
+            "generated_faces_contact_eligible": False,
+            "generated_faces_signed_distance_eligible": False,
+            "signed_geometry_ready": False,
+        }
+    if bool(source_physical_payload.get("signed_geometry_ready")) != signed_geometry_ready:
+        raise RuntimeError(
+            "source physical signed readiness differs from raw P18 signed surface contract"
+        )
+    if source_physical_payload.get("generated_faces_collision_eligible") is True:
+        raise RuntimeError("source physical surface promotes backend-generated collision faces")
     state["object_geometry"] = {
         "state": "experimental_source_neutral_layered_render_prior",
         "completed_mesh_path": str(fallback_mesh),
@@ -425,13 +487,7 @@ def write_state(
         "integration": integration,
         "render_layers_back_to_front": layers,
         "observation_surface_path": str(common_collision),
-        "physical_surface": {
-            "mesh": str(common_collision),
-            "source": "prediction_side_observed_metric_surface_only",
-            "generated_faces_collision_eligible": False,
-            "generated_faces_contact_eligible": False,
-            "signed_geometry_ready": False,
-        },
+        "physical_surface": source_physical_payload,
     }
     state["experimental_p14_p15_adapter"] = {
         "schema": STATE_SCHEMA,
@@ -443,12 +499,12 @@ def write_state(
         "trajectory_policy": "frozen_observed_only_v19_pose_rows",
         "camera_policy": "frozen_annotation_backbone_camera_state",
         "mano_policy": (
-            "source_full_778_vertex_metric_mano_from_annotation_references_plus_"
-            "shared_p18b_uncertain_surface_samples"
+            "shared signed P18 full-778 archive when globally accepted; otherwise source full-778 metric MANO; "
+            "P18 surface samples remain visible diagnostics"
         ),
         "temporal_mano_policy": (
-            "one_prebranch_P18b_state_rendered_as_uncertain_surface_samples_only; "
-            "metric full-MANO body remains the shared annotation source"
+            "one prebranch P18b state; signed-accepted runs render its full-778 P18 archive, "
+            "otherwise the metric full-MANO body remains the shared annotation source"
         ),
         "inherited_constraint_payload_policy": (
             "D16 constraint payload preserved identically for provenance but not rendered as signed physics; "
@@ -458,7 +514,8 @@ def write_state(
         "render_collision_claim_enabled": False,
         "generated_faces_collision_eligible": False,
         "generated_faces_contact_eligible": False,
-        "signed_geometry_ready": False,
+        "signed_geometry_ready": signed_geometry_ready,
+        "signed_full_mano_accepted": signed_full_mano_accepted,
     }
     output_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return state
@@ -489,8 +546,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     collision_digest = geometry_digest(common_collision)
     if observed_digest["geometry_sha256_f64_i64"] != collision_digest["geometry_sha256_f64_i64"]:
         raise RuntimeError("dual observation and collision meshes are not geometrically identical")
-    if physical.get("generated_faces_collision_eligible") is not False or physical.get("signed_geometry_ready") is not False:
-        raise RuntimeError("dual mesh physical quarantine is not explicit")
+    if physical.get("generated_faces_collision_eligible") is not False:
+        raise RuntimeError("dual mesh generated-face physical quarantine is not explicit")
 
     source_validation = validate_source_state(source, source_state_path, common_collision)
     sam_candidate = candidate_by_name(controlled, args.sam_candidate)
@@ -619,13 +676,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "source_validation": source_validation,
         "shared_state_value_sha256": shared_hashes,
         "shared_physical_surface": {
-            "path": str(common_collision),
-            "file_sha256": sha256_file(common_collision),
-            "geometry": collision_digest,
-            "source": "prediction_side_observed_metric_surface_only",
+            "path": str(
+                (((source.get("object_geometry") or {}).get("physical_surface") or {}).get("mesh"))
+                or common_collision
+            ),
+            "file_sha256": sha256_file(
+                require_file(
+                    Path(str((((source.get("object_geometry") or {}).get("physical_surface") or {}).get("mesh")) or common_collision)),
+                    "shared source physical surface",
+                )
+            ),
+            "geometry": geometry_digest(
+                require_file(
+                    Path(str((((source.get("object_geometry") or {}).get("physical_surface") or {}).get("mesh")) or common_collision)),
+                    "shared source physical surface",
+                )
+            ),
+            "source": (((source.get("object_geometry") or {}).get("physical_surface") or {}).get("source")) or "prediction_side_observed_metric_surface_only",
             "generated_faces_collision_eligible": False,
             "generated_faces_contact_eligible": False,
-            "signed_geometry_ready": False,
+            "signed_geometry_ready": bool(source_validation["shared_temporal_mano"].get("signed_geometry_ready")),
         },
         "branch_variable_policy": {
             "allowed_to_differ": [

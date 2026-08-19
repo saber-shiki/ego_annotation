@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
+import trimesh
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -494,6 +495,47 @@ class SharedP18ReintegrationTest(unittest.TestCase):
             np.testing.assert_allclose(
                 report["camera_intrinsics_fx_fy_cx_cy"], intrinsics
             )
+
+    def test_signed_completion_ready_and_unsigned_fallback_are_exactly_bound(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="signed_completion_contract_") as temporary:
+            root = Path(temporary)
+            observed_path = root / "observed.ply"
+            signed_path = root / "signed.ply"
+            trimesh.creation.box(extents=[0.1, 0.08, 0.06]).export(signed_path)
+            observed = trimesh.creation.box(extents=[0.1, 0.08, 0.06]).submesh([[0, 1]], append=True, repair=False)
+            observed.export(observed_path)
+            pose_report = root / "pose.json"
+            pose_report.write_text("{}", encoding="utf-8")
+            fallback_payload = {
+                "inputs": {"pose_report": str(pose_report)},
+                "outputs": {
+                    "pose_hypothesis_mesh_labeled": str(observed_path),
+                    "collision_eligible_mesh_labeled": str(observed_path),
+                },
+                "geometry_readiness": {
+                    "signed_geometry_ready": False,
+                    "generated_hidden_surface_included": False,
+                    "generated_faces_collision_eligible": False,
+                    "generated_faces_contact_eligible": False,
+                    "generated_faces_signed_distance_eligible": False,
+                },
+            }
+            surface, ready, report = shared_tail.validate_signed_completion(
+                fallback_payload, observed_path, observed_path, pose_report
+            )
+            self.assertFalse(ready)
+            self.assertEqual(surface, observed_path)
+            self.assertEqual(report["status"], "shared_signed_geometry_attempt_unsigned_observed_fallback")
+
+            signed_payload = json.loads(json.dumps(fallback_payload))
+            signed_payload["outputs"]["collision_eligible_mesh_labeled"] = str(signed_path)
+            signed_payload["geometry_readiness"]["signed_geometry_ready"] = True
+            surface, ready, report = shared_tail.validate_signed_completion(
+                signed_payload, observed_path, observed_path, pose_report
+            )
+            self.assertTrue(ready)
+            self.assertEqual(surface, signed_path)
+            self.assertTrue(report["signed_surface_is_volume"])
 
 
 if __name__ == "__main__":

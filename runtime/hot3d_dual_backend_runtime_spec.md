@@ -357,7 +357,7 @@ test -s "$DUAL_STATE"
 test -s "$OBSERVED_MESH"
 ```
 
-## D14-D16 shared observed-only object trajectory and unsigned MANO state
+## D14-D16 shared observed-only trajectory, backend-neutral signed proxy, and MANO state
 
 Write the common observed-only pose body contract:
 
@@ -427,19 +427,50 @@ rotation tier is applied, record its exact transitions in `state/v19_agent_evide
 those transition frames during D18, and retain them as low-confidence trajectory uncertainty in
 the final publication; do not call the estimated step a ground-truth angular velocity.
 
-Build an unsigned observed-surface MANO/object measurement state:
+Build one backend-neutral shared signed-geometry candidate from direct observed poses,
+P09 object-owned masks/P09 accepted first-surface samples, active-K depth, and projected-MANO
+occlusion unknown regions. This command does not take a SAM3D or TRELLIS mesh. It always
+writes a completion report: if every topology/coverage/first-hit/free-space check passes,
+the collision surface is the shared watertight sign proxy; otherwise it is the D14
+observed-only unsigned fallback. Do not lower its defaults or add a category primitive:
+
+```bash
+SIGNED_ROOT="$EXP_ROOT/P15b_shared_signed_geometry"
+"$MAIN_PYTHON" scripts/build_hot3d_shared_signed_geometry.py \
+  --case '{CASE_ID}' \
+  --object-id '{OBJECT_ID}' \
+  --annotations "$ANNOTATIONS" \
+  --direct-pose-report "$POSE_FIT" \
+  --pose-report "$POSE_GRAPH" \
+  --observed-completion-report "$OBSERVED_COMPLETION" \
+  --depth-npz "$DEPTH_NPZ" \
+  --output-dir "$SIGNED_ROOT"
+
+SIGNED_COMPLETION="$SIGNED_ROOT/shared_signed_geometry_completion_report.json"
+test -s "$SIGNED_COMPLETION"
+```
+
+Read `geometry_readiness.signed_geometry_ready` and inspect
+`outputs.signed_geometry_qc`.  A false value is not a D15 failure: preserve the candidate
+failure evidence and continue through the report's unsigned fallback. A true value must
+bind `outputs.signed_geometry_mesh` to the exact same path as
+`outputs.collision_eligible_mesh_labeled`, keep `backend_generated_geometry_consumed:false`,
+and keep D15 object-pose values unchanged.
+
+Build the shared MANO/object measurement state against that report. Exact signed distance
+is enabled only when the report declares signed readiness; otherwise the command remains
+an explicit unsigned measurement. Do not pass `--skip-signed-distance`:
 
 ```bash
 "$MAIN_PYTHON" scripts/build_v18_mano_object_constraint_state.py \
   --annotations "$ANNOTATIONS" \
   --hawor-npz "$HAWOR_NPZ" \
   --pose-report "$POSE_GRAPH" \
-  --completion-report "$OBSERVED_COMPLETION" \
-  --skip-signed-distance \
-  --output-dir "$EXP_ROOT/P16_unsigned_mano_object" \
+  --completion-report "$SIGNED_COMPLETION" \
+  --output-dir "$EXP_ROOT/P16_shared_mano_object" \
   --object-id '{OBJECT_ID}'
 
-CONSTRAINT_REPORT="$EXP_ROOT/P16_unsigned_mano_object/v18_mano_object_constraint_state.json"
+CONSTRAINT_REPORT="$EXP_ROOT/P16_shared_mano_object/v18_mano_object_constraint_state.json"
 test -s "$CONSTRAINT_REPORT"
 ```
 
@@ -466,6 +497,7 @@ CUDA_VISIBLE_DEVICES='{GPU_ID}' \
   --annotations "$ANNOTATIONS" \
   --pose-report "$POSE_GRAPH" \
   --completion-report "$OBSERVED_COMPLETION" \
+  --signed-completion-report "$SIGNED_COMPLETION" \
   --depth-npz "$DEPTH_NPZ" \
   --hawor-npz "$HAWOR_NPZ" \
   --interaction-judgment "$INTERACTION_JUDGMENT" \
@@ -489,10 +521,11 @@ The runner must prove all of the following before returning success:
 
 - P04 MANO is bound to active source K through the exact centered-inference-plane affine; old `active_contract_reinference_required=true` rows fail closed;
 - P17 mask membership uses the exact P09 source-to-mask affine while depth lookup stays in source coordinates;
-- D14 physical input is the exact observed-only surface and generated faces are absent;
+- D14 observed mesh remains the exact canonical pose body and generated backend faces are absent from physical inputs;
 - D15 is the unique full-timeline object-pose authority;
-- P18 runs with `--no-optimize-object-translation`, every private object delta is zero, and signed geometry remains inactive;
-- P18b preserves metric MANO and carries only uncertain surface samples.
+- D15b either binds a validated backend-neutral sign proxy or exposes an observed-only unsigned fallback;
+- P18 runs with `--no-optimize-object-translation` and every private object delta is zero;
+- if signed geometry is active, P18 emits a hash-bound full-778 archive and P18b promotes it only when full-timeline/2D/depth/nonpenetration acceptance passes; otherwise P18b preserves source metric MANO and carries uncertain samples.
 
 ## D17 branch render states
 
@@ -507,7 +540,7 @@ SOURCE_STATE="$EXP_ROOT/P17_source_state/observed_only_rigid_render_state.json"
   --object-label '{OBJECT_ID} shared observed pose' \
   --annotations "$ANNOTATIONS" \
   --pose-report "$POSE_GRAPH" \
-  --completion-report "$OBSERVED_COMPLETION" \
+  --completion-report "$SIGNED_COMPLETION" \
   --completed-mesh "$OBSERVED_MESH" \
   --constraint-report "$CONSTRAINT_REPORT" \
   --temporal-mano-state "$SHARED_P18B_STATE" \
@@ -558,8 +591,10 @@ test -s "$TRELLIS_RENDER_MANIFEST"
 Inspect each anchor review PNG as an image. Confirm that the object follows the same
 observed trajectory in both branches, the generated geometry appears as an underlay,
 the green observed surface owns measured support, full source metric MANO surfaces remain
-visible, and yellow shared P18b uncertain surface samples appear when the state contains
-samples. The yellow samples are not accepted contact. Record any drift, handedness concern,
+visible. If shared signed geometry and full-MANO acceptance pass, blue/orange full hand
+surfaces must come from the same accepted P18 full-778 archive in both branches; otherwise
+they must remain the same source metric MANO. Yellow P18b samples remain diagnostic and are
+not contact ownership. Record any drift, handedness concern,
 render/physical-surface disagreement, or unresolved contact in
 `{RUN_ROOT}/state/v19_agent_evidence.md`; do not change state to hide it.
 
@@ -592,7 +627,7 @@ Final stable outputs are:
 - `{RUN_ROOT}/final_results/sam3d/videos/{camera_overlay,world_view,side_world_view,side_by_side}.mp4`
 - `{RUN_ROOT}/final_results/trellis/videos/{camera_overlay,world_view,side_world_view,side_by_side}.mp4`
 - per-backend `geometry/`, `state/`, `reports/`, and `backend_result.json`
-- shared `state/{p18b_temporal_mano_state,raw_p18_mano_interval_state}.json`, P17 report/judgment, and `shared_state_manifest.json`
+- shared `state/{p18b_temporal_mano_state,raw_p18_mano_interval_state}.json`, optional accepted full-MANO archive, signed completion/proxy, P17 report/judgment, and `shared_state_manifest.json`
 - `{RUN_ROOT}/final_results/case_result_manifest.json`
 
 Append one final harness event and a concise uncertainty statement.  Do not run any

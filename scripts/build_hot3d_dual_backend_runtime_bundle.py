@@ -26,6 +26,7 @@ SELF_TEST_FILES = [
     ("experiments/sam3d_p11_p12_branch/self_test.py", "experiments/sam3d_p11_p12_branch/self_test.py"),
     ("experiments/v19_metric_camera_contract/self_test.py", "experiments/v19_metric_camera_contract/self_test.py"),
     ("experiments/hot3d_shared_p18_reintegration/self_test.py", "experiments/hot3d_shared_p18_reintegration/self_test.py"),
+    ("experiments/hot3d_shared_signed_geometry/self_test.py", "experiments/hot3d_shared_signed_geometry/self_test.py"),
 ]
 SCRIPT_FILES = [
     "run_unidepth_metric_source_v3.py",
@@ -40,6 +41,7 @@ SCRIPT_FILES = [
     "remote_run_trellis_shape_v3.py",
     "remote_run_sam3d_objects_mesh_v7.py",
     "build_v19_observed_only_completion_reference.py",
+    "build_hot3d_shared_signed_geometry.py",
     "export_hawor_world.py",
     "remote_run_hawor_export.sh",
     "build_v19_visible_contact_ownership_factor.py",
@@ -55,6 +57,7 @@ SCRIPT_FILES = [
 EXTRA_FILES = [
     ("runtime/hot3d_dual_backend_runtime_spec.md", "runtime/hot3d_dual_backend_runtime_spec.md"),
     ("configs/hot3d_dual_backend_agent_system_prompt.md", "configs/hot3d_dual_backend_agent_system_prompt.md"),
+    ("docs/hot3d_shared_signed_geometry_milk_design_zh.md", "docs/hot3d_shared_signed_geometry_milk_design_zh.md"),
 ]
 TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"}
 

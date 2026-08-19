@@ -95,7 +95,8 @@ v19_bundle_a800_6ce5fc6_hot3d_observed_pose_local22
 - 同一 P11 atomic evidence；
 - 同一 observed metric surface；
 - 同一 observed-only object trajectory；
-- 同一 unsigned hand-object state；
+- 同一 backend-neutral shared signed-geometry candidate或其 observed-only unsigned fallback；
+- 同一 shared P17/P18/P18b、full-MANO acceptance state；
 - 同一 renderer、camera、MANO 和视频输出合同。
 
 唯一允许的 branch variable 是：
@@ -129,7 +130,7 @@ generated_faces_contact_eligible    = false
 - signed distance；
 - penetration / nonpenetration 结论。
 
-物理上唯一可用的 object surface 是 prediction-side observed metric surface；由于它是 partial、unsigned、通常 non-watertight，signed contact 和 nonpenetration 仍然 unresolved。
+D15 之前物理上唯一可用的是 prediction-side observed metric surface。D15b 可仅从 direct observed poses、P09 object-owned masks/P09 accepted first-surface samples、active-K depth 和 MANO occlusion unknown 区域构建一个 backend-neutral conservative sign proxy；SAM3D/TRELLIS generated meshes 仍永远不能成为 sign body。D15b 任一拓扑/first-hit/free-space/coverage gate失败时自动回退 partial unsigned surface。
 
 ---
 
@@ -208,8 +209,9 @@ D12  SAM3D and TRELLIS raw generated priors
 D13  controlled metric adaptation + SAM3D dual mesh
 D14  observed-only completion reference and direct pose fit
 D15  shared observed-only 150-frame pose graph
-D16  unsigned MANO/object state
-D16b shared P17 ownership/contact prior + P18 MANO candidate + P18b metric-MANO split
+D15b backend-neutral shared signed proxy or observed-only unsigned fallback
+D16  conditional signed/unsigned MANO-object measurement
+D16b shared P17 ownership/contact prior + signed/unsigned P18 + P18b full-MANO acceptance
 D17  shared P18b source state + geometry-only branch states
 D18  exact dual-backend full-duration renders
 D19  stable per-case publication and SUITE_DONE
@@ -228,10 +230,11 @@ POST  optional multi-case collection finalization
 
 ```text
 D15 observed-only pose authority
-  -> D16 unsigned measurement
+  -> D15b shared observation-only sign proxy or unsigned fallback
+  -> D16 conditional signed/unsigned measurement
   -> shared P17 visual interaction/ownership prior
-  -> shared P18 unsigned MANO candidate (object translation frozen)
-  -> shared P18b metric-MANO-preserved uncertain surface samples
+  -> shared P18 signed/unsigned MANO candidate (object translation frozen)
+  -> shared P18b full-778 acceptance or source-MANO fallback
   -> D17 geometry-only SAM3D/TRELLIS split
 ```
 
@@ -239,11 +242,12 @@ D15 observed-only pose authority
 
 - P04 必须用显式 affine 将 active source K 绑定到 centered HaWoR inference plane，并用逆 affine回绑 source pixels；历史 center-K archive fail closed；
 - P17/P18 mask 使用 P09 exact source→mask affine，depth lookup 仍在 source plane；
-- P18 只消费 observed-only physical surface，SAM3D/TRELLIS generated faces 不进入求解；
+- D15b 只消费 prediction-side direct observations，不消费 SAM3D/TRELLIS generated faces；
 - D15 是唯一 object pose authority，P18 `optimize_object_translation=false` 且所有 delta 为零；
-- P18b 不覆盖 metric MANO joints/root，只保留黄色 uncertain surface samples；
-- D18 必须实际显示这些 samples，D19 必须发布其 provenance；
-- observed surface 仍为 partial/unsigned/non-watertight，不能宣称 signed contact/nonpenetration。
+- D15b 通过时 P18 可启用 shared signed barrier；失败时保持 unsigned；
+- P18 输出 hash-bound full-778 archive，P18b 仅在全 timeline、2D/depth、active-set、zero-object-delta 全部通过时接受；否则恢复 source metric MANO；
+- D18 必须真实渲染 accepted full MANO或source fallback，并显示黄色 sampled diagnostics；D19 发布完整 provenance；
+- signed proxy 是 prediction-side runtime hypothesis，不等于独立 GT contact ownership。
 
 完整设计见 `docs/hot3d_shared_p18_reintegration_design_zh.md`。
 

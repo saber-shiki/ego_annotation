@@ -159,10 +159,17 @@ def validate_render_manifest(
     for key in (
         "generated_faces_collision_eligible",
         "generated_faces_contact_eligible",
-        "signed_geometry_ready",
     ):
         if shared_consumption.get(key) is not False:
             raise RuntimeError(f"D18 manifest lacks explicit {key}=false: {path}")
+    signed_geometry_ready = shared_consumption.get("signed_geometry_ready") is True
+    accepted_signed_rows = int(temporal.get("accepted_signed_full_mano_row_count", 0))
+    if accepted_signed_rows not in (0, int(expected_frame_count) * 2):
+        raise RuntimeError(
+            f"D18 partially rendered accepted full MANO on {accepted_signed_rows}/{expected_frame_count * 2} rows"
+        )
+    if not signed_geometry_ready and accepted_signed_rows:
+        raise RuntimeError("D18 unsigned run rendered signed-accepted full MANO rows")
     outputs = manifest.get("outputs") if isinstance(manifest.get("outputs"), dict) else {}
     videos: dict[str, Any] = {}
     for key in VIDEO_KEYS:
@@ -191,6 +198,9 @@ def validate_render_manifest(
         "generated_faces_contact_eligible": shared_consumption[
             "generated_faces_contact_eligible"
         ],
+        "signed_geometry_ready": signed_geometry_ready,
+        "accepted_signed_full_mano_row_count": accepted_signed_rows,
+        "signed_full_mano_accepted": accepted_signed_rows == int(expected_frame_count) * 2,
         "conditional_rotation_tail_frames": actual_conditional_frames,
         "shared_p18b_temporal_surface": temporal,
     }
@@ -388,7 +398,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "branch_payload_value_sha256": next(iter(temporal_hashes)),
             "d17_temporal_block_value_sha256": expected_temporal_hash,
             "both_branches_identical": True,
-            "rendered_as_uncertain_surface_only": True,
+            "rendered_as_uncertain_surface_only": not all(
+                bool(row.get("signed_geometry_ready")) for row in results.values()
+            ),
+            "signed_geometry_ready": all(
+                bool(row.get("signed_geometry_ready")) for row in results.values()
+            ),
+            "accepted_signed_full_mano_row_count": min(
+                int(row.get("accepted_signed_full_mano_row_count", 0))
+                for row in results.values()
+            ),
+            "signed_full_mano_accepted": all(
+                bool(row.get("signed_full_mano_accepted")) for row in results.values()
+            ),
         },
         "rotation_step_acceptance_mode": rotation_step_gate.get("acceptance_mode"),
         "conditional_rotation_tail_frames": expected_conditional_frames,

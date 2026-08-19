@@ -197,10 +197,16 @@ def load_object_layers(
 
 
 class ManoArchiveCache:
-    def __init__(self, rewrites: list[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        rewrites: list[tuple[str, str]],
+        accepted_temporal_rows: dict[tuple[int, str], dict[str, Any]] | None = None,
+    ) -> None:
         self.rewrites = rewrites
+        self.accepted_temporal_rows = accepted_temporal_rows or {}
         self.archives: dict[Path, Any] = {}
         self.rows_read = 0
+        self.accepted_rows_read = 0
         self.sample_error_m: list[float] = []
         self.sources: dict[str, dict[str, Any]] = {}
 
@@ -226,9 +232,49 @@ class ManoArchiveCache:
             raise RuntimeError(
                 f"frame {frame_idx} {side}: invalid bridge reference array={array_name!r} row={row_index}"
             )
-        vertices = np.asarray(bridge[array_name][row_index], dtype=np.float64)
-        if vertices.shape != (778, 3) or not np.isfinite(vertices).all():
-            raise RuntimeError(f"frame {frame_idx} {side}: invalid full MANO vertices {vertices.shape}")
+        source_vertices = np.asarray(bridge[array_name][row_index], dtype=np.float64)
+        if source_vertices.shape != (778, 3) or not np.isfinite(source_vertices).all():
+            raise RuntimeError(f"frame {frame_idx} {side}: invalid full MANO vertices {source_vertices.shape}")
+        vertices = source_vertices
+        accepted = self.accepted_temporal_rows.get((frame_idx, side))
+        accepted_archive_path: Path | None = None
+        accepted_archive_row_index: int | None = None
+        accepted_delta_m: float | None = None
+        accepted_state = "source_metric_mano"
+        if isinstance(accepted, dict) and str(accepted.get("accepted_full_mano_state")) == "accepted_signed_p18_full_778":
+            accepted_archive_path = canonical.rewrite_path(
+                accepted.get("accepted_full_mano_vertices_world_archive"), self.rewrites
+            )
+            if accepted_archive_path is None:
+                raise RuntimeError(f"frame {frame_idx} {side}: accepted P18 MANO archive path is missing")
+            accepted_archive_path, accepted_archive = self.archive(
+                str(accepted_archive_path), "accepted P18 full MANO archive"
+            )
+            expected_hash = str(accepted.get("accepted_full_mano_vertices_world_archive_sha256") or "")
+            if not expected_hash or sha256_file(accepted_archive_path) != expected_hash:
+                raise RuntimeError(f"frame {frame_idx} {side}: accepted P18 MANO archive hash mismatch")
+            required = {"frame_idx", "hand_side", "vertices_world_m"}
+            if not required.issubset(set(accepted_archive.files)):
+                raise RuntimeError(f"accepted P18 MANO archive lacks {sorted(required - set(accepted_archive.files))}")
+            frame_values = np.asarray(accepted_archive["frame_idx"], dtype=np.int64)
+            side_values = np.asarray(accepted_archive["hand_side"]).astype(str)
+            positions = np.flatnonzero((frame_values == int(frame_idx)) & (side_values == side))
+            if len(positions) != 1:
+                raise RuntimeError(f"frame {frame_idx} {side}: accepted P18 MANO archive key appears {len(positions)} times")
+            accepted_archive_row_index = int(positions[0])
+            candidate = np.asarray(accepted_archive["vertices_world_m"][accepted_archive_row_index], dtype=np.float64)
+            if candidate.shape != (778, 3) or not np.isfinite(candidate).all():
+                raise RuntimeError(f"frame {frame_idx} {side}: invalid accepted P18 full MANO vertices")
+            vertices = candidate
+            accepted_delta_m = float(np.max(np.linalg.norm(vertices - source_vertices, axis=1)))
+            accepted_state = "accepted_signed_p18_full_778"
+            self.accepted_rows_read += 1
+            if str(accepted_archive_path) not in self.sources:
+                self.sources[str(accepted_archive_path)] = {
+                    "kind": "accepted_signed_p18_full_metric_mano_vertices",
+                    "array": "vertices_world_m",
+                    "sha256": expected_hash,
+                }
         if "frame_idx" in bridge.files and int(bridge["frame_idx"][row_index]) != frame_idx:
             raise RuntimeError(f"frame {frame_idx} {side}: bridge row frame mismatch")
         if "hand_side" in bridge.files and str(bridge["hand_side"][row_index]) != side:
@@ -248,7 +294,7 @@ class ManoArchiveCache:
         if sample_indices.ndim == 1 and sample_world.shape == (len(sample_indices), 3) and len(sample_indices) > 0:
             if int(sample_indices.min()) < 0 or int(sample_indices.max()) >= len(vertices):
                 raise RuntimeError(f"frame {frame_idx} {side}: sample indices outside full MANO surface")
-            sample_error = float(np.max(np.linalg.norm(vertices[sample_indices] - sample_world, axis=1)))
+            sample_error = float(np.max(np.linalg.norm(source_vertices[sample_indices] - sample_world, axis=1)))
             self.sample_error_m.append(sample_error)
             if sample_error > 1.0e-5:
                 raise RuntimeError(
@@ -269,6 +315,10 @@ class ManoArchiveCache:
             }
         return vertices, faces, {
             "side": side,
+            "mano_render_state": accepted_state,
+            "accepted_p18_full_mano_archive": str(accepted_archive_path) if accepted_archive_path is not None else None,
+            "accepted_p18_full_mano_archive_row_index": accepted_archive_row_index,
+            "accepted_p18_max_vertex_delta_from_source_m": accepted_delta_m,
             "bridge": str(bridge_path),
             "bridge_array": array_name,
             "bridge_row_index": row_index,
@@ -280,6 +330,8 @@ class ManoArchiveCache:
     def summary(self) -> dict[str, Any]:
         return {
             "full_surface_rows_read": int(self.rows_read),
+            "accepted_signed_p18_full_surface_rows_read": int(self.accepted_rows_read),
+            "source_metric_mano_rows_read": int(self.rows_read - self.accepted_rows_read),
             "vertices_per_hand": 778,
             "sample_reproduction_max_error_m": max(self.sample_error_m) if self.sample_error_m else None,
             "sample_reproduction_median_error_m": float(np.median(self.sample_error_m)) if self.sample_error_m else None,
@@ -544,8 +596,14 @@ def temporal_surface_map(
         if key in out:
             raise RuntimeError(f"duplicate shared P18b row {key}")
         policy = str(raw.get("joint_state_policy") or "")
-        if "metric_mano_preserved" not in policy:
-            raise RuntimeError(f"shared P18b row {key} does not preserve metric MANO")
+        accepted_signed_full = "p18_signed_full_778_mano_accepted" in policy
+        if "metric_mano_preserved" not in policy and not accepted_signed_full:
+            raise RuntimeError(f"shared P18b row {key} lacks a recognized metric MANO policy")
+        if accepted_signed_full:
+            archive_path = raw.get("accepted_full_mano_vertices_world_archive")
+            expected_hash = str(raw.get("accepted_full_mano_vertices_world_archive_sha256") or "")
+            if not archive_path or not expected_hash:
+                raise RuntimeError(f"shared P18b row {key} lacks accepted full-MANO archive binding")
         object_delta = np.asarray(
             raw.get("optimized_object_translation_world_m") or [0.0, 0.0, 0.0],
             dtype=np.float64,
@@ -564,6 +622,14 @@ def temporal_surface_map(
             surface_row_count += 1
             surface_point_count += int(len(samples))
         out[key] = raw
+    accepted_signed_rows = sum(
+        "p18_signed_full_778_mano_accepted" in str(row.get("joint_state_policy") or "")
+        for row in out.values()
+    )
+    if accepted_signed_rows not in (0, len(out)):
+        raise RuntimeError(
+            f"shared P18b mixes accepted signed/source MANO rows: {accepted_signed_rows}/{len(out)}"
+        )
     return out, {
         "path": path_value,
         "path_sha256": path_hash,
@@ -571,6 +637,8 @@ def temporal_surface_map(
         "row_count": len(out),
         "surface_row_count": surface_row_count,
         "surface_point_count": surface_point_count,
+        "accepted_signed_full_mano_row_count": int(accepted_signed_rows),
+        "accepted_signed_full_mano": bool(accepted_signed_rows == len(out)),
         "value_sha256": hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         ).hexdigest(),
@@ -724,8 +792,8 @@ def legend_panel(image: np.ndarray) -> None:
     labels = [
         ("magenta: generated complete render prior (no collision)", ROLE_COLORS["generated_complete_prior_underlay"]),
         ("green: observed metric surface / only collision-eligible layer", ROLE_COLORS["observed_metric_surface_overlay"]),
-        ("blue + orange: full 778-vertex source metric MANO surfaces", (245, 205, 85)),
-        ("yellow: shared P18b uncertain surface hypothesis (not accepted contact)", TEMPORAL_SURFACE_COLOR),
+        ("blue + orange: shared full 778 MANO (source or accepted signed P18)", (245, 205, 85)),
+        ("yellow: P18 surface samples (uncertain unless full signed MANO accepted)", TEMPORAL_SURFACE_COLOR),
         ("triangle depth order shown; signed contact/nonpenetration disabled", (220, 220, 220)),
     ]
     y = image.shape[0] - 102
@@ -776,8 +844,8 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(state, dict) or not str(state.get("status") or "").startswith("ok_experimental"):
         raise RuntimeError(f"not an experimental layered render state: {state_path}")
     adapter = state.get("experimental_p14_p15_adapter") if isinstance(state.get("experimental_p14_p15_adapter"), dict) else {}
-    if adapter.get("generated_faces_collision_eligible") is not False or adapter.get("signed_geometry_ready") is not False:
-        raise RuntimeError("render state does not preserve generated-geometry physical quarantine")
+    if adapter.get("generated_faces_collision_eligible") is not False:
+        raise RuntimeError("render state does not preserve generated-geometry collision quarantine")
 
     annotation_path = canonical.rewrite_path((state.get("annotation_backbone") or {}).get("path"), rewrites)
     if annotation_path is None:
@@ -818,13 +886,19 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     if missing_poses:
         raise RuntimeError(f"selected frames lack object poses: {missing_poses[:20]}")
     object_layers, object_summaries = load_object_layers(state, rewrites, float(args.observed_depth_priority_bias_m))
-    physical_path = canonical.rewrite_path(
-        ((state.get("object_geometry") or {}).get("physical_surface") or {}).get("mesh"), rewrites
+    object_geometry_state = state.get("object_geometry") if isinstance(state.get("object_geometry"), dict) else {}
+    observation_path = canonical.rewrite_path(
+        object_geometry_state.get("observation_surface_path"), rewrites
     )
-    if physical_path is None:
-        raise RuntimeError("state lacks shared physical observation mesh")
-    physical_path = require_file(physical_path, "shared observed-only physical surface")
-    reference_vertices, _reference_faces, reference_summary = canonical.load_mesh(physical_path)
+    if observation_path is None:
+        raise RuntimeError("state lacks shared observed render surface")
+    observation_path = require_file(observation_path, "shared observed render surface")
+    physical_payload = object_geometry_state.get("physical_surface") if isinstance(object_geometry_state.get("physical_surface"), dict) else {}
+    signed_physical_path = canonical.rewrite_path(physical_payload.get("mesh"), rewrites)
+    if signed_physical_path is None:
+        signed_physical_path = observation_path
+    signed_physical_path = require_file(signed_physical_path, "shared physical surface")
+    reference_vertices, _reference_faces, reference_summary = canonical.load_mesh(observation_path)
 
     overlay_dir = output_dir / "overlay_frames"
     world_dir = output_dir / "world_frames"
@@ -847,8 +921,13 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
     branch_id = str(adapter.get("branch_id") or state.get("object_label") or "experimental_branch")
     source_model = str(adapter.get("source_model") or "unknown geometry source")
     integration = str(adapter.get("integration") or "unknown integration")
+    full_mano_label = (
+        "accepted signed P18 full MANO"
+        if bool(temporal_summary.get("accepted_signed_full_mano"))
+        else "source metric MANO fallback"
+    )
 
-    mano_cache = ManoArchiveCache(rewrites)
+    mano_cache = ManoArchiveCache(rewrites, temporal_rows)
     frame_rows: list[dict[str, Any]] = []
     glb_report: dict[str, Any] | None = None
     try:
@@ -901,7 +980,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             temporal_overlay_points = draw_camera_temporal_surface(
                 overlay, temporal_points, T_world_camera, intrinsics
             )
-            title_panel(overlay, f"{branch_id} | camera overlay", f"{source_model} | {integration}", frame_idx)
+            title_panel(overlay, f"{branch_id} | camera overlay", f"{source_model} | {integration} | {full_mano_label}", frame_idx)
             conditional_pose_warning(overlay, conditional_rotation_uncertainty)
             legend_panel(overlay)
 
@@ -925,7 +1004,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             draw_camera_state(
                 world, T_world_camera, camera_path, low, high, (0, 2), float(args.camera_frustum_depth_m)
             )
-            title_panel(world, f"{branch_id} | local metric world X-Z", "shared observed/MANO framing + camera frustum", frame_idx)
+            title_panel(world, f"{branch_id} | local metric world X-Z", f"shared observed framing + {full_mano_label}", frame_idx)
             conditional_pose_warning(world, conditional_rotation_uncertainty)
             legend_panel(world)
 
@@ -941,7 +1020,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             draw_camera_state(
                 side, T_world_camera, camera_path, low, high, (1, 2), float(args.camera_frustum_depth_m)
             )
-            title_panel(side, f"{branch_id} | local metric side Y-Z", "same pose/camera/MANO; alternate world axis", frame_idx)
+            title_panel(side, f"{branch_id} | local metric side Y-Z", f"same pose/camera | {full_mano_label}", frame_idx)
             conditional_pose_warning(side, conditional_rotation_uncertainty)
             legend_panel(side)
 
@@ -1053,8 +1132,10 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
             "render_state_sha256": sha256_file(state_path),
             "annotations": str(annotation_path),
             "annotations_sha256": sha256_file(annotation_path),
-            "shared_observed_physical_surface": str(physical_path),
-            "shared_observed_physical_surface_sha256": sha256_file(physical_path),
+            "shared_observed_render_surface": str(observation_path),
+            "shared_observed_render_surface_sha256": sha256_file(observation_path),
+            "shared_physical_surface": str(signed_physical_path),
+            "shared_physical_surface_sha256": sha256_file(signed_physical_path),
             "canonical_renderer_helper": str(Path(canonical.__file__).resolve()),
             "canonical_renderer_helper_sha256": sha256_file(Path(canonical.__file__).resolve()),
         },
@@ -1076,19 +1157,27 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
         "shared_state_consumption": {
             "object_pose": "render_state.object_pose_trajectory.pose_rows_observed_only",
             "camera": "annotation_backbone.frame.camera.T_world_camera_metric",
-            "mano": "annotation metric_mano_state.vertices_reference full bridge 778 vertices + HaWoR face arrays",
+            "mano": (
+                "shared accepted signed P18 full-778 archive when P18b accepted; "
+                "otherwise annotation metric_mano_state.vertices_reference source bridge; HaWoR face arrays"
+            ),
             "inherited_mano_constraint_payload_rendered": False,
             "shared_p18b_temporal_surface_hypothesis": temporal_summary,
             "inherited_temporal_contact_hypothesis_rendered": True,
-            "temporal_hypothesis_semantics": "uncertain surface samples only; metric MANO body remains source full-778; not accepted contact",
+            "temporal_hypothesis_semantics": (
+                "P18 surface samples remain diagnostic; full MANO is promoted only by explicit shared signed acceptance; "
+                "contact ownership remains visual-evidence-only"
+            ),
             "generated_faces_contact_eligible": False,
             "generated_faces_collision_eligible": False,
-            "signed_geometry_ready": False,
+            "signed_geometry_ready": bool(adapter.get("signed_geometry_ready")),
+            "signed_full_mano_accepted": bool(temporal_summary.get("accepted_signed_full_mano")),
         },
         "reference_surface": reference_summary,
         "mano_full_surface": mano_summary,
         "shared_p18b_temporal_surface": {
             **temporal_summary,
+            "signed_geometry_ready": bool(adapter.get("signed_geometry_ready")),
             "rendered_frame_count_with_input_points": int(
                 sum(
                     int(row["shared_p18b_temporal_surface"]["input_point_count"]) > 0
