@@ -57,7 +57,9 @@ SCRIPT_FILES = [
     "preflight_local_v19_runtime.py",
 ]
 EXTRA_FILES = [
-    ("runtime/v19_runtime_spec.md", "runtime/v19_runtime_spec.md"),
+    # Keep the base bundle's already-sanitized common P00-P11 runtime spec.
+    # The source-tree copy contains development/history prose and is not an
+    # isolated runtime prompt. HOT3D D12-D19 policy is overlaid below.
     ("runtime/hot3d_dual_backend_runtime_spec.md", "runtime/hot3d_dual_backend_runtime_spec.md"),
     ("configs/hot3d_dual_backend_agent_system_prompt.md", "configs/hot3d_dual_backend_agent_system_prompt.md"),
     ("docs/hot3d_shared_signed_geometry_milk_design_zh.md", "docs/hot3d_shared_signed_geometry_milk_design_zh.md"),
