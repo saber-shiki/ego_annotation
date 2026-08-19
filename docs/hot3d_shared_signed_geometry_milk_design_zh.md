@@ -2,8 +2,9 @@
 
 ## 目的
 
-在独立分支 `feature/hot3d-milk-shared-signed-geometry-20260818` 上，用 Milk fresh
-run 实际尝试恢复 signed object geometry，并让通过验证的物理体进入一次共享 P18。
+初始实现位于 `feature/hot3d-milk-shared-signed-geometry-20260818`；局部 authority
+修复位于独立分支 `fix/hot3d-local-signed-authority-p18-support-20260819`。目标是用
+Milk fresh run 实际尝试恢复 signed object geometry，并让通过验证的物理体进入一次共享 P18。
 本实验不把 SAM3D 或 TRELLIS 生成面提升为物理面；signed proxy 必须由 prediction-side
 object-owned mask、active-K metric depth、D15 observed-only pose 和 direct P14
 observations 独立构建。
@@ -49,27 +50,48 @@ free-space 失败，而不能把 mesh flag 改成 ready。
    - owned mask 内、depth 后方的 voxel 获得 volume support；
 4. 跨视角保留无 free-space contradiction 且有分布式 silhouette support 的 voxel，
    用小尺度 closing/fill-holes 得到 volume，Marching Cubes 生成 sign proxy；
-5. 独立用 Open3D first-hit ray 检查 proxy 的 front surface、mask support、depth
-   contradiction、viewpoint coverage 和 topology；
-6. 只在 `watertight && winding_consistent && is_volume && direct coverage &&
-   no repeated free-space contradiction && front support` 同时成立时写
-   `geometry_readiness.signed_geometry_ready=true`。
+5. 对完整 proxy face set（不能只抽样）用 Open3D first-hit ray 检查 front surface、
+   mask/depth support、hand-unknown adjacency、held-out free-space contradiction 与
+   face-center 到 observed surfel 的距离；
+6. 输出 mesh/hash-bound per-face authority，至少区分 direct first-hit-supported、
+   silhouette-only completion、hand-unknown adjacent、free-space-risk 和 unsupported
+   topology closure；
+7. watertight proxy 只提供 inside/outside topology。只有 nearest face 的
+   `signed_distance_eligible=true` 时，D16/P18 才能产生 signed force；
+8. `signed_geometry_ready=true` 还要求 MANO interaction-near 区域具有局部 authority，
+   且不能存在超过上界的 unauthorized closure penetration。全局 support fraction、
+   watertight 或 winding consistent 都不能单独晋升 signed geometry。
 
 输出同时保留：
 
 - `pose_hypothesis_mesh_labeled`：D14 observed canonical mesh，供 D15 pose frame；
 - `collision_eligible_mesh_labeled` / `signed_geometry_mesh`：shared proxy，供 P18
   signed query；
-- face labels、voxel support NPZ、QC report/mesh。
+- collision face labels、candidate/selected mesh 各自的 mesh-bound face-authority NPZ、
+  voxel support NPZ、QC report/mesh。即使 candidate 未晋升，其逐面 provenance 仍保留。
 
 ## P18 promotion
 
 P18 继续使用 `--no-optimize-object-translation`。当 completion report 明确绑定
-shared signed proxy 且 readiness 为 true 时，signed factor 可作用于 proxy 全部
-物理 faces；object delta 仍必须逐行精确为零。
+shared signed proxy 且 readiness 为 true 时，closed proxy 可用于计算 sign，但 signed
+factor 只可作用于 per-face authority 明确允许的局部物理 faces；object delta 仍必须
+逐行精确为零。
+
+P17/P18 还必须区分两种 mask/depth 语义：
+
+- `constraint_eligible_entity` 用于排除 hand-owned object pixels，不能再拿它查询 MANO
+  顶点是否具有 translation support；
+- translation gate 使用独立的 P09 accepted first-surface 邻域 raster。它只说明 MANO
+  附近有真实物体 first-hit evidence，可允许 root translation；它本身不是“手必须在
+  物体后面”的单向 depth-order residual，也不得读取 hand pixel 下的 raw depth。
+
+没有独立 translation support 的 row 在 solver 内冻结 translation，并在输出端 fail
+closed。报告同时保存 raw optimizer candidate 与 published candidate；任一 output
+translation gate 生效都会阻止 full-MANO 晋升。
 
 求解器额外输出 full optimized MANO vertices archive。P18b 只有在 signed report、
-full timeline、zero object delta、bounded 2D/temporal residual 全部通过时，才把
+full timeline、zero object delta、active-set closure、authorized/unauthorized topology
+penetration、bounded 2D/depth/temporal residual 全部通过时，才把
 P18 optimized full-778 MANO 作为 accepted render state；否则继续使用 source metric
 MANO，并将 P18 samples 标为 uncertain yellow diagnostics。
 

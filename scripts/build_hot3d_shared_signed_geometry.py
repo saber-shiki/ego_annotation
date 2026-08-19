@@ -33,7 +33,7 @@ import trimesh
 
 from build_v19_visible_geometry_from_sam2_depth import projected_mano_hand_silhouette
 
-SCHEMA = "v19_hot3d_shared_observation_signed_geometry_v1"
+SCHEMA = "v19_hot3d_shared_observation_signed_geometry_v2"
 DIRECT_POSE_STATUSES = {
     "fit_to_visible_depth_samples",
     "fit_to_visible_depth_archive_vertices",
@@ -319,6 +319,94 @@ def canonical_observed_points(
     return np.vstack(chunks), reports
 
 
+def canonical_full_mano_rows(
+    frames: dict[int, dict[str, Any]],
+    d15: dict[int, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load the exact full MANO surface referenced by P09 annotations.
+
+    These prediction-side rows only test whether a candidate sign proxy has
+    unsupported boundary faces in the current hand-interaction region. They do
+    not create object shape or pose evidence.
+    """
+    archive_cache: dict[Path, dict[str, np.ndarray]] = {}
+    archive_hashes: dict[str, str] = {}
+    rows: list[dict[str, Any]] = []
+    for frame_idx in sorted(frames):
+        pose_row = d15.get(frame_idx)
+        if pose_row is None:
+            continue
+        rotation, translation = finite_pose(
+            pose_row, f"D15 MANO interaction frame {frame_idx}"
+        )
+        for hand in frames[frame_idx].get("hands") or []:
+            if not isinstance(hand, dict):
+                continue
+            side = str(hand.get("hand_side") or "")
+            if side not in {"left", "right"}:
+                continue
+            metric = (
+                hand.get("metric_mano_state")
+                if isinstance(hand.get("metric_mano_state"), dict)
+                else {}
+            )
+            reference = (
+                metric.get("vertices_reference")
+                if isinstance(metric.get("vertices_reference"), dict)
+                else {}
+            )
+            bridge_raw = reference.get("bridge_npz")
+            array_name = reference.get("bridge_vertices_world_array")
+            row_index = reference.get("bridge_row_index")
+            if not isinstance(bridge_raw, str) or not isinstance(array_name, str) or row_index is None:
+                raise RuntimeError(
+                    f"frame {frame_idx} {side}: full MANO bridge reference is incomplete"
+                )
+            bridge_path = require_file(Path(bridge_raw), "full MANO bridge NPZ")
+            if bridge_path not in archive_cache:
+                with np.load(bridge_path, allow_pickle=False) as archive:
+                    archive_cache[bridge_path] = {
+                        key: np.asarray(archive[key]) for key in archive.files
+                    }
+                archive_hashes[str(bridge_path)] = sha256_file(bridge_path)
+            archive = archive_cache[bridge_path]
+            if array_name not in archive:
+                raise RuntimeError(
+                    f"frame {frame_idx} {side}: MANO bridge lacks {array_name}: {bridge_path}"
+                )
+            pos = int(row_index)
+            vertices_world = np.asarray(archive[array_name][pos], dtype=np.float64)
+            if vertices_world.shape != (778, 3) or not np.isfinite(vertices_world).all():
+                raise RuntimeError(
+                    f"frame {frame_idx} {side}: invalid full MANO vertices {vertices_world.shape}"
+                )
+            declared_shape = reference.get("shape_vertices")
+            if declared_shape not in (None, [778, 3]):
+                raise RuntimeError(
+                    f"frame {frame_idx} {side}: MANO reference does not declare [778,3]"
+                )
+            rows.append(
+                {
+                    "frame_idx": int(frame_idx),
+                    "hand_side": side,
+                    "vertices_canonical_m": (vertices_world - translation[None, :]) @ rotation,
+                    "bridge_npz": str(bridge_path),
+                    "bridge_row_index": pos,
+                    "bridge_vertices_world_array": array_name,
+                }
+            )
+    if not rows:
+        raise RuntimeError(
+            "no full MANO rows are available for local signed-authority validation"
+        )
+    return rows, {
+        "row_count": int(len(rows)),
+        "vertex_count": int(sum(len(row["vertices_canonical_m"]) for row in rows)),
+        "archive_sha256": archive_hashes,
+        "role": "interaction-region readiness diagnostic only; MANO is not object shape or pose evidence",
+    }
+
+
 def viewpoint_coverage(
     frames: dict[int, dict[str, Any]],
     frame_ids: list[int],
@@ -388,6 +476,18 @@ def select_evidence_frames(frame_ids: list[int], angles: np.ndarray, maximum: in
             break
         selected_positions.add(position)
     return [frame_ids[position] for position in sorted(selected_positions)]
+
+
+def select_heldout_validation_frames(
+    direct_frame_ids: list[int], training_frame_ids: list[int], maximum: int
+) -> list[int]:
+    remaining = sorted(set(direct_frame_ids) - set(training_frame_ids))
+    if not remaining or int(maximum) <= 0:
+        return []
+    if len(remaining) <= int(maximum):
+        return remaining
+    positions = np.linspace(0, len(remaining) - 1, int(maximum)).round().astype(int)
+    return [remaining[int(pos)] for pos in sorted(set(positions.tolist()))]
 
 
 def build_grid(points: np.ndarray, observed_mesh: trimesh.Trimesh, pitch: float, pad: float, maximum_voxels: int) -> tuple[np.ndarray, tuple[int, int, int], np.ndarray, dict[str, Any]]:
@@ -810,10 +910,12 @@ def face_sample_points(mesh: trimesh.Trimesh, maximum_faces: int) -> tuple[np.nd
 def validate_proxy(
     mesh: trimesh.Trimesh,
     observed_points: np.ndarray,
-    evidence_rows: list[dict[str, Any]],
+    training_evidence_rows: list[dict[str, Any]],
+    heldout_evidence_rows: list[dict[str, Any]],
+    mano_rows: list[dict[str, Any]],
     coverage: dict[str, Any],
     args: argparse.Namespace,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     topology = mesh_topology(mesh)
     sampled_observed = observed_points[
         np.linspace(0, len(observed_points) - 1, min(len(observed_points), int(args.max_observed_validation_points)), dtype=np.int64)
@@ -826,7 +928,9 @@ def validate_proxy(
         "p95_m": float(np.percentile(observed_distance, 95.0)),
         "max_m": float(np.max(observed_distance)),
     }
-    samples, sampled_face_ids = face_sample_points(mesh, int(args.max_validation_faces))
+    # Per-face authority must cover the complete emitted mesh. A sampled global
+    # ratio cannot authorize an unsampled closure face to push MANO.
+    samples, sampled_face_ids = face_sample_points(mesh, len(mesh.faces))
     face_count, samples_per_face = samples.shape[:2]
     flat = samples.reshape(-1, 3)
     scene = o3d.t.geometry.RaycastingScene()
@@ -837,8 +941,17 @@ def validate_proxy(
     support_counts = np.zeros(face_count, dtype=np.uint16)
     free_counts = np.zeros(face_count, dtype=np.uint16)
     mask_counts = np.zeros(face_count, dtype=np.uint16)
+    unknown_counts = np.zeros(face_count, dtype=np.uint16)
+    train_support_counts = np.zeros(face_count, dtype=np.uint16)
+    heldout_support_counts = np.zeros(face_count, dtype=np.uint16)
+    train_mask_counts = np.zeros(face_count, dtype=np.uint16)
+    heldout_mask_counts = np.zeros(face_count, dtype=np.uint16)
     frame_rows = []
-    for evidence in evidence_rows:
+    evidence_rows = [
+        *(("training", row) for row in training_evidence_rows),
+        *(("heldout", row) for row in heldout_evidence_rows),
+    ]
+    for evidence_split, evidence in evidence_rows:
         uv, z, positive = project_canonical(
             flat,
             evidence["rotation"],
@@ -903,13 +1016,27 @@ def validate_proxy(
         support_face = np.count_nonzero(depth_support.reshape(face_count, samples_per_face), axis=1) >= int(args.min_face_samples_per_validation_view)
         free_face = np.count_nonzero(free.reshape(face_count, samples_per_face), axis=1) >= int(args.min_face_samples_per_validation_view)
         mask_face = np.count_nonzero(mask_support.reshape(face_count, samples_per_face), axis=1) >= int(args.min_face_samples_per_validation_view)
+        unknown_face = np.count_nonzero(
+            (frontmost & mask_valid & sampled_unknown).reshape(
+                face_count, samples_per_face
+            ),
+            axis=1,
+        ) >= int(args.min_face_samples_per_validation_view)
         support_counts += support_face.astype(np.uint16)
         free_counts += free_face.astype(np.uint16)
         mask_counts += mask_face.astype(np.uint16)
+        unknown_counts += unknown_face.astype(np.uint16)
+        if evidence_split == "training":
+            train_support_counts += support_face.astype(np.uint16)
+            train_mask_counts += mask_face.astype(np.uint16)
+        else:
+            heldout_support_counts += support_face.astype(np.uint16)
+            heldout_mask_counts += mask_face.astype(np.uint16)
         decisive_count = int(np.count_nonzero(decisive))
         frame_rows.append(
             {
                 "frame_idx": int(evidence["frame_idx"]),
+                "evidence_split": evidence_split,
                 "model_frontmost_decisive_sample_count": decisive_count,
                 "mask_supported_sample_count": int(np.count_nonzero(mask_support)),
                 "depth_surface_supported_sample_count": int(np.count_nonzero(depth_support)),
@@ -920,8 +1047,76 @@ def validate_proxy(
             }
         )
     repeated_free = free_counts >= int(args.repeated_free_space_validation_views)
-    supported_faces = support_counts > 0
-    mask_supported_faces = mask_counts > 0
+    supported_faces = support_counts >= int(args.min_local_depth_support_views)
+    mask_supported_faces = mask_counts >= int(args.min_local_mask_support_views)
+    face_centers = np.asarray(mesh.triangles_center, dtype=np.float64)
+    observed_distance_all = cKDTree(observed_points).query(
+        face_centers, k=1, workers=-1
+    )[0]
+    observed_near = observed_distance_all <= float(
+        args.max_local_observed_surface_distance_m
+    )
+    heldout_depth_supported = heldout_support_counts >= int(
+        args.min_heldout_local_depth_support_views
+    )
+    heldout_mask_supported = heldout_mask_counts >= int(
+        args.min_heldout_local_mask_support_views
+    )
+    local_signed_eligible = (
+        supported_faces
+        & mask_supported_faces
+        & heldout_depth_supported
+        & heldout_mask_supported
+        & observed_near
+        & ~repeated_free
+    )
+    # The topology mesh stays closed for inside/outside queries, but queries
+    # whose nearest boundary face is false here cannot create physical force.
+    provenance_code = np.zeros((face_count,), dtype=np.uint8)
+    provenance_code[mask_supported_faces] = 1  # silhouette-only support
+    provenance_code[supported_faces] = 2  # first-hit depth support
+    provenance_code[unknown_counts > 0] = 5  # hand-unknown adjacent
+    provenance_code[local_signed_eligible] = 3  # local signed authority
+    provenance_code[repeated_free] = 4  # free-space risk
+
+    interaction_total = 0
+    interaction_authorized = 0
+    interaction_unauthorized_penetrating = 0
+    interaction_max_unauthorized_penetration_m = 0.0
+    for mano_row in mano_rows:
+        vertices = np.asarray(mano_row["vertices_canonical_m"], dtype=np.float64)
+        query_tensor = o3d.core.Tensor(vertices.astype(np.float32))
+        signed = -scene.compute_signed_distance(query_tensor).numpy().astype(float)
+        closest = scene.compute_closest_points(query_tensor)
+        primitive = closest["primitive_ids"].numpy().astype(np.int64)
+        valid = (primitive >= 0) & (primitive < face_count)
+        near = valid & (np.abs(signed) <= float(args.interaction_authority_band_m))
+        inside = valid & (signed > float(args.penetration_readiness_epsilon_m))
+        authority = np.zeros((len(vertices),), dtype=bool)
+        authority[valid] = local_signed_eligible[primitive[valid]]
+        interaction_total += int(np.count_nonzero(near))
+        interaction_authorized += int(np.count_nonzero(near & authority))
+        unauthorized_inside = inside & ~authority
+        interaction_unauthorized_penetrating += int(
+            np.count_nonzero(unauthorized_inside)
+        )
+        if np.any(unauthorized_inside):
+            interaction_max_unauthorized_penetration_m = max(
+                interaction_max_unauthorized_penetration_m,
+                float(np.max(signed[unauthorized_inside])),
+            )
+    interaction_authority_fraction = float(
+        interaction_authorized / max(interaction_total, 1)
+    )
+    local_authority_gate_passed = bool(
+        np.any(local_signed_eligible)
+        and interaction_authority_fraction
+        >= float(args.min_interaction_authority_fraction)
+        and interaction_unauthorized_penetrating
+        <= int(args.max_unauthorized_interaction_penetrating_vertices)
+        and interaction_max_unauthorized_penetration_m
+        <= float(args.max_unauthorized_interaction_penetration_m)
+    )
     repeated_free_fraction = float(np.count_nonzero(repeated_free) / max(face_count, 1))
     depth_supported_fraction = float(np.count_nonzero(supported_faces) / max(face_count, 1))
     mask_supported_fraction = float(np.count_nonzero(mask_supported_faces) / max(face_count, 1))
@@ -951,8 +1146,14 @@ def validate_proxy(
         and depth_supported_fraction >= float(args.min_depth_supported_face_fraction)
         and mask_supported_fraction >= float(args.min_mask_supported_face_fraction)
     )
-    signed_ready = bool(topology_ok and coverage_ok and distance_ok and projection_ok)
-    return {
+    signed_ready = bool(
+        topology_ok
+        and coverage_ok
+        and distance_ok
+        and projection_ok
+        and local_authority_gate_passed
+    )
+    report = {
         "signed_geometry_ready": signed_ready,
         "topology": topology,
         "topology_gate_passed": topology_ok,
@@ -960,6 +1161,41 @@ def validate_proxy(
         "observed_surface_distance": distance_summary,
         "observed_surface_distance_gate_passed": distance_ok,
         "projection_gate_passed": projection_ok,
+        "local_signed_authority_gate_passed": local_authority_gate_passed,
+        "local_signed_authority": {
+            "policy": "watertight topology for sign; physical residual only when nearest face has local observation authority",
+            "eligible_face_count": int(np.count_nonzero(local_signed_eligible)),
+            "eligible_face_fraction": float(np.mean(local_signed_eligible)),
+            "depth_supported_face_count": int(np.count_nonzero(supported_faces)),
+            "mask_supported_face_count": int(np.count_nonzero(mask_supported_faces)),
+            "observed_near_face_count": int(np.count_nonzero(observed_near)),
+            "training_depth_supported_face_count": int(
+                np.count_nonzero(
+                    train_support_counts >= int(args.min_local_depth_support_views)
+                )
+            ),
+            "heldout_depth_supported_face_count": int(
+                np.count_nonzero(heldout_depth_supported)
+            ),
+            "heldout_mask_supported_face_count": int(
+                np.count_nonzero(heldout_mask_supported)
+            ),
+            "heldout_validation_frame_count": int(
+                len(heldout_evidence_rows)
+            ),
+            "hand_unknown_adjacent_face_count": int(
+                np.count_nonzero(unknown_counts > 0)
+            ),
+            "interaction_near_vertex_count": int(interaction_total),
+            "interaction_authorized_vertex_count": int(interaction_authorized),
+            "interaction_authority_fraction": interaction_authority_fraction,
+            "unauthorized_interaction_penetrating_vertex_count": int(
+                interaction_unauthorized_penetrating
+            ),
+            "max_unauthorized_interaction_penetration_m": float(
+                interaction_max_unauthorized_penetration_m
+            ),
+        },
         "sampled_proxy_face_count": int(face_count),
         "sampled_proxy_face_ids_sha256": hashlib.sha256(np.asarray(sampled_face_ids, dtype="<i8").tobytes()).hexdigest(),
         "faces_with_any_depth_surface_support": int(np.count_nonzero(supported_faces)),
@@ -976,8 +1212,44 @@ def validate_proxy(
             "min_depth_supported_face_fraction": float(args.min_depth_supported_face_fraction),
             "min_mask_supported_face_fraction": float(args.min_mask_supported_face_fraction),
             "repeated_free_space_validation_views": int(args.repeated_free_space_validation_views),
+            "min_local_depth_support_views": int(args.min_local_depth_support_views),
+            "min_local_mask_support_views": int(args.min_local_mask_support_views),
+            "min_heldout_local_depth_support_views": int(
+                args.min_heldout_local_depth_support_views
+            ),
+            "min_heldout_local_mask_support_views": int(
+                args.min_heldout_local_mask_support_views
+            ),
+            "max_local_observed_surface_distance_m": float(
+                args.max_local_observed_surface_distance_m
+            ),
+            "interaction_authority_band_m": float(args.interaction_authority_band_m),
+            "min_interaction_authority_fraction": float(
+                args.min_interaction_authority_fraction
+            ),
+            "max_unauthorized_interaction_penetrating_vertices": int(
+                args.max_unauthorized_interaction_penetrating_vertices
+            ),
+            "max_unauthorized_interaction_penetration_m": float(
+                args.max_unauthorized_interaction_penetration_m
+            ),
         },
     }
+    authority = {
+        "face_id": np.arange(face_count, dtype=np.int32),
+        "signed_distance_eligible": local_signed_eligible.astype(bool),
+        "provenance_code": provenance_code,
+        "depth_support_view_count": support_counts,
+        "mask_support_view_count": mask_counts,
+        "free_space_view_count": free_counts,
+        "hand_unknown_view_count": unknown_counts,
+        "training_depth_support_view_count": train_support_counts,
+        "heldout_depth_support_view_count": heldout_support_counts,
+        "training_mask_support_view_count": train_mask_counts,
+        "heldout_mask_support_view_count": heldout_mask_counts,
+        "observed_surface_distance_m": observed_distance_all.astype(np.float32),
+    }
+    return report, authority
 
 
 def render_qc(path: Path, occupancy: np.ndarray, evidence: dict[str, np.ndarray], title: str) -> None:
@@ -1063,7 +1335,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         float(args.min_viewpoint_separation_deg),
         int(args.temporal_bin_count),
     )
-    selected_ids = select_evidence_frames(direct_ids, angle_matrix, int(args.max_evidence_frames))
+    selected_ids = select_evidence_frames(
+        direct_ids, angle_matrix, int(args.max_evidence_frames)
+    )
+    heldout_ids = select_heldout_validation_frames(
+        direct_ids, selected_ids, int(args.max_heldout_validation_frames)
+    )
     depth_archive = load_depth_archive(depth_path)
     grid, grid_shape, grid_origin, grid_report = build_grid(
         observed_points,
@@ -1084,17 +1361,53 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         )
         for frame_idx in selected_ids
     ]
+    heldout_evidence_rows = [
+        frame_evidence(
+            frame_idx,
+            frames[frame_idx],
+            args.object_id,
+            d15_rows[frame_idx],
+            depth_archive,
+            int(args.hand_unknown_padding_mask_px),
+            float(args.accepted_depth_support_radius_mask_px),
+        )
+        for frame_idx in heldout_ids
+    ]
+    mano_rows, mano_validation_provenance = canonical_full_mano_rows(
+        frames, d15_rows
+    )
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     candidate_path = output_dir / "shared_multiview_signed_geometry_candidate.ply"
     selected_collision_path = output_dir / "shared_collision_eligible_surface.ply"
     labels_path = output_dir / "shared_collision_eligible_face_labels.json"
+    face_authority_path = output_dir / "shared_signed_face_authority.npz"
+    candidate_face_authority_path = (
+        output_dir / "shared_signed_geometry_candidate_face_authority.npz"
+    )
     evidence_npz_path = output_dir / "shared_signed_voxel_evidence.npz"
     qc_path = output_dir / "shared_signed_geometry_voxel_qc.jpg"
     report_path = output_dir / "shared_signed_geometry_completion_report.json"
-    for path in (candidate_path, selected_collision_path, labels_path, evidence_npz_path, qc_path, report_path):
-        if path.exists() and not args.replace:
-            raise RuntimeError(f"refusing to overwrite signed geometry output: {path}")
+    for path in (
+        candidate_path,
+        selected_collision_path,
+        labels_path,
+        face_authority_path,
+        candidate_face_authority_path,
+        evidence_npz_path,
+        qc_path,
+        report_path,
+    ):
+        if path.exists():
+            if not args.replace:
+                raise RuntimeError(
+                    f"refusing to overwrite signed geometry output: {path}"
+                )
+            if not path.is_file():
+                raise RuntimeError(
+                    f"signed geometry output path is not a regular file: {path}"
+                )
+            path.unlink()
 
     failure: dict[str, Any] | None = None
     proxy: trimesh.Trimesh | None = None
@@ -1105,6 +1418,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     morphology: dict[str, Any] = {}
     frame_reports: list[dict[str, Any]] = []
     evidence_volumes: dict[str, np.ndarray] = {}
+    face_authority: dict[str, np.ndarray] = {}
     occupancy = np.zeros(grid_shape, dtype=bool)
     try:
         raw_occupancy, evidence_volumes, frame_reports = accumulate_volume_evidence(
@@ -1120,7 +1434,37 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         )
         proxy = occupancy_mesh(occupancy, grid_origin, float(args.pitch_m), args)
         proxy.export(candidate_path)
-        proxy_validation = validate_proxy(proxy, observed_points, evidence_rows, coverage, args)
+        proxy_validation, face_authority = validate_proxy(
+            proxy,
+            observed_points,
+            evidence_rows,
+            heldout_evidence_rows,
+            mano_rows,
+            coverage,
+            args,
+        )
+        candidate_mesh_sha256 = sha256_file(candidate_path)
+        np.savez_compressed(
+            candidate_face_authority_path,
+            **face_authority,
+            source_mesh_sha256=np.asarray(candidate_mesh_sha256),
+            source_mesh_face_count=np.asarray(len(proxy.faces), dtype=np.int64),
+            authority_schema=np.asarray("v19_mesh_bound_signed_face_authority_v1"),
+            authority_role=np.asarray("signed_geometry_candidate_diagnostic"),
+            provenance_code_meaning=np.asarray(
+                [
+                    "0=unsupported_or_closure",
+                    "1=mask_supported_only",
+                    "2=first_hit_depth_supported_not_locally_authorized",
+                    "3=local_signed_distance_authority",
+                    "4=free_space_risk",
+                    "5=hand_unknown_adjacent",
+                ]
+            ),
+            readiness_passed=np.asarray(
+                proxy_validation.get("signed_geometry_ready") is True
+            ),
+        )
     except Exception as exc:
         failure = {"type": type(exc).__name__, "message": str(exc)}
         proxy_validation = {
@@ -1128,16 +1472,88 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "failure": failure,
         }
 
-    signed_ready = bool(proxy is not None and proxy_validation.get("signed_geometry_ready") is True)
+    signed_ready = bool(
+        proxy is not None and proxy_validation.get("signed_geometry_ready") is True
+    )
     selected_source = candidate_path if signed_ready else observed_collision_path
     selected_mesh = proxy if signed_ready else observed_mesh
     assert selected_mesh is not None
     selected_mesh.export(selected_collision_path)
+    selected_mesh_sha256 = sha256_file(selected_collision_path)
+    if signed_ready:
+        if not face_authority:
+            raise RuntimeError("signed-ready proxy lacks per-face authority arrays")
+        np.savez_compressed(
+            face_authority_path,
+            **face_authority,
+            source_mesh_sha256=np.asarray(selected_mesh_sha256),
+            source_mesh_face_count=np.asarray(len(selected_mesh.faces), dtype=np.int64),
+            authority_schema=np.asarray("v19_mesh_bound_signed_face_authority_v1"),
+            authority_role=np.asarray("selected_collision_surface"),
+            readiness_passed=np.asarray(True),
+            provenance_code_meaning=np.asarray(
+                [
+                    "0=unsupported_or_closure",
+                    "1=mask_supported_only",
+                    "2=first_hit_depth_supported_not_locally_authorized",
+                    "3=local_signed_distance_authority",
+                    "4=free_space_risk",
+                    "5=hand_unknown_adjacent",
+                ]
+            ),
+        )
+    else:
+        np.savez_compressed(
+            face_authority_path,
+            face_id=np.arange(len(selected_mesh.faces), dtype=np.int32),
+            signed_distance_eligible=np.zeros((len(selected_mesh.faces),), dtype=bool),
+            provenance_code=np.zeros((len(selected_mesh.faces),), dtype=np.uint8),
+            source_mesh_sha256=np.asarray(selected_mesh_sha256),
+            source_mesh_face_count=np.asarray(len(selected_mesh.faces), dtype=np.int64),
+            authority_schema=np.asarray("v19_mesh_bound_signed_face_authority_v1"),
+            authority_role=np.asarray("selected_collision_surface"),
+            readiness_passed=np.asarray(False),
+            inactive_reason=np.asarray(
+                "signed geometry readiness failed; observed fallback remains unsigned"
+            ),
+        )
+    face_authority_sha256 = sha256_file(face_authority_path)
+    candidate_face_authority_sha256 = (
+        sha256_file(candidate_face_authority_path)
+        if candidate_face_authority_path.is_file()
+        else None
+    )
     selected_label = (
-        "shared_multiview_mask_depth_signed_proxy_surface"
+        "shared_multiview_mask_depth_signed_proxy_surface_with_local_face_authority"
         if signed_ready
         else "observed_depth_surface_unsigned_fallback"
     )
+    provenance_meaning = {
+        0: "unsupported_topology_closure",
+        1: "multiview_silhouette_only_completion",
+        2: "direct_first_hit_depth_supported_not_locally_authorized",
+        3: "direct_observation_local_signed_authority",
+        4: "free_space_risk_surface",
+        5: "hand_unknown_adjacent_surface",
+    }
+    candidate_codes = (
+        np.asarray(face_authority.get("provenance_code"), dtype=np.uint8)
+        if "provenance_code" in face_authority
+        else np.zeros((0,), dtype=np.uint8)
+    )
+    candidate_provenance_counts = {
+        label: int(np.count_nonzero(candidate_codes == code))
+        for code, label in provenance_meaning.items()
+    }
+    selected_codes = (
+        candidate_codes
+        if signed_ready
+        else np.zeros((len(selected_mesh.faces),), dtype=np.uint8)
+    )
+    provenance_counts = {
+        label: int(np.count_nonzero(selected_codes == code))
+        for code, label in provenance_meaning.items()
+    }
     write_json(
         labels_path,
         {
@@ -1146,6 +1562,22 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "face_count": int(len(selected_mesh.faces)),
             "label_counts": {selected_label: int(len(selected_mesh.faces))},
             "labels": [selected_label] * int(len(selected_mesh.faces)),
+            "signed_distance_eligible_face_count": int(
+                np.count_nonzero(
+                    face_authority.get(
+                        "signed_distance_eligible",
+                        np.zeros((len(selected_mesh.faces),), dtype=bool),
+                    )
+                )
+            ) if signed_ready else 0,
+            "signed_face_authority_npz": str(face_authority_path),
+            "signed_face_authority_npz_sha256": face_authority_sha256,
+            "source_mesh_sha256": selected_mesh_sha256,
+            "per_face_provenance_counts": provenance_counts,
+            "candidate_per_face_provenance_counts": candidate_provenance_counts,
+            "per_face_provenance_meaning": {
+                str(code): label for code, label in provenance_meaning.items()
+            },
         },
     )
     if evidence_volumes:
@@ -1190,7 +1622,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "collision_surface_is_volume": bool(selected_topology["is_volume"]),
         "signed_geometry_ready": signed_ready,
         "signed_geometry_source": "shared_prediction_mask_depth_direct_pose_voxel_reconstruction" if signed_ready else "unavailable_unsigned_observed_fallback",
-        "signed_geometry_consumer_policy": "all_faces_of_validated_shared_proxy_signed_eligible" if signed_ready else "signed_queries_inactive",
+        "signed_geometry_consumer_policy": "local_observation_authority_faces_only" if signed_ready else "signed_queries_inactive",
+        "signed_face_authority_required": True,
+        "signed_face_authority_npz": str(face_authority_path),
+        "signed_face_authority_npz_sha256": face_authority_sha256,
+        "signed_face_authority_mesh_sha256": selected_mesh_sha256,
+        "signed_distance_eligible_face_count": int(
+            np.count_nonzero(
+                face_authority.get(
+                    "signed_distance_eligible",
+                    np.zeros((len(selected_mesh.faces),), dtype=bool),
+                )
+            )
+        ) if signed_ready else 0,
+        "signed_distance_eligible_face_fraction": float(
+            np.mean(
+                face_authority.get(
+                    "signed_distance_eligible",
+                    np.zeros((len(selected_mesh.faces),), dtype=bool),
+                )
+            )
+        ) if signed_ready else 0.0,
         "signed_geometry_support_uncertainty_m": float(args.pitch_m) * 2.0,
         "backend_generated_geometry_consumed": False,
         "sam3d_geometry_consumed": False,
@@ -1202,9 +1654,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "generated_faces_signed_distance_eligible": False,
         "annotation_ready": False,
         "signed_geometry_readiness_reason": (
-            "backend-neutral mask/depth volume passed direct-pose coverage, topology, first-hit projection, observed-surface, and repeated free-space checks"
+            "backend-neutral mask/depth volume passed topology and coverage plus mesh-bound local first-hit authority in the MANO interaction region"
             if signed_ready
-            else "shared sign proxy did not pass every topology/coverage/projection/observed-surface gate; physical consumers must remain unsigned"
+            else "shared sign proxy did not pass every topology/coverage/projection/observed-surface/local-interaction-authority gate; physical consumers must remain unsigned"
         ),
     }
     report = {
@@ -1237,6 +1689,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "selected_object_owned_masks": {
                 str(row["frame_idx"]): row["mask_sha256"] for row in evidence_rows
             },
+            "heldout_validation_object_owned_masks": {
+                str(row["frame_idx"]): row["mask_sha256"]
+                for row in heldout_evidence_rows
+            },
         },
         "pose_authority": {
             "source": "D15 observed-only pose graph",
@@ -1250,9 +1706,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "all_direct_frame_ids": direct_ids,
             "selected_evidence_frame_ids": selected_ids,
             "selected_evidence_frame_count": int(len(selected_ids)),
+            "heldout_validation_frame_ids": heldout_ids,
+            "heldout_validation_frame_count": int(len(heldout_ids)),
             "canonical_observed_surfel_count": int(len(observed_points)),
             "per_frame_observed_surfels": observed_rows,
             "viewpoint_coverage": coverage,
+            "mano_interaction_validation_provenance": mano_validation_provenance,
         },
         "grid": grid_report,
         "volume_evidence": {
@@ -1281,6 +1740,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "completed_mesh_labeled": str(observed_pose_mesh_path),
             "collision_eligible_mesh_labeled": str(selected_collision_path),
             "collision_eligible_face_labels": str(labels_path),
+            "signed_face_authority_npz": str(face_authority_path),
+            "signed_geometry_candidate_face_authority_npz": str(candidate_face_authority_path) if candidate_face_authority_path.is_file() else None,
             "signed_geometry_mesh": str(selected_collision_path) if signed_ready else None,
             "signed_geometry_candidate_mesh": str(candidate_path) if candidate_path.is_file() else None,
             "signed_voxel_evidence_npz": str(evidence_npz_path),
@@ -1289,19 +1750,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "output_sha256": {
             "collision_eligible_mesh": sha256_file(selected_collision_path),
             "collision_eligible_face_labels": sha256_file(labels_path),
+            "signed_face_authority_npz": face_authority_sha256,
+            "signed_geometry_candidate_face_authority_npz": candidate_face_authority_sha256,
             "signed_geometry_candidate_mesh": sha256_file(candidate_path) if candidate_path.is_file() else None,
             "signed_voxel_evidence_npz": sha256_file(evidence_npz_path),
             "signed_geometry_qc": sha256_file(qc_path),
         },
         "face_label_counts": {
-            "collision_eligible_mesh": {selected_label: int(len(selected_mesh.faces))}
+            "collision_eligible_mesh": {selected_label: int(len(selected_mesh.faces))},
+            "signed_geometry_candidate_provenance": candidate_provenance_counts,
         },
         "observed_band_m": float(args.pitch_m) * 2.0,
         "accepted_body_semantics": {
             "pose_body": "D14 observed-only canonical mesh",
             "physical_collision_body": "shared signed proxy" if signed_ready else "D14 observed-only unsigned surface",
             "backend_generated_faces_consumed": False,
-            "all_proxy_faces_signed_eligible": signed_ready,
+            "all_proxy_faces_signed_eligible": False,
+            "signed_query_topology_closed_but_local_force_requires_face_authority": signed_ready,
         },
         "parameters": {
             key: str(value) if isinstance(value, Path) else value
@@ -1339,9 +1804,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-padding-m", type=float, default=0.015)
     parser.add_argument("--max-grid-voxels", type=int, default=3_000_000)
     parser.add_argument("--max-evidence-frames", type=int, default=36)
+    parser.add_argument("--max-heldout-validation-frames", type=int, default=36)
     parser.add_argument("--min-depth-m", type=float, default=0.05)
     parser.add_argument("--depth-front-tolerance-m", type=float, default=0.008)
-    parser.add_argument("--depth-surface-tolerance-m", type=float, default=0.012)
+    parser.add_argument("--depth-surface-tolerance-m", type=float, default=0.005)
     parser.add_argument("--model-frontmost-tolerance-m", type=float, default=0.004)
     parser.add_argument("--min-volume-support-views", type=int, default=2)
     parser.add_argument("--min-decisive-support-views", type=int, default=8)
@@ -1365,8 +1831,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-direct-gap-fraction", type=float, default=0.35)
     parser.add_argument("--min-viewpoint-separation-deg", type=float, default=15.0)
     parser.add_argument("--max-observed-validation-points", type=int, default=20_000)
-    parser.add_argument("--max-validation-faces", type=int, default=12_000)
+    parser.add_argument("--max-validation-faces", type=int, default=12_000, help="Legacy diagnostic field; local authority always validates every emitted face.")
     parser.add_argument("--min-face-samples-per-validation-view", type=int, default=2)
+    parser.add_argument("--min-local-depth-support-views", type=int, default=1)
+    parser.add_argument("--min-local-mask-support-views", type=int, default=1)
+    parser.add_argument("--min-heldout-local-depth-support-views", type=int, default=1)
+    parser.add_argument("--min-heldout-local-mask-support-views", type=int, default=1)
+    parser.add_argument("--max-local-observed-surface-distance-m", type=float, default=0.005)
+    parser.add_argument("--interaction-authority-band-m", type=float, default=0.030)
+    parser.add_argument("--penetration-readiness-epsilon-m", type=float, default=0.001)
+    parser.add_argument("--min-interaction-authority-fraction", type=float, default=0.50)
+    parser.add_argument("--max-unauthorized-interaction-penetrating-vertices", type=int, default=0)
+    parser.add_argument("--max-unauthorized-interaction-penetration-m", type=float, default=0.001)
     parser.add_argument("--repeated-free-space-validation-views", type=int, default=2)
     parser.add_argument("--max-repeated-free-face-fraction", type=float, default=0.005)
     parser.add_argument("--min-depth-supported-face-fraction", type=float, default=0.10)

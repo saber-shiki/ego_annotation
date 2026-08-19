@@ -12,6 +12,8 @@ from scipy.spatial import cKDTree
 import trimesh
 import open3d as o3d
 
+from v19_signed_face_authority import load_signed_face_authority
+
 
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
@@ -313,8 +315,37 @@ def main() -> None:
         sign_mesh_is_completion_surface=args.sign_mesh is None,
         sign_mesh_path=sign_mesh_path,
     )
+    authority_payload = (
+        load_json(args.sign_mesh_source_report)
+        if args.sign_mesh_source_report is not None
+        else completion
+        if args.sign_mesh is None
+        else {}
+    )
+    authority_report_path = (
+        args.sign_mesh_source_report
+        if args.sign_mesh_source_report is not None
+        else args.completion_report
+        if args.sign_mesh is None
+        else None
+    )
+    signed_face_authority = load_signed_face_authority(
+        authority_payload,
+        source_report_path=authority_report_path,
+        mesh_path=sign_mesh_path,
+        mesh_face_count=len(sign_mesh.faces),
+    )
+    signed_face_authority_mask = np.asarray(
+        signed_face_authority.pop("mask"), dtype=bool
+    )
+    signed_face_authority.pop("provenance_code", None)
+    sign_source_readiness["signed_face_authority"] = signed_face_authority
     signed_geometry_declared_ready = sign_source_readiness["signed_geometry_ready"] is True
-    signed_geometry_query_eligible = bool(sign_mesh_watertight and signed_geometry_declared_ready)
+    signed_geometry_query_eligible = bool(
+        sign_mesh_watertight
+        and signed_geometry_declared_ready
+        and signed_face_authority.get("usable") is True
+    )
     signed_nonpenetration_physical_active = bool(
         signed_geometry_query_eligible and not args.skip_signed_distance and not quarantine_unready_pose
     )
@@ -383,9 +414,47 @@ def main() -> None:
             signed = np.full(len(verts_c), np.nan, dtype=float)
             penetrating = np.zeros(len(verts_c), dtype=bool)
             correction_c = np.zeros(3, dtype=float)
-            correction_solver = {"solver": "not_needed_no_penetration", "success": True, "constraint_count": 0}
-            signed_broadphase_candidate = sign_aabb & near_surface
-            signed_query_candidate = signed_broadphase_candidate if signed_geometry_query_eligible else np.zeros(len(verts_c), dtype=bool)
+            correction_solver = {"solver": "not_needed_no_authorized_penetration", "success": True, "constraint_count": 0}
+            # A closed sign query must include every MANO vertex inside the sign
+            # mesh AABB. The old observed-band broadphase silently missed deep
+            # penetration; local physical authority is enforced below by the
+            # nearest primitive ID, not by unsigned distance to sampled surface.
+            signed_broadphase_candidate = sign_aabb.copy()
+            signed_local_authority_candidate = np.zeros(len(verts_c), dtype=bool)
+            signed_local_authority_rejected = np.zeros(len(verts_c), dtype=bool)
+            if (
+                signed_geometry_query_eligible
+                and signed_broadphase_candidate.any()
+                and sign_scene is not None
+            ):
+                broad_idx = np.where(signed_broadphase_candidate)[0]
+                closest = sign_scene.compute_closest_points(
+                    o3d.core.Tensor(np.asarray(verts_c[broad_idx], dtype=np.float32))
+                )
+                primitive = closest["primitive_ids"].numpy().astype(np.int64)
+                valid_primitive = (
+                    (primitive >= 0) & (primitive < len(signed_face_authority_mask))
+                )
+                authorized = np.zeros(len(broad_idx), dtype=bool)
+                authorized[valid_primitive] = signed_face_authority_mask[
+                    primitive[valid_primitive]
+                ]
+                signed_local_authority_candidate[broad_idx[authorized]] = True
+                signed_local_authority_rejected[broad_idx[~authorized]] = True
+            signed_query_candidate = signed_local_authority_candidate
+            unresolved_topology_penetrating = np.zeros(len(verts_c), dtype=bool)
+            unresolved_topology_signed = np.full(len(verts_c), np.nan, dtype=float)
+            if (
+                signed_geometry_query_eligible
+                and signed_local_authority_rejected.any()
+                and sign_scene is not None
+            ):
+                rejected_idx = np.where(signed_local_authority_rejected)[0]
+                rejected_signed = -sign_scene.compute_signed_distance(
+                    o3d.core.Tensor(np.asarray(verts_c[rejected_idx], dtype=np.float32))
+                ).numpy().astype(float)
+                unresolved_topology_signed[rejected_idx] = rejected_signed
+                unresolved_topology_penetrating[rejected_idx] = rejected_signed > 0.0
             if signed_geometry_query_eligible and signed_query_candidate.any() and sign_scene is not None:
                 candidate_idx = np.where(signed_query_candidate)[0]
                 query_tensor = o3d.core.Tensor(np.asarray(verts_c[candidate_idx], dtype=np.float32))
@@ -432,6 +501,14 @@ def main() -> None:
                     "success": False,
                     "constraint_count": 0,
                 }
+            elif signed_face_authority.get("usable") is not True:
+                app_state = "inactive_missing_mesh_bound_local_signed_face_authority"
+                reason = "signed readiness cannot activate physical correction because the mesh-bound local face-authority contract is missing, unsafe, empty, or mismatched"
+                correction_solver = {
+                    "solver": "not_run_missing_local_signed_face_authority",
+                    "success": False,
+                    "constraint_count": 0,
+                }
             elif not sign_mesh_watertight:
                 app_state = "inactive_nonwatertight_mesh_no_signed_correction"
                 reason = "the declared sign source mesh is non-watertight, so signed nonpenetration remains inactive"
@@ -451,7 +528,10 @@ def main() -> None:
                 reason = "watertight sign mesh predicts MANO/object penetration, but satisfying local escape halfspaces requires translation larger than the penetration-depth-derived orthogonal constraint bound; this is treated as sign-support inconsistency, not H-prime"
             elif penetrating.any():
                 app_state = "not_applied_visible_2d_conflict_or_unmeasured"
-                reason = "watertight sign mesh predicts MANO/object penetration, but available visible 2D consistency is missing or degraded; coordinate update is held"
+                reason = "watertight sign mesh predicts locally authorized MANO/object penetration, but available visible 2D consistency is missing or degraded; coordinate update is held"
+            elif unresolved_topology_penetrating.any():
+                app_state = "unresolved_topology_penetration_nearest_face_lacks_local_authority"
+                reason = "watertight topology classifies MANO vertices inside, but their nearest boundary faces lack local first-hit authority; no physical correction is applied and signed promotion remains unresolved"
             elif signed_broadphase_candidate.any() and args.skip_signed_distance:
                 app_state = "uncertainty_signed_distance_not_evaluated_broadphase_support"
                 reason = "MANO vertices are within the observed-surface band and inside the sign-mesh AABB, but exact signed distance was intentionally skipped for broadphase measurement"
@@ -519,8 +599,15 @@ def main() -> None:
                 "surface_aabb_candidate_vertex_fraction": float(surface_aabb.mean()),
                 "sign_aabb_candidate_vertex_count": int(sign_aabb.sum()),
                 "sign_aabb_candidate_vertex_fraction": float(sign_aabb.mean()),
+                "signed_broadphase_policy": "all_vertices_inside_sign_mesh_AABB_then_nearest_face_authority_filter",
                 "signed_broadphase_candidate_vertex_count": int(signed_broadphase_candidate.sum()),
                 "signed_broadphase_candidate_vertex_fraction": float(signed_broadphase_candidate.mean()),
+                "signed_local_authority_candidate_vertex_count": int(signed_local_authority_candidate.sum()),
+                "signed_local_authority_rejected_vertex_count": int(signed_local_authority_rejected.sum()),
+                "unresolved_topology_penetrating_vertex_count": int(unresolved_topology_penetrating.sum()),
+                "unresolved_topology_penetration_depth_m": nearest_summary(
+                    unresolved_topology_signed[unresolved_topology_penetrating]
+                ),
                 "signed_query_candidate_vertex_count": int(signed_query_candidate.sum()),
                 "signed_query_candidate_vertex_fraction": float(signed_query_candidate.mean()),
                 "penetrating_vertex_count": int(penetrating.sum()),
@@ -595,6 +682,7 @@ def main() -> None:
         "completion_geometry_readiness": geometry_readiness,
         "signed_geometry_source_readiness": sign_source_readiness,
         "signed_geometry_query_eligible": signed_geometry_query_eligible,
+        "signed_face_authority": signed_face_authority,
         "signed_nonpenetration_factor_active": signed_nonpenetration_physical_active,
         "signed_nonpenetration_inactive_reason": (
             None
@@ -603,7 +691,7 @@ def main() -> None:
             if quarantine_unready_pose
             else "signed_distance_explicitly_skipped"
             if args.skip_signed_distance
-            else "signed_geometry_not_explicitly_ready_or_not_watertight"
+            else "signed_geometry_not_explicitly_ready_not_watertight_or_missing_local_face_authority"
         ),
         "sign_mesh_watertight": sign_mesh_watertight,
         "measured_pair_count": len(rows),

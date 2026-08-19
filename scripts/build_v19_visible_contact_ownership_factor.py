@@ -18,6 +18,7 @@ that the older V18 contact_patch builder only promoted from existing annotations
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any
 import cv2
 import numpy as np
 from PIL import Image
+from scipy.ndimage import distance_transform_edt
 
 HAND_EDGES = [
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -70,6 +72,14 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
@@ -85,6 +95,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hand-radius-px", type=int, default=10)
     p.add_argument("--hand-line-radius-px", type=int, default=6)
     p.add_argument("--ownership-dilation-px", type=int, default=8)
+    p.add_argument(
+        "--depth-order-query-radius-mask-px",
+        type=float,
+        default=6.0,
+        help="Maximum mask-plane distance from a P09 accepted first-hit object sample at which a projected MANO vertex may query object depth. The hand pixel itself remains unknown; raw depth under the hand is never consumed.",
+    )
     p.add_argument("--contact-image-band-px", type=int, default=18)
     p.add_argument("--min-contact-image-px", type=int, default=12)
     p.add_argument("--contact-weight", type=float, default=2.5e4)
@@ -464,6 +480,96 @@ def project_camera_to_mask(
     return u, v, valid
 
 
+def accepted_first_surface_query_raster(
+    candidate: dict[str, Any],
+    plane: dict[str, Any],
+    mask_shape: tuple[int, int],
+    radius_px: float,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Rasterize only P09-accepted object first-hit samples for MANO queries.
+
+    The resulting support band can overlap a projected hand even though the
+    object-owned mask removed that hand region. Depth values are copied from the
+    nearest accepted object sample, never from raw depth under the hand.
+    """
+    first_surface = (
+        candidate.get("first_surface_depth_ownership")
+        if isinstance(candidate.get("first_surface_depth_ownership"), dict)
+        else {}
+    )
+    object_ownership = (
+        candidate.get("object_surface_ownership_filter")
+        if isinstance(candidate.get("object_surface_ownership_filter"), dict)
+        else {}
+    )
+    if (
+        first_surface.get("enabled") is not True
+        or first_surface.get("fail_closed") is True
+        or object_ownership.get("fail_closed") is True
+    ):
+        raise RuntimeError(
+            "P17 depth-order support requires P09 camera samples that passed first-surface depth ownership and object/hand ownership filtering"
+        )
+    points = np.asarray(candidate.get("camera_vertices_sample_m") or [], dtype=np.float64)
+    intr = finite_intrinsics(
+        candidate.get("intrinsics_fx_fy_cx_cy"),
+        "P09 accepted first-surface intrinsics",
+    )
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 32 or not np.isfinite(points).all():
+        raise RuntimeError(
+            f"P09 accepted first-surface camera points are invalid: {points.shape}"
+        )
+    A_mask_from_source = finite_affine(
+        plane.get("A_mask_from_source_coordinate_model"),
+        "A_mask_from_source_coordinate_model",
+    )
+    fx, fy, cx, cy = intr.tolist()
+    z = points[:, 2]
+    positive = z > 1.0e-5
+    uv_source = np.column_stack(
+        [
+            fx * points[:, 0] / np.maximum(z, 1.0e-6) + cx,
+            fy * points[:, 1] / np.maximum(z, 1.0e-6) + cy,
+        ]
+    )
+    uv_mask = transform_source_pixels(uv_source, A_mask_from_source)
+    x = np.rint(uv_mask[:, 0]).astype(np.int64)
+    y = np.rint(uv_mask[:, 1]).astype(np.int64)
+    valid = (
+        positive
+        & np.isfinite(uv_mask).all(axis=1)
+        & (x >= 0)
+        & (x < int(mask_shape[1]))
+        & (y >= 0)
+        & (y < int(mask_shape[0]))
+    )
+    if int(np.count_nonzero(valid)) < 32:
+        raise RuntimeError("too few P09 accepted first-surface points enter the mask plane")
+    sparse = np.full(mask_shape, np.inf, dtype=np.float32)
+    flat_index = y[valid] * int(mask_shape[1]) + x[valid]
+    np.minimum.at(sparse.reshape(-1), flat_index, z[valid].astype(np.float32))
+    seeds = np.isfinite(sparse)
+    distance, indices = distance_transform_edt(
+        ~seeds, return_distances=True, return_indices=True
+    )
+    support = distance <= float(radius_px)
+    nearest_depth = sparse[tuple(indices)]
+    query_depth = np.full(mask_shape, np.nan, dtype=np.float32)
+    query_depth[support] = nearest_depth[support]
+    return support, query_depth, {
+        "source": "P09 visible_geometry_candidate.camera_vertices_sample_m after first_surface_depth_ownership",
+        "accepted_first_surface_point_count": int(len(points)),
+        "projected_point_count": int(np.count_nonzero(valid)),
+        "unique_seed_pixel_count": int(np.count_nonzero(seeds)),
+        "query_support_pixel_count": int(np.count_nonzero(support)),
+        "query_radius_mask_px": float(radius_px),
+        "P09_first_surface_depth_ownership_state": first_surface.get("state"),
+        "P09_object_surface_ownership_state": object_ownership.get("state"),
+        "raw_depth_under_projected_hand_consumed": False,
+        "depth_sha256": hashlib.sha256(query_depth.astype("<f4").tobytes()).hexdigest(),
+    }
+
+
 def draw_hand_mask(
     frame: dict[str, Any],
     hand: dict[str, Any],
@@ -608,6 +714,40 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         object_mask = load_mask(Path(mask_path_raw))
         height, width = object_mask.shape
         plane_contract = mask_plane_contract(frame, obj, object_mask.shape)
+        candidate = (
+            obj.get("visible_geometry_candidate")
+            if isinstance(obj.get("visible_geometry_candidate"), dict)
+            else None
+        )
+        if candidate is None:
+            diagnostics.append(
+                {
+                    "frame_idx": frame_idx,
+                    "state": "missing_P09_accepted_first_surface_for_depth_order_query",
+                }
+            )
+            continue
+        candidate_K = finite_intrinsics(
+            candidate.get("intrinsics_fx_fy_cx_cy"),
+            "P09 accepted first-surface intrinsics",
+        )
+        frame_camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+        active_K = finite_intrinsics(
+            frame_camera.get("intrinsics_fx_fy_cx_cy"),
+            "active frame camera intrinsics",
+        )
+        if not np.allclose(candidate_K, active_K, atol=0.01, rtol=0.0):
+            raise RuntimeError(
+                f"frame {frame_idx}: P09 accepted first-surface K {candidate_K.tolist()} != active source K {active_K.tolist()}"
+            )
+        depth_order_query_support, depth_order_query_depth, depth_order_diag = (
+            accepted_first_surface_query_raster(
+                candidate,
+                plane_contract,
+                object_mask.shape,
+                float(args.depth_order_query_radius_mask_px),
+            )
+        )
         object_contact_band = dilate(object_mask, int(args.contact_image_band_px))
         for hand in as_list(frame.get("hands")):
             if not isinstance(hand, dict):
@@ -649,14 +789,36 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             visible_object_path = side_mask_dir / f"{frame_idx:06d}_visible_object_owned.png"
             constraint_path = side_mask_dir / f"{frame_idx:06d}_constraint_eligible_entity.png"
             hand_support_path = side_mask_dir / f"{frame_idx:06d}_projected_mano_hand_support.png"
+            depth_order_support_path = side_mask_dir / f"{frame_idx:06d}_depth_order_query_support.png"
+            depth_order_npz_path = side_mask_dir / f"{frame_idx:06d}_depth_order_first_surface.npz"
             save_bool_mask(non_object_path, non_object_owned)
             save_bool_mask(visible_object_path, visible_object_owned)
             save_bool_mask(constraint_path, constraint_eligible)
             save_bool_mask(hand_support_path, hand_mask)
+            save_bool_mask(depth_order_support_path, depth_order_query_support)
+            np.savez_compressed(
+                depth_order_npz_path,
+                depth_mask_plane_m=depth_order_query_depth.astype(np.float32),
+                support_mask=depth_order_query_support.astype(np.uint8),
+                A_mask_from_source_coordinate_model=np.asarray(
+                    plane_contract["A_mask_from_source_coordinate_model"],
+                    dtype=np.float64,
+                ),
+                source_size_wh=np.asarray(plane_contract["source_size_wh"], dtype=np.int32),
+                mask_size_wh=np.asarray(plane_contract["mask_size_wh"], dtype=np.int32),
+                source=np.asarray(
+                    "P09 accepted first-surface samples; nearest sample within bounded mask-plane radius"
+                ),
+            )
+            depth_order_support_sha256 = sha256_file(depth_order_support_path)
+            depth_order_npz_sha256 = sha256_file(depth_order_npz_path)
             counts = {
                 "non_object_owned_px": int(np.count_nonzero(non_object_owned)),
                 "visible_object_owned_px": int(np.count_nonzero(visible_object_owned)),
                 "constraint_eligible_entity_px": int(np.count_nonzero(constraint_eligible)),
+                "depth_order_query_support_px": int(
+                    np.count_nonzero(depth_order_query_support)
+                ),
                 **hand_diag,
                 **prox,
                 "contact_image_px": int(contact_image_px),
@@ -688,6 +850,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "visible_object_owned_mask_path": str(visible_object_path),
                 "constraint_eligible_entity_mask_path": str(constraint_path),
                 "adjusted_entity_mask_path": str(constraint_path),
+                "depth_order_query_support_mask_path": str(depth_order_support_path),
+                "depth_order_query_support_mask_sha256": depth_order_support_sha256,
+                "depth_order_first_surface_npz_path": str(depth_order_npz_path),
+                "depth_order_first_surface_npz_sha256": depth_order_npz_sha256,
+                "depth_order_query_semantics": "projected MANO may query nearby P09-accepted object first-hit depth even where ownership mask marks hand/unknown; raw depth under hand is forbidden",
+                "depth_order_first_surface": depth_order_diag,
                 "counts": counts,
             })
             min_dist = prox.get("min_distance_px")
@@ -780,6 +948,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     if len(duplicate_keys) != len(set(duplicate_keys)):
         raise ValueError("duplicate contact rows emitted")
     payload = {
+        "schema": "v19_visible_contact_ownership_factor_v2",
         "method": "v19_visible_contact_ownership_factor_from_projected_mano_object_mask_and_agent_interaction_judgment",
         "case": str(args.case),
         "target_entity_id": str(args.target_entity_id),
@@ -791,6 +960,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "hand_radius_px": int(args.hand_radius_px),
             "hand_line_radius_px": int(args.hand_line_radius_px),
             "ownership_dilation_px": int(args.ownership_dilation_px),
+            "depth_order_query_radius_mask_px": float(
+                args.depth_order_query_radius_mask_px
+            ),
             "contact_image_band_px": int(args.contact_image_band_px),
             "min_contact_image_px": int(args.min_contact_image_px),
             "contact_weight": float(args.contact_weight),
@@ -802,6 +974,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 getattr(args, "require_camera_mano_contract_aligned", False)
             ),
             "projection_image_plane_policy": "project active K in source_rgb then apply exact P09 A_mask_from_source",
+            "depth_order_query_policy": "use only P09 accepted first-surface object samples and a bounded nearest-sample mask-plane band; never consume raw depth under projected MANO",
         },
         "agent_interaction_judgment_summary": judgment_summary,
         "summary": {

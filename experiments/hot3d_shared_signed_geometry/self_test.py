@@ -20,6 +20,7 @@ sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(EXPERIMENT))
 
 import build_hot3d_shared_signed_geometry as signed_geometry  # noqa: E402
+import v19_signed_face_authority as face_authority  # noqa: E402
 import build_v19_mano_surface_hypothesis_state as p18b  # noqa: E402
 import render_p14_p15_layered_state as renderer  # noqa: E402
 
@@ -81,6 +82,75 @@ class SharedSignedGeometryTest(unittest.TestCase):
         self.assertTrue(np.isfinite(depth[xy[:, 1], xy[:, 0]]).all())
         self.assertEqual(report["accepted_first_surface_camera_point_count"], 64)
         self.assertGreaterEqual(report["accepted_first_surface_unique_seed_pixel_count"], 16)
+
+    def test_mesh_bound_face_authority_rejects_hash_mismatch_and_preserves_local_mask(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="signed_face_authority_") as temporary:
+            root = Path(temporary)
+            mesh_path = root / "mesh.ply"
+            mesh = __import__("trimesh").creation.box(extents=[0.1, 0.08, 0.06])
+            mesh.export(mesh_path)
+            mesh_hash = face_authority.sha256_file(mesh_path)
+            authority_path = root / "authority.npz"
+            eligible = np.zeros((len(mesh.faces),), dtype=bool)
+            eligible[:3] = True
+            np.savez_compressed(
+                authority_path,
+                face_id=np.arange(len(mesh.faces), dtype=np.int32),
+                signed_distance_eligible=eligible,
+                provenance_code=np.where(eligible, 3, 0).astype(np.uint8),
+                source_mesh_sha256=np.asarray(mesh_hash),
+                source_mesh_face_count=np.asarray(len(mesh.faces), dtype=np.int64),
+                authority_schema=np.asarray("v19_mesh_bound_signed_face_authority_v1"),
+                authority_role=np.asarray("selected_collision_surface"),
+                readiness_passed=np.asarray(True),
+            )
+            report = {
+                "geometry_readiness": {
+                    "signed_geometry_ready": True,
+                    "signed_geometry_source": "shared_prediction_mask_depth_direct_pose_voxel_reconstruction",
+                    "signed_face_authority_required": True,
+                    "signed_geometry_consumer_policy": "local_observation_authority_faces_only",
+                    "signed_face_authority_npz": str(authority_path),
+                    "signed_face_authority_npz_sha256": face_authority.sha256_file(authority_path),
+                    "signed_face_authority_mesh_sha256": mesh_hash,
+                }
+            }
+            loaded = face_authority.load_signed_face_authority(
+                report,
+                source_report_path=root / "report.json",
+                mesh_path=mesh_path,
+                mesh_face_count=len(mesh.faces),
+            )
+            np.testing.assert_array_equal(loaded.pop("mask"), eligible)
+            self.assertEqual(loaded["eligible_face_count"], 3)
+            unsafe_legacy = {
+                "geometry_readiness": {
+                    "signed_geometry_ready": True,
+                    "signed_geometry_source": "shared_prediction_mask_depth_direct_pose_voxel_reconstruction",
+                    "signed_geometry_consumer_policy": "all_faces_of_validated_shared_proxy_signed_eligible",
+                    "signed_face_authority_npz": str(authority_path),
+                    "signed_face_authority_npz_sha256": face_authority.sha256_file(authority_path),
+                    "signed_face_authority_mesh_sha256": mesh_hash,
+                }
+            }
+            unsafe = face_authority.load_signed_face_authority(
+                unsafe_legacy,
+                source_report_path=root / "legacy.json",
+                mesh_path=mesh_path,
+                mesh_face_count=len(mesh.faces),
+            )
+            self.assertFalse(unsafe.pop("mask").any())
+            self.assertFalse(unsafe["usable"])
+            self.assertIn("requires_rebuild", unsafe["state"])
+            contaminated = json.loads(json.dumps(report))
+            contaminated["geometry_readiness"]["signed_face_authority_mesh_sha256"] = "0" * 64
+            with self.assertRaisesRegex(RuntimeError, "different topology mesh"):
+                face_authority.load_signed_face_authority(
+                    contaminated,
+                    source_report_path=root / "report.json",
+                    mesh_path=mesh_path,
+                    mesh_face_count=len(mesh.faces),
+                )
 
     def test_renderer_consumes_accepted_full_778_archive(self) -> None:
         with tempfile.TemporaryDirectory(prefix="signed_renderer_archive_") as temporary:
@@ -201,6 +271,33 @@ class SharedSignedGeometryTest(unittest.TestCase):
             )
             self.assertFalse(accepted_bad)
             self.assertIn("nonzero_private_object_translation", report_bad["blockers"])
+
+            gated = json.loads(json.dumps(rows))
+            gated[0]["output_translation_gate"] = {"applied": True}
+            accepted_gated, report_gated, _ = p18b.signed_full_mano_acceptance(
+                state, gated, args
+            )
+            self.assertFalse(accepted_gated)
+            self.assertIn(
+                "published_candidate_contains_translation_gated_rows",
+                report_gated["blockers"],
+            )
+
+            unauthorized = json.loads(json.dumps(rows))
+            unauthorized[1][
+                "full_unauthorized_surface_penetrating_vertex_count_after_solver"
+            ] = 1
+            unauthorized[1][
+                "full_unauthorized_surface_penetration_after_solver_m"
+            ] = {"max": 0.004}
+            accepted_unauthorized, report_unauthorized, _ = (
+                p18b.signed_full_mano_acceptance(state, unauthorized, args)
+            )
+            self.assertFalse(accepted_unauthorized)
+            self.assertIn(
+                "unresolved_penetration_nearest_unauthorized_closure_face",
+                report_unauthorized["blockers"],
+            )
 
 
 if __name__ == "__main__":

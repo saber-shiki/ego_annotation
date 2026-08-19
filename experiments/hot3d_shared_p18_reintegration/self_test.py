@@ -141,7 +141,12 @@ class SharedP18ReintegrationTest(unittest.TestCase):
             pose.write_text("{}", encoding="utf-8")
             surface.write_text("ply\n", encoding="utf-8")
             base = {
-                "parameters": {"optimize_object_translation": False},
+                "parameters": {
+                    "optimize_object_translation": False,
+                    "freeze_translation_without_visible_surface_support": True,
+                    "gate_translation_with_visible_surface_support": True,
+                    "translation_gate_min_visible_surface_depth_vertices": 0,
+                },
                 "inputs": {
                     "pose_report": str(pose),
                     "physical_surface_mesh": str(surface),
@@ -151,6 +156,9 @@ class SharedP18ReintegrationTest(unittest.TestCase):
                         "frame_idx": 0,
                         "hand_side": "left",
                         "optimized_object_translation_world_m": [0.0, 0.0, 0.0],
+                        "visible_surface_translation_support_vertex_count": 1,
+                        "optimizer_translation_support_gate": {"frozen": False},
+                        "output_translation_gate": {"applied": False},
                         "signed_object_surface_factor_state": "inactive_signed_geometry_not_ready_or_nonwatertight",
                     }
                 ],
@@ -173,6 +181,130 @@ class SharedP18ReintegrationTest(unittest.TestCase):
                     pose_report=pose,
                     physical_surface=surface,
                 )
+
+    def test_independent_first_hit_support_survives_hand_ownership_cut_without_becoming_residual(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="p17_independent_depth_support_") as temporary:
+            root = Path(temporary)
+            constraint = np.zeros((16, 16), dtype=np.uint8)
+            # Projected MANO will query (8,8), deliberately absent from the
+            # ownership constraint mask.
+            constraint[2:6, 2:6] = 1
+            support = np.zeros((16, 16), dtype=np.uint8)
+            support[8, 8] = 1
+            depth = np.full((16, 16), np.nan, dtype=np.float32)
+            depth[8, 8] = 1.0
+            non_object = root / "non_object.png"
+            constraint_path = root / "constraint.png"
+            support_path = root / "support.png"
+            from PIL import Image
+            Image.fromarray(constraint * 255).save(non_object)
+            Image.fromarray(constraint * 255).save(constraint_path)
+            Image.fromarray(support * 255).save(support_path)
+            npz_path = root / "first_surface.npz"
+            np.savez_compressed(
+                npz_path,
+                depth_mask_plane_m=depth,
+                support_mask=support,
+                A_mask_from_source_coordinate_model=np.eye(3),
+            )
+            row = {
+                "non_object_owned_mask_path": str(non_object),
+                "constraint_eligible_entity_mask_path": str(constraint_path),
+                "depth_order_query_support_mask_path": str(support_path),
+                "depth_order_query_support_mask_sha256": p18.sha256_file(support_path),
+                "depth_order_first_surface_npz_path": str(npz_path),
+                "depth_order_first_surface_npz_sha256": p18.sha256_file(npz_path),
+                "image_plane_transform": {
+                    "camera_contract_consistent": True,
+                    "mask_size_wh": [16, 16],
+                    "A_mask_from_source_coordinate_model": np.eye(3).tolist(),
+                },
+                "counts": {},
+            }
+            _non_object, constraint_mask, diag = p18.visible_ownership_masks_for_row(
+                row, {}
+            )
+            support_mask, support_depth, support_diag = (
+                p18.load_depth_order_first_surface_for_row(
+                    diag, {}, constraint_mask.shape
+                )
+            )
+            self.assertFalse(bool(constraint_mask[8, 8]))
+            self.assertTrue(bool(support_mask[8, 8]))
+            self.assertEqual(
+                support_diag["raw_depth_under_hand_consumed"], False
+            )
+            frame = {
+                "frame_idx": 0,
+                "camera": {"T_world_camera_metric": np.eye(4).tolist()},
+                "hands": [
+                    {
+                        "hand_side": "left",
+                        "metric_mano_state": {
+                            "current_v18_camera_intrinsics_fx_fy_cx_cy": [
+                                8.0,
+                                8.0,
+                                8.0,
+                                8.0,
+                            ]
+                        },
+                    }
+                ],
+            }
+            args = SimpleNamespace(
+                visible_surface_depth_order_term=True,
+                visible_object_mask_dilation_px=0,
+                visible_surface_depth_order_margin_m=0.01,
+                max_visible_surface_depth_vertices=16,
+            )
+            vertices = np.asarray([[0.0, 0.0, 1.05]], dtype=float)
+            hard_ids, *_ = p18.visible_surface_depth_order_constraints(
+                frame=frame,
+                side="left",
+                vertices_world=vertices,
+                mask=constraint_mask,
+                depth_row={"depth": support_depth},
+                A_mask_from_source=np.eye(3),
+                depth_is_mask_plane=True,
+                mask_dilation_px=0,
+                args=args,
+                enabled=True,
+            )
+            support_ids, *_ = p18.visible_surface_depth_order_constraints(
+                frame=frame,
+                side="left",
+                vertices_world=vertices,
+                mask=support_mask,
+                depth_row={"depth": support_depth},
+                A_mask_from_source=np.eye(3),
+                depth_is_mask_plane=True,
+                mask_dilation_px=0,
+                args=args,
+                enabled=True,
+            )
+            self.assertEqual(len(hard_ids), 0)
+            self.assertEqual(support_ids.tolist(), [0])
+
+    def test_translation_gate_threshold_zero_distinguishes_zero_and_one_support(self) -> None:
+        self.assertTrue(
+            p18.translation_support_gate_applies(
+                enabled=True, support_count=0, minimum_supported_vertices=0
+            )
+        )
+        self.assertFalse(
+            p18.translation_support_gate_applies(
+                enabled=True, support_count=1, minimum_supported_vertices=0
+            )
+        )
+        self.assertFalse(
+            p18.translation_support_gate_applies(
+                enabled=False, support_count=0, minimum_supported_vertices=0
+            )
+        )
+        with self.assertRaises(ValueError):
+            p18.translation_support_gate_applies(
+                enabled=True, support_count=-1, minimum_supported_vertices=0
+            )
 
     def test_temporal_surface_samples_change_camera_world_and_side_pixels(self) -> None:
         points = np.asarray([[0.0, 0.0, 1.0]], dtype=np.float64)
@@ -529,7 +661,32 @@ class SharedP18ReintegrationTest(unittest.TestCase):
 
             signed_payload = json.loads(json.dumps(fallback_payload))
             signed_payload["outputs"]["collision_eligible_mesh_labeled"] = str(signed_path)
-            signed_payload["geometry_readiness"]["signed_geometry_ready"] = True
+            signed_mesh = trimesh.load(signed_path, process=False)
+            signed_mesh_sha256 = shared_tail.sha256_file(signed_path)
+            authority_path = root / "signed_face_authority.npz"
+            np.savez_compressed(
+                authority_path,
+                face_id=np.arange(len(signed_mesh.faces), dtype=np.int32),
+                signed_distance_eligible=np.ones((len(signed_mesh.faces),), dtype=bool),
+                provenance_code=np.full((len(signed_mesh.faces),), 3, dtype=np.uint8),
+                source_mesh_sha256=np.asarray(signed_mesh_sha256),
+                source_mesh_face_count=np.asarray(len(signed_mesh.faces), dtype=np.int64),
+                authority_schema=np.asarray("v19_mesh_bound_signed_face_authority_v1"),
+                authority_role=np.asarray("selected_collision_surface"),
+                readiness_passed=np.asarray(True),
+            )
+            authority_sha256 = shared_tail.sha256_file(authority_path)
+            signed_payload["outputs"]["signed_face_authority_npz"] = str(authority_path)
+            signed_payload["geometry_readiness"].update(
+                {
+                    "signed_geometry_ready": True,
+                    "signed_face_authority_required": True,
+                    "signed_geometry_consumer_policy": "local_observation_authority_faces_only",
+                    "signed_face_authority_npz": str(authority_path),
+                    "signed_face_authority_npz_sha256": authority_sha256,
+                    "signed_face_authority_mesh_sha256": signed_mesh_sha256,
+                }
+            )
             surface, ready, report = shared_tail.validate_signed_completion(
                 signed_payload, observed_path, observed_path, pose_report
             )

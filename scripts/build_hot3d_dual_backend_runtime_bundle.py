@@ -42,9 +42,11 @@ SCRIPT_FILES = [
     "remote_run_sam3d_objects_mesh_v7.py",
     "build_v19_observed_only_completion_reference.py",
     "build_hot3d_shared_signed_geometry.py",
+    "v19_signed_face_authority.py",
     "export_hawor_world.py",
     "remote_run_hawor_export.sh",
     "build_v19_visible_contact_ownership_factor.py",
+    "build_v18_mano_object_constraint_state.py",
     "solve_v18_joint_mano_interval_trajectory.py",
     "build_v19_mano_surface_hypothesis_state.py",
     "build_v19_rigid_render_state.py",
@@ -55,6 +57,7 @@ SCRIPT_FILES = [
     "preflight_local_v19_runtime.py",
 ]
 EXTRA_FILES = [
+    ("runtime/v19_runtime_spec.md", "runtime/v19_runtime_spec.md"),
     ("runtime/hot3d_dual_backend_runtime_spec.md", "runtime/hot3d_dual_backend_runtime_spec.md"),
     ("configs/hot3d_dual_backend_agent_system_prompt.md", "configs/hot3d_dual_backend_agent_system_prompt.md"),
     ("docs/hot3d_shared_signed_geometry_milk_design_zh.md", "docs/hot3d_shared_signed_geometry_milk_design_zh.md"),

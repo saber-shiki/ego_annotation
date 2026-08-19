@@ -430,9 +430,14 @@ the final publication; do not call the estimated step a ground-truth angular vel
 Build one backend-neutral shared signed-geometry candidate from direct observed poses,
 P09 object-owned masks/P09 accepted first-surface samples, active-K depth, and projected-MANO
 occlusion unknown regions. This command does not take a SAM3D or TRELLIS mesh. It always
-writes a completion report: if every topology/coverage/first-hit/free-space check passes,
-the collision surface is the shared watertight sign proxy; otherwise it is the D14
-observed-only unsigned fallback. Do not lower its defaults or add a category primitive:
+writes a completion report. Watertight topology only permits an inside/outside query; it
+never grants every closure face physical authority. The builder validates every emitted
+face, including held-out direct views and the MANO interaction neighborhood, and writes a
+mesh/hash-bound per-face authority NPZ. Only faces with local first-hit/mask/observed-surface
+support and no repeated free-space contradiction may exert a signed force. If any topology,
+coverage, projection, or local interaction-authority check fails, the collision surface is
+the D14 observed-only unsigned fallback while the failed candidate and its face provenance
+remain diagnostic outputs. Do not lower defaults or add a category primitive:
 
 ```bash
 SIGNED_ROOT="$EXP_ROOT/P15b_shared_signed_geometry"
@@ -454,8 +459,12 @@ Read `geometry_readiness.signed_geometry_ready` and inspect
 `outputs.signed_geometry_qc`.  A false value is not a D15 failure: preserve the candidate
 failure evidence and continue through the report's unsigned fallback. A true value must
 bind `outputs.signed_geometry_mesh` to the exact same path as
-`outputs.collision_eligible_mesh_labeled`, keep `backend_generated_geometry_consumed:false`,
-and keep D15 object-pose values unchanged.
+`outputs.collision_eligible_mesh_labeled`, bind `outputs.signed_face_authority_npz` to the
+exact mesh bytes/hash and full face count, set
+`signed_geometry_consumer_policy:local_observation_authority_faces_only`, keep
+`backend_generated_geometry_consumed:false`, and keep D15 object-pose values unchanged.
+The historical `all_faces_of_validated_shared_proxy_signed_eligible` policy is unsafe and
+must be rebuilt; it is not a reusable signed source in this runtime.
 
 Build the shared MANO/object measurement state against that report. Exact signed distance
 is enabled only when the report declares signed readiness; otherwise the command remains
@@ -520,12 +529,15 @@ test -s "$SHARED_P18B_STATE"
 The runner must prove all of the following before returning success:
 
 - P04 MANO is bound to active source K through the exact centered-inference-plane affine; old `active_contract_reinference_required=true` rows fail closed;
-- P17 mask membership uses the exact P09 source-to-mask affine while depth lookup stays in source coordinates;
+- P17 mask membership uses the exact P09 source-to-mask affine while source-plane depth lookup stays in source coordinates;
+- P17 writes an independent P09 accepted-first-surface depth-order query raster. The translation gate uses its nearby first-hit support, not `constraint_eligible_entity`; hard depth-order uses the intersection with non-hand-owned visible support and the accepted sample depth. Neither path consumes raw depth under projected MANO;
+- nearby first-hit support only grounds whether root translation may be optimized. It is not by itself a one-sided residual requiring the hand to lie behind the object;
 - D14 observed mesh remains the exact canonical pose body and generated backend faces are absent from physical inputs;
 - D15 is the unique full-timeline object-pose authority;
 - D15b either binds a validated backend-neutral sign proxy or exposes an observed-only unsigned fallback;
 - P18 runs with `--no-optimize-object-translation` and every private object delta is zero;
-- if signed geometry is active, P18 emits a hash-bound full-778 archive and P18b promotes it only when full-timeline/2D/depth/nonpenetration acceptance passes; otherwise P18b preserves source metric MANO and carries uncertain samples.
+- P18 freezes translation in-solver when independent first-hit grounding is absent, audits both raw optimizer and published gate-adjusted candidates, and never silently treats a gate-reverted candidate as accepted optimization;
+- if signed geometry is active, P18 emits a hash-bound full-778 archive and P18b promotes it only when full-timeline/2D/depth/active-set/authorized penetration checks pass, no penetration remains nearest an unauthorized closure face, and no output translation gate was applied; otherwise P18b preserves source metric MANO and carries uncertain samples.
 
 ## D17 branch render states
 

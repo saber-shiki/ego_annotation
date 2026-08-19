@@ -23,7 +23,12 @@ from typing import Any
 import numpy as np
 import trimesh
 
-SCHEMA = "v19_hot3d_shared_p17_p18_tail_v1"
+from v19_signed_face_authority import (
+    LOCAL_AUTHORITY_POLICY,
+    load_signed_face_authority,
+)
+
+SCHEMA = "v19_hot3d_shared_p17_p18_tail_v2"
 ACCEPTED_POSE_STATUSES = {
     "fit_to_visible_depth_samples",
     "fit_to_visible_depth_archive_vertices",
@@ -312,6 +317,7 @@ def validate_signed_completion(
     if not same_path(signed_pose, pose_mesh):
         raise RuntimeError("signed completion pose hypothesis differs from D14 canonical pose body")
     signed_ready = readiness.get("signed_geometry_ready") is True
+    authority_required = readiness.get("signed_face_authority_required") is True
     for key in (
         "generated_hidden_surface_included",
         "generated_faces_collision_eligible",
@@ -330,6 +336,33 @@ def validate_signed_completion(
         raise RuntimeError("signed completion surface is not a triangle mesh")
     if signed_ready and not bool(mesh.is_watertight and mesh.is_winding_consistent and mesh.is_volume):
         raise RuntimeError("signed-ready completion surface is not a watertight winding-consistent volume")
+    authority_path: Path | None = None
+    authority_count = 0
+    authority_report: dict[str, Any] | None = None
+    if signed_ready:
+        if not authority_required:
+            raise RuntimeError(
+                "shared signed completion lacks required per-face local authority contract"
+            )
+        if readiness.get("signed_geometry_consumer_policy") != LOCAL_AUTHORITY_POLICY:
+            raise RuntimeError(
+                "shared signed completion does not use local-observation face authority"
+            )
+        loaded_authority = load_signed_face_authority(
+            signed_completion,
+            source_report_path=None,
+            mesh_path=signed_surface,
+            mesh_face_count=len(mesh.faces),
+        )
+        authority_mask = np.asarray(loaded_authority.pop("mask"), dtype=bool)
+        loaded_authority.pop("provenance_code", None)
+        if loaded_authority.get("usable") is not True or not np.any(authority_mask):
+            raise RuntimeError(
+                "signed-ready completion has no usable mesh-bound local face authority"
+            )
+        authority_path = Path(str(loaded_authority["authority_npz"]))
+        authority_count = int(np.count_nonzero(authority_mask))
+        authority_report = loaded_authority
     if not signed_ready:
         signed_hash, _ = mesh_geometry_sha256(signed_surface)
         observed_hash, _ = mesh_geometry_sha256(observed_physical_surface)
@@ -353,6 +386,11 @@ def validate_signed_completion(
         "signed_surface_is_volume": bool(mesh.is_volume),
         "candidate_failure": signed_completion.get("candidate_failure"),
         "candidate_validation": signed_completion.get("candidate_validation"),
+        "signed_face_authority_required": authority_required,
+        "signed_face_authority_npz": None if authority_path is None else str(authority_path),
+        "signed_face_authority_eligible_face_count": authority_count,
+        "signed_face_authority_validation": authority_report,
+        "signed_geometry_consumer_policy": readiness.get("signed_geometry_consumer_policy"),
         "generated_geometry_consumed": False,
         "pose_report": str(pose_report),
     }
@@ -454,6 +492,10 @@ def expected_p17_keys(
 def validate_p17_factor(
     factor: dict[str, Any], expected_keys: set[tuple[int, str]]
 ) -> dict[str, Any]:
+    if factor.get("schema") != "v19_visible_contact_ownership_factor_v2":
+        raise RuntimeError(
+            "P17 factor must use v2 independent first-hit translation-support schema"
+        )
     ownership = [row for row in factor.get("ownership_rows") or [] if isinstance(row, dict)]
     actual_keys = {(int(row["frame_idx"]), str(row["hand_side"])) for row in ownership}
     if actual_keys != expected_keys:
@@ -482,7 +524,37 @@ def validate_p17_factor(
             Path(str(row.get("non_object_owned_mask_path") or "")),
             "P17 ownership mask",
         )
-        affine_hashes.add(value_sha256({"A": A.tolist(), "mask": str(mask_path)}))
+        depth_order_support = require_file(
+            Path(str(row.get("depth_order_query_support_mask_path") or "")),
+            "P17 independent depth-order query support mask",
+        )
+        depth_order_npz = require_file(
+            Path(str(row.get("depth_order_first_surface_npz_path") or "")),
+            "P17 accepted first-surface depth-order NPZ",
+        )
+        expected_support_hash = str(
+            row.get("depth_order_query_support_mask_sha256") or ""
+        )
+        expected_npz_hash = str(
+            row.get("depth_order_first_surface_npz_sha256") or ""
+        )
+        if not expected_support_hash or sha256_file(depth_order_support) != expected_support_hash:
+            raise RuntimeError("P17 depth-order support mask SHA256 binding failed")
+        if not expected_npz_hash or sha256_file(depth_order_npz) != expected_npz_hash:
+            raise RuntimeError("P17 depth-order first-surface NPZ SHA256 binding failed")
+        with np.load(depth_order_npz, allow_pickle=False) as archive:
+            if "depth_mask_plane_m" not in archive.files or "support_mask" not in archive.files:
+                raise RuntimeError("P17 depth-order NPZ lacks accepted first-surface depth/support")
+        affine_hashes.add(
+            value_sha256(
+                {
+                    "A": A.tolist(),
+                    "mask": str(mask_path),
+                    "depth_order_support": str(depth_order_support),
+                    "depth_order_npz": str(depth_order_npz),
+                }
+            )
+        )
     return {
         "status": "exact_source_to_mask_affines_bound",
         "ownership_row_count": len(ownership),
@@ -512,7 +584,21 @@ def validate_p18(
     rows = [row for row in state.get("per_frame_states") or [] if isinstance(row, dict)]
     if len(rows) != expected_rows:
         raise RuntimeError(f"P18 state rows {len(rows)} != expected {expected_rows}")
+    if parameters.get("freeze_translation_without_visible_surface_support") is not True:
+        raise RuntimeError(
+            "P18 controlled tail did not freeze unsupported translation in-solver"
+        )
+    if parameters.get("gate_translation_with_visible_surface_support") is not True:
+        raise RuntimeError(
+            "P18 controlled tail did not enable the unsupported-translation output gate"
+        )
+    support_threshold = int(
+        parameters.get("translation_gate_min_visible_surface_depth_vertices", 0)
+    )
     object_delta_norms = []
+    support_counts: list[int] = []
+    unsupported_gate_consistent_count = 0
+    supported_gate_consistent_count = 0
     for row in rows:
         delta = np.asarray(
             row.get("optimized_object_translation_world_m") or [], dtype=np.float64
@@ -520,6 +606,33 @@ def validate_p18(
         if delta.shape != (3,) or not np.isfinite(delta).all():
             raise RuntimeError("P18 row has invalid object translation delta")
         object_delta_norms.append(float(np.linalg.norm(delta)))
+        support_count = int(
+            row.get("visible_surface_translation_support_vertex_count") or 0
+        )
+        support_counts.append(support_count)
+        optimizer_gate = (
+            row.get("optimizer_translation_support_gate")
+            if isinstance(row.get("optimizer_translation_support_gate"), dict)
+            else {}
+        )
+        output_gate = (
+            row.get("output_translation_gate")
+            if isinstance(row.get("output_translation_gate"), dict)
+            else {}
+        )
+        unsupported = support_count <= support_threshold
+        if unsupported:
+            if optimizer_gate.get("frozen") is not True or output_gate.get("applied") is not True:
+                raise RuntimeError(
+                    f"P18 row frame={row.get('frame_idx')} side={row.get('hand_side')} lacks support but translation was not frozen/gated"
+                )
+            unsupported_gate_consistent_count += 1
+        else:
+            if optimizer_gate.get("frozen") is True or output_gate.get("applied") is True:
+                raise RuntimeError(
+                    f"P18 row frame={row.get('frame_idx')} side={row.get('hand_side')} has independent support but translation was incorrectly frozen/gated"
+                )
+            supported_gate_consistent_count += 1
     max_delta = max(object_delta_norms, default=math.inf)
     if max_delta > 1.0e-10:
         raise RuntimeError(f"P18 privately moved the object by up to {max_delta} m")
@@ -543,6 +656,22 @@ def validate_p18(
         "row_count": len(rows),
         "max_object_translation_delta_m": max_delta,
         "signed_object_surface_factor_active": signed_active,
+        "visible_surface_translation_supported_row_count": int(
+            sum(count > support_threshold for count in support_counts)
+        ),
+        "visible_surface_translation_unsupported_row_count": int(
+            sum(count <= support_threshold for count in support_counts)
+        ),
+        "visible_surface_translation_support_threshold": support_threshold,
+        "visible_surface_translation_support_count_max": max(
+            support_counts, default=0
+        ),
+        "unsupported_translation_gate_consistent_row_count": int(
+            unsupported_gate_consistent_count
+        ),
+        "supported_translation_gate_consistent_row_count": int(
+            supported_gate_consistent_count
+        ),
         "pose_report_sha256": sha256_file(pose_report),
         "physical_surface_sha256": sha256_file(physical_surface),
     }
@@ -807,6 +936,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 str(factor_path),
                 "--optimize-contact-state",
                 "--visible-surface-depth-order-term",
+                "--freeze-translation-without-visible-surface-support",
                 "--gate-translation-with-visible-surface-support",
                 "--translation-gate-min-visible-surface-depth-vertices",
                 "0",

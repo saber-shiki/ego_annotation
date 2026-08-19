@@ -38,10 +38,17 @@ Hard rules:
   never supplies pose, P17/P18 contact, collision, or signed-distance evidence. After D15, run
   the named backend-neutral shared signed-geometry reconstruction from direct observed poses,
   P09 object-owned masks/P09 accepted first-surface samples, active-K depth, and MANO occlusion
-  unknown regions. If its report is not explicitly signed-ready, continue with the report's
-  observed-only unsigned fallback; never lower its thresholds or substitute either backend mesh.
-  Run P17/P18/P18b once before branching, keep D15 as the sole object-pose authority, and never enable P18
-  object-translation optimization. The common trajectory uses accepted metric surfel
+  unknown regions. Watertightness does not authorize every closure face: the report must bind a
+  full mesh/hash-matched per-face local authority array, and only locally first-hit-supported faces
+  may exert signed force. If its report is not explicitly signed-ready, continue with the report's
+  observed-only unsigned fallback; never lower thresholds, reuse a historical all-face signed report,
+  or substitute either backend mesh.
+  Run P17/P18/P18b once before branching. P17 must keep hand-owned object exclusion separate from
+  an independent P09 accepted-first-surface neighborhood used only to ground the translation gate;
+  never use raw depth under the projected hand or turn nearby support into an automatic hand-behind-object
+  residual. Keep D15 as the sole object-pose authority, never enable P18 object-translation optimization,
+  and reject full-MANO promotion if an output translation gate was applied or penetration remains nearest
+  an unauthorized closure face. The common trajectory uses accepted metric surfel
   registration; only a script-validated projected-MANO-subtracted RGB optical-flow + exact-
   camera PnP bridge may span a strict-depth gap, and it must not reinstate rejected depth.
   Unsigned physical support remains observed-surface-only.

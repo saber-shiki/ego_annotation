@@ -37,6 +37,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_v18_mano_object_constraint_state import project  # noqa: E402
+from v19_signed_face_authority import load_signed_face_authority  # noqa: E402
 from build_v18_compact_rigid_hidden_volume_depth_validation import load_depth_sources  # noqa: E402
 from build_v18_observed_surface_mano_constraint_state import (  # noqa: E402
     VERTEX_OBSERVED_SUPPORTED,
@@ -116,6 +117,10 @@ class FrameHandRow:
     object_translation_world_m: np.ndarray
     face_strict_observed_raw: np.ndarray
     face_strict_observed: np.ndarray
+    signed_face_authority_required: bool
+    signed_face_authority_state: str
+    signed_face_authority_face_count: int
+    signed_face_authority_eligible_face_count: int
     hand_owned_quarantined_face_count: int
     surface_eligibility_npz_path: str | None
     surface_eligibility_mode: str | None
@@ -144,6 +149,10 @@ class FrameHandRow:
     visible_surface_depth_order_depth_m: np.ndarray
     visible_surface_depth_order_initial_delta_m: np.ndarray
     visible_surface_depth_order_initial_measure: dict[str, Any]
+    visible_surface_translation_support_vertex_indices: np.ndarray
+    visible_surface_translation_support_depth_m: np.ndarray
+    visible_surface_translation_support_initial_delta_m: np.ndarray
+    visible_surface_translation_support_measure: dict[str, Any]
     hand_observation_visibility_factor_state: str | None
     hand_observation_visibility_candidate_px: int
     hand_observation_visibility_weight_multiplier: float
@@ -173,6 +182,22 @@ class FrameHandRow:
     hand_ray_shift_prior_world_m: np.ndarray
     hand_ray_shift_prior_source_m: float | None
     hand_ray_shift_prior_weight: float
+
+
+def translation_support_gate_applies(
+    *, enabled: bool, support_count: int, minimum_supported_vertices: int
+) -> bool:
+    """Whether a row lacks enough independent visible first-surface support.
+
+    ``minimum_supported_vertices`` is the largest unsupported count. Thus the
+    controlled threshold 0 gates exactly zero support, while one supported
+    vertex is not silently treated as zero.
+    """
+    count = int(support_count)
+    threshold = int(minimum_supported_vertices)
+    if count < 0 or threshold < 0:
+        raise ValueError("translation support counts/thresholds must be nonnegative")
+    return bool(enabled and count <= threshold)
 
 
 def parse_args() -> argparse.Namespace:
@@ -322,6 +347,8 @@ def completion_report_mesh_contract(path: Path) -> dict[str, Any]:
         "geometry_readiness": readiness,
         "signed_geometry_ready": readiness.get("signed_geometry_ready") if isinstance(readiness.get("signed_geometry_ready"), bool) else None,
         "legacy_geometry_readiness_fields_missing": readiness.get("signed_geometry_ready") is None,
+        "completion_report_payload": data,
+        "completion_report_path": path,
     }
 
 
@@ -374,6 +401,8 @@ def resolve_physical_surface_contract(
             "geometry_readiness": {},
             "signed_geometry_ready": None,
             "legacy_geometry_readiness_fields_missing": True,
+            "completion_report_payload": {},
+            "completion_report_path": None,
         }
     else:
         contract = completion_report_mesh_contract(completion_report)
@@ -389,6 +418,14 @@ def resolve_physical_surface_contract(
     if not selected_path.exists() or selected_path.stat().st_size <= 0:
         raise RuntimeError(f"physical surface mesh {selected_path} is missing or empty")
     return contract
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def finite_intrinsics(value: Any, label: str) -> np.ndarray:
@@ -679,12 +716,17 @@ def surface_eligibility_mask_for_row(row: dict[str, Any] | None, expected_count:
     return mask.copy(), {"state": "ok", "face_state_npz_path": str(path), "eligible_hard_observed_count": int(np.count_nonzero(mask)), "observed_surface_support_uncertainty_m": max(0.0, support_uncertainty_m)}
 
 
-def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path, np.ndarray]) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
+def visible_ownership_masks_for_row(
+    row: dict[str, Any] | None,
+    cache: dict[Path, np.ndarray],
+) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
     if not isinstance(row, dict):
         return None, None, {"state": "missing_visible_ownership_row"}
     non_object_raw = row.get("non_object_owned_mask_path")
     constraint_raw = row.get("constraint_eligible_entity_mask_path") or row.get("adjusted_entity_mask_path") or row.get("visible_object_owned_mask_path")
     visible_object_raw = row.get("visible_object_owned_mask_path")
+    depth_order_support_raw = row.get("depth_order_query_support_mask_path")
+    depth_order_npz_raw = row.get("depth_order_first_surface_npz_path")
     if not isinstance(non_object_raw, str) or not Path(non_object_raw).exists():
         raise FileNotFoundError(f"visible ownership row has no readable non_object_owned_mask_path: {non_object_raw}")
     if not isinstance(constraint_raw, str) or not Path(constraint_raw).exists():
@@ -712,6 +754,20 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
     )
     raw_counts = row.get("counts")
     counts = raw_counts if isinstance(raw_counts, dict) else {}
+    if depth_order_support_raw not in (None, "") and (
+        not isinstance(depth_order_support_raw, str)
+        or not Path(depth_order_support_raw).exists()
+    ):
+        raise FileNotFoundError(
+            f"visible ownership row has unreadable depth-order support mask: {depth_order_support_raw}"
+        )
+    if depth_order_npz_raw not in (None, "") and (
+        not isinstance(depth_order_npz_raw, str)
+        or not Path(depth_order_npz_raw).exists()
+    ):
+        raise FileNotFoundError(
+            f"visible ownership row has unreadable depth-order first-surface NPZ: {depth_order_npz_raw}"
+        )
     return non_object_mask, constraint_mask, {
         "state": "ok",
         "image_plane_transform": plane,
@@ -719,9 +775,83 @@ def visible_ownership_masks_for_row(row: dict[str, Any] | None, cache: dict[Path
         "non_object_owned_mask_path": non_object_raw if isinstance(non_object_raw, str) else None,
         "constraint_eligible_entity_mask_path": constraint_raw if isinstance(constraint_raw, str) else None,
         "visible_object_owned_mask_path": visible_object_raw if isinstance(visible_object_raw, str) else None,
+        "depth_order_query_support_mask_path": depth_order_support_raw if isinstance(depth_order_support_raw, str) else None,
+        "depth_order_query_support_mask_sha256": row.get("depth_order_query_support_mask_sha256"),
+        "depth_order_first_surface_npz_path": depth_order_npz_raw if isinstance(depth_order_npz_raw, str) else None,
+        "depth_order_first_surface_npz_sha256": row.get("depth_order_first_surface_npz_sha256"),
+        "depth_order_query_semantics": row.get("depth_order_query_semantics"),
         "non_object_owned_px": int(counts.get("non_object_owned_px", int(non_object_mask.sum()) if non_object_mask is not None else 0)),
         "visible_object_owned_px": int(counts.get("visible_object_owned_px", 0)),
         "constraint_eligible_entity_px": int(counts.get("constraint_eligible_entity_px", int(constraint_mask.sum()) if constraint_mask is not None else 0)),
+    }
+
+
+def load_depth_order_first_surface_for_row(
+    diag: dict[str, Any],
+    cache: dict[Path, np.ndarray],
+    expected_mask_shape: tuple[int, int] | None,
+) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
+    mask_raw = diag.get("depth_order_query_support_mask_path")
+    npz_raw = diag.get("depth_order_first_surface_npz_path")
+    if not isinstance(mask_raw, str) or not isinstance(npz_raw, str):
+        return None, None, {
+            "state": "missing_independent_depth_order_first_surface",
+            "raw_depth_under_hand_consumed": False,
+        }
+    mask_path = Path(mask_raw)
+    npz_path = Path(npz_raw)
+    expected_mask_sha256 = str(
+        diag.get("depth_order_query_support_mask_sha256") or ""
+    )
+    expected_npz_sha256 = str(
+        diag.get("depth_order_first_surface_npz_sha256") or ""
+    )
+    if not expected_mask_sha256 or sha256_file(mask_path) != expected_mask_sha256:
+        raise RuntimeError("depth-order support mask SHA256 binding failed")
+    if not expected_npz_sha256 or sha256_file(npz_path) != expected_npz_sha256:
+        raise RuntimeError("depth-order first-surface NPZ SHA256 binding failed")
+    support = load_binary_mask(mask_path, cache)
+    with np.load(npz_path, allow_pickle=False) as archive:
+        if "depth_mask_plane_m" not in archive.files or "support_mask" not in archive.files:
+            raise KeyError(
+                f"depth-order first-surface NPZ lacks depth/support arrays: {npz_path}"
+            )
+        depth_mask = np.asarray(archive["depth_mask_plane_m"], dtype=np.float32)
+        support_npz = np.asarray(archive["support_mask"], dtype=bool)
+        affine = finite_image_affine(
+            archive["A_mask_from_source_coordinate_model"],
+            "depth-order NPZ A_mask_from_source",
+        )
+    if depth_mask.shape != support.shape or support_npz.shape != support.shape:
+        raise RuntimeError(
+            f"depth-order support/depth shape mismatch: {support.shape}/{support_npz.shape}/{depth_mask.shape}"
+        )
+    if expected_mask_shape is not None and support.shape != expected_mask_shape:
+        raise RuntimeError(
+            f"depth-order support mask shape {support.shape} differs from ownership mask {expected_mask_shape}"
+        )
+    declared_affine = finite_image_affine(
+        diag.get("A_mask_from_source_coordinate_model"),
+        "ownership A_mask_from_source",
+    )
+    if not np.allclose(affine, declared_affine, atol=1.0e-12, rtol=0.0):
+        raise RuntimeError("depth-order NPZ affine differs from ownership factor affine")
+    if not np.array_equal(support, support_npz):
+        raise RuntimeError(
+            "depth-order support PNG and NPZ support arrays are not identical"
+        )
+    if np.any(support & (~np.isfinite(depth_mask) | (depth_mask <= 1.0e-5))):
+        raise RuntimeError(
+            "depth-order support marks pixels without finite positive P09 first-surface depth"
+        )
+    support &= np.isfinite(depth_mask) & (depth_mask > 1.0e-5)
+    return support, depth_mask, {
+        "state": "active_independent_P09_first_surface_depth_order_query",
+        "support_mask_path": str(mask_path),
+        "first_surface_npz_path": str(npz_path),
+        "support_pixel_count": int(np.count_nonzero(support)),
+        "raw_depth_under_hand_consumed": False,
+        "depth_source": "P09 accepted first-surface camera samples",
     }
 
 
@@ -980,6 +1110,8 @@ def visible_surface_depth_order_constraints(
     mask: np.ndarray | None,
     depth_row: dict[str, Any] | None,
     A_mask_from_source: np.ndarray,
+    depth_is_mask_plane: bool = False,
+    mask_dilation_px: int | None = None,
     args: argparse.Namespace,
     enabled: bool | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
@@ -1015,17 +1147,24 @@ def visible_surface_depth_order_constraints(
             "depth_delta_hand_minus_surface_m": numeric_summary(empty),
         }
     height, width = depth.shape
-    # uv remains in source/depth coordinates for depth lookup. Only mask
-    # membership receives the exact source->mask affine from P17.
     inside = mask_membership(
         mask,
         uv,
-        int(args.visible_object_mask_dilation_px),
+        int(args.visible_object_mask_dilation_px)
+        if mask_dilation_px is None
+        else int(mask_dilation_px),
         A_mask_from_source=A_mask_from_source,
     )
     cam = world_to_camera(vertices_world, frame)
-    u = np.rint(uv[:, 0]).astype(int)
-    v = np.rint(uv[:, 1]).astype(int)
+    if depth_is_mask_plane:
+        uv_depth = transform_source_uv_to_mask(uv, A_mask_from_source)
+        assert uv_depth is not None
+    else:
+        # Legacy visible-surface factors may store depth in source coordinates.
+        # New HOT3D P17 depth-order evidence explicitly uses mask-plane depth.
+        uv_depth = uv
+    u = np.rint(uv_depth[:, 0]).astype(int)
+    v = np.rint(uv_depth[:, 1]).astype(int)
     valid = inside & (cam[:, 2] > 1.0e-5) & (u >= 0) & (u < width) & (v >= 0) & (v < height)
     if np.any(valid):
         z_surface_all = depth[v[valid], u[valid]].astype(float)
@@ -1049,6 +1188,7 @@ def visible_surface_depth_order_constraints(
     margin = float(args.visible_surface_depth_order_margin_m)
     measure = {
         "finite_inside_count": int(valid_ids.size),
+        "depth_coordinate_plane": "mask" if depth_is_mask_plane else "source",
         "hand_behind_observed_surface_count": int(np.count_nonzero(delta > margin)),
         "hand_in_front_of_observed_surface_count": int(np.count_nonzero(delta < -margin)),
         "hand_near_observed_surface_depth_count": int(np.count_nonzero(np.abs(delta) <= margin)),
@@ -1345,10 +1485,25 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
             "signed_geometry_consumer_policy", ""
         )
     )
-    all_signed_proxy_faces_eligible = bool(
+    signed_face_authority_mask = np.asarray(
+        getattr(
+            args,
+            "signed_face_authority_mask",
+            np.ones((len(faces),), dtype=bool),
+        ),
+        dtype=bool,
+    )
+    if signed_face_authority_mask.shape != (len(faces),):
+        raise RuntimeError(
+            "mesh-bound signed face authority shape differs from physical surface faces"
+        )
+    signed_face_authority_report = dict(
+        getattr(args, "signed_face_authority_report", {}) or {}
+    )
+    local_signed_proxy_faces_eligible = bool(
         signed_geometry_active_for_faces
         and signed_geometry_consumer_policy
-        == "all_faces_of_validated_shared_proxy_signed_eligible"
+        == "local_observation_authority_faces_only"
     )
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.core.Tensor(vertices_object.astype(np.float32)), o3d.core.Tensor(faces.astype(np.uint32)))
@@ -1387,8 +1542,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         object_depth_summaries.append(obj_summary)
         prov = face_provenance(vertex_classes, faces)
         strict_raw = (
-            np.ones((len(faces),), dtype=bool)
-            if all_signed_proxy_faces_eligible
+            signed_face_authority_mask.copy()
+            if local_signed_proxy_faces_eligible
             else np.asarray(prov["observed_supported_strict"], dtype=bool)
         )
         hand = None
@@ -1461,6 +1616,9 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         if visible_surface_active:
             visible_mask = visible_surface_mask
             visible_mask_path = Path(str(visible_surface_diag.get("surface_mask_path")))
+        # Object-surface face gating may use the ownership mask that excludes
+        # projected MANO. Depth-order MANO queries must not reuse that mask;
+        # they consume a separate P09 accepted-first-hit support raster below.
         if ownership_constraint_eligible_mask is not None:
             visible_mask = ownership_constraint_eligible_mask if visible_mask is None else (visible_mask & ownership_constraint_eligible_mask)
         if visible_mask is not None and ownership_affine_raw is None:
@@ -1493,14 +1651,13 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 strict = surface_mask.astype(bool)
             else:
                 strict = strict & surface_mask.astype(bool)
-        if all_signed_proxy_faces_eligible:
-            # The backend-neutral D15b report validated the complete proxy as a
-            # conservative closed volume. P17 ownership remains visual/contact
-            # evidence; it must not punch holes in the signed barrier exactly
-            # where a hand occludes the object.
-            strict = np.ones((len(faces),), dtype=bool)
-        surface_eligible_face_count = int(np.count_nonzero(surface_mask)) if surface_mask is not None else 0
-        surface_applied_face_delta = int(np.count_nonzero(strict)) - surface_input_face_count
+        if local_signed_proxy_faces_eligible:
+            # The watertight mesh supplies sign topology, but only mesh-bound
+            # locally observed faces may exert a physical signed force. P17
+            # ownership must not promote an unsupported closure face.
+            strict = signed_face_authority_mask.copy()
+        surface_eligible_face_count = int(np.count_nonzero(strict))
+        surface_applied_face_delta = surface_eligible_face_count - surface_input_face_count
         observed_surface_support_uncertainty_m = float(surface_diag.get("observed_surface_support_uncertainty_m", args.observed_surface_support_uncertainty_m) or 0.0)
         source_path, source_frame = source_info
         source = load_source_arrays(source_cache, source_path)
@@ -1542,15 +1699,69 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         hand_visibility_diag = hand_observation_visibility_for_row(hand_observation_visibility_rows.get((frame_idx, side)), args)
         if hand_visibility_diag.get("state") == "active_hand_observation_visibility":
             joint_visibility_weights = np.minimum(joint_visibility_weights, float(hand_visibility_diag.get("weight_multiplier", 1.0)))
+        depth_order_mask, depth_order_depth, depth_order_diag = (
+            load_depth_order_first_surface_for_row(
+                ownership_diag,
+                visible_mask_cache,
+                ownership_constraint_eligible_mask.shape
+                if ownership_constraint_eligible_mask is not None
+                else None,
+            )
+        )
+        depth_order_enabled = bool(args.visible_surface_depth_order_term) or bool(
+            visible_surface_active
+        )
+        if (
+            bool(args.visible_surface_depth_order_term)
+            and ownership_row is not None
+            and depth_order_mask is None
+        ):
+            raise ValueError(
+                f"frame {frame_idx} {side}: P17 ownership row lacks independent P09 first-hit query support; ownership mask is not a valid substitute"
+            )
+        # Hard one-sided depth-order residual: only explicitly visible,
+        # non-hand-owned pixels that also have P09-accepted first-hit depth may
+        # assert that MANO is in front of an observed surface. The accepted
+        # sample raster, not raw depth under MANO, supplies the depth value.
+        hard_depth_order_mask = (
+            visible_mask & depth_order_mask
+            if visible_mask is not None and depth_order_mask is not None
+            else None
+        )
         surface_depth_idx, surface_depth_m, surface_depth_delta, surface_depth_measure = visible_surface_depth_order_constraints(
             frame=frame,
             side=side,
             vertices_world=current_vertices,
-            mask=visible_mask,
-            depth_row=depth_rows.get(frame_idx),
+            mask=hard_depth_order_mask,
+            depth_row={"depth": depth_order_depth} if depth_order_depth is not None else None,
             A_mask_from_source=A_mask_from_source,
+            depth_is_mask_plane=True,
+            mask_dilation_px=0,
             args=args,
-            enabled=bool(args.visible_surface_depth_order_term) or bool(visible_surface_active),
+            enabled=depth_order_enabled,
+        )
+        surface_depth_measure["depth_source"] = (
+            "P09_accepted_first_surface_not_raw_hand_pixel_depth"
+        )
+        # Translation grounding: a MANO vertex may be associated with a nearby
+        # P09-accepted object first-hit sample even where ownership marks the
+        # hand pixel unknown. This count permits optimization but never adds a
+        # one-sided "hand behind object" residual by itself.
+        translation_support_idx, translation_support_depth, translation_support_delta, translation_support_measure = visible_surface_depth_order_constraints(
+            frame=frame,
+            side=side,
+            vertices_world=current_vertices,
+            mask=depth_order_mask,
+            depth_row={"depth": depth_order_depth} if depth_order_depth is not None else None,
+            A_mask_from_source=A_mask_from_source,
+            depth_is_mask_plane=True,
+            mask_dilation_px=0,
+            args=args,
+            enabled=depth_order_enabled,
+        )
+        translation_support_measure["independent_query_support"] = depth_order_diag
+        translation_support_measure["residual_policy"] = (
+            "translation_gate_grounding_only_not_a_one_sided_depth_order_force"
         )
         r_obj, t_obj = pose
         ray_shift = hand_ray_shift_priors.get((frame_idx, side))
@@ -1621,6 +1832,20 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 object_translation_world_m=np.asarray(t_obj, dtype=float),
                 face_strict_observed_raw=strict_raw.astype(bool),
                 face_strict_observed=strict.astype(bool),
+                signed_face_authority_required=bool(
+                    signed_face_authority_report.get("required")
+                ),
+                signed_face_authority_state=str(
+                    signed_face_authority_report.get("state") or "legacy_not_required"
+                ),
+                signed_face_authority_face_count=int(
+                    signed_face_authority_report.get("face_count", len(faces))
+                ),
+                signed_face_authority_eligible_face_count=int(
+                    signed_face_authority_report.get(
+                        "eligible_face_count", np.count_nonzero(strict_raw)
+                    )
+                ),
                 hand_owned_quarantined_face_count=int(hand_owned_quarantined),
                 surface_eligibility_npz_path=surface_diag.get("face_state_npz_path"),
                 surface_eligibility_mode=(str(args.surface_eligibility_mode) if surface_mask is not None else None),
@@ -1649,6 +1874,10 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
                 visible_surface_depth_order_depth_m=surface_depth_m.astype(float),
                 visible_surface_depth_order_initial_delta_m=surface_depth_delta.astype(float),
                 visible_surface_depth_order_initial_measure=surface_depth_measure,
+                visible_surface_translation_support_vertex_indices=translation_support_idx.astype(np.int64),
+                visible_surface_translation_support_depth_m=translation_support_depth.astype(float),
+                visible_surface_translation_support_initial_delta_m=translation_support_delta.astype(float),
+                visible_surface_translation_support_measure=translation_support_measure,
                 hand_observation_visibility_factor_state=hand_visibility_diag.get("state") if hand_visibility_diag.get("state") != "missing_hand_observation_visibility_row" else None,
                 hand_observation_visibility_candidate_px=int(hand_visibility_diag.get("candidate_px", 0)),
                 hand_observation_visibility_weight_multiplier=float(hand_visibility_diag.get("weight_multiplier", 1.0)),
@@ -1692,7 +1921,8 @@ def build_rows(args: argparse.Namespace, side: str) -> tuple[list[FrameHandRow],
         "physical_surface_semantics": getattr(args, "physical_surface_semantics", "legacy_unknown"),
         "geometry_readiness": getattr(args, "completion_geometry_readiness", {}),
         "signed_object_surface_factor_active": bool(getattr(args, "signed_object_surface_factor_active", False)),
-        "all_validated_signed_proxy_faces_eligible": all_signed_proxy_faces_eligible,
+        "local_signed_proxy_faces_eligible": local_signed_proxy_faces_eligible,
+        "signed_face_authority": signed_face_authority_report,
         "signed_geometry_consumer_policy": signed_geometry_consumer_policy,
     }
     return rows, meta, scene
@@ -1856,6 +2086,61 @@ def full_observed_surface_measure(vertices_world: np.ndarray, row: FrameHandRow,
     }
 
 
+def full_signed_topology_measure(
+    vertices_world: np.ndarray,
+    row: FrameHandRow,
+    scene: Any,
+    eps: float,
+    object_translation_delta_world: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Audit all topology penetration and separate locally authorized faces.
+
+    Unsupported closure penetration is not asserted as physical collision, but
+    it is unresolved geometry and therefore blocks full-MANO promotion.
+    """
+    obj_delta = (
+        np.zeros(3, dtype=float)
+        if object_translation_delta_world is None
+        else np.asarray(object_translation_delta_world, dtype=float)
+    )
+    vertices_object = inverse_object(
+        vertices_world,
+        row.object_rotation_world_from_object,
+        row.object_translation_world_m + obj_delta,
+    )
+    query = o3d.core.Tensor(np.asarray(vertices_object, dtype=np.float32))
+    signed = -scene.compute_signed_distance(query).numpy().astype(float)
+    penetrating = np.where(signed > float(eps))[0]
+    empty = numeric_summary(np.asarray([], dtype=float))
+    if penetrating.size == 0:
+        return {
+            "topology_penetrating_vertex_count": 0,
+            "authorized_penetrating_vertex_count": 0,
+            "unauthorized_penetrating_vertex_count": 0,
+            "topology_penetration_m": empty,
+            "authorized_penetration_m": empty,
+            "unauthorized_penetration_m": empty,
+            "claim_scope": "watertight topology audit; unsupported faces block promotion but do not assert physical collision",
+        }
+    closest = scene.compute_closest_points(
+        o3d.core.Tensor(np.asarray(vertices_object[penetrating], dtype=np.float32))
+    )
+    primitive = closest["primitive_ids"].numpy().astype(np.int64)
+    valid = (primitive >= 0) & (primitive < len(row.face_strict_observed_raw))
+    authorized = np.zeros((len(penetrating),), dtype=bool)
+    authorized[valid] = row.face_strict_observed_raw[primitive[valid]]
+    depths = signed[penetrating]
+    return {
+        "topology_penetrating_vertex_count": int(len(penetrating)),
+        "authorized_penetrating_vertex_count": int(np.count_nonzero(authorized)),
+        "unauthorized_penetrating_vertex_count": int(np.count_nonzero(~authorized)),
+        "topology_penetration_m": numeric_summary(depths),
+        "authorized_penetration_m": numeric_summary(depths[authorized]),
+        "unauthorized_penetration_m": numeric_summary(depths[~authorized]),
+        "claim_scope": "watertight topology audit; unsupported faces block promotion but do not assert physical collision",
+    }
+
+
 def contact_patch_anchor_coherence(rows: list[FrameHandRow]) -> dict[str, Any]:
     centroids_object: list[np.ndarray] = []
     row_spreads: list[float] = []
@@ -1942,9 +2227,24 @@ def optimize_rows(
     hand_ray_shift_prior_weight_t = torch.tensor(np.asarray([float(r.hand_ray_shift_prior_weight) for r in rows], dtype=float), dtype=torch.float32, device=device)
     trans_init = hand_ray_shift_prior_t.detach().clone() if bool(args.initialize_hand_ray_shift) else torch.zeros((b, 3), dtype=torch.float32, device=device)
     trans_delta = trans_init.clone().detach().requires_grad_(True)
-    translation_support_count_np = np.asarray([len(r.visible_surface_depth_order_vertex_indices) for r in rows], dtype=int)
+    translation_support_count_np = np.asarray(
+        [len(r.visible_surface_translation_support_vertex_indices) for r in rows],
+        dtype=int,
+    )
     if bool(args.freeze_translation_without_visible_surface_support):
-        translation_allowed_np = translation_support_count_np > int(args.translation_gate_min_visible_surface_depth_vertices)
+        translation_allowed_np = np.asarray(
+            [
+                not translation_support_gate_applies(
+                    enabled=True,
+                    support_count=int(count),
+                    minimum_supported_vertices=int(
+                        args.translation_gate_min_visible_surface_depth_vertices
+                    ),
+                )
+                for count in translation_support_count_np.tolist()
+            ],
+            dtype=bool,
+        )
     else:
         translation_allowed_np = np.ones((b,), dtype=bool)
     translation_allowed_t = torch.tensor(translation_allowed_np.astype(np.float32), dtype=torch.float32, device=device).reshape(b, 1)
@@ -2315,6 +2615,9 @@ def optimize_rows(
     output_translation_gate_applied_count = 0
     output_translation_gate_shift_norm: list[float] = []
     output_translation_gate_support_count: list[float] = []
+    raw_optimizer_full_observed_max: list[float] = []
+    raw_optimizer_visible_max: list[float] = []
+    raw_optimizer_depth_max: list[float] = []
     full_state_vertices_world: list[np.ndarray] = []
     full_state_joints_world: list[np.ndarray] = []
     corrected_frames = 0
@@ -2335,12 +2638,31 @@ def optimize_rows(
         final_max = float(np.max(residual)) if residual.size else 0.0
         if signed_surface_active:
             full_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i])
+            raw_optimizer_topology_post = full_signed_topology_measure(
+                hyp_vertices[i],
+                row,
+                scene,
+                float(args.penetration_epsilon_m),
+                object_trans_np[i],
+            )
             full_raw_post = full_observed_surface_measure(hyp_vertices[i], row, scene, float(args.penetration_epsilon_m), object_trans_np[i], face_strict_observed=row.face_strict_observed_raw)
         else:
             full_post = inactive_signed_surface_measure(row.frame_idx, row.observed_surface_support_uncertainty_m)
+            raw_optimizer_topology_post = {
+                "state": "inactive_signed_geometry_not_ready",
+                "topology_penetrating_vertex_count": 0,
+                "authorized_penetrating_vertex_count": 0,
+                "unauthorized_penetrating_vertex_count": 0,
+                "topology_penetration_m": numeric_summary(np.asarray([], dtype=float)),
+                "authorized_penetration_m": numeric_summary(np.asarray([], dtype=float)),
+                "unauthorized_penetration_m": numeric_summary(np.asarray([], dtype=float)),
+            }
             full_raw_post = inactive_signed_surface_measure(row.frame_idx, row.observed_surface_support_uncertainty_m)
         full_post_max = float((full_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
         full_raw_post_max = float((full_raw_post.get("observed_supported_penetration_m") or {}).get("max") or 0.0)
+        raw_optimizer_full_post = full_post
+        raw_optimizer_full_raw_post = full_raw_post
+        raw_optimizer_active_residual = residual.copy()
         uv0 = project_world(row.current_joints_world, row.frame, row.side)
         uv1 = project_world(hyp_joints[i], row.frame, row.side)
         if uv0 is not None and uv1 is not None:
@@ -2354,7 +2676,12 @@ def optimize_rows(
         cam0 = world_to_camera(row.current_joints_world, row.frame)
         cam1 = world_to_camera(hyp_joints[i], row.frame)
         dshift = np.abs(cam1[:, 2] - cam0[:, 2])
+        raw_optimizer_shift = shift.copy()
+        raw_optimizer_dshift = dshift.copy()
         surface_ids = row.visible_surface_depth_order_vertex_indices.astype(int)
+        translation_support_ids = (
+            row.visible_surface_translation_support_vertex_indices.astype(int)
+        )
         if surface_ids.size:
             cam_v_final = world_to_camera(hyp_vertices[i, surface_ids], row.frame)[:, 2]
             surface_final_delta = cam_v_final.astype(float) - row.visible_surface_depth_order_depth_m.astype(float)
@@ -2401,9 +2728,16 @@ def optimize_rows(
         state_translation_world = trans_np[i].astype(float).copy()
         optimizer_translation_support_gate = {
             "enabled": bool(args.freeze_translation_without_visible_surface_support),
-            "frozen": bool(args.freeze_translation_without_visible_surface_support) and int(surface_ids.size) <= int(args.translation_gate_min_visible_surface_depth_vertices),
+            "frozen": translation_support_gate_applies(
+                enabled=bool(args.freeze_translation_without_visible_surface_support),
+                support_count=int(translation_support_ids.size),
+                minimum_supported_vertices=int(
+                    args.translation_gate_min_visible_surface_depth_vertices
+                ),
+            ),
             "min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
-            "selected_visible_surface_depth_vertices": int(surface_ids.size),
+            "selected_visible_surface_depth_vertices": int(translation_support_ids.size),
+            "support_semantics": "nearby_P09_accepted_first_surface_grounding_not_depth_order_residual",
             "policy": "global MANO translation optimized only for rows with visible-surface support above threshold" if bool(args.freeze_translation_without_visible_surface_support) else "global MANO translation optimized normally",
         }
         output_translation_gate = {
@@ -2411,23 +2745,33 @@ def optimize_rows(
             "applied": False,
             "reason": "disabled" if not bool(args.gate_translation_with_visible_surface_support) else "support_count_above_threshold",
             "min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
-            "selected_visible_surface_depth_vertices": int(surface_ids.size),
+            "selected_visible_surface_depth_vertices": int(translation_support_ids.size),
+            "support_semantics": "nearby_P09_accepted_first_surface_grounding_not_depth_order_residual",
             "articulation_policy": "raw optimizer output",
         }
-        if bool(args.gate_translation_with_visible_surface_support) and int(surface_ids.size) <= int(args.translation_gate_min_visible_surface_depth_vertices):
+        if translation_support_gate_applies(
+            enabled=bool(args.gate_translation_with_visible_surface_support),
+            support_count=int(translation_support_ids.size),
+            minimum_supported_vertices=int(
+                args.translation_gate_min_visible_surface_depth_vertices
+            ),
+        ):
             gate_shift = row.current_joints_world[0].astype(float) - state_joints_world[0].astype(float)
             state_joints_world = state_joints_world + gate_shift[None, :]
             state_vertices_world = state_vertices_world + gate_shift[None, :]
             state_translation_world = state_translation_world + gate_shift
             output_translation_gate_applied_count += 1
             output_translation_gate_shift_norm.append(float(np.linalg.norm(gate_shift)))
-            output_translation_gate_support_count.append(float(surface_ids.size))
+            output_translation_gate_support_count.append(
+                float(translation_support_ids.size)
+            )
             output_translation_gate = {
                 "enabled": True,
                 "applied": True,
                 "reason": "visible_surface_support_at_or_below_threshold",
                 "min_visible_surface_depth_vertices": int(args.translation_gate_min_visible_surface_depth_vertices),
-                "selected_visible_surface_depth_vertices": int(surface_ids.size),
+                "selected_visible_surface_depth_vertices": int(translation_support_ids.size),
+                "support_semantics": "nearby_P09_accepted_first_surface_grounding_not_depth_order_residual",
                 "baseline_wrist_world_m": row.current_joints_world[0].astype(float).tolist(),
                 "raw_optimizer_wrist_world_m": hyp_joints[i, 0].astype(float).tolist(),
                 "applied_world_shift_m": gate_shift.astype(float).tolist(),
@@ -2459,6 +2803,13 @@ def optimize_rows(
                 float(args.penetration_epsilon_m),
                 object_trans_np[i],
             )
+            full_topology_post = full_signed_topology_measure(
+                state_vertices_world,
+                row,
+                scene,
+                float(args.penetration_epsilon_m),
+                object_trans_np[i],
+            )
             full_raw_post = full_observed_surface_measure(
                 state_vertices_world,
                 row,
@@ -2471,6 +2822,21 @@ def optimize_rows(
             full_post = inactive_signed_surface_measure(
                 row.frame_idx, row.observed_surface_support_uncertainty_m
             )
+            full_topology_post = {
+                "state": "inactive_signed_geometry_not_ready",
+                "topology_penetrating_vertex_count": 0,
+                "authorized_penetrating_vertex_count": 0,
+                "unauthorized_penetrating_vertex_count": 0,
+                "topology_penetration_m": numeric_summary(
+                    np.asarray([], dtype=float)
+                ),
+                "authorized_penetration_m": numeric_summary(
+                    np.asarray([], dtype=float)
+                ),
+                "unauthorized_penetration_m": numeric_summary(
+                    np.asarray([], dtype=float)
+                ),
+            }
             full_raw_post = inactive_signed_surface_measure(
                 row.frame_idx, row.observed_surface_support_uncertainty_m
             )
@@ -2526,6 +2892,16 @@ def optimize_rows(
             cp_gap_summary = numeric_summary(cp_gap)
         final_linear_residual_max.append(final_max)
         final_full_observed_max.append(full_post_max)
+        raw_optimizer_full_observed_max.append(
+            float(
+                (raw_optimizer_full_post.get("observed_supported_penetration_m") or {}).get("max")
+                or 0.0
+            )
+        )
+        if raw_optimizer_shift.size:
+            raw_optimizer_visible_max.append(float(np.max(raw_optimizer_shift)))
+        if raw_optimizer_dshift.size:
+            raw_optimizer_depth_max.append(float(np.max(raw_optimizer_dshift)))
         final_raw_observed_max.append(full_raw_post_max)
         if np.isfinite(shift_max):
             visible_max.append(shift_max)
@@ -2558,6 +2934,25 @@ def optimize_rows(
                 "latent_optimizer_translation_world_m": latent_trans_np[i].astype(float).tolist(),
                 "optimizer_translation_support_gate": optimizer_translation_support_gate,
                 "output_translation_gate": output_translation_gate,
+                "raw_optimizer_candidate_audit": {
+                    "active_constraint_residual_m": numeric_summary(
+                        raw_optimizer_active_residual
+                    ),
+                    "full_observed_surface_penetration_m": raw_optimizer_full_post.get(
+                        "observed_supported_penetration_m"
+                    ),
+                    "full_raw_observed_surface_penetration_m": raw_optimizer_full_raw_post.get(
+                        "observed_supported_penetration_m"
+                    ),
+                    "full_signed_topology_audit": raw_optimizer_topology_post,
+                    "visible_joint_shift_px": numeric_summary(raw_optimizer_shift),
+                    "joint_camera_depth_shift_m": numeric_summary(
+                        raw_optimizer_dshift
+                    ),
+                    "published_candidate_was_translation_gated": bool(
+                        output_translation_gate.get("applied")
+                    ),
+                },
                 "hand_ray_shift_prior_translation_world_m": row.hand_ray_shift_prior_world_m.astype(float).tolist(),
                 "hand_ray_shift_prior_source_m": row.hand_ray_shift_prior_source_m,
                 "hand_ray_shift_prior_weight": float(row.hand_ray_shift_prior_weight),
@@ -2590,6 +2985,10 @@ def optimize_rows(
                 "surface_eligible_face_count": int(row.surface_eligible_face_count),
                 "surface_input_face_count": int(row.surface_input_face_count),
                 "surface_applied_face_delta": int(row.surface_applied_face_delta),
+                "signed_face_authority_required": bool(row.signed_face_authority_required),
+                "signed_face_authority_state": row.signed_face_authority_state,
+                "signed_face_authority_face_count": int(row.signed_face_authority_face_count),
+                "signed_face_authority_eligible_face_count": int(row.signed_face_authority_eligible_face_count),
                 "visible_ownership_non_object_mask_path": row.visible_ownership_non_object_mask_path,
                 "visible_ownership_object_owned_mask_path": row.visible_ownership_object_owned_mask_path,
                 "visible_ownership_constraint_eligible_mask_path": row.visible_ownership_constraint_eligible_mask_path,
@@ -2608,6 +3007,13 @@ def optimize_rows(
                 "visible_surface_track_valid_depth_pixels": int(row.visible_surface_track_valid_depth_pixels),
                 "visible_surface_track_quarantined_face_count": int(row.visible_surface_track_quarantined_face_count),
                 "visible_surface_depth_order_initial": row.visible_surface_depth_order_initial_measure,
+                "visible_surface_translation_support": row.visible_surface_translation_support_measure,
+                "visible_surface_translation_support_vertex_count": int(
+                    translation_support_ids.size
+                ),
+                "visible_surface_translation_support_vertex_ids": translation_support_ids.astype(int).tolist(),
+                "visible_surface_translation_support_depth_m": row.visible_surface_translation_support_depth_m.astype(float).tolist(),
+                "visible_surface_translation_support_initial_delta_hand_minus_surface_m": row.visible_surface_translation_support_initial_delta_m.astype(float).tolist(),
                 "visible_surface_depth_order_selected_vertex_count": int(surface_ids.size),
                 "visible_surface_depth_order_selected_vertex_ids": surface_ids.astype(int).tolist(),
                 "visible_surface_depth_order_selected_surface_depth_m": row.visible_surface_depth_order_depth_m.astype(float).tolist(),
@@ -2658,6 +3064,9 @@ def optimize_rows(
                 "final_active_constraint_residual_after_solver_m": numeric_summary(residual),
                 "full_observed_surface_penetration_after_solver_m": full_post.get("observed_supported_penetration_m"),
                 "full_raw_observed_surface_penetration_after_solver_m": full_raw_post.get("observed_supported_penetration_m"),
+                "full_signed_topology_audit_after_solver": full_topology_post,
+                "full_unauthorized_surface_penetration_after_solver_m": full_topology_post.get("unauthorized_penetration_m"),
+                "full_unauthorized_surface_penetrating_vertex_count_after_solver": int(full_topology_post.get("unauthorized_penetrating_vertex_count", 0)),
                 "full_observed_supported_penetrating_vertex_count_after_solver": int(full_post.get("observed_supported_penetrating_vertex_count", 0)),
                 "visible_joint_shift_px": {"count": int(len(shift)), "median": shift_med, "max": shift_max},
                 "joint_camera_depth_shift_m": {"count": int(len(dshift)), "median": float(np.median(dshift)), "max": float(np.max(dshift))},
@@ -2700,6 +3109,20 @@ def optimize_rows(
         "output_translation_gate_applied_count": int(output_translation_gate_applied_count),
         "output_translation_gate_shift_norm_m": numeric_summary(np.asarray(output_translation_gate_shift_norm, dtype=float)),
         "output_translation_gate_selected_support_count": numeric_summary(np.asarray(output_translation_gate_support_count, dtype=float)),
+        "raw_optimizer_candidate_audit": {
+            "full_observed_surface_penetration_max_m": numeric_summary(
+                np.asarray(raw_optimizer_full_observed_max, dtype=float)
+            ),
+            "visible_joint_shift_max_px": numeric_summary(
+                np.asarray(raw_optimizer_visible_max, dtype=float)
+            ),
+            "joint_camera_depth_shift_max_m": numeric_summary(
+                np.asarray(raw_optimizer_depth_max, dtype=float)
+            ),
+            "published_translation_gate_applied_count": int(
+                output_translation_gate_applied_count
+            ),
+        },
         "object_translation_delta_norm_m": numeric_summary(np.asarray(object_trans_max, dtype=float)),
         "root_delta_norm_rad": numeric_summary(np.asarray(root_max, dtype=float)),
         "pose_delta_max_joint_norm_rad": numeric_summary(np.asarray(pose_max, dtype=float)),
@@ -2932,7 +3355,11 @@ def quarantined_source_state(args: argparse.Namespace, pose_readiness: dict[str,
                 else (str(value) if isinstance(value, Path) else value)
             )
             for key, value in vars(args).items()
-            if key not in {"depth_npz"}
+            if key not in {
+                "depth_npz",
+                "signed_face_authority_mask",
+                "signed_face_authority_report",
+            }
         },
         "build_meta": {},
         "summary": {
@@ -2990,6 +3417,17 @@ def main() -> None:
     )
     physical_surface_probe = load_mesh(args.resolved_physical_surface_mesh)
     args.physical_surface_watertight = bool(physical_surface_probe.is_watertight)
+    signed_face_authority = load_signed_face_authority(
+        surface_contract.get("completion_report_payload") or {},
+        source_report_path=surface_contract.get("completion_report_path"),
+        mesh_path=args.resolved_physical_surface_mesh,
+        mesh_face_count=len(physical_surface_probe.faces),
+    )
+    args.signed_face_authority_mask = np.asarray(
+        signed_face_authority.pop("mask"), dtype=bool
+    )
+    signed_face_authority.pop("provenance_code", None)
+    args.signed_face_authority_report = signed_face_authority
     signed_geometry_declared_ready = surface_contract["signed_geometry_ready"] is True
     signed_geometry_diagnostic_override_used = bool(
         args.physical_surface_watertight
@@ -2998,6 +3436,7 @@ def main() -> None:
     )
     args.signed_object_surface_factor_active = bool(
         args.physical_surface_watertight
+        and signed_face_authority.get("usable") is True
         and (signed_geometry_declared_ready or signed_geometry_diagnostic_override_used)
     )
     args.signed_object_surface_factor_state = (
@@ -3005,7 +3444,7 @@ def main() -> None:
         if args.signed_object_surface_factor_active and signed_geometry_declared_ready
         else "active_diagnostic_override_unready_signed_geometry"
         if signed_geometry_diagnostic_override_used
-        else "inactive_signed_geometry_not_ready_or_nonwatertight"
+        else "inactive_signed_geometry_not_ready_nonwatertight_or_missing_local_face_authority"
     )
     visible_surface_factor_supplied = args.visible_surface_track_factor_report is not None or bool(args.factor_report)
     if (bool(args.visible_object_mask_gate) or bool(args.visible_surface_depth_order_term)) and args.visible_object_mask_report is None and not visible_surface_factor_supplied:
@@ -3093,7 +3532,20 @@ def main() -> None:
             "visible_surface_track_factor_report": None if args.visible_surface_track_factor_report is None else str(args.visible_surface_track_factor_report),
             "factor_report": None if args.factor_report is None else [str(p) for p in args.factor_report],
         },
-        "parameters": {k: ([str(x) for x in v] if k == "factor_report" and v is not None else (str(v) if isinstance(v, Path) else v)) for k, v in vars(args).items() if k not in {"depth_npz"}},
+        "parameters": {
+            k: (
+                [str(x) for x in v]
+                if k == "factor_report" and v is not None
+                else (str(v) if isinstance(v, Path) else v)
+            )
+            for k, v in vars(args).items()
+            if k
+            not in {
+                "depth_npz",
+                "signed_face_authority_mask",
+                "signed_face_authority_report",
+            }
+        },
         "object_pose_readiness": pose_readiness,
         "camera_mano_contract_validation": args.camera_mano_contract_validation,
         "physical_surface_contract": {
@@ -3105,6 +3557,7 @@ def main() -> None:
             "signed_geometry_declared_ready": signed_geometry_declared_ready,
             "signed_object_surface_factor_active": args.signed_object_surface_factor_active,
             "signed_object_surface_factor_state": args.signed_object_surface_factor_state,
+            "signed_face_authority": args.signed_face_authority_report,
             "unready_signed_geometry_diagnostic_override_requested": bool(args.allow_unready_signed_geometry_for_diagnostic_optimization),
             "unready_signed_geometry_diagnostic_override_used": signed_geometry_diagnostic_override_used,
         },

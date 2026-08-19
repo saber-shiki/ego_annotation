@@ -233,6 +233,7 @@ def main() -> None:
                 vertices_world=row.current_vertices_world,
                 mask=mask,
                 depth_row=depth_row,
+                A_mask_from_source=row.visible_mask_A_mask_from_source,
                 args=solver_args,
                 enabled=True,
             )
@@ -242,6 +243,7 @@ def main() -> None:
                 vertices_world=vertices[i],
                 mask=mask,
                 depth_row=depth_row,
+                A_mask_from_source=row.visible_mask_A_mask_from_source,
                 args=solver_args,
                 enabled=True,
             )

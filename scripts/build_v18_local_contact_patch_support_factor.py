@@ -287,6 +287,9 @@ def solver_residual_contact_patch_selection(
     solver_gate_mask = visible_mask_for_gate
     if solver_ownership_row is not None:
         non_object_mask, constraint_mask, ownership_diag = visible_ownership_masks_for_row(solver_ownership_row, mask_cache)
+        A_mask_from_source = np.asarray(
+            ownership_diag.get("A_mask_from_source_coordinate_model"), dtype=float
+        )
         strict, ownership_quarantined = visible_ownership_quarantine_faces(
             frame=frame,
             side=side,
@@ -295,6 +298,7 @@ def solver_residual_contact_patch_selection(
             object_pose=pose,
             face_strict_observed=strict,
             non_object_owned_mask=non_object_mask,
+            A_mask_from_source=A_mask_from_source,
             args=args,
         )
         solver_gate_mask = constraint_mask if constraint_mask is not None else solver_gate_mask
@@ -306,6 +310,7 @@ def solver_residual_contact_patch_selection(
         object_pose=pose,
         face_strict_observed=strict,
         mask=solver_gate_mask,
+        A_mask_from_source=A_mask_from_source if solver_ownership_row is not None else np.eye(3),
         args=args,
     )
     surface_mask, surface_diag = surface_eligibility_mask_for_row(surface_row, len(faces), surface_cache)

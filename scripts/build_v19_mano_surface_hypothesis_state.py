@@ -164,7 +164,10 @@ def signed_full_mano_acceptance(
     depth_shift_max = 0.0
     penetration_residual_max = 0.0
     full_penetration_after_uncertainty_max = 0.0
+    unauthorized_penetration_max = 0.0
+    unauthorized_penetrating_vertex_count = 0
     active_set_closed = True
+    output_translation_gate_applied_count = 0
     for row in rows:
         object_delta = np.asarray(row.get("optimized_object_translation_world_m") or [], dtype=np.float64)
         if object_delta.shape != (3,) or not np.isfinite(object_delta).all():
@@ -175,6 +178,7 @@ def signed_full_mano_acceptance(
         depth = row.get("joint_camera_depth_shift_m") if isinstance(row.get("joint_camera_depth_shift_m"), dict) else {}
         residual = row.get("final_active_constraint_residual_after_solver_m") if isinstance(row.get("final_active_constraint_residual_after_solver_m"), dict) else {}
         full_penetration = row.get("full_observed_surface_penetration_after_solver_m") if isinstance(row.get("full_observed_surface_penetration_after_solver_m"), dict) else {}
+        unauthorized_penetration = row.get("full_unauthorized_surface_penetration_after_solver_m") if isinstance(row.get("full_unauthorized_surface_penetration_after_solver_m"), dict) else {}
         support_uncertainty = max(0.0, float(row.get("observed_surface_support_uncertainty_m") or 0.0))
         visible_shift_max = max(visible_shift_max, float(visible.get("max") or 0.0))
         depth_shift_max = max(depth_shift_max, float(depth.get("max") or 0.0))
@@ -183,8 +187,23 @@ def signed_full_mano_acceptance(
             full_penetration_after_uncertainty_max,
             max(0.0, float(full_penetration.get("max") or 0.0) - support_uncertainty),
         )
+        unauthorized_penetration_max = max(
+            unauthorized_penetration_max,
+            float(unauthorized_penetration.get("max") or 0.0),
+        )
+        unauthorized_penetrating_vertex_count += int(
+            row.get("full_unauthorized_surface_penetrating_vertex_count_after_solver")
+            or 0
+        )
         if not str(row.get("signed_object_surface_factor_state") or "").startswith("active_explicit"):
             active_set_closed = False
+        output_gate = (
+            row.get("output_translation_gate")
+            if isinstance(row.get("output_translation_gate"), dict)
+            else {}
+        )
+        if output_gate.get("applied") is True:
+            output_translation_gate_applied_count += 1
     for interval in contact_state.get("intervals") or []:
         if isinstance(interval, dict) and interval.get("active_set_closed") is not True:
             active_set_closed = False
@@ -198,8 +217,12 @@ def signed_full_mano_acceptance(
         blockers.append("signed_penetration_residual_exceeds_bound")
     if full_penetration_after_uncertainty_max > float(args.max_accepted_penetration_residual_m):
         blockers.append("full_signed_penetration_after_uncertainty_exceeds_bound")
+    if unauthorized_penetrating_vertex_count > 0 or unauthorized_penetration_max > 0.0:
+        blockers.append("unresolved_penetration_nearest_unauthorized_closure_face")
     if not active_set_closed:
         blockers.append("signed_active_set_not_closed")
+    if output_translation_gate_applied_count:
+        blockers.append("published_candidate_contains_translation_gated_rows")
 
     archive_rows: dict[tuple[int, str], tuple[np.ndarray, np.ndarray]] = {}
     if not blockers and archive.is_file():
@@ -238,7 +261,14 @@ def signed_full_mano_acceptance(
         "max_joint_camera_depth_shift_m": depth_shift_max,
         "max_signed_penetration_residual_m": penetration_residual_max,
         "max_full_signed_penetration_after_uncertainty_m": full_penetration_after_uncertainty_max,
+        "max_unauthorized_closure_penetration_m": unauthorized_penetration_max,
+        "unauthorized_closure_penetrating_vertex_count": int(
+            unauthorized_penetrating_vertex_count
+        ),
         "signed_active_set_closed": active_set_closed,
+        "output_translation_gate_applied_count": int(
+            output_translation_gate_applied_count
+        ),
         "thresholds": {
             "max_accepted_visible_joint_shift_px": float(args.max_accepted_visible_joint_shift_px),
             "max_accepted_joint_depth_shift_m": float(args.max_accepted_joint_depth_shift_m),
