@@ -225,6 +225,17 @@ def validate_contract(payload: dict[str, Any], *, expected_frame_ids: list[int] 
     }
 
 
+def require_ordered_frame_subset(contract_frame_ids: list[int], selected_frame_ids: list[int]) -> None:
+    """Bind a depth chunk to an ordered subset of an immutable camera timeline."""
+    contract_positions = {int(frame): position for position, frame in enumerate(contract_frame_ids)}
+    missing = [int(frame) for frame in selected_frame_ids if int(frame) not in contract_positions]
+    if missing:
+        raise RuntimeError(f"camera contract misses selected frames: {missing[:10]}")
+    positions = [contract_positions[int(frame)] for frame in selected_frame_ids]
+    if positions != sorted(positions) or len(positions) != len(set(positions)):
+        raise RuntimeError("selected frames are not an ordered unique subset of the camera contract timeline")
+
+
 def load_contract(path: Path, *, expected_frame_ids: list[int] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     payload = load_json(path)
     normalized = validate_contract(payload, expected_frame_ids=expected_frame_ids)

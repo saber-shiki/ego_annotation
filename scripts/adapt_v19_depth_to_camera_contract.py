@@ -17,7 +17,13 @@ from typing import Any
 
 import numpy as np
 
-from v19_camera_contract import load_contract, plane_intrinsics, sha256_file, summarize_contract
+from v19_camera_contract import (
+    load_contract,
+    plane_intrinsics,
+    require_ordered_frame_subset,
+    sha256_file,
+    summarize_contract,
+)
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -77,7 +83,8 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
     if depth_size != tuple(int(v) for v in source_size.tolist()):
         raise RuntimeError(f"depth raster {depth_size} disagrees with source_size {source_size.tolist()}")
 
-    contract, normalized = load_contract(contract_path, expected_frame_ids=frame_idx.tolist())
+    contract, normalized = load_contract(contract_path)
+    require_ordered_frame_subset(normalized["frame_ids"], frame_idx.tolist())
     intrinsics, transform = plane_intrinsics(
         contract,
         normalized,

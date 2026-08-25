@@ -116,14 +116,14 @@ class DA3PoseConditionedContractTest(unittest.TestCase):
         np.testing.assert_allclose(remapped[valid], map_x[valid], atol=1.0 / 32.0)
 
     def test_camera_contract_accepts_ordered_frame_range_subset(self) -> None:
-        da3.require_ordered_contract_subset([0, 1, 2, 3], [1, 2])
-        da3.require_ordered_contract_subset([0, 2, 4, 6], [2, 6])
+        da3.require_ordered_frame_subset([0, 1, 2, 3], [1, 2])
+        da3.require_ordered_frame_subset([0, 2, 4, 6], [2, 6])
         with self.assertRaisesRegex(RuntimeError, "misses selected frames"):
-            da3.require_ordered_contract_subset([0, 1, 2, 3], [1, 7])
+            da3.require_ordered_frame_subset([0, 1, 2, 3], [1, 7])
         with self.assertRaisesRegex(RuntimeError, "ordered unique subset"):
-            da3.require_ordered_contract_subset([0, 1, 2, 3], [2, 1])
+            da3.require_ordered_frame_subset([0, 1, 2, 3], [2, 1])
         with self.assertRaisesRegex(RuntimeError, "ordered unique subset"):
-            da3.require_ordered_contract_subset([0, 1, 2, 3], [1, 1])
+            da3.require_ordered_frame_subset([0, 1, 2, 3], [1, 1])
 
     def test_memmap_cleanup_closes_and_removes_scratch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="da3_memmap_cleanup_") as temp:
@@ -185,7 +185,8 @@ class DA3PoseConditionedContractTest(unittest.TestCase):
             contract = root / "camera.json"
             size = (10, 8)
             frames = [0, 1]
-            write_contract(contract, size, frames)
+            # The archive is a chunk of a longer immutable camera timeline.
+            write_contract(contract, size, [0, 1, 2, 3])
             intrinsics = np.asarray([80.0, 82.0, 5.0, 4.0], dtype=np.float64)
             intrinsics_rows = np.repeat(intrinsics[None], len(frames), axis=0)
             source = root / "da3.npz"
