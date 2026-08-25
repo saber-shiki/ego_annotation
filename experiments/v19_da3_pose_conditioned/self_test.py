@@ -125,6 +125,20 @@ class DA3PoseConditionedContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ordered unique subset"):
             da3.require_ordered_contract_subset([0, 1, 2, 3], [1, 1])
 
+    def test_memmap_cleanup_closes_and_removes_scratch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="da3_memmap_cleanup_") as temp:
+            scratch = Path(temp) / "scratch"
+            scratch.mkdir()
+            array = np.lib.format.open_memmap(
+                scratch / "array.npy", mode="w+", dtype=np.float32, shape=(3, 4)
+            )
+            array[:] = 2.0
+            da3.close_memmap(array)
+            da3.remove_temporary_tree(scratch)
+            self.assertFalse(scratch.exists())
+            # Idempotence is required by exception cleanup.
+            da3.remove_temporary_tree(scratch)
+
     def test_hawor_c2w_is_inverted_to_opencv_w2c(self) -> None:
         with tempfile.TemporaryDirectory(prefix="da3_hawor_camera_") as temp:
             path = Path(temp) / "hawor.npz"

@@ -13,6 +13,7 @@ must not be used to inject a DA3 point map into SAM3D Objects.
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -348,6 +349,38 @@ def load_model(args: argparse.Namespace) -> Any:
     return model.to(device=args.device).eval()
 
 
+def close_memmap(array: Any) -> None:
+    if array is None:
+        return
+    try:
+        array.flush()
+    except Exception:
+        pass
+    mmap = getattr(array, "_mmap", None)
+    if mmap is not None:
+        try:
+            mmap.close()
+        except Exception:
+            pass
+
+
+def remove_temporary_tree(path: Path, attempts: int = 5) -> None:
+    """Remove local or CIFS scratch without masking the inference exception."""
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            last_error = error
+            if attempt + 1 < attempts:
+                time.sleep(0.25 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
     rows = read_manifest(args.manifest, int(args.frame_start), int(args.frame_end))
@@ -401,6 +434,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     taper_sum = np.lib.format.open_memmap(temp_dir / "taper_sum.npy", mode="w+", dtype=np.float32, shape=shape)
     contribution_count = np.zeros(len(rows), dtype=np.int32)
 
+    model = None
+    depth_final = None
+    confidence_error_final = None
     model = load_model(args)
     overlap_rows: list[dict[str, Any]] = []
     window_rows: list[dict[str, Any]] = []
@@ -717,14 +753,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         print(json.dumps({key: value for key, value in report.items() if key not in {"processed_intrinsics_rows"}}, indent=2))
         return report
     finally:
-        del model
-        for array in (depth_numerator, weight_sum, confidence_numerator, taper_sum):
-            try:
-                array.flush()
-            except Exception:
-                pass
+        # Explicitly close every mmap before CIFS deletion. Cleanup must never
+        # replace the inference exception with a transient ENOTEMPTY from NAS.
+        for array in (
+            depth_final,
+            confidence_error_final,
+            depth_numerator,
+            weight_sum,
+            confidence_numerator,
+            taper_sum,
+        ):
+            close_memmap(array)
+        depth_final = confidence_error_final = None
+        depth_numerator = weight_sum = confidence_numerator = taper_sum = None
+        model = None
+        gc.collect()
         if temp_dir.exists() and not args.keep_temporary_accumulators:
-            shutil.rmtree(temp_dir)
+            try:
+                remove_temporary_tree(temp_dir)
+            except OSError as error:
+                print(f"warning: could not remove DA3 temporary directory {temp_dir}: {error}", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
