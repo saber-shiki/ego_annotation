@@ -634,6 +634,21 @@ class CameraContractTest(unittest.TestCase):
                     allow_implicit_depth_resize=False,
                 )
 
+    def test_legacy_camera_bound_depth_without_provider_is_unidepth(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="v19_legacy_unidepth_provider_") as temp:
+            path = Path(temp) / "legacy_unidepth.npz"
+            np.savez_compressed(
+                path,
+                frame_idx=np.asarray([0], dtype=np.int32),
+                depth=np.ones((1, 2, 3), dtype=np.float16),
+                confidence=np.ones((1, 2, 3), dtype=np.float16),
+                source_size=np.asarray([3, 2], dtype=np.int32),
+                intrinsics_fx_fy_cx_cy=np.asarray([[4.0, 4.0, 1.5, 1.0]], dtype=np.float64),
+            )
+            loaded = visible_geometry.load_depth_npz(path)
+            self.assertEqual(loaded["depth_provider"], "unidepth")
+            self.assertEqual(loaded["confidence_role"], "predicted_error_proxy_higher_is_worse")
+
     def test_unidepth_full_frame_consumes_camera_contract_before_depth_decode(self) -> None:
         with tempfile.TemporaryDirectory(prefix="v19_unidepth_conditioned_") as temp:
             root = Path(temp)

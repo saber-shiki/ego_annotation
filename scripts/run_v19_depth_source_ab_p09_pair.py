@@ -231,6 +231,8 @@ def validate_branch_output(
         or int(report.get("anchor_frame_idx", -1)) != anchor_frame
         or int(report.get("output_frame_count", -1)) != len(frame_ids)
         or report.get("preserve_source_index") is not True
+        or str(report.get("depth_provider")) != expected_provider
+        or str(report.get("depth_confidence_role")) != "predicted_error_proxy_higher_is_worse"
     ):
         raise RuntimeError(f"{branch} P09 report violates case/object/anchor/timeline invariants")
     inputs = report.get("inputs") if isinstance(report.get("inputs"), dict) else {}
@@ -275,7 +277,16 @@ def validate_branch_output(
         }
         candidate = obj.get("visible_geometry_candidate")
         if isinstance(candidate, dict) and candidate.get("depth_provider"):
-            providers.add(str(candidate["depth_provider"]))
+            candidate_provider = str(candidate["depth_provider"])
+            ownership_provider = str((candidate.get("first_surface_depth_ownership") or {}).get("depth_provider"))
+            if candidate_provider != ownership_provider:
+                raise RuntimeError(
+                    f"{branch} frame {idx} candidate/ownership provider mismatch: "
+                    f"{candidate_provider!r} != {ownership_provider!r}"
+                )
+            if str(candidate.get("depth_confidence_role")) != "predicted_error_proxy_higher_is_worse":
+                raise RuntimeError(f"{branch} frame {idx} candidate confidence role is invalid")
+            providers.add(candidate_provider)
         shared_frame_state[idx] = canonical_sha256({
             "frame_idx": frame.get("frame_idx"),
             "time_s": frame.get("time_s"),

@@ -195,7 +195,10 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
     confidence = np.asarray(blob["confidence"], dtype=np.float32) if "confidence" in blob.files else None
     if confidence is not None and confidence.shape != depth.shape:
         raise RuntimeError(f"{path} confidence shape {confidence.shape} disagrees with depth {depth.shape}")
-    depth_provider = scalar_text(blob["depth_provider"], "depth_provider") if "depth_provider" in blob.files else "legacy_unidepth"
+    # Camera-bound UniDepth archives produced before provider-neutral metadata
+    # did not carry depth_provider. The adapter and pair contract both define
+    # that historical absence as UniDepth, not as a third provider identity.
+    depth_provider = scalar_text(blob["depth_provider"], "depth_provider") if "depth_provider" in blob.files else "unidepth"
     confidence_semantics = (
         scalar_text(blob["confidence_semantics"], "confidence_semantics")
         if "confidence_semantics" in blob.files
@@ -1704,6 +1707,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_shape": list(depth_m.shape),
             "depth_provider": str(depth.get("depth_provider")),
             "depth_confidence_semantics": str(depth.get("confidence_semantics")),
+            "depth_confidence_role": str(depth.get("confidence_role")),
             "object_surface_ownership_filter": ownership_summary,
             "first_surface_depth_ownership": depth_ownership_summary,
             "source_width": int(source_width),
@@ -1898,6 +1902,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "source_height": int(vis.get("source_height") or frame.get("source_height") or 0),
             "depth_npz": str(args.depth_npz),
             "depth_frame_index": int(idx),
+            "depth_provider": str(vis["depth_provider"]),
+            "depth_confidence_semantics": str(vis["depth_confidence_semantics"]),
+            "depth_confidence_role": str(vis["depth_confidence_role"]),
             "camera_pose_source": vis["camera_source"],
             "intrinsics_fx_fy_cx_cy": np.asarray(vis["intrinsics"], dtype=float).tolist(),
             "intrinsics_source": vis.get("intrinsics_source"),
@@ -1956,6 +1963,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "owned_mask_area_source_px": owned_area_source_px,
                 "owned_mask_bbox_source_xyxy": [float(x) for x in owned_bbox[:4]],
                 "depth_median_m": float(vis["depth_median_m"]),
+                "depth_provider": str(vis["depth_provider"]),
+                "depth_confidence_semantics": str(vis["depth_confidence_semantics"]),
+                "depth_confidence_role": str(vis["depth_confidence_role"]),
                 "centroid_world_m": centroid.astype(float).tolist(),
                 "world_extent_m": world_extent_m.astype(float).tolist(),
                 "extent_ratio_to_population_diag": extent_ratio_diag,
@@ -1986,6 +1996,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "mask_image_plane": args.mask_image_plane,
             "pixel_center_convention": args.pixel_center_convention,
             "depth_camera_contract_binding_validation": depth_contract_binding_validation,
+            "depth_provider": str(depth.get("depth_provider")),
+            "depth_confidence_semantics": str(depth.get("confidence_semantics")),
+            "depth_confidence_role": str(depth.get("confidence_role")),
             "anchor_frame_idx": int(anchor),
             "claim_scope": "visible metric surfel and initial-pose adapter for rigid branch; downstream completion/pose/interval solvers must produce the physical object pose claim",
         },
@@ -2064,6 +2077,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "output_frame_count": int(len(output_indices)),
         "preserve_source_index": bool(args.preserve_source_index),
         "visible_metric_frame_count": int(sum(1 for row in rows if row.get("status") == "visible_metric_surface_measurement")),
+        "depth_provider": str(depth.get("depth_provider")),
+        "depth_confidence_semantics": str(depth.get("confidence_semantics")),
+        "depth_confidence_role": str(depth.get("confidence_role")),
         "anchor_frame_idx": int(anchor),
         "anchor_centroid_world_m": anchor_centroid.astype(float).tolist(),
         "anchor_extent_world_m": anchor_extent_m.astype(float).tolist(),
