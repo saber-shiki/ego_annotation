@@ -115,6 +115,29 @@ def fit_frame_pose(canonical_samples: np.ndarray, observed_world: np.ndarray, in
     }
 
 
+def fit_quality_thresholds(mesh: trimesh.Trimesh, args: argparse.Namespace) -> dict[str, float]:
+    object_diagonal_m = float(np.linalg.norm(np.asarray(mesh.extents, dtype=float)))
+    median_threshold_m = float(
+        np.clip(
+            float(args.fit_quality_median_object_diag_fraction) * object_diagonal_m,
+            float(args.fit_quality_median_floor_m),
+            float(args.fit_quality_median_cap_m),
+        )
+    )
+    p90_threshold_m = float(
+        np.clip(
+            float(args.fit_quality_p90_object_diag_fraction) * object_diagonal_m,
+            float(args.fit_quality_p90_floor_m),
+            float(args.fit_quality_p90_cap_m),
+        )
+    )
+    return {
+        "pose_hypothesis_object_diagonal_m": object_diagonal_m,
+        "observed_to_mesh_final_median_threshold_m": median_threshold_m,
+        "observed_to_mesh_final_p90_threshold_m": p90_threshold_m,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--annotations", type=Path, required=True)
@@ -123,6 +146,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sample-count", type=int, default=6000)
     parser.add_argument("--iterations", type=int, default=4)
+    parser.add_argument("--fit-quality-median-object-diag-fraction", type=float, default=0.06)
+    parser.add_argument("--fit-quality-p90-object-diag-fraction", type=float, default=0.15)
+    parser.add_argument("--fit-quality-median-floor-m", type=float, default=0.004)
+    parser.add_argument("--fit-quality-median-cap-m", type=float, default=0.012)
+    parser.add_argument("--fit-quality-p90-floor-m", type=float, default=0.008)
+    parser.add_argument("--fit-quality-p90-cap-m", type=float, default=0.025)
     parser.add_argument(
         "--include-ineligible-rigid-pose-observations",
         action="store_true",
@@ -138,6 +167,13 @@ def main() -> None:
         raise RuntimeError("completion report lacks outputs.pose_hypothesis_mesh_labeled/completed_mesh_labeled")
     mesh_path = Path(mesh_value)
     mesh = load_mesh(mesh_path)
+    if not 0.0 <= float(args.fit_quality_median_floor_m) <= float(args.fit_quality_median_cap_m):
+        raise ValueError("fit-quality median floor/cap must satisfy 0 <= floor <= cap")
+    if not 0.0 <= float(args.fit_quality_p90_floor_m) <= float(args.fit_quality_p90_cap_m):
+        raise ValueError("fit-quality p90 floor/cap must satisfy 0 <= floor <= cap")
+    if float(args.fit_quality_median_object_diag_fraction) < 0.0 or float(args.fit_quality_p90_object_diag_fraction) < 0.0:
+        raise ValueError("fit-quality object-diagonal fractions must be non-negative")
+    quality_thresholds = fit_quality_thresholds(mesh, args)
     canonical_samples = deterministic_sample_mesh(mesh, args.sample_count)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -153,6 +189,9 @@ def main() -> None:
     explicit_eligible_fit_count = 0
     eligibility_unspecified_fit_count = 0
     ineligible_override_fit_count = 0
+    fit_quality_eligible_count = 0
+    fit_quality_ineligible_count = 0
+    fit_quality_ineligible_frames: list[int] = []
     for frame in annotations.get("frames", []):
         frame_idx = int(frame.get("frame_idx"))
         obj = None
@@ -206,6 +245,21 @@ def main() -> None:
             })
             continue
         fit = fit_frame_pose(canonical_samples, observed, r, t, args.iterations)
+        final_median = fit["observed_to_mesh_final"].get("median_m")
+        final_p90 = fit["observed_to_mesh_final"].get("p90_m")
+        fit_quality_eligible = bool(
+            isinstance(final_median, (int, float))
+            and isinstance(final_p90, (int, float))
+            and np.isfinite(float(final_median))
+            and np.isfinite(float(final_p90))
+            and float(final_median) <= quality_thresholds["observed_to_mesh_final_median_threshold_m"]
+            and float(final_p90) <= quality_thresholds["observed_to_mesh_final_p90_threshold_m"]
+        )
+        if fit_quality_eligible:
+            fit_quality_eligible_count += 1
+        else:
+            fit_quality_ineligible_count += 1
+            fit_quality_ineligible_frames.append(frame_idx)
         if eligibility is True:
             explicit_eligible_fit_count += 1
         elif eligibility is None:
@@ -223,6 +277,13 @@ def main() -> None:
             "rigid_pose_observation_reasons": eligibility_reasons,
             "rigid_pose_observation_eligibility_sources": eligibility_sources,
             "ineligible_override_used": bool(eligibility is False and args.include_ineligible_rigid_pose_observations),
+            "rigid_pose_fit_quality_eligible": fit_quality_eligible,
+            "rigid_pose_fit_quality_reason": (
+                "observed_to_pose_hypothesis_residual_within_scale_relative_median_and_p90_thresholds"
+                if fit_quality_eligible
+                else "observed_to_pose_hypothesis_residual_exceeds_scale_relative_median_or_p90_threshold"
+            ),
+            "rigid_pose_fit_quality_thresholds": quality_thresholds,
         })
         rows.append(fit)
 
@@ -256,6 +317,18 @@ def main() -> None:
             "resolution": "false from either object or visible_geometry_candidate rejects the observation; otherwise explicit true is recorded",
             "include_ineligible_override": bool(args.include_ineligible_rigid_pose_observations),
         },
+        "fit_quality_policy": {
+            **quality_thresholds,
+            "median_object_diag_fraction": float(args.fit_quality_median_object_diag_fraction),
+            "p90_object_diag_fraction": float(args.fit_quality_p90_object_diag_fraction),
+            "median_floor_m": float(args.fit_quality_median_floor_m),
+            "median_cap_m": float(args.fit_quality_median_cap_m),
+            "p90_floor_m": float(args.fit_quality_p90_floor_m),
+            "p90_cap_m": float(args.fit_quality_p90_cap_m),
+            "explicit_false": "hard rejected by P15/P14b",
+            "missing_field": "legacy compatibility only; cannot support P14b hidden-geometry promotion",
+            "claim_scope": "Post-fit residual gate over direct visible metric points and the pose hypothesis. Passing is necessary for a trusted pose observation, not sufficient for annotation readiness.",
+        },
         "frame_count": len(rows),
         "fit_frame_count": sum(1 for r in rows if r.get("status") == "fit_to_visible_depth_samples"),
         "explicit_eligible_fit_count": explicit_eligible_fit_count,
@@ -265,6 +338,9 @@ def main() -> None:
         "explicit_ineligible_input_count": explicit_ineligible_input_count,
         "ineligible_observation_count": ineligible_observation_count,
         "ineligible_override_fit_count": ineligible_override_fit_count,
+        "fit_quality_eligible_count": fit_quality_eligible_count,
+        "fit_quality_ineligible_count": fit_quality_ineligible_count,
+        "fit_quality_ineligible_frames": fit_quality_ineligible_frames,
         "ineligible_observation_frames": ineligible_observation_frames,
         "ineligible_reason_counts": ineligible_reason_counts,
         "missing_pose_count": missing_pose,
@@ -279,7 +355,7 @@ def main() -> None:
     out_path = args.output_dir / "v18_compact_rigid_object_pose_fit_report.json"
     args.output_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ["status", "object_id", "frame_count", "fit_frame_count", "explicit_eligible_input_count", "eligibility_unspecified_input_count", "explicit_ineligible_input_count", "explicit_eligible_fit_count", "eligibility_unspecified_fit_count", "ineligible_observation_count", "ineligible_override_fit_count", "missing_pose_count", "missing_visible_depth_sample_count", "final_observed_to_mesh_median_summary_m"]}, indent=2))
+    print(json.dumps({k: report[k] for k in ["status", "object_id", "frame_count", "fit_frame_count", "explicit_eligible_input_count", "eligibility_unspecified_input_count", "explicit_ineligible_input_count", "explicit_eligible_fit_count", "eligibility_unspecified_fit_count", "ineligible_observation_count", "ineligible_override_fit_count", "fit_quality_eligible_count", "fit_quality_ineligible_count", "fit_quality_ineligible_frames", "missing_pose_count", "missing_visible_depth_sample_count", "final_observed_to_mesh_median_summary_m"]}, indent=2))
 
 
 if __name__ == "__main__":

@@ -197,6 +197,15 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
                 }
             )
             continue
+        if row.get("rigid_pose_fit_quality_eligible") is False and not args.include_ineligible_rigid_pose_fits:
+            skipped.append(
+                {
+                    "frame_idx": idx,
+                    "reason": "explicit upstream rigid_pose_fit_quality_eligible=false",
+                    "policy": "hard rejected unless --include-ineligible-rigid-pose-fits is explicitly enabled for diagnostic reproduction",
+                }
+            )
+            continue
         if args.frame_start is not None and idx < int(args.frame_start):
             continue
         if args.frame_end is not None and idx > int(args.frame_end):
@@ -244,6 +253,103 @@ def build_observations(args: argparse.Namespace, annotations: dict[str, Any], po
         )
     observations.sort(key=lambda obs: obs.frame_idx)
     return observations, skipped, targets
+
+
+def direct_pose_observation_coverage(
+    observations: list[PoseObservation],
+    frames_by_idx: dict[int, dict[str, Any]],
+    timeline_frame_ids: list[int],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    timeline = sorted(set(int(value) for value in timeline_frame_ids))
+    direct = sorted(set(int(obs.frame_idx) for obs in observations))
+    if not timeline:
+        raise RuntimeError("cannot measure direct pose coverage on an empty timeline")
+    start, end = timeline[0], timeline[-1]
+    timeline_count = end - start + 1
+    bins = max(1, int(args.temporal_bin_count))
+    occupied = sorted({min(bins - 1, (frame - start) * bins // max(1, timeline_count)) for frame in direct})
+    if direct:
+        gaps = [direct[0] - start]
+        gaps.extend(max(0, right - left - 1) for left, right in zip(direct[:-1], direct[1:]))
+        gaps.append(end - direct[-1])
+        span = [direct[0], direct[-1]]
+        span_fraction = float((direct[-1] - direct[0]) / max(1, timeline_count - 1))
+    else:
+        gaps = [timeline_count]
+        span = None
+        span_fraction = 0.0
+    max_gap = max(gaps)
+
+    directions: list[tuple[int, np.ndarray]] = []
+    for obs in observations:
+        frame = frames_by_idx.get(int(obs.frame_idx), {})
+        camera = frame.get("camera") if isinstance(frame.get("camera"), dict) else {}
+        transform_value = camera.get("T_world_camera_metric") or camera.get("T_world_camera")
+        transform = np.asarray(transform_value if transform_value is not None else [], dtype=float)
+        if transform.shape != (4, 4) or not np.isfinite(transform).all():
+            continue
+        camera_center_world = transform[:3, 3]
+        ray_world = camera_center_world - obs.translation_world_m
+        ray_canonical = obs.rotation_world_from_canonical.T @ ray_world
+        norm = float(np.linalg.norm(ray_canonical))
+        if np.isfinite(norm) and norm > 1.0e-9:
+            directions.append((int(obs.frame_idx), ray_canonical / norm))
+    max_angle_deg = 0.0
+    max_angle_pair: list[int] | None = None
+    pair_count = 0
+    for left in range(len(directions)):
+        for right in range(left + 1, len(directions)):
+            pair_count += 1
+            angle_deg = float(
+                np.degrees(
+                    np.arccos(np.clip(np.dot(directions[left][1], directions[right][1]), -1.0, 1.0))
+                )
+            )
+            if angle_deg > max_angle_deg:
+                max_angle_deg = angle_deg
+                max_angle_pair = [directions[left][0], directions[right][0]]
+
+    count_sufficient = len(direct) >= int(args.min_graph_frames)
+    span_sufficient = span_fraction >= float(args.min_direct_pose_span_fraction)
+    bins_sufficient = len(occupied) >= int(args.min_occupied_temporal_bins)
+    gap_fraction = float(max_gap / max(1, timeline_count))
+    gap_sufficient = gap_fraction <= float(args.max_direct_pose_gap_fraction)
+    viewpoint_observable = len(directions) == len(direct) and pair_count > 0
+    viewpoint_sufficient = bool(
+        viewpoint_observable and max_angle_deg >= float(args.min_direct_pose_viewpoint_angle_deg)
+    )
+    return {
+        "sufficient": bool(count_sufficient and span_sufficient and bins_sufficient and gap_sufficient and viewpoint_sufficient),
+        "direct_count_sufficient": bool(count_sufficient),
+        "span_sufficient": bool(span_sufficient),
+        "temporal_bins_sufficient": bool(bins_sufficient),
+        "maximum_gap_sufficient": bool(gap_sufficient),
+        "viewpoint_sufficient": bool(viewpoint_sufficient),
+        "viewpoint_observable": bool(viewpoint_observable),
+        "configured_min_graph_frames": int(args.min_graph_frames),
+        "actual_graph_frames": len(direct),
+        "timeline_frame_span": [start, end],
+        "direct_frame_span": span,
+        "direct_frame_span_fraction": span_fraction,
+        "configured_min_direct_pose_span_fraction": float(args.min_direct_pose_span_fraction),
+        "temporal_bin_count": bins,
+        "occupied_temporal_bins": occupied,
+        "occupied_temporal_bin_count": len(occupied),
+        "configured_min_occupied_temporal_bins": int(args.min_occupied_temporal_bins),
+        "unobserved_gap_frames": gaps,
+        "maximum_unobserved_gap_frames": int(max_gap),
+        "maximum_unobserved_gap_fraction": gap_fraction,
+        "configured_max_direct_pose_gap_fraction": float(args.max_direct_pose_gap_fraction),
+        "object_canonical_viewpoint": {
+            "valid_frame_ids": [frame for frame, _ in directions],
+            "pair_count": pair_count,
+            "maximum_pair_angle_deg": float(max_angle_deg) if pair_count else None,
+            "maximum_pair_frame_ids": max_angle_pair,
+            "configured_minimum_pair_angle_deg": float(args.min_direct_pose_viewpoint_angle_deg),
+            "claim_scope": "Exact pairwise camera-to-object-origin ray separation after transforming each ray into that P14 pose row's object-canonical frame.",
+        },
+    }
 
 
 def unpack(x: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -516,7 +622,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     mesh = load_mesh(Path(mesh_path))
     observations, skipped, targets = build_observations(args, annotations, pose_report, mesh)
-    graph_support_sufficient = len(observations) >= int(args.min_graph_frames)
+    frames_by_idx = {
+        int(frame.get("frame_idx")): frame
+        for frame in annotations.get("frames", [])
+        if isinstance(frame, dict) and frame.get("frame_idx") is not None
+        and (args.frame_start is None or int(frame.get("frame_idx")) >= int(args.frame_start))
+        and (args.frame_end is None or int(frame.get("frame_idx")) <= int(args.frame_end))
+    }
+    direct_coverage = direct_pose_observation_coverage(
+        observations,
+        frames_by_idx,
+        list(frames_by_idx),
+        args,
+    )
+    graph_support_sufficient = bool(direct_coverage["sufficient"])
     x0 = np.zeros(len(observations) * 6, dtype=float)
     before = residual_vector(x0, observations, args)
     jac = residual_sparsity(observations)
@@ -595,16 +714,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "graph_frames": [obs.frame_idx for obs in observations],
         "graph_frame_count": int(len(observations)),
         "graph_support": {
-            "sufficient": graph_support_sufficient,
-            "configured_min_graph_frames": int(args.min_graph_frames),
-            "actual_graph_frames": int(len(observations)),
+            **direct_coverage,
             "frame_span": [int(observations[0].frame_idx), int(observations[-1].frame_idx)],
             "continued_only_as_uncertain_full_timeline_completion": bool(not graph_support_sufficient and args.complete_full_timeline_rigid_pose),
+            "claim_scope": "Annotation-ready graph support requires count, source-frame span, temporal-bin occupancy, bounded maximum unobserved gap, and an exact separated object-canonical viewpoint pair. Nearest holds/interpolations never enter these diagnostics.",
         },
         "pose_observation_eligibility_policy": {
             "explicit_false": "included_only_with_override" if args.include_ineligible_rigid_pose_observations else "hard_rejected",
             "missing_field": "allowed_for_legacy_compatibility",
             "include_ineligible_override": bool(args.include_ineligible_rigid_pose_observations),
+            "fit_quality_explicit_false": "included_only_with_diagnostic_override" if args.include_ineligible_rigid_pose_fits else "hard_rejected",
+            "fit_quality_missing_field": "allowed_for_legacy_compatibility",
+            "include_ineligible_fit_override": bool(args.include_ineligible_rigid_pose_fits),
             "candidate_measurement_row_count": len(pose_measurement_candidates),
             "explicit_eligible_candidate_count": int(
                 sum(row.get("rigid_pose_observation_eligible") is True for row in pose_measurement_candidates)
@@ -620,6 +741,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "explicit_ineligible_admitted_count": int(
                 sum(obs.source_row.get("rigid_pose_observation_eligible") is False for obs in observations)
+            ),
+            "fit_quality_ineligible_skipped_count": int(
+                sum(row.get("reason") == "explicit upstream rigid_pose_fit_quality_eligible=false" for row in skipped)
+            ),
+            "fit_quality_ineligible_admitted_count": int(
+                sum(obs.source_row.get("rigid_pose_fit_quality_eligible") is False for obs in observations)
             ),
         },
         "skipped_pose_observations": skipped,
@@ -681,10 +808,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--frame-start", type=int, default=None)
     p.add_argument("--frame-end", type=int, default=None)
     p.add_argument("--min-graph-frames", type=int, default=8)
+    p.add_argument("--temporal-bin-count", type=int, default=5)
+    p.add_argument("--min-occupied-temporal-bins", type=int, default=3)
+    p.add_argument("--min-direct-pose-span-fraction", type=float, default=0.5)
+    p.add_argument("--max-direct-pose-gap-fraction", type=float, default=0.35)
+    p.add_argument("--min-direct-pose-viewpoint-angle-deg", type=float, default=15.0)
     p.add_argument(
         "--include-ineligible-rigid-pose-observations",
         action="store_true",
         help="Historical-reproduction override: admit P14 rows that still carry explicit rigid_pose_observation_eligible=false",
+    )
+    p.add_argument(
+        "--include-ineligible-rigid-pose-fits",
+        action="store_true",
+        help="Diagnostic override: admit P14 rows explicitly rejected by the post-fit residual-quality gate; output remains quarantined",
     )
     p.add_argument("--min-visible-points", type=int, default=20)
     p.add_argument("--min-pose-sigma-m", type=float, default=0.004)

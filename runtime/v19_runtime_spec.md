@@ -71,6 +71,7 @@ with phase id, missing component, blocked state variable, evidence, and next req
 - `{FRAME_END}`: last frame index from P01 manifest.
 - `{SOURCE_WIDTH}`, `{SOURCE_HEIGHT}`: source video resolution from P01 manifest.
 - `{GPU_ID}`: selected A800 GPU from P02.
+- `{METRIC_DEPTH_NPZ}`: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame_official_k/unidepth_full_frame_depth_official_k_v1.npz`, whose depth array is UniDepth and whose K is the chosen P03b camera contract.
 - `{REMOTE_MODEL_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/model_envs/unidepth_sam2/bin/python`, a launch-preflighted A800 model interpreter used for UniDepth/SAM2 Python phases.
 - `{OWLV2_PYTHON}`: `/mnt/user-home/yiwen/ego_annotation_remote/hunyuan3d_v3_env/bin/python`, a launch-preflighted A800 interpreter used only for OWLv2 detector-box prompting.
 - `{OBJECT_ID}`: object id chosen in P05.
@@ -161,7 +162,22 @@ Script: `scripts/build_v19_calibration_contract.py`
 
 Required output: one calibration contract JSON under `{RUN_ROOT}/state/calibration/`.
 
-The canonical runtime-generated filename is `{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json`. If a copied prediction-side contract uses another filename, record that path and use that same copied contract for P04/P08/P09.
+The canonical runtime-generated filename is `{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json`. If a copied prediction-side contract uses another filename, record that path and use that same copied contract for P03c/P04/P08/P09.
+
+## P03c official-intrinsics depth archive
+
+Script: `scripts/build_v19_depth_official_intrinsics_adapter.py`
+
+UniDepth depth values remain the metric-depth source, but UniDepth-estimated intrinsics must not override a prediction-side official camera contract. Copy the depth archive while replacing only intrinsics metadata with the chosen calibration contract:
+
+```bash
+"{REMOTE_MODEL_PYTHON}" scripts/build_v19_depth_official_intrinsics_adapter.py \
+  --source-depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
+  --output-dir "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame_official_k"
+```
+
+Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame_official_k/unidepth_full_frame_depth_official_k_v1.npz` and `v19_depth_official_intrinsics_adapter_report.json`. The report must prove `depth`, `frame_idx`, and `source_size` arrays are unchanged and that every output intrinsics row equals the chosen camera contract. Bind `{METRIC_DEPTH_NPZ}` to this output for every downstream depth consumer, including P09, P14b, and P18.
 
 ## P04 MANO hand measurement
 
@@ -300,7 +316,7 @@ P09 is intentionally two-step. First propose anchor candidates from the same SAM
   --object-id "{OBJECT_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
   --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{METRIC_DEPTH_NPZ}" \
   --output-dir "{RUN_ROOT}/measurements/object_geometry/anchor_candidates/{OBJECT_ID}" \
   --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
   --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
@@ -329,7 +345,7 @@ Then run canonical visible geometry with the selected anchor. This second comman
   --object-id "{OBJECT_ID}" \
   --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
   --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{METRIC_DEPTH_NPZ}" \
   --output-dir "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}" \
   --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
   --calibration-contract "{RUN_ROOT}/state/calibration/<calibration_contract>.json" \
@@ -466,7 +482,7 @@ Script: `scripts/filter_v19_rigid_completion_multiview_support.py`
   --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
   --completion-report "$P13_COMPLETION_REPORT" \
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_visible_pose_fit/v18_compact_rigid_object_pose_fit_report.json" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{METRIC_DEPTH_NPZ}" \
   --object-id "{OBJECT_ID}" \
   --output-dir "{RUN_ROOT}/measurements/geometry_completion/{OBJECT_ID}_multiview_support"
 
@@ -578,7 +594,7 @@ Script: `scripts/solve_v18_joint_mano_interval_trajectory.py`
   --pose-report "{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}_rigid_pose_graph/v19_rigid_object_pose_graph_report.json" \
   --completed-mesh "$POSE_HYPOTHESIS_MESH_PLY" \
   --completion-report "$COMPLETION_REPORT" \
-  --depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
+  --depth-npz "{METRIC_DEPTH_NPZ}" \
   --wilor-root third_party/WiLoR \
   --wilor-mano-left third_party/WiLoR/mano_data/MANO_LEFT.pkl \
   --output-dir "{RUN_ROOT}/measurements/mano_interval_correction/{OBJECT_ID}_{INTERVAL_START}_{INTERVAL_END}" \

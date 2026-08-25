@@ -462,14 +462,33 @@ def choose_visible_points(
     *,
     pixel_stride: int,
     max_points: int,
+    minimum_points: int,
+    adaptive_minimum_sampling: bool,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     stride = max(1, int(pixel_stride))
     sampled = np.zeros_like(valid, dtype=bool)
     sampled[::stride, ::stride] = valid[::stride, ::stride]
     ys, xs = np.where(sampled)
+    strided_point_count = int(len(xs))
+    adaptive_supplemented_points = 0
+    sampling_policy = "fixed_grid_stride"
+    if bool(adaptive_minimum_sampling) and len(xs) < int(minimum_points):
+        candidate_mask = valid & ~sampled
+        candidate_y, candidate_x = np.where(candidate_mask)
+        required = max(0, min(int(max_points), int(minimum_points)) - len(xs))
+        if len(candidate_x) > required:
+            order = rng.choice(len(candidate_x), size=required, replace=False)
+            candidate_y = candidate_y[order]
+            candidate_x = candidate_x[order]
+        if len(candidate_x):
+            ys = np.concatenate([ys, candidate_y])
+            xs = np.concatenate([xs, candidate_x])
+            adaptive_supplemented_points = int(len(candidate_x))
+        sampling_policy = "fixed_grid_plus_valid_pixel_supplement_to_minimum"
     if len(xs) == 0:
         ys, xs = np.where(valid)
+        sampling_policy = "all_valid_pixels_fallback_empty_stride_grid"
     if len(xs) > int(max_points):
         order = rng.choice(len(xs), size=int(max_points), replace=False)
         ys = ys[order]
@@ -488,10 +507,116 @@ def choose_visible_points(
         "valid_depth_mask_pixels": int(valid.sum()),
         "sampled_points_before_finite_filter": int(len(z)),
         "sampled_points": int(len(world)),
+        "strided_point_count": strided_point_count,
+        "adaptive_minimum_sampling_enabled": bool(adaptive_minimum_sampling),
+        "adaptive_minimum_target_points": int(minimum_points),
+        "adaptive_supplemented_points": adaptive_supplemented_points,
+        "sampling_policy": sampling_policy,
         "pixel_stride": int(stride),
         "max_points": int(max_points),
     }
     return cam.astype(float), world.astype(float), summary
+
+
+def temporal_observation_coverage(frame_ids: list[int], timeline_ids: list[int], temporal_bin_count: int = 5) -> dict[str, Any]:
+    if not timeline_ids:
+        return {
+            "direct_candidate_count": 0,
+            "timeline_frame_span": None,
+            "direct_frame_span": None,
+            "direct_frame_span_fraction": 0.0,
+            "occupied_temporal_bins": [],
+            "occupied_temporal_bin_count": 0,
+            "unobserved_gap_frames": [],
+            "maximum_unobserved_gap_frames": 0,
+            "maximum_unobserved_gap_fraction": 1.0,
+        }
+    timeline = sorted(set(int(value) for value in timeline_ids))
+    start, end = timeline[0], timeline[-1]
+    timeline_count = end - start + 1
+    direct = sorted(set(int(value) for value in frame_ids if start <= int(value) <= end))
+    if not direct:
+        return {
+            "direct_candidate_count": 0,
+            "timeline_frame_span": [start, end],
+            "direct_frame_span": None,
+            "direct_frame_span_fraction": 0.0,
+            "occupied_temporal_bins": [],
+            "occupied_temporal_bin_count": 0,
+            "unobserved_gap_frames": [timeline_count],
+            "maximum_unobserved_gap_frames": timeline_count,
+            "maximum_unobserved_gap_fraction": 1.0,
+        }
+    bins = max(1, int(temporal_bin_count))
+    occupied = sorted({min(bins - 1, (frame - start) * bins // max(1, timeline_count)) for frame in direct})
+    gaps = [direct[0] - start]
+    gaps.extend(max(0, right - left - 1) for left, right in zip(direct[:-1], direct[1:]))
+    gaps.append(end - direct[-1])
+    max_gap = max(gaps)
+    return {
+        "direct_candidate_count": len(direct),
+        "direct_candidate_frame_ids": direct,
+        "timeline_frame_span": [start, end],
+        "direct_frame_span": [direct[0], direct[-1]],
+        "direct_frame_span_fraction": float((direct[-1] - direct[0]) / max(1, timeline_count - 1)),
+        "temporal_bin_count": bins,
+        "occupied_temporal_bins": occupied,
+        "occupied_temporal_bin_count": len(occupied),
+        "unobserved_gap_frames": gaps,
+        "maximum_unobserved_gap_frames": int(max_gap),
+        "maximum_unobserved_gap_fraction": float(max_gap / max(1, timeline_count)),
+    }
+
+
+def provisional_viewpoint_coverage(
+    frame_ids: list[int],
+    visible_data: dict[int, dict[str, Any]],
+    object_scale_m: float,
+) -> dict[str, Any]:
+    directions: list[np.ndarray] = []
+    camera_centers: list[np.ndarray] = []
+    valid_frames: list[int] = []
+    for frame_idx in sorted(set(frame_ids)):
+        vis = visible_data.get(frame_idx)
+        if not isinstance(vis, dict):
+            continue
+        transform_value = vis.get("T_world_camera")
+        points_value = vis.get("world_points")
+        transform = np.asarray(transform_value if transform_value is not None else [], dtype=float)
+        points = np.asarray(points_value if points_value is not None else [], dtype=float)
+        if transform.shape != (4, 4) or points.ndim != 2 or points.shape[1:] != (3,) or len(points) == 0:
+            continue
+        centroid = points.mean(axis=0)
+        camera_center = transform[:3, 3]
+        ray = camera_center - centroid
+        norm = float(np.linalg.norm(ray))
+        if not np.isfinite(norm) or norm <= 1.0e-9:
+            continue
+        directions.append(ray / norm)
+        camera_centers.append(camera_center)
+        valid_frames.append(int(frame_idx))
+    angles: list[float] = []
+    baselines: list[float] = []
+    for left in range(len(directions)):
+        for right in range(left + 1, len(directions)):
+            angles.append(float(np.degrees(np.arccos(np.clip(np.dot(directions[left], directions[right]), -1.0, 1.0)))))
+            baselines.append(float(np.linalg.norm(camera_centers[left] - camera_centers[right])))
+    max_baseline = max(baselines, default=0.0)
+    return {
+        "valid_frame_ids": valid_frames,
+        "pairwise_camera_to_visible_centroid_ray_angle_deg": {
+            "count": len(angles),
+            "median": float(np.median(angles)) if angles else None,
+            "max": float(max(angles)) if angles else None,
+        },
+        "pairwise_camera_center_baseline_m": {
+            "count": len(baselines),
+            "median": float(np.median(baselines)) if baselines else None,
+            "max": float(max_baseline),
+        },
+        "maximum_camera_baseline_over_anchor_visible_extent": float(max_baseline / max(float(object_scale_m), 1.0e-9)),
+        "claim_scope": "P09 provisional camera-to-visible-centroid ray diversity only. Object-canonical viewpoint diversity requires solved P14 poses and is remeasured by P14b; this diagnostic cannot promote pose or hidden geometry.",
+    }
 
 
 def normalize01(value: float, lo: float, hi: float) -> float:
@@ -788,6 +913,10 @@ def remove_existing_object(objects: list[Any], object_id: str, track_id: str) ->
 
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
+    if int(args.min_valid_points) <= 0:
+        raise ValueError("--min-valid-points must be positive")
+    if int(args.max_points) < int(args.min_valid_points):
+        raise ValueError("--max-points must be at least --min-valid-points")
     raw_frames, raw_payload = raw_frame_map(args.raw_frame_manifest)
     depth = load_depth_npz(args.depth_npz)
     calibration_intrinsics, calibration_source, calibration_summary = load_calibration_contract(args.calibration_contract)
@@ -858,6 +987,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             T_world_camera,
             pixel_stride=int(args.pixel_stride),
             max_points=int(args.max_points),
+            minimum_points=int(args.min_valid_points),
+            adaptive_minimum_sampling=bool(args.adaptive_minimum_point_sampling),
             rng=rng,
         )
         if len(world_points) < int(args.min_valid_points):
@@ -1086,6 +1217,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "rigid_pose_observation_reason": rigid_pose_observation_reason,
                 "camera_pose_source": vis["camera_source"],
                 "intrinsics_source": vis.get("intrinsics_source"),
+                "sample_summary": vis.get("sample_summary"),
             }
         )
 
@@ -1143,6 +1275,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     }
     write_json(visible_mask_report_path, visible_mask_report)
 
+    eligible_rigid_pose_frame_ids = [
+        int(row["frame_idx"])
+        for row in rows
+        if row.get("status") == "visible_metric_surface_measurement"
+        and row.get("rigid_pose_observation_eligible") is True
+    ]
+    rigid_pose_temporal_coverage = temporal_observation_coverage(
+        eligible_rigid_pose_frame_ids,
+        output_indices,
+        temporal_bin_count=5,
+    )
+    rigid_pose_viewpoint_coverage = provisional_viewpoint_coverage(
+        eligible_rigid_pose_frame_ids,
+        visible_data,
+        anchor_diag_m,
+    )
+
     report = {
         "method": "build_v19_visible_geometry_from_sam2_depth",
         "status": "ok",
@@ -1174,15 +1323,28 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "output_frame_count": int(len(output_indices)),
         "preserve_source_index": bool(args.preserve_source_index),
         "visible_metric_frame_count": int(sum(1 for row in rows if row.get("status") == "visible_metric_surface_measurement")),
+        "adaptive_sampling_recovered_frame_count": int(
+            sum(int((vis.get("sample_summary") or {}).get("adaptive_supplemented_points") or 0) > 0 for vis in visible_data.values())
+        ),
+        "adaptive_sampling_supplemented_point_count": int(
+            sum(int((vis.get("sample_summary") or {}).get("adaptive_supplemented_points") or 0) for vis in visible_data.values())
+        ),
         "anchor_frame_idx": int(anchor),
         "anchor_centroid_world_m": anchor_centroid.astype(float).tolist(),
         "anchor_extent_world_m": anchor_extent_m.astype(float).tolist(),
         "anchor_visible_surface_mesh_reconstruction": anchor_mesh_reconstruction,
+        "rigid_pose_observation_coverage": {
+            "selection_policy": "all explicit-eligible direct visible metric rows remain candidates; interpolation/carry rows are excluded",
+            "temporal": rigid_pose_temporal_coverage,
+            "provisional_viewpoint": rigid_pose_viewpoint_coverage,
+            "claim_scope": "Coverage diagnostic over direct P09 measurement candidates only. Counts, temporal spread, or camera baseline do not make an object trajectory annotation-ready; P14/P14b/P15 must remeasure pose, viewpoint, and graph support.",
+        },
         "camera_pose_source_counts": dict(camera_source_counts),
         "intrinsics_source_counts": dict(Counter(str(vis.get("intrinsics_source")) for vis in visible_data.values())),
         "calibration_contract": calibration_summary,
         "parameters": {
             "pixel_stride": int(args.pixel_stride),
+            "adaptive_minimum_point_sampling": bool(args.adaptive_minimum_point_sampling),
             "max_points": int(args.max_points),
             "min_valid_points": int(args.min_valid_points),
             "min_depth_m": float(args.min_depth_m),
@@ -1253,6 +1415,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anchor-candidate-min-gap", type=int, default=8, help="Minimum frame gap used when diversifying review-sheet anchor candidates; ranked JSON still contains every candidate.")
     parser.add_argument("--anchor-candidate-panel-width", type=int, default=360, help="Width in pixels for each candidate panel in anchor_candidate_review.jpg.")
     parser.add_argument("--pixel-stride", type=int, default=4)
+    parser.add_argument("--adaptive-minimum-point-sampling", action=argparse.BooleanOptionalAction, default=True, help="When a valid object mask has at least --min-valid-points but the fixed stride grid samples fewer, supplement from unsampled valid pixels up to the unchanged minimum instead of discarding the frame.")
     parser.add_argument("--max-points", type=int, default=2500)
     parser.add_argument("--min-valid-points", type=int, default=50)
     parser.add_argument("--min-depth-m", type=float, default=0.05)
