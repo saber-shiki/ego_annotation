@@ -1,7 +1,10 @@
 # HOT3D five-clip controlled SAM3D / TRELLIS runtime spec
 
-This document is authoritative for the controlled dual-backend run.  Execute one
-case per fresh run root.  The geometry backend is the only branch variable.
+This document is authoritative for the controlled SAM3D/TRELLIS dual-geometry-backend run.
+Execute one case per fresh run root. The geometry backend is the only branch variable. This
+runtime is not a UniDepth/DA3 depth-source A/B and its outputs must not be labeled as one.
+A formal depth-source A/B requires a separately hash-bound shared-upstream freeze contract and
+pair verification before P09 branch state is built.
 
 ## Bound launch values
 

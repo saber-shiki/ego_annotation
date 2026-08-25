@@ -123,6 +123,30 @@ blend 伪装成一致输出。两窗口 ablation 显示关闭该 Umeyama depth r
 raw median 从约 `1.268` 降至 `0.079`，说明主要误差来自小基线轨迹尺度对齐；正式
 `nested_metric_branch` 仍必须在完整 150 帧上逐窗口通过上述 gate。
 
+## 公平 A/B 的 shared-upstream 冻结合同
+
+现有 `hot3d_dual_backend` runtime 中的“双后端”是同一外部深度下的 SAM3D/TRELLIS 几何
+后端，不是 UniDepth/DA3 深度源 A/B，二者不得混称。正式 depth-source A/B 必须先只运行一次
+P01/P03b/P04/P05/P06/P07/P08，并在不读取任何 depth、confidence、P09 metric extent 或
+provider-specific score 的情况下，从 RGB + frozen SAM2 mask 选择一个共享 anchor。随后运行：
+
+```bash
+scripts/build_v19_depth_source_ab_freeze_contract.py ...
+scripts/verify_v19_depth_source_ab_pair.py \
+  --freeze-contract shared_upstream.json \
+  --unidepth-depth unidepth_camera_bound.npz \
+  --da3-depth da3_camera_bound.npz \
+  --output depth_source_pair.json
+```
+
+freeze contract 对实际被分支读取的 source video、manifest、camera K、HaWoR、object plan、
+OWLv2、SAM2 track、全部 RGB、全部 SAM2 mask、base annotations、MANO bridge 和共享 anchor
+逐文件绑定 bytes/SHA256。分支不得重新运行或修改这些状态。pair verifier 还会从 frozen HaWoR
+重建逐帧 W2C，校验 DA3 conditioning trajectory，并拒绝 Umeyama scale mode、overlap failure、
+metadata-only K relabel、不同 timeline/K 或任意 frozen byte 变化。通过 pair contract 后，只重建
+P09 及之后明确 depth-dependent 的状态；geometry backend/config/seed 和 SAM3D `pointmap=None`
+继续固定。UniDepth 与 DA3 confidence 语义不同，未标定前禁止复用同一个数值阈值。
+
 ## 评估边界
 
 Prediction run 不消费 GT。冻结 prediction 后，evaluation 才可使用 HOT3D CAD/pose/depth sidecar，
