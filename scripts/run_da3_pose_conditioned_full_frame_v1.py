@@ -344,6 +344,60 @@ def load_model(args: argparse.Namespace) -> Any:
     return model.to(device=args.device).eval()
 
 
+def evaluate_overlap_consistency(
+    overlap_rows: list[dict[str, Any]],
+    window_count: int,
+    *,
+    max_median_relative_difference: float,
+    max_frame_relative_difference: float,
+    max_scale_aligned_median_relative_difference: float,
+) -> dict[str, Any]:
+    relative_medians = [
+        float(row["relative_depth_difference"].get("median", float("nan"))) for row in overlap_rows
+    ]
+    scale_aligned_relative_medians = [
+        float(row["scale_aligned_relative_depth_difference"].get("median", float("nan")))
+        for row in overlap_rows
+    ]
+    required = int(window_count) > 1
+    passed = bool(
+        not required
+        or (
+            overlap_rows
+            and np.isfinite(relative_medians).all()
+            and np.isfinite(scale_aligned_relative_medians).all()
+            and float(np.median(relative_medians)) <= float(max_median_relative_difference)
+            and float(np.max(relative_medians)) <= float(max_frame_relative_difference)
+            and float(np.median(scale_aligned_relative_medians))
+            <= float(max_scale_aligned_median_relative_difference)
+        )
+    )
+    return {
+        "required": required,
+        "passed": passed,
+        "thresholds": {
+            "median_relative_difference": float(max_median_relative_difference),
+            "max_frame_relative_difference": float(max_frame_relative_difference),
+            "scale_aligned_median_relative_difference": float(
+                max_scale_aligned_median_relative_difference
+            ),
+        },
+        "observed": {
+            "median_relative_difference": (
+                float(np.median(relative_medians)) if relative_medians else None
+            ),
+            "max_frame_relative_difference": (
+                float(np.max(relative_medians)) if relative_medians else None
+            ),
+            "scale_aligned_median_relative_difference": (
+                float(np.median(scale_aligned_relative_medians))
+                if scale_aligned_relative_medians
+                else None
+            ),
+        },
+    }
+
+
 def close_memmap(array: Any) -> None:
     if array is None:
         return
@@ -416,6 +470,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     windows = make_windows(len(rows), int(args.window_size), int(args.window_overlap))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = args.output_dir / args.output_name
+    success_report_path = args.output_dir / "qc_da3_pose_conditioned_full_frame_v1.json"
+    failure_report_path = args.output_dir / "qc_da3_pose_conditioned_overlap_failure_v1.json"
+    stale_outputs = [path for path in (archive_path, success_report_path, failure_report_path) if path.exists()]
+    if stale_outputs and not args.replace:
+        raise RuntimeError(f"DA3 outputs exist; use --replace explicitly: {[str(path) for path in stale_outputs]}")
+    for path in stale_outputs:
+        path.unlink()
     temp_dir = args.output_dir / ".da3_accumulators"
     if temp_dir.exists():
         if not args.replace:
@@ -541,11 +603,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     comparison = valid & np.isfinite(existing)
                     sampled = comparison[:: int(args.overlap_diagnostic_stride), :: int(args.overlap_diagnostic_stride)]
-                    differences = np.abs(existing - depth_output)[:: int(args.overlap_diagnostic_stride), :: int(args.overlap_diagnostic_stride)][sampled]
-                    relative = differences / np.maximum(
-                        np.abs(existing)[:: int(args.overlap_diagnostic_stride), :: int(args.overlap_diagnostic_stride)][sampled],
-                        1.0e-6,
-                    )
+                    existing_sampled = existing[:: int(args.overlap_diagnostic_stride), :: int(args.overlap_diagnostic_stride)][sampled]
+                    current_sampled = depth_output[:: int(args.overlap_diagnostic_stride), :: int(args.overlap_diagnostic_stride)][sampled]
+                    differences = np.abs(existing_sampled - current_sampled)
+                    relative = differences / np.maximum(np.abs(existing_sampled), 1.0e-6)
+                    # A global scalar cannot explain context-dependent geometry,
+                    # but reporting its best median fit separates scale drift
+                    # from residual shape/depth disagreement.
+                    scale_ratio = float(np.median(existing_sampled / np.maximum(current_sampled, 1.0e-6)))
+                    scale_aligned_differences = np.abs(existing_sampled - current_sampled * scale_ratio)
+                    scale_aligned_relative = scale_aligned_differences / np.maximum(np.abs(existing_sampled), 1.0e-6)
                     overlap_rows.append({
                         "frame_idx": frame_ids[global_position],
                         "window_index": window_index,
@@ -553,6 +620,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "sample_count": int(differences.size),
                         "absolute_depth_difference_m": summarize(differences.tolist()),
                         "relative_depth_difference": summarize(relative.tolist()),
+                        "median_scale_to_previous": scale_ratio,
+                        "scale_aligned_absolute_depth_difference_m": summarize(scale_aligned_differences.tolist()),
+                        "scale_aligned_relative_depth_difference": summarize(scale_aligned_relative.tolist()),
                     })
                 blend_weight = raw_confidence_output * float(taper[local_position])
                 blend_weight[~valid] = 0.0
@@ -569,6 +639,41 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         if np.any(contribution_count == 0):
             raise RuntimeError(f"DA3 windows produced no contribution for frames {np.where(contribution_count == 0)[0].tolist()}")
+        overlap_relative_medians = [
+            float(row["relative_depth_difference"].get("median", float("nan"))) for row in overlap_rows
+        ]
+        overlap_scale_aligned_relative_medians = [
+            float(row["scale_aligned_relative_depth_difference"].get("median", float("nan")))
+            for row in overlap_rows
+        ]
+        overlap_consistency = evaluate_overlap_consistency(
+            overlap_rows,
+            len(windows),
+            max_median_relative_difference=float(args.max_overlap_median_relative_difference),
+            max_frame_relative_difference=float(args.max_overlap_frame_relative_difference),
+            max_scale_aligned_median_relative_difference=float(
+                args.max_overlap_scale_aligned_median_relative_difference
+            ),
+        )
+        if not overlap_consistency["passed"]:
+            write_json(
+                failure_report_path,
+                {
+                    "status": "failed_overlap_consistency",
+                    "annotation_ready": False,
+                    "frame_range": [frame_ids[0], frame_ids[-1]],
+                    "window_size": int(args.window_size),
+                    "window_overlap": int(args.window_overlap),
+                    "overlap_consistency": overlap_consistency,
+                    "overlap_rows": overlap_rows,
+                    "window_rows": window_rows,
+                    "depth_archive_written": False,
+                },
+            )
+            raise RuntimeError(
+                "DA3 overlapping windows violate metric-depth consistency; "
+                f"diagnostics={failure_report_path} observed={overlap_consistency['observed']}"
+            )
         depth_final = np.lib.format.open_memmap(temp_dir / "depth_final.npy", mode="w+", dtype=np.float16, shape=shape)
         confidence_error_final = np.lib.format.open_memmap(temp_dir / "confidence_error_final.npy", mode="w+", dtype=np.float16, shape=shape)
         depth_medians: list[float] = []
@@ -628,9 +733,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             dtype=np.float64,
         )
         output_intrinsics_rows = np.repeat(np.asarray(output_intrinsics, dtype=np.float64)[None], len(rows), axis=0)
-        archive_path = args.output_dir / args.output_name
-        if archive_path.exists() and not args.replace:
-            raise RuntimeError(f"output archive exists: {archive_path}")
         np.savez_compressed(
             archive_path,
             frame_idx=np.asarray(frame_ids, dtype=np.int32),
@@ -661,6 +763,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             window_size=np.asarray(int(args.window_size)),
             window_overlap=np.asarray(int(args.window_overlap)),
             window_contribution_count=contribution_count,
+            overlap_consistency_passed=np.asarray(bool(overlap_consistency["passed"])),
+            overlap_consistency_required=np.asarray(bool(overlap_consistency["required"])),
+            overlap_median_relative_difference=np.asarray(
+                overlap_consistency["observed"]["median_relative_difference"]
+                if overlap_consistency["observed"]["median_relative_difference"] is not None
+                else np.nan,
+                dtype=np.float64,
+            ),
+            overlap_scale_aligned_median_relative_difference=np.asarray(
+                overlap_consistency["observed"]["scale_aligned_median_relative_difference"]
+                if overlap_consistency["observed"]["scale_aligned_median_relative_difference"] is not None
+                else np.nan,
+                dtype=np.float64,
+            ),
         )
         report = {
             "status": "ok",
@@ -720,9 +836,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "overlap_absolute_depth_median_m": summarize([
                     row["absolute_depth_difference_m"].get("median", float("nan")) for row in overlap_rows
                 ]),
-                "overlap_relative_depth_median": summarize([
-                    row["relative_depth_difference"].get("median", float("nan")) for row in overlap_rows
-                ]),
+                "overlap_relative_depth_median": summarize(overlap_relative_medians),
+                "overlap_scale_aligned_relative_depth_median": summarize(
+                    overlap_scale_aligned_relative_medians
+                ),
+                "overlap_consistency": overlap_consistency,
             },
             "confidence": {
                 "archive_field": "confidence",
@@ -743,8 +861,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "elapsed_s": float(time.time() - started),
         }
-        report_path = args.output_dir / "qc_da3_pose_conditioned_full_frame_v1.json"
-        write_json(report_path, report)
+        write_json(success_report_path, report)
         print(json.dumps({key: value for key, value in report.items() if key not in {"processed_intrinsics_rows"}}, indent=2))
         return report
     finally:
@@ -799,6 +916,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ray-validation-max-angle-deg", type=float, default=1.0e-5)
     parser.add_argument("--confidence-epsilon", type=float, default=1.0e-6)
     parser.add_argument("--overlap-diagnostic-stride", type=int, default=16)
+    parser.add_argument("--max-overlap-median-relative-difference", type=float, default=0.10)
+    parser.add_argument("--max-overlap-frame-relative-difference", type=float, default=0.25)
+    parser.add_argument("--max-overlap-scale-aligned-median-relative-difference", type=float, default=0.10)
     parser.add_argument("--review-frame-count", type=int, default=12)
     parser.add_argument("--keep-temporary-accumulators", action="store_true")
     parser.add_argument("--replace", action="store_true")
@@ -807,6 +927,13 @@ def parse_args() -> argparse.Namespace:
         parser.error("--overlap-diagnostic-stride must be positive")
     if not 0.0 < float(args.min_reprojected_valid_fraction) <= 1.0:
         parser.error("--min-reprojected-valid-fraction must be in (0,1]")
+    for name in (
+        "max_overlap_median_relative_difference",
+        "max_overlap_frame_relative_difference",
+        "max_overlap_scale_aligned_median_relative_difference",
+    ):
+        if not 0.0 <= float(getattr(args, name)) <= 1.0:
+            parser.error(f"--{name.replace('_', '-')} must be in [0,1]")
     return args
 
 

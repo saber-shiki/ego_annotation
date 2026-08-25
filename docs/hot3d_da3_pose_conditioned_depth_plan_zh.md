@@ -100,6 +100,23 @@ case preflight 额外传：
 任何 source dirty、revision mismatch、权重缺失/hash mismatch、环境 import 失败都必须阻断
 launch，不能在 prediction run 内修环境或回退到未声明模型。
 
+## Overlap fail-closed gate
+
+多窗口输出只有在重复帧通过一致性 gate 后才能写正式 depth archive。默认要求：
+
+```text
+all overlap rows median(relative |z_prev-z_new|/z_prev): median <= 0.10
+all overlap rows median(relative |z_prev-z_new|/z_prev): max <= 0.25
+median best-scalar-aligned relative residual <= 0.10
+```
+
+该 gate 同时区分整体 scale 漂移与不能由一个 scalar 解释的 geometry/context 变化。失败时只写
+`qc_da3_pose_conditioned_overlap_failure_v1.json`，不写可供 P09/P14/P18 使用的 depth archive；
+provider-neutral adapter 还会二次拒绝 `overlap_consistency_passed=false`。
+
+在 milk 150 帧技术验证中，原始 overlap relative median 为约 `0.622`、单帧最大约 `2.081`，
+所以该配置必须被视为 negative result，不能靠 confidence blend 伪装成一致输出。
+
 ## 评估边界
 
 Prediction run 不消费 GT。冻结 prediction 后，evaluation 才可使用 HOT3D CAD/pose/depth sidecar，

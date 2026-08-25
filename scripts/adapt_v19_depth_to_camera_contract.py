@@ -156,6 +156,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
             "depth_ray_geometry_reprojected",
             "confidence",
             "confidence_role",
+            "overlap_consistency_passed",
         }
         missing_conditioning = sorted(required_conditioning - set(payload))
         if missing_conditioning:
@@ -183,6 +184,8 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
         confidence_role = scalar_text(payload["confidence_role"], "confidence_role")
         if confidence_role != "predicted_error_proxy_higher_is_worse":
             raise RuntimeError(f"unsupported pose-conditioned confidence role {confidence_role!r}")
+        if not bool(np.asarray(payload["overlap_consistency_passed"]).reshape(-1)[0]):
+            raise RuntimeError("pose-conditioned depth archive failed overlapping-window consistency")
         source_conditioning.update({
             "camera_contract_sha256": source_contract_hash,
             "output_plane": source_output_plane,
@@ -193,6 +196,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
             "camera_trajectory_source": scalar_text(payload["camera_trajectory_source"], "camera_trajectory_source"),
             "fixed_extrinsics_shape": list(conditioned_extrinsics.shape),
             "confidence_role": confidence_role,
+            "overlap_consistency_passed": True,
         })
     elif source_conditioning_mode not in {"model_inferred_intrinsics", "legacy_unspecified"}:
         raise RuntimeError(f"unsupported source depth camera conditioning mode {source_conditioning_mode!r}")
