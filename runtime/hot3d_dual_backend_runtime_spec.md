@@ -69,8 +69,11 @@ Read `runtime/v19_runtime_spec.md`, bind the launch values above, and execute on
 P01, P02, **P03b, P04, P03d DA3, P03c**, P05, P06, P07, P08, P09, P10, and P11 in that
 order. P03d must pass official K and the P04 HaWoR metric W2C trajectory to DA3. It writes
 camera-z metric depth on exact source rays; metadata-only K relabel and any released/reference
-camera pose are forbidden. P03 UniDepth is not the active depth source and must not feed P09 in
-this branch.
+camera pose are forbidden. Metric scale must use the Nested checkpoint metric branch via
+`--metric-scale-mode nested_metric_branch`; `input_trajectory_umeyama` is a diagnostic ablation and
+is not downstream eligible because short-window trajectory scale is underconstrained. Every
+multi-window run must pass the archive-declared overlap-consistency gate before P03c. P03 UniDepth
+is not the active depth source and must not feed P09 in this branch.
 Use the dedicated `{GPU_ID}` unless a live probe shows it is no longer safe; do not take
 another case's declared GPU.  The target should remain rigid even when local evidence is
 missing; record missing evidence as uncertainty rather than broadening the object mask.
@@ -95,7 +98,8 @@ CUDA_VISIBLE_DEVICES='{GPU_ID}' '{DA3_PYTHON}' scripts/run_da3_pose_conditioned_
   --source-height {SOURCE_HEIGHT} \
   --window-size 16 \
   --window-overlap 4 \
-  --ref-view-strategy middle
+  --ref-view-strategy middle \
+  --metric-scale-mode nested_metric_branch
 ```
 
 Then run P03c before P05 with the provider-specific output name:

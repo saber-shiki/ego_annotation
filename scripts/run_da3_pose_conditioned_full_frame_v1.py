@@ -41,6 +41,10 @@ from v19_camera_contract import (
 DEPTH_PROVIDER = "depth_anything_3"
 POSE_CONDITIONING_MODE = "fixed_prediction_side_hawor_metric_w2c"
 CONFIDENCE_SEMANTICS = "monotonic_inverse_DA3_confidence_error_proxy_higher_is_worse_not_metric_error"
+METRIC_SCALE_MODES = {
+    "nested_metric_branch": False,
+    "input_trajectory_umeyama": True,
+}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -491,6 +495,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     taper_sum = np.lib.format.open_memmap(temp_dir / "taper_sum.npy", mode="w+", dtype=np.float32, shape=shape)
     contribution_count = np.zeros(len(rows), dtype=np.int32)
 
+    if args.metric_scale_mode not in METRIC_SCALE_MODES:
+        raise RuntimeError(f"unsupported DA3 metric scale mode {args.metric_scale_mode!r}")
+    align_to_input_ext_scale = METRIC_SCALE_MODES[args.metric_scale_mode]
     model = None
     depth_final = None
     confidence_error_final = None
@@ -507,7 +514,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 image=images,
                 extrinsics=w2c[start:end].copy(),
                 intrinsics=input_K_rows[start:end].copy(),
-                align_to_input_ext_scale=True,
+                align_to_input_ext_scale=align_to_input_ext_scale,
                 use_ray_pose=False,
                 ref_view_strategy=args.ref_view_strategy,
                 process_res=int(args.process_res),
@@ -535,7 +542,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if not np.isfinite(confidence_native).all() or np.any(confidence_native <= 0.0):
                 raise RuntimeError(f"DA3 window {window_index} returned invalid confidence")
             extrinsics_error = float(np.max(np.abs(returned_extrinsics - w2c[start:end])))
-            if extrinsics_error > float(args.returned_camera_tolerance):
+            if align_to_input_ext_scale and extrinsics_error > float(args.returned_camera_tolerance):
                 raise RuntimeError(
                     f"DA3 window {window_index} did not preserve supplied W2C camera authority: max_error={extrinsics_error}"
                 )
@@ -553,8 +560,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "frame_start": frame_ids[start],
                 "frame_end": frame_ids[end - 1],
                 "frame_count": count,
-                "returned_camera_max_abs_error": extrinsics_error,
-                "prediction_scale_factor": float(prediction.scale_factor) if prediction.scale_factor is not None else None,
+                "returned_camera_max_abs_error_diagnostic": extrinsics_error,
+                "returned_camera_authority": False,
+                "prediction_scale_factor_diagnostic": (
+                    float(prediction.scale_factor) if prediction.scale_factor is not None else None
+                ),
+                "metric_scale_mode": args.metric_scale_mode,
                 "processed_depth_shape_hw": list(depth_native.shape[1:]),
                 "conditioned_camera_center_extent_m": window_extent.tolist(),
                 "conditioned_camera_center_max_baseline_m": window_baseline_m,
@@ -752,6 +763,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             model_path=np.asarray(str(args.model_path.expanduser().resolve())),
             camera_conditioning_mode=np.asarray("provided_pinhole_intrinsics_and_metric_extrinsics"),
             pose_conditioning_mode=np.asarray(POSE_CONDITIONING_MODE),
+            metric_scale_mode=np.asarray(args.metric_scale_mode),
+            metric_scale_source=np.asarray(
+                "DA3_Nested_metric_branch_no_input_trajectory_Umeyama_depth_rescale"
+                if args.metric_scale_mode == "nested_metric_branch"
+                else "DA3_API_input_trajectory_Umeyama_depth_rescale"
+            ),
             camera_trajectory_source=np.asarray(str(args.hawor_npz.expanduser().resolve())),
             depth_ray_geometry_reprojected=np.asarray(True),
             depth_output_quantity=np.asarray("camera_z_m_ray_remapped_from_DA3_processed_K_to_exact_output_contract_K"),
@@ -823,7 +840,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "mode": POSE_CONDITIONING_MODE,
                 "input_extrinsics_convention": "OpenCV world_to_camera 4x4",
                 "DA3_predicted_camera_promoted": False,
-                "align_to_input_ext_scale": True,
+                "align_to_input_ext_scale": align_to_input_ext_scale,
+                "metric_scale_mode": args.metric_scale_mode,
+                "metric_scale_source": (
+                    "DA3 Nested metric branch; supplied K/W2C condition any-view geometry but returned camera is diagnostic"
+                    if args.metric_scale_mode == "nested_metric_branch"
+                    else "DA3 API Umeyama alignment to supplied prediction-side trajectory; ablation only"
+                ),
                 "use_ray_pose": False,
                 "camera_report": camera_report,
             },
@@ -910,6 +933,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--process-res", type=int, default=504)
     parser.add_argument("--process-res-method", default="upper_bound_resize")
     parser.add_argument("--ref-view-strategy", default="middle")
+    parser.add_argument("--metric-scale-mode", choices=sorted(METRIC_SCALE_MODES), required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--returned-camera-tolerance", type=float, default=1.0e-5)
     parser.add_argument("--min-reprojected-valid-fraction", type=float, default=0.99)

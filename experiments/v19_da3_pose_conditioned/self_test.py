@@ -240,6 +240,8 @@ class DA3PoseConditionedContractTest(unittest.TestCase):
                 pose_conditioning_mode=np.asarray(da3.POSE_CONDITIONING_MODE),
                 camera_trajectory_source=np.asarray("synthetic_hawor.npz"),
                 overlap_consistency_passed=np.asarray(True),
+                metric_scale_mode=np.asarray("nested_metric_branch"),
+                metric_scale_source=np.asarray("synthetic_nested_metric_branch"),
             )
             output_dir = root / "bound"
             report = depth_adapter.adapt(
@@ -259,6 +261,36 @@ class DA3PoseConditionedContractTest(unittest.TestCase):
             loaded = visible_geometry.load_depth_npz(output_dir / "da3_bound.npz")
             self.assertEqual(loaded["depth_provider"], "depth_anything_3")
             self.assertEqual(loaded["confidence_role"], "predicted_error_proxy_higher_is_worse")
+
+    def test_camera_adapter_rejects_umeyama_metric_scale_ablation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="da3_umeyama_reject_") as temp:
+            root = Path(temp)
+            contract = root / "camera.json"
+            write_contract(contract, (10, 8), [0, 1])
+            rows = np.repeat(np.asarray([[80.0, 82.0, 5.0, 4.0]]), 2, axis=0)
+            source = root / "da3_umeyama.npz"
+            np.savez_compressed(
+                source,
+                frame_idx=np.asarray([0, 1], dtype=np.int32), depth=np.ones((2, 8, 10), dtype=np.float16),
+                confidence=np.ones((2, 8, 10), dtype=np.float16),
+                confidence_role=np.asarray("predicted_error_proxy_higher_is_worse"),
+                source_size=np.asarray([10, 8], dtype=np.int32), intrinsics_fx_fy_cx_cy=rows,
+                depth_provider=np.asarray("depth_anything_3"),
+                camera_conditioning_mode=np.asarray("provided_pinhole_intrinsics_and_metric_extrinsics"),
+                depth_ray_geometry_reprojected=np.asarray(True), depth_output_quantity=np.asarray("camera_z_m"),
+                inference_camera_contract_sha256=np.asarray(depth_adapter.sha256_file(contract)),
+                inference_camera_output_plane=np.asarray("source_rgb"),
+                inference_camera_intrinsics_fx_fy_cx_cy=rows,
+                inference_camera_extrinsics_w2c=np.repeat(np.eye(4)[None], 2, axis=0),
+                pose_conditioning_mode=np.asarray(da3.POSE_CONDITIONING_MODE),
+                camera_trajectory_source=np.asarray("synthetic_hawor.npz"), overlap_consistency_passed=np.asarray(True),
+                metric_scale_mode=np.asarray("input_trajectory_umeyama"),
+                metric_scale_source=np.asarray("synthetic_umeyama_ablation"),
+            )
+            with self.assertRaisesRegex(RuntimeError, "not downstream eligible"):
+                depth_adapter.adapt(SimpleNamespace(source_depth_npz=source, camera_contract=contract,
+                    depth_plane="source_rgb", output_dir=root / "bound", output_name="bound.npz",
+                    allow_implicit_depth_resize=False, allow_metadata_only_ray_relabel=False, replace=False))
 
     def test_camera_adapter_rejects_failed_overlap_consistency(self) -> None:
         with tempfile.TemporaryDirectory(prefix="da3_overlap_reject_") as temp:
@@ -286,6 +318,8 @@ class DA3PoseConditionedContractTest(unittest.TestCase):
                 pose_conditioning_mode=np.asarray(da3.POSE_CONDITIONING_MODE),
                 camera_trajectory_source=np.asarray("synthetic_hawor.npz"),
                 overlap_consistency_passed=np.asarray(False),
+                metric_scale_mode=np.asarray("nested_metric_branch"),
+                metric_scale_source=np.asarray("synthetic_nested_metric_branch"),
             )
             with self.assertRaisesRegex(RuntimeError, "failed overlapping-window consistency"):
                 depth_adapter.adapt(

@@ -44,7 +44,10 @@ P03b official camera/image-plane contract
 1. 读取官方 V19 camera contract 的 `manifest_rgb` K；
 2. 将 HaWoR `R_c2w/t_c2w` 组装成 OpenCV c2w 并求逆为 DA3 所需 w2c；
 3. 以默认 16 帧窗口、4 帧 overlap 运行 DA3 Nested；
-4. 传入固定 K/W2C、`align_to_input_ext_scale=True`、`use_ray_pose=False`；
+4. 传入固定 K/W2C、`use_ray_pose=False`；正式模式为 `metric_scale_mode=nested_metric_branch`
+   (`align_to_input_ext_scale=False`)：相机仍用于 any-view conditioning，米制尺度由 Nested metric
+   branch 提供；DA3 返回相机只作诊断，不提升为 authority。`input_trajectory_umeyama`
+   (`align_to_input_ext_scale=True`) 仅保留为短基线尺度 ablation，不得进入下游；
 5. 根据 DA3 返回的 processed-grid K，将 camera-z depth 逆映射到 exact `source_rgb` rays；
 6. overlap 采用位置 taper × DA3 raw confidence 融合，并记录窗口间 depth disagreement；
 7. 输出 provider-neutral P09 字段：`frame_idx/depth/confidence/source_size/intrinsics`；
@@ -114,8 +117,11 @@ median best-scalar-aligned relative residual <= 0.10
 `qc_da3_pose_conditioned_overlap_failure_v1.json`，不写可供 P09/P14/P18 使用的 depth archive；
 provider-neutral adapter 还会二次拒绝 `overlap_consistency_passed=false`。
 
-在 milk 150 帧技术验证中，原始 overlap relative median 为约 `0.622`、单帧最大约 `2.081`，
-所以该配置必须被视为 negative result，不能靠 confidence blend 伪装成一致输出。
+在 milk 150 帧 `input_trajectory_umeyama` 技术验证中，原始 overlap relative median 为约
+`0.622`、单帧最大约 `2.081`，所以该配置必须被视为 negative result，不能靠 confidence
+blend 伪装成一致输出。两窗口 ablation 显示关闭该 Umeyama depth rescale 后，首个 overlap
+raw median 从约 `1.268` 降至 `0.079`，说明主要误差来自小基线轨迹尺度对齐；正式
+`nested_metric_branch` 仍必须在完整 150 帧上逐窗口通过上述 gate。
 
 ## 评估边界
 

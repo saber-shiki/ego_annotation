@@ -157,6 +157,8 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
             "confidence",
             "confidence_role",
             "overlap_consistency_passed",
+            "metric_scale_mode",
+            "metric_scale_source",
         }
         missing_conditioning = sorted(required_conditioning - set(payload))
         if missing_conditioning:
@@ -186,6 +188,11 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError(f"unsupported pose-conditioned confidence role {confidence_role!r}")
         if not bool(np.asarray(payload["overlap_consistency_passed"]).reshape(-1)[0]):
             raise RuntimeError("pose-conditioned depth archive failed overlapping-window consistency")
+        metric_scale_mode = scalar_text(payload["metric_scale_mode"], "metric_scale_mode")
+        if metric_scale_mode != "nested_metric_branch":
+            raise RuntimeError(
+                f"pose-conditioned depth metric scale mode is not downstream eligible: {metric_scale_mode!r}"
+            )
         source_conditioning.update({
             "camera_contract_sha256": source_contract_hash,
             "output_plane": source_output_plane,
@@ -197,6 +204,8 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
             "fixed_extrinsics_shape": list(conditioned_extrinsics.shape),
             "confidence_role": confidence_role,
             "overlap_consistency_passed": True,
+            "metric_scale_mode": metric_scale_mode,
+            "metric_scale_source": scalar_text(payload["metric_scale_source"], "metric_scale_source"),
         })
     elif source_conditioning_mode not in {"model_inferred_intrinsics", "legacy_unspecified"}:
         raise RuntimeError(f"unsupported source depth camera conditioning mode {source_conditioning_mode!r}")
