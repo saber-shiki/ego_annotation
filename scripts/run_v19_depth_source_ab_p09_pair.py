@@ -64,6 +64,17 @@ def require_file(path: Path, role: str) -> Path:
     return path
 
 
+def require_python(path: Path) -> Path:
+    # Do not Path.resolve() a virtual-environment interpreter. The executable is
+    # commonly a symlink to the base Python; invoking the resolved target loses
+    # pyvenv.cfg discovery and therefore the venv's site-packages.
+    expanded = path.expanduser()
+    absolute = Path(os.path.abspath(str(expanded)))
+    if not absolute.is_file() or not os.access(absolute, os.X_OK):
+        raise RuntimeError(f"missing or non-executable P09 Python: {absolute}")
+    return absolute
+
+
 def frozen_path(freeze: dict[str, Any], role: str) -> Path:
     rows = [row for row in freeze.get("fixed_assets") or [] if row.get("role") == role]
     if len(rows) != 1:
@@ -345,7 +356,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     anchor_frame = int(freeze["anchor"]["frame_idx"])
     case_id = str(freeze["case_id"])
     object_id = str(freeze["object_id"])
-    python = require_file(args.python, "P09 Python")
+    python = require_python(args.python)
     p09_script = require_file(args.p09_script, "P09 script")
     canonical_p09_script = Path(__file__).resolve().with_name("build_v19_visible_geometry_from_sam2_depth.py")
     if p09_script != canonical_p09_script:

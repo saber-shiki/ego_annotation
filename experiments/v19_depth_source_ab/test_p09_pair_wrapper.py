@@ -39,6 +39,15 @@ class P09PairWrapperTest(unittest.TestCase):
             "shared_frame_state_sha256": {idx: state for idx, state in enumerate(states)},
         }
 
+    def test_virtualenv_python_symlink_identity_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="p09_pair_python_") as temp:
+            root = Path(temp)
+            base = root / "base-python"; base.write_bytes(b"#!/bin/sh\n"); base.chmod(0o755)
+            venv_python = root / "venv-python"; venv_python.symlink_to(base)
+            selected = wrapper.require_python(venv_python)
+            self.assertEqual(selected, venv_python.absolute())
+            self.assertNotEqual(selected, base.resolve())
+
     def test_identical_masks_and_shared_state_pass(self) -> None:
         with tempfile.TemporaryDirectory(prefix="p09_pair_ok_") as temp:
             root = Path(temp)
