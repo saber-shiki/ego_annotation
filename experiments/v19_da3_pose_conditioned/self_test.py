@@ -115,6 +115,16 @@ class DA3PoseConditionedContractTest(unittest.TestCase):
         # to 1/32 pixel, so compare to the analytic map at that bound.
         np.testing.assert_allclose(remapped[valid], map_x[valid], atol=1.0 / 32.0)
 
+    def test_camera_contract_accepts_ordered_frame_range_subset(self) -> None:
+        da3.require_ordered_contract_subset([0, 1, 2, 3], [1, 2])
+        da3.require_ordered_contract_subset([0, 2, 4, 6], [2, 6])
+        with self.assertRaisesRegex(RuntimeError, "misses selected frames"):
+            da3.require_ordered_contract_subset([0, 1, 2, 3], [1, 7])
+        with self.assertRaisesRegex(RuntimeError, "ordered unique subset"):
+            da3.require_ordered_contract_subset([0, 1, 2, 3], [2, 1])
+        with self.assertRaisesRegex(RuntimeError, "ordered unique subset"):
+            da3.require_ordered_contract_subset([0, 1, 2, 3], [1, 1])
+
     def test_hawor_c2w_is_inverted_to_opencv_w2c(self) -> None:
         with tempfile.TemporaryDirectory(prefix="da3_hawor_camera_") as temp:
             path = Path(temp) / "hawor.npz"

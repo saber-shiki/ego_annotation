@@ -108,6 +108,17 @@ def read_manifest(path: Path, frame_start: int, frame_end: int) -> list[dict[str
     return selected
 
 
+def require_ordered_contract_subset(contract_frame_ids: list[int], selected_frame_ids: list[int]) -> None:
+    """Bind a requested frame range to the complete immutable camera timeline."""
+    contract_positions = {int(frame): position for position, frame in enumerate(contract_frame_ids)}
+    missing = [int(frame) for frame in selected_frame_ids if int(frame) not in contract_positions]
+    if missing:
+        raise RuntimeError(f"camera contract misses selected frames: {missing[:10]}")
+    positions = [contract_positions[int(frame)] for frame in selected_frame_ids]
+    if positions != sorted(positions) or len(positions) != len(set(positions)):
+        raise RuntimeError("selected frames are not an ordered unique subset of the camera contract timeline")
+
+
 def load_hawor_w2c(path: Path, expected_frame_ids: list[int]) -> tuple[np.ndarray, dict[str, Any]]:
     with np.load(path, allow_pickle=False) as archive:
         required = {"frame_idx", "R_c2w", "t_c2w"}
@@ -350,7 +361,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError(f"frame {frame} RGB size {image.size} differs from {input_size_wh}")
 
     contract_path = args.camera_contract.expanduser().resolve()
-    contract, normalized_contract = load_contract(contract_path, expected_frame_ids=frame_ids)
+    # Validate the complete immutable contract first, then bind this invocation's
+    # frame range as an ordered subset. Requiring equality here would make the
+    # advertised --frame-start/--frame-end interface unusable for smoke tests or
+    # resumable chunks while adding no protection for a fixed-K contract.
+    contract, normalized_contract = load_contract(contract_path)
+    require_ordered_contract_subset(normalized_contract["frame_ids"], frame_ids)
     input_intrinsics, input_plane = plane_intrinsics(
         contract,
         normalized_contract,
