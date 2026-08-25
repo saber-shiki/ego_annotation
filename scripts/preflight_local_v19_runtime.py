@@ -17,6 +17,8 @@ EXPECTED_INPUT_SHA256 = "7a9baf0553e5dcfb4411b6cfabbe3a734f815ee4c5b014bdd965b9e
 EXPECTED_DINOV2_SHA256 = "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51"
 EXPECTED_DINOV2_HUBCONF_SHA256 = "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64"
 EXPECTED_MOGE_SHA256 = "da96b09a0485a3c45a5aa455e67743c8b4efc4dd8437c1f2aa93c2b4303d957f"
+EXPECTED_DA3_SOURCE_REVISION = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4"
+EXPECTED_DA3_MODEL_REVISION = "b2359bdf726fb44ef62acca04d629dcf158053e7"
 EXPECTED_HASHES = {
     "sam2": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
     "owlv2": "e1e130b9e404cf91a75ad45644c1da9d7fa5284085eecc864266a6923efb99e7",
@@ -179,6 +181,50 @@ print('SAM3D_IMPORT_NATIVE_POSE_AND_OFFLINE_ASSETS_OK', Inference.__module__, er
         ]
     )
     return ["bash", "-lc", shell]
+
+
+def da3_contract_check(args: argparse.Namespace) -> dict[str, Any]:
+    python = args.da3_python.expanduser().resolve()
+    repo = args.da3_repo.expanduser().resolve()
+    model = args.da3_model.expanduser().resolve()
+    manifest = json.loads((args.bundle.expanduser().resolve() / "RUNTIME_BUNDLE_MANIFEST.json").read_text())
+    offline = manifest.get("offline_model_assets") if isinstance(manifest.get("offline_model_assets"), dict) else {}
+    declared = offline.get("da3_nested") if isinstance(offline.get("da3_nested"), dict) else {}
+    declared_files = declared.get("model_files") if isinstance(declared.get("model_files"), list) else []
+    failures = []
+    for row in declared_files:
+        path = Path(str(row.get("path") or ""))
+        if not path.is_file():
+            failures.append({"path": str(path), "reason": "missing"})
+        elif sha256_file(path) != row.get("sha256"):
+            failures.append({"path": str(path), "reason": "sha256_mismatch"})
+    revision_result = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, capture_output=True)
+    revision = revision_result.stdout.strip() if revision_result.returncode == 0 else None
+    checks = {
+        "python_executable": bool(python.is_file() and os.access(python, os.X_OK)),
+        "repo_directory": repo.is_dir(),
+        "api_module": (repo / "src/depth_anything_3/api.py").is_file(),
+        "repo_revision": revision == declared.get("repository_revision") == EXPECTED_DA3_SOURCE_REVISION,
+        "model_directory": model.is_dir() and str(model) == declared.get("model_path"),
+        "model_file_hashes": bool(declared_files and not failures),
+        "model_id": declared.get("model_id") == "depth-anything/DA3NESTED-GIANT-LARGE-1.1",
+        "model_revision": declared.get("model_revision") == EXPECTED_DA3_MODEL_REVISION,
+        "runtime_manifest_hash_bound": any(
+            row.get("relative_path") == "DA3_RUNTIME_MANIFEST.json" for row in declared_files
+        ),
+        "license": declared.get("license") == "CC BY-NC 4.0",
+        "network_forbidden": declared.get("network_resolution_allowed") is False,
+    }
+    return {
+        "status": "ok" if all(checks.values()) else "failed",
+        "python": str(python),
+        "repo": str(repo),
+        "actual_repo_revision": revision,
+        "model": str(model),
+        "model_files": declared_files,
+        "file_failures": failures,
+        "checks": checks,
+    }
 
 
 def verify_bundle_manifest(bundle: Path) -> dict[str, Any]:
@@ -349,6 +395,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "mano_right": require_hash(bundle / "third_party/WiLoR/mano_data/MANO_RIGHT.pkl", EXPECTED_HASHES["mano_right"]),
     }
     checks["fixed_asset_hashes"] = {"status": "ok" if all(row["status"] == "ok" for row in hashes.values()) else "failed", "assets": hashes}
+    checks["da3_contract"] = da3_contract_check(args)
     checks["hawor_manifest"] = load_manifest(args.hawor_asset_root / "HAWOR_RUNTIME_MANIFEST.json", "installed_import_validated")
     checks["trellis_manifest"] = load_manifest(args.trellis_model / "TRELLIS_RUNTIME_MANIFEST.json", "installed_import_validated")
     dino = args.torch_home / "hub/checkpoints/dinov2_vitl14_reg4_pretrain.pth"
@@ -389,6 +436,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     import_commands = {
         "main": [str(args.main_python), "-c", "import cv2,open3d,smplx,torch,transformers,trimesh; from PIL import Image; print(torch.__version__, cv2.__version__, open3d.__version__, transformers.__version__)"],
         "unidepth": [str(args.unidepth_python), "-c", f"import sys,torch,numpy,cv2; sys.path.insert(0,{str(args.unidepth_repo)!r}); import unidepth; print(torch.__version__,numpy.__version__,cv2.__version__)"],
+        "da3": [str(args.da3_python), "-c", f"import sys,torch,numpy,cv2; sys.path.insert(0,{str(args.da3_repo / 'src')!r}); from depth_anything_3.api import DepthAnything3; print(torch.__version__,numpy.__version__,cv2.__version__,DepthAnything3.__name__)"],
         "hawor": [str(args.hawor_python), "-c", f"import sys; sys.path.insert(0,{str(args.hawor_repo)!r}); import torch; import cv2,droid_backends,lietorch,mmcv,pytorch3d,smplx; print(torch.__version__,cv2.__version__)"],
         "trellis": [str(args.trellis_python), "-c", "import kaolin,spconv,torch,transformers,trimesh,xformers; print(torch.__version__,transformers.__version__,kaolin.__version__,spconv.__version__)"],
         "trellis_dinov2_offline_source": [str(args.trellis_python), "-c", trellis_offline_code],
@@ -416,6 +464,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             python = args.main_python
             if name.startswith("run_unidepth_"):
                 python = args.unidepth_python
+            elif name.startswith("run_da3_"):
+                python = args.da3_python
             elif name == "export_hawor_world.py":
                 python = args.hawor_python
             elif name == "remote_run_trellis_shape_v3.py":
@@ -472,6 +522,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unidepth-python", type=Path, required=True)
     parser.add_argument("--unidepth-repo", type=Path, required=True)
     parser.add_argument("--unidepth-model", type=Path, required=True)
+    parser.add_argument("--da3-python", type=Path, required=True)
+    parser.add_argument("--da3-repo", type=Path, required=True)
+    parser.add_argument("--da3-model", type=Path, required=True)
     parser.add_argument("--hawor-python", type=Path, required=True)
     parser.add_argument("--hawor-repo", type=Path, required=True)
     parser.add_argument("--hawor-asset-root", type=Path, required=True)

@@ -102,6 +102,7 @@ def validate_case(case: dict[str, Any], bundle: Path) -> dict[str, Any]:
         "dinov2_checkpoint": preflight_checks.get("trellis_dinov2_cache", {}).get("status") == "ok",
         "dinov2_source": preflight_checks.get("trellis_dinov2_offline_source", {}).get("status") == "ok",
         "script_cli_contracts": preflight_checks.get("script_cli_contracts", {}).get("status") == "ok",
+        "da3_contract": preflight_checks.get("da3_contract", {}).get("status") == "ok",
         "fresh_run_root": preflight_checks.get("fresh_run_root", {}).get("status") == "ok",
     }
     failed_checks = [name for name, passed in checks.items() if not passed]
@@ -129,8 +130,15 @@ def validate_case(case: dict[str, Any], bundle: Path) -> dict[str, Any]:
             raise RuntimeError(f"preflight {key} mismatch for {case['case_id']}: {preflight.get(key)} != {expected}")
     if Path(case["log"]).exists() or Path(case["agent_done"]).exists():
         raise RuntimeError(f"case log/sentinel already exists for {case['case_id']}")
+    da3_check = preflight_checks.get("da3_contract") if isinstance(preflight_checks.get("da3_contract"), dict) else {}
+    for key in ("python", "repo", "model"):
+        if not da3_check.get(key):
+            raise RuntimeError(f"preflight DA3 contract lacks {key} for {case['case_id']}")
     return {
         **case,
+        "da3_python": str(da3_check["python"]),
+        "da3_repo": str(da3_check["repo"]),
+        "da3_model_path": str(da3_check["model"]),
         "input_video": str(input_video),
         "sensor_calibration_metadata": str(sensor),
         "preflight_report": str(preflight_path),
@@ -160,6 +168,9 @@ SENSOR_FRAME_INTRINSICS_KEY=<empty>
 TARGET_HINT={case['target_hint']}
 TARGET_EXCLUSIONS={case['target_exclusions']}
 ANCHOR_GUIDANCE={case.get('anchor_guidance', 'none; select only after inspecting this fresh run P09 review')}
+DA3_PYTHON={case['da3_python']}
+DA3_REPO={case['da3_repo']}
+DA3_MODEL_PATH={case['da3_model_path']}
 LAUNCH_PREFLIGHT_REPORT={case['preflight_report']}
 
 The target hint is semantic only. Confirm it from your own raw/review image inspection.

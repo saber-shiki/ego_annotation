@@ -27,15 +27,17 @@ The launch also binds:
 - SAM3D config: `/mnt/nas-222-project/kupingxin/sam3d-objects/checkpoints/modelscope/pipeline.yaml`.
 - Launch preflight must source the activation script and prove `from inference import Inference` with the declared repository before any case is launched.
 - TRELLIS Python/repository/model and all common assets are those declared by `runtime/v19_runtime_spec.md`.
+- DA3 Python/repository/model are launcher-preflighted local assets bound as `{DA3_PYTHON}`, `{DA3_REPO}`, and `{DA3_MODEL_PATH}`. The controlled checkpoint is `depth-anything/DA3NESTED-GIANT-LARGE-1.1` (CC BY-NC 4.0; non-commercial research use only).
 
 ## Isolation and fairness rules
 
 1. Do not inspect or consume reference-label state directories, CAD models, reference poses,
    foreground reference depth, MANO reference state, or any sibling run output.
 2. Official K is allowed only through the launcher-supplied prediction-side sensor contract.
-3. Execute common phases from `runtime/v19_runtime_spec.md`, but apply its declared
-   sensor-first dependency: P00, P01, P02, **P03b, P03, P03c**, then P04 through P11.
-   Do not execute its canonical P12 through P21; replace that tail with this document.
+3. Execute common phases from `runtime/v19_runtime_spec.md`, but apply the DA3 intervention order:
+   P00, P01, P02, **P03b, P04, P03d DA3, P03c**, then P05 through P11. P03 UniDepth is an A/B
+   baseline only and is not the active depth source in this branch. Do not execute the canonical
+   P12 through P21; replace that tail with this document.
 4. P05 must inspect the raw contact sheet as an image.  P07 must inspect OWLv2/SAM2
    review imagery.  P09 must inspect the anchor-candidate review image and write the
    explicit anchor decision. When the proposal report exposes supported
@@ -47,9 +49,10 @@ The launch also binds:
    triangle-silhouette subtraction; rejected depth remains ineligible, and per-frame extent
    eligibility must use the orientation-invariant visible-population reference rather than
    one anchor's camera-axis AABB. The launch target hint must be visually confirmed.
-5. Use one shared P11 evidence report, anchor RGB, object-owned mask, observed metric
-   surface, camera/HaWoR state, and observed-only object trajectory for both branches.
-6. SAM3D receives full RGB plus the binary object-owned mask and no external pointmap.
+5. Use one shared P11 evidence report, anchor RGB, object-owned mask, DA3 depth, observed metric
+   surface, camera/HaWoR state, and observed-only object trajectory for both geometry branches.
+6. SAM3D receives full RGB plus the binary object-owned mask and no external pointmap. DA3 is an
+   external depth measurement only; SAM3D internal MoGe, config, runner, and `pointmap=None` remain frozen.
    TRELLIS receives its native P11 object-isolated RGBA crop.  These native conditioning
    formats are intentional; neither backend may receive another hidden source.
 7. Generated faces are render-only.  They are never collision, sign, contact, or pose
@@ -63,14 +66,59 @@ The launch also binds:
 ## Common P00-P11
 
 Read `runtime/v19_runtime_spec.md`, bind the launch values above, and execute only P00,
-P01, P02, **P03b, P03, P03c**, P04, P05, P06, P07, P08, P09, P10, and P11 in that
-sensor-first order. P03 must pass the resolved contract to UniDepth; a metadata-only K
-relabel or the forensic compatibility override is forbidden.
+P01, P02, **P03b, P04, P03d DA3, P03c**, P05, P06, P07, P08, P09, P10, and P11 in that
+order. P03d must pass official K and the P04 HaWoR metric W2C trajectory to DA3. It writes
+camera-z metric depth on exact source rays; metadata-only K relabel and any released/reference
+camera pose are forbidden. P03 UniDepth is not the active depth source and must not feed P09 in
+this branch.
 Use the dedicated `{GPU_ID}` unless a live probe shows it is no longer safe; do not take
 another case's declared GPU.  The target should remain rigid even when local evidence is
 missing; record missing evidence as uncertainty rather than broadening the object mask.
 
-Before continuing, bind and validate:
+After P04 and before P05, run the exact P03d intervention. All DA3 source/checkpoint paths are
+launcher/preflight bindings; runtime discovery or download is forbidden:
+
+```bash
+CUDA_VISIBLE_DEVICES='{GPU_ID}' '{DA3_PYTHON}' scripts/run_da3_pose_conditioned_full_frame_v1.py \
+  --manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
+  --camera-contract '{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json' \
+  --hawor-npz '{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz' \
+  --da3-repo '{DA3_REPO}' \
+  --model-path '{DA3_MODEL_PATH}' \
+  --model-id depth-anything/DA3NESTED-GIANT-LARGE-1.1 \
+  --output-dir '{RUN_ROOT}/measurements/depth_slam/da3_pose_conditioned' \
+  --camera-input-plane manifest_rgb \
+  --camera-output-plane source_rgb \
+  --frame-start 0 \
+  --frame-end {FRAME_END} \
+  --source-width {SOURCE_WIDTH} \
+  --source-height {SOURCE_HEIGHT} \
+  --window-size 16 \
+  --window-overlap 4 \
+  --ref-view-strategy middle
+```
+
+Then run P03c before P05 with the provider-specific output name:
+
+```bash
+MAIN_PYTHON=/mnt/user-home/kupingxin/ego_annotation/.venv/bin/python
+DA3_RAW_DEPTH='{RUN_ROOT}/measurements/depth_slam/da3_pose_conditioned/da3_pose_conditioned_full_frame_depth_v1.npz'
+DEPTH_NPZ='{RUN_ROOT}/state/calibration/depth_camera_contract/da3_pose_conditioned_depth_camera_contract_v2.npz'
+"$MAIN_PYTHON" scripts/adapt_v19_depth_to_camera_contract.py \
+  --source-depth-npz "$DA3_RAW_DEPTH" \
+  --camera-contract '{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json' \
+  --depth-plane source_rgb \
+  --output-dir '{RUN_ROOT}/state/calibration/depth_camera_contract' \
+  --output-name da3_pose_conditioned_depth_camera_contract_v2.npz
+```
+
+In every common P08/P09/P14b/P18 command that names the canonical UniDepth camera-bound archive,
+substitute exactly `$DEPTH_NPZ`; do not rename the DA3 file to a UniDepth filename. P09's
+first-surface logic consumes the archive-declared provider confidence semantics. P03d converts
+DA3 raw higher-is-better confidence to a monotonic higher-is-worse error proxy; it is not calibrated
+metric uncertainty.
+
+After P11, bind and validate:
 
 ```bash
 set -euo pipefail
@@ -79,10 +127,12 @@ EXP_ROOT='{RUN_ROOT}/experiments/sam3d_trellis_controlled'
 EVIDENCE_REPORT='{RUN_ROOT}/measurements/geometry_completion/rigid_evidence/{CASE_ID}/{OBJECT_ID}/evidence_bundle/evidence_bundle_report.json'
 ANNOTATIONS='{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json'
 HAWOR_NPZ='{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz'
-DEPTH_NPZ='{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
+DA3_RAW_DEPTH='{RUN_ROOT}/measurements/depth_slam/da3_pose_conditioned/da3_pose_conditioned_full_frame_depth_v1.npz'
+DEPTH_NPZ='{RUN_ROOT}/state/calibration/depth_camera_contract/da3_pose_conditioned_depth_camera_contract_v2.npz'
 test -s "$EVIDENCE_REPORT"
 test -s "$ANNOTATIONS"
 test -s "$HAWOR_NPZ"
+test -s "$DA3_RAW_DEPTH"
 test -s "$DEPTH_NPZ"
 "$MAIN_PYTHON" - "$EVIDENCE_REPORT" <<'PY'
 import json, sys

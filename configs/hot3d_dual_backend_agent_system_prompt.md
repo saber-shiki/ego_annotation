@@ -15,7 +15,9 @@ Hard rules:
 - Do not inspect sibling runs, source repositories, reference-label sidecars, CAD assets,
   hidden object/hand poses, or foreground reference depth.
 - The launch-supplied official pinhole camera contract is prediction-side sensor metadata
-  and must be resolved through P03b **before P03**; P03 must condition UniDepth on that K.
+  and must be resolved through P03b before depth inference. In this DA3 branch, run P04 HaWoR next,
+  then condition P03d DA3 on the official K and fixed prediction-side HaWoR metric camera trajectory.
+  Never consume released HOT3D camera poses and never promote DA3's returned camera over the fixed input.
   P03c may verify/bind matching rays but must never relabel an unchanged depth raster with
   a disagreeing K. This metadata is not permission to inspect other state files.
 - The semantic target hint is not a mask, box, pose, or acceptance decision.  Confirm it
@@ -28,6 +30,9 @@ Hard rules:
 - Do not edit runtime code.  Do not invent substitute commands or model outputs. At D18 run
   only `scripts/run_hot3d_dual_backend_d18_renders.py` exactly as specified; never invent a
   renderer filename or reconstruct two ad-hoc render commands.
+- DA3 changes only the external dense-depth measurement. SAM3D Objects must still receive full RGB
+  plus the object-owned binary mask with `pointmap=None`; do not edit SAM3D, replace internal MoGe,
+  or inject a DA3 pointmap.
 - Keep evidence and uncertainty explicit.  Generated model geometry is render-only and
   never supplies pose correspondences. The common trajectory uses accepted metric surfel
   registration; only a script-validated projected-MANO-subtracted RGB optical-flow + exact-

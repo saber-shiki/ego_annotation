@@ -66,6 +66,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
     source_size = np.asarray(payload["source_size"], dtype=np.int32).reshape(-1)
     source_intrinsics = np.asarray(payload["intrinsics_fx_fy_cx_cy"], dtype=np.float64)
     source_confidence = np.asarray(payload["confidence"]) if "confidence" in payload else None
+    depth_provider = scalar_text(payload["depth_provider"], "depth_provider") if "depth_provider" in payload else "unidepth"
     if depth.ndim != 3 or frame_idx.shape != (depth.shape[0],):
         raise RuntimeError(f"inconsistent depth/frame arrays: {depth.shape}, {frame_idx.shape}")
     if source_size.shape != (2,):
@@ -94,7 +95,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
         if "camera_conditioning_mode" in payload
         else "legacy_unspecified"
     )
-    source_conditioning: dict[str, Any] = {"mode": source_conditioning_mode}
+    source_conditioning: dict[str, Any] = {"mode": source_conditioning_mode, "depth_provider": depth_provider}
     source_depth_rays_reprojected = bool(
         np.asarray(payload.get("depth_ray_geometry_reprojected", False)).reshape(-1)[0]
     )
@@ -136,6 +137,56 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
             "depth_ray_geometry_reprojected": True,
             "depth_output_quantity": scalar_text(payload.get("depth_output_quantity"), "depth_output_quantity"),
         })
+    elif source_conditioning_mode == "provided_pinhole_intrinsics_and_metric_extrinsics":
+        required_conditioning = {
+            "inference_camera_contract_sha256",
+            "inference_camera_output_plane",
+            "inference_camera_intrinsics_fx_fy_cx_cy",
+            "inference_camera_extrinsics_w2c",
+            "pose_conditioning_mode",
+            "camera_trajectory_source",
+            "depth_output_quantity",
+            "depth_ray_geometry_reprojected",
+            "confidence",
+            "confidence_role",
+        }
+        missing_conditioning = sorted(required_conditioning - set(payload))
+        if missing_conditioning:
+            raise RuntimeError(f"pose-conditioned depth archive misses {missing_conditioning}")
+        source_contract_hash = scalar_text(
+            payload["inference_camera_contract_sha256"], "inference_camera_contract_sha256"
+        )
+        source_output_plane = scalar_text(payload["inference_camera_output_plane"], "inference_camera_output_plane")
+        if source_contract_hash != contract_hash:
+            raise RuntimeError("pose-conditioned depth camera-contract hash disagrees with the requested contract")
+        if source_output_plane != args.depth_plane:
+            raise RuntimeError(
+                f"pose-conditioned depth output plane {source_output_plane!r} disagrees with requested {args.depth_plane!r}"
+            )
+        conditioned_rows = np.asarray(payload["inference_camera_intrinsics_fx_fy_cx_cy"], dtype=np.float64)
+        if conditioned_rows.shape != source_intrinsics.shape or not np.allclose(
+            conditioned_rows, source_intrinsics, atol=1.0e-6, rtol=0.0
+        ):
+            raise RuntimeError("pose-conditioned inference K rows disagree with source depth K rows")
+        conditioned_extrinsics = np.asarray(payload["inference_camera_extrinsics_w2c"], dtype=np.float64)
+        if conditioned_extrinsics.shape != (len(frame_idx), 4, 4) or not np.isfinite(conditioned_extrinsics).all():
+            raise RuntimeError("pose-conditioned depth archive has invalid fixed W2C rows")
+        if not source_depth_rays_reprojected:
+            raise RuntimeError("pose-conditioned depth was not ray-remapped onto the exact output contract")
+        confidence_role = scalar_text(payload["confidence_role"], "confidence_role")
+        if confidence_role != "predicted_error_proxy_higher_is_worse":
+            raise RuntimeError(f"unsupported pose-conditioned confidence role {confidence_role!r}")
+        source_conditioning.update({
+            "camera_contract_sha256": source_contract_hash,
+            "output_plane": source_output_plane,
+            "intrinsics_match_source_rows": True,
+            "depth_ray_geometry_reprojected": True,
+            "depth_output_quantity": scalar_text(payload["depth_output_quantity"], "depth_output_quantity"),
+            "pose_conditioning_mode": scalar_text(payload["pose_conditioning_mode"], "pose_conditioning_mode"),
+            "camera_trajectory_source": scalar_text(payload["camera_trajectory_source"], "camera_trajectory_source"),
+            "fixed_extrinsics_shape": list(conditioned_extrinsics.shape),
+            "confidence_role": confidence_role,
+        })
     elif source_conditioning_mode not in {"model_inferred_intrinsics", "legacy_unspecified"}:
         raise RuntimeError(f"unsupported source depth camera conditioning mode {source_conditioning_mode!r}")
     # Preserve source intrinsics for provenance, but do not relabel an unchanged
@@ -160,6 +211,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
     payload["intrinsics_fx_fy_cx_cy"] = resolved_rows
     payload["focal_px"] = np.repeat(np.float64(np.sqrt(intrinsics[0] * intrinsics[1])), depth.shape[0])
     payload["intrinsics_source"] = np.asarray(str(contract.get("intrinsics_source") or contract.get("method")))
+    payload["depth_provider"] = np.asarray(depth_provider)
     payload["calibration_authority"] = np.asarray(str(normalized["calibration_authority"]))
     payload["camera_contract_path"] = np.asarray(str(contract_path))
     payload["camera_contract_sha256"] = np.asarray(contract_hash)
@@ -226,6 +278,7 @@ def adapt(args: argparse.Namespace) -> dict[str, Any]:
         "depth_dtype": str(depth.dtype),
         "active_intrinsics_dtype": str(resolved_rows.dtype),
         "depth_plane": args.depth_plane,
+        "depth_provider": depth_provider,
         "source_depth_camera_conditioning": source_conditioning,
         "depth_ray_geometry_reprojected": source_depth_rays_reprojected,
         "source_and_resolved_rays_match": same_rays,

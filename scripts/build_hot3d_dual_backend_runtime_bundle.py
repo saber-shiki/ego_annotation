@@ -25,10 +25,12 @@ EXPERIMENT_FILES = [
 SELF_TEST_FILES = [
     ("experiments/sam3d_p11_p12_branch/self_test.py", "experiments/sam3d_p11_p12_branch/self_test.py"),
     ("experiments/v19_metric_camera_contract/self_test.py", "experiments/v19_metric_camera_contract/self_test.py"),
+    ("experiments/v19_da3_pose_conditioned/self_test.py", "experiments/v19_da3_pose_conditioned/self_test.py"),
 ]
 SCRIPT_FILES = [
     "run_unidepth_metric_source_v3.py",
     "run_unidepth_full_frame_v3.py",
+    "run_da3_pose_conditioned_full_frame_v1.py",
     "adapt_v19_depth_to_camera_contract.py",
     "build_v19_visible_geometry_from_sam2_depth.py",
     "build_v18_compact_rigid_evidence_bundle.py",
@@ -48,6 +50,8 @@ EXTRA_FILES = [
     ("configs/hot3d_dual_backend_agent_system_prompt.md", "configs/hot3d_dual_backend_agent_system_prompt.md"),
 ]
 TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"}
+EXPECTED_DA3_SOURCE_REVISION = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4"
+EXPECTED_DA3_MODEL_REVISION = "b2359bdf726fb44ef62acca04d629dcf158053e7"
 
 
 def sha256_file(path: Path) -> str:
@@ -116,6 +120,24 @@ def rewrite_bundle_root(bundle: Path, old: str, new: str) -> int:
     return changed
 
 
+def external_asset_rows(root: Path, patterns: tuple[str, ...]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for pattern in patterns:
+        for path in sorted(root.glob(pattern)):
+            if not path.is_file() or path.stat().st_size <= 0:
+                continue
+            rows.append(
+                {
+                    "path": str(path.resolve()),
+                    "relative_path": str(path.relative_to(root)),
+                    "bytes": int(path.stat().st_size),
+                    "sha256": sha256_file(path),
+                }
+            )
+    unique = {row["relative_path"]: row for row in rows}
+    return [unique[key] for key in sorted(unique)]
+
+
 def file_rows(bundle: Path) -> list[dict[str, Any]]:
     rows = []
     for path in sorted(item for item in bundle.rglob("*") if item.is_file() and not item.is_symlink()):
@@ -139,6 +161,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("bundle root must be a distinct path outside the base bundle and source worktree")
     revision = git_value(source, "rev-parse", "HEAD")
     dirty = git_value(source, "status", "--short") or ""
+    da3_repo = args.da3_repo.expanduser().resolve()
+    da3_model = args.da3_model.expanduser().resolve()
+    da3_revision = git_value(da3_repo, "rev-parse", "HEAD")
+    da3_dirty = git_value(da3_repo, "status", "--short") or ""
     if not revision:
         raise RuntimeError(f"source root is not a readable Git revision: {source}")
     if dirty:
@@ -146,6 +172,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "immutable HOT3D runtime bundles require a committed clean source worktree; "
             f"dirty entries: {dirty.splitlines()}"
         )
+    if da3_revision != EXPECTED_DA3_SOURCE_REVISION or da3_dirty:
+        raise RuntimeError(
+            "DA3 runtime requires a readable clean pinned repository; "
+            f"repo={da3_repo} revision={da3_revision} dirty={da3_dirty.splitlines()}"
+        )
+    if not da3_model.is_dir():
+        raise RuntimeError(f"missing local DA3 model directory: {da3_model}")
+    da3_manifest = require_file(da3_model / "DA3_RUNTIME_MANIFEST.json", "DA3 runtime manifest")
+    da3_manifest_payload = json.loads(da3_manifest.read_text(encoding="utf-8"))
+    if (
+        da3_manifest_payload.get("status") != "installed_import_validated_no_inference"
+        or da3_manifest_payload.get("model_revision") != EXPECTED_DA3_MODEL_REVISION
+        or da3_manifest_payload.get("source_commit") != da3_revision
+    ):
+        raise RuntimeError(f"DA3 runtime manifest does not bind requested source/model revisions: {da3_manifest_payload}")
+    da3_model_assets = external_asset_rows(
+        da3_model,
+        ("config.json", "*.safetensors", "*.safetensors.index.json", "DA3_RUNTIME_MANIFEST.json"),
+    )
+    if not da3_model_assets or not any(row["relative_path"].endswith(".safetensors") for row in da3_model_assets):
+        raise RuntimeError(f"DA3 model directory has no hashable safetensors checkpoint: {da3_model}")
     base_manifest = verify_manifest(base)
     if output.exists():
         if not args.replace:
@@ -212,6 +259,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "suite_experiment_files": [f"experiments/sam3d_p11_p12_branch/{name}" for name in EXPERIMENT_FILES],
         "bundle_self_tests": [destination for _source, destination in SELF_TEST_FILES],
         "offline_model_assets": {
+            "da3_nested": {
+                "model_id": "depth-anything/DA3NESTED-GIANT-LARGE-1.1",
+                "model_revision": EXPECTED_DA3_MODEL_REVISION,
+                "model_family": "nested_anyview_metric",
+                "license": "CC BY-NC 4.0",
+                "usage": "non-commercial research/evaluation only",
+                "repository": str(da3_repo),
+                "repository_revision": da3_revision,
+                "repository_dirty": False,
+                "model_path": str(da3_model),
+                "model_files": da3_model_assets,
+                "network_resolution_allowed": False,
+            },
             "dinov2_source_hubconf": {
                 "path": "/mnt/truenas-user-home/kupingxin/ego_annotation_models/torch_hub/hub/facebookresearch_dinov2_main/hubconf.py",
                 "sha256": "c1f5090e78ff940b72c076d2bf9c0310d1707c946b3d10e2d6f2b0bdf56a6f64",
@@ -253,6 +313,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-bundle", type=Path, required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--bundle-root", type=Path, required=True)
+    parser.add_argument("--da3-repo", type=Path, required=True)
+    parser.add_argument("--da3-model", type=Path, required=True)
     parser.add_argument("--replace", action="store_true")
     return parser.parse_args()
 

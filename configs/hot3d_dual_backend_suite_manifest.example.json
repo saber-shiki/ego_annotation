@@ -8,6 +8,7 @@
   "pi_provider": "YOUR_PI_PROVIDER",
   "pi_model": "YOUR_PI_MODEL",
   "pi_thinking": "max",
+  "depth_intervention": "DA3NESTED-GIANT-LARGE-1.1 pose-conditioned on official K plus fixed prediction-side HaWoR metric camera trajectory; SAM3D remains pointmap=None",
   "cases": [
     {
       "case_id": "HOT3D_CASE_ID",

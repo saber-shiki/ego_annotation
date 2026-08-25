@@ -536,7 +536,7 @@ class CameraContractTest(unittest.TestCase):
         self.assertEqual(diagnostic["state"], "validated_sparse_interior_and_boundary_depth_quarantined")
         self.assertEqual(quarantine["interior_removed_pixels"], 16)
         self.assertTrue(quarantine["validated"])
-        self.assertEqual(quarantine["mode"], "sparse_unidepth_predicted_error_flagged_interior_holes")
+        self.assertEqual(quarantine["mode"], "sparse_depth_provider_predicted_error_flagged_interior_holes")
         self.assertTrue(np.all(~robust[28:32, 28:32]))
 
     def test_first_surface_depth_ownership_rejects_unexplained_sparse_interior_surface(self) -> None:

@@ -195,6 +195,22 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
     confidence = np.asarray(blob["confidence"], dtype=np.float32) if "confidence" in blob.files else None
     if confidence is not None and confidence.shape != depth.shape:
         raise RuntimeError(f"{path} confidence shape {confidence.shape} disagrees with depth {depth.shape}")
+    depth_provider = scalar_text(blob["depth_provider"], "depth_provider") if "depth_provider" in blob.files else "legacy_unidepth"
+    confidence_semantics = (
+        scalar_text(blob["confidence_semantics"], "confidence_semantics")
+        if "confidence_semantics" in blob.files
+        else "UniDepth exp(logconfidence); larger values predict larger depth error"
+    )
+    confidence_role = (
+        scalar_text(blob["confidence_role"], "confidence_role")
+        if "confidence_role" in blob.files
+        else "predicted_error_proxy_higher_is_worse"
+    )
+    if confidence_role != "predicted_error_proxy_higher_is_worse":
+        raise RuntimeError(
+            f"{path} confidence_role={confidence_role!r} is incompatible with first-surface ownership; "
+            "convert provider confidence to a higher-is-worse error proxy before P09"
+        )
     camera_contract_binding = None
     binding_keys = {
         "camera_contract_path",
@@ -230,6 +246,9 @@ def load_depth_npz(path: Path) -> dict[str, Any]:
         "frame_idx": frame_idx,
         "depth": depth,
         "confidence": confidence,
+        "confidence_semantics": confidence_semantics,
+        "confidence_role": confidence_role,
+        "depth_provider": depth_provider,
         "intrinsics": intr,
         "source_size": source_size,
         "source_estimated_intrinsics": (
@@ -734,6 +753,8 @@ def robust_first_surface_depth_ownership(
     fail_raw_to_robust_extent_ratio: float,
     intrinsics: np.ndarray | None = None,
     confidence: np.ndarray | None = None,
+    confidence_semantics: str = "provider-declared predicted-error proxy; larger values predict larger depth error",
+    depth_provider: str = "unspecified",
     confidence_seed_percentile: float = 95.0,
     local_depth_step_max_m: float = 0.005,
     max_removed_distance_inside_mask_px: float = 10.0,
@@ -791,10 +812,10 @@ def robust_first_surface_depth_ownership(
     confidence_m = None if confidence is None else np.asarray(confidence, dtype=np.float64)
     failure_reasons: list[str] = []
     if confidence_m is None or confidence_m.shape != depth_m.shape:
-        failure_reasons.append("missing_or_mismatched_unidepth_confidence")
+        failure_reasons.append("missing_or_mismatched_depth_provider_error_proxy")
         confidence_m = np.full(depth_m.shape, np.inf, dtype=np.float64)
     elif not np.isfinite(confidence_m[valid]).all() or np.any(confidence_m[valid] <= 0.0):
-        failure_reasons.append("invalid_unidepth_confidence")
+        failure_reasons.append("invalid_depth_provider_error_proxy")
 
     accepted = np.zeros_like(valid)
     confidence_threshold_map = np.full(depth_m.shape, np.nan, dtype=np.float64)
@@ -897,7 +918,7 @@ def robust_first_surface_depth_ownership(
             and confidence_flagged_interior_fraction >= float(min_interior_confidence_flagged_fraction)
         )
         interior_quarantine_mode = (
-            "sparse_unidepth_predicted_error_flagged_interior_holes"
+            "sparse_depth_provider_predicted_error_flagged_interior_holes"
             if interior_quarantine_validated else
             "unresolved_interior_rejection"
         )
@@ -938,7 +959,9 @@ def robust_first_surface_depth_ownership(
         "median_absolute_deviation_m": global_mad,
         "mad_sigma": float(mad_sigma),
         "minimum_half_width_m": float(min_half_width_m),
-        "confidence_semantics": "UniDepth exp(logconfidence); larger values predict larger depth error",
+        "depth_provider": str(depth_provider),
+        "confidence_semantics": str(confidence_semantics),
+        "confidence_role": "predicted_error_proxy_higher_is_worse",
         "confidence_seed_percentile": float(confidence_seed_percentile),
         "local_depth_step_max_m": float(local_depth_step_max_m),
         "max_removed_distance_inside_mask_px": float(max_removed_distance_inside_mask_px),
@@ -971,7 +994,7 @@ def robust_first_surface_depth_ownership(
             "max_unexplained_interior_pixels": int(max_unexplained_interior_pixels),
             "validated": bool(interior_quarantine_validated),
             "mode": interior_quarantine_mode,
-            "semantics": "Pixels beyond the ordinary boundary band remain excluded only when isolated or when a sparse region is overwhelmingly marked by UniDepth as higher predicted error than its component seed. This is explicit unresolved-depth quarantine, not object-mask erosion.",
+            "semantics": "Pixels beyond the ordinary boundary band remain excluded only when isolated or when a sparse region is overwhelmingly marked by the declared depth provider error proxy as higher predicted error than its component seed. This is explicit unresolved-depth quarantine, not object-mask erosion.",
         },
         "fail_closed": bool(failure_reasons),
         "failure_reasons": failure_reasons,
@@ -1621,6 +1644,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             fail_raw_to_robust_extent_ratio=float(args.first_surface_fail_raw_to_robust_extent_ratio),
             intrinsics=intr,
             confidence=confidence_m,
+            confidence_semantics=str(depth.get("confidence_semantics")),
+            depth_provider=str(depth.get("depth_provider")),
             confidence_seed_percentile=float(args.first_surface_confidence_seed_percentile),
             local_depth_step_max_m=float(args.first_surface_local_depth_step_max_m),
             max_removed_distance_inside_mask_px=float(args.first_surface_max_removed_distance_inside_mask_px),
@@ -1677,6 +1702,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "mask_shape": list(mask_owned.shape),
             "raw_sam2_mask_shape": list(mask.shape),
             "depth_shape": list(depth_m.shape),
+            "depth_provider": str(depth.get("depth_provider")),
+            "depth_confidence_semantics": str(depth.get("confidence_semantics")),
             "object_surface_ownership_filter": ownership_summary,
             "first_surface_depth_ownership": depth_ownership_summary,
             "source_width": int(source_width),
@@ -2174,11 +2201,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--first-surface-mad-sigma", type=float, default=2.5, help="Per connected component: MAD sigma used only for the initial depth seed before confidence/geodesic growth.")
     parser.add_argument("--first-surface-min-half-width-m", type=float, default=0.03, help="Minimum per-component seed half-width in meters.")
     parser.add_argument("--first-surface-min-retained-fraction", type=float, default=0.90, help="Fail closed when validated depth-coherent support retains less than this fraction of valid owned depth.")
-    parser.add_argument("--first-surface-confidence-seed-percentile", type=float, default=95.0, help="Maximum traversable UniDepth error proxy is derived from this percentile of each component seed.")
+    parser.add_argument("--first-surface-confidence-seed-percentile", type=float, default=95.0, help="Maximum traversable provider-declared higher-is-worse depth error proxy is derived from this percentile of each component seed.")
     parser.add_argument("--first-surface-local-depth-step-max-m", type=float, default=0.005, help="Maximum adjacent-pixel depth step during geodesic support growth.")
     parser.add_argument("--first-surface-max-removed-distance-inside-mask-px", type=float, default=10.0, help="Distance defining the ordinary boundary quarantine band; deeper rejection must pass sparse/confidence-flagged interior gates.")
-    parser.add_argument("--first-surface-max-confidence-flagged-interior-fraction", type=float, default=0.015, help="Maximum fraction of valid owned depth that may be quarantined beyond the boundary band when UniDepth flags it as high predicted error.")
-    parser.add_argument("--first-surface-min-interior-confidence-flagged-fraction", type=float, default=0.95, help="Required fraction of nontrivial interior rejection whose UniDepth predicted-error proxy exceeds its component seed threshold.")
+    parser.add_argument("--first-surface-max-confidence-flagged-interior-fraction", type=float, default=0.015, help="Maximum fraction of valid owned depth that may be quarantined beyond the boundary band when the depth provider flags it as high predicted error.")
+    parser.add_argument("--first-surface-min-interior-confidence-flagged-fraction", type=float, default=0.95, help="Required fraction of nontrivial interior rejection whose provider-declared predicted-error proxy exceeds its component seed threshold.")
     parser.add_argument("--first-surface-max-unexplained-interior-pixels", type=int, default=5, help="Permit only this many isolated interior raster samples without the confidence-flagged proof.")
     parser.add_argument("--first-surface-min-component-pixels", type=int, default=20)
     parser.add_argument("--first-surface-max-small-component-fraction", type=float, default=0.01)
