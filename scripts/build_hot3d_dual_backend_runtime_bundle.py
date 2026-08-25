@@ -31,6 +31,7 @@ SCRIPT_FILES = [
     "run_unidepth_metric_source_v3.py",
     "run_unidepth_full_frame_v3.py",
     "run_da3_pose_conditioned_full_frame_v1.py",
+    "v19_camera_contract.py",
     "adapt_v19_depth_to_camera_contract.py",
     "build_v19_visible_geometry_from_sam2_depth.py",
     "build_v18_compact_rigid_evidence_bundle.py",
