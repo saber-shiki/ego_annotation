@@ -27,6 +27,7 @@ SELF_TEST_FILES = [
     ("experiments/v19_metric_camera_contract/self_test.py", "experiments/v19_metric_camera_contract/self_test.py"),
     ("experiments/v19_da3_pose_conditioned/self_test.py", "experiments/v19_da3_pose_conditioned/self_test.py"),
     ("experiments/v19_depth_source_ab/self_test.py", "experiments/v19_depth_source_ab/self_test.py"),
+    ("experiments/v19_depth_source_ab/test_p09_pair_wrapper.py", "experiments/v19_depth_source_ab/test_p09_pair_wrapper.py"),
 ]
 SCRIPT_FILES = [
     "run_unidepth_metric_source_v3.py",
@@ -36,6 +37,7 @@ SCRIPT_FILES = [
     "adapt_v19_depth_to_camera_contract.py",
     "build_v19_depth_source_ab_freeze_contract.py",
     "verify_v19_depth_source_ab_pair.py",
+    "run_v19_depth_source_ab_p09_pair.py",
     "build_v19_visible_geometry_from_sam2_depth.py",
     "build_v18_compact_rigid_evidence_bundle.py",
     "build_v18_compact_rigid_trellis_completion.py",

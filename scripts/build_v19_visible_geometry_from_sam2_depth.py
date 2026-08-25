@@ -2086,6 +2086,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "mask_image_plane": args.mask_image_plane,
             "pixel_center_convention": args.pixel_center_convention,
             "pixel_stride": int(args.pixel_stride),
+            "seed": int(args.seed),
             "max_points": int(args.max_points),
             "min_valid_points": int(args.min_valid_points),
             "min_depth_m": float(args.min_depth_m),

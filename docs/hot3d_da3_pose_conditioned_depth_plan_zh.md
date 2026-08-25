@@ -143,9 +143,14 @@ freeze contract 对实际被分支读取的 source video、manifest、camera K�
 OWLv2、SAM2 track、全部 RGB、全部 SAM2 mask、base annotations、MANO bridge 和共享 anchor
 逐文件绑定 bytes/SHA256。分支不得重新运行或修改这些状态。pair verifier 还会从 frozen HaWoR
 重建逐帧 W2C，校验 DA3 conditioning trajectory，并拒绝 Umeyama scale mode、overlap failure、
-metadata-only K relabel、不同 timeline/K 或任意 frozen byte 变化。通过 pair contract 后，只重建
-P09 及之后明确 depth-dependent 的状态；geometry backend/config/seed 和 SAM3D `pointmap=None`
-继续固定。UniDepth 与 DA3 confidence 语义不同，未标定前禁止复用同一个数值阈值。
+metadata-only K relabel、不同 timeline/K 或任意 frozen byte 变化。通过 pair contract 后，使用 `run_v19_depth_source_ab_p09_pair.py` 从 freeze contract 自动解析
+所有 shared paths，以相同脚本、参数、seed、固定 anchor 顺序重建两支 P09。wrapper 在运行前后
+重验全部 frozen bytes 与 depth archives，并要求两支生成的 150 张 object-owned appearance mask、
+camera/hand shared frame state 逐帧一致；只允许 depth-dependent surfels/annotations 不同。P09 对
+confidence 仅做各 provider 内、各 connected component 的 95th-percentile 单调排序，因此不复用
+绝对数值阈值；DA3 `1/conf` 足以保留该排序，但仍不是标定的米制误差。geometry
+backend/config/seed 和 SAM3D `pointmap=None` 继续固定；任何后续绝对 confidence threshold 或
+跨 provider 数值比较，在单独校准前仍禁止。
 
 ## 评估边界
 
