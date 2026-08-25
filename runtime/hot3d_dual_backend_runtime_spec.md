@@ -70,8 +70,8 @@ P01, P02, **P03b, P04, P03d DA3, P03c**, P05, P06, P07, P08, P09, P10, and P11 i
 order. P03d must pass official K and the P04 HaWoR metric W2C trajectory to DA3. It writes
 camera-z metric depth on exact source rays; metadata-only K relabel and any released/reference
 camera pose are forbidden. Metric scale must use the Nested checkpoint metric branch via
-`--metric-scale-mode nested_metric_branch`; `input_trajectory_umeyama` is a diagnostic ablation and
-is not downstream eligible because short-window trajectory scale is underconstrained. Every
+`--metric-scale-mode nested_metric_branch`; `input_trajectory_umeyama` is a non-runtime diagnostic
+mode and is not downstream eligible because short-window trajectory scale is underconstrained. Every
 multi-window run must pass the archive-declared overlap-consistency gate before P03c. P03 UniDepth
 is not the active depth source and must not feed P09 in this branch.
 Use the dedicated `{GPU_ID}` unless a live probe shows it is no longer safe; do not take
