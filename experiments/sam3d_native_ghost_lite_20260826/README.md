@@ -132,6 +132,9 @@ mechanism, not because SciPy reported success.
 - Old-vs-fixed depth slice: `.../p15_first_hit_depth_authority_bounded_v4/frame92_REJECTED_vs_RECOMMENDED_depth_slice.png`
 - Corrected overlays: `.../p15_first_hit_depth_authority_bounded_v4/renders_overlay/overlay_*.png`
 - Visible-surface overlays: `.../p15_first_hit_depth_authority_bounded_v4/renders_visible_surface_fit/fit_*.png`
+- Combined frame-92 GLB scene: `.../p15_first_hit_depth_authority_bounded_v4/combined_scene_frame92/frame_000092_object_hands_visible_surface.glb`
+- Combined frame-92 colored PLY: `.../combined_scene_frame92/frame_000092_object_hands_visible_surface.binary.ply` (ASCII sibling also provided)
+- Combined-scene previews: `.../combined_scene_frame92/preview_front.png`, `preview_side.png`, `preview_angle.png`
 - Rejected negative controls: `.../audit_native_pose/` and `.../sim3_alignment/`
 
 ## Environment
