@@ -40,7 +40,7 @@ def project(points_camera: np.ndarray, fx: float, fy: float, cx: float, cy: floa
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", default="sim3", choices=["sim3", "p15"])
-    parser.add_argument("--alignment-qc", type=Path)
+    parser.add_argument("--alignment-qc", type=Path, help="sim3 QC JSON in sim3 mode; anchor-camera mesh PLY in p15 mode")
     parser.add_argument("--annotations", type=Path, required=True)
     parser.add_argument("--pose-graph", type=Path)
     parser.add_argument("--anchor-frame", type=int, default=92)
@@ -64,11 +64,13 @@ def main() -> None:
         pose = load_json(args.pose_graph)
         pose_by_idx = {int(r["frame_idx"]): r for r in pose["pose_rows"]}
         mesh = trimesh.load(args.alignment_qc, force="mesh", process=False) if args.alignment_qc else None
-        assert mesh is not None, "p15 mode needs the anchor-camera metric mesh via --alignment-qc"
+        assert mesh is not None, "p15 mode needs the anchor-camera metric mesh PLY via --alignment-qc"
         v = np.asarray(mesh.vertices, dtype=np.float64)
         T92 = np.asarray(frame_by_idx[args.anchor_frame]["camera"]["T_world_camera_metric"], dtype=np.float64)
-        cent92 = np.asarray(pose_by_idx[args.anchor_frame]["translation_world_m"], dtype=np.float64)
-        canonical = (v @ T92[:3, :3].T + T92[:3, 3]) - cent92[None, :]
+        anchor_pose = pose_by_idx[args.anchor_frame]
+        cent92 = np.asarray(anchor_pose["translation_world_m"], dtype=np.float64)
+        R92 = np.asarray(anchor_pose["rotation_world_from_completed_canonical_matrix"], dtype=np.float64)
+        canonical = ((v @ T92[:3, :3].T + T92[:3, 3]) - cent92[None, :]) @ R92
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for raw in args.frames.split(","):

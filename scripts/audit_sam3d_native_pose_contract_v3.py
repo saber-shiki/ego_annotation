@@ -172,6 +172,108 @@ def rasterize_convex_projection(vertices: np.ndarray, intrinsics: np.ndarray, sh
     }
 
 
+def rasterize_first_hit_depth(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    intrinsics: np.ndarray,
+    shape: tuple[int, int],
+    device: str,
+) -> np.ndarray:
+    """Rasterize the true nearest mesh intersection in OpenCV camera axes."""
+    import torch
+    from pytorch3d.renderer import MeshRasterizer, RasterizationSettings
+    from pytorch3d.structures import Meshes
+    from pytorch3d.utils.camera_conversions import cameras_from_opencv_projection
+
+    height, width = shape
+    if height != width:
+        raise RuntimeError(f"PyTorch3D first-hit audit expects a square plane, got {shape}")
+    fx, fy, cx, cy = intrinsics.tolist()
+    K = torch.tensor(
+        [[[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]]],
+        dtype=torch.float32,
+        device=device,
+    )
+    cameras = cameras_from_opencv_projection(
+        torch.eye(3, dtype=torch.float32, device=device)[None],
+        torch.zeros(1, 3, dtype=torch.float32, device=device),
+        K,
+        torch.tensor([[height, width]], dtype=torch.float32, device=device),
+    )
+    rasterizer = MeshRasterizer(
+        cameras=cameras,
+        raster_settings=RasterizationSettings(
+            image_size=(height, width),
+            blur_radius=0.0,
+            faces_per_pixel=1,
+            cull_backfaces=False,
+            bin_size=0,
+        ),
+    )
+    with torch.no_grad():
+        fragments = rasterizer(
+            Meshes(
+                verts=[torch.tensor(vertices, dtype=torch.float32, device=device)],
+                faces=[torch.tensor(faces, dtype=torch.int64, device=device)],
+            )
+        )
+    zbuf = fragments.zbuf[0, ..., 0].detach().cpu().numpy().astype(np.float64)
+    return np.where(np.isfinite(zbuf) & (zbuf > 1.0e-6), zbuf, np.nan)
+
+
+def first_hit_metric_scale(
+    native_vertices: np.ndarray,
+    faces: np.ndarray,
+    observed_camera: np.ndarray,
+    intrinsics: np.ndarray,
+    mask: np.ndarray,
+    device: str,
+) -> tuple[float, dict[str, Any]]:
+    """Estimate camera-origin scale from measured/front-hit depth ratios.
+
+    Camera-origin uniform scaling preserves every projected pixel, so at a
+    trusted surfel pixel ``z_metric = scale * z_native_first_hit``.  The robust
+    median ratio therefore fixes both the native scene unit and the front
+    surface position without averaging front/back/hidden mesh vertices.
+    """
+    zbuf = rasterize_first_hit_depth(native_vertices, faces, intrinsics, mask.shape, device)
+    fx, fy, cx, cy = intrinsics.tolist()
+    z_obs = observed_camera[:, 2]
+    u = np.rint(fx * observed_camera[:, 0] / z_obs + cx).astype(np.int64)
+    v = np.rint(fy * observed_camera[:, 1] / z_obs + cy).astype(np.int64)
+    height, width = mask.shape
+    inside = (
+        np.isfinite(observed_camera).all(axis=1)
+        & (z_obs > 1.0e-6)
+        & (u >= 0)
+        & (u < width)
+        & (v >= 0)
+        & (v < height)
+    )
+    native_hit = np.full(len(observed_camera), np.nan, dtype=np.float64)
+    owned = np.zeros(len(observed_camera), dtype=bool)
+    native_hit[inside] = zbuf[v[inside], u[inside]]
+    owned[inside] = mask[v[inside], u[inside]]
+    valid = inside & owned & np.isfinite(native_hit) & (native_hit > 1.0e-6)
+    if np.count_nonzero(valid) < 100:
+        raise RuntimeError(f"too few observed/native first-hit correspondences: {np.count_nonzero(valid)}")
+    ratios = z_obs[valid] / native_hit[valid]
+    ratios = ratios[np.isfinite(ratios) & (ratios > 0.0)]
+    scale = float(np.median(ratios))
+    residual = scale * native_hit[valid] - z_obs[valid]
+    return scale, {
+        "method": "median_observed_z_over_native_first_hit_z_at_trusted_surfel_pixels",
+        "correspondence_count": int(len(ratios)),
+        "surfel_first_hit_coverage_fraction": float(np.count_nonzero(valid) / max(1, len(observed_camera))),
+        "ratio_p05_p50_p95": np.percentile(ratios, [5.0, 50.0, 95.0]).astype(float).tolist(),
+        "scaled_first_hit_minus_observed_depth_m": {
+            "median": float(np.median(residual)),
+            "p05": float(np.percentile(residual, 5.0)),
+            "p95": float(np.percentile(residual, 95.0)),
+        },
+    }
+
+
 def mask_metrics(projected: np.ndarray, target: np.ndarray) -> dict[str, Any]:
     projected = np.asarray(projected, dtype=bool)
     target = np.asarray(target, dtype=bool)
@@ -260,7 +362,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"insufficient observed camera points: {observed_camera.shape}")
     sensor_depth_median = float(np.median(observed_camera[:, 2]))
 
-    native_projection, _ = rasterize_convex_projection(opencv_vertices, intrinsics, mask.shape)
+    # Retain the old full-mesh-vertex median only as a negative-control
+    # diagnostic.  It mixes front/back/hidden vertices and must not define the
+    # metric mesh: doing so puts the observed surface near the object's middle.
     fx, fy, cx, cy = intrinsics.tolist()
     z = opencv_vertices[:, 2]
     positive = np.isfinite(opencv_vertices).all(axis=1) & (z > 1.0e-6)
@@ -281,10 +385,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     owned = mask[rounded_inside[:, 1], rounded_inside[:, 0]] if len(rounded_inside) else np.zeros(0, dtype=bool)
     if np.count_nonzero(owned) < int(args.min_owned_projected_vertices):
         raise RuntimeError("too few native vertices project into the owned mask")
-    native_front_depth = float(np.median(z_inside[owned]))
-    metric_scale = sensor_depth_median / native_front_depth
+    full_mesh_vertex_median_depth = float(np.median(z_inside[owned]))
+    legacy_depth_centroid_scale = sensor_depth_median / full_mesh_vertex_median_depth
+
+    metric_scale, first_hit_scale_evidence = first_hit_metric_scale(
+        opencv_vertices,
+        faces,
+        observed_camera,
+        intrinsics,
+        mask,
+        args.device,
+    )
     if not np.isfinite(metric_scale) or metric_scale <= 0.0:
-        raise RuntimeError(f"invalid camera-origin metric scale: {metric_scale}")
+        raise RuntimeError(f"invalid first-hit camera-origin metric scale: {metric_scale}")
     metric_native = opencv_vertices * metric_scale
 
     raw_as_opencv = raw_vertices.copy()
@@ -300,8 +413,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "native_pytorch3d_then_declared_axis_flip", p3d_as_opencv, intrinsics, mask
         ),
         "native_opencv": evaluate_hypothesis("native_opencv", opencv_vertices, intrinsics, mask),
-        "native_opencv_camera_origin_metric_scaled": evaluate_hypothesis(
-            "native_opencv_camera_origin_metric_scaled", metric_native, intrinsics, mask
+        "native_opencv_camera_origin_first_hit_metric_scaled": evaluate_hypothesis(
+            "native_opencv_camera_origin_first_hit_metric_scaled", metric_native, intrinsics, mask
         ),
     }
 
@@ -311,7 +424,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "native_pytorch3d_reinterpreted_as_opencv_without_axis_flip"
     ]["mask_overlap"]["iou"]
     metric_iou = hypotheses[
-        "native_opencv_camera_origin_metric_scaled"
+        "native_opencv_camera_origin_first_hit_metric_scaled"
     ]["mask_overlap"]["iou"]
     verdict_reasons = []
     if native_iou < float(args.min_native_projection_iou):
@@ -328,7 +441,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if output_dir.exists() and any(output_dir.iterdir()):
         raise RuntimeError(f"refusing to overwrite nonempty output: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    metric_mesh_path = output_dir / "sam3d_native_opencv_camera_origin_metric_scaled.ply"
+    metric_mesh_path = output_dir / "sam3d_native_opencv_camera_origin_first_hit_metric_scaled.ply"
     trimesh.Trimesh(vertices=metric_native, faces=faces, process=False).export(str(metric_mesh_path))
 
     report = {
@@ -364,8 +477,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "raster_contract": raster_contract,
         "metric_scene_similarity": {
             "observed_owned_surface_median_depth_m": sensor_depth_median,
-            "native_owned_projected_vertex_median_depth": native_front_depth,
             "camera_origin_uniform_scale": metric_scale,
+            "scale_authority": "true_first_hit_zbuffer_at_trusted_observed_surfel_pixels",
+            "first_hit_scale_evidence": first_hit_scale_evidence,
+            "negative_control_legacy_depth_centroid": {
+                "full_mesh_owned_projected_vertex_median_depth_native_units": full_mesh_vertex_median_depth,
+                "legacy_camera_origin_scale": float(legacy_depth_centroid_scale),
+                "rejected_reason": "mixes_front_back_hidden_vertices_and_places_observed_surface_inside_complete_mesh",
+            },
             "translation_and_object_scale_scaled_together": True,
             "projection_invariant_expected": True,
         },
@@ -382,7 +501,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "metric_scale_iou_delta": float(metric_iou - native_iou),
         },
         "outputs": {
-            "native_opencv_camera_origin_metric_mesh": str(metric_mesh_path),
+            "native_opencv_camera_origin_first_hit_metric_mesh": str(metric_mesh_path),
         },
     }
     report_path = output_dir / "sam3d_native_pose_contract_audit.json"
@@ -410,6 +529,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-native-iou-gain-over-raw", type=float, default=0.10)
     parser.add_argument("--min-native-iou-gain-over-wrong-axis", type=float, default=0.10)
     parser.add_argument("--max-metric-scale-iou-delta", type=float, default=1.0e-12)
+    parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
 

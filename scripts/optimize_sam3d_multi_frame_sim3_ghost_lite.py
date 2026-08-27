@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""GHOST-lite multi-frame object alignment: one global Sim3 for the SAM3D mesh.
+"""REJECTED negative control: static global Sim3 with sampled-surface depth.
+
+Do not use this script to produce an aligned mesh.  It does not rasterize a
+true first hit: random samples from front/back/hidden generated surfaces are
+compared to observed depth, which can place the measured surface inside the
+complete mesh.  It also treats a manipulated object as static in the anchor
+frame.  Use ``optimize_sam3d_p15_first_hit_sim3_v3.py`` instead.
 
 The complete SAM3D generated mesh is given in the anchor camera frame with the
 native local-to-camera pose and the camera-origin metric scale already applied
@@ -9,9 +15,8 @@ generated mesh satisfies, across many frames at once:
 
   * one-way observed-surfel-to-generated-surface proximity (only observed ->
     generated, so hidden/back surfaces are never pulled toward the visible front),
-  * first-hit depth at object-owned pixels: behind-observed penalty (mesh must not
-    float behind the measured front surface) and front-poke penalty (mesh must not
-    poke in front of the measured front surface),
+  * rejected sampled-surface depth at object-owned pixels (not a first-hit
+    z-buffer; front/back/hidden samples exert contradictory pressure),
   * silhouette outside distance on the object-owned mask plane,
   * small priors on scale/rotation/translation around the P15 observed pose.
 
@@ -507,10 +512,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "status": "ok" if bool(result.success) else "optimizer_incomplete",
         "annotation_ready": False,
         "diagnostic_only": True,
-        "method": "single_global_sim3_multi_frame_ghost_lite",
+        "method": "rejected_static_global_sim3_sampled_surface_depth_negative_control",
         "claim_scope": (
-            "One global similarity transform fit to multi-frame observed metric front-surface surfels, "
-            "object-owned first-hit depth, and mask silhouette. Generated SAM3D faces remain render-only; "
+            "Rejected static global Sim3 negative control using nearest-neighbour proximity, "
+            "random sampled-surface depth (not first-hit), and one-way silhouette. Generated SAM3D faces remain render-only; "
             "no collision, sign, contact, or nonpenetration authority."
         ),
         "mesh_prior_anchor_camera": str(args.mesh_prior_anchor_camera),

@@ -61,9 +61,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     mesh = trimesh.load(args.mesh_anchor_camera, force="mesh", process=False)
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
     T92 = np.asarray(ann_by_idx[args.anchor_frame]["camera"]["T_world_camera_metric"], dtype=np.float64)
-    cent92 = np.asarray(pose_by_idx[args.anchor_frame]["translation_world_m"], dtype=np.float64)
-    # canonical world mesh: world92 - cent92
-    canonical = (vertices @ T92[:3, :3].T + T92[:3, 3]) - cent92[None, :]
+    anchor_pose = pose_by_idx[args.anchor_frame]
+    cent92 = np.asarray(anchor_pose["translation_world_m"], dtype=np.float64)
+    R92 = np.asarray(anchor_pose["rotation_world_from_completed_canonical_matrix"], dtype=np.float64)
+    # canonical mesh: inverse anchor object pose applied to anchor-world vertices.
+    canonical = ((vertices @ T92[:3, :3].T + T92[:3, 3]) - cent92[None, :]) @ R92
     rows: dict[str, Any] = {}
     for idx in range(int(args.frame_start), int(args.frame_end) + 1):
         if idx not in ann_by_idx or idx not in pose_by_idx:
