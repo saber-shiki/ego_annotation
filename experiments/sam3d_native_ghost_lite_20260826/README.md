@@ -135,6 +135,9 @@ mechanism, not because SciPy reported success.
 - Combined frame-92 GLB scene: `.../p15_first_hit_depth_authority_bounded_v4/combined_scene_frame92/frame_000092_object_hands_visible_surface.glb`
 - Combined frame-92 colored PLY: `.../combined_scene_frame92/frame_000092_object_hands_visible_surface.binary.ply` (ASCII sibling also provided)
 - Combined-scene previews: `.../combined_scene_frame92/preview_front.png`, `preview_side.png`, `preview_angle.png`
+- Full 150-frame optimized-object overlay: `.../p15_first_hit_depth_authority_bounded_v4/full_video/optimized_object_camera_overlay.mp4`
+- Full 150-frame raw-vs-overlay comparison: `.../p15_first_hit_depth_authority_bounded_v4/full_video/optimized_object_side_by_side.mp4`
+- Full-video QC: `.../p15_first_hit_depth_authority_bounded_v4/full_video/qc_optimized_object_full_video.json`
 - Rejected negative controls: `.../audit_native_pose/` and `.../sim3_alignment/`
 
 ## Environment
