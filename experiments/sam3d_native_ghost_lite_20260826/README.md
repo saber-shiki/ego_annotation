@@ -135,9 +135,10 @@ mechanism, not because SciPy reported success.
 - Combined frame-92 GLB scene: `.../p15_first_hit_depth_authority_bounded_v4/combined_scene_frame92/frame_000092_object_hands_visible_surface.glb`
 - Combined frame-92 colored PLY: `.../combined_scene_frame92/frame_000092_object_hands_visible_surface.binary.ply` (ASCII sibling also provided)
 - Combined-scene previews: `.../combined_scene_frame92/preview_front.png`, `preview_side.png`, `preview_angle.png`
-- Full 150-frame optimized-object overlay: `.../p15_first_hit_depth_authority_bounded_v4/full_video/optimized_object_camera_overlay.mp4`
-- Full 150-frame raw-vs-overlay comparison: `.../p15_first_hit_depth_authority_bounded_v4/full_video/optimized_object_side_by_side.mp4`
-- Full-video QC: `.../p15_first_hit_depth_authority_bounded_v4/full_video/qc_optimized_object_full_video.json`
+- Correct-intrinsics full 150-frame optimized-object overlay: `.../p15_first_hit_depth_authority_bounded_v4/full_video_correct_intrinsics_v2/optimized_object_camera_overlay.mp4`
+- Correct-intrinsics full 150-frame raw-vs-overlay comparison: `.../p15_first_hit_depth_authority_bounded_v4/full_video_correct_intrinsics_v2/optimized_object_side_by_side.mp4`
+- Correct-intrinsics full-video QC, including per-frame raster-vs-mask metrics: `.../p15_first_hit_depth_authority_bounded_v4/full_video_correct_intrinsics_v2/qc_optimized_object_full_video.json`
+- Rejected wrong-intrinsics videos: `.../p15_first_hit_depth_authority_bounded_v4/full_video/`; the renderer used 1408×1408 source-plane K directly on 960×960 manifest RGB, giving zero median hull-mask IoU and about 349 px median centroid error.
 - Rejected negative controls: `.../audit_native_pose/` and `.../sim3_alignment/`
 
 ## Environment

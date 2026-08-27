@@ -134,6 +134,43 @@ def face_shading(vertices: np.ndarray, faces: np.ndarray, base_bgr: np.ndarray) 
     return np.clip(base_bgr[None, :] * intensity[:, None], 0.0, 255.0).astype(np.uint8)
 
 
+def mask_metrics(rendered: np.ndarray, observed: np.ndarray) -> dict[str, float | int | None]:
+    rendered = np.asarray(rendered, dtype=bool)
+    observed = np.asarray(observed, dtype=bool)
+    intersection = int(np.count_nonzero(rendered & observed))
+    union = int(np.count_nonzero(rendered | observed))
+    rendered_count = int(np.count_nonzero(rendered))
+    observed_count = int(np.count_nonzero(observed))
+    yr, xr = np.nonzero(rendered)
+    yo, xo = np.nonzero(observed)
+    centroid_error = None
+    if len(xr) and len(xo):
+        centroid_error = float(np.hypot(xr.mean() - xo.mean(), yr.mean() - yo.mean()))
+
+    kernel = np.ones((3, 3), np.uint8)
+    rendered_boundary = cv2.morphologyEx(rendered.astype(np.uint8), cv2.MORPH_GRADIENT, kernel) > 0
+    observed_boundary = cv2.morphologyEx(observed.astype(np.uint8), cv2.MORPH_GRADIENT, kernel) > 0
+    distances: list[np.ndarray] = []
+    for source_boundary, target_boundary in (
+        (rendered_boundary, observed_boundary),
+        (observed_boundary, rendered_boundary),
+    ):
+        if np.any(source_boundary) and np.any(target_boundary):
+            distance_to_target = cv2.distanceTransform((~target_boundary).astype(np.uint8), cv2.DIST_L2, 5)
+            distances.append(distance_to_target[source_boundary])
+    boundary = np.concatenate(distances) if distances else np.empty(0, dtype=np.float32)
+    return {
+        "intersection_pixels": intersection,
+        "union_pixels": union,
+        "iou": float(intersection / union) if union else None,
+        "observed_coverage": float(intersection / observed_count) if observed_count else None,
+        "rendered_outside_fraction": float((rendered_count - intersection) / rendered_count) if rendered_count else None,
+        "centroid_error_px": centroid_error,
+        "symmetric_boundary_median_px": float(np.median(boundary)) if len(boundary) else None,
+        "symmetric_boundary_p95_px": float(np.percentile(boundary, 95.0)) if len(boundary) else None,
+    }
+
+
 def draw_mesh_overlay(
     rgb_bgr: np.ndarray,
     pix: np.ndarray,
@@ -220,9 +257,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     first = cv2.imread(str(args.rgb_dir / "000000.jpg"))
     if first is None:
         raise RuntimeError("cannot decode source frame 0")
-    source_h, source_w = first.shape[:2]
+    manifest_h, manifest_w = first.shape[:2]
+    geometry_source_w = int(frame_by_idx[0]["source_width"])
+    geometry_source_h = int(frame_by_idx[0]["source_height"])
+    if geometry_source_w <= 0 or geometry_source_h <= 0:
+        raise RuntimeError("invalid source image plane in annotations")
+    for frame in frame_by_idx.values():
+        if (int(frame["source_width"]), int(frame["source_height"])) != (geometry_source_w, geometry_source_h):
+            raise RuntimeError("per-frame source image plane is not constant")
     render_w = args.render_width
-    render_h = int(round(source_h * render_w / source_w))
+    render_h = int(round(manifest_h * render_w / manifest_w))
     if render_w % 2 or render_h % 2:
         raise RuntimeError("H.264 yuv420p output dimensions must be even")
 
@@ -242,8 +286,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     hands = np.load(args.hand_npz)
     hand_position = {int(idx): pos for pos, idx in enumerate(hands["frame_idx"].astype(int).tolist())}
-    K_source = np.asarray([[974.3447265625, 0.0, 702.6607055664062], [0.0, 974.3447265625, 706.1102294921875], [0.0, 0.0, 1.0]])
-    K_render = resize_intrinsics(K_source, (source_w, source_h), (render_w, render_h))
+    intrinsics = frame_by_idx[0]["camera"]["intrinsics_fx_fy_cx_cy"]
+    K_source = np.asarray([
+        [intrinsics[0], 0.0, intrinsics[2]],
+        [0.0, intrinsics[1], intrinsics[3]],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float64)
+    for frame in frame_by_idx.values():
+        if not np.allclose(frame["camera"]["intrinsics_fx_fy_cx_cy"], intrinsics, atol=1.0e-6):
+            raise RuntimeError("per-frame camera intrinsics are not constant")
+    # K_source is defined on the 1408x1408 source pinhole plane, while the
+    # manifest RGB JPEGs are resized review images (960x960 for this clip).
+    # The old renderer incorrectly used the JPEG size as K_source's plane.
+    K_render = resize_intrinsics(
+        K_source,
+        (geometry_source_w, geometry_source_h),
+        (render_w, render_h),
+    )
     rasterizer = make_rasterizer(K_render, render_w, render_h, args.device)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -299,21 +358,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         object = frame["objects"][0]
         visible_geometry = object.get("visible_geometry_candidate")
         surfel_count = 0
-        owned_mask_pixels = 0
-        if isinstance(visible_geometry, dict):
-            mask_path = Path(str(visible_geometry.get("mask_path") or object.get("mask_path") or ""))
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-            if mask is not None:
-                mask = cv2.resize(mask, (render_w, render_h), interpolation=getattr(cv2, "INTER_NEAREST_EXACT", cv2.INTER_NEAREST)) > 0
-                owned_mask_pixels = int(np.count_nonzero(mask))
-                mask_contour = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
-                overlay[mask_contour] = np.asarray([60, 60, 255], dtype=np.uint8)
-            if args.draw_visible_surface:
-                observed = np.asarray(visible_geometry.get("camera_vertices_sample_m"), dtype=np.float64)
-                if observed.ndim == 2 and observed.shape[1] == 3:
-                    draw_observed_surface(overlay, observed, K_render, mesh_depth, args.surfel_radius_px)
-                    surfel_count = int(len(observed))
-                    visible_rows += 1
+        mask_path = Path(str(object.get("mask_path") or ""))
+        mask_u8 = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask_u8 is None:
+            raise RuntimeError(f"missing object-owned mask for frame {idx}: {mask_path}")
+        mask = cv2.resize(
+            mask_u8,
+            (render_w, render_h),
+            interpolation=getattr(cv2, "INTER_NEAREST_EXACT", cv2.INTER_NEAREST),
+        ) > 0
+        owned_mask_pixels = int(np.count_nonzero(mask))
+        mask_contour = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
+        overlay[mask_contour] = np.asarray([60, 60, 255], dtype=np.uint8)
+        if args.draw_visible_surface and isinstance(visible_geometry, dict):
+            observed = np.asarray(visible_geometry.get("camera_vertices_sample_m"), dtype=np.float64)
+            if observed.ndim == 2 and observed.shape[1] == 3:
+                draw_observed_surface(overlay, observed, K_render, mesh_depth, args.surfel_radius_px)
+                surfel_count = int(len(observed))
+                visible_rows += 1
 
         caption = f"corrected SAM3D first-hit mesh | frame {idx:03d}/{frame_count - 1:03d} | P15 per-frame SE(3)"
         cv2.rectangle(overlay, (0, 0), (render_w, 34), (0, 0, 0), -1)
@@ -330,9 +392,41 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "hand_occluder_sides": hand_valid_sides,
             "visible_surfel_count": surfel_count,
             "object_owned_mask_pixels": owned_mask_pixels,
+            "full_render_vs_owned_mask": mask_metrics(pix >= 0, mask),
+            "hand_occluded_render_vs_owned_mask": mask_metrics(visible, mask),
         }
         if args.progress_every > 0 and (idx % args.progress_every == 0 or idx == frame_count - 1):
             print(f"rendered {idx + 1}/{frame_count}", flush=True)
+
+    def summarize_metric(section: str, metric: str) -> dict[str, float | int]:
+        values = np.asarray([
+            row[section][metric]
+            for row in per_frame.values()
+            if row[section][metric] is not None
+        ], dtype=np.float64)
+        return {
+            "count": int(len(values)),
+            "median": float(np.median(values)),
+            "p10": float(np.percentile(values, 10.0)),
+            "p90": float(np.percentile(values, 90.0)),
+            "min": float(np.min(values)),
+            "max": float(np.max(values)),
+        }
+
+    silhouette_summary = {
+        section: {
+            metric: summarize_metric(section, metric)
+            for metric in (
+                "iou",
+                "observed_coverage",
+                "rendered_outside_fraction",
+                "centroid_error_px",
+                "symmetric_boundary_median_px",
+                "symmetric_boundary_p95_px",
+            )
+        }
+        for section in ("full_render_vs_owned_mask", "hand_occluded_render_vs_owned_mask")
+    }
 
     overlay_video = args.output_dir / "optimized_object_camera_overlay.mp4"
     side_video = args.output_dir / "optimized_object_side_by_side.mp4"
@@ -341,15 +435,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     overlay_probe = ffprobe(overlay_video)
     side_probe = ffprobe(side_video)
     qc = {
-        "schema": "sam3d_optimized_object_full_video_v1",
-        "status": "ok",
+        "schema": "sam3d_optimized_object_full_video_v2",
+        "status": "rendered_with_source_to_review_intrinsics_contract",
         "annotation_ready": False,
         "diagnostic_only": True,
         "frame_count": frame_count,
         "fps": fps,
         "duration_s": frame_count / fps,
-        "source_size_wh": [source_w, source_h],
+        "geometry_source_size_wh": [geometry_source_w, geometry_source_h],
+        "manifest_rgb_size_wh": [manifest_w, manifest_h],
         "render_size_wh": [render_w, render_h],
+        "K_geometry_source": K_source.tolist(),
+        "K_render": K_render.tolist(),
+        "intrinsics_mapping": "K_geometry_source on annotation source plane resized to render plane with pixel-centre convention",
         "object_mesh_anchor_camera": str(args.object_mesh_anchor_camera),
         "pose_graph": str(args.pose_graph),
         "camera_contract": "T_world_camera_metric; OpenCV camera axes",
@@ -363,6 +461,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "side_by_side_frames": str(side_dir),
         },
         "ffprobe": {"camera_overlay": overlay_probe, "side_by_side": side_probe},
+        "silhouette_summary": silhouette_summary,
         "per_frame": per_frame,
         "claim_scope": (
             "Full-duration visual QC of the corrected first-hit SAM3D render prior under P15 per-frame object SE(3). "
