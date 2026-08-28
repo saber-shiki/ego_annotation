@@ -1,15 +1,18 @@
-# SAM3D Native × GHOST-lite Alignment — milk (carton) instance
+# SAM3D Native × GHOST-lite Alignment — milk study and frozen cross-video benchmark
 
 Research worktree: `ego_annotation_worktrees/sam3d_native_ghost_lite`
 Branch: `research/sam3d-native-ghost-lite-alignment-20260826`
-Instance: `P0014_84ea2dcc_carton_milk_f2370_2519` (150 frames, anchor 92)
-Run: `20260819T122452Z_hot3d_milk_local_authority_local29_v1`
+Initial instance: `P0014_84ea2dcc_carton_milk_f2370_2519` (150 frames, anchor 92)
+Initial run: `20260819T122452Z_hot3d_milk_local_authority_local29_v1`
 
 This study verifies the SAM3D object mesh coordinate contract against the
 sensor metric frames and evaluates how well the generated complete mesh
 adheres to the observed surface and to the HaWoR hands — before any hand
-refinement is attempted. It is a research audit only: **generated SAM3D
-faces are never promoted to collision/sign/contact/nonpenetration authority.**
+refinement is attempted. After the initial milk investigation, the same
+first-hit/shared-Sim(3) configuration is evaluated without category-specific
+parameters on four pre-existing non-milk clips (spatula, bottle, can, mug).
+It is a research audit only: **generated SAM3D faces are never promoted to
+collision/sign/contact/nonpenetration authority.**
 
 ## Coordinate contract (verified)
 
@@ -108,6 +111,107 @@ hit its finite evaluation budget rather than a smooth-gradient convergence
 condition, so the QC remains `optimizer_incomplete`; the mesh is recommended
 because the independent full-resolution geometry audit passes the intended
 mechanism, not because SciPy reported success.
+
+## Frozen cross-video benchmark
+
+The benchmark definition is frozen in `cross_video_benchmark_v1.json` before
+reviewing optimization results. It includes four 150-frame clips selected to
+span different geometry, not to maximize the score:
+
+- thin elongated spatula, anchor 149;
+- near-axisymmetric bottle, anchor 139;
+- strongly axisymmetric can, anchor 90;
+- nonconvex mug with handle, anchor 32.
+
+All cases use their own same-run P12 native mesh, P15 pose graph, visible
+surface, object-owned masks, HaWoR hands, and camera K. They share the milk
+bounded-v4 objective, bounds, 704 raster plane, 20k-face QEM optimization
+proxy, and priors. The only temporal generalization is replacing milk's
+hard-coded frame window with 16 frames sampled uniformly from each clip's
+eligible visible-surface observations while always including the anchor.
+There are no object-label branches in the optimizer or renderer.
+
+All native contracts pass independently. Native OpenCV convex-projection IoU
+and first-hit camera-origin metric scale are:
+
+| case | native IoU | first-hit metric scale |
+|---|---:|---:|
+| spatula | 0.638 | 0.561 |
+| bottle | 0.719 | 0.415 |
+| can | 0.780 | 0.381 |
+| mug | 0.514 | 0.396 |
+
+The frozen shared-Sim(3) sampled-frame results are not uniformly beneficial:
+
+| case | silhouette IoU before→after | median absolute first-hit before→after |
+|---|---:|---:|
+| spatula | 0.197→0.202 | 4.62→5.64 mm |
+| bottle | 0.364→0.458 | 1.54→1.00 mm |
+| can | 0.682→0.702 | 8.74→2.30 mm |
+| mug | 0.439→0.436 | 5.21→6.23 mm |
+
+All four cases then completed full-timeline 150-frame before/after renders at
+the 960 review plane, using the complete mesh topology and true MANO z-buffer
+occlusion. The delivery-grade metric is `hand_occluded_render_vs_owned_mask`,
+medians over all 150 frames:
+
+| case | IoU before→after | observed coverage | centroid px | boundary px | frames improved/degraded |
+|---|---:|---:|---:|---:|---:|
+| spatula | 0.187→0.190 | 0.217→0.221 | 57.4→58.0 | 26.00→26.17 | 145 / 5 |
+| bottle | 0.329→0.388 | 0.832→0.848 | 43.6→30.6 | 20.29→16.00 | 132 / 18 |
+| can | 0.621→**0.592** | 0.934→**0.858** | 19.3→**32.5** | 14.08→**15.38** | 45 / **105** |
+| mug | 0.406→0.422 | 0.701→0.694 | 63.3→59.1 | 16.58→15.39 | 134 / 16 |
+
+This rejects any claim that one shared canonical Sim(3) is a generally
+sufficient video alignment optimizer:
+
+1. **It is net harmful on can.** The sampled proxy objective predicted an
+   improvement (0.682→0.702), but on the full timeline with complete topology
+   the median IoU *drops* and 105/150 frames degrade.
+2. **The optimization proxy is not a faithful stand-in for the delivery
+   audit.** Restricted to the same 16 used frames, can's proxy delta median is
+   `+0.011` while its full-topology delta median is `-0.024`, with 5/16 frames
+   flipping sign (correlation 0.66). Spatula and bottle agree well (corr 0.77 /
+   0.97), so the mismatch is case-dependent and cannot be assumed away. The
+   differing contracts are 20k QEM proxy vs full topology, 704 vs 960 px, and
+   hand convex-hull unknown vs true MANO first-hit occlusion.
+3. **It trades away good anchors.** bottle anchor 139 falls 0.848→0.678 and
+   can anchor 90 falls 0.822→0.722 while mid-sequence frames improve. A single
+   global 7-DoF correction cannot protect well-posed frames and repair
+   badly-posed ones at once.
+4. **It cannot repair temporal pose drift.** can frame 146 is grossly
+   mislocated both before and after; a shared Sim(3) changes projected shape
+   and depth but not per-frame P15 translation error.
+
+Spatula's low IoU is not merely a small-object metric artifact. Normalized by
+`sqrt(median owned-mask area)`, its boundary error is 0.218 vs can 0.097 and
+bottle 0.115, i.e. genuinely about twice as bad in relative terms.
+
+Full-timeline before/after true-raster videos, per-frame metrics, hstacked A/B
+videos (1920×960, h264, 150 frames each) and contact sheets are under
+`/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/sam3d_native_ghost_lite_cross_video_benchmark_20260828/`,
+aggregated in `cross_video_benchmark_summary.json`.
+
+### Root cause and what the next solver must change
+
+Per `solve_v19_rigid_object_pose_graph.py` and
+`fit_v18_compact_rigid_object_pose.py`: P14 trajectories come from accumulated
+adjacent partial-surfel ICP plus an anchor unary fit, and the P15 graph's data
+terms are only a zero-delta prior, temporal delta smoothing, and optional
+nonpenetration. There is **no image-space first-hit or silhouette factor**, and
+these runs' P15 optimizers essentially no-op (`nfev=1, cost=0`). Residual
+per-frame error is therefore structural, not a missing smoother — P15 already
+carries correction velocity/acceleration residuals.
+
+The next round should extend that existing sparse pose graph with per-frame
+SE(3) deltas (scale still shared), adding first-hit depth + bidirectional
+silhouette + hand-unknown data terms to the residuals it already has, with
+rotation priors weighted by geometric observability, the anchor as a
+high-confidence prior rather than a hard lock, and bounds calibrated from these
+four cases rather than milk's ±30 mm / ±5°. Because of finding (2) it must
+either demonstrate per-frame proxy/full-topology equivalence or accept steps
+via a full-topology trust region, and must keep the hand-unknown contract
+identical between optimization and evaluation.
 
 ## Why not a hand-refinement optimizer yet
 

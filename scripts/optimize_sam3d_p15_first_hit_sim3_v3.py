@@ -192,15 +192,23 @@ def load_frames(args: argparse.Namespace) -> tuple[list[FrameData], np.ndarray, 
     pose_by_idx = {int(r["frame_idx"]): r for r in pose["pose_rows"]}
     hands = np.load(args.hand_npz)
     hand_position = {int(idx): pos for pos, idx in enumerate(hands["frame_idx"].astype(int).tolist())}
+    frame_rows = [
+        frame for frame in annotations["frames"]
+        if args.frame_start <= int(frame["frame_idx"]) <= args.frame_end
+        and int(frame["frame_idx"]) in pose_by_idx
+    ]
+    sampled_indices: set[int] | None = None
+    if args.sample_frame_count <= 0:
+        sampled_indices = {
+            idx for idx in (int(frame["frame_idx"]) for frame in frame_rows)
+            if idx == args.anchor_frame or (idx - args.frame_start) % args.frame_step == 0
+        }
+
     selected: list[FrameData] = []
     K_source: np.ndarray | None = None
-    for frame in annotations["frames"]:
+    for frame in frame_rows:
         idx = int(frame["frame_idx"])
-        if idx < args.frame_start or idx > args.frame_end:
-            continue
-        if idx != args.anchor_frame and (idx - args.frame_start) % args.frame_step != 0:
-            continue
-        if idx not in pose_by_idx:
+        if sampled_indices is not None and idx not in sampled_indices:
             continue
         obj = frame.get("objects", [{}])[0]
         visible = obj.get("visible_geometry_candidate") if isinstance(obj, dict) else None
@@ -294,6 +302,20 @@ def load_frames(args: argparse.Namespace) -> tuple[list[FrameData], np.ndarray, 
             hand_unknown_mask=hand_unknown,
             distance_to_target_or_unknown=distance_to_target_or_unknown,
         ))
+
+    if args.sample_frame_count > 0:
+        eligible_indices = [frame.frame_idx for frame in selected]
+        if int(args.anchor_frame) not in eligible_indices:
+            raise RuntimeError(f"anchor frame {args.anchor_frame} lacks eligible visible-surface evidence")
+        sample_count = min(int(args.sample_frame_count), len(eligible_indices))
+        sample_positions = np.linspace(0, len(eligible_indices) - 1, num=sample_count)
+        uniformly_sampled = {eligible_indices[int(round(position))] for position in sample_positions}
+        if int(args.anchor_frame) not in uniformly_sampled:
+            replaced = min(uniformly_sampled, key=lambda idx: abs(idx - int(args.anchor_frame)))
+            uniformly_sampled.remove(replaced)
+            uniformly_sampled.add(int(args.anchor_frame))
+        selected = [frame for frame in selected if frame.frame_idx in uniformly_sampled]
+
     if len(selected) < args.min_frames:
         raise RuntimeError(f"only {len(selected)} eligible frames, need {args.min_frames}")
     assert K_source is not None
@@ -527,7 +549,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anchor-frame", type=int, default=92)
     parser.add_argument("--frame-start", type=int, default=30)
     parser.add_argument("--frame-end", type=int, default=146)
-    parser.add_argument("--frame-step", type=int, default=8)
+    parser.add_argument("--frame-step", type=int, default=8, help="legacy fixed-step sampling; ignored when --sample-frame-count > 0")
+    parser.add_argument("--sample-frame-count", type=int, default=0, help="uniform full-window sample count, with anchor always included")
     parser.add_argument("--min-frames", type=int, default=8)
     parser.add_argument("--source-size", type=int, default=1408)
     parser.add_argument("--raster-size", type=int, default=704)

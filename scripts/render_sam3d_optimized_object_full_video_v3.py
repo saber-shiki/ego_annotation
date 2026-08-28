@@ -377,7 +377,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 surfel_count = int(len(observed))
                 visible_rows += 1
 
-        caption = f"corrected SAM3D first-hit mesh | frame {idx:03d}/{frame_count - 1:03d} | P15 per-frame SE(3)"
+        caption = f"{args.caption} | frame {idx:03d}/{frame_count - 1:03d} | P15 per-frame SE(3)"
         cv2.rectangle(overlay, (0, 0), (render_w, 34), (0, 0, 0), -1)
         cv2.putText(overlay, caption, (12, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
         if args.draw_visible_surface:
@@ -487,6 +487,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anchor-frame", type=int, default=92)
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--alpha", type=float, default=0.58)
+    parser.add_argument("--caption", default="SAM3D first-hit mesh")
     parser.add_argument("--draw-visible-surface", action="store_true")
     parser.add_argument("--surfel-radius-px", type=int, default=1)
     parser.add_argument("--progress-every", type=int, default=10)

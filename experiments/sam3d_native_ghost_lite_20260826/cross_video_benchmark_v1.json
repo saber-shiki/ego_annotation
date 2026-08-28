@@ -1,0 +1,76 @@
+{
+  "schema": "sam3d_native_ghost_lite_cross_video_benchmark_v1",
+  "selection_policy": "four pre-existing non-milk HOT3D clips selected before benchmark results to span thin, near-symmetric, symmetric, and nonconvex geometry; no case-specific optimization parameters",
+  "parameter_policy": "freeze the milk bounded-v4 first-hit global Sim3 objective, bounds, raster size, optimization topology, and priors; replace only its milk-specific temporal indices with uniform full-timeline sampling plus mandatory anchor inclusion",
+  "compute": {
+    "host": "dexrobot-Standard-PC-Q35-ICH9-2009",
+    "gpu": "NVIDIA A800-SXM4-40GB",
+    "cuda_visible_devices": "6",
+    "environment": "/mnt/user-home/kupingxin/sam3d-objects/mamba/envs/sam3d-objects"
+  },
+  "parameters": {
+    "frame_start": 0,
+    "frame_end": 149,
+    "sample_frame_count": 16,
+    "min_frames": 8,
+    "source_size": 1408,
+    "raster_size": 704,
+    "optimization_faces": 20000,
+    "min_observed_points": 100,
+    "max_observed_points": 1200,
+    "min_ownership_fraction": 0.9,
+    "hand_unknown_dilation_px": 4,
+    "sigma_depth_m": 0.004,
+    "max_depth_residual_m": 0.05,
+    "sigma_silhouette_px": 4.0,
+    "max_silhouette_px": 40.0,
+    "sigma_log_scale": 0.06,
+    "sigma_rotation_rad": 0.08,
+    "sigma_translation_m": 0.015,
+    "max_abs_log_scale": 0.15,
+    "max_abs_rotation_rad": 0.25,
+    "max_abs_translation_m": 0.05,
+    "jac_log_scale_step": 0.002,
+    "jac_rotation_step_rad": 0.002,
+    "jac_translation_step_m": 0.001,
+    "max_nfev": 30,
+    "seed": 42
+  },
+  "cases": [
+    {
+      "name": "spatula",
+      "geometry_challenge": "thin elongated object",
+      "anchor_frame": 149,
+      "run_root": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/hot3d_pinhole_rgbd_selection_v1/backend_tests/20260818T122110Z_hot3d_spatula_shared_p18_local24_v1/runs/P0002_016222d1_spatula_red_f3285_3434",
+      "object_id": "spatula_red"
+    },
+    {
+      "name": "bottle",
+      "geometry_challenge": "near-axisymmetric bottle",
+      "anchor_frame": 139,
+      "run_root": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/hot3d_pinhole_rgbd_selection_v1/backend_tests/20260816T144000Z_sam3d_trellis_recovery3_fresh_local21_v3/runs/P0012_ca1f6626_bottle_bbq_f1515_1664",
+      "object_id": "bottle_bbq"
+    },
+    {
+      "name": "can",
+      "geometry_challenge": "strongly axisymmetric can",
+      "anchor_frame": 90,
+      "run_root": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/hot3d_pinhole_rgbd_selection_v1/backend_tests/20260816T114500Z_sam3d_trellis_remaining4_fresh_local20_v2/runs/P0015_7e95628d_can_soup_f1770_1919",
+      "object_id": "can_soup"
+    },
+    {
+      "name": "mug",
+      "geometry_challenge": "nonconvex mug with handle",
+      "anchor_frame": 32,
+      "run_root": "/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/hot3d_pinhole_rgbd_selection_v1/backend_tests/20260816T144000Z_sam3d_trellis_recovery3_fresh_local21_v3/runs/P0012_73e66984_mug_white_f2145_2294",
+      "object_id": "mug_white"
+    }
+  ],
+  "evaluation": {
+    "native_contract": "raw/local vs native OpenCV projection and true-first-hit metric scale",
+    "sampled_optimization": "before/after first-hit residual, coverage, and hand-unknown silhouette IoU",
+    "full_timeline_render": "150-frame true-raster mask IoU, coverage, outside fraction, centroid error, symmetric boundary error",
+    "temporal": "P15 translation and rotation velocity/acceleration summaries plus metric time segments",
+    "claim_scope": "cross-video render-prior alignment benchmark only; generated hidden faces remain without collision/sign/contact authority"
+  }
+}
