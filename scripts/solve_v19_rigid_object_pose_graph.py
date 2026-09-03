@@ -49,6 +49,18 @@ class PoseObservation:
     nonpenetration_source_rows: int
 
 
+@dataclass(frozen=True)
+class ImageFactorObservation:
+    frame_idx: int
+    T_world_camera: np.ndarray
+    K_raster: np.ndarray
+    depth_points_canonical: np.ndarray
+    depth_observed_z: np.ndarray
+    silhouette_points_canonical: np.ndarray
+    silhouette_target_uv: np.ndarray
+    silhouette_kind: np.ndarray
+
+
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -186,6 +198,80 @@ def constraint_targets(path: Path | None, max_target_m: float, accepted_states: 
     return out
 
 
+def load_image_factor_observations(
+    path: Path | None,
+    observations: list[PoseObservation],
+    args: argparse.Namespace,
+    expected_completed_mesh: Path,
+) -> tuple[dict[int, ImageFactorObservation], dict[str, Any]]:
+    if path is None:
+        return {}, {"enabled": False}
+    data = np.load(path.expanduser().resolve())
+    metadata_raw = data["metadata"][0] if "metadata" in data.files else "{}"
+    metadata = json.loads(str(metadata_raw))
+    resolved = path.expanduser().resolve()
+    expected = {
+        "annotations": str(args.annotations.expanduser().resolve()),
+        "pose_report": str(args.pose_report.expanduser().resolve()),
+        "completed_mesh": str(expected_completed_mesh.expanduser().resolve()),
+        "object_id": str(args.object_id),
+    }
+    for key, expected_value in expected.items():
+        actual = str(metadata.get(key) or "")
+        if actual != expected_value:
+            raise RuntimeError(
+                f"image factor contract mismatch for {key}: expected {expected_value}, got {actual}; "
+                "rebuild first-hit/silhouette factors for this exact P14/annotation/mesh input"
+            )
+    frame_idx = np.asarray(data["frame_idx"], dtype=np.int64)
+    T_world_camera = np.asarray(data["T_world_camera"], dtype=np.float64)
+    K_raster = np.asarray(data["K_raster"], dtype=np.float64)
+    depth_offsets = np.asarray(data["depth_offsets"], dtype=np.int64)
+    silhouette_offsets = np.asarray(data["silhouette_offsets"], dtype=np.int64)
+    depth_points = np.asarray(data["depth_points_canonical"], dtype=np.float64)
+    depth_z = np.asarray(data["depth_observed_z"], dtype=np.float64)
+    silhouette_points = np.asarray(data["silhouette_points_canonical"], dtype=np.float64)
+    silhouette_targets = np.asarray(data["silhouette_target_uv"], dtype=np.float64)
+    silhouette_kind = np.asarray(data["silhouette_kind"], dtype=np.int8)
+    if T_world_camera.shape != (len(frame_idx), 4, 4) or K_raster.shape != (3, 3):
+        raise RuntimeError("invalid image factor camera arrays")
+    if depth_offsets.shape != (len(frame_idx) + 1,) or silhouette_offsets.shape != (len(frame_idx) + 1,):
+        raise RuntimeError("invalid image factor offset arrays")
+    by_frame: dict[int, ImageFactorObservation] = {}
+    for pos, idx in enumerate(frame_idx.tolist()):
+        d0, d1 = int(depth_offsets[pos]), int(depth_offsets[pos + 1])
+        s0, s1 = int(silhouette_offsets[pos]), int(silhouette_offsets[pos + 1])
+        factor = ImageFactorObservation(
+            frame_idx=int(idx),
+            T_world_camera=T_world_camera[pos],
+            K_raster=K_raster,
+            depth_points_canonical=depth_points[d0:d1],
+            depth_observed_z=depth_z[d0:d1],
+            silhouette_points_canonical=silhouette_points[s0:s1],
+            silhouette_target_uv=silhouette_targets[s0:s1],
+            silhouette_kind=silhouette_kind[s0:s1],
+        )
+        if factor.depth_points_canonical.ndim != 2 or factor.depth_points_canonical.shape[1] != 3:
+            raise RuntimeError(f"invalid depth factors for frame {idx}")
+        if factor.silhouette_points_canonical.ndim != 2 or factor.silhouette_points_canonical.shape[1] != 3:
+            raise RuntimeError(f"invalid silhouette factors for frame {idx}")
+        if factor.silhouette_target_uv.shape != (len(factor.silhouette_points_canonical), 2):
+            raise RuntimeError(f"invalid silhouette targets for frame {idx}")
+        by_frame[int(idx)] = factor
+    missing = [obs.frame_idx for obs in observations if obs.frame_idx not in by_frame]
+    if missing:
+        raise RuntimeError(f"image factors missing P15 observation frames: {missing[:12]}")
+    metadata_out = {
+        **metadata,
+        "enabled": True,
+        "factor_npz": str(resolved),
+        "loaded_frame_count": int(len(by_frame)),
+        "depth_factor_count": int(sum(len(f.depth_observed_z) for f in by_frame.values())),
+        "silhouette_factor_count": int(sum(len(f.silhouette_kind) for f in by_frame.values())),
+    }
+    return by_frame, metadata_out
+
+
 def build_observations(args: argparse.Namespace, annotations: dict[str, Any], pose_report: dict[str, Any], mesh: trimesh.Trimesh) -> tuple[list[PoseObservation], list[dict[str, Any]], dict[int, tuple[np.ndarray, float, int]]]:
     frames_by_idx = {int(frame.get("frame_idx")): frame for frame in annotations.get("frames", []) if isinstance(frame, dict) and frame.get("frame_idx") is not None}
     radius = float(np.linalg.norm(np.asarray(mesh.extents, dtype=float)) / 2.0)
@@ -287,7 +373,69 @@ def unpack(x: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
     return arr[:, :3], arr[:, 3:6]
 
 
-def residual_vector(x: np.ndarray, observations: list[PoseObservation], args: argparse.Namespace) -> np.ndarray:
+def image_factors_active(args: argparse.Namespace, image_factors: dict[int, ImageFactorObservation] | None) -> bool:
+    return bool(
+        image_factors
+        and (
+            float(args.image_first_hit_weight) > 0.0
+            or float(args.image_silhouette_weight) > 0.0
+        )
+    )
+
+
+def image_factor_blocks(
+    obs: PoseObservation,
+    factor: ImageFactorObservation | None,
+    rot_delta_i: np.ndarray,
+    trans_delta_i: np.ndarray,
+    args: argparse.Namespace,
+) -> list[np.ndarray]:
+    if factor is None:
+        return []
+    r, t = corrected_pose(obs, rot_delta_i, trans_delta_i)
+    blocks: list[np.ndarray] = []
+    if len(factor.depth_observed_z) and float(args.image_first_hit_weight) > 0.0:
+        world = apply_pose(factor.depth_points_canonical, r, t)
+        camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
+        depth = np.clip(
+            camera[:, 2] - factor.depth_observed_z,
+            -float(args.max_image_first_hit_residual_m),
+            float(args.max_image_first_hit_residual_m),
+        ) / float(args.sigma_image_first_hit_m)
+        blocks.append(
+            math.sqrt(float(args.image_first_hit_weight))
+            * depth
+            / math.sqrt(max(1, len(depth)))
+        )
+    if len(factor.silhouette_kind) and float(args.image_silhouette_weight) > 0.0:
+        world = apply_pose(factor.silhouette_points_canonical, r, t)
+        camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
+        z = np.maximum(camera[:, 2], 1.0e-9)
+        uv = np.column_stack((
+            factor.K_raster[0, 0] * camera[:, 0] / z + factor.K_raster[0, 2],
+            factor.K_raster[1, 1] * camera[:, 1] / z + factor.K_raster[1, 2],
+        ))
+        diff = uv - factor.silhouette_target_uv
+        norms = np.linalg.norm(diff, axis=1)
+        clip_scale = np.minimum(
+            1.0,
+            float(args.max_image_silhouette_residual_px) / np.maximum(norms, 1.0e-9),
+        )
+        silhouette = (diff * clip_scale[:, None]) / float(args.sigma_image_silhouette_px)
+        blocks.append(
+            math.sqrt(float(args.image_silhouette_weight))
+            * silhouette.reshape(-1)
+            / math.sqrt(max(1, len(factor.silhouette_kind)))
+        )
+    return blocks
+
+
+def residual_vector(
+    x: np.ndarray,
+    observations: list[PoseObservation],
+    args: argparse.Namespace,
+    image_factors: dict[int, ImageFactorObservation] | None = None,
+) -> np.ndarray:
     rot_delta, trans_delta = unpack(x, len(observations))
     residuals: list[np.ndarray] = []
     for i, obs in enumerate(observations):
@@ -299,6 +447,8 @@ def residual_vector(x: np.ndarray, observations: list[PoseObservation], args: ar
                 * (trans_delta[i] - obs.nonpenetration_target_world_m)
                 / float(args.sigma_nonpenetration_target_m)
             )
+        if image_factors:
+            residuals.extend(image_factor_blocks(obs, image_factors.get(obs.frame_idx), rot_delta[i], trans_delta[i], args))
     # Smooth the correction field, not the physical object trajectory, so real object motion measured by ICP is preserved.
     for i in range(1, len(observations)):
         gap = max(1, observations[i].frame_idx - observations[i - 1].frame_idx)
@@ -319,7 +469,11 @@ def residual_vector(x: np.ndarray, observations: list[PoseObservation], args: ar
     return np.concatenate([r.reshape(-1) for r in residuals]).astype(float)
 
 
-def residual_sparsity(observations: list[PoseObservation]) -> sparse.csr_matrix:
+def residual_sparsity(
+    observations: list[PoseObservation],
+    image_factors: dict[int, ImageFactorObservation] | None = None,
+    args: argparse.Namespace | None = None,
+) -> sparse.csr_matrix:
     n = len(observations)
     cols = n * 6
     entries: list[tuple[int, int]] = []
@@ -339,6 +493,21 @@ def residual_sparsity(observations: list[PoseObservation]) -> sparse.csr_matrix:
         if obs.nonpenetration_target_world_m is not None and obs.nonpenetration_weight > 0.0:
             add(range(row, row + 3), [i])
             row += 3
+        if image_factors and args is not None:
+            factor = image_factors.get(obs.frame_idx)
+            if factor is not None:
+                depth_rows = len(factor.depth_observed_z) if float(args.image_first_hit_weight) > 0.0 else 0
+                silhouette_rows = (
+                    2 * len(factor.silhouette_kind)
+                    if float(args.image_silhouette_weight) > 0.0
+                    else 0
+                )
+                if depth_rows:
+                    add(range(row, row + depth_rows), [i])
+                    row += depth_rows
+                if silhouette_rows:
+                    add(range(row, row + silhouette_rows), [i])
+                    row += silhouette_rows
     for i in range(1, n):
         add(range(row, row + 3), [i - 1, i])
         row += 3
@@ -351,6 +520,78 @@ def residual_sparsity(observations: list[PoseObservation]) -> sparse.csr_matrix:
         row += 3
     rr, cc = np.asarray(entries, dtype=np.int64).T
     return sparse.csr_matrix((np.ones(len(entries), dtype=bool), (rr, cc)), shape=(row, cols))
+
+
+def image_factor_metrics(
+    x: np.ndarray,
+    observations: list[PoseObservation],
+    image_factors: dict[int, ImageFactorObservation],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    if not image_factors_active(args, image_factors):
+        return {"enabled": False}
+    rot_delta, trans_delta = unpack(x, len(observations))
+    depth_errors: list[np.ndarray] = []
+    outside_errors: list[np.ndarray] = []
+    missing_errors: list[np.ndarray] = []
+    normalized_blocks: list[np.ndarray] = []
+    per_frame: dict[str, Any] = {}
+    depth_count = 0
+    silhouette_count = 0
+    for i, obs in enumerate(observations):
+        factor = image_factors.get(obs.frame_idx)
+        if factor is None:
+            continue
+        r, t = corrected_pose(obs, rot_delta[i], trans_delta[i])
+        frame_depth: np.ndarray | None = None
+        frame_outside: np.ndarray | None = None
+        frame_missing: np.ndarray | None = None
+        if len(factor.depth_observed_z):
+            world = apply_pose(factor.depth_points_canonical, r, t)
+            camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
+            frame_depth = camera[:, 2] - factor.depth_observed_z
+            depth_errors.append(frame_depth)
+            depth_count += len(frame_depth)
+        if len(factor.silhouette_kind):
+            world = apply_pose(factor.silhouette_points_canonical, r, t)
+            camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
+            z = np.maximum(camera[:, 2], 1.0e-9)
+            uv = np.column_stack((
+                factor.K_raster[0, 0] * camera[:, 0] / z + factor.K_raster[0, 2],
+                factor.K_raster[1, 1] * camera[:, 1] / z + factor.K_raster[1, 2],
+            ))
+            norms = np.linalg.norm(uv - factor.silhouette_target_uv, axis=1)
+            outside = norms[factor.silhouette_kind == 0]
+            missing = norms[factor.silhouette_kind == 1]
+            if len(outside):
+                outside_errors.append(outside)
+                frame_outside = outside
+            if len(missing):
+                missing_errors.append(missing)
+                frame_missing = missing
+            silhouette_count += len(norms)
+        blocks = image_factor_blocks(obs, factor, rot_delta[i], trans_delta[i], args)
+        if blocks:
+            normalized_blocks.append(np.concatenate([block.reshape(-1) for block in blocks]))
+        per_frame[str(obs.frame_idx)] = {
+            "first_hit_depth_error_m": numeric_summary(frame_depth if frame_depth is not None else []),
+            "outside_silhouette_error_px": numeric_summary(frame_outside if frame_outside is not None else []),
+            "missing_silhouette_error_px": numeric_summary(frame_missing if frame_missing is not None else []),
+        }
+    normalized = np.concatenate(normalized_blocks) if normalized_blocks else np.empty(0, dtype=float)
+    return {
+        "enabled": True,
+        "frame_count": int(len(per_frame)),
+        "depth_factor_count": int(depth_count),
+        "silhouette_factor_count": int(silhouette_count),
+        "image_first_hit_weight": float(args.image_first_hit_weight),
+        "image_silhouette_weight": float(args.image_silhouette_weight),
+        "first_hit_depth_error_m": numeric_summary(np.concatenate(depth_errors) if depth_errors else []),
+        "outside_silhouette_error_px": numeric_summary(np.concatenate(outside_errors) if outside_errors else []),
+        "missing_silhouette_error_px": numeric_summary(np.concatenate(missing_errors) if missing_errors else []),
+        "normalized_image_factor_rms": float(np.sqrt(np.mean(normalized * normalized))) if len(normalized) else None,
+        "per_frame": per_frame,
+    }
 
 
 def target_residual_summary(x: np.ndarray, observations: list[PoseObservation]) -> dict[str, Any]:
@@ -922,14 +1163,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     mesh = load_mesh(Path(mesh_path))
     observations, skipped, targets = build_observations(args, annotations, pose_report, mesh)
+    image_factors, image_factor_metadata = load_image_factor_observations(
+        args.image_factor_npz,
+        observations,
+        args,
+        Path(mesh_path),
+    )
+    if args.image_factor_npz is not None and not image_factors_active(args, image_factors):
+        raise RuntimeError("--image-factor-npz was provided but both image factor weights are zero")
     graph_support_sufficient = len(observations) >= int(args.min_graph_frames)
     x0 = np.zeros(len(observations) * 6, dtype=float)
-    before = residual_vector(x0, observations, args)
-    jac = residual_sparsity(observations)
+    before = residual_vector(x0, observations, args, image_factors)
+    jac = residual_sparsity(observations, image_factors, args)
     if jac.shape != (len(before), len(x0)):
         raise RuntimeError(f"sparsity shape {jac.shape} != residual/vector {(len(before), len(x0))}")
     result = least_squares(
-        lambda x: residual_vector(x, observations, args),
+        lambda x: residual_vector(x, observations, args, image_factors),
         x0,
         jac_sparsity=jac,
         max_nfev=int(args.max_nfev),
@@ -938,12 +1187,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         x_scale="jac",
         verbose=2 if args.verbose else 0,
     )
-    after = residual_vector(result.x, observations, args)
+    after = residual_vector(result.x, observations, args, image_factors)
     mesh_samples = deterministic_sample_mesh(mesh, int(args.surface_metric_sample_count), int(args.seed) + 73)
     before_surface = surface_metrics(observations, mesh_samples, x0)
     after_surface = surface_metrics(observations, mesh_samples, result.x)
     before_target = target_residual_summary(x0, observations)
     after_target = target_residual_summary(result.x, observations)
+    before_image = image_factor_metrics(x0, observations, image_factors, args)
+    after_image = image_factor_metrics(result.x, observations, image_factors, args)
     pose_rows, full_timeline_completion = build_pose_rows(
         pose_report.get("pose_rows", []),
         observations,
@@ -981,6 +1232,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "interpretation": "Direct observed-metric pose retained unchanged under the bounded sparse rotation-tail tier.",
             }
     correction_is_exact_zero = bool(np.array_equal(result.x, np.zeros_like(result.x)))
+    image_terms_active = image_factors_active(args, image_factors)
     no_active_nonpenetration_targets = not any(
         observation.nonpenetration_target_world_m is not None and observation.nonpenetration_weight > 0.0
         for observation in observations
@@ -988,12 +1240,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     optimization_effect = {
         "correction_is_exact_zero": correction_is_exact_zero,
         "no_active_nonpenetration_targets": no_active_nonpenetration_targets,
+        "image_factors_active": image_terms_active,
         "zero_correction_is_structural_objective_minimum": bool(
-            correction_is_exact_zero and no_active_nonpenetration_targets
+            correction_is_exact_zero and no_active_nonpenetration_targets and not image_terms_active
         ),
         "physical_trajectory_smoothed_directly": False,
         "interpretation": (
-            "The objective regularizes only correction deltas. With no nonzero external target, all-zero deltas are the exact minimum; temporal readiness must therefore be established from direct coverage, observability, and SE(3) jump diagnostics, not optimizer success."
+            "The objective regularizes correction deltas. Optional first-hit/silhouette factors are frozen local image correspondences re-linearized under each per-frame SE(3) correction; without nonzero external targets or image factors, all-zero deltas are the exact minimum. Temporal readiness must therefore be established from direct coverage, observability, and SE(3) jump diagnostics, not optimizer success."
         ),
     }
     surface_before_med = before_surface["observed_to_mesh_median_m"]["median"]
@@ -1004,11 +1257,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if surface_before_med is not None and surface_after_med is not None:
         surface_degraded_m = float(surface_after_med) - float(surface_before_med)
     target_improved = target_before_med is not None and target_after_med is not None and float(target_after_med) < float(target_before_med)
+    before_image_rms = before_image.get("normalized_image_factor_rms") if isinstance(before_image, dict) else None
+    after_image_rms = after_image.get("normalized_image_factor_rms") if isinstance(after_image, dict) else None
+    image_improved = before_image_rms is not None and after_image_rms is not None and float(after_image_rms) < float(before_image_rms)
     surface_preserved = surface_degraded_m is None or surface_degraded_m <= float(args.max_surface_median_degradation_m)
     if not graph_support_sufficient:
         status = "completed_uncertain_insufficient_trusted_pose_graph_support"
     elif not temporal_readiness["ready"]:
         status = "completed_unready_temporal_coverage_observability_or_se3_jump"
+    elif result.success and surface_preserved and image_terms_active:
+        status = (
+            "corrected_pose_graph_surface_preserved_image_factors_improved"
+            if image_improved
+            else "corrected_pose_graph_surface_preserved_no_image_factor_gain"
+        )
     elif result.success and surface_preserved and target_improved:
         status = "corrected_pose_graph_surface_preserved_nonpenetration_pressure_improved"
     elif result.success and surface_preserved:
@@ -1046,7 +1308,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "annotation_readiness_mode": annotation_readiness_mode,
         "rotation_step_acceptance_mode": rotation_acceptance_mode,
         "conditional_temporal_uncertainty": temporal_readiness.get("conditional_temporal_uncertainty"),
-        "claim_scope": "Temporal rigid-object pose correction over eligible visible-frame SE(3) measurements. Visible-surface ICP rows are pose observations; nonpenetration rows exert only clipped soft pressure. Annotation readiness additionally requires full timeline coverage, direct-observation density, bounded gaps/holds, conservative rotation observability, and bounded per-frame SE(3) steps. A named sparse conditional rotation tail is explicit uncertainty, not clipping or ground-truth angular velocity. Optimizer success alone is insufficient.",
+        "claim_scope": "Temporal rigid-object pose correction over eligible visible-frame SE(3) measurements. Visible-surface ICP rows are pose observations; nonpenetration rows exert only clipped soft pressure. Optional first-hit/silhouette rows are frozen local image correspondences over the observed-only pose-hypothesis mesh, with hand projection treated as unknown support. Annotation readiness additionally requires full timeline coverage, direct-observation density, bounded gaps/holds, conservative rotation observability, and bounded per-frame SE(3) steps. A named sparse conditional rotation tail is explicit uncertainty, not clipping or ground-truth angular velocity. Optimizer success alone is insufficient.",
         "object_id": args.object_id,
         "inputs": {
             "annotations": str(args.annotations),
@@ -1057,6 +1319,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "collision_eligible_mesh_not_used_as_pose_body": completion_collision_mesh,
             "completion_geometry_readiness": completion_geometry_readiness,
             "constraint_report": str(args.constraint_report) if args.constraint_report else None,
+            "image_factor_npz": str(args.image_factor_npz) if args.image_factor_npz else None,
+            "image_factor_metadata": image_factor_metadata,
         },
         "geometry_contract": {
             "pose_hypothesis_mesh": str(mesh_path),
@@ -1128,6 +1392,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "max_translation_step_m": float(args.max_translation_step_m),
             "min_rotation_observable_fraction": float(args.min_rotation_observable_fraction),
             "min_rotation_observability_score": float(args.min_rotation_observability_score),
+            "image_first_hit_weight": float(args.image_first_hit_weight),
+            "image_silhouette_weight": float(args.image_silhouette_weight),
+            "sigma_image_first_hit_m": float(args.sigma_image_first_hit_m),
+            "sigma_image_silhouette_px": float(args.sigma_image_silhouette_px),
+            "max_image_first_hit_residual_m": float(args.max_image_first_hit_residual_m),
+            "max_image_silhouette_residual_px": float(args.max_image_silhouette_residual_px),
         },
         "optimizer": {
             "success": bool(result.success),
@@ -1142,6 +1412,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "temporal_readiness": temporal_readiness,
         "nonpenetration_target_before": before_target,
         "nonpenetration_target_after": after_target,
+        "image_factor_before": before_image,
+        "image_factor_after": after_image,
+        "image_factor_rms_improvement": (
+            float(before_image_rms) - float(after_image_rms)
+            if before_image_rms is not None and after_image_rms is not None
+            else None
+        ),
         "surface_before": before_surface,
         "surface_after": after_surface,
         "surface_observed_to_mesh_median_degradation_m": surface_degraded_m,
@@ -1157,7 +1434,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     write_json(args.output_dir / "v19_rigid_object_pose_graph_report.json", report)
     # Same payload under the legacy name lets existing V18 render/constraint tools consume corrected rows.
     write_json(args.output_dir / "v18_compact_rigid_object_pose_fit_report.json", report)
-    print(json.dumps({k: report[k] for k in ["status", "annotation_ready", "graph_frame_count", "nonpenetration_target_frame_count", "optimizer", "correction_summary", "optimization_effect", "temporal_readiness", "full_timeline_rigid_pose_completion", "nonpenetration_target_before", "nonpenetration_target_after", "surface_observed_to_mesh_median_degradation_m"]}, indent=2))
+    print(json.dumps({k: report[k] for k in ["status", "annotation_ready", "graph_frame_count", "nonpenetration_target_frame_count", "optimizer", "correction_summary", "optimization_effect", "temporal_readiness", "full_timeline_rigid_pose_completion", "nonpenetration_target_before", "nonpenetration_target_after", "image_factor_before", "image_factor_after", "image_factor_rms_improvement", "surface_observed_to_mesh_median_degradation_m"]}, indent=2))
     return report
 
 
@@ -1168,6 +1445,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--completion-report", type=Path, default=None)
     p.add_argument("--completed-mesh", type=Path, default=None)
     p.add_argument("--constraint-report", type=Path, default=None)
+    p.add_argument("--image-factor-npz", type=Path, default=None)
+    p.add_argument("--image-first-hit-weight", type=float, default=1.0)
+    p.add_argument("--image-silhouette-weight", type=float, default=1.0)
+    p.add_argument("--sigma-image-first-hit-m", type=float, default=0.008)
+    p.add_argument("--sigma-image-silhouette-px", type=float, default=4.0)
+    p.add_argument("--max-image-first-hit-residual-m", type=float, default=0.030)
+    p.add_argument("--max-image-silhouette-residual-px", type=float, default=16.0)
     p.add_argument("--object-id", required=True)
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--frame-start", type=int, default=None)
