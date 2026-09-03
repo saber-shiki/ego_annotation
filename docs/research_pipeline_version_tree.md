@@ -87,14 +87,33 @@ yiwen_research 0c8e6a9  (grafted 基线, origin)
 | `hot3d_upstream_trace_finalize_v1` | `repair/hot3d-upstream-mask-depth-trace-20260818` | `d3925d6` | 干净 |
 | `v19_metric_camera_contract` | `research/v19-metric-camera-contract-visible-geometry` | `905aab4` | 干净 |
 
-### 1.2 远端同步状态
+### 1.2 远端同步状态（本轮推送后）
 
-`personal` 已有 8 个分支。**未推送**的是：
+`personal = saber-shiki/ego_annotation` 现有 9 个分支标签：
 
-- `research/sam3d-native-ghost-lite-alignment-20260826`（本轮推送）
-- `research/v19-multiclip-pipeline-corrections`
-- `feature/hot3d-shared-p18-reintegration-20260818`、`feature/hot3d-milk-shared-signed-geometry-20260818`（中间态，已被 `5a7c195` 包含）
-- `local/kupingxin-v19-a800-deployment`（机器本地，不应推送）
+| 分支 | tip |
+|---|---|
+| `research/sam3d-native-ghost-lite-alignment-20260826` | `3ea0ad1` ★ 本轮新推 |
+| `archive/pre-da3-working-state-20260824` | `da926ec` |
+| `feature/hot3d-da3-pose-conditioned-depth-20260824` | `a2eb282` |
+| `fix/hot3d-local-signed-authority-p18-support-20260819` | `5a7c195` |
+| `repair/hot3d-upstream-mask-depth-trace-20260818` | `d3925d6` |
+| `release/hot3d-sam3d-trellis-dual-backend-20260817` | `6d5471a` |
+| `research/sam3d-p11-p15-keyboard-freeze-20260811` | `d92fe1e` |
+| `research/v19-metric-camera-contract-visible-geometry` | `905aab4` |
+| `yiwen_research` | `931d684` |
+
+以下本地分支**没有独立的远端标签**，但其提交已全部通过上面的分支可达，**没有丢失任何历史**：
+
+- `feature/hot3d-shared-p18-reintegration-20260818`、`feature/hot3d-milk-shared-signed-geometry-20260818`
+  —— 中间态，已被 `5a7c195` 包含；
+- `research/hot3d-sam3d-trellis-fiveclip-suite-20260814`、`research/v19-multiclip-pipeline-corrections`
+  —— 历史研究线，已在主干路径上；
+- `local/kupingxin-v19-a800-deployment` —— 机器本地部署，**刻意不推**。
+
+注意一个指针差：`personal` 的 `release/…-20260817` 标签停在 `6d5471a`，本地在 `e26b507`
+（多出 `468c503` P14 stage 视觉审计 → `e26b507` P11 anchor provenance）。
+这些提交现在通过本轮推送的 research 分支可达；若要让 release 标签本身跟上，需单独推送该分支。
 
 ---
 
