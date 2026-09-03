@@ -213,6 +213,56 @@ either demonstrate per-frame proxy/full-topology equivalence or accept steps
 via a full-topology trust region, and must keep the hand-unknown contract
 identical between optimization and evaluation.
 
+## Depth-order front-only mask correction (S0–S5)
+
+The cross-video benchmark above concluded that a shared Sim(3) is the wrong
+contract and that P15 needs per-frame SE(3) plus image factors. Following that,
+this worktree traced the milk case's apparent mask/surface misalignment to its
+actual root cause. Full write-up: `docs/research_pipeline_version_tree.md` §4.
+
+**S0 — depth hypothesis rejected.** `diagnose_mask_depth_alignment_three_experiments.py`
+shows same-frame `depth → 3D → pixel` closure is 0 px and
+`camera→world→camera` is 9.34e-08 m. Millimetre axial depth residuals cannot
+produce tens-of-pixels lateral offset.
+
+**S1 — root cause.** `diagnose_hand_depth_order_ownership.py` reconstructs V19
+ownership exactly (146/146 frames) and rasterizes per-hand first-hit depth.
+Current ownership is `raw_mask − dilate(projected_full_MANO_silhouette, 4 px)`
+with **no depth-order test**. Of validly-removed pixels, **78.29% have the hand
+behind the measured object surface**; only 0.67% are genuinely in front.
+
+**S2 — front-only counterfactual mask.** `build_depth_order_counterfactual_masks.py`
+removes only `hand_z < object_z − 5 mm`, preserving behind-object, ambiguous and
+padding-only pixels. With the **same old GHOST mesh and no re-optimization**,
+swapping only the evaluation mask moves full-video median IoU `0.574 → 0.785`
+and centroid `43.29 → 9.30 px`. Most apparent misalignment was a contaminated
+evaluation target, not bad geometry.
+
+**S3 — rebuilt P14/P15.** `build_depth_order_counterfactual_pose_reference.py`
+rebinds the corrected visible geometry to the same observed-only P14/P15
+contract. The new trajectory shifts translation by median 19.37 mm and rotation
+by 2.75°, and repairs the tail: frames 132–149 gain ΔIoU +0.0736 and −10.75 px
+centroid, dropping centroid max `38.6 → 27.0 px`, at the cost of slight
+mid-segment degradation.
+
+**S4 — first-hit/silhouette image factors in P15.**
+`build_p15_first_hit_silhouette_factors.py` freezes local correspondences from a
+single low-resolution raster of the observed-only pose-hypothesis mesh;
+`scripts/solve_v19_rigid_object_pose_graph.py` (+294 lines) re-linearizes those
+canonical points under each per-frame SE(3) via `--image-factor-npz`. Hand
+regions stay explicit unknown support; the NPZ is contract-bound to
+annotations/pose_report/mesh/object_id. P15 stops being degenerate
+(`nfev=1, cost=0` → optimizer success `nfev=10`), and full-video improves to
+IoU median `0.7912` with centroid max `19.31 px`. Frames 84–127 still degrade.
+
+**S5 — temporal lag rejected.** `diagnose_temporal_lag_mesh_mask.py` finds best
+integer lag = 0 in all three configurations; P14 translation regularization tau
+is only 0.0091 s (0.27 frames). Residual error is per-frame pose/shape, not lag.
+
+Not yet merged into the P09 mainline: ownership must become per-pixel
+depth-order, and 4 px padding must be a review band rather than a deletion.
+Only the milk case has been validated; can already degraded under shared Sim(3).
+
 ## Why not a hand-refinement optimizer yet
 
 1. Axis/quaternion/projection and true-first-hit metric scale are now verified.
@@ -252,4 +302,6 @@ identical between optimization and evaluation.
 
 ## Status
 
-Local research only. Not pushed.
+Committed on `research/sam3d-native-ghost-lite-alignment-20260826` and pushed to
+the `personal` remote. Research audit only — no generated face has been promoted
+to collision/sign/contact authority, and the P09 ownership mainline is unchanged.
