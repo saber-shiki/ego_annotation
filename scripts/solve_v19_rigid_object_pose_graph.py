@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import time
@@ -56,6 +57,7 @@ class ImageFactorObservation:
     K_raster: np.ndarray
     depth_points_canonical: np.ndarray
     depth_observed_z: np.ndarray
+    depth_weight: np.ndarray
     silhouette_points_canonical: np.ndarray
     silhouette_target_uv: np.ndarray
     silhouette_kind: np.ndarray
@@ -71,11 +73,46 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.expanduser().resolve().open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_camera_transform(transform: np.ndarray, frame_idx: int) -> np.ndarray:
+    transform = np.asarray(transform, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.isfinite(transform).all():
+        raise RuntimeError(f"frame {frame_idx} has invalid T_world_camera_metric")
+    rotation = transform[:3, :3]
+    if np.linalg.norm(rotation.T @ rotation - np.eye(3)) > 1.0e-4 or abs(np.linalg.det(rotation) - 1.0) > 1.0e-4:
+        raise RuntimeError(f"frame {frame_idx} has non-rigid T_world_camera_metric")
+    if not np.allclose(transform[3], np.asarray([0.0, 0.0, 0.0, 1.0]), atol=1.0e-6):
+        raise RuntimeError(f"frame {frame_idx} has malformed homogeneous camera transform")
+    return transform
+
+
 def as_array(value: Any, shape: tuple[int, ...], name: str) -> np.ndarray:
     arr = np.asarray(value if value is not None else [], dtype=float)
     if arr.shape != shape or not np.isfinite(arr).all():
         raise RuntimeError(f"invalid {name}: expected {shape}, got {arr.shape}")
     return arr
+
+
+def resize_intrinsics_xy(
+    K_source: np.ndarray,
+    source_size_wh: tuple[int, int],
+    target_size_wh: tuple[int, int],
+) -> np.ndarray:
+    sx = float(target_size_wh[0]) / float(source_size_wh[0])
+    sy = float(target_size_wh[1]) / float(source_size_wh[1])
+    K = np.asarray(K_source, dtype=np.float64).copy()
+    K[0, 0] *= sx
+    K[1, 1] *= sy
+    K[0, 2] = sx * (K[0, 2] + 0.5) - 0.5
+    K[1, 2] = sy * (K[1, 2] + 0.5) - 0.5
+    return K
 
 
 def load_mesh(path: Path) -> trimesh.Trimesh:
@@ -206,13 +243,42 @@ def load_image_factor_observations(
 ) -> tuple[dict[int, ImageFactorObservation], dict[str, Any]]:
     if path is None:
         return {}, {"enabled": False}
-    data = np.load(path.expanduser().resolve())
-    metadata_raw = data["metadata"][0] if "metadata" in data.files else "{}"
-    metadata = json.loads(str(metadata_raw))
     resolved = path.expanduser().resolve()
+    with np.load(resolved, allow_pickle=False) as data:
+        required = {
+            "metadata", "frame_idx", "T_world_camera", "K_raster",
+            "depth_offsets", "depth_points_canonical", "depth_observed_z",
+            "silhouette_offsets", "silhouette_points_canonical",
+            "silhouette_target_uv", "silhouette_kind",
+        }
+        missing_keys = sorted(required.difference(data.files))
+        if missing_keys:
+            raise RuntimeError(f"image factor NPZ is missing keys: {missing_keys}")
+        metadata_raw = data["metadata"][0]
+        metadata = json.loads(str(metadata_raw))
+        frame_idx = np.asarray(data["frame_idx"], dtype=np.int64).copy()
+        T_world_camera = np.asarray(data["T_world_camera"], dtype=np.float64).copy()
+        K_raster = np.asarray(data["K_raster"], dtype=np.float64).copy()
+        depth_offsets = np.asarray(data["depth_offsets"], dtype=np.int64).copy()
+        silhouette_offsets = np.asarray(data["silhouette_offsets"], dtype=np.int64).copy()
+        depth_points = np.asarray(data["depth_points_canonical"], dtype=np.float64).copy()
+        depth_z = np.asarray(data["depth_observed_z"], dtype=np.float64).copy()
+        depth_weight_present = "depth_weight" in data.files
+        depth_weight = (
+            np.asarray(data["depth_weight"], dtype=np.float64).copy()
+            if "depth_weight" in data.files
+            else np.ones(len(depth_z), dtype=np.float64)
+        )
+        silhouette_points = np.asarray(data["silhouette_points_canonical"], dtype=np.float64).copy()
+        silhouette_targets = np.asarray(data["silhouette_target_uv"], dtype=np.float64).copy()
+        silhouette_kind = np.asarray(data["silhouette_kind"], dtype=np.int8).copy()
+
+    if not isinstance(metadata, dict):
+        raise RuntimeError("image factor metadata must be a JSON object")
     expected = {
         "annotations": str(args.annotations.expanduser().resolve()),
         "pose_report": str(args.pose_report.expanduser().resolve()),
+        "factor_pose_report": str(args.pose_report.expanduser().resolve()),
         "completed_mesh": str(expected_completed_mesh.expanduser().resolve()),
         "object_id": str(args.object_id),
     }
@@ -223,20 +289,120 @@ def load_image_factor_observations(
                 f"image factor contract mismatch for {key}: expected {expected_value}, got {actual}; "
                 "rebuild first-hit/silhouette factors for this exact P14/annotation/mesh input"
             )
-    frame_idx = np.asarray(data["frame_idx"], dtype=np.int64)
-    T_world_camera = np.asarray(data["T_world_camera"], dtype=np.float64)
-    K_raster = np.asarray(data["K_raster"], dtype=np.float64)
-    depth_offsets = np.asarray(data["depth_offsets"], dtype=np.int64)
-    silhouette_offsets = np.asarray(data["silhouette_offsets"], dtype=np.int64)
-    depth_points = np.asarray(data["depth_points_canonical"], dtype=np.float64)
-    depth_z = np.asarray(data["depth_observed_z"], dtype=np.float64)
-    silhouette_points = np.asarray(data["silhouette_points_canonical"], dtype=np.float64)
-    silhouette_targets = np.asarray(data["silhouette_target_uv"], dtype=np.float64)
-    silhouette_kind = np.asarray(data["silhouette_kind"], dtype=np.int8)
+    strict = bool(getattr(args, "require_strict_image_factor_contract", False))
+    hash_contract = metadata.get("input_sha256") if isinstance(metadata.get("input_sha256"), dict) else {}
+    if strict:
+        if int(metadata.get("contract_version") or 0) < 2:
+            raise RuntimeError("strict image-factor contract requires contract_version >= 2")
+        if not depth_weight_present:
+            raise RuntimeError("strict image-factor contract requires per-factor depth_weight")
+        expected_hashes = {
+            "annotations": args.annotations,
+            "pose_report": args.pose_report,
+            "factor_pose_report": args.pose_report,
+            "completed_mesh": expected_completed_mesh,
+        }
+        for key, source_path in expected_hashes.items():
+            actual_hash = str(hash_contract.get(key) or "")
+            if actual_hash != sha256_file(source_path):
+                raise RuntimeError(
+                    f"image factor hash contract mismatch for {key}: expected current {sha256_file(source_path)}, got {actual_hash}"
+                )
+        for optional_key in ("hand_npz", "mano_faces_pkl"):
+            optional_path = Path(str(metadata.get(optional_key) or "")).expanduser().resolve()
+            optional_hash = str((hash_contract.get(optional_key) or ""))
+            if not optional_path.is_file() or not optional_hash or optional_hash != sha256_file(optional_path):
+                raise RuntimeError(f"image factor {optional_key} hash contract mismatch")
+        if metadata.get("generated_faces_consumed") is not False or metadata.get("collision_surface_consumed") is not False:
+            raise RuntimeError("image factors must not consume generated/collision faces as pose authority")
+    if frame_idx.ndim != 1 or len(frame_idx) == 0 or len(np.unique(frame_idx)) != len(frame_idx) or not np.all(frame_idx[:-1] <= frame_idx[1:]):
+        raise RuntimeError("image factor frame_idx must be a sorted unique non-empty vector")
     if T_world_camera.shape != (len(frame_idx), 4, 4) or K_raster.shape != (3, 3):
         raise RuntimeError("invalid image factor camera arrays")
     if depth_offsets.shape != (len(frame_idx) + 1,) or silhouette_offsets.shape != (len(frame_idx) + 1,):
         raise RuntimeError("invalid image factor offset arrays")
+    if np.any(np.diff(depth_offsets) < 0) or np.any(np.diff(silhouette_offsets) < 0):
+        raise RuntimeError("image factor offsets must be monotonic")
+    if depth_offsets[-1] != len(depth_points) or depth_offsets[-1] != len(depth_z) or depth_offsets[-1] != len(depth_weight):
+        raise RuntimeError("image factor depth arrays disagree with offsets")
+    if silhouette_offsets[-1] != len(silhouette_points) or silhouette_offsets[-1] != len(silhouette_targets) or silhouette_offsets[-1] != len(silhouette_kind):
+        raise RuntimeError("image factor silhouette arrays disagree with offsets")
+    if K_raster[0, 0] <= 0.0 or K_raster[1, 1] <= 0.0 or not np.isfinite(K_raster).all():
+        raise RuntimeError("image factor raster intrinsics are invalid")
+    if not np.isfinite(T_world_camera).all() or not np.isfinite(depth_points).all() or not np.isfinite(depth_z).all() or not np.isfinite(depth_weight).all() or not np.isfinite(silhouette_points).all() or not np.isfinite(silhouette_targets).all() or not np.isfinite(silhouette_kind).all():
+        raise RuntimeError("image factor arrays contain non-finite values")
+    if np.any(depth_weight <= 0.0) or np.any(depth_weight > 1.0 + 1.0e-6):
+        raise RuntimeError("image factor depth weights must be in (0,1]")
+    if not np.isin(silhouette_kind, np.asarray([0, 1], dtype=np.int8)).all():
+        raise RuntimeError("image factor silhouette_kind must contain only outside=0 or missing=1")
+
+    annotations = load_json(args.annotations)
+    frames_by_idx = {
+        int(frame["frame_idx"]): frame
+        for frame in annotations.get("frames", [])
+        if isinstance(frame, dict) and frame.get("frame_idx") is not None
+    }
+    expected_frames = {int(obs.frame_idx) for obs in observations}
+    actual_frames = set(int(value) for value in frame_idx.tolist())
+    if actual_frames != expected_frames:
+        raise RuntimeError(
+            f"image factor frame contract mismatch: expected {sorted(expected_frames)}, got {sorted(actual_frames)}"
+        )
+    for pos, idx in enumerate(frame_idx.tolist()):
+        frame = frames_by_idx.get(int(idx))
+        if frame is None:
+            raise RuntimeError(f"image factor references missing annotation frame {idx}")
+        expected_T = validate_camera_transform(frame["camera"]["T_world_camera_metric"], int(idx))
+        if not np.allclose(T_world_camera[pos], expected_T, atol=1.0e-6, rtol=0.0):
+            raise RuntimeError(f"image factor camera transform mismatch at frame {idx}")
+        obj = annotation_object(frame, str(args.object_id))
+        visible = obj.get("visible_geometry_candidate") if isinstance(obj, dict) and isinstance(obj.get("visible_geometry_candidate"), dict) else {}
+        values = np.asarray(visible.get("intrinsics_fx_fy_cx_cy") or [], dtype=np.float64)
+        if values.shape != (4,):
+            raise RuntimeError(f"annotation lacks visible-surface intrinsics at frame {idx}")
+        calibration_size = metadata.get("calibration_size_wh") or [int(frame.get("source_width") or 1408), int(frame.get("source_height") or 1408)]
+        image_size = metadata.get("image_source_size_wh") or [int(frame.get("manifest_width") or 960), int(frame.get("manifest_height") or 960)]
+        raster_size = metadata.get("raster_size_wh") or [int(metadata.get("raster_size") or 0), int(metadata.get("raster_size") or 0)]
+        if len(calibration_size) != 2 or len(image_size) != 2 or len(raster_size) != 2:
+            raise RuntimeError("image factor plane-size metadata is malformed")
+        calibration_size_wh = (int(calibration_size[0]), int(calibration_size[1]))
+        image_size_wh = (int(image_size[0]), int(image_size[1]))
+        raster_size_wh = (int(raster_size[0]), int(raster_size[1]))
+        if min(*calibration_size_wh, *image_size_wh, *raster_size_wh) <= 0:
+            raise RuntimeError("image factor plane sizes must be positive")
+        expected_K_image = resize_intrinsics_xy(
+            np.asarray([[values[0], 0.0, values[2]], [0.0, values[1], values[3]], [0.0, 0.0, 1.0]], dtype=np.float64),
+            calibration_size_wh,
+            image_size_wh,
+        )
+        expected_K = resize_intrinsics_xy(expected_K_image, image_size_wh, raster_size_wh)
+        if strict:
+            metadata_K_calibration = np.asarray(metadata.get("K_calibration") or [], dtype=np.float64)
+            metadata_K_image = np.asarray(metadata.get("K_image_source") or [], dtype=np.float64)
+            if metadata_K_calibration.shape != (3, 3) or not np.allclose(metadata_K_calibration, np.asarray([[values[0], 0.0, values[2]], [0.0, values[1], values[3]], [0.0, 0.0, 1.0]], dtype=np.float64), atol=1.0e-6, rtol=0.0):
+                raise RuntimeError(f"image factor calibration intrinsics metadata mismatch at frame {idx}")
+            if metadata_K_image.shape != (3, 3) or not np.allclose(metadata_K_image, expected_K_image, atol=1.0e-6, rtol=0.0):
+                raise RuntimeError(f"image factor image-plane intrinsics metadata mismatch at frame {idx}")
+            mask_contract = visible.get("mask_depth_transform_contract") if isinstance(visible.get("mask_depth_transform_contract"), dict) else {}
+            declared_affine = np.asarray(mask_contract.get("A_depth_from_mask_coordinate_model") or [], dtype=np.float64)
+            expected_affine = np.asarray([[float(calibration_size_wh[0]) / float(image_size_wh[0]), 0.0, 0.5 * float(calibration_size_wh[0]) / float(image_size_wh[0]) - 0.5], [0.0, float(calibration_size_wh[1]) / float(image_size_wh[1]), 0.5 * float(calibration_size_wh[1]) / float(image_size_wh[1]) - 0.5], [0.0, 0.0, 1.0]], dtype=np.float64)
+            if declared_affine.shape != (3, 3) or not np.allclose(declared_affine, expected_affine, atol=1.0e-6, rtol=0.0):
+                raise RuntimeError(f"annotation mask/depth affine contract mismatch at frame {idx}")
+        if not np.allclose(K_raster, expected_K, atol=1.0e-5, rtol=0.0):
+            raise RuntimeError(f"image factor raster intrinsics mismatch at frame {idx}")
+        obj = annotation_object(frame, str(args.object_id))
+        mask_path = Path(str((obj or {}).get("mask_path") or "")).expanduser().resolve()
+        if not mask_path.is_file():
+            raise RuntimeError(f"image factor annotation mask missing at frame {idx}: {mask_path}")
+        if strict:
+            expected_mask_hash = str((metadata.get("mask_sha256_by_frame") or {}).get(str(idx)) or "")
+            if expected_mask_hash != sha256_file(mask_path):
+                raise RuntimeError(f"image factor mask hash mismatch at frame {idx}")
+            depth_path = Path(str(visible.get("depth_npz") or "")).expanduser().resolve()
+            expected_depth_hash = str((metadata.get("depth_npz_sha256_by_path") or {}).get(str(depth_path)) or "")
+            if not depth_path.is_file() or expected_depth_hash != sha256_file(depth_path):
+                raise RuntimeError(f"image factor depth archive hash mismatch at frame {idx}")
+
     by_frame: dict[int, ImageFactorObservation] = {}
     for pos, idx in enumerate(frame_idx.tolist()):
         d0, d1 = int(depth_offsets[pos]), int(depth_offsets[pos + 1])
@@ -247,6 +413,7 @@ def load_image_factor_observations(
             K_raster=K_raster,
             depth_points_canonical=depth_points[d0:d1],
             depth_observed_z=depth_z[d0:d1],
+            depth_weight=depth_weight[d0:d1],
             silhouette_points_canonical=silhouette_points[s0:s1],
             silhouette_target_uv=silhouette_targets[s0:s1],
             silhouette_kind=silhouette_kind[s0:s1],
@@ -258,12 +425,10 @@ def load_image_factor_observations(
         if factor.silhouette_target_uv.shape != (len(factor.silhouette_points_canonical), 2):
             raise RuntimeError(f"invalid silhouette targets for frame {idx}")
         by_frame[int(idx)] = factor
-    missing = [obs.frame_idx for obs in observations if obs.frame_idx not in by_frame]
-    if missing:
-        raise RuntimeError(f"image factors missing P15 observation frames: {missing[:12]}")
     metadata_out = {
         **metadata,
         "enabled": True,
+        "strict_contract_validated": strict,
         "factor_npz": str(resolved),
         "loaded_frame_count": int(len(by_frame)),
         "depth_factor_count": int(sum(len(f.depth_observed_z) for f in by_frame.values())),
@@ -402,10 +567,12 @@ def image_factor_blocks(
             -float(args.max_image_first_hit_residual_m),
             float(args.max_image_first_hit_residual_m),
         ) / float(args.sigma_image_first_hit_m)
+        depth_scale = math.sqrt(max(float(np.sum(factor.depth_weight)), 1.0))
         blocks.append(
             math.sqrt(float(args.image_first_hit_weight))
+            * np.sqrt(factor.depth_weight)
             * depth
-            / math.sqrt(max(1, len(depth)))
+            / depth_scale
         )
     if len(factor.silhouette_kind) and float(args.image_silhouette_weight) > 0.0:
         world = apply_pose(factor.silhouette_points_canonical, r, t)
@@ -532,6 +699,7 @@ def image_factor_metrics(
         return {"enabled": False}
     rot_delta, trans_delta = unpack(x, len(observations))
     depth_errors: list[np.ndarray] = []
+    depth_weight_values: list[np.ndarray] = []
     outside_errors: list[np.ndarray] = []
     missing_errors: list[np.ndarray] = []
     normalized_blocks: list[np.ndarray] = []
@@ -551,6 +719,7 @@ def image_factor_metrics(
             camera = (world - factor.T_world_camera[:3, 3]) @ factor.T_world_camera[:3, :3]
             frame_depth = camera[:, 2] - factor.depth_observed_z
             depth_errors.append(frame_depth)
+            depth_weight_values.append(factor.depth_weight)
             depth_count += len(frame_depth)
         if len(factor.silhouette_kind):
             world = apply_pose(factor.silhouette_points_canonical, r, t)
@@ -587,6 +756,7 @@ def image_factor_metrics(
         "image_first_hit_weight": float(args.image_first_hit_weight),
         "image_silhouette_weight": float(args.image_silhouette_weight),
         "first_hit_depth_error_m": numeric_summary(np.concatenate(depth_errors) if depth_errors else []),
+        "depth_factor_weight": numeric_summary(np.concatenate(depth_weight_values) if depth_weight_values else []),
         "outside_silhouette_error_px": numeric_summary(np.concatenate(outside_errors) if outside_errors else []),
         "missing_silhouette_error_px": numeric_summary(np.concatenate(missing_errors) if missing_errors else []),
         "normalized_image_factor_rms": float(np.sqrt(np.mean(normalized * normalized))) if len(normalized) else None,
@@ -1320,6 +1490,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "completion_geometry_readiness": completion_geometry_readiness,
             "constraint_report": str(args.constraint_report) if args.constraint_report else None,
             "image_factor_npz": str(args.image_factor_npz) if args.image_factor_npz else None,
+            "image_factor_strict_contract_requested": bool(args.require_strict_image_factor_contract),
             "image_factor_metadata": image_factor_metadata,
         },
         "geometry_contract": {
@@ -1398,6 +1569,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "sigma_image_silhouette_px": float(args.sigma_image_silhouette_px),
             "max_image_first_hit_residual_m": float(args.max_image_first_hit_residual_m),
             "max_image_silhouette_residual_px": float(args.max_image_silhouette_residual_px),
+            "require_strict_image_factor_contract": bool(args.require_strict_image_factor_contract),
         },
         "optimizer": {
             "success": bool(result.success),
@@ -1446,6 +1618,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--completed-mesh", type=Path, default=None)
     p.add_argument("--constraint-report", type=Path, default=None)
     p.add_argument("--image-factor-npz", type=Path, default=None)
+    p.add_argument("--require-strict-image-factor-contract", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--image-first-hit-weight", type=float, default=1.0)
     p.add_argument("--image-silhouette-weight", type=float, default=1.0)
     p.add_argument("--sigma-image-first-hit-m", type=float, default=0.008)
