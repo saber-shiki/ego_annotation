@@ -56,6 +56,7 @@ class FactorBuildFrame:
     mask_path: str
     depth_npz_path: str
     target_mask: np.ndarray
+    hand_unknown: np.ndarray
     target_or_unknown: np.ndarray
 
 
@@ -450,6 +451,7 @@ def load_frames(args: argparse.Namespace) -> tuple[list[FactorBuildFrame], np.nd
             mask_path=str(mask_path),
             depth_npz_path=str(confidence_path),
             target_mask=target_mask,
+            hand_unknown=hand_unknown,
             target_or_unknown=target_mask | hand_unknown,
         ))
     if K_raster is None or len(frames) < int(args.min_frames):
@@ -502,6 +504,7 @@ def build_frame_factors(
     observed_px[:, 1] = np.clip(observed_px[:, 1], 0, args.raster_size - 1)
     hit = rendered[observed_px[:, 1], observed_px[:, 0]]
 
+    observed_hand_unknown = frame.hand_unknown[observed_px[:, 1], observed_px[:, 0]]
     depth_points = point_map[observed_px[hit, 1], observed_px[hit, 0]]
     depth_z = observed[hit, 2]
     depth_confidence = observed_confidence[hit]
@@ -555,7 +558,7 @@ def build_frame_factors(
 
     # Observed surfel -> missing rendered coverage: use the nearest rendered
     # first-hit canonical point as a boundary correspondence.
-    missing_uv = observed_uv[~hit]
+    missing_uv = observed_uv[(~hit) & (~observed_hand_unknown)]
     if len(missing_uv) and np.any(rendered):
         rendered_coords = np.column_stack(np.nonzero(rendered)[::-1])
         selected = deterministic_indices(len(missing_uv), int(args.max_missing_silhouette_factors_per_frame))
@@ -599,6 +602,7 @@ def build_frame_factors(
         "initial_silhouette_iou": float(intersection / max(1, union)),
         "initial_outside_pixels": int(np.count_nonzero(outside)),
         "initial_observed_hit_fraction": float(np.mean(hit)) if len(hit) else 0.0,
+        "observed_hand_unknown_excluded_count": int(np.count_nonzero((~hit) & observed_hand_unknown)),
         "known_pixels_contract": "hand-projected pixels are excluded from known-background factors",
     }
     return {
@@ -732,6 +736,7 @@ def main() -> None:
         "raster_size": int(args.raster_size),
         "hand_unknown_dilation_px": int(args.hand_unknown_dilation_px),
         "hand_unknown_method": "projected_mano_triangle_silhouette",
+        "missing_coverage_hand_unknown_excluded": True,
         "boundary_downweight_radius_px": float(args.boundary_downweight_radius_px),
         "boundary_weight": float(args.boundary_weight),
         "min_depth_factor_weight": float(args.min_depth_factor_weight),
