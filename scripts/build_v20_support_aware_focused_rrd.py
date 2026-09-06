@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Focused V20 visualization with prediction-side SAM3D depth-order display gating.
+"""Focused V20 visualization with an objective-mesh render contract.
 
-This is a render-only correction: generated SAM3D faces whose projected depth
-is measurably in front of nearby P09 first-hit points are omitted from the
-visualization.  The pose, canonical mesh, collision state, and contact state
-are not changed.  Frames without accepted P09 metric points are never given a
-synthetic depth gate.
+When the pose report binds a generated mesh/hash, this renderer verifies the
+input mesh and preserves all display faces so a presentation-only depth gate
+cannot hide pose/surface errors.  Legacy pose reports without that contract
+retain the previous diagnostic depth-order pruning behavior.  Neither mode
+changes collision, contact, SDF, sign, or formal annotation authority.
 """
 from __future__ import annotations
 
@@ -78,6 +78,45 @@ def pose_rows(path: Path) -> dict[int, dict[str, Any]]:
     return rows
 
 
+def validate_render_mesh_contract(
+    pose_payload: dict[str, Any], generated_mesh: Path
+) -> dict[str, Any]:
+    contract = pose_payload.get("render_mesh_contract")
+    if not isinstance(contract, dict) or contract.get("renderer_must_match") is not True:
+        return {
+            "required": False,
+            "validated": False,
+            "reason": "pose report does not require a render mesh binding",
+        }
+    expected_hash = str(contract.get("required_mesh_sha256") or "")
+    expected_path_value = str(contract.get("required_mesh_path") or "")
+    if not expected_hash or not expected_path_value:
+        raise RuntimeError("pose report render mesh contract is incomplete")
+    actual_path = generated_mesh.expanduser().resolve()
+    expected_path = Path(expected_path_value).expanduser().resolve()
+    if actual_path != expected_path:
+        raise RuntimeError(
+            "renderer generated mesh path does not match pose objective: "
+            f"{actual_path} != {expected_path}"
+        )
+    actual_hash = sha256_file(actual_path)
+    if actual_hash != expected_hash:
+        raise RuntimeError(
+            "renderer generated mesh hash does not match pose objective: "
+            f"{actual_hash} != {expected_hash}"
+        )
+    return {
+        "required": True,
+        "validated": True,
+        "expected_path": str(expected_path),
+        "actual_path": str(actual_path),
+        "path_matches": True,
+        "expected_sha256": expected_hash,
+        "actual_sha256": actual_hash,
+        "display_face_pruning_allowed": False,
+    }
+
+
 def resize_intrinsics_half_pixel(K: np.ndarray, source_wh: tuple[int, int], target_wh: tuple[int, int]) -> np.ndarray:
     sx = float(target_wh[0]) / float(source_wh[0])
     sy = float(target_wh[1]) / float(source_wh[1])
@@ -106,7 +145,7 @@ def project_points(points_camera: np.ndarray, K: np.ndarray, width: int, height:
 
 
 def decimate_mesh(mesh: trimesh.Trimesh, target_faces: int) -> tuple[np.ndarray, np.ndarray]:
-    if len(mesh.faces) <= int(target_faces):
+    if int(target_faces) <= 0 or len(mesh.faces) <= int(target_faces):
         return np.asarray(mesh.vertices, dtype=np.float64), np.asarray(mesh.faces, dtype=np.int32)
     o3 = o3d.geometry.TriangleMesh(
         vertices=o3d.utility.Vector3dVector(np.asarray(mesh.vertices, dtype=np.float64)),
@@ -408,9 +447,26 @@ def main() -> None:
     if args.frame_end<args.frame_start:raise RuntimeError('invalid frame range')
     for p in (args.annotations,args.pose_report,args.generated_mesh,args.mano_bridge,args.mano_topology,args.source_video):
         if not p.expanduser().resolve().is_file():raise FileNotFoundError(p)
-    ann=load_json(args.annotations);frames={int(f['frame_idx']):f for f in ann.get('frames',[]) if isinstance(f,dict) and f.get('frame_idx') is not None};selected=list(range(args.frame_start,args.frame_end+1));poses=pose_rows(args.pose_report);missing=[i for i in selected if i not in poses];
-    if missing:raise RuntimeError(f'pose report missing frames: {missing[:10]}')
-    mesh=load_mesh(args.generated_mesh);canon_vertices,canon_faces=decimate_mesh(mesh,int(args.decimated_face_count));
+    pose_payload = load_json(args.pose_report)
+    render_mesh_contract = validate_render_mesh_contract(
+        pose_payload, args.generated_mesh
+    )
+    preserve_objective_mesh = bool(render_mesh_contract.get("required"))
+    ann = load_json(args.annotations)
+    frames = {
+        int(f["frame_idx"]): f
+        for f in ann.get("frames", [])
+        if isinstance(f, dict) and f.get("frame_idx") is not None
+    }
+    selected = list(range(args.frame_start, args.frame_end + 1))
+    poses = pose_rows(args.pose_report)
+    missing = [i for i in selected if i not in poses]
+    if missing:
+        raise RuntimeError(f"pose report missing frames: {missing[:10]}")
+    mesh = load_mesh(args.generated_mesh)
+    canon_vertices, canon_faces = decimate_mesh(
+        mesh, int(args.decimated_face_count)
+    )
     with np.load(args.mano_bridge.expanduser().resolve(),allow_pickle=False) as bridge:
         bf=np.asarray(bridge['frame_idx'],np.int64);bs=np.asarray(bridge['hand_side']).astype(str);bv=np.asarray(bridge['vertices_current_v18_world_from_hawor_projection_relift_m'],np.float32);bj=np.asarray(bridge['joints_current_v18_world_from_hawor_projection_relift_m'],np.float32) if 'joints_current_v18_world_from_hawor_projection_relift_m' in bridge.files else None
     with np.load(args.mano_topology.expanduser().resolve(),allow_pickle=False) as top:left_faces=np.asarray(top['left_faces'],np.int32);right_faces=np.asarray(top['right_faces'],np.int32)
@@ -421,7 +477,19 @@ def main() -> None:
     fps=float(video.get(cv2.CAP_PROP_FPS) or 30.);vw=int(video.get(cv2.CAP_PROP_FRAME_WIDTH));vh=int(video.get(cv2.CAP_PROP_FRAME_HEIGHT));video.set(cv2.CAP_PROP_POS_FRAMES,args.frame_start)
     args.output_rrd.parent.mkdir(parents=True,exist_ok=True);rr.init(f'milk_{args.label}',spawn=False);rr.save(str(args.output_rrd.expanduser().resolve()));rr.log('/',rr.ViewCoordinates.RDF,static=True)
     rr.log('/world/sam3d_raw/mesh',rr.Mesh3D(vertex_positions=canon_vertices.astype(np.float32),triangle_indices=canon_faces,albedo_factor=[215,45,190,130]),static=True)
-    rr.log('/metadata/description',rr.TextDocument('# Depth-ordered focused V20 visualization\n\nSAM3D generated faces in front of nearby P09 first-hit rays are removed from the display layer only. This does not modify pose, canonical geometry, collision, contact, or formal state.'),static=True)
+    rr.log(
+        "/metadata/description",
+        rr.TextDocument(
+            "# Objective-mesh V20 visualization\n\n"
+            + (
+                "The generated mesh source is hash-bound to the pose objective. "
+                "No display-only front-face pruning is applied."
+                if preserve_objective_mesh
+                else "Legacy display-only depth-order pruning is active; this does not modify pose or formal state."
+            )
+        ),
+        static=True,
+    )
     tmp=Path(tempfile.mkdtemp(prefix='v20_depth_ordered_overlay_',dir=str(args.output_rrd.parent)));metric=[];empty=[];stats=[];camtraj=[]
     try:
         for idx in selected:
@@ -431,22 +499,166 @@ def main() -> None:
             obj=next((o for o in fr.get('objects',[]) if o.get('object_id')==args.object_id),None);geom=obj.get('visible_geometry_candidate') if isinstance(obj,dict) and isinstance(obj.get('visible_geometry_candidate'),dict) else {};p09=np.asarray(geom.get('camera_vertices_sample_m') or [],float)
             rr.set_time('frame',sequence=idx);cp=T[:3,3];camtraj.append(cp);rr.log('/world/camera',rr.Transform3D(translation=cp.tolist(),mat3x3=T[:3,:3].tolist()));rr.log('/world/camera/trajectory',rr.LineStrips3D([np.asarray(camtraj,np.float32)],radii=.0015,colors=[[180,180,180,220]]));rr.log('/world/camera/image',rr.Pinhole(image_from_camera=K960.tolist(),resolution=[960,960]));rgb960=cv2.resize(frame_bgr,(960,960),interpolation=cv2.INTER_AREA);rr.log('/world/camera/image',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality))
             world=canon_vertices@R.T+t[None,:];
-            if p09.ndim==2 and p09.shape==(2500,3) and np.isfinite(p09).all():
-                metric.append(idx);support_rays,support_depth,support_stats=build_support_rays(p09,K,geom.get('mask_path'),radius_px=args.support_radius_px,stride=args.support_mask_stride,max_rays=args.support_max_rays);kept,st=depth_order_faces(world,canon_faces,T,K,p09,support_rays=support_rays,support_depth=support_depth,neighbor_px=args.depth_neighbor_px,front_tolerance_m=args.front_tolerance_mm/1000.);st['support_raster']=support_stats;stats.append({'frame_idx':idx,**st});rv,rf=compact_mesh(world,canon_faces,kept);rr.log('/world/sam3d_depth_ordered',rr.Mesh3D(vertex_positions=rv,triangle_indices=rf,albedo_factor=[215,45,190,150]));rr.log('/world/visible_surface',rr.Points3D(p09[::args.point_stride],radii=.0018,colors=[255,220,0,255],point_shading=rr.components.PointShading.Flat))
+            if p09.ndim == 2 and p09.shape == (2500, 3) and np.isfinite(p09).all():
+                metric.append(idx)
+                support_rays, support_depth, support_stats = build_support_rays(
+                    p09,
+                    K,
+                    geom.get("mask_path"),
+                    radius_px=args.support_radius_px,
+                    stride=args.support_mask_stride,
+                    max_rays=args.support_max_rays,
+                )
+                if preserve_objective_mesh:
+                    kept = np.arange(len(canon_faces), dtype=np.int32)
+                    st = {
+                        "frame_idx": idx,
+                        "input_faces": int(len(canon_faces)),
+                        "candidate_faces": int(len(canon_faces)),
+                        "kept_faces": int(len(canon_faces)),
+                        "dropped_front_faces": 0,
+                        "gate_active": False,
+                        "reason": "pose objective render-mesh contract forbids display-only face pruning",
+                        "objective_mesh_preserved": True,
+                        "support_raster": support_stats,
+                    }
+                else:
+                    kept, st = depth_order_faces(
+                        world,
+                        canon_faces,
+                        T,
+                        K,
+                        p09,
+                        support_rays=support_rays,
+                        support_depth=support_depth,
+                        neighbor_px=args.depth_neighbor_px,
+                        front_tolerance_m=args.front_tolerance_mm / 1000.0,
+                    )
+                    st["support_raster"] = support_stats
+                    st["objective_mesh_preserved"] = False
+                stats.append({"frame_idx": idx, **st})
+                rv, rf = compact_mesh(world, canon_faces, kept)
+                rr.log(
+                    "/world/sam3d_depth_ordered",
+                    rr.Mesh3D(
+                        vertex_positions=rv,
+                        triangle_indices=rf,
+                        albedo_factor=[215, 45, 190, 150],
+                    ),
+                )
+                rr.log(
+                    "/world/visible_surface",
+                    rr.Points3D(
+                        p09[:: args.point_stride],
+                        radii=0.0018,
+                        colors=[255, 220, 0, 255],
+                        point_shading=rr.components.PointShading.Flat,
+                    ),
+                )
             else:
-                empty.append(idx);stats.append({'frame_idx':idx,'gate_active':False,'input_faces':len(canon_faces),'kept_faces':len(canon_faces),'dropped_front_faces':0});rr.log('/world/sam3d_depth_ordered',rr.Mesh3D(vertex_positions=world.astype(np.float32),triangle_indices=canon_faces,albedo_factor=[215,45,190,110]));rr.log('/world/visible_surface',rr.Clear(recursive=False));rr.log('/world/visible_surface/status',rr.TextLog('no accepted P09 metric surface; depth gate inactive'))
+                empty.append(idx)
+                kept = np.arange(len(canon_faces), dtype=np.int32)
+                stats.append(
+                    {
+                        "frame_idx": idx,
+                        "gate_active": False,
+                        "input_faces": len(canon_faces),
+                        "kept_faces": len(canon_faces),
+                        "dropped_front_faces": 0,
+                        "objective_mesh_preserved": preserve_objective_mesh,
+                    }
+                )
+                rr.log(
+                    "/world/sam3d_depth_ordered",
+                    rr.Mesh3D(
+                        vertex_positions=world.astype(np.float32),
+                        triangle_indices=canon_faces,
+                        albedo_factor=[215, 45, 190, 110],
+                    ),
+                )
+                rr.log("/world/visible_surface", rr.Clear(recursive=False))
+                rr.log(
+                    "/world/visible_surface/status",
+                    rr.TextLog("no accepted P09 metric surface; depth gate inactive"),
+                )
             for side,faces,color in [('left',left_faces,[255,150,40,255]),('right',right_faces,[80,150,255,255])]:
                 if side in hands: v,j=hands[side];rr.log(f'/world/hands/{side}',rr.Mesh3D(vertex_positions=v,triangle_indices=faces,albedo_factor=color));
                 else:rr.log(f'/world/hands/{side}',rr.Clear(recursive=False))
             # Overlay corrected mesh to original video: use the same face gate and
             # a sampled world mesh, not the full 476k-face topology.
-            overlay=rgb960.copy();
-            if p09.ndim==2 and p09.shape==(2500,3) and np.isfinite(p09).all():kept,st2=depth_order_faces(world,canon_faces,T,K,p09,support_rays=support_rays,support_depth=support_depth,neighbor_px=args.depth_neighbor_px,front_tolerance_m=args.front_tolerance_mm/1000.);stats[-1]['video_gate']=st2
-            else:kept=np.arange(len(canon_faces),dtype=np.int32)
-            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);overlay_points(overlay,p09,T,K960,args.overlay_point_stride);draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Depth-ordered display-only | frame={idx:03d} | SAM3D magenta clipped against nearby P09 rays',f'front tolerance={args.front_tolerance_mm:g} mm; generated geometry remains non-authoritative'])
+            overlay=rgb960.copy()
+            if p09.ndim==2 and p09.shape==(2500,3) and np.isfinite(p09).all():
+                if preserve_objective_mesh:
+                    kept = np.arange(len(canon_faces), dtype=np.int32)
+                    stats[-1]["video_gate"] = {
+                        "gate_active": False,
+                        "objective_mesh_preserved": True,
+                        "kept_faces": int(len(kept)),
+                    }
+                else:
+                    kept,st2=depth_order_faces(world,canon_faces,T,K,p09,support_rays=support_rays,support_depth=support_depth,neighbor_px=args.depth_neighbor_px,front_tolerance_m=args.front_tolerance_mm/1000.)
+                    stats[-1]['video_gate']=st2
+            else:
+                kept=np.arange(len(canon_faces),dtype=np.int32)
+            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);overlay_points(overlay,p09,T,K960,args.overlay_point_stride);draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Objective-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose objective; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate')])
             side=np.hstack([rgb960,overlay]);cv2.imwrite(str(tmp/f'{idx:06d}.jpg'),side,[cv2.IMWRITE_JPEG_QUALITY,args.jpeg_quality]);rr.log('/comparison/original_video',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/depth_ordered_overlay',rr.Image(cv2.cvtColor(overlay,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/side_by_side',rr.Image(cv2.cvtColor(side,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));
         video.release();rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(rrb.Spatial3DView(origin='/world',name='Depth-ordered SAM3D + MANO + P09 + camera',contents=['+ /world/sam3d_depth_ordered','+ /world/hands/**','+ /world/visible_surface','+ /world/camera/**']),rrb.Vertical(rrb.Spatial2DView(origin='/comparison/original_video',name='Original video'),rrb.Spatial2DView(origin='/comparison/depth_ordered_overlay',name='Depth-ordered overlay'),rrb.Spatial2DView(origin='/comparison/side_by_side',name='Original | depth-ordered overlay')),column_shares=[3,2]),collapse_panels=False));rr.disconnect();encode_video(tmp,args.output_video,fps,start_number=args.frame_start)
     finally:shutil.rmtree(tmp,ignore_errors=True)
-    report={'schema':'v20_support_aware_focused_visualization_v1','status':'ok','diagnostic_only':True,'formal_state_modified':False,'display_only_depth_gate':True,'pose_report':str(args.pose_report.expanduser().resolve()),'generated_mesh_role':'render_only_completion_hypothesis','depth_gate':{'neighbor_px':args.depth_neighbor_px,'support_radius_px':args.support_radius_px,'support_mask_stride':args.support_mask_stride,'support_max_rays':args.support_max_rays,'front_tolerance_mm':args.front_tolerance_mm,'policy':'keep the existing P09 first-hit display gate and add dense mask-supported nearest-P09 rays; no pose/state changes'},'timeline':{'frame_count':len(selected),'metric_frames':metric,'no_metric_frames':empty},'stats':stats,'outputs':{'rrd':str(args.output_rrd.expanduser().resolve()),'video':str(args.output_video.expanduser().resolve())},'inputs_sha256':{'annotations':sha256_file(args.annotations),'pose_report':sha256_file(args.pose_report),'generated_mesh':sha256_file(args.generated_mesh),'mano_bridge':sha256_file(args.mano_bridge),'source_video':sha256_file(args.source_video)},'claim_scope':'Visualization-only depth ordering. Generated mesh is never pose/collision/contact/SDF authority; P09 points and MANO remain prediction-side.'}
+    report = {
+        "schema": "v20_support_aware_focused_visualization_v2",
+        "status": "ok",
+        "diagnostic_only": True,
+        "formal_state_modified": False,
+        "display_only_depth_gate": not preserve_objective_mesh,
+        "objective_mesh_preserved": preserve_objective_mesh,
+        "render_mesh_contract": render_mesh_contract,
+        "pose_report": str(args.pose_report.expanduser().resolve()),
+        "generated_mesh": str(args.generated_mesh.expanduser().resolve()),
+        "generated_mesh_role": "visible_pose_objective_and_render_hypothesis"
+        if preserve_objective_mesh
+        else "render_only_completion_hypothesis",
+        "display_geometry": {
+            "source_vertices": int(len(mesh.vertices)),
+            "source_faces": int(len(mesh.faces)),
+            "display_vertices": int(len(canon_vertices)),
+            "display_faces": int(len(canon_faces)),
+            "decimation_requested_face_count": int(args.decimated_face_count),
+            "face_pruning_applied": not preserve_objective_mesh,
+        },
+        "depth_gate": {
+            "neighbor_px": args.depth_neighbor_px,
+            "support_radius_px": args.support_radius_px,
+            "support_mask_stride": args.support_mask_stride,
+            "support_max_rays": args.support_max_rays,
+            "front_tolerance_mm": args.front_tolerance_mm,
+            "policy": (
+                "disabled because the pose report binds the objective mesh; all display faces are retained"
+                if preserve_objective_mesh
+                else "legacy display-only P09 first-hit pruning; no pose/state changes"
+            ),
+        },
+        "timeline": {
+            "frame_count": len(selected),
+            "metric_frames": metric,
+            "no_metric_frames": empty,
+        },
+        "stats": stats,
+        "outputs": {
+            "rrd": str(args.output_rrd.expanduser().resolve()),
+            "video": str(args.output_video.expanduser().resolve()),
+        },
+        "inputs_sha256": {
+            "annotations": sha256_file(args.annotations),
+            "pose_report": sha256_file(args.pose_report),
+            "generated_mesh": sha256_file(args.generated_mesh),
+            "mano_bridge": sha256_file(args.mano_bridge),
+            "source_video": sha256_file(args.source_video),
+        },
+        "claim_scope": (
+            "Visualization of the exact source mesh bound to the pose objective when a render contract is present. "
+            "Display decimation is recorded, but no front faces are hidden. Generated geometry remains outside "
+            "collision/contact/SDF/sign authority."
+        ),
+    }
     args.output_rrd.with_suffix('.json').write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n');print(json.dumps({'status':'ok','rrd':str(args.output_rrd),'video':str(args.output_video),'metric_frames':len(metric),'empty_frames':empty,'stats':stats},indent=2))
 if __name__=='__main__':main()

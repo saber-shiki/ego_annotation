@@ -46,8 +46,14 @@ class Node:
 class PointFactor:
     source_pos: int
     target_pos: int
-    source_canonical: np.ndarray
-    target_canonical: np.ndarray
+    # Observations stay fixed in the metric world frame.  During each residual
+    # evaluation they are pulled back through the candidate object poses and
+    # compared in the shared canonical frame.  Storing canonical points frozen
+    # under the outer-loop pose and then pushing them back to two different
+    # world poses would incorrectly penalize the object's real inter-frame
+    # motion.
+    source_world: np.ndarray
+    target_world: np.ndarray
     target_normals_canonical: np.ndarray
     weights: np.ndarray
     kind: str
@@ -225,7 +231,17 @@ def build_dynamic_point_factors(nodes: list[Node], key_positions: list[int], anc
         target_c = canonical[target_pos][dst_idx]
         q = normal_quality[target_pos][dst_idx]
         weights = np.clip(target.depth_quality * (float(args.keyframe_anchor_weight) if target.frame_idx in node_key_set else float(args.non_keyframe_anchor_weight)) * float(args.anchor_point_factor_scale) * np.clip(q / max(float(args.normal_quality_scale), 1.0e-6), 0.1, 1.0) * np.exp(-distances / max(float(args.point_weight_scale_m), 1.0e-6)), 0.05, 1.0)
-        factors.append(PointFactor(anchor_position, target_pos, source_c, target_c, normals[target_pos][dst_idx], weights, "anchor_loop"))
+        factors.append(
+            PointFactor(
+                anchor_position,
+                target_pos,
+                nodes[anchor_position].observed_world[src_idx],
+                nodes[target_pos].observed_world[dst_idx],
+                normals[target_pos][dst_idx],
+                weights,
+                "anchor_loop",
+            )
+        )
         anchor_count += len(source_c)
     # Consecutive keyframe edges are rebuilt at every outer pass.
     for source_pos, target_pos in zip(key_positions[:-1], key_positions[1:]):
@@ -235,7 +251,17 @@ def build_dynamic_point_factors(nodes: list[Node], key_positions: list[int], anc
         q = normal_quality[target_pos][dst_idx]
         edge_q = min(nodes[source_pos].depth_quality, nodes[target_pos].depth_quality)
         weights = np.clip(edge_q * float(args.local_edge_weight) * float(args.local_point_factor_scale) * np.clip(q / max(float(args.normal_quality_scale), 1.0e-6), 0.1, 1.0) * np.exp(-distances / max(float(args.point_weight_scale_m), 1.0e-6)), 0.05, 1.0)
-        factors.append(PointFactor(source_pos, target_pos, canonical[source_pos][src_idx], canonical[target_pos][dst_idx], normals[target_pos][dst_idx], weights, "keyframe_local"))
+        factors.append(
+            PointFactor(
+                source_pos,
+                target_pos,
+                nodes[source_pos].observed_world[src_idx],
+                nodes[target_pos].observed_world[dst_idx],
+                normals[target_pos][dst_idx],
+                weights,
+                "keyframe_local",
+            )
+        )
         local_count += len(src_idx)
     return factors, {"outer_iteration": int(outer_index), "factor_group_count": len(factors), "anchor_point_count": int(anchor_count), "local_point_count": int(local_count), "normal_quality_median": float(np.median(np.concatenate(normal_quality))) if normal_quality else None}
 
@@ -461,7 +487,41 @@ def residual_blocks(x: np.ndarray, nodes: list[Node], point_factors: list[PointF
             if silhouette_block is not None:
                 blocks["image_silhouette"].append(silhouette_block)
     for factor in point_factors:
-        ps=apply_pose(factor.source_canonical,Rs[factor.source_pos],ts[factor.source_pos]);pt=apply_pose(factor.target_canonical,Rs[factor.target_pos],ts[factor.target_pos]);nw=factor.target_normals_canonical @ Rs[factor.target_pos].T;diff=ps-pt;plane=np.einsum('ij,ij->i',nw,diff);scale=math.sqrt(max(1,len(plane)));blocks["point_to_plane"].append(math.sqrt(float(args.point_to_plane_weight)) * np.sqrt(factor.weights)*np.clip(plane,-float(args.max_point_residual_m),float(args.max_point_residual_m))/float(args.sigma_point_to_plane_m)/scale);blocks["point_to_point"].append(math.sqrt(float(args.point_to_point_weight)) * np.sqrt(factor.weights[:,None]) * np.clip(diff,-float(args.max_point_residual_m),float(args.max_point_residual_m))/float(args.sigma_point_to_point_m)/scale)
+        source_canonical = inverse_pose(
+            factor.source_world,
+            Rs[factor.source_pos],
+            ts[factor.source_pos],
+        )
+        target_canonical = inverse_pose(
+            factor.target_world,
+            Rs[factor.target_pos],
+            ts[factor.target_pos],
+        )
+        diff = source_canonical - target_canonical
+        plane = np.einsum("ij,ij->i", factor.target_normals_canonical, diff)
+        scale = math.sqrt(max(1, len(plane)))
+        blocks["point_to_plane"].append(
+            math.sqrt(float(args.point_to_plane_weight))
+            * np.sqrt(factor.weights)
+            * np.clip(
+                plane,
+                -float(args.max_point_residual_m),
+                float(args.max_point_residual_m),
+            )
+            / float(args.sigma_point_to_plane_m)
+            / scale
+        )
+        blocks["point_to_point"].append(
+            math.sqrt(float(args.point_to_point_weight))
+            * np.sqrt(factor.weights[:, None])
+            * np.clip(
+                diff,
+                -float(args.max_point_residual_m),
+                float(args.max_point_residual_m),
+            )
+            / float(args.sigma_point_to_point_m)
+            / scale
+        )
     for factor in key_factors:
         r,t=relative_residual(Rs,ts,factor);blocks["keyframe_relative_rotation"].append(math.sqrt(factor.weight)*r/float(args.sigma_relative_rotation_rad));blocks["keyframe_relative_translation"].append(math.sqrt(factor.weight)*t/float(args.sigma_relative_translation_m))
     for factor in rgb_factors:
@@ -515,9 +575,9 @@ def residual_sparsity(
             if factor is not None and float(args.image_silhouette_weight) > 0.0:
                 add(2 * len(factor.silhouette_kind), [i])
     for factor in point_factors:
-        add(len(factor.source_canonical), [factor.source_pos, factor.target_pos])
+        add(len(factor.source_world), [factor.source_pos, factor.target_pos])
     for factor in point_factors:
-        add(3 * len(factor.source_canonical), [factor.source_pos, factor.target_pos])
+        add(3 * len(factor.source_world), [factor.source_pos, factor.target_pos])
     for factor in key_factors:
         add(3, [factor.source_pos, factor.target_pos])
     for factor in key_factors:
