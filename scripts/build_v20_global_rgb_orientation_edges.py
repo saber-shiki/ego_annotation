@@ -21,6 +21,12 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 
+try:
+    from v20_prediction_contracts import append_prediction_stage, assert_prediction_only
+except ModuleNotFoundError:  # pragma: no cover - supports direct test imports
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from v20_prediction_contracts import append_prediction_stage, assert_prediction_only
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -46,6 +52,28 @@ def resize_intrinsics(K: np.ndarray, source_wh: tuple[int, int], target_wh: tupl
     out[0, 2] = sx * (out[0, 2] + 0.5) - 0.5
     out[1, 2] = sy * (out[1, 2] + 0.5) - 0.5
     return out
+
+
+def validate_depth_contract(
+    depth_ids: np.ndarray,
+    depths: np.ndarray,
+    confidences: np.ndarray,
+    source_size: np.ndarray,
+    intrinsics: np.ndarray,
+) -> tuple[int, int]:
+    source_size_array = np.asarray(source_size, dtype=np.int64).reshape(-1)
+    if source_size_array.shape != (2,) or np.any(source_size_array <= 0):
+        raise RuntimeError("depth source_size must be two positive dimensions")
+    source_wh = (int(source_size_array[0]), int(source_size_array[1]))
+    if depths.ndim != 3 or depths.shape[2] != source_wh[0] or depths.shape[1] != source_wh[1]:
+        raise RuntimeError(f"depth raster {depths.shape} disagrees with source_size {source_wh}")
+    if confidences.shape != depths.shape:
+        raise RuntimeError("depth/confidence raster shapes disagree")
+    if intrinsics.shape != (len(depth_ids), 4):
+        raise RuntimeError("per-frame depth intrinsics shape is invalid")
+    if len(np.unique(depth_ids)) != len(depth_ids):
+        raise RuntimeError("depth frame_idx values are not unique")
+    return source_wh
 
 
 def find_case_root(annotation_path: Path) -> Path:
@@ -97,10 +125,12 @@ def feature_pair(
     confidences: np.ndarray,
     depth_pos: dict[int, int],
     depth_intrinsics: np.ndarray,
+    source_wh: tuple[int, int],
     matcher: torch.nn.Module,
     device: torch.device,
     args: argparse.Namespace,
-) -> tuple[dict[str, Any], tuple[np.ndarray, np.ndarray] | None]:
+    initial_pose_by_frame: dict[int, tuple[np.ndarray, np.ndarray]],
+) -> tuple[dict[str, Any], tuple[np.ndarray, np.ndarray] | None, dict[str, np.ndarray] | None]:
     from lightglue.utils import rbd
     with torch.inference_mode():
         matched = rbd(matcher({"image0": features[source_idx], "image1": features[target_idx]}))
@@ -142,9 +172,11 @@ def feature_pair(
     source_world = source_world[valid]
     target_uv = uv1[valid]
     if len(source_world) < int(args.min_matches):
-        return {"source_frame_idx": source_idx, "target_frame_idx": target_idx, "status": "rejected", "matches_total": int(len(pairs)), "matches_object": int(len(source_world)), "reason": "too_few_object_matches"}, None
+        return {"source_frame_idx": source_idx, "target_frame_idx": target_idx, "status": "rejected", "matches_total": int(len(pairs)), "matches_object": int(len(source_world)), "reason": "too_few_object_matches"}, None, None
     K_target = np.asarray([[target_intr[0], 0.0, target_intr[2]], [0.0, target_intr[1], target_intr[3]], [0.0, 0.0, 1.0]], dtype=np.float64)
-    K_target = resize_intrinsics(K_target, (1408, 1408), (mask1.shape[1], mask1.shape[0]))
+    K_target = resize_intrinsics(
+        K_target, source_wh, (mask1.shape[1], mask1.shape[0])
+    )
     success, rvec, tvec, inliers = cv2.solvePnPRansac(
         source_world.astype(np.float64), target_uv.astype(np.float64), K_target,
         np.zeros(5, dtype=np.float64), iterationsCount=int(args.pnp_iterations),
@@ -152,7 +184,7 @@ def feature_pair(
         flags=cv2.SOLVEPNP_EPNP,
     )
     if not success or inliers is None or len(inliers) < 3:
-        return {"source_frame_idx": source_idx, "target_frame_idx": target_idx, "status": "rejected", "matches_total": int(len(pairs)), "matches_object": int(len(source_world)), "reason": "pnp_failed"}, None
+        return {"source_frame_idx": source_idx, "target_frame_idx": target_idx, "status": "rejected", "matches_total": int(len(pairs)), "matches_object": int(len(source_world)), "reason": "pnp_failed"}, None, None
     inliers = inliers[:, 0]
     try:
         rvec, tvec = cv2.solvePnPRefineLM(source_world[inliers], target_uv[inliers], K_target, np.zeros(5), rvec, tvec)
@@ -190,7 +222,46 @@ def feature_pair(
         "source_3d_covariance_eigenvalues": eig.tolist(),
         "source_3d_conditioning": conditioning,
     }
-    return row, (R_delta, t_delta) if status == "accepted" else None
+    evidence = None
+    if status == "accepted":
+        if source_idx not in initial_pose_by_frame:
+            raise RuntimeError(f"initial pose report lacks RGB source frame {source_idx}")
+        source_R0, source_t0 = initial_pose_by_frame[source_idx]
+        canonical_points = (source_world[inliers] - source_t0[None, :]) @ source_R0
+        target_intrinsics = np.asarray(
+            [K_target[0, 0], K_target[1, 1], K_target[0, 2], K_target[1, 2]],
+            dtype=np.float64,
+        )
+        point_weights = np.clip(np.exp(-reprojection / 2.0), 0.25, 1.0)
+        evidence = {
+            "canonical_points": np.asarray(canonical_points, dtype=np.float64),
+            "target_uv": np.asarray(target_uv[inliers], dtype=np.float64),
+            "target_intrinsics": target_intrinsics,
+            "target_camera": np.asarray(target_camera, dtype=np.float64),
+            "weights": point_weights,
+        }
+        row["reprojection_evidence_count"] = int(len(canonical_points))
+        row["reprojection_evidence_contract"] = "source_initial_canonical_points_to_target_uv"
+    return row, (R_delta, t_delta) if status == "accepted" else None, evidence
+
+
+def build_edge_pairs(
+    selected: list[int], key_ids: list[int], keyframe_neighbor_span: int
+) -> list[tuple[int, int]]:
+    if int(keyframe_neighbor_span) < 1:
+        raise RuntimeError("keyframe_neighbor_span must be positive")
+    pairs = set(zip(selected[:-1], selected[1:]))
+    for offset in range(1, int(keyframe_neighbor_span) + 1):
+        for a, b in zip(key_ids[:-offset], key_ids[offset:]):
+            pairs.add((a, b))
+    if len(key_ids) >= 4:
+        for a, b in (
+            (key_ids[0], key_ids[len(key_ids) // 2]),
+            (key_ids[len(key_ids) // 2], key_ids[-1]),
+            (key_ids[0], key_ids[-1]),
+        ):
+            pairs.add((a, b))
+    return sorted((a, b) for a, b in pairs if a < b)
 
 
 def main() -> None:
@@ -202,6 +273,12 @@ def main() -> None:
     parser.add_argument("--frame-start", type=int, default=0)
     parser.add_argument("--frame-end", type=int, default=149)
     parser.add_argument("--keyframe-interval", type=int, default=5)
+    parser.add_argument(
+        "--keyframe-neighbor-span",
+        type=int,
+        default=1,
+        help="Connect each keyframe to this many subsequent keyframes.",
+    )
     parser.add_argument("--max-keyframes", type=int, default=40)
     parser.add_argument("--max-keypoints", type=int, default=2048)
     parser.add_argument("--ratio-test", type=float, default=0.78)
@@ -224,14 +301,36 @@ def main() -> None:
 
     device = torch.device(args.device)
     annotations = load_json(args.annotations)
-    frames = {int(f["frame_idx"]): f for f in annotations.get("frames", []) if isinstance(f, dict) and f.get("frame_idx") is not None}
+    assert_prediction_only(
+        annotations, label="RGB edge annotations", object_id=args.object_id
+    )
+    initial_report_path = args.initial_pose_report.expanduser().resolve()
+    initial_report = load_json(initial_report_path)
+    assert_prediction_only(
+        initial_report,
+        label="RGB edge initial pose report",
+        object_id=args.object_id,
+    )
+    frames = {
+        int(f["frame_idx"]): f
+        for f in annotations.get("frames", [])
+        if isinstance(f, dict) and f.get("frame_idx") is not None
+    }
     annotation_root = args.annotations.expanduser().resolve()
     case_root = find_case_root(annotation_root)
     with np.load(args.depth_npz.expanduser().resolve(), allow_pickle=False) as data:
+        required = {"frame_idx", "depth", "confidence", "source_size", "intrinsics_fx_fy_cx_cy"}
+        missing_keys = sorted(required - set(data.files))
+        if missing_keys:
+            raise RuntimeError(f"depth archive lacks camera contract keys: {missing_keys}")
         depth_ids = np.asarray(data["frame_idx"], dtype=np.int64)
         depths = np.asarray(data["depth"], dtype=np.float32)
         confidences = np.asarray(data["confidence"], dtype=np.float32)
+        source_size_array = np.asarray(data["source_size"], dtype=np.int64).reshape(-1)
         depth_intrinsics = np.asarray(data["intrinsics_fx_fy_cx_cy"], dtype=np.float64)
+        source_wh = validate_depth_contract(
+            depth_ids, depths, confidences, source_size_array, depth_intrinsics
+        )
     depth_pos = {int(idx): i for i, idx in enumerate(depth_ids.tolist())}
     selected = [i for i in range(int(args.frame_start), int(args.frame_end) + 1) if i in frames and i in depth_pos]
     if len(selected) < 2:
@@ -268,25 +367,47 @@ def main() -> None:
         chosen = [interior[int(round(i * (len(interior) - 1) / max(1, take - 1)))] for i in range(take)] if take and interior else []
         key_ids = sorted(set([key_ids[0], *chosen, key_ids[-1]]))
 
-    edge_pairs = set(zip(selected[:-1], selected[1:]))
-    for a, b in zip(key_ids[:-1], key_ids[1:]):
-        edge_pairs.add((a, b))
-    if len(key_ids) >= 4:
-        for a, b in ((key_ids[0], key_ids[len(key_ids) // 2]), (key_ids[len(key_ids) // 2], key_ids[-1]), (key_ids[0], key_ids[-1])):
-            edge_pairs.add((a, b))
-    edge_pairs = sorted((a, b) for a, b in edge_pairs if a in features and b in features)
+    edge_pairs = [
+        (a, b)
+        for a, b in build_edge_pairs(
+            selected, key_ids, int(args.keyframe_neighbor_span)
+        )
+        if a in features and b in features
+    ]
 
-    rng = np.random.default_rng(20260905)
+    initial_rows = {
+        int(row["frame_idx"]): row
+        for row in initial_report.get("pose_rows", [])
+        if isinstance(row, dict)
+        and row.get("rotation_world_from_completed_canonical_matrix") is not None
+    }
+    initial_pose_by_frame = {
+        idx: (
+            np.asarray(row["rotation_world_from_completed_canonical_matrix"], dtype=np.float64),
+            np.asarray(row["translation_world_m"], dtype=np.float64),
+        )
+        for idx, row in initial_rows.items()
+        if row.get("translation_world_m") is not None
+    }
+    if any(idx not in initial_pose_by_frame for idx in selected):
+        missing_pose = sorted(idx for idx in selected if idx not in initial_pose_by_frame)
+        raise RuntimeError(f"initial pose report lacks selected frames: {missing_pose[:20]}")
+
     edges: list[dict[str, Any]] = []
     edge_motions: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+    edge_reprojection_evidence: dict[tuple[int, int], dict[str, np.ndarray]] = {}
     for n, (a, b) in enumerate(edge_pairs, 1):
-        row, motion = feature_pair(a, b, features, masks, frames, depths, confidences, depth_pos, depth_intrinsics, matcher, device, args)
+        row, motion, evidence = feature_pair(
+            a, b, features, masks, frames, depths, confidences, depth_pos,
+            depth_intrinsics, source_wh, matcher, device, args, initial_pose_by_frame
+        )
         edges.append(row)
         if motion is not None:
             edge_motions[(a, b)] = motion
+        if evidence is not None:
+            edge_reprojection_evidence[(a, b)] = evidence
         print(f"[global-rgb] edge {n}/{len(edge_pairs)} {a}->{b} {row['status']} matches={row.get('matches_object')} inliers={row.get('inliers')}", flush=True)
 
-    initial_rows = {int(row["frame_idx"]): row for row in load_json(args.initial_pose_report).get("pose_rows", []) if isinstance(row, dict) and row.get("rotation_world_from_completed_canonical_matrix") is not None}
     if selected[0] not in initial_rows:
         raise RuntimeError("initial pose report lacks anchor frame")
     anchor_R = np.asarray(initial_rows[selected[0]]["rotation_world_from_completed_canonical_matrix"], dtype=np.float64)
@@ -300,7 +421,7 @@ def main() -> None:
         R_prev, t_prev = chain[a]
         chain[b] = (R_delta @ R_prev, R_delta @ t_prev + t_delta)
     chain_rows = []
-    for original in load_json(args.initial_pose_report).get("pose_rows", []):
+    for original in initial_report.get("pose_rows", []):
         if not isinstance(original, dict):
             chain_rows.append(original)
             continue
@@ -315,7 +436,7 @@ def main() -> None:
         chain_rows.append(row)
 
     metadata = {
-        "schema": "v20_prediction_lightglue_rgb_depth_global_orientation_edges_v1",
+        "schema": "v20_prediction_lightglue_rgb_depth_global_orientation_edges_v2",
         "annotations": str(args.annotations.expanduser().resolve()),
         "depth_npz": str(args.depth_npz.expanduser().resolve()),
         "initial_pose_report": str(args.initial_pose_report.expanduser().resolve()),
@@ -323,6 +444,19 @@ def main() -> None:
         "prediction_side_only": True,
         "generated_geometry_consumed": False,
         "gt_used_as_solver_input": False,
+        "reprojection_evidence_contract": {
+            "present": True,
+            "storage": "NPZ_flattened_points_with_edge_offsets",
+            "canonical_frame": "initial_prediction_pose_source_object_frame",
+            "target_frame": "camera_pixels_at_mask_resolution",
+            "used_for_pose_objective_only_when_explicitly_enabled": True,
+        },
+        "camera_contract": {
+            "source_size_wh": list(source_wh),
+            "depth_raster_shape": list(depths.shape[1:]),
+            "intrinsics_plane": "depth_source_plane",
+            "target_intrinsics_resize_from_source_wh": list(source_wh),
+        },
         "input_sha256": {
             "annotations": sha256_file(args.annotations),
             "depth_npz": sha256_file(args.depth_npz),
@@ -338,10 +472,55 @@ def main() -> None:
         "edge_count": len(edges),
         "accepted_count": sum(row.get("status") == "accepted" for row in edges),
         "rejected_count": sum(row.get("status") != "accepted" for row in edges),
+        "reprojection_evidence_edge_count": len(edge_reprojection_evidence),
+        "reprojection_evidence_point_count": int(sum(len(value["weights"]) for value in edge_reprojection_evidence.values())),
         "chain_covered_frame_count": len(chain),
         "rows": edges,
-        "parameters": {key: getattr(args, key.replace("-", "_"), None) for key in []},
+        "parameters": {
+            "keyframe_interval": int(args.keyframe_interval),
+            "keyframe_neighbor_span": int(args.keyframe_neighbor_span),
+            "max_keyframes": int(args.max_keyframes),
+            "max_edge_rotation_deg": float(args.max_edge_rotation_deg),
+            "min_matches": int(args.min_matches),
+            "min_inliers": int(args.min_inliers),
+            "min_inlier_fraction": float(args.min_inlier_fraction),
+            "max_reprojection_median_px": float(
+                args.max_reprojection_median_px
+            ),
+        },
     }
+    append_prediction_stage(
+        report,
+        stage="prediction_rgb_depth_edge_builder",
+        input_hashes=metadata["input_sha256"],
+        notes={"source_size_wh": list(source_wh), "gt_consumed": False},
+    )
+    evidence_offsets = [0]
+    evidence_points: list[np.ndarray] = []
+    evidence_uv: list[np.ndarray] = []
+    evidence_weights: list[np.ndarray] = []
+    evidence_intrinsics: list[np.ndarray] = []
+    evidence_camera: list[np.ndarray] = []
+    for row in edges:
+        key = (int(row["source_frame_idx"]), int(row["target_frame_idx"]))
+        evidence = edge_reprojection_evidence.get(key)
+        if evidence is None:
+            evidence_points.append(np.empty((0, 3), dtype=np.float64))
+            evidence_uv.append(np.empty((0, 2), dtype=np.float64))
+            evidence_weights.append(np.empty((0,), dtype=np.float64))
+            evidence_intrinsics.append(np.zeros((4,), dtype=np.float64))
+            evidence_camera.append(np.zeros((4, 4), dtype=np.float64))
+            evidence_offsets.append(evidence_offsets[-1])
+        else:
+            evidence_points.append(evidence["canonical_points"])
+            evidence_uv.append(evidence["target_uv"])
+            evidence_weights.append(evidence["weights"])
+            evidence_intrinsics.append(evidence["target_intrinsics"])
+            evidence_camera.append(evidence["target_camera"])
+            evidence_offsets.append(evidence_offsets[-1] + len(evidence["weights"]))
+    flat_points = np.concatenate(evidence_points, axis=0) if evidence_points else np.empty((0, 3), dtype=np.float64)
+    flat_uv = np.concatenate(evidence_uv, axis=0) if evidence_uv else np.empty((0, 2), dtype=np.float64)
+    flat_weights = np.concatenate(evidence_weights, axis=0) if evidence_weights else np.empty((0,), dtype=np.float64)
     args.output_npz.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         args.output_npz,
@@ -351,12 +530,25 @@ def main() -> None:
         rotation_source_to_target_world=np.asarray([edge_motions.get((row["source_frame_idx"], row["target_frame_idx"]), (np.eye(3), np.zeros(3)))[0] for row in edges]),
         translation_source_to_target_world_m=np.asarray([edge_motions.get((row["source_frame_idx"], row["target_frame_idx"]), (np.eye(3), np.zeros(3)))[1] for row in edges]),
         accepted=np.asarray([row.get("status") == "accepted" for row in edges], dtype=bool),
+        source_size=np.asarray(source_wh, dtype=np.int64),
+        reprojection_evidence_offsets=np.asarray(evidence_offsets, dtype=np.int64),
+        reprojection_canonical_points=flat_points,
+        reprojection_target_uv=flat_uv,
+        reprojection_weights=flat_weights,
+        reprojection_target_intrinsics=np.asarray(evidence_intrinsics, dtype=np.float64),
+        reprojection_target_camera=np.asarray(evidence_camera, dtype=np.float64),
     )
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     if args.output_pose_report is not None:
-        chain_report = load_json(args.initial_pose_report)
+        chain_report = dict(initial_report)
         chain_report.update({"status": "v20_prediction_lightglue_rgb_depth_chain_diagnostic", "annotation_ready": False, "diagnostic_only": True, "generated_geometry_pose_evidence_consumed": False, "gt_used_as_solver_input": False, "pose_rows": chain_rows, "feature_edge_report": str(args.output_json.expanduser().resolve())})
+        append_prediction_stage(
+            chain_report,
+            stage="prediction_rgb_depth_chain_builder",
+            input_hashes=metadata["input_sha256"],
+            notes={"source_size_wh": list(source_wh), "gt_consumed": False},
+        )
         args.output_pose_report.parent.mkdir(parents=True, exist_ok=True)
         args.output_pose_report.write_text(json.dumps(chain_report, indent=2, ensure_ascii=False) + "\n")
     print(json.dumps({"status": "ok", "edge_count": len(edges), "accepted_count": report["accepted_count"], "rejected_count": report["rejected_count"], "keyframes": key_ids, "chain_covered_frame_count": len(chain), "output_json": str(args.output_json), "output_pose_report": str(args.output_pose_report) if args.output_pose_report else None}, indent=2))

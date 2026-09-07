@@ -132,6 +132,12 @@ def camera_points_from_world(points_world: np.ndarray, T_world_camera: np.ndarra
     return (np.asarray(points_world, dtype=np.float64) - T_world_camera[:3, 3][None, :]) @ T_world_camera[:3, :3]
 
 
+def camera_points_to_world(points_camera: np.ndarray, T_world_camera: np.ndarray) -> np.ndarray:
+    """Convert camera-frame visible points to world exactly once."""
+    transform = np.asarray(T_world_camera, dtype=np.float64)
+    return np.asarray(points_camera, dtype=np.float64) @ transform[:3, :3].T + transform[:3, 3][None, :]
+
+
 def project_points(points_camera: np.ndarray, K: np.ndarray, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
     points = np.asarray(points_camera, dtype=np.float64)
     z = points[:, 2]
@@ -497,6 +503,7 @@ def main() -> None:
             if not ok:raise RuntimeError(f'failed decode frame {idx}')
             fr=frames[idx];row=poses[idx];R=np.asarray(row['rotation_world_from_completed_canonical_matrix'],float);t=np.asarray(row['translation_world_m'],float);T=np.asarray(fr['camera']['T_world_camera_metric'],float);kv=np.asarray(fr['camera']['intrinsics_fx_fy_cx_cy'],float);K=np.array([[kv[0],0,kv[2]],[0,kv[1],kv[3]],[0,0,1.]],float);K960=resize_intrinsics_half_pixel(K,(1408,1408),(960,960));
             obj=next((o for o in fr.get('objects',[]) if o.get('object_id')==args.object_id),None);geom=obj.get('visible_geometry_candidate') if isinstance(obj,dict) and isinstance(obj.get('visible_geometry_candidate'),dict) else {};p09=np.asarray(geom.get('camera_vertices_sample_m') or [],float)
+            p09_world = camera_points_to_world(p09, T) if p09.ndim == 2 and p09.shape[1] == 3 else np.empty((0, 3), dtype=np.float64)
             rr.set_time('frame',sequence=idx);cp=T[:3,3];camtraj.append(cp);rr.log('/world/camera',rr.Transform3D(translation=cp.tolist(),mat3x3=T[:3,:3].tolist()));rr.log('/world/camera/trajectory',rr.LineStrips3D([np.asarray(camtraj,np.float32)],radii=.0015,colors=[[180,180,180,220]]));rr.log('/world/camera/image',rr.Pinhole(image_from_camera=K960.tolist(),resolution=[960,960]));rgb960=cv2.resize(frame_bgr,(960,960),interpolation=cv2.INTER_AREA);rr.log('/world/camera/image',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality))
             world=canon_vertices@R.T+t[None,:];
             if p09.ndim == 2 and p09.shape == (2500, 3) and np.isfinite(p09).all():
@@ -549,7 +556,7 @@ def main() -> None:
                 rr.log(
                     "/world/visible_surface",
                     rr.Points3D(
-                        p09[:: args.point_stride],
+                        p09_world[:: args.point_stride],
                         radii=0.0018,
                         colors=[255, 220, 0, 255],
                         point_shading=rr.components.PointShading.Flat,
@@ -600,7 +607,7 @@ def main() -> None:
                     stats[-1]['video_gate']=st2
             else:
                 kept=np.arange(len(canon_faces),dtype=np.int32)
-            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);overlay_points(overlay,p09,T,K960,args.overlay_point_stride);draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Objective-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose objective; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate')])
+            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);overlay_points(overlay,p09_world,T,K960,args.overlay_point_stride);draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Objective-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose objective; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate')])
             side=np.hstack([rgb960,overlay]);cv2.imwrite(str(tmp/f'{idx:06d}.jpg'),side,[cv2.IMWRITE_JPEG_QUALITY,args.jpeg_quality]);rr.log('/comparison/original_video',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/depth_ordered_overlay',rr.Image(cv2.cvtColor(overlay,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/side_by_side',rr.Image(cv2.cvtColor(side,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));
         video.release();rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(rrb.Spatial3DView(origin='/world',name='Depth-ordered SAM3D + MANO + P09 + camera',contents=['+ /world/sam3d_depth_ordered','+ /world/hands/**','+ /world/visible_surface','+ /world/camera/**']),rrb.Vertical(rrb.Spatial2DView(origin='/comparison/original_video',name='Original video'),rrb.Spatial2DView(origin='/comparison/depth_ordered_overlay',name='Depth-ordered overlay'),rrb.Spatial2DView(origin='/comparison/side_by_side',name='Original | depth-ordered overlay')),column_shares=[3,2]),collapse_panels=False));rr.disconnect();encode_video(tmp,args.output_video,fps,start_number=args.frame_start)
     finally:shutil.rmtree(tmp,ignore_errors=True)
@@ -617,6 +624,13 @@ def main() -> None:
         "generated_mesh_role": "visible_pose_objective_and_render_hypothesis"
         if preserve_objective_mesh
         else "render_only_completion_hypothesis",
+        "visible_surface_coordinate_contract": {
+            "source_field": "visible_geometry_candidate.camera_vertices_sample_m",
+            "source_frame": "camera",
+            "rrd_frame": "world",
+            "conversion": "camera_to_world_once",
+            "overlay_projection": "world_to_camera_once",
+        },
         "display_geometry": {
             "source_vertices": int(len(mesh.vertices)),
             "source_faces": int(len(mesh.faces)),
