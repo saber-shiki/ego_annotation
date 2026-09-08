@@ -135,6 +135,61 @@ class CurrentRunLineage(unittest.TestCase):
         validate_references({'note':'the model may explain candidate.json','weight':'MANO_LEFT.pkl',
                              'config':'pipeline.yaml'},self.root)
 
+    def test_runtime_entrypoints_never_request_nested_full_inventory(self):
+        import ast
+        root=Path(__file__).resolve().parents[1]/'scripts'
+        expected={'run_v19_sam3d_reconstruction.py':'geometry','run_v19_offline_rgb_edges.py':'rgb_loader',
+                  'build_v19_rgb_pose_initializer.py':'pose_initializer'}
+        for name in [*expected,'run_v19_sam3d_integration_stage.py','run_v19_frontend_stage.py']:
+            tree=ast.parse((root/name).read_text())
+            calls=[node for node in ast.walk(tree) if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='RunLineage']
+            self.assertEqual(len(calls),1,name)
+            roles=[kw.value for kw in calls[0].keywords if kw.arg=='asset_role']
+            self.assertEqual(len(roles),1,name)
+            if name in expected:self.assertEqual(ast.literal_eval(roles[0]),expected[name])
+        source=(root/'run_v19_sam3d_integration_stage.py').read_text()
+        self.assertIn("asset_role='geometry_dispatch' if a.stage=='geometry' else a.stage",source)
+
+    def test_runtime_asset_roles_hash_only_consumed_subsets(self):
+        import v19_runtime_assets as assets
+        exe=self.home/'env/bin/python';exe.parent.mkdir(parents=True);exe.write_bytes(b'interpreter');exe.chmod(0o755)
+        cfg={'main_python':str(exe),'rgb_python':str(exe),'demo_python':str(exe),
+             'sam3d_python':str(exe),'sam3d_repo':str(self.home/'sam'),
+             'sam3d_dinov2_repo':str(self.home/'dino'),'sam3d_config':str(self.home/'sam_weights/pipeline.yaml')}
+        identity={'files':{},'trees':{},'interpreters':{str(exe):{'resolved_executable':str(exe),'venv_config':None}}}
+        def pin(path,content):
+            path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(content)
+            identity['files'][str(path)]={'sha256':sha(path),'resolved_path':str(path)}
+            return path
+        pin(exe,b'interpreter')
+        pipeline=pin(Path(cfg['sam3d_config']),b'slat_generator_ckpt_path: generator.ckpt\n')
+        weight=pin(pipeline.parent/'generator.ckpt',b'SAM weight')
+        unused=pin(self.home/'hawor/checkpoint.pt',b'HaWoR weights')
+        moge=pin(self.home/'sam_weights/moge.pth',b'loader-checked MoGe')
+        for root in [self.home/'sam/sam3d_objects',self.home/'sam/notebook',self.home/'dino/dinov2']:
+            pin(root/'model.py',b'# source');identity['trees'][str(root)]={'kind':'source','members':['model.py']}
+        pin(self.home/'dino/hubconf.py',b'# hub source')
+        dispatch=assets.runtime_asset_subset(identity,cfg,'geometry_dispatch')
+        geometry=assets.runtime_asset_subset(identity,cfg,'geometry')
+        self.assertNotIn(str(weight),dispatch['files']);self.assertIn(str(weight),geometry['files'])
+        self.assertNotIn(str(moge),geometry['files'])  # actual SAM loader owns this fixed-hash check
+        self.assertEqual(set(dispatch['files']) & set(geometry['files']),{str(exe)})
+        for role in ('pose','pose_initializer','rgb_loader','export'):
+            subset=assets.runtime_asset_subset(identity,cfg,role)
+            self.assertEqual(set(subset['files']),{str(exe)})
+            with patch.object(assets,'sha',wraps=sha) as hashes:
+                assets.verify_external_assets(subset)
+            self.assertEqual([str(c.args[0]) for c in hashes.call_args_list],[str(exe)])
+        unused.write_bytes(b'changed unused model')
+        assets.verify_external_assets(assets.runtime_asset_subset(identity,cfg,'pose'))
+        with self.assertRaisesRegex(ValueError,'external asset changed'):
+            assets.verify_external_assets(identity)
+        weight.write_bytes(b'changed consumed SAM model')
+        with self.assertRaisesRegex(ValueError,'external asset changed'):
+            assets.verify_external_assets(assets.runtime_asset_subset(identity,cfg,'geometry'))
+        with self.assertRaisesRegex(ValueError,'unknown runtime asset role'):
+            assets.runtime_asset_subset(identity,cfg,'skip-everything')
+
     def test_native_profile_context_and_provider_contract(self):
         from prepare_v19_sam3d_runtime import validate_native_profile,NATIVE_PROFILE
         root=Path(__file__).resolve().parents[1]

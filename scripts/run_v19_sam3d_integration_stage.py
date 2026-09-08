@@ -124,7 +124,7 @@ def main():
     p.add_argument('--stage',choices=STAGES,required=True);p.add_argument('--run-root',type=Path,required=True);p.add_argument('--runtime-config',type=Path,required=True)
     p.add_argument('--gpu',type=int,required=True);a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
     execution_target(cfg,a.gpu)
-    _LINEAGE=RunLineage(root,ROOT,a.runtime_config)
+    _LINEAGE=RunLineage(root,ROOT,a.runtime_config,asset_role='geometry_dispatch' if a.stage=='geometry' else a.stage)
     if a.stage == 'camera':
         camera_stage(a, cfg, root)
         return

@@ -117,7 +117,7 @@ def main():
     p.add_argument('--run-root',type=Path,required=True)
     p.add_argument('--object-id',required=True);p.add_argument('--anchor-frame',type=int,required=True);a=p.parse_args()
     root=a.run_root.resolve()
-    lineage=RunLineage(root,Path(__file__).resolve().parents[1])
+    lineage=RunLineage(root,Path(__file__).resolve().parents[1],asset_role='pose_initializer')
     for name in ['annotations','pose_report','rgb_edge_npz','rgb_edge_json']:
         lineage.require(getattr(a,name))
     in_run(a.output,root,must_exist=False)

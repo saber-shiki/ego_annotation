@@ -28,7 +28,7 @@ def main():
     parser.add_argument('--run-root',type=Path,required=True)
     parser.add_argument('--runtime-config', type=Path, required=True)
     args, remaining = parser.parse_known_args()
-    lineage=RunLineage(args.run_root,Path(__file__).resolve().parents[1],args.runtime_config)
+    lineage=RunLineage(args.run_root,Path(__file__).resolve().parents[1],args.runtime_config,asset_role='rgb_loader')
     for flag in ('--annotations','--depth-npz','--initial-pose-report'):
         lineage.require(remaining[remaining.index(flag)+1])
     config = load(args.runtime_config)

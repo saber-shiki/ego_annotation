@@ -18,7 +18,7 @@ def main():
     p.add_argument('--object-id')
     a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
     execution_target(cfg,a.gpu)
-    lineage=RunLineage(root,ROOT,a.runtime_config);contract=lineage.contract;case=contract['case']
+    lineage=RunLineage(root,ROOT,a.runtime_config,asset_role=a.phase);contract=lineage.contract;case=contract['case']
     python=interpreter(cfg['main_python']);env=runtime_environment(cfg,a.gpu)
     def run(script,args,outputs,extra=(),heavy=False,exe=python):
         run_command(a.phase,[exe,ROOT/'scripts'/script,*args],outputs,root=root,cwd=ROOT,env=env,

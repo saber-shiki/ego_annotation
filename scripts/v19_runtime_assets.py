@@ -100,12 +100,74 @@ def verify_external_assets(identity):
             raise ValueError(f'external asset changed: {path}')
 
 
-def verify_bundle(bundle):
+def runtime_asset_subset(identity, config, role):
+    """Fixed entrypoint responsibilities, not a user-configurable skip cache.
+
+    Full inventories remain mandatory at preparation/authorized launch. Runtime
+    entrypoints rehash only what they consume. SAM3D's pinned MoGe/DINOv2 loader
+    and the offline LightGlue loader verify those checkpoint bytes at load time.
+    The geometry dispatcher consumes no model itself; its nested reconstruction
+    entry owns the SAM3D checks. All selected bytes are hashed, never mtime-only.
+    """
+    python_keys = {
+        'P01':('main_python',), 'P06':('main_python','owlv2_python'),
+        'P07':('main_python',), 'P08':('main_python',), 'P09-propose':('main_python',),
+        'P09':('main_python',), 'P11':('main_python',),
+        'camera':('main_python','unidepth_python'),
+        'geometry_dispatch':('main_python',), 'geometry':('main_python','sam3d_python'),
+        'pose':('main_python','rgb_python'), 'pose_initializer':('main_python',),
+        'rgb_loader':('rgb_python',), 'interaction':('main_python',),
+        'physical-render':('main_python',), 'demo':('main_python','demo_python'),
+        'export':('main_python','demo_python'),
+    }
+    if role not in python_keys:raise ValueError(f'unknown runtime asset role: {role}')
+    files=set();trees=set()
+    def file(path):
+        name=str(Path(os.path.abspath(Path(path).expanduser())))
+        if name not in identity['files']:raise ValueError(f'runtime asset not pinned: {name}')
+        files.add(name)
+    def tree(path):
+        name=str(Path(path))
+        if name not in identity['trees']:raise ValueError(f'runtime source tree not pinned: {name}')
+        trees.add(name)
+        for member in identity['trees'][name]['members']:file(Path(name)/member)
+    def python(value):
+        name=str(interpreter(value));file(name)
+        record=identity['interpreters'].get(name)
+        if record is None:raise ValueError(f'interpreter identity not pinned: {name}')
+        if record['venv_config']:file(record['venv_config'])
+    for key in python_keys[role]:python(config[key])
+    if role=='P06':tree(config['owlv2_model'])
+    if role=='P07':file(config['sam2_checkpoint'])
+    if role=='camera':
+        tree(config['unidepth_model']);tree(Path(config['unidepth_repo'])/'unidepth')
+        hawor=Path(config['hawor_root'])/'third_party/HaWoR'
+        for sub in ('hawor','infiller','lib','scripts/scripts_test_video','thirdparty','weights'):tree(hawor/sub)
+        for name in ('_DATA/data/mano/MANO_RIGHT.pkl','_DATA/data_left/mano_left/MANO_LEFT.pkl',
+                     '_DATA/data/mano_mean_params.npz','thirdparty/Metric3D/weights/metric_depth_vit_large_800k.pth'):file(hawor/name)
+        python(Path(config['hawor_root'])/'.venv_hawor/bin/python')
+        file(Path(config['hawor_root'])/'.venv_hawor/bin/activate')
+    if role=='geometry':
+        for sub in ('sam3d_objects','notebook'):tree(Path(config['sam3d_repo'])/sub)
+        tree(Path(config['sam3d_dinov2_repo'])/'dinov2');file(Path(config['sam3d_dinov2_repo'])/'hubconf.py')
+        pipeline=Path(config['sam3d_config']);file(pipeline)
+        # Verify pipeline bytes before using its declared dependency list.
+        verify_external_assets({'files':{str(pipeline):identity['files'][str(pipeline)]},'trees':{}})
+        for line in pipeline.read_text().splitlines():
+            if re.match(r'^\w+_(?:config|ckpt)_path:',line):file(pipeline.parent/line.split(':',1)[1].strip())
+    return {'files':{name:identity['files'][name] for name in sorted(files)},
+            'trees':{name:identity['trees'][name] for name in sorted(trees)},'role':role}
+
+
+def verify_bundle(bundle, *, asset_role=None):
     bundle=Path(bundle).resolve()
     manifest=load(bundle/'runtime/bundle_manifest.json')
     for name,digest in manifest['files'].items():
         path=bundle/name
         if not path.resolve().is_relative_to(bundle) or not path.is_file() or sha(path)!=digest:
             raise ValueError(f'bundle file missing/changed: {name}')
-    verify_external_assets(manifest['external_assets'])
+    identity=manifest['external_assets']
+    if asset_role is not None:
+        identity=runtime_asset_subset(identity,load(bundle/'runtime/runtime_config.json'),asset_role)
+    verify_external_assets(identity)
     return manifest

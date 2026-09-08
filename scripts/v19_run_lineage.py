@@ -16,13 +16,13 @@ AGENT_PATHS = {
 
 
 class RunLineage:
-    def __init__(self, root, bundle, runtime_config=None):
+    def __init__(self, root, bundle, runtime_config=None, *, asset_role=None):
         self.root=Path(root).resolve();self.bundle=Path(bundle).resolve()
         self.contract_path=in_run(self.root/'input/runtime_input_contract.json',self.root)
         self.contract=load(self.contract_path)
         uuid.UUID(self.contract['run_id'])
         if self.contract['run_root'] != str(self.root):raise ValueError('prepared run identity/root mismatch')
-        self.manifest=verify_bundle(self.bundle)
+        self.manifest=verify_bundle(self.bundle,asset_role=asset_role)
         if runtime_config is not None and sha(runtime_config)!=sha(self.bundle/'runtime/runtime_config.json'):
             raise ValueError('runtime config differs from the prepared bundle')
         if sha(self.bundle/'runtime/bundle_manifest.json') != self.contract['bundle_manifest_sha256']:

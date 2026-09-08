@@ -68,7 +68,7 @@ P05, the P09 anchor decision, P10 and P17 judgments are authored from current vi
 
 Do not author this provenance on behalf of unseen images or relabel copied judgments. It distinguishes visual judgment from measurement execution and does not make a judgment certain. The fixed frontend reads detector prompts/frames/intervals and optional `track_id` from the single selected P05 object. P10 must explicitly state `physical_branch: rigid` to enter P11. Alternative branches remain unresolved/nonrigid rather than entering rigid reconstruction.
 
-External model/source/interpreter identities are bound in the bundle manifest and rechecked at preparation and stage use. Optional environment overlays cannot enable GPU/network access during import preflight.
+External model/source/interpreter identities are bound in the bundle manifest. Preparation/authorized launch verifies the full inventory; each runtime entrypoint byte-checks its fixed consumed subset. The geometry dispatcher does not repeat its nested SAM3D consumer's inventory; MoGe/DINOv2 and LightGlue checkpoints retain their actual loader hash checks. There is no user skip-cache option or mtime-only replacement. Optional environment overlays cannot enable GPU/network access during import preflight.
 
 ## Stop condition
 
