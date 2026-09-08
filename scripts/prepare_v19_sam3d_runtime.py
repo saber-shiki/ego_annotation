@@ -24,7 +24,7 @@ from v19_runtime_assets import external_asset_identity, verify_bundle
 SPEC = 'runtime/rgb_sam3d_runtime_spec.md'
 PROMPT = 'runtime/rgb_sam3d_system_prompt.md'
 NATIVE_PROFILE = '.pi/agents/ego-annotation.rgb-sam3d-runtime.md'
-NATIVE_PROVIDER = '/mnt/user-home/kupingxin/ego_annotation_worktrees/shellgate_native_image_transport_fix_20260908/extensions/shellgate.ts'
+NATIVE_PROVIDER = '/mnt/user-home/kupingxin/ego_annotation_worktrees/shellgate_native_write_transport_fix_20260909/extensions/shellgate.ts'
 SCRIPT_RE = re.compile(r'scripts/[A-Za-z0-9_]+\.(?:py|sh)')
 ASSET_KEYS = {
     'compute_host', 'gpu', 'main_python', 'demo_python', 'rgb_python', 'unidepth_python',

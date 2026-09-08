@@ -287,7 +287,13 @@ def write_request(bundle, root, mode, contract_path, output_dir):
     return request
 
 
-def prepare_probe(bundle, probe_root, output_dir):
+def prepare_probe(bundle, probe_root, output_dir, marker_bytes=51):
+    if (
+        isinstance(marker_bytes, bool)
+        or not isinstance(marker_bytes, int)
+        or not 51 <= marker_bytes <= 16384
+    ):
+        raise ValueError("probe marker bytes must be an integer in [51,16384]")
     bundle, root = Path(bundle).resolve(), Path(probe_root).resolve()
     output_dir = Path(output_dir).resolve()
     verify_workspace(bundle)
@@ -296,7 +302,11 @@ def prepare_probe(bundle, probe_root, output_dir):
     require_request_separation(bundle, root, output_dir)
     root.mkdir(parents=True)
     marker = root / "input_marker.txt"
-    marker.write_text("native-tool-probe-" + uuid.uuid4().hex + "\n")
+    prefix = "native-tool-probe-" + uuid.uuid4().hex
+    extra = marker_bytes - len(prefix) - 1
+    marker.write_text(
+        prefix + ("0123456789abcdef" * ((extra + 15) // 16))[:extra] + "\n"
+    )
     image = root / "transport_probe.png"
     synthetic_probe_png(image)
     contract = {
@@ -306,6 +316,8 @@ def prepare_probe(bundle, probe_root, output_dir):
         "tmux_target": "ego_annotation_rgb_sam3d_probe_" + uuid.uuid4().hex[:12],
         "input_marker_file": str(marker),
         "input_marker_sha256": sha(marker),
+        "input_marker_bytes": marker_bytes,
+        "marker_copy_policy": "Return the complete marker text verbatim in marker_text; do not abbreviate a long marker.",
         "input_image": str(image),
         "input_image_sha256": sha(image),
         "output_json": str(root / "tool_probe_result.json"),
@@ -350,9 +362,24 @@ def main():
     parser.add_argument("mode", choices=["tool-probe", "prediction-request"])
     for name in ("bundle-root", "run-root", "output-dir"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument(
+        "--probe-marker-bytes",
+        type=int,
+        default=51,
+        help="Tool-probe only: exact marker size echoed through the native write tool",
+    )
     args = parser.parse_args()
-    fn = prepare_probe if args.mode == "tool-probe" else prepare_prediction_request
-    print(json.dumps(fn(args.bundle_root, args.run_root, args.output_dir), indent=2))
+    if args.mode == "tool-probe":
+        result = prepare_probe(
+            args.bundle_root, args.run_root, args.output_dir, args.probe_marker_bytes
+        )
+    else:
+        if args.probe_marker_bytes != 51:
+            parser.error("--probe-marker-bytes is only for tool-probe")
+        result = prepare_prediction_request(
+            args.bundle_root, args.run_root, args.output_dir
+        )
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

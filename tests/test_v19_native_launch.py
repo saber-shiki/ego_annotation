@@ -99,6 +99,28 @@ class NativeLaunchPlanTests(unittest.TestCase):
             {str(p): launch.sha(p) for p in self.bundle.rglob("*") if p.is_file()},
         )
 
+    def test_large_probe_marker_requires_large_native_write_without_creating_result(
+        self,
+    ):
+        root, request_dir = self.root / "large_probe", self.root / "large_request"
+        request = launch.prepare_probe(self.bundle, root, request_dir, 8192)
+        marker = root / "input_marker.txt"
+        self.assertEqual(marker.stat().st_size, 8192)
+        contract = launch.load(root / "probe_contract.json")
+        self.assertEqual(contract["input_marker_bytes"], 8192)
+        self.assertEqual(contract["input_marker_sha256"], launch.sha(marker))
+        self.assertIn("complete marker text verbatim", contract["marker_copy_policy"])
+        self.assertFalse((root / "tool_probe_result.json").exists())
+        self.assertIn(
+            json.dumps(str(root / "tool_probe_result.json")),
+            Path(request["workflowScriptPath"]).read_text(),
+        )
+        with self.assertRaisesRegex(ValueError, "marker bytes"):
+            launch.prepare_probe(
+                self.bundle, self.root / "bad_probe", self.root / "bad_request", 16385
+            )
+        self.assertFalse((self.root / "bad_probe").exists())
+
     def test_no_inherited_context_or_missing_provider_is_accepted(self):
         profile = self.bundle / launch.PROFILE
         original = profile.read_text()
