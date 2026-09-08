@@ -11,6 +11,7 @@ import numpy as np
 from v20_prediction_contracts import find_positive_gt_flags
 from v19_run_lineage import RunLineage
 from v19_video_timing import read_cfr_video_timing, validate_package_cfr_times
+from v19_camera_contract import load_contract as load_camera_contract, plane_intrinsics
 from v19_runtime_contracts import (in_run, validate_references, validate_timeline,
     run_command, runtime_environment, execution_target)
 
@@ -48,6 +49,18 @@ def interpreter(value):
     p=Path(os.path.abspath(Path(value).expanduser()))
     if not p.is_file() or not os.access(p,os.X_OK):raise ValueError(f'interpreter unavailable: {p}')
     return p
+
+
+def hawor_source_intrinsics(camera, frame_ids, source_size_wh):
+    """Read the authoritative source plane in both sensor and RGB-fallback V2 contracts."""
+    payload, normalized = load_camera_contract(camera, expected_frame_ids=frame_ids)
+    K, _ = plane_intrinsics(payload, normalized, plane_name='source_rgb',
+                            actual_size_wh=source_size_wh, allow_implicit_resize=False)
+    if K.shape != (4,) or not np.isfinite(K).all() or np.any(K[:2] <= 0):
+        raise ValueError('invalid source K')
+    if not np.isclose(K[0], K[1], rtol=1e-6, atol=1e-6):
+        raise ValueError('HaWoR requires square focal; cannot average supplied fx/fy')
+    return K
 
 
 def camera_stage(args, cfg, root):
@@ -94,16 +107,13 @@ def camera_stage(args, cfg, root):
         extra=['--unidepth-npz',probe/depth_name,'--fallback-reason','no supplied prediction-side calibration','--aggregation','median','--square-focal']
     run('P03b_camera',[main_python,ROOT/'scripts/resolve_v19_camera_contract.py','--case',contract['case'],
         '--raw-frame-manifest',manifest_path,'--output-dir',calibration,*extra],[camera])
+    K=hawor_source_intrinsics(camera, ids, (width,height))
     run('P03_conditioned_depth',depth_command(final)+['--camera-contract',camera,
         '--camera-input-plane','manifest_rgb','--camera-output-plane','source_rgb'],[final/depth_name])
     bound=calibration/'depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
     run('P03c_depth_binding',[main_python,ROOT/'scripts/adapt_v19_depth_to_camera_contract.py',
         '--source-depth-npz',final/depth_name,'--camera-contract',camera,'--depth-plane','source_rgb',
         '--output-dir',bound.parent],[bound])
-    K=np.asarray(load(camera)['source_plane_intrinsics_fx_fy_cx_cy'],float)
-    if K.shape != (4,) or not np.isfinite(K).all() or np.any(K[:2]<=0):raise ValueError('invalid source K')
-    if not np.isclose(K[0],K[1],rtol=1e-6,atol=1e-6):
-        raise ValueError('HaWoR requires square focal; cannot average supplied fx/fy')
     handout=root/'measurements/hand_candidates/hawor_world'
     if handout.exists():raise ValueError('HaWoR output already exists')
     clip=root/'input/hawor_sequence'/f"{contract['case']}.mp4"
@@ -126,7 +136,19 @@ def main():
     execution_target(cfg,a.gpu)
     _LINEAGE=RunLineage(root,ROOT,a.runtime_config,asset_role='geometry_dispatch' if a.stage=='geometry' else a.stage)
     if a.stage == 'camera':
-        camera_stage(a, cfg, root)
+        try:
+            camera_stage(a, cfg, root)
+        except Exception as exc:
+            # Preparation errors between subcommands must survive a shell exit
+            # just like subprocess failures; do not rely on agent file tools.
+            import traceback
+            directory=in_run(root/'state/runtime_blockers',root,must_exist=False)
+            directory.mkdir(parents=True,exist_ok=True)
+            blocker={'phase':'camera','status':'failed','error_type':type(exc).__name__,
+                     'error':str(exc),'argv':sys.argv,'traceback':traceback.format_exc(),
+                     'next_required_repair':'repair the failed producer/consumer interface; preserve this run'}
+            (directory/'camera_stage.json').write_text(json.dumps(blocker,indent=2)+'\n')
+            raise
         return
     selection=load(file_in_run(root/'state/object_selection.json',root));case=str(selection['case']);obj=str(selection['object_id']);anchor=int(selection['anchor_frame'])
     for value in [case,obj]:

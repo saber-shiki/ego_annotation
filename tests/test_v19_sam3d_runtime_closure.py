@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 import run_v19_sam3d_integration_stage as stage
 import prepare_v19_sam3d_runtime as prep
 import v19_runtime_contracts as contracts
+import resolve_v19_camera_contract as camera_resolver
 from v20_prediction_contracts import assert_prediction_only
 
 
@@ -101,10 +102,19 @@ class StageContracts(unittest.TestCase):
             if script == 'run_v19_offline_rgb_edges.py':
                 flags |= producer_options('build_v20_global_rgb_orientation_edges.py')
             self.assertLessEqual({a for a in argv[2:] if a.startswith('--')},flags)
+        if key == 'P03a_intrinsics_probe':
+            path=Path(outputs[0]);path.parent.mkdir(parents=True,exist_ok=True)
+            np.savez(path,frame_idx=np.arange(3),intrinsics_fx_fy_cx_cy=np.tile([900.,900.,35.5,21.5],(3,1)),source_size=[80,48])
+            return
+        if key == 'P03b_camera':
+            # Exercise the actual source-neutral producer, not a hand-written
+            # convenience-key fixture which hid the first cold-run failure.
+            with patch.object(sys,'argv',argv[1:]):
+                camera_resolver.resolve(camera_resolver.parse_args())
+            return
         for path in outputs:
             value = {'fixture':key}
-            if key == 'P03b_camera':value={'source_plane_intrinsics_fx_fy_cx_cy':[900,900,35.5,21.5]}
-            elif key == 'P14b_multiview':value=self.completion
+            if key == 'P14b_multiview':value=self.completion
             elif key == 'D00_demo_binding':
                 source=load_source=contracts.load(Path(argv[argv.index('--pose-report')+1]))
                 value={**source,'render_mesh_contract':self.completion['render_mesh_contract'],
@@ -162,6 +172,8 @@ class StageContracts(unittest.TestCase):
         self.assertIn('unidepth_intrinsics_probe', ' '.join(self.calls[1][1]))
         self.assertIn('--camera-contract',self.calls[2][1])
         self.assertIn('source_rgb',self.calls[3][1])
+        camera_path=self.root/'state/calibration/v19_camera_calibration_contract.json'
+        self.assertNotIn('source_plane_intrinsics_fx_fy_cx_cy',contracts.load(camera_path))
         env=self.calls[-1][3]['env']
         self.assertEqual(env['EGO_HAWOR_CAMERA_INTRINSICS_FX_FY_CX_CY'],'900.0 900.0 35.5 21.5')
         self.assertEqual(env['EGO_HAWOR_IMG_FOCAL'],'900.0')
@@ -177,12 +189,50 @@ class StageContracts(unittest.TestCase):
         self.assertFalse(self.calls)
 
     def test_supplied_sensor_does_not_probe_or_fallback(self):
-        sensor=write(self.root/'input/sensor.json',{'source_plane_intrinsics_fx_fy_cx_cy':[900,900,35.5,21.5]})
+        sensor=write(self.root/'input/sensor.json',{'intrinsics_fx_fy_cx_cy':[900,900,35.5,21.5], 'source_size':[80,48], 'frames':self.frames})
         data=contracts.load(self.input);data.update(sensor_calibration_metadata=str(sensor),sensor_calibration_authority='prediction_side_sensor_metadata');write(self.input,data)
         self.invoke('camera')
         self.assertEqual(self.calls[0][0],'P03b_camera')
         self.assertIn('--sensor-calibration-contract',self.calls[0][1])
         self.assertNotIn('--unidepth-npz',self.calls[0][1])
+
+    def test_P04_source_plane_uses_actual_sensor_affine_not_calibration_K(self):
+        sensor=write(self.root/'input/sensor_affine.json',{'intrinsics_fx_fy_cx_cy':[1800,1800,71.5,43.5], 'source_size':[160,96], 'frames':self.frames})
+        out=self.root/'state/affine_camera'
+        args=['resolve','--case','clip','--raw-frame-manifest',str(self.manifest),
+              '--sensor-calibration-contract',str(sensor),'--prediction-source-video',str(self.video),
+              '--sensor-source-video',str(self.video),'--output-dir',str(out),
+              '--source-from-calibration-affine','.5','0','-.25','0','.5','-.25','0','0','1']
+        with patch.object(sys,'argv',args):
+            result=camera_resolver.resolve(camera_resolver.parse_args())
+        path=out/'v19_camera_calibration_contract.json';before=path.read_bytes()
+        np.testing.assert_allclose(stage.hawor_source_intrinsics(path,[0,1,2],(80,48)),[900,900,35.5,21.5],atol=1e-12)
+        self.assertEqual(result['intrinsics_fx_fy_cx_cy'],[1800,1800,71.5,43.5])
+        self.assertEqual(before,path.read_bytes())
+        with self.assertRaisesRegex(RuntimeError,'frame_ids'):
+            stage.hawor_source_intrinsics(path,[0,1],(80,48))
+        with self.assertRaisesRegex(RuntimeError,'actual source_rgb size'):
+            stage.hawor_source_intrinsics(path,[0,1,2],(160,96))
+
+    def test_P04_still_rejects_nonsquare_focal_without_averaging(self):
+        sensor=write(self.root/'input/sensor_nonsquare.json',{'intrinsics_fx_fy_cx_cy':[900,950,35.5,21.5], 'source_size':[80,48], 'frames':self.frames})
+        data=contracts.load(self.input);data.update(sensor_calibration_metadata=str(sensor),sensor_calibration_authority='prediction_side_sensor_metadata');write(self.input,data)
+        with self.assertRaisesRegex(ValueError,'cannot average'):
+            self.invoke('camera')
+        self.assertEqual([c[0] for c in self.calls],['P03b_camera'])
+
+    def test_camera_preparation_error_persists_blocker_before_hawor(self):
+        def broken(key,argv,outputs,**kwargs):
+            self.command(key,argv,outputs,**kwargs)
+            if key=='P03b_camera':
+                path=Path(outputs[0]);data=contracts.load(path);del data['image_planes']['source_rgb'];write(path,data)
+        with self.assertRaisesRegex(RuntimeError,'source_rgb'):
+            self.invoke('camera',broken)
+        self.assertNotIn('P04_HaWoR',[c[0] for c in self.calls])
+        blocker=contracts.load(self.root/'state/runtime_blockers/camera_stage.json')
+        self.assertEqual(blocker['phase'],'camera')
+        self.assertEqual(blocker['error_type'],'RuntimeError')
+        self.assertIn('source_rgb',blocker['error'])
 
     def test_pose_and_interaction_actual_CLI_bindings(self):
         self.seed_pose();self.invoke('pose')
@@ -249,6 +299,25 @@ class StageContracts(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'directory already exists'):
                 self.invoke('pose',contracts.run_command)
         launch.assert_not_called()
+
+
+class ManagedShellCommandPolicy(unittest.TestCase):
+    def test_actual_broker_transactions_keep_failure_inside_subshell(self):
+        import importlib.util
+        path=Path(prep.NATIVE_PROVIDER).with_name('shellgate-broker.py')
+        spec=importlib.util.spec_from_file_location('v19_test_broker_command',path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        def transactions(first):
+            return ''.join(module.command_block('posix',command,None,str(i),'off')
+                           for i,command in enumerate([first,'( set -euo pipefail; (exit 7) )',"printf 'FOLLOWUP_ALIVE\\n'"]))
+        safe=subprocess.run(['bash','--noprofile','--norc'],input=transactions('( set -euo pipefail; printf host_ok )'),capture_output=True,text=True)
+        self.assertEqual(safe.returncode,0)
+        self.assertIn('__SGB_STATUS_1__:7:',safe.stdout)
+        self.assertIn('FOLLOWUP_ALIVE',safe.stdout)
+        unsafe=subprocess.run(['bash','--noprofile','--norc'],input=transactions('set -euo pipefail; printf host_ok'),capture_output=True,text=True)
+        self.assertEqual(unsafe.returncode,7)
+        self.assertNotIn('__SGB_STATUS_1__',unsafe.stdout)
+        self.assertNotIn('FOLLOWUP_ALIVE',unsafe.stdout)
 
 
 class BundleContracts(unittest.TestCase):

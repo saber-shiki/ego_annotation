@@ -45,6 +45,8 @@ The runtime output is a prediction run root containing `input/`, `measurements/`
 7. Do not run scoring or comparisons inside this runtime run.
 8. Before each GPU-heavy phase, recheck live GPU memory/utilization and compute processes; if the configured GPU is busy, record the live process/memory evidence and stop that launch; do not take a different GPU without launch authorization.
 9. Do not use sleep, polling loops, or idle waits. Long-running jobs need durable command logs/status files and inspectable job handles.
+10. The managed shell persists between calls. Put `set -euo pipefail` and command pipelines inside a subshell `( ... )`; do not enable persistent `errexit`/`nounset` in that shell. A failing stage must return its exit status without destroying the broker shell needed to inspect its log.
+11. Use the bash tool's explicit `timeout=1200` seconds for model/stage commands (including the combined camera stage), within the launch tool budget. This is a tool wait budget, not the shell `timeout` command. A tool timeout is not proof of model termination: do not send another command/read into the active managed shell, rerun the phase, or turn the broker off; report the exact command and log path for process/exit reconciliation.
 
 ## Declared compute and asset targets
 
@@ -127,10 +129,12 @@ Required output: `{RUN_ROOT}/input/raw_frame_manifest/manifest.json`.
 Type: bash command.
 
 ```bash
-set -euo pipefail
-hostname
-df -h "{RUN_ROOT}"
-nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+(
+  set -euo pipefail
+  hostname
+  df -h "{RUN_ROOT}"
+  nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
+)
 ```
 
 Required output: append a log event to `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}` and successful A800 host probe. There is no per-phase bundle sync or raw-frame-manifest staging because Pi, the input video, and the run root are already on the A800 host.
