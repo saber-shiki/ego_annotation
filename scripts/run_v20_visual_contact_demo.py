@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the validated milk demo fit/render or replay a frozen demo state.
+"""Run the additive MANO/object demo fit/render or replay a frozen demo state.
 
 This is a demo postprocessing entry point, NOT a V19 fresh-run orchestrator.
 It never installs dependencies, starts agents, or chooses a compute host.
@@ -47,6 +47,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--state", type=Path, help="Frozen demo_state.npz; replay only")
     for name in FIT_INPUTS:
         result.add_argument("--" + name.replace("_", "-"), type=Path)
+    result.add_argument("--render-width", type=int)
+    result.add_argument("--frames", default="all", help="Renderer frame IDs, or all")
+    result.add_argument("--interaction-judgments", type=Path)
     result.add_argument("--object-id", default="carton_milk")
     result.add_argument("--device", default="cuda:0")
     result.add_argument("--iterations", type=int, default=240)
@@ -72,6 +75,8 @@ def build_plan(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
         raise ValueError(f"refusing to overwrite output directory: {args.output_dir}")
     if not args.source_video.is_file():
         raise ValueError(f"source video not found: {args.source_video}")
+    if args.render_width is not None and args.render_width < 2:
+        raise ValueError("render width must be at least 2")
     if args.iterations < 1:
         raise ValueError("iterations must be positive")
     script_dir = Path(__file__).resolve().parent
@@ -107,12 +112,18 @@ def build_plan(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
                 str(output_dir / "fit"),
             ]
         )
+        if args.interaction_judgments is not None:
+            if not args.interaction_judgments.is_file():
+                raise ValueError("interaction judgments input not found")
+            fit.extend(["--interaction-judgments", str(args.interaction_judgments.resolve())])
+        if args.render_width is not None:
+            fit.extend(["--render-width", str(args.render_width)])
         steps.append(("fit", fit))
         state_path = output_dir / "fit" / "demo_state.npz"
     else:
         if args.state is None or not args.state.is_file():
             raise ValueError("replay requires an existing --state demo_state.npz")
-        if any(getattr(args, name) is not None for name in FIT_INPUTS):
+        if args.interaction_judgments is not None or any(getattr(args, name) is not None for name in FIT_INPUTS):
             raise ValueError("replay does not consume fit inputs; pass only --state")
         state_path = args.state.resolve()
     render = [
@@ -127,6 +138,9 @@ def build_plan(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
         "--detail-yaw-deg",
         str(args.detail_yaw_deg),
     ]
+    render.extend(["--frames", args.frames])
+    if args.render_width is not None:
+        render.extend(["--render-width", str(args.render_width)])
     steps.append(("render", render))
     return steps
 
@@ -152,6 +166,8 @@ def execute(args: argparse.Namespace, plan: list[tuple[str, list[str]]]) -> int:
     root = args.output_dir.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=False)
     inputs = {"source_video": args.source_video.resolve()}
+    if args.interaction_judgments is not None:
+        inputs["interaction_judgments"] = args.interaction_judgments.resolve()
     if args.state is not None:
         inputs["state"] = args.state.resolve()
     if args.mode == "fit-render":
@@ -177,6 +193,7 @@ def execute(args: argparse.Namespace, plan: list[tuple[str, list[str]]]) -> int:
                 "fit_v20_visual_contact_demo.py",
                 "render_v20_visual_contact_demo.py",
                 "v20_demo_geometry.py",
+                "v19_demo_timeline.py",
                 "v20_prediction_contracts.py",
             )
         },
@@ -212,7 +229,7 @@ def main() -> int:
     cli = parser()
     args = cli.parse_args()
     # Expand user paths consistently for validation and execution.
-    for name in ("output_dir", "source_video", "state", *FIT_INPUTS):
+    for name in ("output_dir", "source_video", "state", "interaction_judgments", *FIT_INPUTS):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, value.expanduser())

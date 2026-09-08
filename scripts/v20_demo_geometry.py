@@ -37,8 +37,12 @@ def project(points, K):
 
 
 def resized_K(K, source=(1408, 1408), target=(960, 960)):
-    s = np.asarray(target) / np.asarray(source)
-    return np.r_[np.asarray(K)[:2] * s, (np.asarray(K)[2:] + 0.5) * s - 0.5]
+    s = np.asarray(target, dtype=float) / np.asarray(source, dtype=float)
+    K = np.asarray(K, dtype=float)
+    if (K.shape != (4,) or not np.isfinite(K).all() or np.any(K[:2] <= 0)
+            or s.shape != (2,) or not np.isfinite(s).all() or np.any(s <= 0)):
+        raise ValueError("invalid intrinsics or image resize")
+    return np.r_[K[:2] * s, (K[2:] + 0.5) * s - 0.5]
 
 
 def mano_models(path, device="cpu"):

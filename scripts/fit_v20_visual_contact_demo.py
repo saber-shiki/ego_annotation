@@ -21,6 +21,8 @@ from v20_demo_geometry import (
     torch_rodrigues,
 )
 from v20_prediction_contracts import assert_prediction_only
+from v19_demo_timeline import (annotation_timeline, hand_validity, fit_keyframes,
+    interpolate_supported, interaction_states)
 
 
 def main():
@@ -37,6 +39,8 @@ def main():
     parser.add_argument("--object-id", default="carton_milk")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--iterations", type=int, default=240)
+    parser.add_argument("--render-width", type=int, help="Preserve source aspect ratio; default source size")
+    parser.add_argument("--interaction-judgments", type=Path)
     args = parser.parse_args()
     out = args.output_dir
     if out.exists():
@@ -49,7 +53,6 @@ def main():
     ann = load(args.annotations)
     rep = load(args.pose_report)
     assert_prediction_only(rep, label="demo initial pose", object_id=args.object_id)
-    rows = {r["frame_idx"]: r for r in rep["pose_rows"]}
     meshpath = Path(rep["render_mesh_contract"]["required_mesh_path"])
     if sha(meshpath) != rep["render_mesh_contract"]["required_mesh_sha256"]:
         raise ValueError("mesh identity mismatch")
@@ -57,27 +60,28 @@ def main():
     V = np.asarray(mesh.vertices)
     F = np.asarray(mesh.faces)
     scene = make_scene(V, F)
-    z = np.load(args.hawor_params, allow_pickle=False)
-    bridge = np.load(args.mano_bridge, allow_pickle=False)
-    ids = np.asarray(z["frame_idx"], int)
+    with np.load(args.hawor_params, allow_pickle=False) as archive:
+        z = dict(archive)
+    with np.load(args.mano_bridge, allow_pickle=False) as archive:
+        bridge = dict(archive)
+    frames, z, rows, times, T, K, size, source_size = annotation_timeline(
+        ann, dict(z), rep["pose_rows"], args.render_width
+    )
+    ids = z["frame_idx"]
     N = len(ids)
-    assert N == 150 and np.array_equal(ids, np.arange(N))
-    key = np.unique(np.r_[np.arange(0, N, 5), N - 1])
+    valid = {side: hand_validity(z, side, N) for side in ["left", "right"]}
+    key = fit_keyframes(N, valid)
     B = len(key)
-    T = np.asarray([f["camera"]["T_world_camera_metric"] for f in ann["frames"]])
-    K = np.asarray(
-        [
-            resized_K(
-                f["camera"]["intrinsics_fx_fy_cx_cy"],
-                (f["source_width"], f["source_height"]),
-            )
-            for f in ann["frames"]
-        ]
+    judgments = interaction_states(
+        load(args.interaction_judgments) if args.interaction_judgments else None,
+        ids, args.object_id,
     )
-    R0 = np.asarray(
-        [rows[i]["rotation_world_from_completed_canonical_matrix"] for i in ids]
-    )
-    t0 = np.asarray([rows[i]["translation_world_m"] for i in ids])
+    R0 = np.asarray([r["rotation_world_from_completed_canonical_matrix"] for r in rows])
+    t0 = np.asarray([r["translation_world_m"] for r in rows])
+    if (R0.shape != (N, 3, 3) or t0.shape != (N, 3) or not np.isfinite(R0).all()
+            or not np.isfinite(t0).all() or not np.allclose(R0.transpose(0, 2, 1) @ R0, np.eye(3), atol=1e-4)
+            or not np.allclose(np.linalg.det(R0), 1, atol=1e-4)):
+        raise ValueError("full-timeline rigid object poses required")
     models = mano_models(args.mano_models, device)
     for model in models.values():
         model.requires_grad_(False)
@@ -86,61 +90,50 @@ def main():
     data = {}
     maxreplay = {}
     for side in ["left", "right"]:
+        vi = np.flatnonzero(valid[side])
+        if not len(vi):
+            maxreplay[side] = None
+            continue
         root = z[side + "_root_orient_axis_angle"]
         pose = z[side + "_hand_pose_axis_angle"]
         beta = z[side + "_betas"]
         trans = z[side + "_trans_world_m"]
         with torch.no_grad():
-            rr = models[side](
-                global_orient=to(root), hand_pose=to(pose), betas=to(beta)
-            )
-            replay = rr.vertices + to(trans)[:, None]
+            rr = models[side](global_orient=to(root[vi]), hand_pose=to(pose[vi]), betas=to(beta[vi]))
+            replay = rr.vertices + to(trans[vi])[:, None]
         source = z[side + "_vertices_world_m"]
-        bi = np.asarray(
-            [
-                np.flatnonzero(
-                    (bridge["frame_idx"] == i) & (bridge["hand_side"] == side)
-                )[0]
-                for i in ids
-            ]
-        )
-        if not np.allclose(
-            bridge["vertices_current_v18_world_from_hawor_projection_relift_m"][bi],
-            source,
-            atol=1e-6,
-        ):
+        bi = []
+        for i in ids[vi]:
+            matches = np.flatnonzero((bridge["frame_idx"] == i) & (bridge["hand_side"] == side))
+            if len(matches) != 1:
+                raise ValueError(f"MANO bridge requires unique valid frame/side {i}/{side}")
+            bi.append(matches[0])
+        if not np.allclose(bridge["vertices_current_v18_world_from_hawor_projection_relift_m"][bi], source[vi], atol=1e-6):
             raise ValueError("MANO bridge/source mismatch")
-        err = np.linalg.norm(replay.cpu().numpy() - source, axis=-1)
+        err = np.linalg.norm(replay.cpu().numpy() - source[vi], axis=-1)
         maxreplay[side] = float(err.max())
-        if err.max() > 1e-4:
+        if not np.isfinite(err).all() or err.max() > 1e-4:
             raise ValueError(f"MANO replay inconsistent {side}: {err.max()}")
         joints = z[side + "_joints_world_m"]
-        joints_replay = (
-            (
-                torch.cat([rr.joints[:, :16], rr.vertices[:, TIP_VERTICES]], dim=1)[
-                    :, JOINT_ORDER
-                ]
-                + to(trans)[:, None]
-            )
-            .detach()
-            .cpu()
-            .numpy()
-        )
-        if np.max(np.linalg.norm(joints_replay - joints, axis=-1)) > 1e-4:
+        joints_replay = (torch.cat([rr.joints[:, :16], rr.vertices[:, TIP_VERTICES]], dim=1)[:, JOINT_ORDER] + to(trans[vi])[:, None]).detach().cpu().numpy()
+        if not np.allclose(joints_replay, joints[vi], atol=1e-4, rtol=0):
             raise ValueError(f"MANO joint order inconsistent {side}")
+        ki = np.flatnonzero(valid[side][key])
+        skey = key[ki]
         # Surface pad samples: fixed vertex ids around each fingertip in actual MANO topology.
         sample = np.asarray(
-            [cKDTree(source[i]).query(source[i, TIP_VERTICES], k=12)[1] for i in key]
+            [cKDTree(source[i]).query(source[i, TIP_VERTICES], k=12)[1] for i in skey]
         )
-        pix = np.asarray([project(camera(source[i], T[i]), K[i]) for i in key])
-        jpix = np.asarray([project(camera(joints[i], T[i]), K[i]) for i in key])
+        pix = np.asarray([project(camera(source[i], T[i]), K[i]) for i in skey])
+        jpix = np.asarray([project(camera(joints[i], T[i]), K[i]) for i in skey])
         data[side] = dict(
-            root=to(root[key]),
-            pose=to(pose[key]),
-            beta=to(beta[key]),
-            trans=to(trans[key]),
-            base_vertices=to(source[key]),
-            base_joints=to(joints[key]),
+            ki=ki,
+            root=to(root[skey]),
+            pose=to(pose[skey]),
+            beta=to(beta[skey]),
+            trans=to(trans[skey]),
+            base_vertices=to(source[skey]),
+            base_joints=to(joints[skey]),
             base_pixel=to(pix),
             base_joint_pixel=to(jpix),
             patch=sample,
@@ -151,15 +144,22 @@ def main():
     contact_gate = np.zeros((B, 2, 5), np.float32)
     for k, i in enumerate(key):
         obj = next(
-            o for o in ann["frames"][i]["objects"] if o["object_id"] == args.object_id
+            (o for o in frames[i]["objects"] if o["object_id"] == args.object_id), None
         )
-        m = cv2.imread(obj["mask_path"], 0)
-        if m is None or m.shape != (960, 960):
-            raise ValueError("expected object mask on960 plane")
+        m = cv2.imread(obj["mask_path"], 0) if obj and obj.get("mask_path") else None
+        if m is None or not np.any(m):
+            mask_contours.append(None)
+            continue
+        if abs(m.shape[1] / m.shape[0] - source_size[0] / source_size[1]) > 0.01:
+            raise ValueError("object mask aspect ratio is not the source image plane")
+        m = cv2.resize(m, tuple(size), interpolation=cv2.INTER_NEAREST)
         ys, xs = np.where(m > 0)
         hull = cv2.convexHull(np.column_stack([xs, ys]).astype("float32")).reshape(
             -1, 2
         )
+        if len(hull) < 3:
+            mask_contours.append(None)
+            continue
         edge = np.roll(hull, -1, axis=0) - hull
         length = np.linalg.norm(edge, axis=1)
         cum = np.r_[0, np.cumsum(length)]
@@ -171,13 +171,16 @@ def main():
         mask_contours.append(contour)
         dist = cv2.distanceTransform((m == 0).astype("uint8"), cv2.DIST_L2, 5)
         for si, side in enumerate(["left", "right"]):
-            uv = data[side]["base_joint_pixel"][k, [4, 8, 12, 16, 20]].cpu().numpy()
+            if not valid[side][i] or judgments[i, si] not in {"likely_contact", "possible_contact", "legacy_visual_hypothesis"}:
+                continue
+            local = int(np.flatnonzero(data[side]["ki"] == k)[0])
+            uv = data[side]["base_joint_pixel"][local, [4, 8, 12, 16, 20]].cpu().numpy()
             p = np.rint(uv).astype(int)
-            inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < 960) & (p[:, 1] < 960)
-            p = np.clip(p, 0, 959)
-            # Thumbs seen supporting the carton are primary demo hypotheses.
+            inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < size[0]) & (p[:, 1] < size[1])
+            p = np.clip(p, [0, 0], size - 1)
+            # Geometric candidates remain demo hypotheses, gated by supplied agent states.
             contact_gate[k, si, 0] = float(inside[0] and dist[p[0, 1], p[0, 0]] < 16)
-            base = data[side]["base_vertices"][k].cpu().numpy()
+            base = data[side]["base_vertices"][local].cpu().numpy()
             q = (base[TIP_VERTICES] - t0[i]) @ R0[i]
             near, n = closest(scene, q)
             gap = np.linalg.norm(q - near, axis=1)
@@ -191,10 +194,11 @@ def main():
         json.dumps(
             {
                 "kind": "demo_visual_grasp_hypothesis_not_measured_contact",
-                "keyframes": key.tolist(),
+                "keyframes": ids[key].tolist(),
                 "weights": contact_gate.tolist(),
                 "tip_vertices": TIP_VERTICES.tolist(),
-                "raw_frames_inspected": [0, 35, 65, 95, 120, 140, 149],
+                "interaction_source": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
+                "interaction_states": judgments[key].tolist(),
             },
             indent=2,
         )
@@ -228,10 +232,13 @@ def main():
         t = base_t + torch.einsum("bij,bj->bi", cam_R, obj_delta[:, 3:])
         hands = {}
         for si, side in enumerate(["left", "right"]):
+            if side not in data:
+                continue
             d = data[side]
+            ki = d["ki"]
             o = models[side](
                 global_orient=d["root"],
-                hand_pose=d["pose"] + hand_delta[:, si],
+                hand_pose=d["pose"] + hand_delta[ki, si],
                 betas=d["beta"],
             )
             vw = o.vertices + d["trans"][:, None]
@@ -242,16 +249,16 @@ def main():
                 + d["trans"][:, None]
             )
             pivot = jw[:, :1]
-            dR = torch_rodrigues(hand_root[:, si])
+            dR = torch_rodrigues(hand_root[ki, si])
             vw = (vw - pivot) @ dR.transpose(1, 2) + pivot
             jw = (jw - pivot) @ dR.transpose(1, 2) + pivot
-            vc = (vw - cam_t[:, None]) @ cam_R
-            jc = (jw - cam_t[:, None]) @ cam_R
-            scale = torch.exp(hand_scale[:, si])[:, None]
-            vc = vc * scale + hand_t[:, si, None]
-            jc = jc * scale + hand_t[:, si, None]
-            vw = vc @ cam_R.transpose(1, 2) + cam_t[:, None]
-            jw = jc @ cam_R.transpose(1, 2) + cam_t[:, None]
+            vc = (vw - cam_t[ki, None]) @ cam_R[ki]
+            jc = (jw - cam_t[ki, None]) @ cam_R[ki]
+            scale = torch.exp(hand_scale[ki, si])[:, None]
+            vc = vc * scale + hand_t[ki, si, None]
+            jc = jc * scale + hand_t[ki, si, None]
+            vw = vc @ cam_R[ki].transpose(1, 2) + cam_t[ki, None]
+            jw = jc @ cam_R[ki].transpose(1, 2) + cam_t[ki, None]
             hands[side] = (vw, jw, vc, jc)
         return R, t, hands
 
@@ -261,11 +268,16 @@ def main():
         if it % 12 == 0:
             with torch.no_grad():
                 for si, side in enumerate(["left", "right"]):
+                    if side not in data:
+                        continue
+                    ki = data[side]["ki"]
                     vw = hands[side][0]
-                    qc = (vw - t[:, None]) @ R
+                    qc = (vw - t[ki, None]) @ R[ki]
                     q, n = closest(scene, qc.cpu().numpy())
                     targets[side] = (to(q), to(n))
                 for k, i in enumerate(key):
+                    if mask_contours[k] is None:
+                        continue
                     vc = (ov @ R[k].T + t[k] - cam_t[k]) @ cam_R[k]
                     uv = torch_project(vc, intr[k]).cpu().numpy()
                     h = cv2.convexHull(
@@ -306,20 +318,23 @@ def main():
             + obj_delta[:, 3:5].square().mean() / 0.006**2
             + obj_delta[:, 5].square().mean() / 0.025**2
         )
-        image_loss = 0
-        contact_loss = 0
-        intrusion = 0
+        image_loss = to(0.0)
+        contact_loss = to(0.0)
+        intrusion = to(0.0)
         for si, side in enumerate(["left", "right"]):
+            if side not in data:
+                continue
             vw, jw, vc, jc = hands[side]
             d = data[side]
-            pix = torch_project(vc[:, sample_indices], intr)
-            jpix = torch_project(jc, intr)
+            ki = d["ki"]
+            pix = torch_project(vc[:, sample_indices], intr[ki])
+            jpix = torch_project(jc, intr[ki])
             image_loss = (
                 image_loss
                 + ((pix - d["base_pixel"][:, sample_indices]) / 9.0).square().mean()
                 + ((jpix - d["base_joint_pixel"]) / 6.0).square().mean()
             )
-            qc = (vw - t[:, None]) @ R
+            qc = (vw - t[ki, None]) @ R[ki]
             q, n = targets[side]
             signed = ((qc - q) * n).sum(-1)
             intrusion = (
@@ -328,18 +343,18 @@ def main():
                 .square()
                 .mean()
             )
-            for k in range(B):
+            for local, k in enumerate(ki):
                 for finger in range(5):
                     if contact_gate[k, si, finger] == 0:
                         continue
-                    ix = torch.tensor(d["patch"][k, finger], device=device)
-                    delta = qc[k, ix] - (q[k, ix] + 0.0008 * n[k, ix])
+                    ix = torch.tensor(d["patch"][local, finger], device=device)
+                    delta = qc[local, ix] - (q[local, ix] + 0.0008 * n[local, ix])
                     dist = delta.square().sum(-1)
                     contact_loss = contact_loss + weights[k, si, finger] * torch.topk(
                         dist, 3, largest=False
                     ).values.mean() / 0.003**2 / (B * 2)
-        boundary_loss = 0
-        for k in range(B):
+        boundary_loss = to(0.0)
+        for k in outline:
             vc = (ov @ R[k].T + t[k] - cam_t[k]) @ cam_R[k]
             uv = torch_project(vc, intr[k])
             ia, ib, fraction, targ, rev, contour = outline[k]
@@ -356,11 +371,22 @@ def main():
             (hand_scale, 0.025),
             (obj_delta, 0.008),
         ]:
-            temporal += ((p[1:] - p[:-1]) / scale).square().mean() * 0.06
-            if B > 2:
-                temporal += (
-                    (p[2:] - 2 * p[1:-1] + p[:-2]) / scale
-                ).square().mean() * 0.06
+            # Do not couple corrections across missing-hand segments.
+            if p is obj_delta:
+                if B > 1:
+                    temporal += ((p[1:] - p[:-1]) / scale).square().mean() * 0.06
+                if B > 2:
+                    temporal += ((p[2:] - 2 * p[1:-1] + p[:-2]) / scale).square().mean() * 0.06
+            else:
+                for si, side in enumerate(["left", "right"]):
+                    edges = [j for j in range(B - 1) if valid[side][key[j]:key[j + 1] + 1].all()]
+                    if edges:
+                        e = np.asarray(edges)
+                        temporal += ((p[e + 1, si] - p[e, si]) / scale).square().mean() * 0.06
+                    triples = [j for j in range(B - 2) if valid[side][key[j]:key[j + 2] + 1].all()]
+                    if triples:
+                        e = np.asarray(triples)
+                        temporal += ((p[e + 2, si] - 2 * p[e + 1, si] + p[e, si]) / scale).square().mean() * 0.06
         loss = (
             loss
             + image_loss * 3
@@ -404,20 +430,23 @@ def main():
         params,
     ):
         a = p.detach().cpu().numpy()
-        flat = a.reshape(B, -1)
-        full = np.stack(
-            [np.interp(ids, key, flat[:, j]) for j in range(flat.shape[1])], 1
-        ).reshape(N, *a.shape[1:])
+        if name == "object_delta":
+            full = interpolate_supported(times, key, a, np.ones(N, bool))
+        else:
+            full = np.stack([interpolate_supported(times, key, a[:, si], valid[side])
+                             for si, side in enumerate(["left", "right"])], axis=1)
         interp[name] = full
     state = {
-        "frame_idx": ids,
-        "T_world_camera": T,
-        "intrinsics_960": K,
-        "object_vertices_canonical": V,
-        "object_faces": F,
-        "keyframe_idx": key,
-        **interp,
+        "frame_idx": ids, "time_s": times,
+        "T_world_camera": T, "render_size_wh": size,
+        "source_size_wh": source_size, "intrinsics_render": K,
+        "left_valid": valid["left"], "right_valid": valid["right"],
+        "interaction_states": judgments,
+        "object_vertices_canonical": V, "object_faces": F,
+        "keyframe_idx": ids[key], **interp,
     }
+    if np.array_equal(size, [960, 960]):
+        state["intrinsics_960"] = K
     from scipy.spatial.transform import Rotation
 
     RR = Rotation.from_rotvec(interp["object_delta"][:, :3]).as_matrix() @ R0
@@ -426,44 +455,40 @@ def main():
     state["object_translation_world"] = tt
     measurements = []
     for si, side in enumerate(["left", "right"]):
+        vi = np.flatnonzero(valid[side])
+        state[side + "_vertices_world"] = np.full((N, 778, 3), np.nan, np.float32)
+        state[side + "_joints_world"] = np.full((N, 21, 3), np.nan, np.float32)
+        state[side + "_faces"] = z.get(side + "_faces", models[side].faces)
+        for suffix in ["vertices_world_m", "joints_world_m", "root_orient_axis_angle", "hand_pose_axis_angle", "betas", "trans_world_m", "valid"]:
+            if side + "_" + suffix in z:
+                state[side + "_source_" + suffix] = z[side + "_" + suffix]
+        state[side + "_base_vertices_world"] = z.get(side + "_vertices_world_m", state[side + "_vertices_world"].copy())
+        state[side + "_base_joints_world"] = z.get(side + "_joints_world_m", state[side + "_joints_world"].copy())
+        if not len(vi):
+            continue
         with torch.no_grad():
             o = models[side](
-                global_orient=to(z[side + "_root_orient_axis_angle"]),
-                hand_pose=to(
-                    z[side + "_hand_pose_axis_angle"]
-                    + interp["hand_articulation"][:, si]
-                ),
-                betas=to(z[side + "_betas"]),
+                global_orient=to(z[side + "_root_orient_axis_angle"][vi]),
+                hand_pose=to(z[side + "_hand_pose_axis_angle"][vi] + interp["hand_articulation"][vi, si]),
+                betas=to(z[side + "_betas"][vi]),
             )
-            vw = (o.vertices + to(z[side + "_trans_world_m"])[:, None]).cpu().numpy()
-            jw = (
-                (
-                    torch.cat([o.joints[:, :16], o.vertices[:, TIP_VERTICES]], dim=1)[
-                        :, JOINT_ORDER
-                    ]
-                    + to(z[side + "_trans_world_m"])[:, None]
-                )
-                .cpu()
-                .numpy()
-            )
-        dR = Rotation.from_rotvec(interp["hand_root"][:, si]).as_matrix()
+            vw = (o.vertices + to(z[side + "_trans_world_m"][vi])[:, None]).cpu().numpy()
+            jw = (torch.cat([o.joints[:, :16], o.vertices[:, TIP_VERTICES]], dim=1)[:, JOINT_ORDER] + to(z[side + "_trans_world_m"][vi])[:, None]).cpu().numpy()
+        dR = Rotation.from_rotvec(interp["hand_root"][vi, si]).as_matrix()
         pivot = jw[:, :1]
         vw = (vw - pivot) @ dR.transpose(0, 2, 1) + pivot
         jw = (jw - pivot) @ dR.transpose(0, 2, 1) + pivot
-        vc = (vw - T[:, :3, 3][:, None]) @ T[:, :3, :3]
-        jc = (jw - T[:, :3, 3][:, None]) @ T[:, :3, :3]
-        sc = np.exp(interp["hand_log_scale"][:, si])[:, None]
-        vc = vc * sc + interp["hand_translation_camera"][:, si, None]
-        jc = jc * sc + interp["hand_translation_camera"][:, si, None]
-        vw = vc @ T[:, :3, :3].transpose(0, 2, 1) + T[:, :3, 3][:, None]
-        jw = jc @ T[:, :3, :3].transpose(0, 2, 1) + T[:, :3, 3][:, None]
-        state[side + "_vertices_world"] = vw.astype("float32")
-        state[side + "_joints_world"] = jw.astype("float32")
-        state[side + "_faces"] = z[side + "_faces"]
-        state[side + "_base_vertices_world"] = z[side + "_vertices_world_m"]
-        state[side + "_base_joints_world"] = z[side + "_joints_world_m"]
-        for i in ids:
-            qc = (vw[i] - tt[i]) @ RR[i]
+        vc = (vw - T[vi, :3, 3][:, None]) @ T[vi, :3, :3]
+        jc = (jw - T[vi, :3, 3][:, None]) @ T[vi, :3, :3]
+        sc = np.exp(interp["hand_log_scale"][vi, si])[:, None]
+        vc = vc * sc + interp["hand_translation_camera"][vi, si, None]
+        jc = jc * sc + interp["hand_translation_camera"][vi, si, None]
+        vw = vc @ T[vi, :3, :3].transpose(0, 2, 1) + T[vi, :3, 3][:, None]
+        jw = jc @ T[vi, :3, :3].transpose(0, 2, 1) + T[vi, :3, 3][:, None]
+        state[side + "_vertices_world"][vi] = vw.astype("float32")
+        state[side + "_joints_world"][vi] = jw.astype("float32")
+        for local, i in enumerate(vi):
+            qc = (vw[local] - tt[i]) @ RR[i]
             q, n = closest(scene, qc)
             bc = (z[side + "_vertices_world_m"][i] - t0[i]) @ R0[i]
             qb, nb = closest(scene, bc)
@@ -490,10 +515,11 @@ def main():
                     }
                 )
             before = project(camera(z[side + "_joints_world_m"][i], T[i]), K[i])
-            after = project(jc[i], K[i])
+            after = project(jc[local], K[i])
             measurements.append(
                 {
-                    "frame": int(i),
+                    "frame": int(ids[i]),
+                    "time_s": float(times[i]),
                     "side": side,
                     "pad_gaps": tips,
                     "joint_projection_delta_median_px": float(
@@ -530,6 +556,7 @@ def main():
                 k: sha(getattr(args, k))
                 for k in ["annotations", "pose_report", "mano_bridge", "hawor_params"]
             },
+            **({"interaction_judgments": sha(args.interaction_judgments)} if args.interaction_judgments else {}),
             **{
                 "mano_" + side: sha(args.mano_models / f"MANO_{side.upper()}.pkl")
                 for side in ["left", "right"]
@@ -539,6 +566,8 @@ def main():
         "mesh_sha256": sha(meshpath),
         "device": str(device),
         "frame_count": N,
+        "hand_uncertainty": {side: {"invalid_frame_ids": ids[~valid[side]].tolist(), "invalid_state": "unresolved_not_rendered", "valid_state": "source_MANO_replayed_demo_hypothesis"} for side in ["left", "right"]},
+        "interaction_judgments": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
         "zero_state_max_vertex_error_m": maxreplay,
         "trace": trace,
         "measurements": measurements,

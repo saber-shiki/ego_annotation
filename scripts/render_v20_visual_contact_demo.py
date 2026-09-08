@@ -15,9 +15,10 @@ import rerun.blueprint as rrb
 from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation
 from v20_demo_geometry import camera, project, sha
+from v19_demo_timeline import hand_validity, state_timeline
 
 
-def scene_for_frame(z, idx, base=False, yaw_deg=0.0):
+def scene_for_frame(z, idx, base=False, yaw_deg=0.0, valid=None):
     prefix = "base_" if base else ""
     V = z["object_vertices_canonical"]
     F = z["object_faces"]
@@ -26,7 +27,13 @@ def scene_for_frame(z, idx, base=False, yaw_deg=0.0):
     T = z["T_world_camera"][idx]
     vertices = [camera(V @ R.T + t, T)]
     faces = [F]
-    for side in ["left", "right"]:
+    labels = [0]
+    if valid is None:
+        valid = {side: hand_validity(z, side, len(z["frame_idx"]), fitted=True) for side in ["left", "right"]}
+    for si, side in enumerate(["left", "right"]):
+        if not valid[side][idx]:
+            continue
+        labels.append(si + 1)
         key = side + ("_base_vertices_world" if base else "_vertices_world")
         vertices.append(camera(z[key][idx], T))
         faces.append(z[side + "_faces"])
@@ -48,10 +55,10 @@ def scene_for_frame(z, idx, base=False, yaw_deg=0.0):
             np.add.at(vn, f[:, col], fn)
         vn /= np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-8)
         normals.append(vn)
-    return scene, vertices, faces, normals
+    return scene, vertices, faces, normals, labels
 
 
-def shade(scene, K, size, faces, normals, background=(239, 241, 245)):
+def shade(scene, K, size, faces, normals, labels=None, background=(239, 241, 245)):
     w, h = size
     yy, xx = np.mgrid[:h, :w]
     rays = np.stack(
@@ -65,7 +72,7 @@ def shade(scene, K, size, faces, normals, background=(239, 241, 245)):
     mask = np.isfinite(depth)
     face_ids = hit["primitive_ids"].numpy()
     bary = hit["primitive_uvs"].numpy()
-    for geom in [1, 2]:
+    for geom in range(1, len(faces)):
         valid = mask & (ids == geom)
         tris = faces[geom][face_ids[valid]]
         b = bary[valid]
@@ -74,6 +81,10 @@ def shade(scene, K, size, faces, normals, background=(239, 241, 245)):
         normal[valid] = smooth / np.maximum(
             np.linalg.norm(smooth, axis=1, keepdims=True), 1e-8
         )
+    if labels is not None:
+        raw_ids = ids.copy()
+        for geom, label in enumerate(labels):
+            ids[raw_ids == geom] = label
     # Neutral stylization; no raw image is pasted into the mesh appearance.
     colors = np.array([[80, 188, 183], [235, 183, 158], [242, 200, 168]], float)
     light = np.array([-0.35, -0.6, -1.0])
@@ -123,7 +134,7 @@ def encode_process(path, size, fps):
             "-preset",
             "fast",
             "-pix_fmt",
-            "yuv420p",
+            "yuv420p" if size[0] % 2 == 0 and size[1] % 2 == 0 else "yuv444p",
             "-movflags",
             "+faststart",
             str(path),
@@ -134,13 +145,15 @@ def encode_process(path, size, fps):
 
 def banner(img, left, right):
     im = img.copy()
-    cv2.rectangle(im, (0, 0), (im.shape[1], 49), (25, 30, 40), -1)
+    scale = min(1.0, im.shape[0] / 960)
+    bar_height = max(1, round(49 * scale))
+    cv2.rectangle(im, (0, 0), (im.shape[1], bar_height), (25, 30, 40), -1)
     cv2.putText(
         im,
         left,
-        (20, 31),
+        (max(1, round(20 * scale)), max(1, round(31 * scale))),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.67,
+        0.67 * scale,
         (240, 240, 245),
         1,
         cv2.LINE_AA,
@@ -148,9 +161,9 @@ def banner(img, left, right):
     cv2.putText(
         im,
         right,
-        (im.shape[1] // 2 + 20, 31),
+        (im.shape[1] // 2 + max(1, round(20 * scale)), max(1, round(31 * scale))),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.67,
+        0.67 * scale,
         (240, 240, 245),
         1,
         cv2.LINE_AA,
@@ -166,44 +179,47 @@ def main():
     p.add_argument("--frames", default="all")
     p.add_argument("--base", action="store_true")
     p.add_argument("--detail-yaw-deg", type=float, default=20.0)
+    p.add_argument("--render-width", type=int, help="Preserve state image aspect ratio")
     a = p.parse_args()
     out = a.output_dir
     if out.exists():
         raise ValueError("new output directory required")
     out.mkdir(parents=True)
-    z = np.load(a.state, allow_pickle=False)
-    ids = z["frame_idx"]
-    selected = (
-        ids if a.frames == "all" else np.array([int(x) for x in a.frames.split(",")])
-    )
+    with np.load(a.state, allow_pickle=False) as archive:
+        z = dict(archive)
     video = cv2.VideoCapture(str(a.source_video))
     fps = video.get(cv2.CAP_PROP_FPS)
     n = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-    assert n == len(ids) == 150
+    ids, times, order, render_wh, intrinsics = state_timeline(z, fps, n, a.render_width)
+    W, H = map(int, render_wh)
+    if "source_size_wh" in z and not np.array_equal(z["source_size_wh"], [int(video.get(cv2.CAP_PROP_FRAME_WIDTH)), int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))]):
+        raise ValueError("source video dimensions disagree with state")
+    id_to_index = {int(f): i for i, f in enumerate(ids)}
+    video_position = {int(i): pos for pos, i in enumerate(order)}
+    selected = order if a.frames == "all" else np.array([id_to_index[int(f)] for f in a.frames.split(",")])
+    valid = {side: hand_validity(z, side, n, fitted=True) for side in ["left", "right"]}
     full = a.frames == "all"
-    mp4 = (
-        encode_process(out / "interaction_demo.mp4", (1920, 960), fps) if full else None
-    )
-    detail = (
-        encode_process(out / "contact_detail.mp4", (1920, 960), fps) if full else None
-    )
+    mp4 = encode_process(out / "interaction_demo.mp4", (2 * W, H), fps) if full else None
+    detail = encode_process(out / "contact_detail.mp4", (2 * W, H), fps) if full else None
     scene_centers = []
     scene_sizes = []
-    for i in ids:
+    for i in range(n):
         pts = np.concatenate(
-            [z[s + "_vertices_world"][i] for s in ["left", "right"]]
+            [z[s + ("_base_vertices_world" if a.base else "_vertices_world")][i] for s in ["left", "right"] if valid[s][i]]
             + [
-                z["object_vertices_canonical"][::256] @ z["object_rotation"][i].T
-                + z["object_translation_world"][i]
+                z["object_vertices_canonical"][::max(1, len(z["object_vertices_canonical"]) // 5000)] @ z[("base_" if a.base else "") + "object_rotation"][i].T
+                + z[("base_" if a.base else "") + "object_translation_world"][i]
             ]
         )
-        uv = project(camera(pts, z["T_world_camera"][i]), z["intrinsics_960"][i])
+        uv = project(camera(pts, z["T_world_camera"][i]), intrinsics[i])
         lo = np.percentile(uv, 1, axis=0)
         hi = np.percentile(uv, 99, axis=0)
         scene_centers.append((lo + hi) / 2)
-        scene_sizes.append(max(hi - lo) * 1.18)
-    centers = gaussian_filter1d(np.asarray(scene_centers), 4, axis=0)
-    sizes = np.clip(gaussian_filter1d(np.asarray(scene_sizes), 4), 370, 800)
+        scene_sizes.append(max((hi - lo)[0], (hi - lo)[1] * W / H) * 1.18)
+    centers = np.empty((n, 2))
+    sizes = np.empty(n)
+    centers[order] = gaussian_filter1d(np.asarray(scene_centers)[order], 4, axis=0)
+    sizes[order] = np.clip(gaussian_filter1d(np.asarray(scene_sizes)[order], 4), min(W, H) * 0.385, max(W, H) * 0.834)
     if full:
         rr.init("V20_visual_hand_object_demo", spawn=False)
         rr.save(str(out / "interaction_demo.rrd"))
@@ -229,14 +245,15 @@ def main():
     try:
         for idx in selected:
             idx = int(idx)
-            video.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            frame_id = int(ids[idx])
+            video.set(cv2.CAP_PROP_POS_FRAMES, video_position[idx])
             ok, bgr = video.read()
             if not ok:
                 raise ValueError("source frame decode failure")
-            rgb = cv2.cvtColor(cv2.resize(bgr, (960, 960)), cv2.COLOR_BGR2RGB)
-            K = z["intrinsics_960"][idx]
-            scene, vertices, faces, normals = scene_for_frame(z, idx, base=a.base)
-            shaded, mask, gids, depth = shade(scene, K, (960, 960), faces, normals)
+            rgb = cv2.cvtColor(cv2.resize(bgr, (W, H)), cv2.COLOR_BGR2RGB)
+            K = intrinsics[idx]
+            scene, vertices, faces, normals, labels = scene_for_frame(z, idx, base=a.base, valid=valid)
+            shaded, mask, gids, depth = shade(scene, K, (W, H), faces, normals, labels)
             overlay = rgb.copy()
             alpha = np.where(gids == 0, 0.55, 0.68)
             overlay[mask] = (
@@ -244,20 +261,20 @@ def main():
             ).astype("uint8")
             pair = banner(
                 np.hstack((rgb, overlay)),
-                f"Original video  |  frame {idx:03d}",
+                f"Original video  |  frame {frame_id}",
                 "Visual interaction fit  |  demo-only",
             )
             size = float(sizes[idx])
             cx, cy = centers[idx]
             x0 = cx - size / 2
-            y0 = cy - size / 2
-            ratio = 960 / size
+            y0 = cy - size * H / W / 2
+            ratio = W / size
             zoomK = np.r_[K[:2] * ratio, (K[2:] - [x0, y0] + 0.5) * ratio - 0.5]
-            inspect_scene, _, inspect_faces, inspect_normals = scene_for_frame(
-                z, idx, base=a.base, yaw_deg=a.detail_yaw_deg
+            inspect_scene, _, inspect_faces, inspect_normals, inspect_labels = scene_for_frame(
+                z, idx, base=a.base, yaw_deg=a.detail_yaw_deg, valid=valid
             )
             solid, _, _, _ = shade(
-                inspect_scene, zoomK, (960, 960), inspect_faces, inspect_normals
+                inspect_scene, zoomK, (W, H), inspect_faces, inspect_normals, inspect_labels
             )
             affine = np.array(
                 [
@@ -269,7 +286,7 @@ def main():
             crop = cv2.warpAffine(
                 rgb,
                 affine,
-                (960, 960),
+                (W, H),
                 flags=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_CONSTANT,
                 borderValue=(239, 241, 245),
@@ -284,12 +301,16 @@ def main():
                 mp4.stdin.write(pair.tobytes())
                 detail.stdin.write(closepair.tobytes())
                 T = z["T_world_camera"][idx]
-                rr.set_time("frame", sequence=idx)
+                rr.set_time("frame", sequence=frame_id)
+                rr.set_time("time_s", duration=float(times[idx]))
                 prefix = "base_" if a.base else ""
                 R = z[prefix + "object_rotation"][idx]
                 t = z[prefix + "object_translation_world"][idx]
                 rr.log("/world/object", rr.Transform3D(translation=t, mat3x3=R))
                 for si, side in enumerate(["left", "right"]):
+                    if not valid[side][idx]:
+                        rr.log("/world/hands/" + side, rr.Clear(recursive=True))
+                        continue
                     key = side + (
                         "_base_vertices_world" if a.base else "_vertices_world"
                     )
@@ -311,7 +332,7 @@ def main():
                     "/world/camera/image",
                     rr.Pinhole(
                         image_from_camera=[[K[0], 0, K[2]], [0, K[1], K[3]], [0, 0, 1]],
-                        resolution=[960, 960],
+                        resolution=[W, H],
                     ),
                 )
                 rr.log("/world/camera/image", rr.Image(rgb).compress(jpeg_quality=85))
@@ -322,18 +343,21 @@ def main():
                 rr.log(
                     "/comparison/detail", rr.Image(closepair).compress(jpeg_quality=85)
                 )
-            if not full or idx in [0, 35, 65, 95, 120, 130, 135, 140, 143, 149]:
+            if not full or video_position[idx] in np.linspace(0, n - 1, min(n, 10), dtype=int):
                 cv2.imwrite(
-                    str(out / f"frame_{idx:03d}_overlay.png"),
+                    str(out / f"frame_{frame_id:03d}_overlay.png"),
                     cv2.cvtColor(pair, cv2.COLOR_RGB2BGR),
                 )
                 cv2.imwrite(
-                    str(out / f"frame_{idx:03d}_detail.png"),
+                    str(out / f"frame_{frame_id:03d}_detail.png"),
                     cv2.cvtColor(closepair, cv2.COLOR_RGB2BGR),
                 )
             stats.append(
                 {
-                    "frame": idx,
+                    "frame": frame_id,
+                    "time_s": float(times[idx]),
+                    "left_valid": bool(valid["left"][idx]),
+                    "right_valid": bool(valid["right"][idx]),
                     "object_pixels": int(np.count_nonzero(gids == 0)),
                     "left_pixels": int(np.count_nonzero(gids == 1)),
                     "right_pixels": int(np.count_nonzero(gids == 2)),
@@ -393,10 +417,12 @@ def main():
                 "full_duration": bool(full),
                 "frame_count": len(selected),
                 "fps": fps,
+                "render_size_wh": [W, H],
+                "missing_hand_policy": "unresolved; no geometry logged; rr.Clear",
                 "elapsed_s": time.monotonic() - start,
                 "object_triangle_count": len(z["object_faces"]),
                 "mano_triangle_counts": {
-                    s: len(z[s + "_faces"]) for s in ["left", "right"]
+                    s: len(z[s + "_faces"]) if s + "_faces" in z else 0 for s in ["left", "right"]
                 },
                 "rendering": "full original triangle BVH z-buffer; no point-cloud gate or front-face deletion",
                 "base_mode": a.base,
