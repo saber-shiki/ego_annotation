@@ -439,3 +439,22 @@ def test_shared_shape_rotation_parameterization_is_explicit_and_bounded():
     )
     np.testing.assert_allclose(rotated, [[0.0, 1.0, 0.0]], atol=1e-10)
     assert shape.parameter_size(type("Args", (), {"optimize_canonical_rotation": True})()) == 9
+
+
+def test_world_hand_object_proximity_is_visual_only():
+    hand = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]])
+    obj = np.array([[0.0, 0.0, 0.01], [1.0, 1.0, 1.0]])
+    result = renderer.world_hand_object_proximity(hand, obj)
+    assert result["available"] is True
+    np.testing.assert_allclose(result["distance_m"], 0.01)
+    assert result["visual_proximity_state"] == "near_visual_proximity"
+    assert "visual proximity only" in result["definition"]
+
+
+def test_renderer_selects_world_mano_by_frame_before_logging():
+    left = (np.zeros((2, 3), dtype=np.float32), None)
+    right = (np.ones((2, 3), dtype=np.float32), None)
+    hands = {120: {"left": left, "right": right}}
+    selected = renderer.hand_state_for_frame(hands, 120)
+    assert set(selected) == {"left", "right"}
+    assert renderer.hand_state_for_frame(hands, 121) == {}

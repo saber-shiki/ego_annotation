@@ -405,6 +405,50 @@ def overlay_points(image: np.ndarray, points_world: np.ndarray, T_world_camera: 
         cv2.circle(image, tuple(point), 1, VISIBLE_POINT_COLOR_BGR, -1, cv2.LINE_AA)
 
 
+def hand_state_for_frame(
+    hands: dict[int, dict[str, tuple[np.ndarray, np.ndarray | None]]],
+    frame_idx: int,
+) -> dict[str, tuple[np.ndarray, np.ndarray | None]]:
+    """Select per-frame world MANO states for RRD logging and overlays."""
+    return hands.get(int(frame_idx), {})
+
+
+def world_hand_object_proximity(
+    hand_vertices_world: np.ndarray,
+    object_vertices_world: np.ndarray,
+) -> dict[str, Any]:
+    """Return a world-space nearest-pair diagnostic for visual interaction.
+
+    This is deliberately a proximity visualization only.  It does not infer
+    contact, collision, penetration, signed geometry, or physical authority.
+    """
+    hand = np.asarray(hand_vertices_world, dtype=np.float64)
+    obj = np.asarray(object_vertices_world, dtype=np.float64)
+    if hand.ndim != 2 or hand.shape[1] != 3 or obj.ndim != 2 or obj.shape[1] != 3:
+        return {"available": False, "reason": "invalid_world_vertex_arrays"}
+    valid_hand = np.isfinite(hand).all(axis=1)
+    valid_obj = np.isfinite(obj).all(axis=1)
+    if not np.any(valid_hand) or not np.any(valid_obj):
+        return {"available": False, "reason": "empty_or_nonfinite_world_vertices"}
+    tree = cKDTree(obj[valid_obj])
+    distances, indices = tree.query(hand[valid_hand], k=1)
+    hand_valid = hand[valid_hand]
+    nearest = int(np.argmin(distances))
+    hand_point = hand_valid[nearest]
+    object_point = obj[valid_obj][int(indices[nearest])]
+    distance_m = float(distances[nearest])
+    return {
+        "available": True,
+        "distance_m": distance_m,
+        "visual_proximity_state": "near_visual_proximity" if distance_m <= 0.02 else "separated_visual_proximity",
+        "hand_point_world_m": hand_point.astype(float).tolist(),
+        "object_point_world_m": object_point.astype(float).tolist(),
+        "hand_vertex_count": int(np.count_nonzero(valid_hand)),
+        "object_vertex_count": int(np.count_nonzero(valid_obj)),
+        "definition": "minimum Euclidean distance between displayed MANO and SAM3D world vertices; visual proximity only",
+    }
+
+
 def overlay_hands(image: np.ndarray, hands: dict[str, tuple[np.ndarray, np.ndarray | None]], T_world_camera: np.ndarray, K: np.ndarray) -> None:
     for side, color in (("left", LEFT_COLOR_BGR), ("right", RIGHT_COLOR_BGR)):
         if side not in hands:
@@ -496,7 +540,7 @@ def main() -> None:
         ),
         static=True,
     )
-    tmp=Path(tempfile.mkdtemp(prefix='v20_depth_ordered_overlay_',dir=str(args.output_rrd.parent)));metric=[];empty=[];stats=[];camtraj=[]
+    tmp=Path(tempfile.mkdtemp(prefix='v20_depth_ordered_overlay_',dir=str(args.output_rrd.parent)));metric=[];empty=[];stats=[];camtraj=[];interaction_stats=[]
     try:
         for idx in selected:
             ok,frame_bgr=video.read()
@@ -505,7 +549,9 @@ def main() -> None:
             obj=next((o for o in fr.get('objects',[]) if o.get('object_id')==args.object_id),None);geom=obj.get('visible_geometry_candidate') if isinstance(obj,dict) and isinstance(obj.get('visible_geometry_candidate'),dict) else {};p09=np.asarray(geom.get('camera_vertices_sample_m') or [],float)
             p09_world = camera_points_to_world(p09, T) if p09.ndim == 2 and p09.shape[1] == 3 else np.empty((0, 3), dtype=np.float64)
             rr.set_time('frame',sequence=idx);cp=T[:3,3];camtraj.append(cp);rr.log('/world/camera',rr.Transform3D(translation=cp.tolist(),mat3x3=T[:3,:3].tolist()));rr.log('/world/camera/world_pose',rr.TextLog('T_world_camera_metric = '+np.array2string(T,precision=6,suppress_small=True)));rr.log('/world/camera/trajectory',rr.LineStrips3D([np.asarray(camtraj,np.float32)],radii=.0015,colors=[[180,180,180,220]]));rr.log('/world/camera/image',rr.Pinhole(image_from_camera=K960.tolist(),resolution=[960,960]));rgb960=cv2.resize(frame_bgr,(960,960),interpolation=cv2.INTER_AREA);rr.log('/world/camera/image',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality))
-            world=canon_vertices@R.T+t[None,:];
+            world=canon_vertices@R.T+t[None,:]
+            rr.log('/world/sam3d/object_pose',rr.Transform3D(translation=t.tolist(),mat3x3=R.tolist()))
+            frame_interaction={"frame_idx":int(idx),"object_pose_world":True,"sides":{}}
             if p09.ndim == 2 and p09.shape == (2500, 3) and np.isfinite(p09).all():
                 metric.append(idx)
                 support_rays, support_depth, support_stats = build_support_rays(
@@ -590,10 +636,12 @@ def main() -> None:
                         "/world/visible_surface/status",
                         rr.TextLog("no accepted P09 metric surface; depth gate inactive"),
                     )
+            frame_hands = hand_state_for_frame(hands, idx)
             for side,faces,color in [('left',left_faces,[255,150,40,255]),('right',right_faces,[80,150,255,255])]:
-                if side in hands:
-                    v,j=hands[side]
-                    rr.log(f'/world/hands/{side}',rr.Mesh3D(vertex_positions=v,triangle_indices=faces,albedo_factor=color))
+                if side in frame_hands:
+                    v,j=frame_hands[side]
+                    v_world=np.asarray(v,dtype=np.float32)
+                    rr.log(f'/world/hands/{side}',rr.Mesh3D(vertex_positions=v_world,triangle_indices=faces,albedo_factor=color))
                     if j is not None:
                         joints_world=np.asarray(j,dtype=np.float32)
                         rr.log(f'/world/hands/{side}/joints',rr.Points3D(joints_world,radii=.0025,colors=color))
@@ -601,9 +649,24 @@ def main() -> None:
                         rr.log(f'/world/hands/{side}/skeleton',rr.LineStrips3D(skeleton,radii=.0018,colors=[color]))
                     else:
                         rr.log(f'/world/hands/{side}/joints',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/skeleton',rr.Clear(recursive=False))
-                    rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO world mesh, joints, and skeleton shown' if j is not None else 'MANO world mesh shown; joints unavailable'))
+                    proximity=world_hand_object_proximity(v_world,world)
+                    frame_interaction["sides"][side]=proximity
+                    if proximity.get("available"):
+                        hp=np.asarray([proximity["hand_point_world_m"]],dtype=np.float32)
+                        op=np.asarray([proximity["object_point_world_m"]],dtype=np.float32)
+                        rr.log(f'/world/interaction/{side}/hand_nearest',rr.Points3D(hp,radii=.004,colors=color))
+                        rr.log(f'/world/interaction/{side}/object_nearest',rr.Points3D(op,radii=.004,colors=[215,45,190,255]))
+                        rr.log(f'/world/interaction/{side}/nearest_pair',rr.LineStrips3D(np.asarray([[hp[0],op[0]]],dtype=np.float32),radii=.0025,colors=[color]))
+                        rr.log(f'/world/interaction/{side}/distance_m',rr.Scalars(float(proximity["distance_m"])))
+                        rr.log(f'/world/interaction/{side}/status',rr.TextLog(str(proximity['visual_proximity_state'])+'; world-space visual proximity only, not contact/collision'))
+                    else:
+                        rr.log(f'/world/interaction/{side}/hand_nearest',rr.Clear(recursive=False));rr.log(f'/world/interaction/{side}/object_nearest',rr.Clear(recursive=False));rr.log(f'/world/interaction/{side}/nearest_pair',rr.Clear(recursive=False));rr.log(f'/world/interaction/{side}/status',rr.TextLog('world-space proximity unavailable'))
+                    rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO world mesh, joints, skeleton, and interaction proximity shown' if j is not None else 'MANO world mesh and interaction proximity shown; joints unavailable'))
                 else:
+                    frame_interaction["sides"][side]={"available":False,"reason":"MANO side unavailable for this frame"}
                     rr.log(f'/world/hands/{side}',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/joints',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/skeleton',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO side unavailable for this frame'))
+                    rr.log(f'/world/interaction/{side}/hand_nearest',rr.Clear(recursive=False));rr.log(f'/world/interaction/{side}/object_nearest',rr.Clear(recursive=False));rr.log(f'/world/interaction/{side}/nearest_pair',rr.Clear(recursive=False));rr.log(f'/world/interaction/{side}/status',rr.TextLog('world-space proximity unavailable'))
+            interaction_stats.append(frame_interaction)
             # Overlay corrected mesh to original video: use the same face gate and
             # a sampled world mesh, not the full 476k-face topology.
             overlay=rgb960.copy()
@@ -620,12 +683,12 @@ def main() -> None:
                     stats[-1]['video_gate']=st2
             else:
                 kept=np.arange(len(canon_faces),dtype=np.int32)
-            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);
+            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hand_state_for_frame(hands, idx),T,K960);
             if not args.hide_visible_surface_points:
                 overlay_points(overlay,p09_world,T,K960,args.overlay_point_stride)
             draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Objective-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose objective; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate'),('P09 visible-surface point cloud hidden' if args.hide_visible_surface_points else 'P09 visible-surface points shown')])
             side=np.hstack([rgb960,overlay]);cv2.imwrite(str(tmp/f'{idx:06d}.jpg'),side,[cv2.IMWRITE_JPEG_QUALITY,args.jpeg_quality]);rr.log('/comparison/original_video',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/depth_ordered_overlay',rr.Image(cv2.cvtColor(overlay,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/side_by_side',rr.Image(cv2.cvtColor(side,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));
-        video.release();contents=['+ /world/sam3d_depth_ordered','+ /world/hands/**','+ /world/camera/**'];
+        video.release();contents=['+ /world/sam3d_depth_ordered','+ /world/hands/**','+ /world/interaction/**','+ /world/camera/**'];
         if not args.hide_visible_surface_points:
             contents.append('+ /world/visible_surface')
         rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(rrb.Spatial3DView(origin='/world',name='SAM3D + MANO + camera world pose',contents=contents),rrb.Vertical(rrb.Spatial2DView(origin='/comparison/original_video',name='Original video'),rrb.Spatial2DView(origin='/comparison/depth_ordered_overlay',name='SAM3D + MANO overlay'),rrb.Spatial2DView(origin='/comparison/side_by_side',name='Original | SAM3D + MANO')),column_shares=[3,2]),collapse_panels=False));rr.disconnect();encode_video(tmp,args.output_video,fps,start_number=args.frame_start)
@@ -656,6 +719,13 @@ def main() -> None:
             "trajectory_logged": True,
             "transform_field": "T_world_camera_metric",
             "pose_frame": "world",
+        },
+        "hand_object_interaction_display": {
+            "world_object_pose_logged": True,
+            "world_nearest_pair_logged": True,
+            "world_distance_scalar_logged": True,
+            "sides": ["left", "right"],
+            "scope": "visual proximity diagnostic only; not contact/collision/nonpenetration authority",
         },
         "visible_surface_coordinate_contract": {
             "source_field": "visible_geometry_candidate.camera_vertices_sample_m",
@@ -690,6 +760,7 @@ def main() -> None:
             "no_metric_frames": empty,
         },
         "stats": stats,
+        "hand_object_interaction": interaction_stats,
         "outputs": {
             "rrd": str(args.output_rrd.expanduser().resolve()),
             "video": str(args.output_video.expanduser().resolve()),

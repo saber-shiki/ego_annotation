@@ -104,3 +104,12 @@ has `visible_surface_points_displayed=false`,
 `objective_mesh_preserved=true`, and `face_pruning_applied=false` in its
 manifest. It remains diagnostic-only because the underlying v25 candidate
 has sustained late signed-front validation failure.
+
+## World hand-object interaction view
+
+The renderer now emits world-space interaction diagnostics in addition to the
+MANO and camera entities. For each side and frame it computes the nearest pair
+between the displayed MANO world vertices and displayed SAM3D object vertices,
+then logs the two points, a connecting line, and a distance scalar under
+`/world/interaction/{left,right}/`. These are explicitly visual-proximity
+markers, not contact/collision/nonpenetration authority.
