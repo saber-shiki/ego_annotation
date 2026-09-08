@@ -27,7 +27,7 @@ cd /mnt/user-home/kupingxin/ego_annotation_worktrees/rgb_sam3d_integration_runti
 /mnt/user-home/kupingxin/ego_annotation/.venv/bin/python scripts/prepare_v19_sam3d_runtime.py bundle \
   --source-root "$PWD" \
   --asset-paths /mnt/truenas-user-home/kupingxin/ego_annotation_outputs/integration_validation/rgb_sam3d_visual_annotation_20260908/closure_inputs/runtime_asset_paths.json \
-  --bundle-root /mnt/user-home/kupingxin/ego_annotation_runtime/rgb_sam3d_integration_closure_candidate_20260908 \
+  --bundle-root /mnt/user-home/kupingxin/ego_annotation_runtime/rgb_sam3d_integration_closure_candidate_v2_20260908 \
   --report-dir /mnt/truenas-user-home/kupingxin/ego_annotation_outputs/integration_validation/rgb_sam3d_visual_annotation_20260908/runtime_closure
 ```
 
@@ -49,7 +49,7 @@ Once a specific new raw video and case are authorized:
 
 ```bash
 /mnt/user-home/kupingxin/ego_annotation/.venv/bin/python scripts/prepare_v19_sam3d_runtime.py prepare-run \
-  --bundle-root /mnt/user-home/kupingxin/ego_annotation_runtime/rgb_sam3d_integration_closure_candidate_20260908 \
+  --bundle-root /mnt/user-home/kupingxin/ego_annotation_runtime/rgb_sam3d_integration_closure_candidate_v2_20260908 \
   --run-root /absolute/new/run_root \
   --video /absolute/authorized/raw_video.mp4 \
   --case new_case
@@ -81,3 +81,19 @@ Focused CPU tests cover the emitted arguments against actual parser declarations
 Validation commands and actual results are retained under the integration output `runtime_closure/` and the worker handoff. The correction includes the separately authorized parent video-PTS/semantic-shader commit before real workspace preparation; see `RGB_SAM3D_VIDEO_REVIEW_FIX.md` for that independent change.
 
 Remaining limits: no cold P00–P21 run, neural constructor/inference validation, GPU availability acceptance at future launch time, or new full-video physical annotation has been established. Approximate sensor/geometry failures remain uncertainties under the original mechanisms. Preparation and a validated script graph must never be labeled completed fresh reconstruction.
+
+## Review correction: current invocation lineage and external identity
+
+The v1 candidate stays frozen. The v2 candidate adds the following bounded anti-misuse checks; none is evidence of successful reconstruction or adversarial filesystem attestation.
+
+- Bare clip filenames (`candidate.json`, `mesh.ply`, `clip.mp4`) in nested source references are rejected, as are relative paths and symlink escapes. Multiword explanatory prose and model configuration/weight names are not interpreted as clip filenames.
+- `prepare-run` creates a new random UUID, binds the absolute run root, original video hash, optional sensor hash and exact bundle manifest. Copying old reports and their old execution records into this root does not produce the new identity.
+- `run_v19_frontend_stage.py` is a **fixed** P01/P06/P07/P08/P09-proposal/P09/P11 dispatcher. It derives command inputs from the same-run manifest and visually authored P05/anchor/P10 records and exposes no arbitrary command, registration or cached-prediction option. The spec routes these phases through it rather than executing producers directly.
+- Existing `run_command` records current run identity, code closure hashes, actual input hashes and output hashes only after subprocess success and required output existence. It covers fresh output trees (including masks, meshes and NPZs), excluding mutable command logs. P04 also captures its isolated sequence intermediates. Later consumers require and recursively verify the successful chain. Repeated file verification is deduplicated only while its stat fingerprint remains unchanged.
+- Demo pose/mesh binding is now a named deterministic subprocess so its output has real invocation lineage; source readiness, geometry and physical state remain untouched.
+- P05/anchor/P10/P17 documents instead declare `visual_judgment_provenance`, current run identity and hashes of the current phase evidence. No command record is fabricated for visual judgment. These declarations cannot prove the images were inspected; that remains the native agent's responsibility and the later visual/cold-run check.
+- `v19_runtime_assets.py` enumerates declared external source/config/model files and records hashes plus resolved paths/tree membership. This includes UniDepth and OWLv2 local model files, UniDepth code, HaWoR source/dependencies/checkpoints/config/MANO data and Metric3D checkpoint, SAM2 checkpoint, SAM3D source and pipeline-referenced configs/checkpoints, MoGe, DINOv2 source/checkpoint, the two LightGlue weights, and interpreter executable/venv identity. It does not hash unrelated prediction directories, Torch caches, or all site-packages. Copied SAM2/WiLoR/LightGlue code and copied MANO assets stay protected by bundle hashes without dependencies on unused originals.
+- Asset hashes and membership are revalidated at prepare-run and each stage entry before use; the separate nested SAM3D/RGB producers also verify their run inputs and assets. Same-path changed bytes or interpreter retargeting fail. This is not a portable environment installer or complete binary-library freeze.
+- Import preflight forcibly disables CUDA visibility and Hugging Face networking after optional environment overlays and removes inherited `PYTHONPATH`. No model inference is invoked.
+
+External asset verification reads approximately the declared model footprint, not arbitrary caches. Runtime cost must be judged on the actual cold pipeline; no runtime performance success follows from these records. The native registration/launch/tool-probe seam belongs to the separate supervising lane, with only an explicit inclusion hook to be coordinated; this patch does not implement or invoke an agent launcher.

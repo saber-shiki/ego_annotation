@@ -9,12 +9,14 @@ import argparse,json,os,subprocess,sys,time,hashlib
 from pathlib import Path
 import numpy as np
 from v20_prediction_contracts import find_positive_gt_flags
+from v19_run_lineage import RunLineage
 from v19_video_timing import read_cfr_video_timing, validate_package_cfr_times
 from v19_runtime_contracts import (in_run, validate_references, validate_timeline,
     run_command, runtime_environment, execution_target)
 
 STAGES=('camera','geometry','pose','interaction','physical-render','demo','export')
 ROOT=Path(__file__).resolve().parents[1]
+_LINEAGE=None
 
 
 def load(path):
@@ -32,6 +34,8 @@ def sha(path):
 
 def file_in_run(value,root):
     p=in_run(value,root)
+    if _LINEAGE is not None and p != root/'state/object_selection.json':
+        _LINEAGE.require(p)
     if p.suffix == '.json':
         payload=load(p)
         if find_positive_gt_flags(payload):raise ValueError(f'non-prediction source: {p}')
@@ -64,6 +68,8 @@ def camera_stage(args, cfg, root):
     env=runtime_environment(cfg,args.gpu)
     def run(key,argv,outputs,environment=None):
         run_command(key,argv,outputs,root=root,cwd=ROOT,env=environment or env,
+                    lineage=_LINEAGE,extra_inputs=[camera,clip] if key=='P04_HaWoR' else [],
+                    capture_roots=[handout,clip.with_suffix('')] if key=='P04_HaWoR' else [],
                     gpu=args.gpu if key in {'P03a_intrinsics_probe','P03_conditioned_depth','P04_HaWoR'} else None)
     probe=root/'measurements/depth_slam/unidepth_intrinsics_probe'
     final=root/'measurements/depth_slam/unidepth_full_frame'
@@ -113,10 +119,12 @@ def camera_stage(args, cfg, root):
 
 
 def main():
+    global _LINEAGE
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stage',choices=STAGES,required=True);p.add_argument('--run-root',type=Path,required=True);p.add_argument('--runtime-config',type=Path,required=True)
     p.add_argument('--gpu',type=int,required=True);a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
     execution_target(cfg,a.gpu)
+    _LINEAGE=RunLineage(root,ROOT,a.runtime_config)
     if a.stage == 'camera':
         camera_stage(a, cfg, root)
         return
@@ -141,6 +149,7 @@ def main():
     def script(name):return ROOT/'scripts'/name
     def run(key,argv,outputs):
         run_command(key,argv,outputs,root=root,cwd=ROOT,env=runtime_environment(cfg,a.gpu),
+                    lineage=_LINEAGE,
                     gpu=a.gpu if key in {'P12_P13_SAM3D','P14_RGB_observations','P18_interval','D01_demo_fit'} else None)
     depth=root/'state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
     hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz';bridge=root/'state/base_annotations/v19_mano_bridge_from_hawor_world.npz'
@@ -159,6 +168,7 @@ def main():
     demo_pose=root/f'state/demo_inputs/{obj}_pose_mesh.json';demodir=root/f'measurements/demo_visual/{obj}';demo_state=demodir/'demo_state.npz'
     paths={'annotations':ann,'depth':depth,'hawor':hawor,'mano_bridge':bridge,'evidence':evidence,'completion':completion,'p14':p14,'rgb_initialized_pose':initialized,'multiview_support':support,'p15':p15,'p16':p16,'p17':p17,'p18':p18,'p18b':p18b,'physical_render_state':physical,'demo_state':demo_state}
     if a.stage=='geometry':
+        file_in_run(root/f'state/physical_branch_decisions/{obj}.json',root)
         file_in_run(evidence,root)
         evidence_document=load(evidence)
         if evidence_document.get('case') != case or evidence_document.get('object_id') != obj or int(evidence_document['selected_frame_idx']) != anchor:
@@ -167,7 +177,7 @@ def main():
     elif a.stage=='pose':
         file_in_run(completion,root);file_in_run(depth,root)
         run('P14_visible_pose',[main_python,script('fit_v18_compact_rigid_object_pose.py'),'--annotations',ann,'--completion-report',completion,'--object-id',obj,'--output-dir',p14.parent],[p14])
-        run('P14_RGB_observations',[rgb_python,script('run_v19_offline_rgb_edges.py'),'--runtime-config',a.runtime_config,'--annotations',ann,'--depth-npz',depth,'--initial-pose-report',p14,'--object-id',obj,'--frame-start',lo,'--frame-end',hi,'--keyframe-interval',5,'--keyframe-neighbor-span',4,'--lightglue-root',cfg['lightglue_root'],'--device','cuda:0','--output-npz',str(rgb)+'.npz','--output-json',str(rgb)+'.json'],[Path(str(rgb)+'.npz'),Path(str(rgb)+'.json')])
+        run('P14_RGB_observations',[rgb_python,script('run_v19_offline_rgb_edges.py'),'--run-root',root,'--runtime-config',a.runtime_config,'--annotations',ann,'--depth-npz',depth,'--initial-pose-report',p14,'--object-id',obj,'--frame-start',lo,'--frame-end',hi,'--keyframe-interval',5,'--keyframe-neighbor-span',4,'--lightglue-root',cfg['lightglue_root'],'--device','cuda:0','--output-npz',str(rgb)+'.npz','--output-json',str(rgb)+'.json'],[Path(str(rgb)+'.npz'),Path(str(rgb)+'.json')])
         run('P14_RGB_initializer',[main_python,script('build_v19_rgb_pose_initializer.py'),'--run-root',root,'--annotations',ann,'--pose-report',p14,'--rgb-edge-npz',str(rgb)+'.npz','--rgb-edge-json',str(rgb)+'.json','--object-id',obj,'--anchor-frame',anchor,'--output',initialized],[initialized])
         run('P14b_multiview',[main_python,script('filter_v19_rigid_completion_multiview_support.py'),'--annotations',ann,'--completion-report',completion,'--pose-report',initialized,'--depth-npz',depth,'--object-id',obj,'--output-dir',support.parent],[support])
         run('P15_temporal_pose',[main_python,script('solve_v19_rigid_object_pose_graph.py'),'--annotations',ann,'--pose-report',initialized,'--completion-report',support,'--object-id',obj,'--complete-full-timeline-rigid-pose','--output-dir',p15.parent],[p15])
@@ -187,13 +197,7 @@ def main():
     elif a.stage=='demo':
         for path in [p15,hawor,bridge,judgments,physical,completion]:file_in_run(path,root)
         source=load(p15);geomreport=load(completion);contract=geomreport['render_mesh_contract'];file_in_run(contract['required_mesh_path'],root)
-        # Bind an additive render mesh without relabeling source P15 readiness,
-        # core physical state, metric MANO or P18b contact surface state.
-        if demo_pose.exists():raise ValueError('demo input binding already exists')
-        if find_positive_gt_flags(source):raise ValueError('non-prediction demo source')
-        visual=dict(source);visual['render_mesh_contract']=contract
-        visual['core_source_identity']={'pose_report':str(p15),'sha256':sha(p15),'source_readiness':source.get('annotation_ready'),'source_graph_support':source.get('graph_support')}
-        demo_pose.parent.mkdir(parents=True,exist_ok=True);demo_pose.write_text(json.dumps(visual,indent=2)+'\n')
+        run('D00_demo_binding',[main_python,script('build_v19_demo_pose_binding.py'),'--pose-report',p15,'--completion-report',completion,'--output',demo_pose],[demo_pose])
         run('D01_demo_fit',[demo_python,script('fit_v20_visual_contact_demo.py'),'--annotations',ann,'--pose-report',demo_pose,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',cfg['mano_models'],'--object-id',obj,'--device','cuda:0','--interaction-judgments',judgments,'--render-width',cfg.get('render_width',960),'--output-dir',demodir],[demo_state,demodir/'fit_report.json'])
         input_manifest=load(file_in_run(root/'input/raw_frame_manifest/manifest.json',root));video=input_manifest.get('input_video') or input_manifest.get('video')
         if not video:raise ValueError('raw manifest has no original video path')

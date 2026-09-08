@@ -90,7 +90,7 @@ class StageContracts(unittest.TestCase):
 
     def invoke(self, which, fake=None):
         args = ['stage', '--stage', which, '--run-root',str(self.root),'--runtime-config',str(self.config),'--gpu','5']
-        with patch.object(sys,'argv',args), patch.object(stage,'run_command',side_effect=fake or self.command), patch.object(stage,'read_cfr_video_timing',return_value=SimpleNamespace(frame_rate=Fraction(10),source_size_wh=(80,48))), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(sys,'argv',args), patch.object(stage,'run_command',side_effect=fake or self.command), patch.object(stage,'RunLineage',return_value=None), patch.object(stage,'read_cfr_video_timing',return_value=SimpleNamespace(frame_rate=Fraction(10),source_size_wh=(80,48))), contextlib.redirect_stdout(io.StringIO()):
             stage.main()
 
     def command(self, key, argv, outputs, **kwargs):
@@ -105,6 +105,10 @@ class StageContracts(unittest.TestCase):
             value = {'fixture':key}
             if key == 'P03b_camera':value={'source_plane_intrinsics_fx_fy_cx_cy':[900,900,35.5,21.5]}
             elif key == 'P14b_multiview':value=self.completion
+            elif key == 'D00_demo_binding':
+                source=load_source=contracts.load(Path(argv[argv.index('--pose-report')+1]))
+                value={**source,'render_mesh_contract':self.completion['render_mesh_contract'],
+                    'core_source_identity':{'sha256':contracts.sha(Path(argv[argv.index('--pose-report')+1]))}}
             elif key == 'P12_P13_SAM3D':value=self.completion
             elif key == 'P15_temporal_pose':value={'annotation_ready':True,'diagnostic_only':False,'pose_rows':self.frames}
             write(Path(path), value)
@@ -121,14 +125,35 @@ class StageContracts(unittest.TestCase):
         write(self.root / 'state/agent_interaction_judgments/thing.json',{'interaction_judgments':[]})
 
     def test_geometry_requires_agent_selected_P11_identity(self):
+        write(self.root/'state/physical_branch_decisions/thing.json',{'physical_branch':'rigid'})
         evidence = self.root / 'measurements/geometry_completion/rigid_evidence/clip/thing/evidence_bundle/evidence_bundle_report.json'
         write(evidence, {'case':'clip','object_id':'thing','selected_frame_idx':2})
         with self.assertRaisesRegex(ValueError,'P11 evidence'):
             self.invoke('geometry')
         self.assertFalse(self.calls)
         write(evidence, {'case':'clip','object_id':'thing','selected_frame_idx':0})
+        write(self.root/'state/physical_branch_decisions/thing.json',{'physical_branch':'rigid'})
         self.invoke('geometry')
         self.assertEqual(self.calls[0][0],'P12_P13_SAM3D')
+
+    def test_fixed_frontend_commands_match_producer_parsers(self):
+        import run_v19_frontend_stage as frontend
+        write(self.root/'measurements/object_candidates/object_plan_agent.json',{'objects':[{
+            'object_id':'thing','track_id':'track','description':'selected object','detector_text_prompts':['object.'],
+            'detector_prompt_frames':[0,2],'detector_active_interval':[0,2]}]})
+        write(self.root/'state/physical_branch_decisions/thing.json',{'physical_branch':'rigid'})
+        fake=SimpleNamespace(contract=contracts.load(self.input),require=lambda p:Path(p))
+        for phase in frontend.PHASES:
+            with self.subTest(phase=phase):
+                write(self.manifest,{'frames':self.frames,'input_video':str(self.video)})
+                argv=['frontend','--phase',phase,'--run-root',str(self.root),'--runtime-config',str(self.config),'--gpu','5']
+                self.cfg.update(owlv2_python=sys.executable,owlv2_model='/models/owl',sam2_checkpoint='/models/sam2.pt')
+                write(self.config,self.cfg)
+                with patch.object(sys,'argv',argv),patch.object(frontend,'RunLineage',return_value=fake),patch.object(frontend,'run_command',side_effect=self.command):
+                    frontend.main()
+        self.assertEqual([c[0] for c in self.calls],list(frontend.PHASES))
+        self.assertIn('--require-anchor-frame',self.calls[-2][1])
+        self.assertIn('--selected-frame-idx',self.calls[-1][1])
 
     def test_camera_probe_conditioning_and_full_K_hawor(self):
         self.invoke('camera')
@@ -182,7 +207,7 @@ class StageContracts(unittest.TestCase):
         self.assertIs(bound['diagnostic_only'],False)
         self.assertEqual(bound['core_source_identity']['sha256'],contracts.sha(source))
         self.assertEqual(source.read_bytes(),before);self.assertEqual(physical.read_bytes(),core_before)
-        self.assertEqual([c[0] for c in self.calls],['D01_demo_fit','D02_demo_render'])
+        self.assertEqual([c[0] for c in self.calls],['D00_demo_binding','D01_demo_fit','D02_demo_render'])
 
     def test_P19_P18b_and_export_paths_remain_separate(self):
         self.seed_interaction()
@@ -259,7 +284,7 @@ class BundleContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);bundle=root/'bundle';bundle.mkdir()
             source=bundle/'runtime/spec.md';source.parent.mkdir();source.write_text('fixture spec')
-            write(bundle/'runtime/bundle_manifest.json',{'preflight_status':'imports_checked','files':{'runtime/spec.md':contracts.sha(source)}})
+            write(bundle/'runtime/bundle_manifest.json',{'external_assets':{'files':{},'trees':{}},'preflight_status':'imports_checked','files':{'runtime/spec.md':contracts.sha(source)}})
             video=root/'raw.mp4';video.write_bytes(b'raw fixture')
             out=root/'run'
             with patch.object(prep,'read_cfr_video_timing',return_value=SimpleNamespace(report=lambda:{'test_only':True})):

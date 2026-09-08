@@ -39,7 +39,7 @@ def in_run(value, root, *, must_exist=True):
     return resolved
 
 
-def validate_references(value, root, *, must_exist=False):
+def validate_references(value, root, *, must_exist=False, field=''):
     """Reject outside/symlink/relative clip paths, including embedded provenance.
 
     Model binaries (.pkl/.pt/.pth) are not clip predictions. Their separate
@@ -47,13 +47,16 @@ def validate_references(value, root, *, must_exist=False):
     Future output paths inside reports may not exist yet.
     """
     if isinstance(value, dict):
-        for child in value.values():
-            validate_references(child, root, must_exist=must_exist)
+        for key,child in value.items():
+            validate_references(child, root, must_exist=must_exist, field=str(key))
     elif isinstance(value, list):
         for child in value:
-            validate_references(child, root, must_exist=must_exist)
-    elif isinstance(value, str) and '\n' not in value and '/' in value:
+            validate_references(child, root, must_exist=must_exist, field=field)
+    elif isinstance(value, str) and '\n' not in value:
         if Path(value).suffix.lower() in CLIP_SUFFIXES:
+            prose = any(word in field.lower() for word in ('note','description','rationale','claim','interpretation','uncertainty','message','semantics','rule','policy'))
+            if prose and any(c.isspace() for c in value) and not value.startswith(('/', './', '../')):
+                return
             in_run(value, root, must_exist=must_exist)
 
 
@@ -74,7 +77,7 @@ def runtime_environment(config, gpu):
     return env
 
 
-def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None):
+def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, lineage=None, extra_inputs=(), capture_roots=()):
     """One fresh invocation; preserve failures and never continue after failure."""
     root = Path(root).resolve()
     argv = list(map(str, argv))
@@ -82,18 +85,26 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None):
     for path in outputs:
         if path.exists():
             raise ValueError(f'{key} output already exists; not a fresh stage: {path}')
-    for flag in ('--output-dir', '--output-root'):
+    output_roots=[]
+    for flag in ('--output-dir', '--output-root', '--review-dir'):
         if flag in argv:
             directory = in_run(argv[argv.index(flag) + 1], root, must_exist=False)
+            output_roots.append(directory)
             if directory.exists():
                 raise ValueError(f'{key} output directory already exists: {directory}')
+    for value in capture_roots:
+        directory=in_run(value,root,must_exist=False)
+        if directory.exists():raise ValueError(f'{key} output directory already exists: {directory}')
+        output_roots.append(directory)
     logdir = Path(logdir) if logdir else root / 'logs/integration'
     in_run(logdir, root, must_exist=False)
     logdir.mkdir(parents=True, exist_ok=True)
     log = logdir / f'{key}.log'
     start = time.monotonic()
-    event = {'phase': key, 'argv': argv, 'log': str(log), 'outputs': list(map(str, outputs))}
+    event = {'phase': key, 'argv': argv, 'log': str(log), 'outputs': list(map(str, outputs)),
+             'execution_environment':{k:v for k,v in env.items() if k.startswith('EGO_HAWOR_') or k in {'CUDA_VISIBLE_DEVICES','TORCH_HOME','HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE'}}}
     try:
+        inputs=lineage.inputs(argv,output_roots,extra_inputs) if lineage else {}
         with log.open('x') as handle:
             if gpu is not None:
                 event['gpu_probe'] = live_gpu_probe(gpu)
@@ -105,6 +116,8 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None):
             raise RuntimeError(f'{key} failed: {log}')
         for path in outputs:
             in_run(path, root)
+        if lineage:
+            lineage.success(event,inputs,outputs,output_roots)
     except Exception as exc:
         event['error'] = str(exc)
         blockers = root / 'state/runtime_blockers'

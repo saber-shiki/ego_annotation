@@ -57,7 +57,7 @@ class Sam3dOnlyRunner(unittest.TestCase):
             if name == 'integration_sam3d_contract':
                 result.gpu_preflight = lambda gpu, required: {'physical_gpu_id': gpu, 'passed': True, 'test_stub': True}
             return result
-        with patch.object(sys, 'argv', args), patch.object(runner, 'module', side_effect=modules), patch.object(runner.subprocess, 'run', side_effect=self.command), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(sys, 'argv', args), patch.object(runner, 'module', side_effect=modules), patch.object(runner,'RunLineage') as lineage, patch.object(runner.subprocess, 'run', side_effect=self.command), contextlib.redirect_stdout(io.StringIO()):
             runner.main()
 
     def command(self, argv, **kwargs):

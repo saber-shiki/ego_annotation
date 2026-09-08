@@ -5,6 +5,7 @@ from pathlib import Path
 import runpy
 import sys
 from urllib.parse import urlparse
+from v19_run_lineage import RunLineage
 from v19_runtime_contracts import load, sha
 
 
@@ -24,8 +25,12 @@ def bind_offline_weights(records, torch):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--run-root',type=Path,required=True)
     parser.add_argument('--runtime-config', type=Path, required=True)
     args, remaining = parser.parse_known_args()
+    lineage=RunLineage(args.run_root,Path(__file__).resolve().parents[1],args.runtime_config)
+    for flag in ('--annotations','--depth-npz','--initial-pose-report'):
+        lineage.require(remaining[remaining.index(flag)+1])
     config = load(args.runtime_config)
     import torch
     bind_offline_weights(config['lightglue_weights'], torch)

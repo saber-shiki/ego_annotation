@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from v19_run_lineage import RunLineage
 from v20_prediction_contracts import assert_prediction_only
 from v19_runtime_contracts import validate_references, runtime_environment, execution_target
 
@@ -42,6 +43,7 @@ def main():
     if not out.is_relative_to(root) or out.exists():raise ValueError('new output directory within run root required')
     config=json.loads(a.runtime_config.read_text());execution_target(config,a.gpu)
     ev=json.loads(evidence.read_text());assert_prediction_only(ev,label='SAM3D evidence')
+    RunLineage(root,Path(__file__).resolve().parents[1],a.runtime_config).require(evidence)
     validate_clip_references(ev,root)
     repo=Path(__file__).resolve().parents[1];exp=repo/'experiments/sam3d_p11_p12_branch'
     p12=module(exp/'run_p12_parallel_geometry_priors.py','integration_sam3d_contract')

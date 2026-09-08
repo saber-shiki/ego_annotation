@@ -56,6 +56,20 @@ The launch-preflighted `runtime/runtime_config.json` binds model/checkpoint and 
 - SAM3D source/config and offline MoGe/DINOv2 assets are declared in `runtime/runtime_config.json`. The SAM3D runner verifies the pinned assets before inference.
 - MANO model assets `{MANO_MODELS}` and WiLoR source `{WILOR_ROOT}` are read-only model assets.
 
+## Current-run source binding
+
+`input/runtime_input_contract.json` supplies a unique prepared `run_id`, absolute `run_root`, original video hash and bundle identity. All named frontend and later producer commands must run through the fixed stage entries. Do not execute producer scripts directly or copy a prior prediction into the new run root. A successful command records input/output/code hashes tied to this identity; downstream stages verify the chain and all generated files, including masks/meshes. There is no cache-registration command. These records show command provenance, not reconstruction quality or physical authority.
+
+P05, the P09 anchor decision, P10 and P17 judgments are authored from current visual evidence, not model-execution records. Add a top-level `visual_judgment_provenance` object with:
+- `kind: current_run_visual_judgment`;
+- `phase`: `P05`, `P09_anchor`, `P10` or `P17_judgment` respectively;
+- `run_identity`: exact `run_id`, `run_root`, `input_video_sha256`, `bundle_manifest_sha256` copied from the prepared contract;
+- `evidence_sha256`: absolute current evidence paths mapped to their SHA-256 values. P05 includes inspected P01 frames/manifest; anchor includes the P09 proposal/review image; P10 includes P09 visible geometry; P17 includes the current P15 pose report and inspected raw frames.
+
+Do not author this provenance on behalf of unseen images or relabel copied judgments. It distinguishes visual judgment from measurement execution and does not make a judgment certain. The fixed frontend reads detector prompts/frames/intervals and optional `track_id` from the single selected P05 object. P10 must explicitly state `physical_branch: rigid` to enter P11. Alternative branches remain unresolved/nonrigid rather than entering rigid reconstruction.
+
+External model/source/interpreter identities are bound in the bundle manifest and rechecked at preparation and stage use. Optional environment overlays cannot enable GPU/network access during import preflight.
+
 ## Stop condition
 
 If a phase cannot run because an input, script, model asset, or environment is missing, write:
@@ -102,10 +116,8 @@ The input contract must preserve the launch-provided `input_video_sha256` and in
 Script: `scripts/build_v19_raw_frame_manifest.py`
 
 ```bash
-"{MAIN_PYTHON}" scripts/build_v19_raw_frame_manifest.py \
-  --video "{INPUT_VIDEO}" \
-  --output-dir "{RUN_ROOT}/input/raw_frame_manifest" \
-  --render-width 960
+"{MAIN_PYTHON}" scripts/run_v19_frontend_stage.py --phase P01 \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
 Required output: `{RUN_ROOT}/input/raw_frame_manifest/manifest.json`.
@@ -157,27 +169,8 @@ Script: `scripts/build_v19_owlv2_object_box_prompts.py`
 The default P06 source is OWLv2 text-conditioned detection, not VLM/agent pixel clicks. A VLM/agent may name the target object, write open-vocabulary text prompts, and choose representative frames in P05, but it must not be treated as the source of pixel-accurate click coordinates. For each rigid/manipulated object selected in P05, run OWLv2 with the object's `detector_text_prompts` on `detector_prompt_frames`, then write SAM2 prompt JSON containing `box_xyxy` in the detector image coordinate frame. Do not hard-code a category-specific object id, prompt string, or active interval in the runtime command; keyboard prompts are an example P05 object-plan value, not the P06 contract.
 
 ```bash
-mkdir -p "{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2" "{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes"
-TEXT_PROMPT_ARGS=()
-for PROMPT in "${DETECTOR_TEXT_PROMPTS[@]}"; do
-  TEXT_PROMPT_ARGS+=(--text-prompt "$PROMPT")
-done
-CUDA_VISIBLE_DEVICES="{GPU_ID}" "{OWLV2_PYTHON}" scripts/build_v19_owlv2_object_box_prompts.py \
-  --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
-  --output-root "{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2" \
-  --review-dir "{RUN_ROOT}/renders/review_frames/P06_owlv2_object_boxes" \
-  --case-id "{CASE_ID}" \
-  --object-id "{OBJECT_ID}" \
-  --track-id "{TRACK_ID}" \
-  --description "{OBJECT_DESCRIPTION}" \
-  "${TEXT_PROMPT_ARGS[@]}" \
-  --prompt-frames "{DETECTOR_PROMPT_FRAMES_CSV}" \
-  --active-start "{DETECTOR_ACTIVE_START}" \
-  --active-end "{DETECTOR_ACTIVE_END}" \
-  --owlv2-model {OWLV2_MODEL} \
-  --box-threshold 0.03 \
-  --device cuda \
-  --box-only
+"{MAIN_PYTHON}" scripts/run_v19_frontend_stage.py --phase P06 \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
 Required output for each object: `{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2/{OBJECT_ID}/object_point_prompts_vlm.json` and `v19_owlv2_object_box_prompt_report.json`. The prompt JSON must contain `prompt_source=owlv2_text_grounded_detector_boxes`, `box_xyxy` on visible prompt frames, and a coordinate declaration matching the frame images used by the detector. If OWLv2 produces no usable box for the target object, write a P06 blocker and stop; do not replace it with VLM/agent click coordinates as the default path.
@@ -187,19 +180,8 @@ Required output for each object: `{RUN_ROOT}/measurements/object_candidates/obje
 Script: `scripts/run_sam2_vlm_points_multiobject.py`
 
 ```bash
-mkdir -p '{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points'
-CUDA_VISIBLE_DEVICES='{GPU_ID}' '{MAIN_PYTHON}' scripts/run_sam2_vlm_points_multiobject.py \
-  --clip '{INPUT_VIDEO}' \
-  --point-root '{RUN_ROOT}/measurements/object_candidates/object_box_prompts_owlv2' \
-  --output-root '{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points' \
-  --checkpoint {SAM2_CHECKPOINT} \
-  --frame-start 0 \
-  --frame-end {FRAME_END} \
-  --sam2-image-width 960 \
-  --render-width 960 \
-  --use-positive-prompt-box \
-  --prompt-box-pad-ratio 0.18 \
-  --prompt-box-min-pad-px 24
+"{MAIN_PYTHON}" scripts/run_v19_frontend_stage.py --phase P07 \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
 Required output for each object: `{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points/{TRACK_ID}/sam2/sam2_track.json` written directly under the A800/truenas run root.
@@ -211,14 +193,8 @@ Required P07 self-check before P08: inspect `qc_sam2_multiobject_points.json`, P
 Script: `scripts/build_v19_base_annotations.py`
 
 ```bash
-"{MAIN_PYTHON}" scripts/build_v19_base_annotations.py \
-  --case "{CASE_ID}" \
-  --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
-  --hawor-npz "{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz" \
-  --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
-  --sam2-output-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --calibration-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
-  --output-dir "{RUN_ROOT}/state/base_annotations"
+"{MAIN_PYTHON}" scripts/run_v19_frontend_stage.py --phase P08 \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
 Required output: `{RUN_ROOT}/state/base_annotations/annotations_v19_base.json`, `v19_base_physical_state.json`, and `v19_mano_bridge_from_hawor_world.npz`.
@@ -232,24 +208,8 @@ Script: `scripts/build_v19_visible_geometry_from_sam2_depth.py`
 P09 is intentionally two-step. First propose anchor candidates from the same SAM2/depth/camera evidence without committing to a canonical object frame:
 
 ```bash
-"{MAIN_PYTHON}" scripts/build_v19_visible_geometry_from_sam2_depth.py \
-  --case "{CASE_ID}" \
-  --track-id "{TRACK_ID}" \
-  --object-id "{OBJECT_ID}" \
-  --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
-  --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --depth-npz "{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz" \
-  --output-dir "{RUN_ROOT}/measurements/object_geometry/anchor_candidates/{OBJECT_ID}" \
-  --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
-  --calibration-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
-  --depth-image-plane source_rgb \
-  --mask-image-plane sam2_mask \
-  --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
-  --preserve-source-index \
-  --exclude-hand-regions \
-  --hand-bbox-exclusion-pad-px 4 \
-  --propose-anchor-candidates-only \
-  --anchor-candidate-count 12
+"{MAIN_PYTHON}" scripts/run_v19_frontend_stage.py --phase P09-propose \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
 Required proposal outputs: `anchor_candidate_proposals.json` and `anchor_candidate_review.jpg`. The numeric proposal score is not an acceptance gate. The runtime agent must inspect the review sheet as an image, compare raw appearance/mask/depth/hand-removal summaries, and write an explicit anchor decision:
@@ -263,24 +223,8 @@ Minimum decision fields: `object_id`, `selected_anchor_frame_idx`, `selected_can
 Then run canonical visible geometry with the selected anchor. This second command must use `--require-anchor-frame` so the pipeline cannot silently fall back to the max-point frame:
 
 ```bash
-"{MAIN_PYTHON}" scripts/build_v19_visible_geometry_from_sam2_depth.py \
-  --case "{CASE_ID}" \
-  --track-id "{TRACK_ID}" \
-  --object-id "{OBJECT_ID}" \
-  --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
-  --sam2-root "{RUN_ROOT}/measurements/object_tracks/sam2_owlv2_box_points" \
-  --depth-npz "{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz" \
-  --output-dir "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}" \
-  --base-annotations "{RUN_ROOT}/state/base_annotations/annotations_v19_base.json" \
-  --calibration-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
-  --depth-image-plane source_rgb \
-  --mask-image-plane sam2_mask \
-  --object-plan "{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json" \
-  --anchor-frame "{ANCHOR_FRAME}" \
-  --require-anchor-frame \
-  --preserve-source-index \
-  --exclude-hand-regions \
-  --hand-bbox-exclusion-pad-px 4
+"{MAIN_PYTHON}" scripts/run_v19_frontend_stage.py --phase P09 \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
 Required output: `v19_visible_geometry_depth_fused_report.json` and visible-geometry
@@ -320,14 +264,8 @@ If branch is not rigid, stop rigid path and render uncertainty from available st
 Script: `scripts/build_v18_compact_rigid_evidence_bundle.py`
 
 ```bash
-"{MAIN_PYTHON}" scripts/build_v18_compact_rigid_evidence_bundle.py \
-  --case "{CASE_ID}" \
-  --object-id "{OBJECT_ID}" \
-  --annotations "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/annotations_v19_visible_geometry.json" \
-  --depth-fused-report "{RUN_ROOT}/measurements/object_geometry/visible_geometry/{OBJECT_ID}/v19_visible_geometry_depth_fused_report.json" \
-  --output-root "{RUN_ROOT}/measurements/geometry_completion/rigid_evidence" \
-  --selected-frame-idx "{ANCHOR_FRAME}" \
-  --selection-note "agent-selected anchor from state/anchor_decisions/{OBJECT_ID}.json"
+"{MAIN_PYTHON}" scripts/run_v19_frontend_stage.py --phase P11 \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
 Required output: evidence bundle report and object crop image path. P11 must use the same `selected_anchor_frame_idx` recorded in P09's anchor-decision JSON; it must not independently rerank evidence frames by mask area or point count. SAM3D consumes `selected.raw_frame_path` and the matching object-owned `selected.mask_path` as full-scene RGB plus mask, with no external pointmap or independent crop/rotation. The legacy RGBA crop is preserved as P11 evidence only; no second reconstruction backend runs.

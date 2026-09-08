@@ -15,9 +15,11 @@ import shutil
 import socket
 import subprocess
 import sys
+import uuid
 from v19_runtime_contracts import interpreter, load, sha
 from v20_prediction_contracts import find_positive_gt_flags
 from v19_video_timing import read_cfr_video_timing
+from v19_runtime_assets import external_asset_identity, verify_bundle
 
 SPEC = 'runtime/rgb_sam3d_runtime_spec.md'
 PROMPT = 'runtime/rgb_sam3d_system_prompt.md'
@@ -184,6 +186,9 @@ def import_preflight(bundle, config):
         env.pop('PYTHONPATH', None)
         if name == 'sam3d':
             env.update(config['sam3d_environment'])
+        # Never allow optional overlays to expose GPUs or enable networking.
+        env.update(CUDA_VISIBLE_DEVICES='',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1')
+        env.pop('PYTHONPATH',None)
         done = subprocess.run([str(interpreter(python)), '-c', code], cwd=bundle,
                               env=env, capture_output=True, text=True, timeout=90)
         results.append({'check': name, 'argv': [python, '-c', code], 'returncode': done.returncode,
@@ -236,9 +241,11 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
     # Verify closure on the copied tree, without resolving back to development.
     if closure(bundle) != selected:
         raise ValueError('copied script closure differs')
+    asset_identity=external_asset_identity(config)
     results = import_preflight(bundle, config) if check_imports else []
     files = {str(p.relative_to(bundle)): sha(p) for p in sorted(bundle.rglob('*')) if p.is_file()}
     manifest = {'schema': 'v19_rgb_sam3d_bundle_v1', 'scripts': list(map(str, selected)), 'files': files,
+                'external_assets':asset_identity,
                 'preflight_status': 'imports_checked' if results and all(r['returncode'] == 0 for r in results) else 'imports_unchecked_or_failed',
                 'source_commit': subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()}
     (bundle / 'runtime/bundle_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -266,10 +273,7 @@ def prepare_run(bundle, run_root, video, case, sensor=None, sensor_source=None,
     manifest = load(bundle / 'runtime/bundle_manifest.json')
     if manifest.get('preflight_status') != 'imports_checked':
         raise ValueError('bundle import preflight has not passed')
-    for relative, expected in manifest['files'].items():
-        path = bundle / relative
-        if not path.is_file() or sha(path) != expected:
-            raise ValueError(f'bundle file missing/changed: {relative}')
+    verify_bundle(bundle)
     timing = read_cfr_video_timing(video)
     if sensor:
         payload = load(sensor)
@@ -281,8 +285,9 @@ def prepare_run(bundle, run_root, video, case, sensor=None, sensor_source=None,
     shutil.copyfile(video, root / 'input/source.mp4')
     if sensor:
         shutil.copyfile(sensor, root / 'input/sensor_calibration.json')
-    contract = {'case': case, 'input_video': str(root / 'input/source.mp4'), 'input_video_sha256': sha(video),
+    contract = {'run_id':str(uuid.uuid4()),'run_root':str(root),'case': case, 'input_video': str(root / 'input/source.mp4'), 'input_video_sha256': sha(video),
                 'sensor_calibration_metadata': str(root / 'input/sensor_calibration.json') if sensor else None,
+                'sensor_calibration_sha256':sha(sensor) if sensor else None,
                 'sensor_calibration_authority': sensor_authority if sensor else None,
                 'sensor_frame_intrinsics_key': sensor_key, 'source_timing':timing.report(), 'bundle_manifest_sha256': sha(bundle / 'runtime/bundle_manifest.json')}
     (root / 'input/runtime_input_contract.json').write_text(json.dumps(contract, indent=2) + '\n')

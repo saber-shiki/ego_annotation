@@ -16,6 +16,7 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 import fit_v20_late_window_prediction_only_se3 as se3
 from v20_prediction_contracts import assert_prediction_only
+from v19_run_lineage import RunLineage
 from v19_runtime_contracts import in_run, validate_references
 
 
@@ -116,8 +117,9 @@ def main():
     p.add_argument('--run-root',type=Path,required=True)
     p.add_argument('--object-id',required=True);p.add_argument('--anchor-frame',type=int,required=True);a=p.parse_args()
     root=a.run_root.resolve()
+    lineage=RunLineage(root,Path(__file__).resolve().parents[1])
     for name in ['annotations','pose_report','rgb_edge_npz','rgb_edge_json']:
-        in_run(getattr(a,name),root)
+        lineage.require(getattr(a,name))
     in_run(a.output,root,must_exist=False)
     if a.output.exists():raise ValueError('refusing to overwrite pose initializer')
     base=se3.load_json(a.pose_report);ann=se3.load_json(a.annotations);ed=se3.load_json(a.rgb_edge_json)
