@@ -170,8 +170,9 @@ class DemoTimeline(unittest.TestCase):
             (root / "ann.json").write_text(json.dumps(ann))
             mesh = root / "mesh.ply"
             trimesh.creation.box(extents=[.1, .1, .1]).export(mesh)
-            (root / "poses.json").write_text(json.dumps({"pose_rows": poses, "render_mesh_contract": {
+            (root / "poses.json").write_text(json.dumps({"annotation_ready": True, "diagnostic_only": False, "pose_rows": poses, "render_mesh_contract": {
                 "required_mesh_path": str(mesh), "required_mesh_sha256": sha(mesh)}}))
+            source_pose_bytes = (root / "poses.json").read_bytes()
             ids = np.array([42, 40, 43, 41])
             valid = np.array([1, 1, 1, 0], bool)
             source_v = np.tile(vertices, (4, 1, 1)); source_v[~valid] = np.nan
@@ -205,6 +206,13 @@ class DemoTimeline(unittest.TestCase):
                 np.testing.assert_allclose(state["left_base_vertices_world"][0], vertices)
             hypotheses = json.loads((root / "out/contact_hypotheses.json").read_text())
             self.assertFalse(np.asarray(hypotheses["weights"]).any())
+            self.assertEqual((root / "poses.json").read_bytes(), source_pose_bytes)
+            fit_report = json.loads((root / "out/fit_report.json").read_text())
+            self.assertTrue(fit_report["demo_only"])
+            self.assertFalse(fit_report["annotation_ready"])
+            source_pose = json.loads(source_pose_bytes)
+            source_pose["annotation_ready"] = False
+            (root / "poses.json").write_text(json.dumps(source_pose))
             legacy_argv = argv[:-2]
             legacy_argv[legacy_argv.index("--output-dir") + 1] = str(root / "legacy")
             with patch.object(sys, "argv", legacy_argv), patch.object(fitter, "mano_models", return_value={s: TestMano() for s in ["left", "right"]}), contextlib.redirect_stdout(io.StringIO()):

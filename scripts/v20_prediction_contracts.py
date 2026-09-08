@@ -43,6 +43,7 @@ def assert_prediction_only(
     label: str,
     object_id: str | None = None,
     allow_annotation_ready: bool = False,
+    allow_nondiagnostic_prediction: bool = False,
     allowed_schema_prefixes: tuple[str, ...] = (),
     allowed_statuses: tuple[str, ...] = (),
 ) -> None:
@@ -51,7 +52,7 @@ def assert_prediction_only(
         raise RuntimeError(f"{label} has positive GT provenance flags: {flags[:20]}")
     if not allow_annotation_ready and report.get("annotation_ready") is True:
         raise RuntimeError(f"{label} cannot be annotation-ready input")
-    if report.get("diagnostic_only") is False:
+    if not allow_nondiagnostic_prediction and report.get("diagnostic_only") is False:
         raise RuntimeError(f"{label} is not diagnostic_only")
     if object_id is not None:
         actual = report.get("object_id")

@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 from v20_prediction_contracts import assert_prediction_only
+from v19_runtime_contracts import validate_references, runtime_environment, execution_target
 
 
 def module(path, name):
@@ -30,14 +31,7 @@ def inside(path, root):
 
 def validate_clip_references(value, root):
     """Check prediction assets before legacy producers can copy an outside file."""
-    if isinstance(value, dict):
-        for child in value.values():validate_clip_references(child, root)
-    elif isinstance(value, list):
-        for child in value:validate_clip_references(child, root)
-    elif isinstance(value, str) and value.startswith('/') and '\n' not in value:
-        path=Path(value)
-        if path.suffix.lower() in {'.json','.npz','.ply','.obj','.glb','.png','.jpg','.jpeg','.mp4'}:
-            inside(path,root)
+    validate_references(value, root, must_exist=True)
 
 
 def main():
@@ -46,7 +40,8 @@ def main():
     p.add_argument('--gpu',type=int,required=True);p.add_argument('--seed',type=int,default=42);a=p.parse_args()
     root=a.run_root.resolve();evidence=inside(a.evidence_report,root);out=a.output_dir.resolve()
     if not out.is_relative_to(root) or out.exists():raise ValueError('new output directory within run root required')
-    config=json.loads(a.runtime_config.read_text());ev=json.loads(evidence.read_text());assert_prediction_only(ev,label='SAM3D evidence')
+    config=json.loads(a.runtime_config.read_text());execution_target(config,a.gpu)
+    ev=json.loads(evidence.read_text());assert_prediction_only(ev,label='SAM3D evidence')
     validate_clip_references(ev,root)
     repo=Path(__file__).resolve().parents[1];exp=repo/'experiments/sam3d_p11_p12_branch'
     p12=module(exp/'run_p12_parallel_geometry_priors.py','integration_sam3d_contract')
@@ -63,8 +58,13 @@ def main():
         overlay=config.get('sam3d_environment',{}) if key=='P12_SAM3D' else {}
         if not isinstance(overlay,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in overlay.items()):
             raise ValueError('sam3d_environment must contain string environment values')
-        environment={**os.environ,**overlay,'CUDA_VISIBLE_DEVICES':str(a.gpu)}
-        with log.open('w') as f:done=subprocess.run(list(map(str,argv)),stdout=f,stderr=subprocess.STDOUT,env=environment)
+        environment={**runtime_environment(config,a.gpu),**overlay,'CUDA_VISIBLE_DEVICES':str(a.gpu)}
+        try:
+            with log.open('x') as f:done=subprocess.run(list(map(str,argv)),cwd=repo,stdout=f,stderr=subprocess.STDOUT,env=environment)
+        except OSError as exc:
+            steps.append({'phase':key,'argv':list(map(str,argv)),'error':str(exc),'log':str(log)})
+            (out/'execution.json').write_text(json.dumps({'steps':steps},indent=2)+'\n')
+            raise
         steps.append({'phase':key,'argv':list(map(str,argv)),'returncode':done.returncode,'elapsed_s':time.monotonic()-started,'log':str(log)})
         (out/'execution.json').write_text(json.dumps({'steps':steps,'source_artifacts_mutated':False},indent=2)+'\n')
         if done.returncode:raise RuntimeError(f'{key} failed: {log}')

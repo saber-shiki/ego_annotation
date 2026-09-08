@@ -1,6 +1,6 @@
 # V19 RGB / SAM3D Runtime Spec
 
-This is the only runtime instruction document. It defines state ontology, execution policy, exact phase order, scripts, command templates, required outputs, and stop conditions. Do not inspect or mention any file that is not named by this spec.
+This is the only runtime execution spec; `runtime/rgb_sam3d_system_prompt.md` establishes the prediction-executor role. Internal dependencies and hashes are in `runtime/bundle_manifest.json`. It defines state ontology, execution policy, exact phase order, scripts, command templates, required outputs, and stop conditions. Do not inspect or mention any file that is not named by this spec.
 
 ## Runtime inputs
 
@@ -85,9 +85,9 @@ with phase id, missing component, blocked state variable, evidence, and next req
 
 ## P00 startup records
 
-Type: agent writes JSON/Markdown.
+Type: agent writes JSON/Markdown; preserve the prepared input contract without overwriting it.
 
-Outputs:
+Inputs/outputs:
 
 - `{RUN_ROOT}/input/runtime_input_contract.json`
 - `{RUN_ROOT}/logs/harness_events.jsonl`
@@ -123,171 +123,24 @@ nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --for
 
 Required output: append a log event to `{RUN_ROOT}/logs/harness_events.jsonl` with selected `{GPU_ID}` and successful A800 host probe. There is no per-phase bundle sync or raw-frame-manifest staging because Pi, the input video, and the run root are already on the A800 host.
 
-## P03 camera-conditioned depth measurement
+## P03a/P03b/P03/P03c/P04 camera, depth and MANO
 
-Script: `scripts/run_unidepth_full_frame_v3.py`
-
-**Execution dependency:** when prediction-side sensor metadata is supplied (for a calibrated RGB input), execute P03b first, then run the final P03 command below. UniDepth
-must consume the resolved `manifest_rgb` rays in its depth head. Its predicted camera-head K
-is diagnostic only: the final source-plane camera-z raster is formed by resizing the metric
-radius and explicitly projecting it onto exact `source_rgb` contract rays. P03c is not allowed
-to relabel a disagreeing unchanged z raster after the fact. If no sensor metadata is supplied, run one
-unconditioned intrinsics-probe pass into
-`{RUN_ROOT}/measurements/depth_slam/unidepth_intrinsics_probe`, resolve P03b from that probe,
-then run this final camera-conditioned P03 pass into the path below.
+After P01 and the live P02 probe, execute exactly:
 
 ```bash
-CUDA_VISIBLE_DEVICES='{GPU_ID}' '{UNIDEPTH_PYTHON}' scripts/run_unidepth_full_frame_v3.py \
-  --manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
-  --output-dir '{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame' \
-  --camera-contract '{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json' \
-  --camera-input-plane manifest_rgb \
-  --camera-output-plane source_rgb \
-  --frame-start 0 \
-  --frame-end {FRAME_END} \
-  --unidepth-repo {UNIDEPTH_REPO} \
-  --model-id {UNIDEPTH_MODEL} \
-  --remote-root '{RUN_ROOT}/input/raw_frame_manifest' \
-  --local-root '{RUN_ROOT}/input/raw_frame_manifest' \
-  --source-width {SOURCE_WIDTH} \
-  --source-height {SOURCE_HEIGHT}
+"{MAIN_PYTHON}" scripts/run_v19_sam3d_integration_stage.py --stage camera \
+  --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
-Required output: `{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz` and `qc_unidepth_full_frame_v3.json` written directly under the A800/truenas run root. The report must declare `depth_ray_geometry_reprojected:true`, the radius-to-exact-ray conversion, and a maximum internal conditioned-ray discrepancy no greater than the fixed 1° gate; camera-head K disagreement is retained as a diagnostic rather than made active.
+The command binds original input identity and the complete P01 frame/time map before any measurement. Its internal commands use:
 
-### P03a intrinsics probe (only without supplied calibration)
+1. `scripts/run_unidepth_full_frame_v3.py` unconditioned into `measurements/depth_slam/unidepth_intrinsics_probe` **only if no calibration was supplied** in the prepared input contract.
+2. `scripts/resolve_v19_camera_contract.py` (P03b) into `state/calibration/v19_camera_calibration_contract.json`. Supplied sensor metadata must match the copied RGB bytes and complete timeline. It never falls back after a supplied calibration error. Without supplied calibration it aggregates the probe, with square focal for the supported HaWoR model API.
+3. `scripts/run_unidepth_full_frame_v3.py` conditioned on that contract (`--camera-input-plane manifest_rgb --camera-output-plane source_rgb`) into `measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz`. Radius-to-exact-source-ray reprojection is required by this producer; the camera-head K remains diagnostic.
+4. `scripts/adapt_v19_depth_to_camera_contract.py` with `--depth-plane source_rgb` into `state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz`. Metadata-only ray relabeling is forbidden; depth values/raster/frame IDs and the exact conditioned K/contract must agree.
+5. `scripts/remote_run_hawor_export.sh` / `scripts/export_hawor_world.py` with an isolated byte-identical `input/hawor_sequence/{CASE_ID}.mp4`, the full source `[fx,fy,cx,cy]`, and exact source focal. The released HaWoR API requires square focal: non-square supplied K is a concrete model/API blocker, never averaged or relabeled. Required outputs are `measurements/hand_candidates/hawor_world/hawor_world_hands.npz` and `qc_hawor_world_hands.json`.
 
-When no sensor metadata is supplied, run this once before P03b. It is an estimated-camera probe, NOT the final conditioned depth archive.
-
-```bash
-CUDA_VISIBLE_DEVICES='{GPU_ID}' '{UNIDEPTH_PYTHON}' scripts/run_unidepth_full_frame_v3.py \
-  --manifest '{RUN_ROOT}/input/raw_frame_manifest/manifest.json' \
-  --output-dir '{RUN_ROOT}/measurements/depth_slam/unidepth_intrinsics_probe' \
-  --frame-start 0 --frame-end {FRAME_END} \
-  --unidepth-repo '{UNIDEPTH_REPO}' --model-id '{UNIDEPTH_MODEL}' \
-  --remote-root '{RUN_ROOT}/input/raw_frame_manifest' --local-root '{RUN_ROOT}/input/raw_frame_manifest' \
-  --source-width {SOURCE_WIDTH} --source-height {SOURCE_HEIGHT}
-```
-
-## P03b source-neutral camera/image-transform contract
-
-Script: `scripts/resolve_v19_camera_contract.py`
-
-The launcher binds `{SENSOR_CALIBRATION_METADATA}`; the runtime must not discover calibration outside the declared prediction input. If prediction-side sensor metadata is supplied, resolve it into the canonical V2 contract. A supplied-but-missing, malformed, variable-K, wrong-size, or wrong-timeline sensor contract is a P03b implementation/input failure and must not silently fall back. Only when the launcher explicitly supplies no sensor metadata may the original robust UniDepth aggregation be used as fallback.
-
-```bash
-SENSOR_METADATA='{SENSOR_CALIBRATION_METADATA}'
-SENSOR_INTRINSICS_KEY='{SENSOR_FRAME_INTRINSICS_KEY}'
-CAMERA_ARGS=()
-if [[ -n "$SENSOR_METADATA" ]]; then
-  CAMERA_ARGS+=(
-    --sensor-calibration-contract "$SENSOR_METADATA"
-    --sensor-calibration-authority '{SENSOR_CALIBRATION_AUTHORITY}'
-    --prediction-source-video '{INPUT_VIDEO}'
-    --sensor-source-video '{SENSOR_SOURCE_VIDEO}'
-  )
-  if [[ -n "$SENSOR_INTRINSICS_KEY" ]]; then
-    CAMERA_ARGS+=(--sensor-frame-intrinsics-key "$SENSOR_INTRINSICS_KEY")
-  fi
-else
-  CAMERA_ARGS+=(
-    --unidepth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_intrinsics_probe/unidepth_full_frame_depth_v3.npz"
-    --fallback-reason "launcher supplied no prediction-side sensor calibration"
-    --aggregation median
-    --square-focal
-  )
-fi
-
-"{MAIN_PYTHON}" scripts/resolve_v19_camera_contract.py \
-  --case "{CASE_ID}" \
-  --raw-frame-manifest "{RUN_ROOT}/input/raw_frame_manifest/manifest.json" \
-  --output-dir "{RUN_ROOT}/state/calibration" \
-  "${CAMERA_ARGS[@]}"
-```
-
-Required outputs:
-
-- `{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json`
-- `{RUN_ROOT}/state/calibration/v19_camera_calibration_intrinsics.npz`
-
-Both sensor-first and estimated-fallback modes use schema `v19_camera_image_transform_contract_v2`. In sensor-first mode, the resolver must prove exact prediction/sensor source-video SHA256 identity and matching frame/time timeline before accepting K; same frame count alone is insufficient. The contract declares native calibration K plus explicit `calibration`, `source_rgb`, `manifest_rgb`, `sam2_mask`, and `render` planes under `K_plane = A_plane_from_calibration @ K_calibration`. The fallback mode reuses `build_v19_calibration_contract.py` aggregation functions; the legacy builder remains available but is no longer the source-neutral runtime entry point.
-
-## P03c bind metric depth to the resolved camera plane
-
-Script: `scripts/adapt_v19_depth_to_camera_contract.py`
-
-```bash
-"{MAIN_PYTHON}" scripts/adapt_v19_depth_to_camera_contract.py \
-  --source-depth-npz "{RUN_ROOT}/measurements/depth_slam/unidepth_full_frame/unidepth_full_frame_depth_v3.npz" \
-  --camera-contract "{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json" \
-  --depth-plane source_rgb \
-  --output-dir "{RUN_ROOT}/state/calibration/depth_camera_contract"
-```
-
-Required output:
-
-`{RUN_ROOT}/state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz`
-
-The adapter must prove that depth values, dtype, frame IDs, and raster size are unchanged,
-that source K already equals the requested `source_rgb` K, and—when P03 declares camera
-conditioning—that the inference contract hash and output plane match. It preserves the
-source K under `source_estimated_intrinsics_fx_fy_cx_cy` and embeds the resolved contract
-SHA256, plane, K, and `A_depth_from_calibration`. A metadata-only K relabel is a hard blocker:
-the forensic `--allow-metadata-only-ray-relabel` option is forbidden in production and P09
-rejects such an archive. All metric backprojection must consume this camera-bound archive.
-
-## P04 MANO hand measurement
-
-Script: `scripts/remote_run_hawor_export.sh` (calls `scripts/export_hawor_world.py`)
-
-Extract the HaWoR focal from the chosen contract's `source_rgb` image plane, never from native calibration-plane K when an image affine is present and never from diagnostics/outlier tables. Prefer top-level `source_plane_intrinsics_fx_fy_cx_cy`; legacy contracts may fall back to top-level `focal_px`, `focal_geom_px`, `intrinsics_fx_fy_cx_cy[0]`, then `intrinsics.fx`. If none exists, stop with a P04 blocker before running HaWoR.
-
-```bash
-CONTRACT='{RUN_ROOT}/state/calibration/v19_camera_calibration_contract.json'
-HAWOR_K=$("{MAIN_PYTHON}" -c 'import json,sys; c=json.load(open(sys.argv[1])); print(" ".join(map(str,c["source_plane_intrinsics_fx_fy_cx_cy"])))' "$CONTRACT")
-FOCAL=$("{MAIN_PYTHON}" - "$CONTRACT" <<'PY'
-import json
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-data = json.loads(path.read_text())
-value = None
-source_plane = data.get("source_plane_intrinsics_fx_fy_cx_cy")
-if isinstance(source_plane, list) and len(source_plane) >= 2 and all(isinstance(v, (int, float)) for v in source_plane[:2]):
-    value = float((float(source_plane[0]) * float(source_plane[1])) ** 0.5)
-for key in ("focal_px", "focal_geom_px"):
-    if value is None and isinstance(data.get(key), (int, float)):
-        value = float(data[key])
-        break
-if value is None:
-    intr = data.get("intrinsics_fx_fy_cx_cy")
-    if isinstance(intr, list) and intr and isinstance(intr[0], (int, float)):
-        value = float(intr[0])
-if value is None:
-    intr = data.get("intrinsics")
-    if isinstance(intr, dict) and isinstance(intr.get("fx"), (int, float)):
-        value = float(intr["fx"])
-if value is None:
-    raise SystemExit(f"missing canonical focal in {path}; do not scan diagnostics")
-print(value)
-PY
-)
-HAWOR_CLIP='{RUN_ROOT}/input/hawor_sequence/{CASE_ID}.mp4'
-mkdir -p "$(dirname "$HAWOR_CLIP")"
-if [ ! -s "$HAWOR_CLIP" ]; then cp -- '{INPUT_VIDEO}' "$HAWOR_CLIP"; fi
-[ "$(sha256sum '{INPUT_VIDEO}' | awk '{print $1}')" = "$(sha256sum "$HAWOR_CLIP" | awk '{print $1}')" ]
-CUDA_VISIBLE_DEVICES='{GPU_ID}' \
-EGO_HAWOR_ROOT="{HAWOR_ROOT}" \
-EGO_HAWOR_CASE='{CASE_ID}' \
-EGO_HAWOR_CLIP="$HAWOR_CLIP" \
-EGO_HAWOR_OUTPUT_DIR='{RUN_ROOT}/measurements/hand_candidates/hawor_world' \
-EGO_HAWOR_IMG_FOCAL="$FOCAL" \
-EGO_HAWOR_CAMERA_INTRINSICS_FX_FY_CX_CY="$HAWOR_K" \
-EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH=1 \
-bash scripts/remote_run_hawor_export.sh
-```
-
-Required output: `{RUN_ROOT}/measurements/hand_candidates/hawor_world/hawor_world_hands.npz` and `qc_hawor_world_hands.json` written directly under the A800/truenas run root.
+Each subcommand has a fresh output destination and durable `logs/integration/` command/event records. Failure stops subsequent commands. Heavy subcommands recheck the selected GPU and stop rather than switching devices. No machine `paths.env` is read. Model/checkpoint placement comes only from the bound config.
 
 ## P05 object plan
 
@@ -295,7 +148,7 @@ Type: agent writes JSON from visual evidence.
 
 Output: `{RUN_ROOT}/measurements/object_candidates/object_plan_agent.json`.
 
-Minimum fields per object: `object_id`, `description`, `physical_branch_hypotheses`, `evidence_frames`, `expected_visible_intervals`, `uncertainty_notes`, `detector_text_prompts`, `detector_prompt_frames`, and `detector_active_interval`. `detector_text_prompts` are open-vocabulary object queries such as `keyboard.` / `computer keyboard.`; they are not pixel coordinates. `detector_prompt_frames` must be representative visible frames selected from the raw video, and `detector_active_interval` must be a frame span over which the object is expected to be physically present or uncertain.
+The JSON root must contain an `objects` list. Minimum fields per object: `object_id`, `description`, `physical_branch_hypotheses`, `evidence_frames`, `expected_visible_intervals`, `uncertainty_notes`, `detector_text_prompts`, `detector_prompt_frames`, and `detector_active_interval`. `detector_text_prompts` are open-vocabulary object queries such as `keyboard.` / `computer keyboard.`; they are not pixel coordinates. `detector_prompt_frames` must be representative visible frames selected from the raw video, and `detector_active_interval` must be a frame span over which the object is expected to be physically present or uncertain.
 
 ## P06 object grounded detector box prompts
 
@@ -370,7 +223,7 @@ Script: `scripts/build_v19_base_annotations.py`
 
 Required output: `{RUN_ROOT}/state/base_annotations/annotations_v19_base.json`, `v19_base_physical_state.json`, and `v19_mano_bridge_from_hawor_world.npz`.
 
-If P04 HaWoR was not rerun under the active camera contract (for example, an additive camera-only experiment intentionally inherits a frozen HaWoR archive), P08 must compare the inherited full-image HaWoR K with the active `source_rgb` K. For legacy HaWoR archives, reconstruct the source K as `[img_focal,img_focal,width/2,height/2]`, matching upstream HaWoR's full-image center convention. Any focal or principal-point mismatch must set `active_contract_reinference_required=true` in the base report and camera/hand rows. Hand state must retain the source HaWoR K separately from the active V19 K; replacing K metadata does not recalibrate frozen MANO/camera trajectories. Downstream MANO/contact promotion remains blocked until P04 is rerun or independently aligned.
+P08 must prove that P04 HaWoR consumed the same full `source_rgb` camera contract. Retain source inference-plane K and its affine separately from the active source K; replacing K metadata does not recalibrate MANO or camera trajectories. A contract mismatch must remain explicitly unresolved and cannot be promoted by later image fitting.
 
 ## P09 visible metric geometry and anchor proposal
 
@@ -497,20 +350,20 @@ This runs `scripts/run_v19_sam3d_reconstruction.py`, native inputs, `scripts/rem
   --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
-The named mechanisms are visible-surface P14, object-owned SuperPoint/LightGlue calibrated RGB-D edges from THIS run, weighted SE3 spanning initialization plus robust SO3 loop refinement, P14b multiview support, and the original P15 temporal graph. P14 direct/latent measurement distinctions remain; no historical pose file is an input. Generated geometry does not provide the RGB/P14 pose observations. Missing observations retain uncertainty, not direct-metric status. Required P15 output: `{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}/temporal/v19_rigid_object_pose_graph_report.json`.
+The named mechanisms are visible-surface P14, object-owned SuperPoint/LightGlue calibrated RGB-D edges from THIS run through `scripts/run_v19_offline_rgb_edges.py` / `scripts/build_v20_global_rgb_orientation_edges.py`, weighted SE3 spanning initialization plus robust SO3 loop refinement, P14b multiview support, and the original P15 temporal graph. P14 direct/latent measurement distinctions remain; no historical pose file is an input. Generated geometry does not provide the RGB/P14 pose observations. Missing observations retain uncertainty, not direct-metric status. The initializer `scripts/build_v19_rgb_pose_initializer.py` preserves P14 direct/latent eligibility and binds `inputs.completed_mesh` for `scripts/filter_v19_rigid_completion_multiview_support.py`; `scripts/solve_v19_rigid_object_pose_graph.py` receives the full timeline. Required P15 output: `{RUN_ROOT}/measurements/pose_fits/{OBJECT_ID}/temporal/v19_rigid_object_pose_graph_report.json`.
 
 ## P16/P17/P18/P18b physical interaction and metric MANO preservation
 
 Type: visual agent judgment followed by deterministic scripts. Inspect raw frames and the current object/hand geometry across the full sequence. Write `{RUN_ROOT}/state/agent_interaction_judgments/{OBJECT_ID}.json` with `case`, `target_entity_id: object:{OBJECT_ID}`, `status: ok`, and `interaction_judgments`.
 
-Each judgment has `start_frame`, `end_frame`, `hand_side`, `target_entity_id`, `contact_state` (`likely_contact`, `possible_contact`, `no_contact`, `unresolved`), `occlusion_relation` (`hand_in_front_of_object`, `object_in_front_of_hand`, `object_partially_occluded_by_hand`, `no_visible_occlusion`, `unresolved`), `confidence`, `visual_evidence`, and `uncertainty`. Use explicit intervals for both available hands; do not force contact through unknown/occluded frames. Do not use fitted demo geometry to make these judgments.
+Each judgment has `start_frame`, `end_frame`, `hand_side`, `target_entity_id`, `contact_state` (`likely_contact`, `possible_contact`, `no_contact`, `unresolved`), `occlusion_relation` (`hand_in_front_of_object`, `object_in_front_of_hand`, `object_partially_occluded_by_hand`, `no_visible_occlusion`, `unresolved`), `confidence`, `visual_evidence`, and `uncertainty`. The P17 consumer also requires numeric `contact_prior_probability` in [0,1] and nonnegative `contact_support_uncertainty_m`. Supply `depth_reliability` as `hand_depth_unreliable`, `object_depth_reliable`, `mixed_or_unresolved`, or `not_evaluated`; optional `contact_weight_multiplier` must be nonnegative. These are agent-produced uncertain priors, not measured contact. Missing or malformed fields stop the phase; the dispatcher does not invent them. Use explicit intervals for both available hands; do not force contact through unknown/occluded frames. Do not use fitted demo geometry to make these judgments.
 
 ```bash
 "{MAIN_PYTHON}" scripts/run_v19_sam3d_integration_stage.py --stage interaction \
   --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
-This executes original P16 measurement, P17 visible contact/ownership factors, full-interval P18 MANO correction and P18b metric-MANO/contact-surface separation. Original geometric support/readiness/sign-authority checks are not relaxed. Quarantined physical state remains quarantined; this does not silently promote an unsigned surface to a signed volume. The optional observed-only signed-geometry producer remains an explicit evidence route rather than generated-shape fallback.
+This executes original P16 measurement, P17 visible contact/ownership factors, full-interval P18 MANO correction and P18b metric-MANO/contact-surface separation. Original geometric support/readiness/sign-authority checks are not relaxed. P18 enables `--require-active-full-K-mano-contract`; unready P15 takes the existing source-MANO quarantine path rather than relabeling readiness. Quarantined physical state remains quarantined; this does not silently promote an unsigned surface to a signed volume. The optional observed-only signed-geometry producer remains an explicit evidence route rather than generated-shape fallback.
 
 ## P19 physical state and original renderer
 
@@ -528,7 +381,7 @@ P19 is preserved independently at `{RUN_ROOT}/state/render_state/{OBJECT_ID}_rig
   --run-root '{RUN_ROOT}' --runtime-config runtime/runtime_config.json --gpu {GPU_ID}
 ```
 
-Fit the same run's intact SAM3D triangles, P15 object pose and real HaWoR/MANO to image and eligible P17 contact hypotheses. Actual MANO articulation/root and bounded visual similarity adjustments are replayed; no arbitrary hand-vertex morph. Missing hands stay invalid and are not rendered. The fitted state is `demo_only`; source metric state and physical uncertainty are untouched. Changing display resolution does not change the fitter's 960-width reference pixel units.
+Fit the same run's intact SAM3D triangles, P15 object pose and real HaWoR/MANO to image and eligible P17 contact hypotheses. Actual MANO articulation/root and bounded visual similarity adjustments are replayed; no arbitrary hand-vertex morph. Missing hands stay invalid and are not rendered. A ready or explicitly non-diagnostic P15 prediction may seed this additive fit without changing its source readiness; recursive prediction-source checks still apply. The fitted state is `demo_only`; source metric state and physical uncertainty are untouched. Changing display resolution does not change the fitter's 960-width reference pixel units.
 
 ## P20 shared final annotation, MP4 and world RRD
 

@@ -59,7 +59,8 @@ def main():
 
     ann = load(args.annotations)
     rep = load(args.pose_report)
-    assert_prediction_only(rep, label="demo initial pose", object_id=args.object_id)
+    assert_prediction_only(rep, label="demo initial pose", object_id=args.object_id,
+                           allow_annotation_ready=True, allow_nondiagnostic_prediction=True)
     meshpath = Path(rep["render_mesh_contract"]["required_mesh_path"])
     if sha(meshpath) != rep["render_mesh_contract"]["required_mesh_sha256"]:
         raise ValueError("mesh identity mismatch")

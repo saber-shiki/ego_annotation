@@ -9,8 +9,10 @@ import argparse,json,os,subprocess,sys,time,hashlib
 from pathlib import Path
 import numpy as np
 from v20_prediction_contracts import find_positive_gt_flags
+from v19_runtime_contracts import (in_run, validate_references, validate_timeline,
+    run_command, runtime_environment, execution_target)
 
-STAGES=('geometry','pose','interaction','physical-render','demo','export')
+STAGES=('camera','geometry','pose','interaction','physical-render','demo','export')
 ROOT=Path(__file__).resolve().parents[1]
 
 
@@ -28,8 +30,11 @@ def sha(path):
 
 
 def file_in_run(value,root):
-    p=Path(value).expanduser().resolve()
-    if not p.is_relative_to(root) or not p.is_file():raise ValueError(f'missing or out-of-run input: {value}')
+    p=in_run(value,root)
+    if p.suffix == '.json':
+        payload=load(p)
+        if find_positive_gt_flags(payload):raise ValueError(f'non-prediction source: {p}')
+        validate_references(payload,root)
     return p
 
 
@@ -40,29 +45,99 @@ def interpreter(value):
     return p
 
 
+def camera_stage(args, cfg, root):
+    main_python=interpreter(cfg['main_python'])
+    depth_python=interpreter(cfg['unidepth_python'])
+    manifest_path=file_in_run(root/'input/raw_frame_manifest/manifest.json',root)
+    manifest=load(manifest_path)
+    contract=load(file_in_run(root/'input/runtime_input_contract.json',root))
+    video=file_in_run(manifest['input_video'],root)
+    if sha(video) != contract['input_video_sha256']:raise ValueError('input video changed')
+    if not manifest.get('full_source_timeline'):raise ValueError('full raw-video timeline required')
+    frames=manifest['frames'];width=frames[0]['source_width'];height=frames[0]['source_height']
+    ids=validate_timeline(manifest,manifest)
+    if ids != list(range(len(ids))):raise ValueError('raw manifest must index the full decoded video')
+    env=runtime_environment(cfg,args.gpu)
+    def run(key,argv,outputs,environment=None):
+        run_command(key,argv,outputs,root=root,cwd=ROOT,env=environment or env,
+                    gpu=args.gpu if key in {'P03a_intrinsics_probe','P03_conditioned_depth','P04_HaWoR'} else None)
+    probe=root/'measurements/depth_slam/unidepth_intrinsics_probe'
+    final=root/'measurements/depth_slam/unidepth_full_frame'
+    calibration=root/'state/calibration'
+    camera=calibration/'v19_camera_calibration_contract.json'
+    depth_name='unidepth_full_frame_depth_v3.npz'
+    def depth_command(output):
+        return [depth_python,ROOT/'scripts/run_unidepth_full_frame_v3.py','--manifest',manifest_path,
+            '--output-dir',output,'--frame-start',0,'--frame-end',ids[-1],
+            '--unidepth-repo',cfg['unidepth_repo'],'--model-id',cfg['unidepth_model'],
+            '--remote-root',manifest_path.parent,'--local-root',manifest_path.parent,
+            '--source-width',width,'--source-height',height]
+    sensor=contract.get('sensor_calibration_metadata')
+    if sensor:
+        extra=['--sensor-calibration-contract',file_in_run(sensor,root),
+            '--sensor-calibration-authority',contract['sensor_calibration_authority'],
+            '--prediction-source-video',video,'--sensor-source-video',video]
+        if contract.get('sensor_frame_intrinsics_key'):
+            extra += ['--sensor-frame-intrinsics-key',contract['sensor_frame_intrinsics_key']]
+    else:
+        run('P03a_intrinsics_probe',depth_command(probe),[probe/depth_name])
+        extra=['--unidepth-npz',probe/depth_name,'--fallback-reason','no supplied prediction-side calibration','--aggregation','median','--square-focal']
+    run('P03b_camera',[main_python,ROOT/'scripts/resolve_v19_camera_contract.py','--case',contract['case'],
+        '--raw-frame-manifest',manifest_path,'--output-dir',calibration,*extra],[camera])
+    run('P03_conditioned_depth',depth_command(final)+['--camera-contract',camera,
+        '--camera-input-plane','manifest_rgb','--camera-output-plane','source_rgb'],[final/depth_name])
+    bound=calibration/'depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
+    run('P03c_depth_binding',[main_python,ROOT/'scripts/adapt_v19_depth_to_camera_contract.py',
+        '--source-depth-npz',final/depth_name,'--camera-contract',camera,'--depth-plane','source_rgb',
+        '--output-dir',bound.parent],[bound])
+    K=np.asarray(load(camera)['source_plane_intrinsics_fx_fy_cx_cy'],float)
+    if K.shape != (4,) or not np.isfinite(K).all() or np.any(K[:2]<=0):raise ValueError('invalid source K')
+    if not np.isclose(K[0],K[1],rtol=1e-6,atol=1e-6):
+        raise ValueError('HaWoR requires square focal; cannot average supplied fx/fy')
+    handout=root/'measurements/hand_candidates/hawor_world'
+    if handout.exists():raise ValueError('HaWoR output already exists')
+    clip=root/'input/hawor_sequence'/f"{contract['case']}.mp4"
+    if clip.exists():raise ValueError('HaWoR sequence already exists')
+    import shutil
+    clip.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(video,clip)
+    hawor_env={**env,'EGO_HAWOR_ROOT':cfg['hawor_root'],'EGO_HAWOR_CASE':contract['case'],
+        'EGO_HAWOR_CLIP':str(clip),'EGO_HAWOR_CLIP_SHA256':sha(video),'EGO_HAWOR_OUTPUT_DIR':str(handout),
+        'EGO_HAWOR_IMG_FOCAL':str(K[0]),'EGO_HAWOR_CAMERA_INTRINSICS_FX_FY_CX_CY':' '.join(map(str,K)),
+        'EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH':'1'}
+    run('P04_HaWoR',['bash',ROOT/'scripts/remote_run_hawor_export.sh'],
+        [handout/'hawor_world_hands.npz',handout/'qc_hawor_world_hands.json'],hawor_env)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stage',choices=STAGES,required=True);p.add_argument('--run-root',type=Path,required=True);p.add_argument('--runtime-config',type=Path,required=True)
     p.add_argument('--gpu',type=int,required=True);a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
+    execution_target(cfg,a.gpu)
+    if a.stage == 'camera':
+        camera_stage(a, cfg, root)
+        return
     selection=load(file_in_run(root/'state/object_selection.json',root));case=str(selection['case']);obj=str(selection['object_id']);anchor=int(selection['anchor_frame'])
     for value in [case,obj]:
-        if not value or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-' for c in value):raise ValueError('unsafe case/object id')
+        if not value or value in {'.','..'} or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-' for c in value):raise ValueError('unsafe case/object id')
     ann=file_in_run(root/f'measurements/object_geometry/visible_geometry/{obj}/annotations_v19_visible_geometry.json',root)
-    annotations=load(ann);ids=[int(f['frame_idx']) for f in annotations['frames']]
+    annotations=load(ann)
+    raw_manifest=load(file_in_run(root/'input/raw_frame_manifest/manifest.json',root))
+    ids=validate_timeline(annotations,raw_manifest)
     if not ids or len(set(ids))!=len(ids):raise ValueError('invalid annotation timeline')
     lo,hi=min(ids),max(ids)
     if anchor not in ids:raise ValueError('selected anchor absent')
+    plan=load(file_in_run(root/'measurements/object_candidates/object_plan_agent.json',root))
+    decision=load(file_in_run(root/f'state/anchor_decisions/{obj}.json',root))
+    input_contract=load(file_in_run(root/'input/runtime_input_contract.json',root))
+    if input_contract['case'] != case or not any(row.get('object_id') == obj for row in plan.get('objects',[])):
+        raise ValueError('selection does not match the same-run input/P05 object plan')
+    if decision.get('object_id') != obj or int(decision['selected_anchor_frame_idx']) != anchor:
+        raise ValueError('selection does not match the P09 visual anchor decision')
     main_python=interpreter(cfg['main_python']);demo_python=interpreter(cfg.get('demo_python',cfg['main_python']));rgb_python=interpreter(cfg.get('rgb_python',cfg['main_python']))
     def script(name):return ROOT/'scripts'/name
     def run(key,argv,outputs):
-        for dest in outputs:
-            if Path(dest).exists():raise ValueError(f'{key} output already exists; not a fresh stage: {dest}')
-        logdir=root/'logs/integration';logdir.mkdir(parents=True,exist_ok=True);log=logdir/f'{key}.log';started=time.monotonic()
-        with log.open('w') as f:result=subprocess.run(list(map(str,argv)),cwd=ROOT,stdout=f,stderr=subprocess.STDOUT,env={**os.environ,'CUDA_VISIBLE_DEVICES':str(a.gpu)})
-        event={'phase':key,'argv':list(map(str,argv)),'returncode':result.returncode,'elapsed_s':time.monotonic()-started,'log':str(log),'outputs':list(map(str,outputs))}
-        with (logdir/'events.jsonl').open('a') as f:f.write(json.dumps(event)+'\n')
-        if result.returncode:raise RuntimeError(f'{key} failed: {log}')
-        for dest in outputs:file_in_run(dest,root)
+        run_command(key,argv,outputs,root=root,cwd=ROOT,env=runtime_environment(cfg,a.gpu),
+                    gpu=a.gpu if key in {'P12_P13_SAM3D','P14_RGB_observations','P18_interval','D01_demo_fit'} else None)
     depth=root/'state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
     hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz';bridge=root/'state/base_annotations/v19_mano_bridge_from_hawor_world.npz'
     evidence=root/f'measurements/geometry_completion/rigid_evidence/{case}/{obj}/evidence_bundle/evidence_bundle_report.json'
@@ -81,35 +156,38 @@ def main():
     paths={'annotations':ann,'depth':depth,'hawor':hawor,'mano_bridge':bridge,'evidence':evidence,'completion':completion,'p14':p14,'rgb_initialized_pose':initialized,'multiview_support':support,'p15':p15,'p16':p16,'p17':p17,'p18':p18,'p18b':p18b,'physical_render_state':physical,'demo_state':demo_state}
     if a.stage=='geometry':
         file_in_run(evidence,root)
+        evidence_document=load(evidence)
+        if evidence_document.get('case') != case or evidence_document.get('object_id') != obj or int(evidence_document['selected_frame_idx']) != anchor:
+            raise ValueError('P11 evidence does not match the selected case/object/anchor')
         run('P12_P13_SAM3D',[main_python,script('run_v19_sam3d_reconstruction.py'),'--run-root',root,'--evidence-report',evidence,'--output-dir',geom,'--runtime-config',a.runtime_config,'--gpu',a.gpu], [completion])
     elif a.stage=='pose':
         file_in_run(completion,root);file_in_run(depth,root)
         run('P14_visible_pose',[main_python,script('fit_v18_compact_rigid_object_pose.py'),'--annotations',ann,'--completion-report',completion,'--object-id',obj,'--output-dir',p14.parent],[p14])
-        run('P14_RGB_observations',[rgb_python,script('build_v20_global_rgb_orientation_edges.py'),'--annotations',ann,'--depth-npz',depth,'--initial-pose-report',p14,'--object-id',obj,'--frame-start',lo,'--frame-end',hi,'--keyframe-interval',5,'--keyframe-neighbor-span',4,'--lightglue-root',cfg['lightglue_root'],'--device','cuda:0','--output-npz',str(rgb)+'.npz','--output-json',str(rgb)+'.json'],[Path(str(rgb)+'.npz'),Path(str(rgb)+'.json')])
-        run('P14_RGB_initializer',[main_python,script('build_v19_rgb_pose_initializer.py'),'--annotations',ann,'--pose-report',p14,'--rgb-edge-npz',str(rgb)+'.npz','--rgb-edge-json',str(rgb)+'.json','--object-id',obj,'--anchor-frame',anchor,'--output',initialized],[initialized])
+        run('P14_RGB_observations',[rgb_python,script('run_v19_offline_rgb_edges.py'),'--runtime-config',a.runtime_config,'--annotations',ann,'--depth-npz',depth,'--initial-pose-report',p14,'--object-id',obj,'--frame-start',lo,'--frame-end',hi,'--keyframe-interval',5,'--keyframe-neighbor-span',4,'--lightglue-root',cfg['lightglue_root'],'--device','cuda:0','--output-npz',str(rgb)+'.npz','--output-json',str(rgb)+'.json'],[Path(str(rgb)+'.npz'),Path(str(rgb)+'.json')])
+        run('P14_RGB_initializer',[main_python,script('build_v19_rgb_pose_initializer.py'),'--run-root',root,'--annotations',ann,'--pose-report',p14,'--rgb-edge-npz',str(rgb)+'.npz','--rgb-edge-json',str(rgb)+'.json','--object-id',obj,'--anchor-frame',anchor,'--output',initialized],[initialized])
         run('P14b_multiview',[main_python,script('filter_v19_rigid_completion_multiview_support.py'),'--annotations',ann,'--completion-report',completion,'--pose-report',initialized,'--depth-npz',depth,'--object-id',obj,'--output-dir',support.parent],[support])
         run('P15_temporal_pose',[main_python,script('solve_v19_rigid_object_pose_graph.py'),'--annotations',ann,'--pose-report',initialized,'--completion-report',support,'--object-id',obj,'--complete-full-timeline-rigid-pose','--output-dir',p15.parent],[p15])
     elif a.stage=='interaction':
         for path in [hawor,depth,judgments,p15,support]:file_in_run(path,root)
         run('P16_constraints',[main_python,script('build_v18_mano_object_constraint_state.py'),'--annotations',ann,'--hawor-npz',hawor,'--pose-report',p15,'--completion-report',support,'--output-dir',p16.parent,'--object-id',obj],[p16])
         run('P17_contact_ownership',[main_python,script('build_v19_visible_contact_ownership_factor.py'),'--annotations',ann,'--case',case,'--target-entity-id','object:'+obj,'--frame-span',lo,hi,'--output-root',p17root,'--agent-interaction-judgment',judgments],[p17])
-        body=file_in_run(load(completion)['outputs']['pose_hypothesis_mesh_labeled'],root)
-        run('P18_interval',[main_python,script('solve_v18_joint_mano_interval_trajectory.py'),'--case',case,'--object-id','object:'+obj,'--annotations',ann,'--pose-report',p15,'--completed-mesh',body,'--completion-report',support,'--depth-npz',depth,'--wilor-root',cfg['wilor_root'],'--wilor-mano-left',Path(cfg['mano_models'])/'MANO_LEFT.pkl','--output-dir',p18dir,'--start-frame',lo,'--end-frame',hi,'--sides','left','right','--factor-report',p17,'--optimize-contact-state','--visible-surface-depth-order-term','--freeze-translation-without-visible-surface-support','--gate-translation-with-visible-surface-support','--translation-gate-min-visible-surface-depth-vertices',0],[p18])
+        body=file_in_run(load(support)['outputs']['pose_hypothesis_mesh_labeled'],root)
+        run('P18_interval',[main_python,script('solve_v18_joint_mano_interval_trajectory.py'),'--case',case,'--object-id','object:'+obj,'--annotations',ann,'--pose-report',p15,'--completed-mesh',body,'--completion-report',support,'--depth-npz',depth,'--wilor-root',cfg['wilor_root'],'--wilor-mano-left',Path(cfg['mano_models'])/'MANO_LEFT.pkl','--wilor-mano-right',Path(cfg['mano_models'])/'MANO_RIGHT.pkl','--device','cuda:0','--output-dir',p18dir,'--start-frame',lo,'--end-frame',hi,'--sides','left','right','--factor-report',p17,'--require-active-full-K-mano-contract','--optimize-contact-state','--visible-surface-depth-order-term','--freeze-translation-without-visible-surface-support','--gate-translation-with-visible-surface-support','--translation-gate-min-visible-surface-depth-vertices',0],[p18])
         run('P18b_metric_preservation',[main_python,script('build_v19_mano_surface_hypothesis_state.py'),'--contact-state',p18,'--joint-source','hawor_npz','--hawor-npz',hawor,'--case',case,'--object-id',obj,'--output',p18b],[p18b])
     elif a.stage=='physical-render':
         for path in [p15,p16,p18b,support]:file_in_run(path,root)
-        body=file_in_run(load(completion)['outputs']['pose_hypothesis_mesh_labeled'],root)
+        body=file_in_run(load(support)['outputs']['pose_hypothesis_mesh_labeled'],root)
         run('P19a_physical_state',[main_python,script('build_v19_rigid_render_state.py'),'--case',case,'--object-id',obj,'--annotations',ann,'--pose-report',p15,'--completed-mesh',body,'--completion-report',support,'--constraint-report',p16,'--temporal-mano-state',p18b,'--output',physical],[physical])
         renderroot=root/f'renders/{obj}_physical';manifest=renderroot/case/'v19_rigid_state_render_manifest.json'
         run('P19b_physical_render',[main_python,script('render_v19_rigid_state_artifact.py'),'--render-state',physical,'--output-root',renderroot,'--world-view','local'],[manifest])
     elif a.stage=='demo':
         for path in [p15,hawor,bridge,judgments,physical,completion]:file_in_run(path,root)
         source=load(p15);geomreport=load(completion);contract=geomreport['render_mesh_contract'];file_in_run(contract['required_mesh_path'],root)
-        # Copy only for visual fitting. Never mutate the source P15 readiness,
+        # Bind an additive render mesh without relabeling source P15 readiness,
         # core physical state, metric MANO or P18b contact surface state.
         if demo_pose.exists():raise ValueError('demo input binding already exists')
         if find_positive_gt_flags(source):raise ValueError('non-prediction demo source')
-        visual=dict(source);visual.update(diagnostic_only=True,annotation_ready=False,gt_consumed=False,render_mesh_contract=contract)
+        visual=dict(source);visual['render_mesh_contract']=contract
         visual['core_source_identity']={'pose_report':str(p15),'sha256':sha(p15),'source_readiness':source.get('annotation_ready'),'source_graph_support':source.get('graph_support')}
         demo_pose.parent.mkdir(parents=True,exist_ok=True);demo_pose.write_text(json.dumps(visual,indent=2)+'\n')
         run('D01_demo_fit',[demo_python,script('fit_v20_visual_contact_demo.py'),'--annotations',ann,'--pose-report',demo_pose,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',cfg['mano_models'],'--object-id',obj,'--device','cuda:0','--interaction-judgments',judgments,'--render-width',cfg.get('render_width',960),'--output-dir',demodir],[demo_state,demodir/'fit_report.json'])

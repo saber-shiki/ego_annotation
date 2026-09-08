@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 from pathlib import Path
 import sys
 import tempfile
@@ -30,7 +31,8 @@ class Sam3dOnlyRunner(unittest.TestCase):
         self.out = self.root / 'sam3d'
         self.assets = Path(self.tmp.name) / 'assets'
         self.assets.mkdir()
-        self.config = {'main_python': sys.executable, 'sam3d_python': sys.executable}
+        self.config = {'main_python': sys.executable, 'sam3d_python': sys.executable,
+                       'compute_host': socket.gethostname(), 'gpu': 5}
         for key in ['sam3d_repo', 'sam3d_config', 'sam3d_moge_checkpoint', 'sam3d_dinov2_repo', 'sam3d_dinov2_checkpoint']:
             path = self.assets / key
             path.write_text('test asset, not model weights')
