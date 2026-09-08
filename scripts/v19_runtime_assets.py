@@ -89,6 +89,12 @@ def external_asset_identity(config):
 
 
 def verify_external_assets(identity):
+    # Loader-owned checkpoints still retain manifest target identity. Their
+    # actual loaders own the expensive byte hash; this check performs no reads.
+    for name,record in identity.get('resolved_targets',{}).items():
+        path=Path(name)
+        if not path.is_file() or str(path.resolve())!=record['resolved_path']:
+            raise ValueError(f'external asset changed (resolved target): {path}')
     for root, record in identity['trees'].items():
         path = Path(root)
         members = tree_files(path,record['kind'])
@@ -121,7 +127,11 @@ def runtime_asset_subset(identity, config, role):
         'export':('main_python','demo_python'),
     }
     if role not in python_keys:raise ValueError(f'unknown runtime asset role: {role}')
-    files=set();trees=set()
+    files=set();trees=set();resolved_targets={}
+    def loader_target(path):
+        name=str(Path(os.path.abspath(Path(path).expanduser())))
+        if name not in identity['files']:raise ValueError(f'loader asset not pinned: {name}')
+        resolved_targets[name]=identity['files'][name]
     def file(path):
         name=str(Path(os.path.abspath(Path(path).expanduser())))
         if name not in identity['files']:raise ValueError(f'runtime asset not pinned: {name}')
@@ -147,7 +157,10 @@ def runtime_asset_subset(identity, config, role):
                      '_DATA/data/mano_mean_params.npz','thirdparty/Metric3D/weights/metric_depth_vit_large_800k.pth'):file(hawor/name)
         python(Path(config['hawor_root'])/'.venv_hawor/bin/python')
         file(Path(config['hawor_root'])/'.venv_hawor/bin/activate')
+    if role=='rgb_loader':
+        for record in config['lightglue_weights'].values():loader_target(record['path'])
     if role=='geometry':
+        for key in ('sam3d_moge_checkpoint','sam3d_dinov2_checkpoint'):loader_target(config[key])
         for sub in ('sam3d_objects','notebook'):tree(Path(config['sam3d_repo'])/sub)
         tree(Path(config['sam3d_dinov2_repo'])/'dinov2');file(Path(config['sam3d_dinov2_repo'])/'hubconf.py')
         pipeline=Path(config['sam3d_config']);file(pipeline)
@@ -156,7 +169,8 @@ def runtime_asset_subset(identity, config, role):
         for line in pipeline.read_text().splitlines():
             if re.match(r'^\w+_(?:config|ckpt)_path:',line):file(pipeline.parent/line.split(':',1)[1].strip())
     return {'files':{name:identity['files'][name] for name in sorted(files)},
-            'trees':{name:identity['trees'][name] for name in sorted(trees)},'role':role}
+            'trees':{name:identity['trees'][name] for name in sorted(trees)},
+            'resolved_targets':resolved_targets,'role':role}
 
 
 def verify_bundle(bundle, *, asset_role=None):

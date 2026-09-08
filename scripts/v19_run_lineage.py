@@ -41,28 +41,46 @@ class RunLineage:
                     for path in event.get('output_sha256',{}):self.records[path]=event
         for path in self.raw:self.require(path)
 
+    def checked_digest(self, path):
+        """Invocation-local byte digest, reusable only for an unchanged file.
+
+        This is not a persisted stat-only identity cache. A new fingerprint
+        requires reading bytes again; post-command checks deliberately bypass it.
+        """
+        path=Path(path);name=str(path)
+        stat=path.stat();fingerprint=(stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+        cached=self.verified.get(name)
+        if cached is not None and cached[0]==fingerprint:
+            return cached[1]
+        digest=sha(path)
+        stat=path.stat()
+        if (stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)!=fingerprint:
+            raise ValueError(f'input changed during byte verification: {name}')
+        self.verified[name]=(fingerprint,digest)
+        return digest
+
     def require(self, value):
         path=in_run(value,self.root);name=str(path)
-        stat=path.stat();fingerprint=(stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
-        if self.verified.get(name)==fingerprint:return path
+        # Recheck dependencies even when this output's bytes are cached: an
+        # unchanged mask must not conceal a changed input of its producer.
         if name in self.visiting:raise ValueError('cyclic producer lineage')
         self.visiting.add(name)
         try:
+            digest=self.checked_digest(path)
             if name in self.raw:
-                if sha(path)!=self.raw[name]:raise ValueError(f'prepared input changed: {name}')
+                if digest!=self.raw[name]:raise ValueError(f'prepared input changed: {name}')
             elif path.parent == self.root/'input/hawor_sequence' and path.suffix=='.mp4':
-                if sha(path)!=self.identity['input_video_sha256']:raise ValueError('HaWoR raw copy changed')
+                if digest!=self.identity['input_video_sha256']:raise ValueError('HaWoR raw copy changed')
             elif self.agent_phase(path):
                 self.require_judgment(path)
             else:
                 event=self.records.get(name)
                 if event is None:raise ValueError(f'no successful current-run producer for {name}')
                 if event['code_sha256'] != self.code:raise ValueError('producer code identity changed')
-                if sha(path)!=event['output_sha256'][name]:raise ValueError(f'producer output changed: {name}')
-                for source,digest in event['input_sha256'].items():
-                    self.require(source)
-                    if sha(source)!=digest:raise ValueError(f'producer input changed: {source}')
-            self.verified[name]=fingerprint
+                if digest!=event['output_sha256'][name]:raise ValueError(f'producer output changed: {name}')
+                for source,expected in event['input_sha256'].items():
+                    checked=self.require(source)
+                    if self.checked_digest(checked)!=expected:raise ValueError(f'producer input changed: {source}')
             return path
         finally:self.visiting.remove(name)
 
@@ -79,12 +97,35 @@ class RunLineage:
                 or source.get('run_identity')!=self.identity or not source.get('evidence_sha256')):
             raise ValueError(f'missing current-run visual judgment provenance: {path}')
         for name,digest in source['evidence_sha256'].items():
-            self.require(name)
-            if sha(name)!=digest:raise ValueError(f'visual judgment evidence changed: {name}')
+            checked=self.require(name)
+            if self.checked_digest(checked)!=digest:raise ValueError(f'visual judgment evidence changed: {name}')
+        if source['phase']=='P17_judgment':
+            self.require_interaction_evidence(path,source['evidence_sha256'])
+            return
         required = {'P05':'/input/raw_frame_manifest/', 'P09_anchor':'/object_geometry/anchor_candidates/',
-                    'P10':'/object_geometry/visible_geometry/', 'P17_judgment':'/pose_fits/'}[source['phase']]
+                    'P10':'/object_geometry/visible_geometry/'}[source['phase']]
         if not any(required in name for name in source['evidence_sha256']):
             raise ValueError(f'visual judgment lacks phase evidence: {path}')
+
+    def require_interaction_evidence(self, judgment, evidence):
+        """Validate declared P15/P01 evidence, not whether pixels were inspected."""
+        selection=load(in_run(self.root/'state/object_selection.json',self.root))
+        obj=selection['object_id']
+        if judgment!=self.root/'state/agent_interaction_judgments'/f'{obj}.json':
+            raise ValueError('P17 judgment does not match selected object')
+        p15=str(self.root/f'measurements/pose_fits/{obj}/temporal/v19_rigid_object_pose_graph_report.json')
+        event=self.records.get(p15,{})
+        if p15 not in evidence or event.get('phase')!='P15_temporal_pose' or p15 not in event.get('outputs',[]):
+            raise ValueError('P17 judgment requires selected-object current P15 report')
+        manifest=self.require(self.root/'input/raw_frame_manifest/manifest.json')
+        p01=self.records.get(str(manifest),{})
+        if p01.get('phase')!='P01' or str(manifest) not in p01.get('outputs',[]):
+            raise ValueError('P17 judgment requires current P01 raw-frame producer')
+        for frame in load(manifest).get('frames',[]):
+            name=frame.get('raw_frame_path') or frame.get('rgb')
+            if name in evidence and self.records.get(name) is p01:
+                return
+        raise ValueError('P17 judgment requires at least one current P01 raw frame')
 
     def inputs(self, argv, output_roots, extra=()):
         selected=set()
@@ -114,9 +155,10 @@ class RunLineage:
                         p=Path(value)
                         if p.suffix in CLIP_SUFFIXES and p.is_file() and p.resolve().is_relative_to(self.root) and str(p) not in selected:include(p)
                 walk(load(name))
-        return {name:sha(name) for name in sorted(selected)}
+        return {name:self.checked_digest(name) for name in sorted(selected)}
 
     def success(self,event,inputs,outputs,output_roots):
+        # Force fresh byte reads after the command, irrespective of the cache.
         for name,digest in inputs.items():
             if sha(name)!=digest:raise ValueError(f'producer mutated source input: {name}')
         files=set(outputs)
