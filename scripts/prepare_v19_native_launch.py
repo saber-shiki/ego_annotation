@@ -287,7 +287,13 @@ def write_request(bundle, root, mode, contract_path, output_dir):
     return request
 
 
-def prepare_probe(bundle, probe_root, output_dir, marker_bytes=51):
+def prepare_probe(bundle, probe_root, output_dir, marker_bytes=51, min_write_bytes=0):
+    if (
+        isinstance(min_write_bytes, bool)
+        or not isinstance(min_write_bytes, int)
+        or not 0 <= min_write_bytes <= 32768
+    ):
+        raise ValueError("probe minimum write bytes must be an integer in [0,32768]")
     if (
         isinstance(marker_bytes, bool)
         or not isinstance(marker_bytes, int)
@@ -329,9 +335,13 @@ def prepare_probe(bundle, probe_root, output_dir, marker_bytes=51):
             "managed_shell_verified",
             "prediction_executed",
         ],
+        "minimum_native_write_bytes": min_write_bytes,
+        "output_size_policy": "When minimum_native_write_bytes is nonzero, author synthetic non-measurement padding in transport_padding so the actual UTF-8 JSON passed to write is at least that size. Marker text remains a short exact identity; padding is not copied evidence.",
         "allowed_execution": "cwd/printf plus file/image read-write only; no prediction scripts or GPU",
         "prediction_executed": False,
     }
+    if min_write_bytes:
+        contract["required_output_fields"].append("transport_padding")
     target = root / "probe_contract.json"
     target.write_text(json.dumps(contract, indent=2) + "\n")
     return write_request(bundle, root, "tool_probe", target, output_dir)
@@ -368,14 +378,24 @@ def main():
         default=51,
         help="Tool-probe only: exact marker size echoed through the native write tool",
     )
+    parser.add_argument(
+        "--probe-min-write-bytes",
+        type=int,
+        default=0,
+        help="Tool-probe only: minimum authored JSON write size, independent of marker identity",
+    )
     args = parser.parse_args()
     if args.mode == "tool-probe":
         result = prepare_probe(
-            args.bundle_root, args.run_root, args.output_dir, args.probe_marker_bytes
+            args.bundle_root,
+            args.run_root,
+            args.output_dir,
+            args.probe_marker_bytes,
+            args.probe_min_write_bytes,
         )
     else:
-        if args.probe_marker_bytes != 51:
-            parser.error("--probe-marker-bytes is only for tool-probe")
+        if args.probe_marker_bytes != 51 or args.probe_min_write_bytes != 0:
+            parser.error("probe size options are only for tool-probe")
         result = prepare_prediction_request(
             args.bundle_root, args.run_root, args.output_dir
         )

@@ -121,6 +121,22 @@ class NativeLaunchPlanTests(unittest.TestCase):
             )
         self.assertFalse((self.root / "bad_probe").exists())
 
+    def test_authored_large_write_keeps_identity_marker_short(self):
+        root, request_dir = self.root / "authored_probe", self.root / "authored_request"
+        launch.prepare_probe(self.bundle, root, request_dir, min_write_bytes=8192)
+        contract = launch.load(root / "probe_contract.json")
+        self.assertEqual((root / "input_marker.txt").stat().st_size, 51)
+        self.assertEqual(contract["minimum_native_write_bytes"], 8192)
+        self.assertIn("transport_padding", contract["required_output_fields"])
+        self.assertFalse((root / "tool_probe_result.json").exists())
+        with self.assertRaisesRegex(ValueError, "minimum write bytes"):
+            launch.prepare_probe(
+                self.bundle,
+                self.root / "bad_min",
+                self.root / "bad_min_request",
+                min_write_bytes=65536,
+            )
+
     def test_no_inherited_context_or_missing_provider_is_accepted(self):
         profile = self.bundle / launch.PROFILE
         original = profile.read_text()
