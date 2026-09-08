@@ -9,6 +9,7 @@ import argparse,json,os,subprocess,sys,time,hashlib
 from pathlib import Path
 import numpy as np
 from v20_prediction_contracts import find_positive_gt_flags
+from v19_video_timing import read_cfr_video_timing, validate_package_cfr_times
 from v19_runtime_contracts import (in_run, validate_references, validate_timeline,
     run_command, runtime_environment, execution_target)
 
@@ -57,6 +58,9 @@ def camera_stage(args, cfg, root):
     frames=manifest['frames'];width=frames[0]['source_width'];height=frames[0]['source_height']
     ids=validate_timeline(manifest,manifest)
     if ids != list(range(len(ids))):raise ValueError('raw manifest must index the full decoded video')
+    timing=read_cfr_video_timing(video,expected_frame_count=len(ids))
+    validate_package_cfr_times([f['time_s'] for f in sorted(frames,key=lambda f:f['frame_idx'])],timing.frame_rate)
+    if timing.source_size_wh != (width,height):raise ValueError('source/manifest dimensions mismatch')
     env=runtime_environment(cfg,args.gpu)
     def run(key,argv,outputs,environment=None):
         run_command(key,argv,outputs,root=root,cwd=ROOT,env=environment or env,

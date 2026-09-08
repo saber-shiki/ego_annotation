@@ -35,6 +35,23 @@ class RGBInitializer(unittest.TestCase):
         base,ann,arrays,q,_,_=self.fixture();q[0]['inlier_fraction']=float('nan')
         with self.assertRaisesRegex(ValueError,'quality evidence'):initialize(base,ann,'thing',arrays,q,0)
 
+    def test_direct_and_latent_rows_survive_P14b_P15_without_promotion(self):
+        from types import SimpleNamespace
+        from filter_v19_rigid_completion_multiview_support import trusted_pose_rows
+        from solve_v19_rigid_object_pose_graph import build_pose_rows
+        base,ann,arrays,q,_,_=self.fixture()
+        base['pose_rows'][-1].update(status='interpolated',rigid_pose_observation_eligible=False)
+        ann['frames'].append({'frame_idx':8,'objects':[]})
+        out=initialize(base,ann,'thing',arrays,q,0)
+        self.assertEqual([r['frame_idx'] for r in trusted_pose_rows(out)],[0,3])
+        args=SimpleNamespace(complete_full_timeline_rigid_pose=True,
+            max_rigid_pose_interpolation_gap_frames=10,max_rigid_pose_extrapolation_gap_frames=10)
+        rows,summary=build_pose_rows(out['pose_rows'],[],np.zeros(0),args,False)
+        self.assertEqual([r['frame_idx'] for r in rows],[0,3,7,8])
+        self.assertFalse(rows[2]['rigid_pose_observation_eligible'])
+        self.assertEqual(rows[3]['status'],'rgb_initialized_uncertain')
+        self.assertEqual(rows,out['pose_rows'])
+
     def test_actual_p14_schema_reaches_p14b_and_preserves_measurements(self):
         from filter_v19_rigid_completion_multiview_support import trusted_pose_rows
         base,ann,arrays,q,_,_=self.fixture()

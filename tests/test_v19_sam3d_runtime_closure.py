@@ -1,5 +1,6 @@
 """CPU-only runtime closure/CLI tests. No agent, model inference or installation."""
 import ast
+from fractions import Fraction
 import contextlib
 import io
 import json
@@ -89,7 +90,7 @@ class StageContracts(unittest.TestCase):
 
     def invoke(self, which, fake=None):
         args = ['stage', '--stage', which, '--run-root',str(self.root),'--runtime-config',str(self.config),'--gpu','5']
-        with patch.object(sys,'argv',args), patch.object(stage,'run_command',side_effect=fake or self.command), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(sys,'argv',args), patch.object(stage,'run_command',side_effect=fake or self.command), patch.object(stage,'read_cfr_video_timing',return_value=SimpleNamespace(frame_rate=Fraction(10),source_size_wh=(80,48))), contextlib.redirect_stdout(io.StringIO()):
             stage.main()
 
     def command(self, key, argv, outputs, **kwargs):
@@ -141,6 +142,14 @@ class StageContracts(unittest.TestCase):
         self.assertEqual(env['EGO_HAWOR_IMG_FOCAL'],'900.0')
         self.assertEqual(Path(env['EGO_HAWOR_CLIP']).read_bytes(),self.video.read_bytes())
         self.assertEqual(self.calls[-1][3]['gpu'],5)
+
+    def test_camera_rejects_manifest_CFR_mismatch_before_measurements(self):
+        payload=contracts.load(self.manifest)
+        payload['frames'][1]['time_s'] += .01
+        write(self.manifest,payload)
+        with self.assertRaisesRegex(ValueError,'constant-rate'):
+            self.invoke('camera')
+        self.assertFalse(self.calls)
 
     def test_supplied_sensor_does_not_probe_or_fallback(self):
         sensor=write(self.root/'input/sensor.json',{'source_plane_intrinsics_fx_fy_cx_cy':[900,900,35.5,21.5]})
@@ -250,10 +259,11 @@ class BundleContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);bundle=root/'bundle';bundle.mkdir()
             source=bundle/'runtime/spec.md';source.parent.mkdir();source.write_text('fixture spec')
-            write(bundle/'runtime/bundle_manifest.json',{'files':{'runtime/spec.md':contracts.sha(source)}})
+            write(bundle/'runtime/bundle_manifest.json',{'preflight_status':'imports_checked','files':{'runtime/spec.md':contracts.sha(source)}})
             video=root/'raw.mp4';video.write_bytes(b'raw fixture')
             out=root/'run'
-            result=prep.prepare_run(bundle,out,video,'clip')
+            with patch.object(prep,'read_cfr_video_timing',return_value=SimpleNamespace(report=lambda:{'test_only':True})):
+                result=prep.prepare_run(bundle,out,video,'clip')
             self.assertEqual((out/'input/source.mp4').read_bytes(),video.read_bytes())
             self.assertEqual(result['input_video_sha256'],contracts.sha(video))
             self.assertFalse((out/'state/object_selection.json').exists())
@@ -264,6 +274,38 @@ class BundleContracts(unittest.TestCase):
     def test_asset_config_rejects_history_key(self):
         with self.assertRaisesRegex(ValueError,'unexpected'):
             prep.validate_config({'old_prediction_npz':'/old/pose.npz'})
+
+    def test_offline_RGB_weights_never_fall_back_to_download(self):
+        from run_v19_offline_rgb_edges import bind_offline_weights
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'superpoint_v1.pth';path.write_bytes(b'fixture weight bytes')
+            calls=[]
+            torch=SimpleNamespace(hub=SimpleNamespace(),load=lambda p,**kw:calls.append(p) or {'loaded':True})
+            bind_offline_weights({'superpoint_v1.pth':{'path':str(path),'sha256':contracts.sha(path)}},torch)
+            result=torch.hub.load_state_dict_from_url('https://example/superpoint_v1.pth')
+            self.assertTrue(result['loaded']);self.assertEqual(calls,[path])
+            with self.assertRaisesRegex(ValueError,'undeclared'):
+                torch.hub.load_state_dict_from_url('https://example/unknown.pth')
+            path.write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError,'missing/changed'):
+                torch.hub.load_state_dict_from_url('https://example/superpoint_v1.pth')
+            self.assertEqual(len(calls),1)
+
+    def test_P17_documented_judgment_fields_match_actual_consumer(self):
+        from build_v19_visible_contact_ownership_factor import load_agent_interaction_judgments
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'judgments.json'
+            row={'hand_side':'left','start_frame':0,'end_frame':2,'target_entity_id':'object:thing',
+                 'contact_state':'possible_contact','occlusion_relation':'unresolved',
+                 'contact_prior_probability':.4,'contact_support_uncertainty_m':.03,
+                 'depth_reliability':'mixed_or_unresolved'}
+            write(path,{'case':'clip','status':'ok','interaction_judgments':[row]})
+            index,summary=load_agent_interaction_judgments(path,case='clip',target_entity_id='object:thing',frame_span=(0,2),sides={'left','right'})
+            self.assertEqual(len(index),3)
+            row.pop('contact_support_uncertainty_m')
+            write(path,{'interaction_judgments':[row]})
+            with self.assertRaises(ValueError):
+                load_agent_interaction_judgments(path,case='clip',target_entity_id='object:thing',frame_span=(0,2),sides={'left'})
 
     def test_ready_allowance_is_opt_in_and_GT_checks_stay_strict(self):
         for ready in [False,True]:

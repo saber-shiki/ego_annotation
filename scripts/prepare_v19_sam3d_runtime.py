@@ -17,6 +17,7 @@ import subprocess
 import sys
 from v19_runtime_contracts import interpreter, load, sha
 from v20_prediction_contracts import find_positive_gt_flags
+from v19_video_timing import read_cfr_video_timing
 
 SPEC = 'runtime/rgb_sam3d_runtime_spec.md'
 PROMPT = 'runtime/rgb_sam3d_system_prompt.md'
@@ -157,12 +158,20 @@ def import_preflight(bundle, config):
     # Imports only: never instantiate a model, call cuda(), or execute a stage.
     checks = [
         ('main', config['main_python'], ['numpy', 'scipy', 'torch', 'cv2', 'open3d', 'trimesh', 'smplx', 'rerun',
-          'run_v19_sam3d_integration_stage', 'run_v19_sam3d_reconstruction', 'build_v19_rgb_pose_initializer'], []),
+          'run_v19_sam3d_integration_stage', 'run_v19_sam3d_reconstruction', 'build_v19_rgb_pose_initializer',
+          'build_v19_base_annotations', 'build_v19_visible_geometry_from_sam2_depth',
+          'fit_v18_compact_rigid_object_pose', 'filter_v19_rigid_completion_multiview_support',
+          'solve_v19_rigid_object_pose_graph', 'build_v18_mano_object_constraint_state',
+          'build_v19_visible_contact_ownership_factor', 'solve_v18_joint_mano_interval_trajectory',
+          'build_v19_mano_surface_hypothesis_state', 'build_v19_rigid_render_state',
+          'render_v19_rigid_state_artifact', 'assemble_v19_annotation_layers',
+          'render_v19_annotation_layers_rrd', 'render_v19_annotation_layers_video'], []),
         ('rgb', config['rgb_python'], ['torch', 'cv2', 'lightglue'], [config['lightglue_root']]),
         ('depth', config['unidepth_python'], ['torch', 'cv2', 'unidepth'], [config['unidepth_repo']]),
         ('detector_sam2', config['owlv2_python'], ['torch', 'transformers', 'sam2.build_sam'], [config['sam2_source']]),
         ('hawor', str(Path(config['hawor_root']) / '.venv_hawor/bin/python'), ['torch', 'cv2', 'smplx'], []),
-        ('sam3d', config['sam3d_python'], ['torch', 'hydra', 'omegaconf', 'sam3d_objects'], [config['sam3d_repo']]),
+        ('sam3d', config['sam3d_python'], ['torch', 'hydra', 'omegaconf', 'sam3d_objects', 'inference'],
+         [config['sam3d_repo'], str(Path(config['sam3d_repo']) / 'notebook')]),
     ]
     results = []
     for name, python, modules, paths in checks:
@@ -186,6 +195,9 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
     source, bundle, report_dir = map(lambda p: Path(p).resolve(), (source, bundle, report_dir))
     if bundle.exists() or bundle.is_relative_to(source):
         raise ValueError('new isolated bundle directory required')
+    for executable in ('ffprobe','ffmpeg'):
+        if shutil.which(executable) is None:
+            raise ValueError(f'required video executable missing: {executable}')
     config = load(assets)
     weights = validate_config(config)
     selected = closure(source)
@@ -227,12 +239,14 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
     results = import_preflight(bundle, config) if check_imports else []
     files = {str(p.relative_to(bundle)): sha(p) for p in sorted(bundle.rglob('*')) if p.is_file()}
     manifest = {'schema': 'v19_rgb_sam3d_bundle_v1', 'scripts': list(map(str, selected)), 'files': files,
+                'preflight_status': 'imports_checked' if results and all(r['returncode'] == 0 for r in results) else 'imports_unchecked_or_failed',
                 'source_commit': subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()}
     (bundle / 'runtime/bundle_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     report = {'status': 'prepared_imports_checked' if results and all(r['returncode'] == 0 for r in results) else 'blocked_or_imports_not_checked',
               'bundle': str(bundle), 'source': str(source), 'source_commit': manifest['source_commit'],
               'script_count': len(selected), 'file_count': len(files), 'imports': results,
-              'prediction_executed': False, 'gpu_live_check_executed': False}
+              'prediction_executed': False, 'gpu_live_check_executed': False,
+              'video_executables': {name:shutil.which(name) for name in ('ffprobe','ffmpeg')}}
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / 'preflight.json').write_text(json.dumps(report, indent=2) + '\n')
     if check_imports and any(r['returncode'] for r in results):
@@ -250,10 +264,13 @@ def prepare_run(bundle, run_root, video, case, sensor=None, sensor_source=None,
     if not video.is_file():
         raise ValueError('raw video missing')
     manifest = load(bundle / 'runtime/bundle_manifest.json')
+    if manifest.get('preflight_status') != 'imports_checked':
+        raise ValueError('bundle import preflight has not passed')
     for relative, expected in manifest['files'].items():
         path = bundle / relative
         if not path.is_file() or sha(path) != expected:
             raise ValueError(f'bundle file missing/changed: {relative}')
+    timing = read_cfr_video_timing(video)
     if sensor:
         payload = load(sensor)
         if find_positive_gt_flags(payload):
@@ -267,7 +284,7 @@ def prepare_run(bundle, run_root, video, case, sensor=None, sensor_source=None,
     contract = {'case': case, 'input_video': str(root / 'input/source.mp4'), 'input_video_sha256': sha(video),
                 'sensor_calibration_metadata': str(root / 'input/sensor_calibration.json') if sensor else None,
                 'sensor_calibration_authority': sensor_authority if sensor else None,
-                'sensor_frame_intrinsics_key': sensor_key, 'bundle_manifest_sha256': sha(bundle / 'runtime/bundle_manifest.json')}
+                'sensor_frame_intrinsics_key': sensor_key, 'source_timing':timing.report(), 'bundle_manifest_sha256': sha(bundle / 'runtime/bundle_manifest.json')}
     (root / 'input/runtime_input_contract.json').write_text(json.dumps(contract, indent=2) + '\n')
     for name in ('logs', 'state', 'measurements', 'renders'):
         (root / name).mkdir()
