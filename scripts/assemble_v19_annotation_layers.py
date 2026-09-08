@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 
 from v19_annotation_layers import (SCHEMA, SIDES, Snapshot, core_arrays, demo_arrays,
-                                   load_json, load_npz, load_package, require)
+                                   load_json, load_npz, load_package, require,
+                                   annotation_hawor_references, validate_hawor_bindings,
+                                   object_target_matches, resolve_object, demo_mesh_contract,
+                                   load_geometry_mesh, sha256)
 
 
 def assemble(args):
@@ -38,17 +41,25 @@ def assemble(args):
     annotation_source = snap.source(core["inputs"]["annotations"], core_dir)
     require(annotation_source == source_paths["annotations"], "P19 annotation source mismatch")
     canonical = snap.source(core["object_geometry"]["completed_mesh_path"], core_dir)
+    hawor_paths = {ref: snap.source(ref, source_paths["annotations"].parent)
+                   for ref in annotation_hawor_references(ann)}
+    hawor_bindings = {ref: {"asset": p, "sha256": sha256(p)} for ref, p in hawor_paths.items()}
+    validate_hawor_bindings(ann, source_paths["hawor_npz"], hawor_bindings, lambda p: p)
     prediction = core_arrays(core, ann, load_npz(source_paths["hawor_npz"]), canonical)
+    source_paths["completion_report"] = snap.source(core["inputs"]["completion_report"], core_dir)
+    completion = load_json(source_paths["completion_report"])
     demo_source = demo_report = demo = None
     demo_files = []
     if args.demo_state:
         demo_source = snap.source(args.demo_state)
         demo_report = snap.source(args.demo_report)
         report = load_json(demo_report)
-        demo = demo_arrays(load_npz(demo_source), prediction)
+        demo_mesh_reference, digest = demo_mesh_contract(core, completion)
+        demo_mesh = snap.source(demo_mesh_reference, source_paths["completion_report"].parent) if digest else canonical
+        require(sha256(demo_mesh) == (digest or sha256(canonical)), "demo bound canonical mesh hash mismatch")
+        demo = demo_arrays(load_npz(demo_source), prediction, load_geometry_mesh(demo_mesh))
         # Model weights are not render dependencies. Prediction NPZ/mesh/report
         # inputs are, and their producer-declared hashes must still match.
-        from v19_annotation_layers import sha256
         for key, digest in report.get("input_hashes", {}).items():
             value = report.get("inputs", {}).get(key)
             if value is None:
@@ -59,7 +70,7 @@ def assemble(args):
         if report.get("mesh"):
             p = snap.source(report["mesh"], demo_report.parent)
             require(report.get("mesh_sha256") == sha256(p), "demo report mesh hash mismatch")
-            require(sha256(p) == sha256(canonical), "demo report canonical mesh mismatch")
+            require(sha256(p) == sha256(demo_mesh), "demo report canonical mesh mismatch")
             demo_files.append(p)
         for key, expected in (("annotations", source_paths["annotations"]), ("hawor_params", source_paths["hawor_npz"])):
             if key in report.get("inputs", {}):
@@ -76,7 +87,6 @@ def assemble(args):
         if isinstance(value, dict):
             for key, child in value.items():
                 if isinstance(child, str) and value.get(key + "_sha256"):
-                    from v19_annotation_layers import sha256
                     p = snap.source(child, core_dir)
                     require(sha256(p) == value[key + "_sha256"], f"core declared asset hash mismatch: {key}")
                 yield from archives(child)
@@ -95,12 +105,17 @@ def assemble(args):
     mesh_asset = snap.copy(canonical)
     metric = {"render_state": core, "annotations": ann, "interaction_judgments": judgments,
               "source_assets": sources, "canonical_mesh_asset": mesh_asset,
+              "completion_report_binding": {"reference": core["inputs"]["completion_report"],
+                                            "sha256": sha256(source_paths["completion_report"])},
+              "hawor_source_bindings": {ref: {"asset": snap.copy(binding["asset"]), "sha256": binding["sha256"]}
+                                        for ref, binding in hawor_bindings.items()},
               "render_arrays_asset": snap.generated("prediction_render_arrays.npz", prediction),
               "authority": "unchanged source metric prediction; no demo corrections or collision promotion"}
     demo_block = None
     if demo is not None:
         demo_block = {"source_assets": {"state": snap.copy(demo_source), "report": snap.copy(demo_report)},
                       "report": load_json(demo_report),
+                      "canonical_mesh_binding": {"reference": demo_mesh_reference, "asset": snap.copy(demo_mesh)},
                       "render_arrays_asset": snap.generated("demo_render_arrays.npz", demo),
                       "authority": "visual hypothesis only; not contact/collision/sign evidence",
                       "annotation_ready": False, "collision_eligible": False}
@@ -114,7 +129,7 @@ def assemble(args):
             end = row.get("frame_end", row.get("end_frame", prediction["frame_idx"][-1]))
             require(int(end) >= int(start), "inverted P17 interval")
             target_id = row.get("target_entity_id", row.get("object_id", row.get("track_id")))
-            matches = target_id in (None, "") or str(target_id).split(":", 1)[-1] == str(core["object_id"]).split(":", 1)[-1]
+            matches = object_target_matches(frame, core["object_id"], target_id)
             if matches and int(start) <= fid <= int(end):
                 frame_judgments.append(row)
         hands = {}
@@ -125,7 +140,7 @@ def assemble(args):
                            "occluder": raw.get("occluder", "unresolved"),
                            "source_state": raw,
                            "uncertainty": raw.get("uncertainty", ["source_uncertainty_not_quantified"])}
-        obj = next((o for o in frame.get("objects", []) if o.get("object_id") == core["object_id"]), {})
+        obj = resolve_object(frame, core["object_id"])
         timeline.append({"frame_idx": fid, "time_s": float(prediction["time_s"][i]),
                          "camera": {"T_world_camera": prediction["T_world_camera"][i].tolist(),
                                     "intrinsics_fx_fy_cx_cy": prediction["intrinsics_render"][i].tolist(),

@@ -1,11 +1,14 @@
 """CPU synthetic contracts for the source-named final annotation exporters."""
 import argparse
+import builtins
+import io
 import json
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import trimesh
@@ -49,6 +52,13 @@ class AnnotationLayersTests(unittest.TestCase):
             "camera": {"T_world_camera_metric": T[i].tolist(), "intrinsics_fx_fy_cx_cy": K[i].tolist()},
             "hands": [{"hand_side": "left", "visibility_state": "visible" if valid[i] else "unresolved", "uncertainty": ["measurement_uncertainty"]}],
             "objects": [{"object_id": "thing", "visibility_state": "partially_visible"}]} for i, fid in enumerate(ids)]}
+        self.annotations["v19_inputs"] = {"hawor_npz": str(self.run / "hawor.npz")}
+        for i in (0, 2):
+            self.annotations["frames"][i]["hands"][0]["metric_mano_state"] = {
+                "vertices_reference": {"source_hawor_npz": str(self.run / "hawor.npz"),
+                                       "source_frame_index": i,
+                                       "source_vertices_world_array": "left_vertices_world_m",
+                                       "source_joints_world_array": "left_joints_world_m"}}
         self.dump("annotations.json", self.annotations)
         self.dump("p15.json", {"annotation_ready": False, "pose_rows": []})
         self.dump("p16.json", {"constraint_rows": [{"original": True}]})
@@ -236,6 +246,220 @@ class AnnotationLayersTests(unittest.TestCase):
         np.savez(self.args.hawor_npz, **self.hawor)
         with self.assertRaisesRegex(ValueError, "required component: left_valid"):
             assemble(self.args)
+
+    def test_declared_hawor_rejects_surface_and_invalid_row_substitution(self):
+        for kind in ("vertices", "validity"):
+            with self.subTest(kind=kind):
+                replacement = {k: v.copy() for k, v in self.hawor.items()}
+                if kind == "vertices":
+                    replacement["left_vertices_world_m"][0, 300, 0] += .1
+                else:
+                    replacement["left_valid"][1] = True
+                    replacement["left_vertices_world_m"][1] = 0
+                    replacement["left_joints_world_m"][1] = 0
+                self.args.hawor_npz = self.run / "replacement.npz"
+                np.savez(self.args.hawor_npz, **replacement)
+                with self.assertRaisesRegex(ValueError, "source archive mismatch"):
+                    assemble(self.args)
+
+    def test_per_hand_source_binding_without_global_reference(self):
+        del self.annotations["v19_inputs"]
+        self.dump("annotations.json", self.annotations)
+        self.args.hawor_npz = self.run / "replacement.npz"
+        replacement = {k: v.copy() for k, v in self.hawor.items()}
+        replacement["left_valid"][1] = True
+        replacement["left_vertices_world_m"][1] = 0
+        replacement["left_joints_world_m"][1] = 0
+        np.savez(self.args.hawor_npz, **replacement)
+        with self.assertRaisesRegex(ValueError, "source archive mismatch"):
+            assemble(self.args)
+
+    def test_declared_source_array_and_row_binding(self):
+        ref = self.annotations["frames"][0]["hands"][0]["metric_mano_state"]["vertices_reference"]
+        ref["source_frame_index"] = 2
+        self.dump("annotations.json", self.annotations)
+        with self.assertRaisesRegex(ValueError, "source row mismatch"):
+            assemble(self.args)
+        ref["source_frame_index"] = 0
+        ref["source_vertices_world_array"] = "left_joints_world_m"
+        self.dump("annotations.json", self.annotations)
+        with self.assertRaisesRegex(ValueError, "source vertices mismatch"):
+            assemble(self.args)
+
+    def test_hawor_binding_replayed_after_relocation_and_rejects_substitution(self):
+        # Content-identical copies are legitimate, but both identities are saved.
+        self.args.hawor_npz = self.run / "copy.npz"
+        shutil.copyfile(self.run / "hawor.npz", self.args.hawor_npz)
+        path = assemble(self.args)
+        shutil.rmtree(self.run)
+        moved = self.root / "moved"
+        shutil.move(path.parent, moved)
+        path = moved / path.name
+        package, _ = load_package(path)
+        relative = package["metric_prediction"]["source_assets"]["hawor_npz"]
+        asset = moved / relative
+        replacement = {k: v.copy() for k, v in self.hawor.items()}
+        replacement["left_vertices_world_m"][0, 300, 0] += .1
+        np.savez(asset, **replacement)
+        package["assets"][relative].update(sha256=sha256(asset), size_bytes=asset.stat().st_size)
+        path.write_text(json.dumps(package))
+        with self.assertRaisesRegex(ValueError, "source archive mismatch"):
+            load_package(path)
+        package["metric_prediction"]["hawor_source_bindings"] = {}
+        path.write_text(json.dumps(package))
+        with self.assertRaisesRegex(ValueError, "source bindings mismatch"):
+            load_package(path)
+
+    def test_same_snapshot_hawor_identity_survives_manifest_rehash(self):
+        path = assemble(self.args)
+        package = json.loads(path.read_text())
+        relative = package["metric_prediction"]["source_assets"]["hawor_npz"]
+        replacement = {k: v.copy() for k, v in self.hawor.items()}
+        replacement["left_vertices_world_m"][0, 300, 0] += .1
+        asset = path.parent / relative
+        np.savez(asset, **replacement)
+        package["assets"][relative].update(sha256=sha256(asset), size_bytes=asset.stat().st_size)
+        path.write_text(json.dumps(package))
+        with self.assertRaisesRegex(ValueError, "source archive mismatch"):
+            load_package(path)
+
+    def test_prefixed_object_track_metadata_and_ambiguity(self):
+        for frame in self.annotations["frames"]:
+            frame["objects"][0].update(object_id="object:thing", track_id="producer_track", occluder="hand:left")
+        self.judgments["interaction_judgments"][0]["target_entity_id"] = "producer_track"
+        self.dump("p17.json", self.judgments)
+        self.dump("annotations.json", self.annotations)
+        path = assemble(self.args)
+        package, _ = load_package(path)
+        self.assertEqual(package["timeline"][0]["object"]["source_state"], self.annotations["frames"][0]["objects"][0])
+        self.assertEqual(package["timeline"][0]["object"]["occluder"], "hand:left")
+        self.assertEqual(package["timeline"][0]["interaction_judgments"], self.judgments["interaction_judgments"])
+        self.args.output_dir = self.root / "ambiguous"
+        self.annotations["frames"][0]["objects"].append({"object_id": "thing"})
+        self.dump("annotations.json", self.annotations)
+        with self.assertRaisesRegex(ValueError, "ambiguous object/track"):
+            assemble(self.args)
+
+    def test_obj_external_material_reads_denied_in_assembly_and_replay(self):
+        self.args.demo_state = self.args.demo_report = None
+        external = self.root / "outside.mtl"
+        external.write_text("newmtl forbidden\nKd 1 0 0\n")
+        mesh_path = self.run / "mesh.obj"
+        original_open, original_io_open = builtins.open, io.open
+        attempted = []
+        def guarded(opener):
+            def open_file(file, *args, **kwargs):
+                if isinstance(file, (str, Path)) and Path(file).name == "outside.mtl":
+                    attempted.append(str(file))
+                    raise AssertionError("external material read")
+                return opener(file, *args, **kwargs)
+            return open_file
+        for i, reference in enumerate((str(external), "../outside.mtl")):
+            with self.subTest(reference=reference):
+                mesh_path.write_text(f"mtllib {reference}\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl forbidden\nf 1 2 3\n")
+                self.core["object_geometry"]["completed_mesh_path"] = str(mesh_path)
+                self.dump("core.json", self.core)
+                self.args.output_dir = self.root / f"obj_final_{i}"
+                with mock.patch("builtins.open", guarded(original_open)), mock.patch("io.open", guarded(original_io_open)):
+                    path = assemble(self.args)
+                    # In replay, ../outside.mtl would resolve here rather than
+                    # relative to the deleted/original mesh source directory.
+                    with original_io_open(path.parent / "outside.mtl", "w") as f:
+                        f.write("newmtl forbidden\n")
+                    load_package(path)
+                self.assertEqual(attempted, [])
+
+    def distinct_demo_mesh(self):
+        generated = trimesh.Trimesh(
+            vertices=[[0, 0, 0], [.1, 0, 0], [0, .1, 0], [0, 0, .1], [.1, .1, .1]],
+            faces=[[0, 1, 2], [0, 2, 3], [1, 3, 4], [1, 2, 4]], process=False)
+        path = self.run / "intact_generated.ply"
+        generated.export(path)
+        generated = trimesh.load(path, force="mesh", process=False)
+        completion = {"outputs": {"completed_mesh": str(self.run / "mesh.ply")},
+                      "render_mesh_contract": {"required_mesh_path": str(path),
+                                               "required_mesh_sha256": sha256(path), "renderer_must_match": True}}
+        self.dump("completion.json", completion)
+        self.demo["object_vertices_canonical"] = np.asarray(generated.vertices)
+        self.demo["object_faces"] = np.asarray(generated.faces)
+        np.savez(self.args.demo_state, **self.demo)
+        self.dump("demo.json", {"demo_only": True, "mesh": str(path), "mesh_sha256": sha256(path)})
+        return path, completion
+
+    def test_distinct_completion_bound_demo_mesh_relocated_rrd(self):
+        _, completion = self.distinct_demo_mesh()
+        before = {str(p): sha256(p) for p in self.run.iterdir()}
+        path = assemble(self.args)
+        self.assertEqual(before, {str(p): sha256(p) for p in self.run.iterdir()})
+        shutil.rmtree(self.run)
+        moved = self.root / "relocated"
+        shutil.move(path.parent, moved)
+        package, layers = load_package(moved / path.name)
+        self.assertEqual(package["metric_prediction"]["render_state"], self.core)
+        self.assertEqual(len(layers["prediction"]["object_vertices_canonical"]), 4)
+        self.assertEqual(len(layers["demo"]["object_vertices_canonical"]), 5)
+        self.assertEqual(len(layers["prediction"]["object_faces"]), 2)
+        self.assertEqual(len(layers["demo"]["object_faces"]), 4)
+        binding = package["demo_visual"]["canonical_mesh_binding"]
+        self.assertEqual(binding["reference"], completion["render_mesh_contract"]["required_mesh_path"])
+        target = render(moved / path.name, self.root / "distinct.rrd")
+        self.assertGreater(target.stat().st_size, 1000)
+
+    def test_distinct_demo_mesh_without_contract_rejected(self):
+        self.distinct_demo_mesh()
+        self.dump("completion.json", {"outputs": {"completed_mesh": str(self.run / "mesh.ply")}})
+        with self.assertRaisesRegex(ValueError, "demo canonical mesh"):
+            assemble(self.args)
+
+    def test_distinct_demo_mesh_bad_hash_or_substitution_rejected(self):
+        path, completion = self.distinct_demo_mesh()
+        completion["render_mesh_contract"]["required_mesh_sha256"] = "0" * 64
+        self.dump("completion.json", completion)
+        with self.assertRaisesRegex(ValueError, "bound canonical mesh hash mismatch"):
+            assemble(self.args)
+        completion["render_mesh_contract"]["required_mesh_sha256"] = sha256(path)
+        self.dump("completion.json", completion)
+        np.savez(self.args.demo_state, **{**self.demo, "object_vertices_canonical": self.demo["object_vertices_canonical"] + .1})
+        with self.assertRaisesRegex(ValueError, "demo canonical mesh"):
+            assemble(self.args)
+        np.savez(self.args.demo_state, **self.demo)
+        self.dump("demo.json", {"mesh": str(self.run / "mesh.ply"), "mesh_sha256": sha256(self.run / "mesh.ply")})
+        with self.assertRaisesRegex(ValueError, "demo report canonical mesh mismatch"):
+            assemble(self.args)
+
+    def test_distinct_demo_retains_base_pose_camera_mano_checks(self):
+        self.distinct_demo_mesh()
+        for key in ("base_object_translation_world", "T_world_camera", "left_base_vertices_world"):
+            with self.subTest(key=key):
+                np.savez(self.args.demo_state, **{**self.demo, key: self.demo[key] + .1})
+                with self.assertRaisesRegex(ValueError, "mismatch"):
+                    assemble(self.args)
+
+    def test_distinct_demo_replay_requires_original_contract_binding(self):
+        self.distinct_demo_mesh()
+        path = assemble(self.args)
+        shutil.rmtree(self.run)
+        original = path.read_text()
+        package = json.loads(original)
+        package["demo_visual"]["canonical_mesh_binding"]["asset"] = package["metric_prediction"]["canonical_mesh_asset"]
+        path.write_text(json.dumps(package))
+        with self.assertRaisesRegex(ValueError, "bound canonical mesh hash mismatch"):
+            load_package(path)
+        package = json.loads(original)
+        package["demo_visual"]["canonical_mesh_binding"]["reference"] = "unbound_mesh.ply"
+        path.write_text(json.dumps(package))
+        with self.assertRaisesRegex(ValueError, "canonical mesh binding mismatch"):
+            load_package(path)
+        package = json.loads(original)
+        relative = package["metric_prediction"]["source_assets"]["completion_report"]
+        report_path = path.parent / relative
+        report = json.loads(report_path.read_text())
+        report["render_mesh_contract"]["required_mesh_sha256"] = "0" * 64
+        report_path.write_text(json.dumps(report))
+        package["assets"][relative].update(sha256=sha256(report_path), size_bytes=report_path.stat().st_size)
+        path.write_text(json.dumps(package))
+        with self.assertRaisesRegex(ValueError, "completion report binding hash mismatch"):
+            load_package(path)
 
     def test_prediction_only(self):
         self.args.demo_state = self.args.demo_report = None

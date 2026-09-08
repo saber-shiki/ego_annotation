@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path, PurePosixPath
 import shutil
@@ -59,6 +60,70 @@ def mesh(vertices, faces, label):
     require(faces.ndim == 2 and faces.shape[1] == 3 and len(faces) > 0
             and np.issubdtype(faces.dtype, np.integer) and faces.min() >= 0
             and faces.max() < len(vertices), f"invalid mesh faces: {label}")
+
+
+def load_geometry_mesh(path):
+    """Load only embedded geometry; no material, texture, or buffer dependency reads."""
+    import trimesh
+    path = Path(path)
+    file_type = path.suffix.lower().lstrip(".")
+    require(file_type in {"ply", "obj", "stl", "glb"}, "unsupported self-contained mesh format")
+    # BytesIO has no filename from which Trimesh could infer a filesystem
+    # resolver. The empty mapping denies every external dependency by default.
+    m = trimesh.load(io.BytesIO(path.read_bytes()), file_type=file_type,
+                     resolver={}, allow_remote=False, force="mesh", process=False,
+                     skip_materials=True)
+    require(isinstance(m, trimesh.Trimesh), "required component: canonical triangle mesh")
+    v, f = np.asarray(m.vertices), np.asarray(m.faces)
+    mesh(v, f, "canonical object")
+    return {"object_vertices_canonical": v, "object_faces": f}
+
+
+def object_alias(value):
+    text = str(value)
+    return text.removeprefix("object:")
+
+
+def resolve_object(frame, object_id):
+    """Resolve established object:/track aliases, rejecting competing rows."""
+    target = object_alias(object_id)
+    matches = [row for row in frame.get("objects", [])
+               if any(value is not None and object_alias(value) == target
+                      for value in (row.get("object_id"), row.get("track_id")))]
+    require(len(matches) <= 1, f"ambiguous object/track identity: {object_id}")
+    return matches[0] if matches else {}
+
+
+def object_target_matches(frame, object_id, target):
+    if target in (None, ""):
+        return True
+    source = resolve_object(frame, object_id)
+    if source:
+        return resolve_object(frame, target) is source
+    return object_alias(target) == object_alias(object_id)
+
+
+def annotation_hawor_references(annotations):
+    """Archive identity binds all rows, including invalid rows without joints."""
+    references = set()
+    declared = annotations.get("v19_inputs", {}).get("hawor_npz")
+    if declared:
+        references.add(declared)
+    for frame in annotations.get("frames", []):
+        for hand in frame.get("hands", []):
+            ref = (hand.get("metric_mano_state") or {}).get("vertices_reference")
+            if ref:
+                require(ref.get("source_hawor_npz"), "required component: vertices_reference.source_hawor_npz")
+                references.add(ref["source_hawor_npz"])
+    return sorted(references)
+
+
+def validate_hawor_bindings(annotations, supplied_path, bindings, resolve_asset):
+    require(set(bindings) == set(annotation_hawor_references(annotations)), "annotation HaWoR source bindings mismatch")
+    digest = sha256(supplied_path)
+    for reference, binding in bindings.items():
+        require(sha256(resolve_asset(binding["asset"])) == binding["sha256"] == digest,
+                f"annotation HaWoR source archive mismatch: {reference}")
 
 
 def hand_arrays(source, n, demo=False):
@@ -126,7 +191,6 @@ class Snapshot:
 
 
 def core_arrays(core, annotations, hawor, mesh_path):
-    import trimesh
     frames = annotations.get("frames")
     require(isinstance(frames, list) and len(frames) > 0, "required component: annotation frames")
     n = len(frames)
@@ -154,10 +218,8 @@ def core_arrays(core, annotations, hawor, mesh_path):
     same(array(hawor, "R_c2w", (n, 3, 3)), T[:, :3, :3], "HaWoR world camera rotation")
     same(array(hawor, "t_c2w", (n, 3)), T[:, :3, 3], "HaWoR world camera translation")
     require(core["object_geometry"].get("mesh_frame") == "completed_canonical", "required component: completed_canonical mesh convention")
-    m = trimesh.load(mesh_path, force="mesh", process=False)
-    require(isinstance(m, trimesh.Trimesh), "required component: canonical triangle mesh")
-    v, faces = np.asarray(m.vertices), np.asarray(m.faces)
-    mesh(v, faces, "canonical object")
+    geometry = load_geometry_mesh(mesh_path)
+    v, faces = geometry["object_vertices_canonical"], geometry["object_faces"]
     R, t = np.full((n, 3, 3), np.nan), np.full((n, 3), np.nan)
     valid = np.zeros(n, dtype=bool)
     index = {int(f): i for i, f in enumerate(ids)}
@@ -177,6 +239,16 @@ def core_arrays(core, annotations, hawor, mesh_path):
         for hand in frame.get("hands", []):
             side = hand.get("hand_side")
             metric = hand.get("metric_mano_state") or {}
+            reference = metric.get("vertices_reference")
+            if reference and side in SIDES:
+                pos = reference.get("source_frame_index")
+                require(isinstance(pos, int) and 0 <= pos < n and ids[pos] == ids[i], "annotation HaWoR source row mismatch")
+                for kind in ("vertices", "joints"):
+                    declared = reference.get(f"source_{kind}_world_array")
+                    require(declared in hawor, f"required annotation source array: {declared}")
+                    actual = array(hawor, declared)[pos]
+                    expected = out[f"{side}_{kind}_world"][i]
+                    require(actual.shape == expected.shape and np.array_equal(actual, expected, equal_nan=True), f"annotation HaWoR source {kind} mismatch")
             joints = metric.get("joints_current_v18_world_m", metric.get("joints_world_m"))
             if side in SIDES and joints is not None:
                 require(out[f"{side}_valid"][i], f"annotation/HaWoR validity mismatch: {side}")
@@ -184,7 +256,18 @@ def core_arrays(core, annotations, hawor, mesh_path):
     return out
 
 
-def demo_arrays(demo, prediction):
+def demo_mesh_contract(core, completion):
+    if "render_mesh_contract" not in completion:
+        return core["object_geometry"]["completed_mesh_path"], None
+    contract = completion["render_mesh_contract"]
+    require(isinstance(contract, dict) and contract.get("required_mesh_path")
+            and isinstance(contract.get("required_mesh_sha256"), str)
+            and len(contract["required_mesh_sha256"]) == 64,
+            "required component: completion render_mesh_contract path/hash")
+    return contract["required_mesh_path"], contract["required_mesh_sha256"]
+
+
+def demo_arrays(demo, prediction, canonical_geometry=None):
     n = len(prediction["frame_idx"])
     for key in ("frame_idx", "time_s", "T_world_camera"):
         same(array(demo, key), prediction[key], f"demo {key}")
@@ -198,8 +281,10 @@ def demo_arrays(demo, prediction):
     expected[:, :2] *= scale
     expected[:, 2:] = (expected[:, 2:] + 0.5) * scale - 0.5
     same(array(demo, "intrinsics_render", (n, 4)), expected, "demo intrinsics/render size")
+    geometry = prediction if canonical_geometry is None else canonical_geometry
     for key in ("object_vertices_canonical", "object_faces"):
-        same(array(demo, key), prediction[key], f"demo canonical mesh {key}")
+        same(array(demo, key), geometry[key], f"demo canonical mesh {key}",
+             atol=0 if key == "object_faces" else 1e-5)
     valid = prediction["object_valid"]
     for key in ("object_rotation", "object_translation_world"):
         base = array(demo, "base_" + key, prediction[key].shape)
@@ -219,7 +304,8 @@ def demo_arrays(demo, prediction):
                 key = f"{side}_{kind}_world"
                 same(array(demo, f"{side}_base_{kind}_world")[hv], prediction[key][hv], f"demo source {side} {kind}")
             same(hands[f"{side}_faces"], prediction[f"{side}_faces"], f"demo {side} topology", atol=0)
-    return {**{k: prediction[k] for k in ("frame_idx", "time_s", "T_world_camera", "object_vertices_canonical", "object_faces")},
+    return {**{k: prediction[k] for k in ("frame_idx", "time_s", "T_world_camera")},
+            **{k: geometry[k] for k in ("object_vertices_canonical", "object_faces")},
             "render_size_wh": size, "intrinsics_render": expected, "object_rotation": R,
             "object_translation_world": t, "object_valid": dv, **hands}
 
@@ -251,7 +337,9 @@ def load_package(path):
     ann = load_json(asset(metric["source_assets"]["annotations"]))
     require(core == metric["render_state"] and ann == metric["annotations"], "verbatim source document mismatch")
     require(load_json(asset(metric["source_assets"]["interaction_judgments"])) == metric["interaction_judgments"], "P17 source document mismatch")
-    expected = core_arrays(core, ann, load_npz(asset(metric["source_assets"]["hawor_npz"])), asset(metric["canonical_mesh_asset"]))
+    hawor_path = asset(metric["source_assets"]["hawor_npz"])
+    validate_hawor_bindings(ann, hawor_path, metric.get("hawor_source_bindings", {}), asset)
+    expected = core_arrays(core, ann, load_npz(hawor_path), asset(metric["canonical_mesh_asset"]))
     pred = load_npz(asset(metric["render_arrays_asset"]))
     compare_arrays(pred, expected, "prediction")
     timeline = package["timeline"]
@@ -270,7 +358,7 @@ def load_package(path):
             require(row["hands"][side]["source_state"] == source_hand, "package source hand mismatch")
             for field, default in (("visibility_state", "unresolved"), ("occluder", "unresolved"), ("uncertainty", ["source_uncertainty_not_quantified"])):
                 require(row["hands"][side][field] == source_hand.get(field, default), f"package hand {field} mismatch")
-        source_object = next((o for o in ann["frames"][i].get("objects", []) if o.get("object_id") == core["object_id"]), {})
+        source_object = resolve_object(ann["frames"][i], core["object_id"])
         require(row["object"]["source_state"] == source_object, "package source object mismatch")
         for field in ("visibility_state", "occluder"):
             require(row["object"][field] == source_object.get(field, "unresolved"), f"package object {field} mismatch")
@@ -279,7 +367,7 @@ def load_package(path):
         selected = []
         for judgment in source_rows:
             target = judgment.get("target_entity_id", judgment.get("object_id", judgment.get("track_id")))
-            matches = target in (None, "") or str(target).split(":", 1)[-1] == str(core["object_id"]).split(":", 1)[-1]
+            matches = object_target_matches(ann["frames"][i], core["object_id"], target)
             start = judgment.get("frame_start", judgment.get("start_frame", pred["frame_idx"][0]))
             end = judgment.get("frame_end", judgment.get("end_frame", pred["frame_idx"][-1]))
             if matches and int(start) <= fid <= int(end):
@@ -291,8 +379,22 @@ def load_package(path):
     if demo is not None:
         require(demo.get("annotation_ready") is False and demo.get("collision_eligible") is False, "demo physical authority promotion forbidden")
         require(load_json(asset(demo["source_assets"]["report"])) == demo["report"], "demo report source mismatch")
+        report_binding = metric["completion_report_binding"]
+        require(report_binding["reference"] == core["inputs"]["completion_report"], "completion report binding mismatch")
+        completion_path = asset(metric["source_assets"]["completion_report"])
+        require(sha256(completion_path) == report_binding["sha256"], "completion report binding hash mismatch")
+        completion = load_json(completion_path)
+        reference, digest = demo_mesh_contract(core, completion)
+        binding = demo["canonical_mesh_binding"]
+        require(binding["reference"] == reference, "demo canonical mesh binding mismatch")
+        mesh_path = asset(binding["asset"])
+        expected_digest = digest or sha256(asset(metric["canonical_mesh_asset"]))
+        require(sha256(mesh_path) == expected_digest, "demo bound canonical mesh hash mismatch")
+        if demo["report"].get("mesh"):
+            require(demo["report"].get("mesh_sha256") == expected_digest, "demo report canonical mesh mismatch")
+        geometry = load_geometry_mesh(mesh_path)
         source = load_npz(asset(demo["source_assets"]["state"]))
-        expected_demo = demo_arrays(source, pred)
+        expected_demo = demo_arrays(source, pred, geometry)
         actual = load_npz(asset(demo["render_arrays_asset"]))
         compare_arrays(actual, expected_demo, "demo")
         layers["demo"] = actual
