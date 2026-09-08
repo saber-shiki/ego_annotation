@@ -38,6 +38,8 @@ The actor's `tool_probe` mode checks real cwd, creates a new non-adopted broker-
 
 The probe's actual result and native transcript—not the generated request or an agent-list entry—are required to accept the launch/tool boundary. Offline script validation alone checks syntax and does not establish provider startup or image transport.
 
+The workflow explicitly declares the contract's **absolute** `tool_probe_result.json` as its child output. Prediction uses `RUN_ROOT/state/native_prediction_handoff.md` for the final handoff, distinct from all phase outputs. This prevents the native harness's report-routing instruction from overriding the required probe/phase artifact location.
+
 ## Prediction request (separate authorization and execution)
 
 First use the accepted runtime preparation entry to create a new raw-input run with its random current-run identity, source-video hash and bundle binding. Then:
@@ -49,7 +51,7 @@ python scripts/prepare_v19_native_launch.py prediction-request \
   --output-dir /absolute/new_prediction_request
 ```
 
-The helper validates registered copied files/profile, prepared run/bundle/raw-video identity and source CFR, and refuses an initial launch with existing measurement/render files. It validates native provider identities against the prepared inventory and emits the same native-harness request shape, now in `prediction` mode. Authorized prediction-request preparation invokes the runtime asset verifier's full default path; scoped runtime checks remain separate. The synthetic tool-only probe checks only its actual tool-provider dependencies, not unrelated neural weights.
+The helper validates registered copied files/profile, a parsed prepared UUID, exact canonical run-root/bundle/raw-video binding and source CFR. An initial prediction request requires exactly the untouched preparation layout (raw input/contract, optional declared calibration, and the five empty output directories). P00 logs/state/receipts, P01 generated inputs, predictions, symlinks and undeclared files or directories are refused; recovery is a separate decision. Developer request directories must be disjoint from run/probe and bundle trees in both directions. The helper validates native provider identities against the prepared inventory and emits the same native-harness request shape, now in `prediction` mode. Authorized prediction-request preparation invokes the runtime asset verifier's full default path; scoped runtime checks remain separate. The synthetic tool-only probe checks only its actual tool-provider dependencies, not unrelated neural weights.
 
 The actor receives only its mode, curated cwd, declared input-contract/run root and new dedicated tmux target. CASE_ID, copied INPUT_VIDEO and calibration binding are read from the immutable prepared input contract. It follows the authoritative runtime prompt/spec and produces all visual judgments from the current evidence. A completed tool probe is not permission to skip actual P00–P21 or to reuse previous clip predictions.
 
@@ -57,9 +59,11 @@ Initial launches and interrupted-run recovery are distinct: do not regenerate a 
 
 ## Current evidence
 
-Six small request/profile/isolation planning tests pass. The exact v2 request was offline-validated and the project agent was discovered as executable. The real native tool-only probe ran as workflow `9f7b2998-a5f4-4f22-8e28-feab145690bc`, child `932ee60f-b481-48c4-bd95-30081cb918f1`, and is **BLOCKED**, not accepted. Cwd, managed-shell marker and text read succeeded; the synthetic-image read failed with `managed socket client exited null`. Image description and output write/readback were not completed. No prediction model was invoked or alternate backend used.
+Nine small request/profile/isolation planning tests pass. The exact v2 request was offline-validated and the project agent was discovered as executable. The real native tool-only probe ran as workflow `9f7b2998-a5f4-4f22-8e28-feab145690bc`, child `932ee60f-b481-48c4-bd95-30081cb918f1`, and is **BLOCKED**, not accepted. Cwd, managed-shell marker and text read succeeded; the synthetic-image read failed with `managed socket client exited null`. Image description and output write/readback were not completed. No prediction model was invoked or alternate backend used.
 
 The failure was reproduced against the installed broker: a nonblocking `sendall()` silently delivered only8064 of2000028 response bytes, with no final newline. The separate ShellGate worktree now has FIFO/write-readiness correction `dd4e03b8c438ee43b76c7ede4577fdb2119033fa`, with13 parent-rerun tests and independent **OK with notes** for the current native client. The global installed plugin remains unchanged. The profile and builder pin now target that isolated repaired provider; a new candidate/native probe is required before acceptance. The P2 write-half-close compatibility note is retained; the current native socket client does not half-close its request side. The failed probe's idle broker was inspected and then shut down through ShellGate solely for cleanup. No real prediction launch is claimed here.
+
+The fixed-provider probe `fa32c276-88a3-4bd0-a831-69b93b0d3d6e` / child `8dff194d-9d40-45e3-ab6c-157321a71cff` subsequently read the large image, correctly described its pixels, and completed managed write/readback plus broker cleanup. However, the relative workflow output caused the harness's authoritative report path to override the contract's JSON target. That measured routing issue is now corrected with an absolute declared child output; a final exact-path probe is pending. Launcher review also found malformed/mismatched run identity, early-interruption freshness and one-direction directory-separation gaps; the current nine-test boundary correction covers them. No prediction model or cold pipeline has been launched.
 
 Developer evidence is under:
 `/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/integration_validation/rgb_sam3d_visual_annotation_20260908/native_launch/`

@@ -172,11 +172,52 @@ def synthetic_probe_png(path, width=960, height=640):
     Path(path).write_bytes(png)
 
 
+def require_request_separation(bundle, root, output_dir):
+    if (
+        output_dir.exists()
+        or output_dir.is_relative_to(bundle)
+        or bundle.is_relative_to(output_dir)
+        or root.is_relative_to(output_dir)
+        or output_dir.is_relative_to(root)
+    ):
+        raise ValueError("new separate developer request directory required")
+
+
+def require_untouched_prepared_root(root, contract):
+    try:
+        uuid.UUID(contract.get("run_id", ""))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("invalid prepared run UUID") from exc
+    if contract.get("run_root") != str(root):
+        raise ValueError("prepared run root binding mismatch")
+    expected_dirs = {"input", "logs", "state", "measurements", "renders"}
+    expected_files = {"input/runtime_input_contract.json", "input/source.mp4"}
+    if contract.get("sensor_calibration_metadata") is not None:
+        sensor = root / "input/sensor_calibration.json"
+        if (
+            contract["sensor_calibration_metadata"] != str(sensor)
+            or not sensor.is_file()
+            or sha(sensor) != contract.get("sensor_calibration_sha256")
+        ):
+            raise ValueError("prepared sensor identity mismatch")
+        expected_files.add("input/sensor_calibration.json")
+    paths = list(root.rglob("*"))
+    actual_files = {str(p.relative_to(root)) for p in paths if p.is_file()}
+    actual_dirs = {str(p.relative_to(root)) for p in paths if p.is_dir()}
+    if (
+        any(p.is_symlink() for p in paths)
+        or actual_files != expected_files
+        or actual_dirs != expected_dirs
+    ):
+        raise ValueError(
+            "initial native launch requires untouched prepared run; execution state or generated inputs found"
+        )
+
+
 def write_request(bundle, root, mode, contract_path, output_dir):
     bundle, root, output_dir = (Path(p).resolve() for p in (bundle, root, output_dir))
+    require_request_separation(bundle, root, output_dir)
     registration = verify_workspace(bundle)
-    if output_dir.exists() or output_dir.is_relative_to(bundle):
-        raise ValueError("new developer-side request directory outside bundle required")
     task = json.dumps(
         {
             "mode": mode,
@@ -193,6 +234,13 @@ def write_request(bundle, root, mode, contract_path, output_dir):
         task_data = json.loads(task)
         task_data["tmux_target"] = payload["tmux_target"]
         task = json.dumps(task_data, sort_keys=True)
+        agent_output = root / "tool_probe_result.json"
+        if payload["output_json"] != str(agent_output):
+            raise ValueError("probe output contract mismatch")
+    else:
+        agent_output = root / "state/native_prediction_handoff.md"
+    if agent_output.exists():
+        raise ValueError("native final output already exists")
     script = (
         "const result = await runs.run('native-"
         + mode.replace("_", "-")
@@ -201,7 +249,7 @@ def write_request(bundle, root, mode, contract_path, output_dir):
         + ", task: "
         + json.dumps(task)
         + ", output: "
-        + json.dumps("native/" + mode + ".md")
+        + json.dumps(str(agent_output))
         + "}); return {result, outputReference: result.outputReference, artifactPaths: result.artifactPaths};\n"
     )
     request = {
@@ -226,6 +274,8 @@ def write_request(bundle, root, mode, contract_path, output_dir):
                 "contract_sha256": sha(contract_path),
                 "request_sha256": sha(output_dir / "request.json"),
                 "workflow_sha256": sha(output_dir / "native.workflow.js"),
+                "request_generator_sha256": sha(__file__),
+                "declared_agent_output": str(agent_output),
                 "native_harness_execution": "pending",
                 "prediction_executed": False,
                 "boundary": "explicit supplied context and role/tool contract; not an OS filesystem sandbox",
@@ -243,12 +293,7 @@ def prepare_probe(bundle, probe_root, output_dir):
     verify_workspace(bundle)
     if root.exists() or root.is_relative_to(bundle):
         raise ValueError("new isolated probe root required")
-    if (
-        output_dir.exists()
-        or output_dir.is_relative_to(bundle)
-        or root.is_relative_to(output_dir)
-    ):
-        raise ValueError("new separate developer request directory required")
+    require_request_separation(bundle, root, output_dir)
     root.mkdir(parents=True)
     marker = root / "input_marker.txt"
     marker.write_text("native-tool-probe-" + uuid.uuid4().hex + "\n")
@@ -282,24 +327,18 @@ def prepare_probe(bundle, probe_root, output_dir):
 
 def prepare_prediction_request(bundle, run_root, output_dir):
     bundle, root = Path(bundle).resolve(), Path(run_root).resolve()
+    output_dir = Path(output_dir).resolve()
+    require_request_separation(bundle, root, output_dir)
     registration = verify_workspace(bundle)
     contract_path = root / "input/runtime_input_contract.json"
     contract = load(contract_path)
-    if (
-        not contract.get("run_id")
-        or contract.get("bundle_manifest_sha256")
-        != registration["bundle_manifest_sha256"]
-    ):
-        raise ValueError("current prepared run identity/bundle binding missing")
+    require_untouched_prepared_root(root, contract)
+    if contract.get("bundle_manifest_sha256") != registration["bundle_manifest_sha256"]:
+        raise ValueError("current prepared run bundle binding missing")
     video = Path(contract["input_video"]).resolve(strict=True)
     if not video.is_relative_to(root) or sha(video) != contract["input_video_sha256"]:
         raise ValueError("prepared raw input identity mismatch")
     read_cfr_video_timing(video)
-    for name in ("measurements", "renders"):
-        if any(p.is_file() for p in (root / name).rglob("*")):
-            raise ValueError(
-                "initial native launch cannot consume pre-existing predictions"
-            )
     # Authorized initial prediction launch uses the full asset path. The
     # lightweight synthetic probe checks only the tooling it actually uses.
     verify_bundle(bundle)
