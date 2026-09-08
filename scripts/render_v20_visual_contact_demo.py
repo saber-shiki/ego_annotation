@@ -72,7 +72,14 @@ def shade(scene, K, size, faces, normals, labels=None, background=(239, 241, 245
     mask = np.isfinite(depth)
     face_ids = hit["primitive_ids"].numpy()
     bary = hit["primitive_uvs"].numpy()
-    for geom in range(1, len(faces)):
+    if labels is not None and len(labels) != len(faces):
+        raise ValueError("semantic labels must match BVH geometry order")
+    for geom in range(len(faces)):
+        # Package scenes may have no valid object, so geometry zero can be a
+        # hand. Smooth by semantic role, retaining the old index convention
+        # only for legacy callers which do not provide labels.
+        if (labels is None and geom == 0) or (labels is not None and labels[geom] not in (1, 2)):
+            continue
         valid = mask & (ids == geom)
         tris = faces[geom][face_ids[valid]]
         b = bary[valid]
