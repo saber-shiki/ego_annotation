@@ -63,6 +63,24 @@ def hawor_source_intrinsics(camera, frame_ids, source_size_wh):
     return K
 
 
+def copy_verified_raw_video(source, destination, expected_sha256):
+    """Verify the new raw copy itself before it enters the lineage cache.
+
+    The first read can refresh write-time metadata on CIFS. The destination
+    byte check is required copy verification, not a metadata-only acceptance.
+    Later lineage checks and post-command byte checks remain unchanged.
+    """
+    import shutil
+    destination=Path(destination)
+    if destination.exists():raise ValueError('HaWoR sequence already exists')
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copyfile(source,destination)
+    copied_sha256=sha(destination)
+    if copied_sha256 != expected_sha256:
+        raise ValueError('HaWoR raw copy byte identity mismatch')
+    return copied_sha256
+
+
 def camera_stage(args, cfg, root):
     main_python=interpreter(cfg['main_python'])
     depth_python=interpreter(cfg['unidepth_python'])
@@ -117,11 +135,9 @@ def camera_stage(args, cfg, root):
     handout=root/'measurements/hand_candidates/hawor_world'
     if handout.exists():raise ValueError('HaWoR output already exists')
     clip=root/'input/hawor_sequence'/f"{contract['case']}.mp4"
-    if clip.exists():raise ValueError('HaWoR sequence already exists')
-    import shutil
-    clip.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(video,clip)
+    copied_sha256=copy_verified_raw_video(video,clip,contract['input_video_sha256'])
     hawor_env={**env,'EGO_HAWOR_ROOT':cfg['hawor_root'],'EGO_HAWOR_CASE':contract['case'],
-        'EGO_HAWOR_CLIP':str(clip),'EGO_HAWOR_CLIP_SHA256':sha(video),'EGO_HAWOR_OUTPUT_DIR':str(handout),
+        'EGO_HAWOR_CLIP':str(clip),'EGO_HAWOR_CLIP_SHA256':copied_sha256,'EGO_HAWOR_OUTPUT_DIR':str(handout),
         'EGO_HAWOR_IMG_FOCAL':str(K[0]),'EGO_HAWOR_CAMERA_INTRINSICS_FX_FY_CX_CY':' '.join(map(str,K)),
         'EGO_HAWOR_FORCE_FOCAL_CACHE_REFRESH':'1'}
     run('P04_HaWoR',['bash',ROOT/'scripts/remote_run_hawor_export.sh'],

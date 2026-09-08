@@ -180,6 +180,33 @@ class StageContracts(unittest.TestCase):
         self.assertEqual(Path(env['EGO_HAWOR_CLIP']).read_bytes(),self.video.read_bytes())
         self.assertEqual(self.calls[-1][3]['gpu'],5)
 
+    def test_verified_raw_copy_checks_destination_and_retains_lineage_rejection(self):
+        from v19_run_lineage import RunLineage
+        clip=self.root/'input/hawor_sequence/verified.mp4'
+        expected=contracts.sha(self.video)
+        with patch.object(stage,'sha',wraps=stage.sha) as hashing:
+            self.assertEqual(stage.copy_verified_raw_video(self.video,clip,expected),expected)
+        hashing.assert_called_once_with(clip)
+        self.assertEqual(clip.read_bytes(),self.video.read_bytes())
+        lineage=object.__new__(RunLineage)
+        lineage.root=self.root;lineage.verified={};lineage.visiting=set();lineage.records={};lineage.raw={}
+        lineage.identity={'input_video_sha256':expected}
+        self.assertEqual(lineage.require(clip),clip)
+        clip.write_bytes(b'actual byte mutation after verified copy')
+        with self.assertRaisesRegex(ValueError,'raw copy changed'):
+            lineage.require(clip)
+        with self.assertRaisesRegex(ValueError,'already exists'):
+            stage.copy_verified_raw_video(self.video,clip,expected)
+
+    def test_corrupt_raw_copy_stops_before_hawor(self):
+        def corrupt(source,destination):
+            Path(destination).write_bytes(b'corrupted transfer')
+        with patch('shutil.copyfile',side_effect=corrupt):
+            with self.assertRaisesRegex(ValueError,'raw copy byte identity mismatch'):
+                self.invoke('camera')
+        self.assertNotIn('P04_HaWoR',[c[0] for c in self.calls])
+        self.assertTrue((self.root/'state/runtime_blockers/camera_stage.json').is_file())
+
     def test_camera_rejects_manifest_CFR_mismatch_before_measurements(self):
         payload=contracts.load(self.manifest)
         payload['frames'][1]['time_s'] += .01
