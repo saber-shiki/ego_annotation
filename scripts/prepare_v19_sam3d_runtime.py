@@ -23,6 +23,8 @@ from v19_runtime_assets import external_asset_identity, verify_bundle
 
 SPEC = 'runtime/rgb_sam3d_runtime_spec.md'
 PROMPT = 'runtime/rgb_sam3d_system_prompt.md'
+NATIVE_PROFILE = '.pi/agents/ego-annotation.rgb-sam3d-runtime.md'
+NATIVE_PROVIDER = '/home/kupingxin/.pi/agent/git/github.com/ylang-ylang/pi-shellgate/extensions/shellgate.ts'
 SCRIPT_RE = re.compile(r'scripts/[A-Za-z0-9_]+\.(?:py|sh)')
 ASSET_KEYS = {
     'compute_host', 'gpu', 'main_python', 'demo_python', 'rgb_python', 'unidepth_python',
@@ -44,6 +46,26 @@ EXPERIMENT_HELPERS = {
 }
 TORCH_WEIGHTS = ('superpoint_v1.pth', 'superpoint_lightglue_v0-1_arxiv.pth')
 FORBIDDEN_INSTRUCTIONS = ('AGENTS.md', '.memory/', 'Workbench', 'EPISTEMIC', 'ablation', 'evaluator', 'parent-session')
+
+
+def validate_native_profile(path):
+    text=Path(path).read_text()
+    pieces=text.split('---',2)
+    if len(pieces)!=3 or pieces[0].strip():raise ValueError('native profile frontmatter missing')
+    fields={}
+    for line in pieces[1].splitlines():
+        if not line.strip():continue
+        key,value=line.split(':',1)
+        if key in fields:raise ValueError('duplicate native profile field')
+        fields[key]=value.strip()
+    expected={'name':'rgb-sam3d-runtime','package':'ego-annotation','systemPromptMode':'replace',
+        'inheritProjectContext':'false','inheritGlobalContext':'false','inheritSkills':'false',
+        'defaultContext':'fresh','subagentOnlyExtensions':NATIVE_PROVIDER}
+    if any(fields.get(k)!=v for k,v in expected.items()):raise ValueError('native profile context/provider mismatch')
+    if set(t.strip() for t in fields.get('tools','').split(',')) != {'read','write','bash','shellgate_connect','shellgate_input','contact_supervisor'}:
+        raise ValueError('native profile tools mismatch')
+    provider=Path(NATIVE_PROVIDER)
+    return [provider,provider.with_name('shellgate-broker.py'),provider.parent.parent/'package.json',provider.parent.parent/'package-lock.json']
 
 
 def closure(source):
@@ -211,8 +233,11 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
         for token in FORBIDDEN_INSTRUCTIONS:
             if token.lower() in text.lower():
                 raise ValueError(f'forbidden instruction context: {instruction}: {token}')
+    native_assets=validate_native_profile(source/NATIVE_PROFILE)
+    for path in native_assets:
+        if not path.is_file():raise ValueError(f'native provider file missing: {path}')
     bundle.mkdir(parents=True)
-    for relative in [*selected, Path(SPEC), Path(PROMPT)]:
+    for relative in [*selected, Path(SPEC), Path(PROMPT), Path(NATIVE_PROFILE)]:
         target = bundle / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source / relative, target)
@@ -242,6 +267,9 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
     if closure(bundle) != selected:
         raise ValueError('copied script closure differs')
     asset_identity=external_asset_identity(config)
+    asset_identity['native_tool_files']=list(map(str,native_assets))
+    for path in native_assets:
+        asset_identity['files'][str(path)]={'sha256':sha(path),'resolved_path':str(path.resolve())}
     results = import_preflight(bundle, config) if check_imports else []
     files = {str(p.relative_to(bundle)): sha(p) for p in sorted(bundle.rglob('*')) if p.is_file()}
     manifest = {'schema': 'v19_rgb_sam3d_bundle_v1', 'scripts': list(map(str, selected)), 'files': files,
@@ -252,7 +280,10 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
     report = {'status': 'prepared_imports_checked' if results and all(r['returncode'] == 0 for r in results) else 'blocked_or_imports_not_checked',
               'bundle': str(bundle), 'source': str(source), 'source_commit': manifest['source_commit'],
               'script_count': len(selected), 'file_count': len(files), 'imports': results,
+              'external_asset_file_count':len(asset_identity['files']),
+              'external_asset_bytes':sum(Path(p).stat().st_size for p in asset_identity['files']),
               'prediction_executed': False, 'gpu_live_check_executed': False,
+              'native_profile':NATIVE_PROFILE,'native_launch_tool_probe':'pending_separate_supervisor_validation',
               'video_executables': {name:shutil.which(name) for name in ('ffprobe','ffmpeg')}}
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / 'preflight.json').write_text(json.dumps(report, indent=2) + '\n')

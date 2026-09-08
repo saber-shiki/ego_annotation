@@ -135,6 +135,17 @@ class CurrentRunLineage(unittest.TestCase):
         validate_references({'note':'the model may explain candidate.json','weight':'MANO_LEFT.pkl',
                              'config':'pipeline.yaml'},self.root)
 
+    def test_native_profile_context_and_provider_contract(self):
+        from prepare_v19_sam3d_runtime import validate_native_profile,NATIVE_PROFILE
+        root=Path(__file__).resolve().parents[1]
+        assets=validate_native_profile(root/NATIVE_PROFILE)
+        self.assertEqual([p.name for p in assets],['shellgate.ts','shellgate-broker.py','package.json','package-lock.json'])
+        path=self.home/'profile.md'
+        path.write_text((root/NATIVE_PROFILE).read_text().replace('inheritGlobalContext: false','inheritGlobalContext: true'))
+        with self.assertRaisesRegex(ValueError,'context/provider mismatch'):validate_native_profile(path)
+        path.write_text((root/NATIVE_PROFILE).read_text().replace('tools: read, write, bash,','tools: arbitrary, read, write, bash,'))
+        with self.assertRaisesRegex(ValueError,'tools mismatch'):validate_native_profile(path)
+
     def test_preflight_overlay_cannot_enable_GPU_network_or_PYTHONPATH(self):
         config={key:sys.executable for key in ('main_python','rgb_python','unidepth_python','owlv2_python','sam3d_python')}
         config.update({key:str(self.home) for key in ('lightglue_root','unidepth_repo','sam2_source','hawor_root','sam3d_repo','lightglue_torch_home')})
