@@ -328,6 +328,7 @@ def test_low_conditioning_edge_keeps_translation_but_disables_rotation():
             json_path=j,
             pose_by_frame={120: (np.eye(3), np.zeros(3)), 121: (np.eye(3), np.zeros(3))},
             frame_ids={120, 121},
+            source_support_by_frame={120: np.array([0.0, 0.0, 0.4])},
             config=late.SolverConfig(
                 min_rgb_edge_weight=0.25,
                 min_rgb_translation_edge_weight=0.01,
@@ -375,6 +376,8 @@ def test_rgb_reprojection_evidence_loader_validates_flattened_offsets():
         p = Path(d) / "edges_v2.npz"
         pts = np.array([[0.0, 0.0, 1.0], [0.1, 0.0, 1.0], [0.0, 0.1, 1.0], [0.1, 0.1, 1.0]])
         uv = np.array([[320.0, 240.0], [330.0, 240.0], [320.0, 250.0], [330.0, 250.0]])
+        producer = Path(d) / "producer.json"
+        producer.write_text(json.dumps({"gt_consumed": False, "pose_rows": []}))
         np.savez_compressed(
             p,
             source_frame_idx=np.array([120]), target_frame_idx=np.array([121]),
@@ -382,13 +385,14 @@ def test_rgb_reprojection_evidence_loader_validates_flattened_offsets():
             translation_source_to_target_world_m=np.zeros((1, 3)),
             accepted=np.array([True]),
             reprojection_evidence_offsets=np.array([0, 4]),
-            reprojection_canonical_points=pts,
+            reprojection_source_world=pts,
+            metadata=np.asarray([json.dumps({"gt_consumed": False, "initial_pose_report": str(producer), "input_sha256": {"initial_pose_report": late.sha256_file(producer)}, "reprojection_evidence_contract": {"source_frame": "fixed_world_observation"}})]),
             reprojection_target_uv=uv,
             reprojection_weights=np.ones(4),
             reprojection_target_intrinsics=np.array([[100.0, 100.0, 320.0, 240.0]]),
             reprojection_target_camera=np.array([np.eye(4)]),
         )
-        nodes = [node(120), node(121)]
+        nodes = [node(120, points=pts), node(121, points=pts)]
         edge = late.RGBEdge(120, 121, np.eye(3), np.zeros(3), 1.0, {"rotation_eligible": True})
         factors, diagnostics = late.load_rgb_reprojection_factors(
             p, edges=[edge], nodes=nodes,
@@ -397,7 +401,7 @@ def test_rgb_reprojection_evidence_loader_validates_flattened_offsets():
         assert diagnostics["available"] is True
         assert diagnostics["point_count"] == 4
         assert len(factors) == 1
-        assert factors[0].canonical_points.shape == (4, 3)
+        assert factors[0].source_world.shape == (4, 3)
 
 
 def test_disabled_rgb_reprojection_factors_do_not_change_sparsity_rows():

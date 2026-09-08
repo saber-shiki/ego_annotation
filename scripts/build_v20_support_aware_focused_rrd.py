@@ -96,13 +96,13 @@ def validate_render_mesh_contract(
     expected_path = Path(expected_path_value).expanduser().resolve()
     if actual_path != expected_path:
         raise RuntimeError(
-            "renderer generated mesh path does not match pose objective: "
+            "renderer generated mesh path does not match pose report: "
             f"{actual_path} != {expected_path}"
         )
     actual_hash = sha256_file(actual_path)
     if actual_hash != expected_hash:
         raise RuntimeError(
-            "renderer generated mesh hash does not match pose objective: "
+            "renderer generated mesh hash does not match pose report: "
             f"{actual_hash} != {expected_hash}"
         )
     return {
@@ -486,9 +486,9 @@ def main() -> None:
     rr.log(
         "/metadata/description",
         rr.TextDocument(
-            "# Objective-mesh V20 visualization\n\n"
+            "# Bound-mesh V20 visualization\n\n"
             + (
-                "The generated mesh source is hash-bound to the pose objective. "
+                "The generated mesh source is hash-bound to the pose report. "
                 "No display-only front-face pruning is applied."
                 if preserve_objective_mesh
                 else "Legacy display-only depth-order pruning is active; this does not modify pose or formal state."
@@ -525,7 +525,7 @@ def main() -> None:
                         "kept_faces": int(len(canon_faces)),
                         "dropped_front_faces": 0,
                         "gate_active": False,
-                        "reason": "pose objective render-mesh contract forbids display-only face pruning",
+                        "reason": "pose report render-mesh contract forbids display-only face pruning",
                         "objective_mesh_preserved": True,
                         "support_raster": support_stats,
                     }
@@ -623,7 +623,7 @@ def main() -> None:
             overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);
             if not args.hide_visible_surface_points:
                 overlay_points(overlay,p09_world,T,K960,args.overlay_point_stride)
-            draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Objective-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose objective; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate'),('P09 visible-surface point cloud hidden' if args.hide_visible_surface_points else 'P09 visible-surface points shown')])
+            draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Bound-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose report; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate'),('P09 visible-surface point cloud hidden' if args.hide_visible_surface_points else 'P09 visible-surface points shown')])
             side=np.hstack([rgb960,overlay]);cv2.imwrite(str(tmp/f'{idx:06d}.jpg'),side,[cv2.IMWRITE_JPEG_QUALITY,args.jpeg_quality]);rr.log('/comparison/original_video',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/depth_ordered_overlay',rr.Image(cv2.cvtColor(overlay,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/side_by_side',rr.Image(cv2.cvtColor(side,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));
         video.release();contents=['+ /world/sam3d_depth_ordered','+ /world/hands/**','+ /world/camera/**'];
         if not args.hide_visible_surface_points:
@@ -640,7 +640,7 @@ def main() -> None:
         "render_mesh_contract": render_mesh_contract,
         "pose_report": str(args.pose_report.expanduser().resolve()),
         "generated_mesh": str(args.generated_mesh.expanduser().resolve()),
-        "generated_mesh_role": "visible_pose_objective_and_render_hypothesis"
+        "generated_mesh_role": "hash_bound_render_hypothesis_not_an_authority_claim"
         if preserve_objective_mesh
         else "render_only_completion_hypothesis",
         "visible_surface_points_displayed": not bool(args.hide_visible_surface_points),
@@ -702,7 +702,7 @@ def main() -> None:
             "source_video": sha256_file(args.source_video),
         },
         "claim_scope": (
-            "Visualization of the exact source mesh bound to the pose objective when a render contract is present. "
+            "Visualization of the exact source mesh bound to the pose report when a render contract is present. "
             "Display decimation is recorded, but no front faces are hidden. Generated geometry remains outside "
             "collision/contact/SDF/sign authority."
         ),

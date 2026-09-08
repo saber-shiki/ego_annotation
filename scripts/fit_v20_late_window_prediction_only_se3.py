@@ -58,6 +58,9 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+import v20_rgbd_material_factors as material
+
+
 # ---------------------------------------------------------------------------
 # Small, dependency-light SE(3) and coordinate-contract primitives.
 
@@ -257,6 +260,8 @@ class RGBEdge:
     translation_source_to_target_world_m: np.ndarray
     weight: float
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    translation_reference_rotation: np.ndarray | None = None
+    translation_source_support_world: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -265,7 +270,7 @@ class RGBReprojectionFactor:
     target_frame_idx: int
     source_pos: int
     target_pos: int
-    canonical_points: np.ndarray
+    source_world: np.ndarray
     target_uv: np.ndarray
     target_intrinsics: np.ndarray
     target_camera_rotation: np.ndarray
@@ -316,6 +321,12 @@ class SolverConfig:
     min_rgb_translation_edge_weight: float = 0.02
     observed_factor_weight_scale: float = 1.0
     observed_factor_rotation_scale: float = 1.0
+    observed_factor_mode: str = "legacy_nn"
+    material_image_weight: float = 0.25
+    material_metric_weight: float = 1.0
+    sigma_material_px: float = 2.0
+    sigma_material_m: float = 0.008
+    max_material_pixel_degradation_px: float = 3.0
     rgb_rotation_weight_scale: float = 1.0
     rgb_translation_weight_scale: float = 1.0
     rgb_reprojection_weight_scale: float = 0.0
@@ -744,6 +755,7 @@ def load_rgb_edges(
     pose_by_frame: Mapping[int, tuple[np.ndarray, np.ndarray]] | None = None,
     frame_ids: set[int] | None = None,
     config: SolverConfig | None = None,
+    source_support_by_frame: Mapping[int, np.ndarray] | None = None,
 ) -> tuple[list[RGBEdge], list[dict[str, Any]]]:
     """Load accepted world-relative PnP edges from both V19 and V20 formats.
 
@@ -910,10 +922,61 @@ def load_rgb_edges(
                 diag["status"] = "rejected"; diag["reason"] = "base_trajectory_cycle_gate"; diagnostics.append(diag); continue
         if weight <= 0.0:
             diag["status"] = "rejected"; diag["reason"] = "zero_conditioned_weight"; diagnostics.append(diag); continue
+        reference_R = support = None
+        if diag.get("translation_only"):
+            if source not in pose_by_frame or target not in pose_by_frame or source not in (source_support_by_frame or {}):
+                diag.update(status="rejected", reason="translation_only_reference_or_support_missing")
+                diagnostics.append(diag)
+                continue
+            reference_R = pose_by_frame[target][0] @ pose_by_frame[source][0].T
+            support = _array(source_support_by_frame[source], (3,)).copy()
+            diag["translation_residual_contract"] = "fixed_orientation_displacement_at_source_support"
         diag["status"] = "accepted"
         diagnostics.append(diag)
-        edges.append(RGBEdge(source, target, R, t, weight, diag))
+        edges.append(RGBEdge(source, target, R, t, weight, diag, reference_R, support))
     return edges, diagnostics
+
+
+def fixed_rgb_source_world(data: Mapping[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+    """Recover fixed observations using the producer's hash-bound pose once.
+
+    A v2 bundle serialized source points in the producer's canonical frame;
+    they are not landmarks to be anchored to that pose during optimization.
+    """
+    if "metadata" not in data:
+        raise RuntimeError("RGB point evidence has no provenance metadata")
+    raw_metadata = np.asarray(data["metadata"]).reshape(-1)
+    if len(raw_metadata) != 1:
+        raise RuntimeError("RGB point evidence metadata must contain one JSON object")
+    meta = json.loads(str(raw_metadata[0]))
+    assert_prediction_only(meta, label="RGB point evidence metadata")
+    path = Path(str(meta.get("initial_pose_report") or "")).expanduser().resolve()
+    expected = (meta.get("input_sha256") or {}).get("initial_pose_report")
+    if not expected or not path.is_file() or sha256_file(path) != expected:
+        raise RuntimeError("legacy RGB canonical evidence initial-pose hash mismatch")
+    producer = load_json(path)
+    assert_prediction_only(producer, label="RGB canonical evidence producer pose", object_id=meta.get("object_id"))
+    if "reprojection_source_world" in data:
+        points = _array(data["reprojection_source_world"])
+        if points.ndim != 2 or points.shape[1] != 3 or meta.get("reprojection_evidence_contract", {}).get("source_frame") != "fixed_world_observation":
+            raise RuntimeError("RGB source-world evidence lacks valid points/coordinate contract")
+        return points, meta
+    poses = _timeline_rows(producer)
+    points = _array(data["reprojection_canonical_points"]).copy()
+    src = np.asarray(data["source_frame_idx"], dtype=np.int64).reshape(-1)
+    offsets = np.asarray(data["reprojection_evidence_offsets"], dtype=np.int64).reshape(-1)
+    if points.ndim != 2 or points.shape[1] != 3 or len(offsets) != len(src) + 1 or offsets[0] != 0 or offsets[-1] != len(points) or np.any(np.diff(offsets) < 0):
+        raise RuntimeError("invalid legacy RGB canonical evidence shape/offsets")
+    for i, idx in enumerate(src):
+        left, right = offsets[i:i+2]
+        if right == left:
+            continue
+        row = poses.get(int(idx), {})
+        pose = pose_from_values(row.get("rotation_world_from_completed_canonical_matrix"), row.get("translation_world_m"))
+        if pose is None:
+            raise RuntimeError(f"RGB canonical evidence producer lacks valid source pose {idx}")
+        points[left:right] = apply_pose(points[left:right], *pose)
+    return points, meta
 
 
 def load_rgb_reprojection_factors(
@@ -938,13 +1001,16 @@ def load_rgb_reprojection_factors(
         "point_count": 0,
         "disabled_reason": None,
     }
+    if not diagnostics["enabled"]:
+        diagnostics["disabled_reason"] = "weight_disabled"
+        return [], diagnostics
     if npz_path is None or not npz_path.exists():
         diagnostics["disabled_reason"] = "npz_missing"
         return [], diagnostics
     with np.load(npz_path.expanduser().resolve(), allow_pickle=False) as data:
         required = {
             "source_frame_idx", "target_frame_idx", "reprojection_evidence_offsets",
-            "reprojection_canonical_points", "reprojection_target_uv",
+            "reprojection_target_uv",
             "reprojection_weights", "reprojection_target_intrinsics",
             "reprojection_target_camera",
         }
@@ -956,7 +1022,10 @@ def load_rgb_reprojection_factors(
         src = np.asarray(data["source_frame_idx"], dtype=np.int64).reshape(-1)
         dst = np.asarray(data["target_frame_idx"], dtype=np.int64).reshape(-1)
         offsets = np.asarray(data["reprojection_evidence_offsets"], dtype=np.int64).reshape(-1)
-        points = np.asarray(data["reprojection_canonical_points"], dtype=np.float64)
+        if "reprojection_source_world" not in data and "reprojection_canonical_points" not in data:
+            raise RuntimeError("RGB reprojection evidence has no source points")
+        points, evidence_metadata = fixed_rgb_source_world(data)
+        diagnostics["input_metadata"] = evidence_metadata
         target_uv = np.asarray(data["reprojection_target_uv"], dtype=np.float64)
         weights = np.asarray(data["reprojection_weights"], dtype=np.float64).reshape(-1)
         intrinsics = np.asarray(data["reprojection_target_intrinsics"], dtype=np.float64)
@@ -979,6 +1048,8 @@ def load_rgb_reprojection_factors(
             continue
         if key[0] not in positions or key[1] not in positions:
             continue
+        if not nodes[positions[key[0]]].metric_observation:
+            continue
         R_camera = np.asarray(cameras[i, :3, :3], dtype=np.float64)
         t_camera = np.asarray(cameras[i, :3, 3], dtype=np.float64)
         if not valid_rotation(R_camera) or not np.isfinite(t_camera).all():
@@ -999,7 +1070,7 @@ def load_rgb_reprojection_factors(
         factors.append(RGBReprojectionFactor(
             source_frame_idx=key[0], target_frame_idx=key[1],
             source_pos=positions[key[0]], target_pos=positions[key[1]],
-            canonical_points=p, target_uv=uv,
+            source_world=p, target_uv=uv,
             target_intrinsics=np.asarray(intrinsics[i], dtype=np.float64),
             target_camera_rotation=R_camera, target_camera_translation=t_camera,
             weights=w, edge_weight=float(edge.weight),
@@ -1103,6 +1174,9 @@ def build_observed_point_factors(
     nearest-neighbor association must follow the current SE(3) candidate.
     """
     cfg = config or SolverConfig()
+    if cfg.observed_factor_mode == "material_tracks":
+        return [], {"outer_iteration": int(outer_iteration), "pair_count": 0, "factor_count": 0,
+                    "reason": "NN replaced by fixed RGB-D material correspondences", "generated_factors_included": False}
     positions = {node.frame_idx: i for i, node in enumerate(nodes)}
     direct = [node for node in nodes if node.metric_observation and node.observed_world is not None and node.frame_idx in pose_by_frame]
     if len(direct) < 2:
@@ -1166,8 +1240,19 @@ def rgb_edge_residual(edge: RGBEdge, pose_by_frame: Mapping[int, tuple[np.ndarra
     Rs, ts = pose_by_frame[edge.source_frame_idx]
     Rt, tt = pose_by_frame[edge.target_frame_idx]
     predicted_R = Rt @ Rs.T
+    rotation_error = Rotation.from_matrix(predicted_R @ edge.rotation_source_to_target_world.T).as_rotvec()
+    if edge.diagnostics.get("translation_only"):
+        if edge.translation_reference_rotation is None or edge.translation_source_support_world is None:
+            raise ValueError("translation-only edge requires a fixed orientation and source support")
+        reference_R = edge.translation_reference_rotation
+        c = edge.translation_source_support_world
+        predicted_displacement = tt - ts + (reference_R - np.eye(3)) @ (c - ts)
+        measured_displacement = (edge.rotation_source_to_target_world - np.eye(3)) @ c + edge.translation_source_to_target_world_m
+        # Both orientation-dependent terms are immutable measurements; this
+        # conditional translation residual has exactly zero rotation Jacobian.
+        return np.zeros(3), predicted_displacement - measured_displacement
     predicted_t = tt - predicted_R @ ts
-    return Rotation.from_matrix(predicted_R @ edge.rotation_source_to_target_world.T).as_rotvec(), predicted_t - edge.translation_source_to_target_world_m
+    return rotation_error, predicted_t - edge.translation_source_to_target_world_m
 
 
 def _robust_clip(values: np.ndarray, limit: float) -> np.ndarray:
@@ -1188,7 +1273,8 @@ def rgb_reprojection_residual(
     if not factor.rotation_eligible:
         source_R = source_node.initial_rotation
         target_R = target_node.initial_rotation
-    world = apply_pose(factor.canonical_points, source_R, source_t)
+    source_canonical = inverse_pose(factor.source_world, source_R, source_t)
+    world = apply_pose(source_canonical, target_R, target_t)
     camera = inverse_pose(
         world,
         factor.target_camera_rotation,
@@ -1215,6 +1301,7 @@ def pose_residual(
     anchor_frame: int,
     config: SolverConfig | None = None,
     reprojection_factors: Sequence[RGBReprojectionFactor] | None = None,
+    material_factors: Sequence[material.MaterialFactor] | None = None,
 ) -> np.ndarray:
     """The complete pose objective; generated mesh factors cannot enter here."""
     cfg = config or SolverConfig()
@@ -1241,6 +1328,10 @@ def pose_residual(
     if float(cfg.rgb_reprojection_weight_scale) > 0.0:
         for reprojection_factor in reprojection_factors or ():
             blocks.append(rgb_reprojection_residual(reprojection_factor, pose_by_frame, nodes, cfg))
+    for factor in material_factors or ():
+        blocks.append(material.residual(factor, pose_by_frame,
+            image_weight=cfg.material_image_weight, metric_weight=cfg.material_metric_weight,
+            sigma_px=cfg.sigma_material_px, sigma_m=cfg.sigma_material_m))
     for factor in observed_factors:
         source_node = nodes[factor.source_pos]
         target_node = nodes[factor.target_pos]
@@ -1342,8 +1433,22 @@ def candidate_gate(
     reasons: list[str] = []
     candidate_surface = candidate_metrics.get("observed_surface_abs_median_m")
     for label, baseline in (("current", current_metrics.get("observed_surface_abs_median_m")), ("immutable_initial", immutable_initial_metrics.get("observed_surface_abs_median_m"))):
-        if candidate_surface is not None and baseline is not None and float(candidate_surface) > float(baseline) + float(cfg.max_metric_degradation_m):
+        if cfg.observed_factor_mode == "legacy_nn" and candidate_surface is not None and baseline is not None and float(candidate_surface) > float(baseline) + float(cfg.max_metric_degradation_m):
             reasons.append(f"observed_surface_degradation_vs_{label}")
+    if cfg.observed_factor_mode == "material_tracks":
+        if not candidate_metrics.get("material_metric_count"):
+            reasons.append("material_metric_evidence_unavailable")
+        if candidate_metrics.get("material_behind_camera_count", 0):
+            reasons.append("material_cheirality_gate")
+        for label, baseline in (("current", current_metrics), ("immutable_initial", immutable_initial_metrics)):
+            for key, allowance in (("material_metric_median_m", cfg.max_metric_degradation_m),
+                                   ("material_metric_p95_m", cfg.max_metric_degradation_m),
+                                   ("material_pixel_median_px", cfg.max_material_pixel_degradation_px)):
+                value = candidate_metrics.get(key); previous = baseline.get(key)
+                if value is None or previous is None or not math.isfinite(float(value)):
+                    reasons.append(f"material_validation_unavailable:{key}")
+                elif float(value) > float(previous) + allowance:
+                    reasons.append(f"{key}_degradation_vs_{label}")
     if float(candidate_metrics.get("continuity_max_step_rotation_rad", 0.0)) > float(cfg.max_continuity_rotation_rad):
         reasons.append("rotation_continuity_gate")
     if float(candidate_metrics.get("continuity_max_step_translation_m", 0.0)) > float(cfg.max_continuity_translation_m):
@@ -1397,6 +1502,7 @@ def pose_residual_sparsity(
     observed_factors: Sequence[PointFactor],
     anchor_frame: int,
     reprojection_factors: Sequence[RGBReprojectionFactor] | None = None,
+    material_factors: Sequence[material.MaterialFactor] | None = None,
 ) -> Any:
     """Return sparsity matching :func:`pose_residual` row order."""
     from scipy import sparse
@@ -1423,6 +1529,8 @@ def pose_residual_sparsity(
     if any(reprojection_factors or ()):
         for reprojection_factor in reprojection_factors or ():
             add(2 * len(reprojection_factor.weights), [reprojection_factor.source_pos, reprojection_factor.target_pos])
+    for factor in material_factors or ():
+        add(6 * len(factor.weights), [factor.source_pos, factor.target_pos])
     for factor in observed_factors:
         add(len(factor.weights), [factor.source_pos, factor.target_pos])
         add(3 * len(factor.weights), [factor.source_pos, factor.target_pos])
@@ -1453,6 +1561,7 @@ def solve_window(
     immutable_initial_metrics: Mapping[str, Any] | None = None,
     generated_validation_callback: Any | None = None,
     reprojection_factors: Sequence[RGBReprojectionFactor] | None = None,
+    material_factors: Sequence[material.MaterialFactor] | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     cfg = config or SolverConfig()
     if not nodes:
@@ -1466,15 +1575,22 @@ def solve_window(
         if float(cfg.rgb_reprojection_weight_scale) > 0.0
         else []
     )
+    if cfg.observed_factor_mode == "material_tracks" and not material_factors:
+        raise ValueError("material mode requires fixed RGB-D observations")
+    def all_metrics(pose):
+        values = pose_metrics(nodes, pose, anchor_frame)
+        if material_factors:
+            values.update(material.metrics(material_factors, pose))
+        return values
     initial_pose = current_poses(nodes, current_x)
     initial_factors, initial_factor_diag = build_observed_point_factors(
         nodes, initial_pose, anchor_frame, cfg, 0
     )
     initial_metrics = dict(
         immutable_initial_metrics
-        or pose_metrics(nodes, initial_pose, anchor_frame)
+        or all_metrics(initial_pose)
     )
-    current_metrics = pose_metrics(nodes, initial_pose, anchor_frame)
+    current_metrics = all_metrics(initial_pose)
     outer_reports: list[dict[str, Any]] = []
     rotation_update_clipped = False
     translation_update_clipped = False
@@ -1486,12 +1602,12 @@ def solve_window(
             nodes, current_pose, anchor_frame, cfg, outer
         )
         residual = lambda values: pose_residual(
-            values, nodes, rgb_edges, factors, anchor_frame, cfg, active_reprojection_factors
+            values, nodes, rgb_edges, factors, anchor_frame, cfg, active_reprojection_factors, material_factors
         )
         before = residual(current_x)
         before_cost = float(before @ before)
         sparsity = pose_residual_sparsity(
-            nodes, rgb_edges, factors, anchor_frame, active_reprojection_factors
+            nodes, rgb_edges, factors, anchor_frame, active_reprojection_factors, material_factors
         )
         if sparsity.shape != (len(before), len(current_x)):
             raise RuntimeError(
@@ -1550,7 +1666,7 @@ def solve_window(
         for scale in step_scales:
             candidate_x = current_x + float(scale) * (np.asarray(result.x) - current_x)
             candidate_pose = current_poses(nodes, candidate_x)
-            candidate_metrics = pose_metrics(nodes, candidate_pose, anchor_frame)
+            candidate_metrics = all_metrics(candidate_pose)
             generated_validation = (
                 generated_validation_callback(candidate_pose, outer)
                 if generated_validation_callback is not None
@@ -1566,7 +1682,13 @@ def solve_window(
             if not bool(result.success):
                 accepted = False
                 reasons = list(reasons) + ["optimizer_not_success"]
-            trial_cost = float(residual(candidate_x) @ residual(candidate_x))
+            trial_residual = residual(candidate_x)
+            trial_cost = float(trial_residual @ trial_residual)
+            robust_before = float(np.sum(2.0 * (np.sqrt(1.0 + before * before) - 1.0)))
+            robust_after = float(np.sum(2.0 * (np.sqrt(1.0 + trial_residual * trial_residual) - 1.0)))
+            if robust_after > robust_before + 1e-9 * max(1.0, robust_before):
+                accepted = False
+                reasons = list(reasons) + ["robust_pose_objective_increased"]
             trial = {
                 "step_scale": float(scale),
                 "candidate_accepted": bool(accepted),
@@ -1575,6 +1697,8 @@ def solve_window(
                 "optimizer_nfev": int(result.nfev),
                 "cost_before": before_cost,
                 "candidate_cost": trial_cost,
+                "robust_cost_before": robust_before,
+                "robust_candidate_cost": robust_after,
                 "rejection_reasons": list(dict.fromkeys(reasons)),
                 "candidate_metrics": candidate_metrics,
                 "generated_validation": generated_validation,
@@ -2202,6 +2326,14 @@ def _build_config(args: argparse.Namespace) -> SolverConfig:
             value = math.radians(value)
         if field_name == "max_base_cycle_translation_m": target = "max_base_cycle_translation_m"
         setattr(cfg, target, value)
+    cfg.observed_factor_mode = args.observed_factor_mode
+    cfg.material_image_weight = float(args.material_image_weight)
+    cfg.material_metric_weight = float(args.material_metric_weight)
+    cfg.sigma_material_px = float(args.sigma_material_px)
+    cfg.sigma_material_m = float(args.sigma_material_m)
+    cfg.max_material_pixel_degradation_px = float(args.max_material_pixel_degradation_px)
+    if min(cfg.material_image_weight, cfg.material_metric_weight) < 0 or min(cfg.sigma_material_px, cfg.sigma_material_m) <= 0:
+        raise ValueError("material weights must be nonnegative and sigmas positive")
     cfg.source_conditioning_full_weight_scale = float(args.source_conditioning_full_weight_scale)
     cfg.min_rgb_translation_edge_weight = float(args.min_rgb_translation_edge_weight)
     cfg.min_rgb_rotation_conditioning = float(args.min_rgb_rotation_conditioning)
@@ -2297,6 +2429,13 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--object-id", required=True)
     parser.add_argument("--rgb-edge-npz", type=Path, default=None)
     parser.add_argument("--rgb-edge-json", type=Path, default=None)
+    parser.add_argument("--material-rgbd-npz", type=Path, default=None)
+    parser.add_argument("--observed-factor-mode", choices=["legacy_nn", "material_tracks"], default="legacy_nn")
+    parser.add_argument("--material-image-weight", type=float, default=0.25)
+    parser.add_argument("--material-metric-weight", type=float, default=1.0)
+    parser.add_argument("--sigma-material-px", type=float, default=2.0)
+    parser.add_argument("--sigma-material-m", type=float, default=0.008)
+    parser.add_argument("--max-material-pixel-degradation-px", type=float, default=3.0)
     parser.add_argument("--output-report", "--output-pose-report", dest="output_report", type=Path, required=True)
     parser.add_argument("--frame-start", type=int, default=115); parser.add_argument("--frame-end", type=int, default=149); parser.add_argument("--anchor-frame", type=int, default=None)
     parser.add_argument("--validation-mesh", "--generated-visible-mesh", dest="validation_mesh", type=Path, default=None)
@@ -2359,13 +2498,40 @@ def main() -> None:
     if args.rgb_edge_json is not None and args.rgb_edge_json.exists():
         edge_report = load_json(args.rgb_edge_json)
         assert_prediction_only(edge_report, label="late-window RGB edge report", object_id=args.object_id)
-    rgb_edges, edge_diagnostics = load_rgb_edges(args.rgb_edge_npz, json_path=args.rgb_edge_json, pose_by_frame=base_pose, frame_ids={node.frame_idx for node in window_nodes}, config=cfg)
+    source_support = {
+        node.frame_idx: np.mean(node.observed_world, axis=0)
+        for node in window_nodes
+        if node.metric_observation and node.observed_world is not None
+    }
+    rgb_edges, edge_diagnostics = load_rgb_edges(args.rgb_edge_npz, json_path=args.rgb_edge_json, pose_by_frame=base_pose, frame_ids={node.frame_idx for node in window_nodes}, config=cfg, source_support_by_frame=source_support)
     reprojection_factors, reprojection_diagnostics = load_rgb_reprojection_factors(
         args.rgb_edge_npz,
         edges=rgb_edges,
         nodes=window_nodes,
         config=cfg,
     )
+    if cfg.rgb_reprojection_weight_scale > 0 and not reprojection_factors:
+        raise RuntimeError(f"requested RGB pixel objective unavailable: {reprojection_diagnostics}")
+    if reprojection_factors:
+        meta = reprojection_diagnostics["input_metadata"]
+        if meta.get("object_id") != args.object_id or (meta.get("input_sha256") or {}).get("annotations") != sha256_file(args.annotations):
+            raise RuntimeError("RGB pixel evidence annotation/object contract mismatch")
+    material_factors = []
+    material_diagnostics = None
+    if args.material_rgbd_npz is not None:
+        if cfg.rgb_reprojection_weight_scale > 0 or cfg.observed_factor_mode != "material_tracks":
+            raise ValueError("material mode replaces NN and legacy pixel factors; do not double-count")
+        material_factors, material_diagnostics = material.load_factors(
+            args.material_rgbd_npz, window_nodes, annotation_sha256=sha256_file(args.annotations),
+            object_id=args.object_id, max_points=cfg.max_rgb_reprojection_points_per_edge)
+    elif cfg.observed_factor_mode == "material_tracks":
+        raise ValueError("--material-rgbd-npz is required for material mode")
+    raw_pairs = {(f.source_frame_idx, f.target_frame_idx) for f in [*reprojection_factors, *material_factors]}
+    duplicate_pnp_pairs = [ [edge.source_frame_idx,edge.target_frame_idx] for edge in rgb_edges
+                           if (edge.source_frame_idx,edge.target_frame_idx) in raw_pairs ]
+    # These are the same RGB matches, not independent measurements. Use their
+    # raw observation factor OR their compressed PnP edge, never both.
+    rgb_edges = [edge for edge in rgb_edges if (edge.source_frame_idx,edge.target_frame_idx) not in raw_pairs]
     immutable_pose = {idx: pose for idx, pose in immutable_direct.items() if int(args.frame_start) <= idx <= int(args.frame_end)}
     initial_metrics = pose_metrics(window_nodes, base_pose, anchor)
     if immutable_pose:
@@ -2373,6 +2539,9 @@ def main() -> None:
         # only for latent rows, never HOT3D/GT.
         metric_pose = dict(base_pose); metric_pose.update(immutable_pose)
         initial_metrics = pose_metrics(window_nodes, metric_pose, anchor)
+    if material_factors:
+        metric_pose = dict(base_pose); metric_pose.update(immutable_pose)
+        initial_metrics.update(material.metrics(material_factors, metric_pose))
     mesh_contract = generated_mesh_contract(args.validation_mesh) if args.validation_mesh is not None else None
     validation_context = load_generated_validation_context(args) if args.validation_mesh is not None else None
     generated_callback = None
@@ -2382,7 +2551,7 @@ def main() -> None:
         generated_callback, generated_current_baseline, generated_immutable_baseline = make_generated_validation_callback(validation_context, window_nodes, immutable_pose, args)
     solver_x, solver_report = solve_window(
         window_nodes, rgb_edges, anchor, cfg, initial_metrics, generated_callback,
-        reprojection_factors,
+        reprojection_factors, material_factors,
     )
     final_pose = current_poses(window_nodes, solver_x)
     solver_report = dict(solver_report)
@@ -2396,6 +2565,12 @@ def main() -> None:
         args.generated_max_per_frame_front_bias_m is not None
         or args.generated_max_negative_front_segment_length is not None
     )
+    solver_report["observed_factor_mode"] = cfg.observed_factor_mode
+    solver_report["material_rgbd_diagnostics"] = material_diagnostics
+    solver_report["material_rgbd_parameters"] = {
+        "image_weight": cfg.material_image_weight, "metric_weight": cfg.material_metric_weight,
+        "sigma_px": cfg.sigma_material_px, "sigma_m": cfg.sigma_material_m}
+    solver_report["compressed_pnp_pairs_replaced_by_raw_observations"] = duplicate_pnp_pairs
     solver_report["rgb_edge_diagnostics"] = edge_diagnostics
     solver_report["rgb_reprojection_diagnostics"] = reprojection_diagnostics
     solver_report["rgb_edge_count_accepted"] = len(rgb_edges)
@@ -2407,8 +2582,13 @@ def main() -> None:
     solver_report["rgb_rotation_observability"] = rgb_rotation_observability(rgb_edges, window_nodes)
     solver_report["base_trajectory_cycle_gating"] = True
     solver_report["pose_objective_terms"] = ["accepted_rgb_world_relative_pnp_rotation", "accepted_rgb_world_relative_pnp_translation", "rebuilt_P09_point_to_plane", "rebuilt_P09_point_to_point", "absolute_pose_velocity", "absolute_pose_acceleration", "correction_priors", "anchor_only_gauge"]
+    if cfg.observed_factor_mode == "material_tracks":
+        solver_report["pose_objective_terms"] = [term for term in solver_report["pose_objective_terms"] if not term.startswith("rebuilt_P09")]
+        solver_report["pose_objective_terms"].append("fixed_material_world_observations_XYZ_and_target_UV")
+    if not rgb_edges:
+        solver_report["pose_objective_terms"] = [term for term in solver_report["pose_objective_terms"] if not term.startswith("accepted_rgb_world")]
     if float(cfg.rgb_reprojection_weight_scale) > 0.0 and reprojection_factors:
-        solver_report["pose_objective_terms"].append("optional_rgb_source_canonical_to_target_uv_reprojection")
+        solver_report["pose_objective_terms"].append("fixed_source_world_via_source_inverse_and_target_pose_reprojection")
     solver_report["generated_factors_in_pose_objective"] = False
     if generated_callback is not None and hasattr(generated_callback, "current_diagnostics"):
         final_generated_validation = generated_callback.current_diagnostics()
@@ -2444,6 +2624,8 @@ def main() -> None:
     )
     solver_report["uncertainty"] = {str(node.frame_idx): {"metric_observation": node.metric_observation, "source": node.observation_source, "uncertainty": node.uncertainty} for node in window_nodes}
     solver_report["input_sha256"] = {"annotations": sha256_file(args.annotations), "immutable_pose_report": sha256_file(args.pose_report), "timeline_pose_report": sha256_file(args.full_timeline_pose_report) if args.full_timeline_pose_report is not None else sha256_file(args.pose_report), "rgb_edge_npz": sha256_file(args.rgb_edge_npz) if args.rgb_edge_npz is not None else None, "rgb_edge_json": sha256_file(args.rgb_edge_json) if args.rgb_edge_json is not None and args.rgb_edge_json.exists() else None}
+    if args.material_rgbd_npz is not None:
+        solver_report["input_sha256"]["material_rgbd_npz"] = sha256_file(args.material_rgbd_npz)
     result = _update_rows(timeline, window_nodes, final_pose, int(args.frame_start), int(args.frame_end), solver_report, mesh_contract)
     result["object_id"] = args.object_id
     accepted_count = sum(

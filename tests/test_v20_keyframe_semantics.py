@@ -461,7 +461,7 @@ def test_render_mesh_contract_rejects_a_different_mesh(tmp_path=None):
         try:
             renderer.validate_render_mesh_contract(payload, equivalent_copy)
         except RuntimeError as exc:
-            assert "path does not match pose objective" in str(exc)
+            assert "path does not match pose report" in str(exc)
         else:
             raise AssertionError(
                 "renderer accepted identical bytes from an unbound mesh path"
@@ -470,15 +470,15 @@ def test_render_mesh_contract_rejects_a_different_mesh(tmp_path=None):
         try:
             renderer.validate_render_mesh_contract(payload, expected)
         except RuntimeError as exc:
-            assert "hash does not match pose objective" in str(exc)
+            assert "hash does not match pose report" in str(exc)
         else:
             raise AssertionError("renderer accepted changed bytes at the bound path")
         try:
             renderer.validate_render_mesh_contract(payload, wrong)
         except RuntimeError as exc:
             assert (
-                "path does not match pose objective" in str(exc)
-                or "hash does not match pose objective" in str(exc)
+                "path does not match pose report" in str(exc)
+                or "hash does not match pose report" in str(exc)
             )
         else:
             raise AssertionError("renderer accepted a mesh outside the pose contract")
