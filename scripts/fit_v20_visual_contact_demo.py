@@ -166,6 +166,9 @@ def main():
             raise ValueError("object mask aspect ratio is not the source image plane")
         m = cv2.resize(m, tuple(fit_size), interpolation=cv2.INTER_NEAREST)
         ys, xs = np.where(m > 0)
+        if not len(xs):
+            mask_contours.append(None)
+            continue
         hull = cv2.convexHull(np.column_stack([xs, ys]).astype("float32")).reshape(
             -1, 2
         )

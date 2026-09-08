@@ -213,6 +213,42 @@ class DemoTimeline(unittest.TestCase):
             self.assertEqual(legacy["interaction_source"], "legacy_visual_hypothesis")
             self.assertGreater(np.count_nonzero(legacy["weights"]), 0)
 
+            # A nonempty source measurement may disappear on the reference
+            # raster. Exercise the fitter, not just cv2.resize or a helper.
+            tiny_mask = np.zeros((2160, 3840), np.uint8)
+            tiny_mask[1:4, 1:4] = 255
+            self.assertEqual(np.count_nonzero(tiny_mask), 9)
+            self.assertFalse(cv2.resize(tiny_mask, (960, 540), interpolation=cv2.INTER_NEAREST).any())
+            cv2.imwrite(str(mask), tiny_mask)
+            for frame in ann["frames"]:
+                frame["source_width"], frame["source_height"] = 3840, 2160
+                frame["camera"]["intrinsics_fx_fy_cx_cy"] = [2800, 2800, 1919.5, 1079.5]
+            (root / "ann.json").write_text(json.dumps(ann))
+            erased_argv = legacy_argv.copy()
+            erased_argv[erased_argv.index("--output-dir") + 1] = str(root / "erased")
+            # Default source-sized export still fits on the 960 reference plane.
+            width_index = erased_argv.index("--render-width")
+            del erased_argv[width_index:width_index + 2]
+            with patch.object(sys, "argv", erased_argv), patch.object(fitter, "mano_models", return_value={s: TestMano() for s in ["left", "right"]}), contextlib.redirect_stdout(io.StringIO()):
+                fitter.main()
+            erased = json.loads((root / "erased/contact_hypotheses.json").read_text())
+            self.assertEqual(erased["fit_image_size_wh"], [960, 540])
+            self.assertFalse(np.asarray(erased["weights"]).any())
+            report = json.loads((root / "erased/fit_report.json").read_text())
+            self.assertEqual(report["frame_count"], 4)
+            self.assertTrue(all(row["boundary"] == 0 and row["contact"] == 0 for row in report["trace"]))
+            with np.load(root / "erased/demo_state.npz") as state:
+                np.testing.assert_array_equal(state["frame_idx"], [40, 41, 42, 43])
+                np.testing.assert_array_equal(state["render_size_wh"], [3840, 2160])
+                self.assertTrue(np.isfinite(state["object_rotation"]).all())
+                self.assertTrue(np.isfinite(state["object_translation_world"]).all())
+                np.testing.assert_allclose(state["object_rotation"], state["base_object_rotation"])
+                np.testing.assert_allclose(state["object_translation_world"], state["base_object_translation_world"])
+                self.assertGreater(len(state["object_faces"]), 0)
+                self.assertTrue(np.isnan(state["left_vertices_world"][1]).all())
+                self.assertFalse(state["right_valid"].any())
+            np.testing.assert_array_equal(cv2.imread(str(mask), 0), tiny_mask)
+
     def test_fit_contact_losses_and_contour_samples_are_render_width_invariant(self):
         import torch
         import trimesh
