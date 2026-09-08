@@ -84,3 +84,23 @@ Generated geometry remains `diagnostic_only` and cannot authorize collision, con
 ## Additional shape experiment
 
 A shared bounded canonical registration rotation was tested after pose freeze (`shape_after_late_pose_v23_canonical_rotation_v28`). It did not remove the late signed-depth segment and reduced coverage/IoU relative to the anisotropic-only shape. It is not the selected candidate.
+
+## SAM3D + MANO + camera-world-pose demo
+
+A display-only demo based on the latest v25 candidate was generated with
+`--hide-visible-surface-points`. The P09 visible-surface point cloud is absent
+from both the RRD and side-by-side video; the exact SAM3D mesh remains, both
+metric MANO world meshes remain, and `T_world_camera_metric` is logged per
+frame as a world transform, explicit pose text, and trajectory.
+
+Demo directory:
+
+```text
+.../final_candidate_late_window_v25/demo_no_visible_surface_points/
+```
+
+The demo is full-duration (`150` frames, `1920x960`, `30 FPS`, `5.000 s`) and
+has `visible_surface_points_displayed=false`,
+`objective_mesh_preserved=true`, and `face_pruning_applied=false` in its
+manifest. It remains diagnostic-only because the underlying v25 candidate
+has sustained late signed-front validation failure.

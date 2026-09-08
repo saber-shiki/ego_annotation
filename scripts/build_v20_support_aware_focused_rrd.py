@@ -448,7 +448,7 @@ def encode_video(frame_dir: Path, output: Path, fps: float, start_number: int) -
 
 def main() -> None:
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--annotations',type=Path,required=True);parser.add_argument('--pose-report',type=Path,required=True);parser.add_argument('--generated-mesh',type=Path,required=True);parser.add_argument('--mano-bridge',type=Path,required=True);parser.add_argument('--mano-topology',type=Path,required=True);parser.add_argument('--source-video',type=Path,required=True);parser.add_argument('--object-id',default='carton_milk');parser.add_argument('--frame-start',type=int,default=0);parser.add_argument('--frame-end',type=int,default=149);parser.add_argument('--output-rrd',type=Path,required=True);parser.add_argument('--output-video',type=Path,required=True);parser.add_argument('--decimated-face-count',type=int,default=30000);parser.add_argument('--depth-neighbor-px',type=float,default=12.0);parser.add_argument('--support-radius-px',type=float,default=8.0);parser.add_argument('--support-mask-stride',type=int,default=4);parser.add_argument('--support-max-rays',type=int,default=12000);parser.add_argument('--front-tolerance-mm',type=float,default=3.0);parser.add_argument('--point-stride',type=int,default=1);parser.add_argument('--overlay-point-stride',type=int,default=8);parser.add_argument('--jpeg-quality',type=int,default=84);parser.add_argument('--label',default='v20_support_aware_focused')
+    parser.add_argument('--annotations',type=Path,required=True);parser.add_argument('--pose-report',type=Path,required=True);parser.add_argument('--generated-mesh',type=Path,required=True);parser.add_argument('--mano-bridge',type=Path,required=True);parser.add_argument('--mano-topology',type=Path,required=True);parser.add_argument('--source-video',type=Path,required=True);parser.add_argument('--object-id',default='carton_milk');parser.add_argument('--frame-start',type=int,default=0);parser.add_argument('--frame-end',type=int,default=149);parser.add_argument('--output-rrd',type=Path,required=True);parser.add_argument('--output-video',type=Path,required=True);parser.add_argument('--decimated-face-count',type=int,default=30000);parser.add_argument('--depth-neighbor-px',type=float,default=12.0);parser.add_argument('--support-radius-px',type=float,default=8.0);parser.add_argument('--support-mask-stride',type=int,default=4);parser.add_argument('--support-max-rays',type=int,default=12000);parser.add_argument('--front-tolerance-mm',type=float,default=3.0);parser.add_argument('--point-stride',type=int,default=1);parser.add_argument('--overlay-point-stride',type=int,default=8);parser.add_argument('--hide-visible-surface-points',action='store_true',help='Hide P09 visible-surface points from RRD and video while retaining SAM3D, MANO, and camera world pose.');parser.add_argument('--jpeg-quality',type=int,default=84);parser.add_argument('--label',default='v20_support_aware_focused')
     args=parser.parse_args()
     if args.frame_end<args.frame_start:raise RuntimeError('invalid frame range')
     for p in (args.annotations,args.pose_report,args.generated_mesh,args.mano_bridge,args.mano_topology,args.source_video):
@@ -504,7 +504,7 @@ def main() -> None:
             fr=frames[idx];row=poses[idx];R=np.asarray(row['rotation_world_from_completed_canonical_matrix'],float);t=np.asarray(row['translation_world_m'],float);T=np.asarray(fr['camera']['T_world_camera_metric'],float);kv=np.asarray(fr['camera']['intrinsics_fx_fy_cx_cy'],float);K=np.array([[kv[0],0,kv[2]],[0,kv[1],kv[3]],[0,0,1.]],float);K960=resize_intrinsics_half_pixel(K,(1408,1408),(960,960));
             obj=next((o for o in fr.get('objects',[]) if o.get('object_id')==args.object_id),None);geom=obj.get('visible_geometry_candidate') if isinstance(obj,dict) and isinstance(obj.get('visible_geometry_candidate'),dict) else {};p09=np.asarray(geom.get('camera_vertices_sample_m') or [],float)
             p09_world = camera_points_to_world(p09, T) if p09.ndim == 2 and p09.shape[1] == 3 else np.empty((0, 3), dtype=np.float64)
-            rr.set_time('frame',sequence=idx);cp=T[:3,3];camtraj.append(cp);rr.log('/world/camera',rr.Transform3D(translation=cp.tolist(),mat3x3=T[:3,:3].tolist()));rr.log('/world/camera/trajectory',rr.LineStrips3D([np.asarray(camtraj,np.float32)],radii=.0015,colors=[[180,180,180,220]]));rr.log('/world/camera/image',rr.Pinhole(image_from_camera=K960.tolist(),resolution=[960,960]));rgb960=cv2.resize(frame_bgr,(960,960),interpolation=cv2.INTER_AREA);rr.log('/world/camera/image',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality))
+            rr.set_time('frame',sequence=idx);cp=T[:3,3];camtraj.append(cp);rr.log('/world/camera',rr.Transform3D(translation=cp.tolist(),mat3x3=T[:3,:3].tolist()));rr.log('/world/camera/world_pose',rr.TextLog('T_world_camera_metric = '+np.array2string(T,precision=6,suppress_small=True)));rr.log('/world/camera/trajectory',rr.LineStrips3D([np.asarray(camtraj,np.float32)],radii=.0015,colors=[[180,180,180,220]]));rr.log('/world/camera/image',rr.Pinhole(image_from_camera=K960.tolist(),resolution=[960,960]));rgb960=cv2.resize(frame_bgr,(960,960),interpolation=cv2.INTER_AREA);rr.log('/world/camera/image',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality))
             world=canon_vertices@R.T+t[None,:];
             if p09.ndim == 2 and p09.shape == (2500, 3) and np.isfinite(p09).all():
                 metric.append(idx)
@@ -553,15 +553,16 @@ def main() -> None:
                         albedo_factor=[215, 45, 190, 150],
                     ),
                 )
-                rr.log(
-                    "/world/visible_surface",
-                    rr.Points3D(
-                        p09_world[:: args.point_stride],
-                        radii=0.0018,
-                        colors=[255, 220, 0, 255],
-                        point_shading=rr.components.PointShading.Flat,
-                    ),
-                )
+                if not args.hide_visible_surface_points:
+                    rr.log(
+                        "/world/visible_surface",
+                        rr.Points3D(
+                            p09_world[:: args.point_stride],
+                            radii=0.0018,
+                            colors=[255, 220, 0, 255],
+                            point_shading=rr.components.PointShading.Flat,
+                        ),
+                    )
             else:
                 empty.append(idx)
                 kept = np.arange(len(canon_faces), dtype=np.int32)
@@ -583,14 +584,16 @@ def main() -> None:
                         albedo_factor=[215, 45, 190, 110],
                     ),
                 )
-                rr.log("/world/visible_surface", rr.Clear(recursive=False))
-                rr.log(
-                    "/world/visible_surface/status",
-                    rr.TextLog("no accepted P09 metric surface; depth gate inactive"),
-                )
+                if not args.hide_visible_surface_points:
+                    rr.log("/world/visible_surface", rr.Clear(recursive=False))
+                    rr.log(
+                        "/world/visible_surface/status",
+                        rr.TextLog("no accepted P09 metric surface; depth gate inactive"),
+                    )
             for side,faces,color in [('left',left_faces,[255,150,40,255]),('right',right_faces,[80,150,255,255])]:
-                if side in hands: v,j=hands[side];rr.log(f'/world/hands/{side}',rr.Mesh3D(vertex_positions=v,triangle_indices=faces,albedo_factor=color));
-                else:rr.log(f'/world/hands/{side}',rr.Clear(recursive=False))
+                if side in hands:
+                    v,j=hands[side];rr.log(f'/world/hands/{side}',rr.Mesh3D(vertex_positions=v,triangle_indices=faces,albedo_factor=color));rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO world mesh shown; joints '+('shown' if j is not None else 'unavailable')))
+                else:rr.log(f'/world/hands/{side}',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO side unavailable for this frame'))
             # Overlay corrected mesh to original video: use the same face gate and
             # a sampled world mesh, not the full 476k-face topology.
             overlay=rgb960.copy()
@@ -607,9 +610,15 @@ def main() -> None:
                     stats[-1]['video_gate']=st2
             else:
                 kept=np.arange(len(canon_faces),dtype=np.int32)
-            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);overlay_points(overlay,p09_world,T,K960,args.overlay_point_stride);draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Objective-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose objective; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate')])
+            overlay_mesh(overlay,world,canon_faces[kept],T,K960,GENERATED_COLOR_BGR,.25);overlay_hands(overlay,hands.get(idx,{}),T,K960);
+            if not args.hide_visible_surface_points:
+                overlay_points(overlay,p09_world,T,K960,args.overlay_point_stride)
+            draw_mask(overlay,geom.get('mask_path'));add_banner(overlay,[f'Objective-mesh render | frame={idx:03d} | SAM3D magenta',('mesh/hash bound to pose objective; no display-only face pruning' if preserve_objective_mesh else f'front tolerance={args.front_tolerance_mm:g} mm; display-only depth gate'),('P09 visible-surface point cloud hidden' if args.hide_visible_surface_points else 'P09 visible-surface points shown')])
             side=np.hstack([rgb960,overlay]);cv2.imwrite(str(tmp/f'{idx:06d}.jpg'),side,[cv2.IMWRITE_JPEG_QUALITY,args.jpeg_quality]);rr.log('/comparison/original_video',rr.Image(cv2.cvtColor(rgb960,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/depth_ordered_overlay',rr.Image(cv2.cvtColor(overlay,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));rr.log('/comparison/side_by_side',rr.Image(cv2.cvtColor(side,cv2.COLOR_BGR2RGB)).compress(jpeg_quality=args.jpeg_quality));
-        video.release();rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(rrb.Spatial3DView(origin='/world',name='Depth-ordered SAM3D + MANO + P09 + camera',contents=['+ /world/sam3d_depth_ordered','+ /world/hands/**','+ /world/visible_surface','+ /world/camera/**']),rrb.Vertical(rrb.Spatial2DView(origin='/comparison/original_video',name='Original video'),rrb.Spatial2DView(origin='/comparison/depth_ordered_overlay',name='Depth-ordered overlay'),rrb.Spatial2DView(origin='/comparison/side_by_side',name='Original | depth-ordered overlay')),column_shares=[3,2]),collapse_panels=False));rr.disconnect();encode_video(tmp,args.output_video,fps,start_number=args.frame_start)
+        video.release();contents=['+ /world/sam3d_depth_ordered','+ /world/hands/**','+ /world/camera/**'];
+        if not args.hide_visible_surface_points:
+            contents.append('+ /world/visible_surface')
+        rr.send_blueprint(rrb.Blueprint(rrb.Horizontal(rrb.Spatial3DView(origin='/world',name='SAM3D + MANO + camera world pose',contents=contents),rrb.Vertical(rrb.Spatial2DView(origin='/comparison/original_video',name='Original video'),rrb.Spatial2DView(origin='/comparison/depth_ordered_overlay',name='SAM3D + MANO overlay'),rrb.Spatial2DView(origin='/comparison/side_by_side',name='Original | SAM3D + MANO')),column_shares=[3,2]),collapse_panels=False));rr.disconnect();encode_video(tmp,args.output_video,fps,start_number=args.frame_start)
     finally:shutil.rmtree(tmp,ignore_errors=True)
     report = {
         "schema": "v20_support_aware_focused_visualization_v2",
@@ -624,6 +633,18 @@ def main() -> None:
         "generated_mesh_role": "visible_pose_objective_and_render_hypothesis"
         if preserve_objective_mesh
         else "render_only_completion_hypothesis",
+        "visible_surface_points_displayed": not bool(args.hide_visible_surface_points),
+        "mano_display": {
+            "world_frame": "MANO bridge world coordinates",
+            "mesh_logged": True,
+            "joint_skeleton_overlay": True,
+        },
+        "camera_world_pose_display": {
+            "transform_logged": True,
+            "trajectory_logged": True,
+            "transform_field": "T_world_camera_metric",
+            "pose_frame": "world",
+        },
         "visible_surface_coordinate_contract": {
             "source_field": "visible_geometry_candidate.camera_vertices_sample_m",
             "source_frame": "camera",
