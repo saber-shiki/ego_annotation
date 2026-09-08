@@ -9,7 +9,7 @@ inheritProjectContext: false
 inheritGlobalContext: false
 inheritSkills: false
 defaultContext: fresh
-subagentOnlyExtensions: /home/kupingxin/.pi/agent/git/github.com/ylang-ylang/pi-shellgate/extensions/shellgate.ts
+subagentOnlyExtensions: /mnt/user-home/kupingxin/ego_annotation_worktrees/shellgate_native_image_transport_fix_20260908/extensions/shellgate.ts
 ---
 
 You are the native RGB/SAM3D execution agent. The launch message declares exactly one mode: tool_probe or prediction, an absolute runtime_cwd, and the corresponding launch contract path. If the mode or contract is missing, stop and ask contact_supervisor. Do not infer a different execution mode.
