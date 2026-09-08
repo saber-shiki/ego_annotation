@@ -592,8 +592,18 @@ def main() -> None:
                     )
             for side,faces,color in [('left',left_faces,[255,150,40,255]),('right',right_faces,[80,150,255,255])]:
                 if side in hands:
-                    v,j=hands[side];rr.log(f'/world/hands/{side}',rr.Mesh3D(vertex_positions=v,triangle_indices=faces,albedo_factor=color));rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO world mesh shown; joints '+('shown' if j is not None else 'unavailable')))
-                else:rr.log(f'/world/hands/{side}',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO side unavailable for this frame'))
+                    v,j=hands[side]
+                    rr.log(f'/world/hands/{side}',rr.Mesh3D(vertex_positions=v,triangle_indices=faces,albedo_factor=color))
+                    if j is not None:
+                        joints_world=np.asarray(j,dtype=np.float32)
+                        rr.log(f'/world/hands/{side}/joints',rr.Points3D(joints_world,radii=.0025,colors=color))
+                        skeleton=np.asarray([joints_world[[a,b]] for a,b in HAND_EDGES],dtype=np.float32)
+                        rr.log(f'/world/hands/{side}/skeleton',rr.LineStrips3D(skeleton,radii=.0018,colors=[color]))
+                    else:
+                        rr.log(f'/world/hands/{side}/joints',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/skeleton',rr.Clear(recursive=False))
+                    rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO world mesh, joints, and skeleton shown' if j is not None else 'MANO world mesh shown; joints unavailable'))
+                else:
+                    rr.log(f'/world/hands/{side}',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/joints',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/skeleton',rr.Clear(recursive=False));rr.log(f'/world/hands/{side}/status',rr.TextLog('MANO side unavailable for this frame'))
             # Overlay corrected mesh to original video: use the same face gate and
             # a sampled world mesh, not the full 476k-face topology.
             overlay=rgb960.copy()
@@ -637,6 +647,8 @@ def main() -> None:
         "mano_display": {
             "world_frame": "MANO bridge world coordinates",
             "mesh_logged": True,
+            "joints_logged_in_world": True,
+            "skeleton_logged_in_world": True,
             "joint_skeleton_overlay": True,
         },
         "camera_world_pose_display": {
