@@ -22,7 +22,14 @@ from v20_demo_geometry import (
 )
 from v20_prediction_contracts import assert_prediction_only
 from v19_demo_timeline import (annotation_timeline, hand_validity, fit_keyframes,
-    interpolate_supported, interaction_states)
+    interpolate_supported, interaction_states, render_size)
+
+
+# Pixel thresholds and residual scales were tuned on the original 960-wide demo.
+# Normalize ALL fitting image evidence to that plane, not the requested display
+# resolution. A shared mask raster also avoids width-dependent quantization of
+# contact distances and silhouette correspondences. Height follows source aspect.
+FIT_REFERENCE_WIDTH = 960
 
 
 def main():
@@ -39,7 +46,7 @@ def main():
     parser.add_argument("--object-id", default="carton_milk")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--iterations", type=int, default=240)
-    parser.add_argument("--render-width", type=int, help="Preserve source aspect ratio; default source size")
+    parser.add_argument("--render-width", type=int, help="Display width (default source size); fitting uses a 960-width reference plane")
     parser.add_argument("--interaction-judgments", type=Path)
     args = parser.parse_args()
     out = args.output_dir
@@ -67,6 +74,11 @@ def main():
     frames, z, rows, times, T, K, size, source_size = annotation_timeline(
         ann, dict(z), rep["pose_rows"], args.render_width
     )
+    fit_size = render_size(source_size, FIT_REFERENCE_WIDTH)
+    fit_K = np.asarray([
+        resized_K(f["camera"]["intrinsics_fx_fy_cx_cy"], source_size, fit_size)
+        for f in frames
+    ])
     ids = z["frame_idx"]
     N = len(ids)
     valid = {side: hand_validity(z, side, N) for side in ["left", "right"]}
@@ -124,8 +136,8 @@ def main():
         sample = np.asarray(
             [cKDTree(source[i]).query(source[i, TIP_VERTICES], k=12)[1] for i in skey]
         )
-        pix = np.asarray([project(camera(source[i], T[i]), K[i]) for i in skey])
-        jpix = np.asarray([project(camera(joints[i], T[i]), K[i]) for i in skey])
+        pix = np.asarray([project(camera(source[i], T[i]), fit_K[i]) for i in skey])
+        jpix = np.asarray([project(camera(joints[i], T[i]), fit_K[i]) for i in skey])
         data[side] = dict(
             ki=ki,
             root=to(root[skey]),
@@ -152,7 +164,7 @@ def main():
             continue
         if abs(m.shape[1] / m.shape[0] - source_size[0] / source_size[1]) > 0.01:
             raise ValueError("object mask aspect ratio is not the source image plane")
-        m = cv2.resize(m, tuple(size), interpolation=cv2.INTER_NEAREST)
+        m = cv2.resize(m, tuple(fit_size), interpolation=cv2.INTER_NEAREST)
         ys, xs = np.where(m > 0)
         hull = cv2.convexHull(np.column_stack([xs, ys]).astype("float32")).reshape(
             -1, 2
@@ -163,6 +175,8 @@ def main():
         edge = np.roll(hull, -1, axis=0) - hull
         length = np.linalg.norm(edge, axis=1)
         cum = np.r_[0, np.cumsum(length)]
+        # Uniform arclength fractions on the common fitting plane: sample count
+        # and effective reference-pixel spacing do not depend on render width.
         positions = np.linspace(0, cum[-1], 160, endpoint=False)
         ix = np.searchsorted(cum, positions, side="right") - 1
         contour = (
@@ -176,8 +190,8 @@ def main():
             local = int(np.flatnonzero(data[side]["ki"] == k)[0])
             uv = data[side]["base_joint_pixel"][local, [4, 8, 12, 16, 20]].cpu().numpy()
             p = np.rint(uv).astype(int)
-            inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < size[0]) & (p[:, 1] < size[1])
-            p = np.clip(p, [0, 0], size - 1)
+            inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < fit_size[0]) & (p[:, 1] < fit_size[1])
+            p = np.clip(p, [0, 0], fit_size - 1)
             # Geometric candidates remain demo hypotheses, gated by supplied agent states.
             contact_gate[k, si, 0] = float(inside[0] and dist[p[0, 1], p[0, 0]] < 16)
             base = data[side]["base_vertices"][local].cpu().numpy()
@@ -199,6 +213,7 @@ def main():
                 "tip_vertices": TIP_VERTICES.tolist(),
                 "interaction_source": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
                 "interaction_states": judgments[key].tolist(),
+                "fit_image_size_wh": fit_size.tolist(),
             },
             indent=2,
         )
@@ -212,7 +227,7 @@ def main():
     base_t = to(t0[key])
     cam_R = to(T[key, :3, :3])
     cam_t = to(T[key, :3, 3])
-    intr = to(K[key])[:, None]
+    intr = to(fit_K[key])[:, None]
     hand_delta = torch.nn.Parameter(torch.zeros((B, 2, 45), device=device))
     hand_root = torch.nn.Parameter(torch.zeros((B, 2, 3), device=device))
     hand_t = torch.nn.Parameter(torch.zeros((B, 2, 3), device=device))
@@ -566,6 +581,9 @@ def main():
         "mesh_sha256": sha(meshpath),
         "device": str(device),
         "frame_count": N,
+        "fit_image_size_wh": fit_size.tolist(),
+        "pixel_loss_plane": "legacy_960_width_reference_not_render_plane",
+        "projection_delta_image_plane": "render",
         "hand_uncertainty": {side: {"invalid_frame_ids": ids[~valid[side]].tolist(), "invalid_state": "unresolved_not_rendered", "valid_state": "source_MANO_replayed_demo_hypothesis"} for side in ["left", "right"]},
         "interaction_judgments": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
         "zero_state_max_vertex_error_m": maxreplay,

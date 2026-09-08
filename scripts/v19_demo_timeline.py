@@ -138,6 +138,9 @@ def interaction_states(payload, ids, object_id):
     states = np.full((len(ids), 2), "legacy_visual_hypothesis", dtype="U32")
     if payload is None:
         return states
+    if not isinstance(payload, dict):
+        raise ValueError("interaction judgments payload is not an object")
+    ids = frame_ids(ids)
     if payload.get("status") not in (None, "ok"):
         raise ValueError("interaction judgments status is not ok")
     rows = payload.get("interaction_judgments", payload.get("judgments", payload.get("segments")))
@@ -145,18 +148,29 @@ def interaction_states(payload, ids, object_id):
         raise ValueError("missing interaction_judgments")
     states[:] = "unresolved"
     occupied = np.zeros(states.shape, bool)
+    matched_rows = 0
     for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("interaction judgment segment is not an object")
         target = row.get("target_entity_id", row.get("object_id", row.get("track_id")))
-        if target and str(target).split(":", 1)[-1] != object_id.split(":", 1)[-1]:
+        if target is not None and not isinstance(target, str):
+            raise ValueError("interaction judgment target must be a string")
+        if target and target.split(":", 1)[-1] != object_id.split(":", 1)[-1]:
             continue
         side = row.get("hand_side", row.get("side"))
         if side not in SIDES:
             raise ValueError("interaction judgment side must be left or right")
         state = row.get("contact_state")
-        if state not in {"likely_contact", "possible_contact", "no_contact", "unresolved"}:
+        if not isinstance(state, str) or state not in {"likely_contact", "possible_contact", "no_contact", "unresolved"}:
             raise ValueError("invalid interaction contact_state")
-        start = row.get("frame_start", row.get("start_frame", int(min(ids))))
-        end = row.get("frame_end", row.get("end_frame", int(max(ids))))
+        bounds = [row.get("frame_start", row.get("start_frame", int(min(ids)))),
+                  row.get("frame_end", row.get("end_frame", int(max(ids))))]
+        try:
+            start, end = (int(value) for value in bounds)
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError("interaction interval bounds must be integer frame IDs") from exc
+        if any(isinstance(value, bool) or (isinstance(value, float) and value != int(value)) for value in bounds):
+            raise ValueError("interaction interval bounds must be integer frame IDs")
         if end < start:
             raise ValueError("inverted interaction interval")
         mask = (ids >= start) & (ids <= end)
@@ -165,6 +179,9 @@ def interaction_states(payload, ids, object_id):
             raise ValueError("overlapping interaction judgments")
         occupied[mask, si] = True
         states[mask, si] = state
+        matched_rows += int(mask.any())
+    if not matched_rows:
+        raise ValueError(f"interaction judgments contained no segments for target {object_id!r} on this timeline")
     return states
 
 

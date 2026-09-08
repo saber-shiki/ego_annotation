@@ -84,6 +84,28 @@ class DemoTimeline(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlapping"):
             interaction_states({"interaction_judgments": rows + rows}, np.array([40, 41, 42]), "item")
 
+    def test_p17_rejects_malformed_rows_and_wrong_target(self):
+        ids = np.array([40, 41, 42])
+        valid = {"side": "left", "object_id": "item", "contact_state": "unresolved"}
+        for bad in [None, [], "not a segment", 7]:
+            with self.subTest(row=bad), self.assertRaisesRegex(ValueError, "segment is not an object"):
+                interaction_states({"interaction_judgments": [bad]}, ids, "item")
+        for fields in [{"contact_state": []}, {"frame_start": None},
+                       {"frame_end": "bad"}, {"frame_start": 40.5},
+                       {"object_id": {}}, {"side": {}}]:
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                interaction_states({"interaction_judgments": [{**valid, **fields}]}, ids, "item")
+        with self.assertRaisesRegex(ValueError, "payload is not an object"):
+            interaction_states([], ids, "item")
+        for fields in [{"object_id": "another_item"}, {"frame_start": 90, "frame_end": 91}]:
+            with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, "no segments for target 'item'"):
+                interaction_states({"interaction_judgments": [{**valid, **fields}]}, ids, "item")
+        # A matching deliberately unresolved interval remains valid, including
+        # the integer-string bounds accepted by the existing P17 loader.
+        states = interaction_states({"interaction_judgments": [
+            {**valid, "frame_start": "40", "frame_end": "42"}]}, ids, "item")
+        self.assertTrue(np.all(states == "unresolved"))
+
     def test_render_timestamp_map_and_legacy_intrinsics(self):
         z = {"frame_idx": np.array([42, 40, 41]), "time_s": [.2, 0, .1],
              "render_size_wh": [80, 48], "intrinsics_render": np.tile([60, 60, 39.5, 23.5], (3, 1)),
@@ -190,6 +212,101 @@ class DemoTimeline(unittest.TestCase):
             legacy = json.loads((root / "legacy/contact_hypotheses.json").read_text())
             self.assertEqual(legacy["interaction_source"], "legacy_visual_hypothesis")
             self.assertGreater(np.count_nonzero(legacy["weights"]), 0)
+
+    def test_fit_contact_losses_and_contour_samples_are_render_width_invariant(self):
+        import torch
+        import trimesh
+        import cv2
+        import fit_v20_visual_contact_demo as fitter
+        rng = np.random.default_rng(18)
+        vertices = rng.normal(size=(778, 3)).astype("float32") * .008
+        vertices[:, 2] += .945
+        # Reference mask starts at x=480. Distances straddle the legacy 16px
+        # thumb and 8px finger thresholds, not just an all-inside contact case.
+        tip_u = np.array([460., 474., 470., 460., 490.])
+        vertices[TIP_VERTICES, 0] = (tip_u - 479.5) * .945 / 720
+        vertices[TIP_VERTICES, 1] = 0
+        vertices[TIP_VERTICES, 2] = .945  # 5mm from the actual object front face
+        faces = np.array([[0, 1, 2]], np.int32)
+        joints = np.concatenate([vertices[:16], vertices[TIP_VERTICES]])[JOINT_ORDER]
+
+        class TestMano:
+            def __init__(self):
+                self.faces = faces
+            def requires_grad_(self, enabled):
+                pass
+            def __call__(self, global_orient, hand_pose, betas):
+                v = torch.tensor(vertices)[None].expand(len(hand_pose), -1, -1) + hand_pose[:, :1, None] * .001
+                return SimpleNamespace(vertices=v, joints=v[:, :16])
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ann, _, poses = fixture()
+            mask = np.zeros((48, 80), np.uint8)
+            mask[15:33, 40:50] = 255
+            cv2.imwrite(str(root / "mask.png"), mask)
+            for frame in ann["frames"]:
+                frame["objects"] = [{"object_id": "item", "mask_path": str(root / "mask.png")}]
+            (root / "ann.json").write_text(json.dumps(ann))
+            mesh = root / "mesh.ply"
+            trimesh.creation.box(extents=[.1, .1, .1]).export(mesh)
+            (root / "poses.json").write_text(json.dumps({"pose_rows": poses, "render_mesh_contract": {
+                "required_mesh_path": str(mesh), "required_mesh_sha256": sha(mesh)}}))
+            ids = np.array([42, 40, 43, 41])
+            np.savez(root / "params.npz", frame_idx=ids, left_valid=np.ones(4, bool),
+                     left_vertices_world_m=np.tile(vertices, (4, 1, 1)),
+                     left_joints_world_m=np.tile(joints, (4, 1, 1)),
+                     left_root_orient_axis_angle=np.zeros((4, 3)), left_hand_pose_axis_angle=np.zeros((4, 45)),
+                     left_betas=np.zeros((4, 10)), left_trans_world_m=np.zeros((4, 3)), left_faces=faces)
+            np.savez(root / "bridge.npz", frame_idx=ids, hand_side=np.array(["left"] * 4),
+                     vertices_current_v18_world_from_hawor_projection_relift_m=np.tile(vertices, (4, 1, 1)))
+            for side in ["LEFT", "RIGHT"]:
+                (root / f"MANO_{side}.pkl").write_bytes(b"test fixture; no model")
+            results = []
+            real_tree = fitter.cKDTree
+            for width in [960, 480]:
+                samples = []
+                def record_tree(points):
+                    if np.shape(points) == (160, 2):
+                        samples.append(np.asarray(points).copy())
+                    return real_tree(points)
+                out = root / str(width)
+                argv = ["fit", "--annotations", str(root / "ann.json"), "--pose-report", str(root / "poses.json"),
+                        "--mano-bridge", str(root / "bridge.npz"), "--hawor-params", str(root / "params.npz"),
+                        "--mano-models", str(root), "--output-dir", str(out), "--device", "cpu",
+                        "--iterations", "3", "--object-id", "item", "--render-width", str(width)]
+                with (patch.object(sys, "argv", argv), patch.object(fitter, "cKDTree", side_effect=record_tree),
+                      patch.object(fitter, "mano_models", return_value={s: TestMano() for s in ["left", "right"]}),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    fitter.main()
+                with np.load(out / "demo_state.npz") as archive:
+                    state = dict(archive)
+                report = json.loads((out / "fit_report.json").read_text())
+                contact = json.loads((out / "contact_hypotheses.json").read_text())["weights"]
+                results.append((state, report["trace"], np.asarray(contact), samples))
+            full, half = results
+            # Explicit legacy decisions: thumb20px -> off; finger6px -> on;
+            # finger10px -> off. Unnormalized half-width gates violate these.
+            np.testing.assert_allclose(full[2][:, 0], np.tile([0, .12, 0, 0, .12], (len(full[2]), 1)))
+            np.testing.assert_array_equal(full[2], half[2])
+            self.assertGreater(full[1][-1]["image"], 0)
+            self.assertGreater(full[1][0]["boundary"], 0)
+            self.assertGreater(full[1][0]["contact"], 0)
+            for row_full, row_half in zip(full[1], half[1]):
+                for term in ["total", "image", "boundary", "contact", "intrusion"]:
+                    self.assertAlmostEqual(row_full[term], row_half[term], places=6)
+            # Both observed contours and projected mesh boundary samples used
+            # by closest-point matching must have identical positions/spacings.
+            self.assertGreater(len(full[3]), 0)
+            np.testing.assert_allclose(full[3], half[3], atol=1e-6)
+            for key in ["object_delta", "object_rotation", "object_translation_world", "hand_articulation",
+                        "hand_root", "hand_translation_camera", "hand_log_scale", "left_vertices_world"]:
+                np.testing.assert_allclose(full[0][key], half[0][key], atol=1e-7)
+            np.testing.assert_array_equal(full[0]["render_size_wh"], [960, 576])
+            np.testing.assert_array_equal(half[0]["render_size_wh"], [480, 288])
+            uv_full = project(full[0]["left_vertices_world"][0], full[0]["intrinsics_render"][0])
+            uv_half = project(half[0]["left_vertices_world"][0], half[0]["intrinsics_render"][0])
+            np.testing.assert_allclose(uv_half, (uv_full + .5) / 2 - .5, atol=1e-6)
 
     def test_short_rrd_logs_timestamp_camera_and_clears_missing_hand(self):
         import render_v20_visual_contact_demo as renderer
