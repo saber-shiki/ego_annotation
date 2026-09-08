@@ -39,7 +39,12 @@ def render(package_path, output, layer="both"):
             root = "/world/" + name
             if state["object_valid"][i]:
                 rr.log(root + "/object", rr.Transform3D(translation=state["object_translation_world"][i], mat3x3=state["object_rotation"][i]))
-                rr.log(root + "/object/mesh", rr.Mesh3D(vertex_positions=state["object_vertices_canonical"], triangle_indices=state["object_faces"], albedo_factor=[80, 170, 240, 255] if name == "prediction" else [110, 220, 110, 255]))
+                if i == 0 or not state["object_valid"][i - 1]:
+                    # Canonical topology is constant. Dynamic logging at each
+                    # valid-segment start restores it after recursive clears.
+                    rr.log(root + "/object/mesh", rr.Mesh3D(vertex_positions=state["object_vertices_canonical"], triangle_indices=state["object_faces"], albedo_factor=[80, 170, 240, 255] if name == "prediction" else [110, 220, 110, 255]))
+                    if i > 0:
+                        rr.log(root + "/object/status", rr.Clear(recursive=True))
             else:
                 rr.log(root + "/object", rr.Clear(recursive=True))
                 rr.log(root + "/object/status", rr.TextLog("missing object pose; unresolved"))

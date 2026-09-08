@@ -405,6 +405,34 @@ class AnnotationLayersTests(unittest.TestCase):
         target = render(moved / path.name, self.root / "distinct.rrd")
         self.assertGreater(target.stat().st_size, 1000)
 
+    def test_rrd_canonical_mesh_logged_per_valid_segment_and_restored(self):
+        import rerun as rr
+        self.distinct_demo_mesh()
+        path = assemble(self.args)
+        _, layers = load_package(path)
+        events = []
+        current = None
+        real_log, real_set_time = rr.log, rr.set_time
+        def set_time(timeline, **kwargs):
+            nonlocal current
+            if timeline == "frame":
+                current = kwargs["sequence"]
+            return real_set_time(timeline, **kwargs)
+        def log(entity, value, **kwargs):
+            events.append((current, entity, value))
+            return real_log(entity, value, **kwargs)
+        with mock.patch.object(rr, "log", side_effect=log), mock.patch.object(rr, "set_time", side_effect=set_time):
+            render(path, self.root / "segments.rrd")
+        for layer, mesh_frames, transform_frames in (("prediction", [4, 6], [4, 6]), ("demo", [4], [4, 5, 6])):
+            root = f"/world/{layer}/object"
+            meshes = [(fid, value) for fid, entity, value in events if entity == root + "/mesh"]
+            self.assertEqual([fid for fid, _ in meshes], mesh_frames)
+            self.assertEqual([fid for fid, entity, value in events if entity == root and isinstance(value, rr.Transform3D)], transform_frames)
+            for _, value in meshes:
+                self.assertEqual(value.triangle_indices.as_arrow_array().to_pylist(), layers[layer]["object_faces"].tolist())
+                np.testing.assert_allclose(value.vertex_positions.as_arrow_array().to_pylist(), layers[layer]["object_vertices_canonical"])
+        self.assertEqual([fid for fid, entity, value in events if entity == "/world/prediction/object" and isinstance(value, rr.Clear)], [5])
+
     def test_distinct_demo_mesh_without_contract_rejected(self):
         self.distinct_demo_mesh()
         self.dump("completion.json", {"outputs": {"completed_mesh": str(self.run / "mesh.ply")}})
