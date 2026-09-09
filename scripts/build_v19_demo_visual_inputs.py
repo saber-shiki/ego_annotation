@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import shutil
+import uuid
 from pathlib import Path
 
 import cv2
@@ -160,8 +161,9 @@ def score_mask(image: np.ndarray, mask: np.ndarray, *, min_area_fraction: float,
     }
 
 
-def build(run_root: Path, object_id: str, raw_manifest_path: Path, annotations_path: Path,
-          track_path: Path, output_dir: Path, *, min_area_fraction: float = 0.002,
+def _build(run_root: Path, object_id: str, raw_manifest_path: Path, annotations_path: Path,
+          track_path: Path, output_dir: Path, *, case_id: str | None = None,
+          track_id: str | None = None, published_output_dir: Path | None = None, min_area_fraction: float = 0.002,
           min_border_fraction: float = 0.005, min_sharpness: float = 2.0) -> tuple[dict, dict]:
     root = run_root.resolve()
     if not SAFE_ID.fullmatch(object_id):
@@ -174,7 +176,15 @@ def build(run_root: Path, object_id: str, raw_manifest_path: Path, annotations_p
     annotations_path = in_run_file(annotations_path, root, "annotations")
     track_path = in_run_file(track_path, root, "SAM2 track")
     raw = indexed_rows(load(raw_manifest_path).get("frames"), "raw manifest")
-    annotations = indexed_rows(load(annotations_path).get("frames"), "annotations")
+    annotation_payload = load(annotations_path)
+    adapter = annotation_payload.get("v19_visible_geometry_adapter")
+    if case_id is not None or track_id is not None:
+        if (not isinstance(adapter, dict) or adapter.get("case") != case_id
+                or adapter.get("track_id") != track_id
+                or adapter.get("object_id") != object_id
+                or Path(adapter.get("sam2_track", "")).expanduser().resolve() != track_path):
+            raise ValueError("appearance track does not match bound visible-geometry adapter")
+    annotations = indexed_rows(annotation_payload.get("frames"), "annotations")
     track = track_rows(load(track_path))
     expected = set(raw)
     if set(annotations) != expected or set(track) != expected:
@@ -213,6 +223,18 @@ def build(run_root: Path, object_id: str, raw_manifest_path: Path, annotations_p
             records.append(record)
             continue
         source = in_run_file(source_mask, root, "SAM2 appearance mask")
+        if not visible:
+            record.update(
+                status="unavailable_not_substituted",
+                source_mask_path=str(source),
+                source_mask_sha256=sha256(source),
+                appearance_mask_path=None,
+                appearance_mask_sha256=None,
+                anchor_eligible=False,
+                rejection="invisible_track_row_has_stale_mask_not_consumed",
+            )
+            records.append(record)
+            continue
         mask = cv2.imread(str(source), cv2.IMREAD_GRAYSCALE)
         if mask is None or mask.shape != image.shape[:2]:
             raise ValueError(f"mask/RGB dimensions differ at frame {frame_idx}")
@@ -234,7 +256,7 @@ def build(run_root: Path, object_id: str, raw_manifest_path: Path, annotations_p
         record.update(
             status="available",
             source_mask_path=str(source),
-            appearance_mask_path=str(destination),
+            appearance_mask_path=str((published_output_dir or output_dir) / "appearance_masks" / destination.name),
             source_mask_sha256=source_hash,
             appearance_mask_sha256=copy_hash,
             source_size_wh=[int(mask.shape[1]), int(mask.shape[0])],
@@ -305,17 +327,42 @@ def build(run_root: Path, object_id: str, raw_manifest_path: Path, annotations_p
     return manifest, anchor
 
 
+def build(run_root, object_id, raw_manifest_path, annotations_path, track_path,
+          output_dir, **kwargs):
+    """Create-only atomic D00 publication; failed staging remains debug evidence."""
+    output_dir = Path(output_dir).resolve()
+    if output_dir.exists():
+        raise ValueError("appearance output already exists")
+    staging = output_dir.with_name("." + output_dir.name + ".staging-" + uuid.uuid4().hex)
+    published = kwargs.pop("published_output_dir", None) or output_dir
+    try:
+        result = _build(run_root, object_id, raw_manifest_path, annotations_path,
+                        track_path, staging, published_output_dir=published, **kwargs)
+        if output_dir.exists():
+            raise ValueError("appearance output appeared during staging")
+        staging.rename(output_dir)
+        return result
+    except Exception:
+        if staging.exists():
+            staging.rename(staging.with_name(staging.name.replace(".staging-", ".failed-")))
+        raise
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("run-root", "raw-frame-manifest", "annotations", "sam2-track", "output-dir"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--published-output-dir", type=Path)
     parser.add_argument("--object-id", required=True)
+    parser.add_argument("--case-id", required=True)
+    parser.add_argument("--track-id", required=True)
     parser.add_argument("--min-area-fraction", type=float, default=0.002)
     parser.add_argument("--min-border-fraction", type=float, default=0.005)
     parser.add_argument("--min-sharpness", type=float, default=2.0)
     args = parser.parse_args()
     build(args.run_root, args.object_id, args.raw_frame_manifest, args.annotations,
-          args.sam2_track, args.output_dir, min_area_fraction=args.min_area_fraction,
+          args.sam2_track, args.output_dir, case_id=args.case_id,
+          track_id=args.track_id, published_output_dir=args.published_output_dir, min_area_fraction=args.min_area_fraction,
           min_border_fraction=args.min_border_fraction, min_sharpness=args.min_sharpness)
     print(args.output_dir / "appearance_mask_manifest.json")
 

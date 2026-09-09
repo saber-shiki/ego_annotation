@@ -24,18 +24,26 @@ All generated files are confined to:
    and duplicate rows fail closed.
 3. The same stage writes a separate visual mesh. It applies at most one static
    uniform scale about a declared pivot, checks the configured bound, and
-   verifies exact face-array preservation. Identity scale is used when there is
-   no externally produced visual-scale record. Generated faces remain
-   ineligible for contact, collision, SDF, or nonpenetration authority.
+   verifies finite source/scaled vertices, valid indexed triangles, exact face-array
+   preservation and serialized vertex order/coordinates (absolute PLY tolerance
+   `1e-6 m`). Identity scale is used when there is no externally produced
+   visual-scale record. The mesh-bound role contract explicitly enables only
+   `demo_visual_proximity_fit_eligible=true`; measured/physical contact,
+   collision, sign, SDF, and nonpenetration authority remain false.
 4. `fit_v20_visual_contact_demo.py` requires the appearance manifest in visual-v2
-   mode. It does not fall back to object-owned masks. P17 likely/possible states
-   gate fingertip hypotheses, and weak non-thumb weights require both image-mask
-   proximity and actual triangle-surface gap. The output remains
-   `annotation_ready=false`.
+   mode and checks its resolved path and SHA against the pose binding. It does
+   not fall back to object-owned masks. P17 likely/possible states gate fingertip
+   hypotheses; **every fingertip, including the thumb**, requires finite actual
+   triangle distance below `0.012 m` plus image-mask proximity. The generated
+   mesh is a visual proximity reference only: signed intrusion/nonpenetration
+   loss is disabled, and unsigned triangle distances drive proximity fitting.
+   The output remains `annotation_ready=false`.
 
 The old direct integration-stage demo is retained only as explicit legacy mode:
 `--legacy-ready-p15-binding` and `--legacy-owned-mask`. It cannot consume an
-unready P15 and is not used by the visual-v2 runner.
+unready P15 and is not used by the visual-v2 runner. Even a ready source produces
+an unready diagnostic demo binding; source readiness is retained only in
+`core_source_identity`.
 
 ## Prepare and launch
 
@@ -61,7 +69,26 @@ PY=/mnt/user-home/kupingxin/ego_annotation/.venv/bin/python
 `state/object_selection.json`. The prepare step byte-binds object selection,
 raw manifest and every RGB, SAM2 track and every available mask, P14, P15,
 completion and mesh, HaWoR/MANO bridge, P17, visual judgment, video, and both
-bundle manifests. The runner rechecks those hashes before any subprocess.
+bundle manifests. The case must equal the live runtime-input case and be a safe
+path component. The track path, track ID and selected object must agree with both
+the byte-bound annotation adapter and its producer report/object plan. Invisible
+track rows with stale masks are provenance only, never appearance or fit evidence.
+
+Before probing the GPU, the runner verifies the live run identity and the curated
+bundle's files/assets, and requires the exact bundle-local runtime config. Every
+original input, raw RGB and mask is checked against its prepared digest before
+and after each phase. Generated consumer inputs are checked against their prior
+successful producer digests, never a newly accepted post-consumption digest.
+
+Each phase writes to a create-only staging directory; required outputs and source
+hashes must validate before atomic publication. The binding now publishes at
+`state/demo_visual/<object>/<demo-id>/visual_binding/`. Embedded RGB/mask/mesh
+references name published paths rather than staging locations. Failures, including
+config/interpreter/GPU preflight errors, have a local failure receipt; partial
+staging is preserved under hidden `.failed` debug namespaces, not final phase
+paths. D00 can be retried at an absent final destination while preserving its
+prior failed debug tree. Full branch receipts remain create-only: use a fresh
+`--demo-id` for a new branch attempt.
 
 A visual scale record is optional and must provide:
 

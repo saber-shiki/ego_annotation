@@ -30,6 +30,49 @@ from v19_demo_timeline import (annotation_timeline, hand_validity, fit_keyframes
 # resolution. A shared mask raster also avoids width-dependent quantization of
 # contact distances and silhouette correspondences. Height follows source aspect.
 FIT_REFERENCE_WIDTH = 960
+VISUAL_PROXIMITY_MAX_GAP_M = 0.012
+
+
+def visual_proximity_weights(inside, image_distances, triangle_gaps,
+                             *, state="likely_contact"):
+    """Demo-only image/triangle proximity weights; never a contact measurement."""
+    inside = np.asarray(inside, dtype=bool)
+    gaps = np.asarray(triangle_gaps, dtype=float)
+    if inside.shape != (5,) or gaps.shape != (5,) or len(image_distances) != 5:
+        raise ValueError("five fingertip proximity values required")
+    result = np.zeros(5, np.float32)
+    if state not in {"likely_contact", "possible_contact", "legacy_visual_hypothesis"}:
+        return result
+    image_bounds = [16.0, 8.0, 8.0, 8.0, 8.0]
+    strengths = [1.0, 0.12, 0.12, 0.12, 0.12]
+    for finger in range(5):
+        distance = image_distances[finger]
+        if (inside[finger] and distance is not None and np.isfinite(distance)
+                and float(distance) < image_bounds[finger]
+                and np.isfinite(gaps[finger]) and 0 <= gaps[finger] < VISUAL_PROXIMITY_MAX_GAP_M):
+            result[finger] = strengths[finger]
+    return result
+
+
+def validate_visual_proximity_contract(rep, appearance_manifest_path):
+    embedded = rep.get("appearance_mask_manifest")
+    receipt = rep.get("visual_mesh_receipt")
+    if appearance_manifest_path is not None and (not isinstance(embedded, dict)
+            or Path(embedded.get("path", "")).resolve() != appearance_manifest_path.resolve()
+            or embedded.get("sha256") != sha(appearance_manifest_path)):
+        raise ValueError("appearance manifest does not match pose binding identity")
+    if (not isinstance(receipt, dict)
+            or receipt.get("demo_visual_proximity_fit_eligible") is not True
+            or receipt.get("physical_contact_authority_eligible") is not False
+            or any(receipt.get(key) is not False for key in (
+                "generated_faces_contact_eligible", "generated_faces_collision_eligible",
+                "generated_faces_sign_eligible", "generated_faces_sdf_eligible", "generated_faces_nonpenetration_eligible"))):
+        raise ValueError("visual mesh lacks demo visual-proximity-only role contract")
+    mesh_contract = rep.get("render_mesh_contract") or {}
+    if (not receipt.get("output_mesh_path") or not mesh_contract.get("required_mesh_path")
+            or Path(receipt["output_mesh_path"]).resolve() != Path(mesh_contract["required_mesh_path"]).resolve()
+            or receipt.get("output_mesh_sha256") != mesh_contract.get("required_mesh_sha256")):
+        raise ValueError("visual proximity role does not bind the rendered mesh identity")
 
 
 def appearance_mask_rows(manifest, annotation_path, object_id, frame_ids, source_size):
@@ -52,6 +95,8 @@ def appearance_mask_rows(manifest, annotation_path, object_id, frame_ids, source
             raise ValueError(f"duplicate appearance frame {idx}")
         path = row.get("appearance_mask_path")
         if row.get("status") == "available":
+            if row.get("visible") is not True:
+                raise ValueError(f"invisible appearance mask cannot be available at frame {idx}")
             if not path or sha(path) != row.get("appearance_mask_sha256"):
                 raise ValueError(f"appearance mask identity mismatch at frame {idx}")
             mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
@@ -105,6 +150,7 @@ def main():
     rep = load(args.pose_report)
     assert_prediction_only(rep, label="demo initial pose", object_id=args.object_id,
                            allow_annotation_ready=True, allow_nondiagnostic_prediction=True)
+    validate_visual_proximity_contract(rep, args.appearance_mask_manifest)
     meshpath = Path(rep["render_mesh_contract"]["required_mesh_path"])
     if sha(meshpath) != rep["render_mesh_contract"]["required_mesh_sha256"]:
         raise ValueError("mesh identity mismatch")
@@ -261,18 +307,14 @@ def main():
             inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < fit_size[0]) & (p[:, 1] < fit_size[1])
             p = np.clip(p, [0, 0], fit_size - 1)
             image_distances = [float(dist[p[finger, 1], p[finger, 0]]) if inside[finger] else None for finger in range(5)]
-            # Geometric candidates remain demo hypotheses, gated by supplied P17 states.
-            contact_gate[k, si, 0] = float(inside[0] and image_distances[0] < 16)
+            # Every fingertip requires both image and finite bounded actual-triangle proximity.
             base = data[side]["base_vertices"][local].cpu().numpy()
             q = (base[TIP_VERTICES] - t0[i]) @ R0[i]
             near, n = closest(scene, q)
             gap = np.linalg.norm(q - near, axis=1)
-            for finger in range(1, 5):
-                contact_gate[k, si, finger] = 0.12 * float(
-                    inside[finger]
-                    and image_distances[finger] < 8
-                    and gap[finger] < 0.012
-                )
+            contact_gate[k, si] = visual_proximity_weights(
+                inside, image_distances, gap, state=str(judgments[i, si])
+            )
             for finger in range(5):
                 weight = float(contact_gate[k, si, finger])
                 contact_diagnostics.append({
@@ -285,13 +327,15 @@ def main():
                     "real_triangle_surface_gap_m": float(gap[finger]),
                     "weight": weight,
                     "selected_patch_vertex_ids": data[side]["patch"][local, finger].astype(int).tolist(),
-                    "decision": ("demo_visual_contact_hypothesis" if weight else
-                                 "rejected_by_image_or_triangle_gap"),
+                    "decision": ("demo_visual_triangle_proximity_fit_hypothesis" if weight else
+                                 "rejected_by_image_or_finite_triangle_gap"),
                 })
     (out / "contact_hypotheses.json").write_text(
         json.dumps(
             {
-                "kind": "demo_visual_grasp_hypothesis_not_measured_contact",
+                "kind": "demo_visual_triangle_proximity_fit_hypothesis_not_measured_contact",
+                "demo_visual_proximity_fit_eligible": True,
+                "physical_contact_authority": False,
                 "keyframes": ids[key].tolist(),
                 "weights": contact_gate.tolist(),
                 "tip_vertices": TIP_VERTICES.tolist(),
@@ -419,8 +463,7 @@ def main():
             + obj_delta[:, 5].square().mean() / 0.025**2
         )
         image_loss = to(0.0)
-        contact_loss = to(0.0)
-        intrusion = to(0.0)
+        visual_proximity_loss = to(0.0)
         for si, side in enumerate(["left", "right"]):
             if side not in data:
                 continue
@@ -436,21 +479,16 @@ def main():
             )
             qc = (vw - t[ki, None]) @ R[ki]
             q, n = targets[side]
-            signed = ((qc - q) * n).sum(-1)
-            intrusion = (
-                intrusion
-                + (torch.relu(-signed[:, sample_indices] - 0.002) / 0.004)
-                .square()
-                .mean()
-            )
+            # Generated normals have no inside/outside authority. Do not apply
+            # a signed intrusion/nonpenetration penalty to this visual surface.
             for local, k in enumerate(ki):
                 for finger in range(5):
                     if contact_gate[k, si, finger] == 0:
                         continue
                     ix = torch.tensor(d["patch"][local, finger], device=device)
-                    delta = qc[local, ix] - (q[local, ix] + 0.0008 * n[local, ix])
+                    delta = qc[local, ix] - q[local, ix]
                     dist = delta.square().sum(-1)
-                    contact_loss = contact_loss + weights[k, si, finger] * torch.topk(
+                    visual_proximity_loss = visual_proximity_loss + weights[k, si, finger] * torch.topk(
                         dist, 3, largest=False
                     ).values.mean() / 0.003**2 / (B * 2)
         boundary_loss = to(0.0)
@@ -490,8 +528,7 @@ def main():
         loss = (
             loss
             + image_loss * 3
-            + contact_loss * 1.7
-            + intrusion * 0.35
+            + visual_proximity_loss * 1.7
             + boundary_loss * 3
             + temporal
         )
@@ -511,8 +548,9 @@ def main():
                 "iteration": it,
                 "total": float(loss.detach()),
                 "image": float(image_loss.detach()),
-                "contact": float(contact_loss.detach()),
-                "intrusion": float(intrusion.detach()),
+                "contact": float(visual_proximity_loss.detach()),  # legacy diagnostic key
+                "visual_proximity": float(visual_proximity_loss.detach()),
+                "intrusion": 0.0,  # legacy diagnostic key; signed term disabled
                 "boundary": float(boundary_loss.detach()),
             }
             trace.append(row)
@@ -625,8 +663,8 @@ def main():
                     "joint_projection_delta_median_px": float(
                         np.median(np.linalg.norm(after - before, axis=1))
                     ),
-                    "normal_intrusion_fraction_gt3mm": float(
-                        np.mean(np.sum((qc - q) * n, axis=1) < -0.003)
+                    "unsigned_visual_triangle_gap_median_m": float(
+                        np.median(np.linalg.norm(qc - q, axis=1))
                     ),
                 }
             )
@@ -640,7 +678,10 @@ def main():
         "diagnostic_only": True,
         "annotation_ready": False,
         "gt_consumed": False,
-        "generated_mesh_role": "demo_visual_contact_reference_not_physical_truth",
+        "generated_mesh_role": "demo_visual_proximity_fitting_surface_not_physical_contact_truth",
+        "demo_visual_proximity_fit_eligible": True,
+        "physical_contact_authority": False,
+        "signed_intrusion_loss_enabled": False,
         "inputs": {
             **{
                 k: str(getattr(args, k).resolve())
@@ -684,7 +725,7 @@ def main():
         "measurements": measurements,
         "elapsed_s": time.monotonic() - start,
         "parameters": {k: v for k, v in vars(args).items() if not isinstance(v, Path)},
-        "claim": "image-fitted demo contact hypothesis; no measured collision/contact/SDF claim",
+        "claim": "image-and-triangle fitted demo visual proximity hypothesis; no measured contact/collision/sign/SDF/nonpenetration claim",
     }
     (out / "fit_report.json").write_text(
         json.dumps(report, indent=2, allow_nan=False) + "\n"

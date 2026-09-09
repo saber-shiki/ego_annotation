@@ -117,7 +117,7 @@ class StageContracts(unittest.TestCase):
             if key == 'P14b_multiview':value=self.completion
             elif key == 'D00_demo_binding':
                 source=load_source=contracts.load(Path(argv[argv.index('--pose-report')+1]))
-                value={**source,'render_mesh_contract':self.completion['render_mesh_contract'],
+                value={**source,'annotation_ready':False,'diagnostic_only':True,'authority':'demo_only_visual_hypothesis','physical_authority':False,'render_mesh_contract':self.completion['render_mesh_contract'],
                     'core_source_identity':{'sha256':contracts.sha(Path(argv[argv.index('--pose-report')+1]))}}
             elif key in {'P12_P13_SAM3D', 'P13_anchor_binding'}:value=self.completion
             elif key == 'P15_temporal_pose':value={'annotation_ready':True,'diagnostic_only':False,'pose_rows':self.frames}
@@ -296,8 +296,8 @@ class StageContracts(unittest.TestCase):
         before=source.read_bytes();core_before=physical.read_bytes()
         self.invoke('demo')
         bound=contracts.load(self.root / 'state/demo_inputs/thing_pose_mesh.json')
-        self.assertIs(bound['annotation_ready'],True)
-        self.assertIs(bound['diagnostic_only'],False)
+        self.assertIs(bound['annotation_ready'],False)
+        self.assertIs(bound['diagnostic_only'],True)
         self.assertEqual(bound['core_source_identity']['sha256'],contracts.sha(source))
         self.assertEqual(source.read_bytes(),before);self.assertEqual(physical.read_bytes(),core_before)
         self.assertEqual([c[0] for c in self.calls],['D00_demo_binding','D01_demo_fit','D02_demo_render'])
@@ -371,7 +371,10 @@ class BundleContracts(unittest.TestCase):
     def test_closure_includes_dynamic_experiment_and_offline_dependencies(self):
         selected=set(map(str,prep.closure(ROOT)))
         self.assertLessEqual(prep.EXPERIMENT_HELPERS,selected)
-        for name in ['run_v19_offline_rgb_edges','v19_runtime_contracts','v20_rgbd_material_factors','build_v20_global_rgb_orientation_edges']:
+        for name in ['run_v19_offline_rgb_edges','v19_runtime_contracts','v20_rgbd_material_factors','build_v20_global_rgb_orientation_edges',
+                     'run_v19_additive_demo_branch', 'build_v19_demo_visual_inputs',
+                     'build_v19_demo_pose_binding', 'fit_v20_visual_contact_demo',
+                     'render_v20_visual_contact_demo', 'v19_demo_timeline', 'v20_demo_geometry']:
             self.assertIn(f'scripts/{name}.py',selected)
         self.assertNotIn('scripts/v20_generated_first_hit_factors.py',selected)
         self.assertFalse(any('remote_run_trellis' in s for s in selected))
@@ -391,10 +394,49 @@ class BundleContracts(unittest.TestCase):
             bundle=Path(temp)
             for rel in prep.closure(ROOT):
                 dest=bundle/rel;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/rel,dest)
-            code="import sys; sys.path.insert(0,'scripts'); import build_v19_rgb_pose_initializer,run_v19_sam3d_reconstruction,run_v19_sam3d_integration_stage; print('ok')"
+            code="import sys; sys.path.insert(0,'scripts'); import build_v19_rgb_pose_initializer,run_v19_sam3d_reconstruction,run_v19_sam3d_integration_stage,run_v19_additive_demo_branch,build_v19_demo_visual_inputs,build_v19_demo_pose_binding,fit_v20_visual_contact_demo,render_v20_visual_contact_demo,v19_demo_timeline,v20_demo_geometry; print('ok')"
             env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1','CUDA_VISIBLE_DEVICES':''};env.pop('PYTHONPATH',None)
             result=subprocess.run([sys.executable,'-c',code],cwd=bundle,env=env,capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_fresh_bundle_copies_exact_visual_v2_execution_profile(self):
+        # Model asset validation is mocked; the actual bundler copies and hashes
+        # the real profile/scripts into a new temporary fixture workspace.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = {"main_python": sys.executable}
+            for key, package in (("sam2_source", "sam2"), ("wilor_root", "wilor"),
+                                 ("lightglue_root", "lightglue")):
+                base = root / key
+                (base / package).mkdir(parents=True)
+                (base / package / "__init__.py").write_text("# CPU fixture package\n")
+                config[key] = str(base)
+            mano = root / "mano"
+            mano.mkdir()
+            for side in ("LEFT", "RIGHT"):
+                (mano / f"MANO_{side}.pkl").write_bytes(b"test-only model placeholder")
+            config["mano_models"] = str(mano)
+            means = Path(config["wilor_root"]) / "mano_data/mano_mean_params.npz"
+            means.parent.mkdir()
+            means.write_bytes(b"test-only means placeholder")
+            assets_path = write(root / "assets.json", config)
+            bundle = root / "new_bundle"
+            with (patch.object(prep, "validate_config", return_value={}),
+                  patch.object(prep, "validate_native_profile", return_value=[]),
+                  patch.object(prep, "external_asset_identity", return_value={"files": {}, "trees": {}})):
+                prep.build(ROOT, bundle, assets_path, root / "report", check_imports=False)
+            profile = bundle / prep.DEMO_PROFILE
+            self.assertEqual(profile.read_bytes(), (ROOT / prep.DEMO_PROFILE).read_bytes())
+            text = profile.read_text()
+            self.assertIn("mode `additive_demo_visual_v2`", text)
+            self.assertNotIn("mode `additive_demo`", text)
+            for phrase in ("runtime_config.main_python", "exact `command` array",
+                           "normal tools serially", "no parallel calls", "create=true/adopt=false",
+                           "timeout=1200", "A failure stops this demo branch"):
+                self.assertIn(phrase, text)
+            manifest = contracts.load(bundle / "runtime/bundle_manifest.json")
+            self.assertEqual(manifest["files"][prep.DEMO_PROFILE], contracts.sha(profile))
+            self.assertIn("scripts/run_v19_additive_demo_branch.py", manifest["scripts"])
 
     def test_raw_input_prepare_refuses_reuse_and_changed_bundle(self):
         with tempfile.TemporaryDirectory() as temp:

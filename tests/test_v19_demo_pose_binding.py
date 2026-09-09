@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -91,6 +93,87 @@ class DemoPoseBinding(unittest.TestCase):
                     "uniform_scale": 1.5, "bounds": [0.8, 1.2],
                     "selection_source": "synthetic",
                 })
+
+
+class DemoReviewGeometry(unittest.TestCase):
+    def test_source_bad_vertices_and_faces_and_serialized_mismatch(self):
+        import trimesh
+        V = np.array([[0., 0, 0], [1, 0, 0], [0, 1, 0]])
+        F = np.array([[0, 1, 2]])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.ply"
+            source.write_bytes(b"fixture")
+            bad_cases = [
+                (V * np.nan, F), (V + np.inf, F),
+                (V, np.array([[0., 1., 2.]])), (V, np.array([[0, -1, 2]])),
+                (V, np.array([[0, 1, 3]])),
+            ]
+            for vertices, faces in bad_cases:
+                with patch.object(trimesh, "load", return_value=SimpleNamespace(vertices=vertices, faces=faces)):
+                    with self.assertRaisesRegex(ValueError, "finite vertices"):
+                        scale_mesh(source, root / "bad.ply", None)
+            for serialized in (V[::-1], V + .01, V[:2], V * np.nan):
+                with patch.object(trimesh, "load", side_effect=[SimpleNamespace(vertices=V, faces=F),
+                                                              SimpleNamespace(vertices=serialized, faces=F)]):
+                    with self.assertRaisesRegex(ValueError, "serialized visual mesh vertices"):
+                        scale_mesh(source, root / "bad.ply", None)
+                    self.assertFalse((root / "bad.ply").exists())
+
+    def test_legacy_ready_source_is_quarantined(self):
+        import build_v19_demo_pose_binding as binding
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            p15, completion, output = (root / name for name in ("p15.json", "completion.json", "demo.json"))
+            source = {"annotation_ready": True, "diagnostic_only": False,
+                      "pose_rows": [pose(9, 0), pose(13, .2)]}
+            p15.write_text(json.dumps(source))
+            completion.write_text(json.dumps({"render_mesh_contract": {"required_mesh_path": "unused", "required_mesh_sha256": "unused_hash"}}))
+            with patch.object(sys, "argv", ["binding", "--pose-report", str(p15),
+                      "--completion-report", str(completion), "--output", str(output),
+                      "--legacy-ready-p15-binding"]):
+                binding.main()
+            result = json.loads(output.read_text())
+            self.assertFalse(result["annotation_ready"])
+            self.assertTrue(result["diagnostic_only"])
+            self.assertFalse(result["physical_authority"])
+            self.assertEqual(result["authority"], "demo_only_visual_hypothesis")
+            self.assertTrue(result["core_source_identity"]["source_readiness"])
+            self.assertEqual(json.loads(p15.read_text()), source)
+
+    def test_visual_proximity_roles_manifest_binding_and_far_thumb(self):
+        from fit_v20_visual_contact_demo import validate_visual_proximity_contract, visual_proximity_weights
+        from v19_runtime_contracts import sha
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "appearance.json"
+            path.write_text("{}")
+            receipt = {
+                "demo_visual_proximity_fit_eligible": True,
+                "physical_contact_authority_eligible": False,
+                "generated_faces_contact_eligible": False,
+                "generated_faces_collision_eligible": False,
+                "generated_faces_sign_eligible": False,
+                "generated_faces_sdf_eligible": False,
+                "generated_faces_nonpenetration_eligible": False,
+            }
+            receipt.update(output_mesh_path=str(path), output_mesh_sha256=sha(path))
+            rep = {"appearance_mask_manifest": {"path": str(path), "sha256": sha(path)},
+                   "render_mesh_contract": {"required_mesh_path": str(path), "required_mesh_sha256": sha(path)},
+                   "visual_mesh_receipt": receipt}
+            validate_visual_proximity_contract(rep, path)
+            for bad in ({}, {**receipt, "demo_visual_proximity_fit_eligible": False},
+                        {**receipt, "generated_faces_contact_eligible": True}):
+                with self.assertRaisesRegex(ValueError, "role contract"):
+                    validate_visual_proximity_contract({**rep, "visual_mesh_receipt": bad}, path)
+            clone = Path(tmp) / "different.json"
+            clone.write_bytes(path.read_bytes())
+            with self.assertRaisesRegex(ValueError, "manifest does not match"):
+                validate_visual_proximity_contract(rep, clone)
+            path.write_text("mutated")
+            with self.assertRaisesRegex(ValueError, "manifest does not match"):
+                validate_visual_proximity_contract(rep, path)
+        result = visual_proximity_weights([True] * 5, [0.] * 5, [.5, .003, np.nan, np.inf, -.1])
+        np.testing.assert_allclose(result, [0, .12, 0, 0, 0])
 
 
 if __name__ == "__main__":

@@ -47,6 +47,57 @@ def selected_track_masks(track_path: Path, root: Path, frame_ids: set[int]) -> d
     return result
 
 
+def selected_track_binding(root: Path, object_id: str, selection: dict,
+                           runtime_input: dict, annotations_path: Path,
+                           supplied_track: Path) -> dict[str, object]:
+    """Bind the supplied P07 track to selected P10/object-plan producer identity."""
+    case_id = runtime_input.get("case")
+    if not isinstance(case_id, str) or not SAFE_ID.fullmatch(case_id):
+        raise ValueError("runtime input case is missing or unsafe")
+    if selection.get("case") is not None and selection.get("case") != case_id:
+        raise ValueError("object selection case does not match runtime input case")
+    annotations = load(annotations_path)
+    embedded = annotations.get("v19_visible_geometry_adapter")
+    if not isinstance(embedded, dict):
+        raise ValueError("annotations lack visible-geometry adapter binding")
+    adapter_path = annotations_path.parent / "v19_visible_geometry_adapter_report.json"
+    adapter = load(adapter_path)
+    object_plan_path = root / "measurements/object_candidates/object_plan_agent.json"
+    object_plan = load(object_plan_path)
+    for label, value in (("embedded adapter", embedded), ("adapter report", adapter)):
+        if (value.get("case") != case_id or value.get("object_id") != object_id):
+            raise ValueError(f"{label} case/object does not match selection")
+    track_id = embedded.get("track_id")
+    if (not isinstance(track_id, str) or not track_id
+            or adapter.get("track_id") != track_id):
+        raise ValueError("visible-geometry track identity is missing or ambiguous")
+    expected_tracks = [embedded.get("sam2_track"), (adapter.get("inputs") or {}).get("sam2_track")]
+    supplied = supplied_track.resolve()
+    if any(not value or Path(value).expanduser().resolve() != supplied for value in expected_tracks):
+        raise ValueError("supplied SAM2 track does not match visible-geometry producer")
+    plan = object_plan.get("plan") if isinstance(object_plan.get("plan"), dict) else object_plan
+    rows = plan.get("objects") if isinstance(plan, dict) else None
+    matches = [row for row in rows or [] if isinstance(row, dict) and row.get("track_id") == track_id]
+    if len(matches) != 1:
+        raise ValueError("selected track is not uniquely bound in object plan")
+    plan_object = matches[0].get("object_id")
+    if plan_object is not None and plan_object != object_id:
+        raise ValueError("object-plan track belongs to a different object")
+    observed_track_ids = {
+        obj.get("track_id")
+        for frame in annotations.get("frames", []) if isinstance(frame, dict)
+        for obj in frame.get("objects", []) if isinstance(obj, dict) and obj.get("object_id") == object_id
+    }
+    if observed_track_ids != {track_id}:
+        raise ValueError("annotation object rows do not uniquely bind selected track")
+    return {
+        "case_id": case_id,
+        "track_id": track_id,
+        "adapter_path": adapter_path,
+        "object_plan_path": object_plan_path,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("run-root", "source-bundle", "demo-bundle", "output-dir", "sam2-track"):
@@ -70,6 +121,8 @@ def main() -> None:
     verify_bundle(source, asset_role="demo")
     lineage = RunLineage(root, source, source / "runtime/runtime_config.json", asset_role="demo")
 
+    runtime_input_path = root / "input/runtime_input_contract.json"
+    runtime_input = load(runtime_input_path)
     selection_path = root / "state/object_selection.json"
     selection = load(selection_path)
     object_id = args.object_id or selection.get("object_id")
@@ -77,9 +130,12 @@ def main() -> None:
         raise ValueError("selected object id missing or unsafe")
     if selection.get("object_id") != object_id:
         raise ValueError("--object-id does not match current object selection")
-    case_id = selection.get("case") or load(root / "input/runtime_input_contract.json").get("case")
-    if not isinstance(case_id, str) or not case_id:
-        raise ValueError("current case id unavailable")
+    binding = selected_track_binding(
+        root, object_id, selection, runtime_input,
+        root / f"measurements/object_geometry/visible_geometry/{object_id}/annotations_v19_visible_geometry.json",
+        args.sam2_track,
+    )
+    case_id = str(binding["case_id"])
 
     raw_manifest = root / "input/raw_frame_manifest/manifest.json"
     raw = load(raw_manifest)
@@ -103,7 +159,10 @@ def main() -> None:
     mask_inputs = selected_track_masks(sam2_track, root, frame_ids)
 
     paths = {
+        "runtime_input": runtime_input_path,
         "object_selection": selection_path,
+        "object_plan": Path(binding["object_plan_path"]),
+        "visible_geometry_adapter": Path(binding["adapter_path"]),
         "raw_frame_manifest": raw_manifest,
         "sam2_track": sam2_track,
         "annotations": root / f"measurements/object_geometry/visible_geometry/{object_id}/annotations_v19_visible_geometry.json",
@@ -114,7 +173,7 @@ def main() -> None:
         "mano_bridge": root / "state/base_annotations/v19_mano_bridge_from_hawor_world.npz",
         "judgment": root / f"state/agent_interaction_judgments/{object_id}.json",
         "p17": root / f"measurements/contact_visibility_factors/{object_id}/{case_id}/v19_visible_contact_ownership_factor_report.json",
-        "source_video": Path(load(root / "input/runtime_input_contract.json")["input_video"]),
+        "source_video": Path(runtime_input["input_video"]),
     }
     if args.visual_scale_record:
         paths["visual_scale_record"] = args.visual_scale_record.resolve()
@@ -149,6 +208,7 @@ def main() -> None:
         "run_root": str(root),
         "run_identity": lineage.identity,
         "case_id": case_id,
+        "track_id": binding["track_id"],
         "object_id": object_id,
         "demo_id": args.demo_id,
         "render_width": args.render_width,

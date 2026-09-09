@@ -184,8 +184,11 @@ def scale_mesh(source_mesh: Path, output_mesh: Path, scale_record: dict | None) 
     mesh = trimesh.load(source_mesh, process=False)
     vertices = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces)
-    if vertices.ndim != 2 or vertices.shape[1] != 3 or not len(vertices) or faces.ndim != 2 or faces.shape[1] != 3:
-        raise ValueError("source visual mesh must contain triangle topology")
+    if (vertices.ndim != 2 or vertices.shape[1] != 3 or not len(vertices)
+            or not np.isfinite(vertices).all() or faces.ndim != 2 or faces.shape[1] != 3
+            or not len(faces) or not np.issubdtype(faces.dtype, np.integer)
+            or faces.min() < 0 or faces.max() >= len(vertices)):
+        raise ValueError("source visual mesh must contain finite vertices and valid integer triangle topology")
     if scale_record is None:
         scalar, bounds, pivot, selection = 1.0, [0.8, 1.2], np.zeros(3), "identity_without_visual_scale_record"
     else:
@@ -200,10 +203,18 @@ def scale_mesh(source_mesh: Path, output_mesh: Path, scale_record: dict | None) 
             or pivot.shape != (3,) or not np.isfinite(pivot).all()):
         raise ValueError("invalid/out-of-bound uniform visual scale")
     scaled = (vertices - pivot) * scalar + pivot
+    if not np.isfinite(scaled).all():
+        raise ValueError("scaled visual mesh vertices are nonfinite")
     output_mesh.parent.mkdir(parents=True, exist_ok=True)
     trimesh.Trimesh(vertices=scaled, faces=faces.copy(), process=False).export(output_mesh)
     written = trimesh.load(output_mesh, process=False)
+    written_vertices = np.asarray(written.vertices, dtype=float)
     written_faces = np.asarray(written.faces)
+    serialization_tolerance_m = 1e-6
+    if (len(written_vertices) != len(scaled) or not np.isfinite(written_vertices).all()
+            or not np.allclose(written_vertices, scaled, atol=serialization_tolerance_m, rtol=0)):
+        output_mesh.unlink(missing_ok=True)
+        raise ValueError("serialized visual mesh vertices changed beyond PLY tolerance")
     if not np.array_equal(written_faces, faces):
         output_mesh.unlink(missing_ok=True)
         raise ValueError("visual mesh topology changed during export")
@@ -223,13 +234,18 @@ def scale_mesh(source_mesh: Path, output_mesh: Path, scale_record: dict | None) 
         "output_face_count": int(len(written_faces)),
         "face_index_digest": face_digest,
         "faces_exactly_preserved": True,
+        "vertices_serialized_in_source_order": True,
+        "serialized_vertex_tolerance_m": serialization_tolerance_m,
         "source_aabb_extent_m": np.ptp(vertices, axis=0).tolist(),
         "scaled_aabb_extent_m": np.ptp(scaled, axis=0).tolist(),
         "static_across_timeline": True,
         "demo_only": True,
+        "demo_visual_proximity_fit_eligible": True,
         "metric_scale_authority": False,
+        "physical_contact_authority_eligible": False,
         "generated_faces_contact_eligible": False,
         "generated_faces_collision_eligible": False,
+        "generated_faces_sign_eligible": False,
         "generated_faces_sdf_eligible": False,
         "generated_faces_nonpenetration_eligible": False,
     }
@@ -247,6 +263,7 @@ def main() -> None:
     parser.add_argument("--object-id")
     parser.add_argument("--appearance-mask-manifest", type=Path)
     parser.add_argument("--visual-scale-record", type=Path)
+    parser.add_argument("--published-output-mesh", type=Path)
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("demo binding already exists")
@@ -259,13 +276,33 @@ def main() -> None:
         if readiness(source) != "explicitly_ready":
             raise ValueError("legacy binding accepts only explicitly ready P15")
         visual = copy.deepcopy(source)
+        assert_prediction_only(source, label="legacy demo source", allow_annotation_ready=True,
+                               allow_nondiagnostic_prediction=True)
         visual["render_mesh_contract"] = completion["render_mesh_contract"]
+        visual["visual_mesh_receipt"] = {
+            "output_mesh_path": completion["render_mesh_contract"]["required_mesh_path"],
+            "output_mesh_sha256": completion["render_mesh_contract"]["required_mesh_sha256"],
+            "demo_visual_proximity_fit_eligible": True,
+            "physical_contact_authority_eligible": False,
+            "generated_faces_contact_eligible": False,
+            "generated_faces_collision_eligible": False,
+            "generated_faces_sign_eligible": False,
+            "generated_faces_sdf_eligible": False,
+            "generated_faces_nonpenetration_eligible": False,
+        }
         visual["core_source_identity"] = {
             "pose_report": str(args.pose_report.resolve()), "sha256": sha(args.pose_report),
             "source_readiness": source.get("annotation_ready"),
             "source_graph_support": source.get("graph_support"),
         }
-        visual["legacy_binding"] = True
+        visual.update({
+            "schema": "v19_additive_demo_legacy_pose_binding_v2",
+            "annotation_ready": False,
+            "diagnostic_only": True,
+            "authority": "demo_only_visual_hypothesis",
+            "physical_authority": False,
+            "legacy_binding": True,
+        })
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(visual, indent=2) + "\n")
         return
@@ -290,10 +327,13 @@ def main() -> None:
         raise ValueError("core completion mesh identity mismatch")
     scale_record = load(args.visual_scale_record) if args.visual_scale_record else None
     mesh_receipt = scale_mesh(source_mesh, args.output_mesh, scale_record)
+    if args.published_output_mesh:
+        mesh_receipt["output_mesh_path"] = str(args.published_output_mesh.resolve())
     visual = copy.deepcopy(p15)
     visual.update({
         "schema": "v19_additive_demo_visual_pose_binding_v2",
         "pose_rows": rows,
+        "diagnostic_only": True,
         "annotation_ready": False,
         "authority": "demo_only_visual_hypothesis",
         "physical_authority": False,
@@ -317,8 +357,10 @@ def main() -> None:
             "source_graph_support": p15.get("graph_support"),
         },
         "core_sources_modified": False,
+        "demo_visual_proximity_fit_eligible": True,
         "generated_faces_contact_eligible": False,
         "generated_faces_collision_eligible": False,
+        "generated_faces_sign_eligible": False,
         "generated_faces_sdf_eligible": False,
         "generated_faces_nonpenetration_eligible": False,
     })

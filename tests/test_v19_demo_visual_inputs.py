@@ -1,4 +1,5 @@
 import json
+import re
 import importlib.util
 import sys
 import tempfile
@@ -135,14 +136,52 @@ class DemoVisualInputs(unittest.TestCase):
         inputs = additive_runner.verified_contract_inputs(contract, self.root)
         self.assertEqual(inputs["p15"], bound.resolve())
         self.source_masks[40].write_bytes(b"tampered")
-        with self.assertRaisesRegex(ValueError, "SAM2 appearance mask changed"):
+        with self.assertRaisesRegex(ValueError, "contract input changed"):
             additive_runner.verified_contract_inputs(contract, self.root)
+
+    def test_invisible_stale_mask_is_unavailable_to_anchor_and_fitter(self):
+        track = json.loads(self.track.read_text())
+        track["75"]["visible"] = False
+        self.track.write_text(json.dumps(track))
+        out = self.root / f"measurements/demo_visual/{self.object_id}/invisible"
+        manifest, anchor = build(self.root, self.object_id, self.raw, self.annotations, self.track, out)
+        row = next(r for r in manifest["frames"] if r["frame_idx"] == 75)
+        self.assertEqual(row["status"], "unavailable_not_substituted")
+        self.assertIsNone(row["appearance_mask_path"])
+        self.assertFalse(row["anchor_eligible"])
+        paths = appearance_mask_rows(manifest, self.annotations, self.object_id, self.ids, [120, 80])
+        self.assertIsNone(paths[75])
+        row.update(status="available", appearance_mask_path=str(self.source_masks[75]))
+        with self.assertRaisesRegex(ValueError, "invisible"):
+            appearance_mask_rows(manifest, self.annotations, self.object_id, self.ids, [120, 80])
+
+    def test_late_mask_failure_keeps_final_namespace_free_and_preserves_debug(self):
+        last = self.source_masks[130]
+        original = last.read_bytes()
+        last.write_bytes(b"invalid late image")
+        out = self.root / f"measurements/demo_visual/{self.object_id}/atomic"
+        with self.assertRaisesRegex(ValueError, "dimensions"):
+            build(self.root, self.object_id, self.raw, self.annotations, self.track, out)
+        self.assertFalse(out.exists())
+        self.assertTrue(list(out.parent.glob(".atomic.failed-*/appearance_masks/*")))
+        last.write_bytes(original)
+        manifest, _ = build(self.root, self.object_id, self.raw, self.annotations, self.track, out)
+        self.assertTrue(out.is_dir())
+        self.assertTrue(all(Path(r["appearance_mask_path"]).is_file() for r in manifest["frames"]))
 
     def test_runner_and_prepare_have_no_case_specific_literal(self):
         text = "\n".join((SCRIPTS / name).read_text() for name in (
-            "prepare_v19_additive_demo.py", "run_v19_additive_demo_branch.py"))
+            "prepare_v19_additive_demo.py", "run_v19_additive_demo_branch.py",
+            "build_v19_demo_visual_inputs.py", "build_v19_demo_pose_binding.py",
+            "fit_v20_visual_contact_demo.py", "v19_demo_timeline.py",
+            "run_v20_visual_contact_demo.py", "render_v20_visual_contact_demo.py",
+            "prepare_v19_sam3d_runtime.py", "run_v19_sam3d_integration_stage.py"))
         self.assertNotIn("milk_carton", text)
         self.assertNotIn("range(150)", text)
+        for pattern in (r"(?i)milk[_ -]?carton|carton[_ -]?milk", r"frame_(?:idx|id)\s*==\s*(?:88|89|92)\b",
+                        r"range\(\s*150\s*\)", r"len\([^\n]*?\)\s*==\s*150\b",
+                        r"(?:frame_count|num_frames|N)\s*=\s*150\b"):
+            self.assertIsNone(re.search(pattern, text), pattern)
         for phase in ("D00_appearance_anchor", "D01_visual_binding", "D02_visual_fit", "D03_visual_render"):
             self.assertIn(phase, text)
         self.assertIn("renders/demo_visual", text)

@@ -30,6 +30,19 @@ def fixture():
     return {"frames": frames}, params, poses
 
 
+def visual_role(mesh):
+    return {
+        "output_mesh_path": str(mesh), "output_mesh_sha256": sha(mesh),
+        "demo_visual_proximity_fit_eligible": True,
+        "physical_contact_authority_eligible": False,
+        "generated_faces_contact_eligible": False,
+        "generated_faces_collision_eligible": False,
+        "generated_faces_sign_eligible": False,
+        "generated_faces_sdf_eligible": False,
+        "generated_faces_nonpenetration_eligible": False,
+    }
+
+
 class DemoTimeline(unittest.TestCase):
     def test_join_nonzero_reordered_ids_nonsquare_intrinsics(self):
         ann, params, poses = fixture()
@@ -187,7 +200,7 @@ class DemoTimeline(unittest.TestCase):
             (root / "ann.json").write_text(json.dumps(ann))
             mesh = root / "mesh.ply"
             trimesh.creation.box(extents=[.1, .1, .1]).export(mesh)
-            (root / "poses.json").write_text(json.dumps({"annotation_ready": True, "diagnostic_only": False, "pose_rows": poses, "render_mesh_contract": {
+            (root / "poses.json").write_text(json.dumps({"annotation_ready": True, "diagnostic_only": False, "pose_rows": poses, "visual_mesh_receipt": visual_role(mesh), "render_mesh_contract": {
                 "required_mesh_path": str(mesh), "required_mesh_sha256": sha(mesh)}}))
             source_pose_bytes = (root / "poses.json").read_bytes()
             ids = np.array([42, 40, 43, 41])
@@ -237,7 +250,7 @@ class DemoTimeline(unittest.TestCase):
                 fitter.main()
             legacy = json.loads((root / "legacy/contact_hypotheses.json").read_text())
             self.assertEqual(legacy["interaction_source"], "legacy_visual_hypothesis")
-            self.assertGreater(np.count_nonzero(legacy["weights"]), 0)
+            self.assertEqual(np.count_nonzero(legacy["weights"]), 0)  # image-close but triangle-far
 
             # A nonempty source measurement may disappear on the reference
             # raster. Exercise the fitter, not just cv2.resize or a helper.
@@ -285,10 +298,12 @@ class DemoTimeline(unittest.TestCase):
         vertices[:, 2] += .945
         # Reference mask starts at x=480. Distances straddle the legacy 16px
         # thumb and 8px finger thresholds, not just an all-inside contact case.
-        tip_u = np.array([460., 474., 470., 460., 490.])
+        tip_u = np.array([490., 474., 470., 460., 490.])
         vertices[TIP_VERTICES, 0] = (tip_u - 479.5) * .945 / 720
         vertices[TIP_VERTICES, 1] = 0
-        vertices[TIP_VERTICES, 2] = .945  # 5mm from the actual object front face
+        vertices[TIP_VERTICES, 2] = .945  # non-thumb samples 5mm from actual front face
+        vertices[TIP_VERTICES[0], 2] = .7  # image-close thumb, 250mm triangle gap
+        vertices[TIP_VERTICES[0], 0] = (490. - 479.5) * .7 / 720
         faces = np.array([[0, 1, 2]], np.int32)
         joints = np.concatenate([vertices[:16], vertices[TIP_VERTICES]])[JOINT_ORDER]
 
@@ -312,8 +327,25 @@ class DemoTimeline(unittest.TestCase):
             (root / "ann.json").write_text(json.dumps(ann))
             mesh = root / "mesh.ply"
             trimesh.creation.box(extents=[.1, .1, .1]).export(mesh)
-            (root / "poses.json").write_text(json.dumps({"pose_rows": poses, "render_mesh_contract": {
+            (root / "poses.json").write_text(json.dumps({"pose_rows": poses, "visual_mesh_receipt": visual_role(mesh), "render_mesh_contract": {
                 "required_mesh_path": str(mesh), "required_mesh_sha256": sha(mesh)}}))
+            appearance = {
+                "object_id": "item", "metric_owned_masks_consumed": False,
+                "source_annotations_sha256": sha(root / "ann.json"),
+                "frames": [{"frame_idx": f["frame_idx"], "object_id": "item", "visible": True,
+                            "status": "available", "source_size_wh": [80, 48],
+                            "appearance_mask_path": str(root / "mask.png"),
+                            "appearance_mask_sha256": sha(root / "mask.png")} for f in ann["frames"]],
+            }
+            (root / "appearance.json").write_text(json.dumps(appearance))
+            binding = json.loads((root / "poses.json").read_text())
+            binding["appearance_mask_manifest"] = {"path": str(root / "appearance.json"),
+                                                   "sha256": sha(root / "appearance.json")}
+            (root / "poses.json").write_text(json.dumps(binding))
+            (root / "p17.json").write_text(json.dumps({
+                "schema": "v19_visible_contact_ownership_factor_v2", "target_entity_id": "object:item",
+                "factor_rows": [{"frame_idx": f["frame_idx"], "hand_side": "left",
+                                 "agent_contact_state": "likely_contact"} for f in ann["frames"]]}))
             ids = np.array([42, 40, 43, 41])
             np.savez(root / "params.npz", frame_idx=ids, left_valid=np.ones(4, bool),
                      left_vertices_world_m=np.tile(vertices, (4, 1, 1)),
@@ -337,7 +369,8 @@ class DemoTimeline(unittest.TestCase):
                         "--mano-bridge", str(root / "bridge.npz"), "--hawor-params", str(root / "params.npz"),
                         "--mano-models", str(root), "--output-dir", str(out), "--device", "cpu",
                         "--iterations", "3", "--object-id", "item", "--render-width", str(width),
-                        "--legacy-owned-mask"]
+                        "--appearance-mask-manifest", str(root / "appearance.json"),
+                        "--interaction-judgments", str(root / "p17.json")]
                 with (patch.object(sys, "argv", argv), patch.object(fitter, "cKDTree", side_effect=record_tree),
                       patch.object(fitter, "mano_models", return_value={s: TestMano() for s in ["left", "right"]}),
                       contextlib.redirect_stdout(io.StringIO())):
@@ -345,10 +378,14 @@ class DemoTimeline(unittest.TestCase):
                 with np.load(out / "demo_state.npz") as archive:
                     state = dict(archive)
                 report = json.loads((out / "fit_report.json").read_text())
-                contact = json.loads((out / "contact_hypotheses.json").read_text())["weights"]
+                hypothesis = json.loads((out / "contact_hypotheses.json").read_text())
+                thumbs = [r for r in hypothesis["diagnostics"] if r["side"] == "left" and r["finger_index"] == 0]
+                self.assertTrue(all(r["appearance_mask_distance_reference_px"] < 16 for r in thumbs))
+                self.assertTrue(all(r["real_triangle_surface_gap_m"] > .2 and r["weight"] == 0 for r in thumbs))
+                contact = hypothesis["weights"]
                 results.append((state, report["trace"], np.asarray(contact), samples))
             full, half = results
-            # Explicit legacy decisions: thumb20px -> off; finger6px -> on;
+            # Thumb is image-close but triangle-far -> off; finger6px -> on;
             # finger10px -> off. Unnormalized half-width gates violate these.
             np.testing.assert_allclose(full[2][:, 0], np.tile([0, .12, 0, 0, .12], (len(full[2]), 1)))
             np.testing.assert_array_equal(full[2], half[2])
