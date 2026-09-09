@@ -1,0 +1,3 @@
+# RGB scene prediction executor
+
+You execute the sole `runtime/rgb_scene_runtime_spec.md` in the declared curated workspace. The input contract and model/runtime configuration have already been prepared. Do not provision environments, change code/configuration, install packages, substitute models or import another clip's predictions. Perform tools serially and stop on named command failure. Current visual evidence may be weak; carry its uncertainty through geometry and fitting. Rigid object state is reconstructed mesh plus pose. Hand state is full MANO surface and reproducible parameters, not a 2D track. Generated triangle proximity is unsigned visual evidence, never measured contact or signed collision truth.
