@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from bind_v19_completion_anchor import normalize_completion, read_report
 from v19_run_lineage import RunLineage
 from v20_prediction_contracts import assert_prediction_only
 from v19_runtime_contracts import validate_references, runtime_environment, execution_target
@@ -37,13 +38,15 @@ def validate_clip_references(value, root):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for k in ['run-root','evidence-report','output-dir','runtime-config']:p.add_argument('--'+k,type=Path,required=True)
+    for k in ['run-root','evidence-report','annotations','output-dir','runtime-config']:p.add_argument('--'+k,type=Path,required=True)
     p.add_argument('--gpu',type=int,required=True);p.add_argument('--seed',type=int,default=42);a=p.parse_args()
     root=a.run_root.resolve();evidence=inside(a.evidence_report,root);out=a.output_dir.resolve()
     if not out.is_relative_to(root) or out.exists():raise ValueError('new output directory within run root required')
     config=json.loads(a.runtime_config.read_text());execution_target(config,a.gpu)
-    ev=json.loads(evidence.read_text());assert_prediction_only(ev,label='SAM3D evidence')
-    RunLineage(root,Path(__file__).resolve().parents[1],a.runtime_config,asset_role='geometry').require(evidence)
+    ev,evidence_sha256=read_report(evidence);assert_prediction_only(ev,label='SAM3D evidence')
+    annotations_path=inside(a.annotations,root)
+    lineage=RunLineage(root,Path(__file__).resolve().parents[1],a.runtime_config,asset_role='geometry')
+    lineage.require(evidence);lineage.require(annotations_path)
     validate_clip_references(ev,root)
     repo=Path(__file__).resolve().parents[1];exp=repo/'experiments/sam3d_p11_p12_branch'
     p12=module(exp/'run_p12_parallel_geometry_priors.py','integration_sam3d_contract')
@@ -103,7 +106,9 @@ def main():
     report['outputs']['intact_generated_render_mesh']=str(canonical)
     report['inputs']={**report['inputs'],'sam3d_prior_report':str(p12report),'sam3d_runner_report':str(raw_report),'source_run_root':str(root)}
     report['phase_retention']={'physical_face_support':True,'generated_single_view_sign_promoted':False,'trellis_inference_executed':False,'comparison_required':False}
-    report['input_hashes']={'evidence_report':p12.sha256_file(evidence),'sam3d_prior_report':p12.sha256_file(p12report),'native_canonical_mesh':p12.sha256_file(canonical)}
+    report['input_hashes']={'evidence_report':evidence_sha256,'sam3d_prior_report':p12.sha256_file(p12report),'native_canonical_mesh':p12.sha256_file(canonical)}
+    annotations,_=read_report(annotations_path)
+    report=normalize_completion(report,annotations,str(ev['object_id']))
     destination=out/'completion_report.json';destination.write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps({'status':report['status'],'completion_report':str(destination),'intact_demo_mesh':str(canonical),'physical_surface':report['outputs']['collision_eligible_mesh_labeled']}))
 

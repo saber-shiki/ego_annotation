@@ -192,8 +192,9 @@ def main():
     depth=root/'state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
     hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz';bridge=root/'state/base_annotations/v19_mano_bridge_from_hawor_world.npz'
     evidence=root/f'measurements/geometry_completion/rigid_evidence/{case}/{obj}/evidence_bundle/evidence_bundle_report.json'
-    geom=root/f'measurements/geometry_completion/sam3d_{obj}';completion=geom/'completion_report.json'
-    pose_root=root/f'measurements/pose_fits/{obj}';p14=pose_root/'visible/v18_compact_rigid_object_pose_fit_report.json'
+    geom=root/f'measurements/geometry_completion/sam3d_{obj}';original_completion=geom/'completion_report.json'
+    completion=geom/'anchor_bound_completion_report.json'
+    pose_root=root/f'measurements/pose_fits/{obj}';p14=pose_root/'visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json'
     rgb=pose_root/'rgb/rgb_edges';initialized=pose_root/'rgb_initialized_pose.json'
     support=geom/'multiview/v19_multiview_supported_completion_report.json'
     p15=pose_root/'temporal/v19_rigid_object_pose_graph_report.json'
@@ -204,17 +205,18 @@ def main():
     p18b=root/f'measurements/mano_interval_correction/{obj}_metric_surface/{case}/v18_joint_mano_interval_trajectory_state.json'
     physical=root/f'state/render_state/{obj}_rigid_render_state.json'
     demo_pose=root/f'state/demo_inputs/{obj}_pose_mesh.json';demodir=root/f'measurements/demo_visual/{obj}';demo_state=demodir/'demo_state.npz'
-    paths={'annotations':ann,'depth':depth,'hawor':hawor,'mano_bridge':bridge,'evidence':evidence,'completion':completion,'p14':p14,'rgb_initialized_pose':initialized,'multiview_support':support,'p15':p15,'p16':p16,'p17':p17,'p18':p18,'p18b':p18b,'physical_render_state':physical,'demo_state':demo_state}
+    paths={'annotations':ann,'depth':depth,'hawor':hawor,'mano_bridge':bridge,'evidence':evidence,'original_completion':original_completion,'completion':completion,'p14':p14,'rgb_initialized_pose':initialized,'multiview_support':support,'p15':p15,'p16':p16,'p17':p17,'p18':p18,'p18b':p18b,'physical_render_state':physical,'demo_state':demo_state}
     if a.stage=='geometry':
         file_in_run(root/f'state/physical_branch_decisions/{obj}.json',root)
         file_in_run(evidence,root)
         evidence_document=load(evidence)
         if evidence_document.get('case') != case or evidence_document.get('object_id') != obj or int(evidence_document['selected_frame_idx']) != anchor:
             raise ValueError('P11 evidence does not match the selected case/object/anchor')
-        run('P12_P13_SAM3D',[main_python,script('run_v19_sam3d_reconstruction.py'),'--run-root',root,'--evidence-report',evidence,'--output-dir',geom,'--runtime-config',a.runtime_config,'--gpu',a.gpu], [completion])
+        run('P12_P13_SAM3D',[main_python,script('run_v19_sam3d_reconstruction.py'),'--run-root',root,'--evidence-report',evidence,'--annotations',ann,'--output-dir',geom,'--runtime-config',a.runtime_config,'--gpu',a.gpu], [original_completion])
     elif a.stage=='pose':
-        file_in_run(completion,root);file_in_run(depth,root)
-        run('P14_visible_pose',[main_python,script('fit_v18_compact_rigid_object_pose.py'),'--annotations',ann,'--completion-report',completion,'--object-id',obj,'--output-dir',p14.parent],[p14])
+        file_in_run(original_completion,root);file_in_run(depth,root)
+        run('P13_anchor_binding',[main_python,script('bind_v19_completion_anchor.py'),'--completion-report',original_completion,'--annotations',ann,'--object-id',obj,'--output',completion],[completion])
+        run('P14_anchor_bound_visible_pose',[main_python,script('fit_v18_compact_rigid_object_pose.py'),'--annotations',ann,'--completion-report',completion,'--object-id',obj,'--output-dir',p14.parent],[p14])
         run('P14_RGB_observations',[rgb_python,script('run_v19_offline_rgb_edges.py'),'--run-root',root,'--runtime-config',a.runtime_config,'--annotations',ann,'--depth-npz',depth,'--initial-pose-report',p14,'--object-id',obj,'--frame-start',lo,'--frame-end',hi,'--keyframe-interval',5,'--keyframe-neighbor-span',4,'--lightglue-root',cfg['lightglue_root'],'--device','cuda:0','--output-npz',str(rgb)+'.npz','--output-json',str(rgb)+'.json'],[Path(str(rgb)+'.npz'),Path(str(rgb)+'.json')])
         run('P14_RGB_initializer',[main_python,script('build_v19_rgb_pose_initializer.py'),'--run-root',root,'--annotations',ann,'--pose-report',p14,'--rgb-edge-npz',str(rgb)+'.npz','--rgb-edge-json',str(rgb)+'.json','--object-id',obj,'--anchor-frame',anchor,'--output',initialized],[initialized])
         run('P14b_multiview',[main_python,script('filter_v19_rigid_completion_multiview_support.py'),'--annotations',ann,'--completion-report',completion,'--pose-report',initialized,'--depth-npz',depth,'--object-id',obj,'--output-dir',support.parent],[support])

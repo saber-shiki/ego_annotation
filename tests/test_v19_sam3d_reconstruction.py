@@ -20,6 +20,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import run_v19_sam3d_reconstruction as runner
+from test_bind_v19_completion_anchor import anchor_fixture
 
 
 class Sam3dOnlyRunner(unittest.TestCase):
@@ -42,7 +43,12 @@ class Sam3dOnlyRunner(unittest.TestCase):
         for name in ['rgb.png', 'mask.png', 'crop.png']:
             Image.fromarray(np.ones((12, 20), np.uint8) * 255).save(self.root / name)
         self.evidence = self.root / 'evidence.json'
-        self.payload = {'case': 'clip', 'object_id': 'thing', 'selected_frame_idx': 7, 'selected': {'frame_idx': 7, 'raw_frame_path': str(self.root / 'rgb.png'), 'mask_path': str(self.root / 'mask.png'), 'visible_geometry_candidate': {'mask_path': str(self.root / 'mask.png')}, 'trellis_conditioning_crop': {'crop_rgba': str(self.root / 'crop.png')}}}
+        _, self.payload, annotations = anchor_fixture(self.root)
+        self.annotations = self.root / 'annotations.json'
+        self.annotations.write_text(json.dumps(annotations))
+        self.payload['selected'].update(raw_frame_path=str(self.root / 'rgb.png'), mask_path=str(self.root / 'mask.png'),
+                                        trellis_conditioning_crop={'crop_rgba': str(self.root / 'crop.png')})
+        self.payload['selected']['visible_geometry_candidate']['mask_path'] = str(self.root / 'mask.png')
         self.evidence.write_text(json.dumps(self.payload))
         self.before = self.evidence.read_bytes()
         self.calls = []
@@ -50,7 +56,7 @@ class Sam3dOnlyRunner(unittest.TestCase):
         self.native = runner.module(Path(runner.__file__).resolve().parents[1] / 'experiments/sam3d_p11_p12_branch/build_p11_dual_geometry_inputs.py', 'sam3d_test_native')
 
     def invoke(self):
-        args = ['test', '--run-root', str(self.root), '--evidence-report', str(self.evidence), '--output-dir', str(self.out), '--runtime-config', str(self.config_path), '--gpu', '5']
+        args = ['test', '--run-root', str(self.root), '--evidence-report', str(self.evidence), '--annotations', str(self.annotations), '--output-dir', str(self.out), '--runtime-config', str(self.config_path), '--gpu', '5']
         original_module = runner.module
         def modules(path, name):
             result = original_module(path, name)
@@ -88,7 +94,7 @@ class Sam3dOnlyRunner(unittest.TestCase):
             output.mkdir()
             body, physical = output / 'body.ply', output / 'physical.ply'
             body.write_text('test pose mesh');physical.write_text('test observed surface')
-            (output / 'v18_compact_rigid_trellis_completion_report.json').write_text(json.dumps({'status': 'ok', 'inputs': {}, 'outputs': {'pose_hypothesis_mesh_labeled': str(body), 'collision_eligible_mesh_labeled': str(physical)}, 'geometry_readiness': {'signed_volume_validated': False}}))
+            (output / 'v18_compact_rigid_trellis_completion_report.json').write_text(json.dumps({'status': 'ok', 'case': 'clip', 'object_id': 'thing', 'inputs': {'evidence_report': str(self.evidence)}, 'outputs': {'pose_hypothesis_mesh_labeled': str(body), 'collision_eligible_mesh_labeled': str(physical)}, 'geometry_readiness': {'signed_volume_validated': False}}))
         else:self.fail('unexpected stage: ' + name)
         return types.SimpleNamespace(returncode=0)
 
@@ -96,11 +102,27 @@ class Sam3dOnlyRunner(unittest.TestCase):
         self.invoke()
         report = json.loads((self.out / 'completion_report.json').read_text())
         self.assertEqual(self.before, self.evidence.read_bytes())
+        self.assertEqual(report['inputs']['selected_anchor_atomic_binding'], self.payload['selected_anchor_atomic_binding'])
+        self.assertEqual(report['inputs']['candidate_evidence_report_sha256'], report['input_hashes']['evidence_report'])
+        self.assertEqual(report['inputs']['candidate_evidence_report'], str(self.evidence))
         self.assertEqual([Path(c[0][1]).name for c in self.calls], ['build_p11_dual_geometry_inputs.py', 'remote_run_sam3d_objects_mesh_v7.py', 'build_p13_sam3d_native_metric_bridge.py', 'build_v18_compact_rigid_trellis_completion.py'])
         self.assertFalse(report['phase_retention']['trellis_inference_executed'])
         self.assertFalse(report['geometry_readiness']['signed_volume_validated'])
         self.assertEqual(Path(report['render_mesh_contract']['required_mesh_path']).read_text(), 'test canonical geometry stub')
         self.assertNotEqual(report['render_mesh_contract']['required_mesh_path'], report['outputs']['pose_hypothesis_mesh_labeled'])
+
+    def test_changed_P11_during_production_is_not_rebound_at_emission(self):
+        original_command = self.command
+        def change_after_model(argv, **kwargs):
+            result = original_command(argv, **kwargs)
+            if Path(argv[1]).name == 'remote_run_sam3d_objects_mesh_v7.py':
+                with self.evidence.open('a') as handle:
+                    handle.write('\n')
+            return result
+        self.command = change_after_model
+        with self.assertRaisesRegex(ValueError, 'producer-declared P11 SHA256 mismatch'):
+            self.invoke()
+        self.assertFalse((self.out / 'completion_report.json').exists())
 
     def test_model_failure_stops_before_bridge_with_log(self):
         self.fail_model = True

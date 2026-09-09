@@ -119,7 +119,7 @@ class StageContracts(unittest.TestCase):
                 source=load_source=contracts.load(Path(argv[argv.index('--pose-report')+1]))
                 value={**source,'render_mesh_contract':self.completion['render_mesh_contract'],
                     'core_source_identity':{'sha256':contracts.sha(Path(argv[argv.index('--pose-report')+1]))}}
-            elif key == 'P12_P13_SAM3D':value=self.completion
+            elif key in {'P12_P13_SAM3D', 'P13_anchor_binding'}:value=self.completion
             elif key == 'P15_temporal_pose':value={'annotation_ready':True,'diagnostic_only':False,'pose_rows':self.frames}
             write(Path(path), value)
 
@@ -130,6 +130,7 @@ class StageContracts(unittest.TestCase):
     def seed_interaction(self):
         self.seed_pose()
         write(self.geom / 'multiview/v19_multiview_supported_completion_report.json',self.completion)
+        write(self.geom / 'anchor_bound_completion_report.json',self.completion)
         write(self.pose / 'temporal/v19_rigid_object_pose_graph_report.json',{'annotation_ready':True,'diagnostic_only':False,'pose_rows':self.frames})
         write(self.root / 'measurements/hand_candidates/hawor_world/hawor_world_hands.npz',{})
         write(self.root / 'state/agent_interaction_judgments/thing.json',{'interaction_judgments':[]})
@@ -262,9 +263,24 @@ class StageContracts(unittest.TestCase):
         self.assertIn('source_rgb',blocker['error'])
 
     def test_pose_and_interaction_actual_CLI_bindings(self):
-        self.seed_pose();self.invoke('pose')
-        self.assertEqual([c[0] for c in self.calls],['P14_visible_pose','P14_RGB_observations','P14_RGB_initializer','P14b_multiview','P15_temporal_pose'])
-        self.assertIn('--run-root',self.calls[2][1])
+        self.seed_pose()
+        old_visible = self.pose / 'visible';old_visible.mkdir(parents=True)
+        old_log = self.root / 'logs/integration/P14_visible_pose.log'
+        old_log.parent.mkdir(parents=True);old_log.write_text('original failed P14 evidence')
+        self.invoke('pose')
+        self.assertEqual([c[0] for c in self.calls],['P13_anchor_binding','P14_anchor_bound_visible_pose','P14_RGB_observations','P14_RGB_initializer','P14b_multiview','P15_temporal_pose'])
+        self.assertEqual(list(old_visible.iterdir()), [])
+        self.assertEqual(old_log.read_text(), 'original failed P14 evidence')
+        bound = str(self.geom / 'anchor_bound_completion_report.json')
+        visible = str(self.pose / 'visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json')
+        self.assertIn(str(self.geom / 'completion_report.json'), self.calls[0][1])
+        self.assertIn(bound, self.calls[0][1])
+        for index in [1, 4]:
+            argv = self.calls[index][1]
+            self.assertEqual(argv[argv.index('--completion-report')+1], bound)
+        for index in [2, 3]:
+            self.assertIn(visible, self.calls[index][1])
+        self.assertIn('--run-root',self.calls[3][1])
         self.assertIn('--complete-full-timeline-rigid-pose',self.calls[-1][1])
         self.seed_interaction();self.calls.clear();self.invoke('interaction')
         self.assertEqual([c[0] for c in self.calls],['P16_constraints','P17_contact_ownership','P18_interval','P18b_metric_preservation'])
@@ -312,19 +328,23 @@ class StageContracts(unittest.TestCase):
     def test_failure_stops_subsequent_stage_and_records_log(self):
         self.seed_pose()
         with patch.object(contracts.subprocess,'run',return_value=SimpleNamespace(returncode=9)) as launch:
-            with self.assertRaisesRegex(RuntimeError,'P14_visible_pose failed'):
+            with self.assertRaisesRegex(RuntimeError,'P13_anchor_binding failed'):
                 self.invoke('pose',contracts.run_command)
         self.assertEqual(launch.call_count,1)
-        self.assertTrue((self.root/'logs/integration/P14_visible_pose.log').exists())
+        self.assertTrue((self.root/'logs/integration/P13_anchor_binding.log').exists())
         event=json.loads((self.root/'logs/integration/events.jsonl').read_text().splitlines()[0])
         self.assertEqual(event['returncode'],9)
         self.assertFalse((self.pose/'rgb_initialized_pose.json').exists())
 
     def test_existing_partial_output_directory_refused(self):
-        self.seed_pose();(self.pose/'visible').mkdir(parents=True)
+        self.seed_pose();(self.pose/'visible_anchor_bound').mkdir(parents=True)
+        def bind_then_refuse(key, argv, outputs, **kwargs):
+            if key == 'P13_anchor_binding':
+                return self.command(key, argv, outputs, **kwargs)
+            return contracts.run_command(key, argv, outputs, **kwargs)
         with patch.object(contracts.subprocess,'run') as launch:
             with self.assertRaisesRegex(ValueError,'directory already exists'):
-                self.invoke('pose',contracts.run_command)
+                self.invoke('pose',bind_then_refuse)
         launch.assert_not_called()
 
 
