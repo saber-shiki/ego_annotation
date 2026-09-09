@@ -279,7 +279,7 @@ def main():
                          "--pose-report", pose_report, "--mano-bridge", inputs["mano_bridge"],
                          "--hawor-params", inputs["hawor"], "--mano-models", cfg["mano_models"],
                          "--object-id", object_id, "--device", "cuda:0",
-                         "--interaction-judgments", inputs["p17"], "--render-width",
+                         "--interaction-judgments", inputs["judgment"], "--render-width",
                          int(contract["render_width"]), "--output-dir", d02_stage],
                 "required": [d02_stage / "demo_state.npz", d02_stage / "fit_report.json",
                              d02_stage / "contact_hypotheses.json"],

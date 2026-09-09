@@ -79,8 +79,14 @@ class AtomicDemoExecution(unittest.TestCase):
         })
         self.sources = {}
         for name in ("raw_frame_manifest", "annotations", "sam2_track", "p15", "p14", "completion",
-                     "mano_bridge", "hawor", "p17", "source_video", "judgment"):
+                     "mano_bridge", "hawor", "source_video", "judgment"):
             self.sources[name] = dump(self.root / "input" / (name + ".json"), {"source": name})
+        dump(self.sources["judgment"], {
+            "case": "clip-A", "target_entity_id": "object:object-A", "status": "ok",
+            "interaction_judgments": [{"start_frame": 10, "end_frame": 10,
+                "hand_side": "left", "target_entity_id": "object:object-A",
+                "contact_state": "possible_contact"}],
+        })
         self.sources["runtime_input"] = self.live
         self.mask = dump(self.root / "input/mask.png", {"mask": "byte fixture"})
         self.rgb = dump(self.root / "input/rgb.png", {"rgb": "byte fixture"})
@@ -229,10 +235,104 @@ class AtomicDemoExecution(unittest.TestCase):
         self.assertIsNone(failure["events"][0]["returncode"])
         self.assertTrue(failure["events"][0]["argv"])
 
+    def test_prepare_uses_real_judgment_lineage_without_core_factors(self):
+        # Synthetic on-disk producers exercise RunLineage itself, not a permissive mock.
+        import uuid
+        from v19_demo_timeline import interaction_states
+        root, obj = self.root, "object-A"
+        live = {**runner.load(self.live), "run_id": str(uuid.uuid4()),
+                "input_video": str(self.sources["source_video"]),
+                "input_video_sha256": runner.sha(self.sources["source_video"]),
+                "bundle_manifest_sha256": runner.sha(self.manifest)}
+        dump(self.live, live)
+        identity = {k: live[k] for k in runner.RUN_IDENTITY_KEYS}
+        dump(self.bundle / ".pi/agents/ego-annotation.rgb-sam3d-demo.md", {})
+        dump(root / "state/object_selection.json", {"object_id": obj, "case": "clip-A"})
+        raw = dump(root / "input/raw_frame_manifest/manifest.json", {
+            "full_source_timeline": True,
+            "frames": [{"frame_idx": 10, "time_s": 0.0, "raw_frame_path": str(self.rgb)}],
+        })
+        track = dump(root / "measurements/object_tracks/first/sam2_track.json", {
+            "10": {"visible": True, "mask_path": str(self.mask)},
+        })
+        visible = root / f"measurements/object_geometry/visible_geometry/{obj}"
+        adapter = {"case": "clip-A", "object_id": obj, "track_id": "first", "sam2_track": str(track)}
+        ann = dump(visible / "annotations_v19_visible_geometry.json", {
+            "v19_visible_geometry_adapter": adapter,
+            "frames": [{"frame_idx": 10, "time_s": 0.0,
+                        "objects": [{"object_id": obj, "track_id": "first"}]}],
+        })
+        adapter_path = dump(visible / "v19_visible_geometry_adapter_report.json", {
+            **adapter, "inputs": {"sam2_track": str(track)},
+        })
+        def provenance(phase, evidence):
+            return {"kind": "current_run_visual_judgment", "phase": phase,
+                    "run_identity": identity,
+                    "evidence_sha256": {str(p): runner.sha(p) for p in evidence}}
+        dump(root / "measurements/object_candidates/object_plan_agent.json", {
+            "objects": [{"object_id": obj, "track_id": "first"}],
+            "visual_judgment_provenance": provenance("P05", [raw]),
+        })
+        p14 = dump(root / f"measurements/pose_fits/{obj}/visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json", {})
+        p15 = dump(root / f"measurements/pose_fits/{obj}/temporal/v19_rigid_object_pose_graph_report.json", {})
+        mesh = dump(root / "measurements/geometry_completion/mesh.ply", {})
+        completion = dump(root / f"measurements/geometry_completion/sam3d_{obj}/anchor_bound_completion_report.json", {
+            "render_mesh_contract": {"required_mesh_path": str(mesh), "required_mesh_sha256": runner.sha(mesh)},
+        })
+        hawor = dump(root / "measurements/hand_candidates/hawor_world/hawor_world_hands.npz", {})
+        mano = dump(root / "state/base_annotations/v19_mano_bridge_from_hawor_world.npz", {})
+        judgment = dump(root / f"state/agent_interaction_judgments/{obj}.json", {
+            **runner.load(self.sources["judgment"]),
+            "visual_judgment_provenance": provenance("P17_judgment", [raw, self.rgb, p15]),
+        })
+        self.assertEqual(interaction_states(runner.load(judgment), [10], obj).tolist(),
+                         [["possible_contact", "unresolved"]])
+        code = {k: v for k, v in runner.load(self.manifest)["files"].items() if k.endswith((".py", ".sh"))}
+        events = []
+        for phase, outputs in (("P01", [raw, self.rgb]), ("P15_temporal_pose", [p15]),
+                               ("fixture_upstream", [track, self.mask, ann, adapter_path, p14, mesh, completion, hawor, mano])):
+            events.append({"phase": phase, "returncode": 0, "run_identity": identity,
+                           "code_sha256": code, "input_sha256": {},
+                           "outputs": list(map(str, outputs)),
+                           "output_sha256": {str(p): runner.sha(p) for p in outputs}})
+        log = root / "logs/integration/events.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text("".join(json.dumps(e) + "\n" for e in events))
+        argv = ["prepare", "--run-root", str(root), "--source-bundle", str(self.bundle),
+                "--demo-bundle", str(self.bundle), "--output-dir", str(self.base / "request"),
+                "--sam2-track", str(track), "--demo-id", "judgment-only", "--gpu", "5"]
+        from v19_run_lineage import RunLineage
+        with (patch.object(sys, "argv", argv),
+              patch.object(assets, "runtime_asset_subset", side_effect=lambda identity, config, role: identity),
+              patch.object(prepare, "RunLineage", wraps=RunLineage) as lineage,
+              contextlib.redirect_stdout(io.StringIO())):
+            prepare.main()
+        self.assertEqual(lineage.call_count, 1)
+        contract = runner.load(root / f"state/demo_visual/{obj}/judgment-only/receipts/launch_contract.json")
+        self.assertNotIn("p17", contract["inputs"])
+        self.assertEqual(contract["inputs"]["judgment"], {"path": str(judgment), "sha256": runner.sha(judgment)})
+        self.assertFalse((root / "measurements/contact_visibility_factors").exists())
+        self.assertEqual({e["phase"] for e in events}, {"P01", "P15_temporal_pose", "fixture_upstream"})
+        self.assertTrue((self.base / "request/request.json").is_file())
+
+    def test_judgment_mutation_is_rejected_before_probe(self):
+        self.sources["judgment"].write_bytes(b"changed visual judgment")
+        with self.assertRaisesRegex(ValueError, "contract input changed"):
+            self.invoke()
+        self.assertEqual(self.probe_count, 0)
+        self.assertEqual(self.process_count, 0)
+
     def test_success_publishes_only_complete_namespaces_and_exact_hashes(self):
+        self.assertNotIn("p17", self.contract["inputs"])
         self.invoke()
         self.assertEqual(self.process_count, 4)
+        fit = self.calls[2]
+        self.assertEqual(fit[fit.index("--interaction-judgments") + 1], str(self.sources["judgment"]))
+        self.assertFalse((self.root / "measurements/contact_visibility_factors").exists())
         result = runner.load(self.receipts / "branch_result.json")
+        for event in result["events"]:
+            self.assertEqual(event["input_sha256"][str(self.sources["judgment"])],
+                             runner.sha(self.sources["judgment"]))
         self.assertFalse(result["annotation_ready"])
         self.assertFalse(list(self.root.rglob("*.staging")))
         for event in result["events"]:

@@ -2,8 +2,9 @@
 """Build a demo-only pose initializer and topology-preserving visual mesh.
 
 Ready P15 poses pass through unchanged. Explicitly unready P15 poses are not
-trusted: eligible direct P14 observations are retained and only absent rows are
-interpolated on the real annotation timeline. Core reports and meshes are read
+trusted: eligible direct P14 observations are retained and only absent rows or
+explicit empty missing-surface placeholders are interpolated on the real
+annotation timeline. Core reports and meshes are read
 only and no generated surface receives physical/contact authority.
 """
 from __future__ import annotations
@@ -23,6 +24,35 @@ from v20_prediction_contracts import assert_prediction_only
 ROTATION_KEY = "rotation_world_from_completed_canonical_matrix"
 TRANSLATION_KEY = "translation_world_m"
 DIRECT_STATUS = "fit_to_visible_depth_samples"
+MISSING_STATUS = "missing_accepted_metric_surface"
+GENERATED_EVIDENCE_KEYS = ("generated_geometry_pose_evidence_consumed",
+                          "generated_geometry_pose_evidence")
+
+
+def _no_positive_evidence(row: dict, keys: tuple[str, ...]) -> bool:
+    # Fail closed for malformed flag values too (e.g. strings or numeric true).
+    return all(row.get(key) is None or row.get(key) is False for key in keys)
+
+
+def _missing_placeholder(row: dict) -> bool:
+    return (row.get("status") == MISSING_STATUS
+            and row.get(ROTATION_KEY) is None and row.get(TRANSLATION_KEY) is None
+            and _no_positive_evidence(row, GENERATED_EVIDENCE_KEYS + (
+                "rigid_pose_observation_eligible", "direct_visible_measurement",
+                "direct_metric_observation_added", "observed", "annotation_ready"))
+            and not any(row.get(key) for key in (
+                "direct_pose_observation_source", "pose_measurement_status", "pose_source")))
+
+
+def _object_identity(p15: dict, p14: dict, object_id: str | None) -> str | None:
+    identities = [object_id, p15.get("object_id"), p14.get("object_id")]
+    for report in (p15, p14):
+        rows = _rows({"pose_rows": report.get("pose_rows", [])}, "pose source")
+        identities.extend(row.get("object_id") for row in rows.values())
+    present = [value for value in identities if value is not None]
+    if any(not isinstance(value, str) or not value or value != present[0] for value in present):
+        raise ValueError("pose source object mismatch")
+    return present[0] if present else None
 
 
 def readiness(p15: dict) -> str:
@@ -81,12 +111,14 @@ def _rows(report: dict, label: str) -> dict[int, dict]:
 def _eligible_direct(row: dict) -> bool:
     return (row.get("status") == DIRECT_STATUS
             and row.get("rigid_pose_observation_eligible") is True
-            and row.get("generated_geometry_pose_evidence") is not True)
+            and _no_positive_evidence(row, GENERATED_EVIDENCE_KEYS))
 
 
-def build_demo_pose_rows(p15: dict, p14: dict, annotation_frames: list[dict]) -> tuple[list[dict], dict]:
+def build_demo_pose_rows(p15: dict, p14: dict, annotation_frames: list[dict],
+                         *, object_id: str | None = None) -> tuple[list[dict], dict]:
     timeline = _timeline(annotation_frames)
     state = readiness(p15)
+    object_id = _object_identity(p15, p14 if state == "explicitly_unready" else {"pose_rows": []}, object_id)
     if state == "explicitly_ready":
         p15_rows = _rows(p15, "P15")
         if set(p15_rows) != {idx for idx, _ in timeline}:
@@ -104,6 +136,8 @@ def build_demo_pose_rows(p15: dict, p14: dict, annotation_frames: list[dict]) ->
     if state != "explicitly_unready":
         raise ValueError("P15 readiness is unknown; demo fallback is not authorized")
 
+    if not _no_positive_evidence(p14, GENERATED_EVIDENCE_KEYS):
+        raise ValueError("P14 generated geometry pose evidence is not an eligible direct source")
     p14_rows = _rows(p14, "P14")
     timeline_ids = {idx for idx, _ in timeline}
     unexpected = set(p14_rows) - timeline_ids
@@ -111,8 +145,10 @@ def build_demo_pose_rows(p15: dict, p14: dict, annotation_frames: list[dict]) ->
         raise ValueError(f"P14 rows outside annotation timeline: {sorted(unexpected)}")
     direct = {}
     for idx, row in p14_rows.items():
+        if _missing_placeholder(row):
+            continue
         if not _eligible_direct(row):
-            # Existing latent/invalid evidence is not treated as an absent row.
+            # Only the producer's explicit empty missing-surface status is absent evidence.
             raise ValueError(f"existing P14 frame {idx} is not an eligible direct observation")
         _pose(row)
         direct[idx] = row
@@ -147,14 +183,19 @@ def build_demo_pose_rows(p15: dict, p14: dict, annotation_frames: list[dict]) ->
         result.append({
             "frame_idx": idx,
             "time_s": time_s,
+            **({"object_id": object_id} if object_id is not None else {}),
             "status": "demo_visual_interpolated_between_direct_P14",
             ROTATION_KEY: rotation.tolist(),
             TRANSLATION_KEY: translation.tolist(),
             "rigid_pose_observation_eligible": False,
             "pose_measurement_status": None,
             "direct_visible_measurement": False,
+            "annotation_ready": False,
+            "generated_geometry_pose_evidence_consumed": False,
             "demo_visual_provenance": {
                 "source": "SO3_Slerp_and_linear_translation_between_direct_P14",
+                "source_placeholder_row": copy.deepcopy(p14_rows.get(idx)),
+                "latent_interpolated": True,
                 "bracket_frame_ids": [left, right],
                 "bracket_time_s": [t0, t1],
                 "interpolation_alpha": alpha,
@@ -321,7 +362,7 @@ def main() -> None:
     appearance = load(args.appearance_mask_manifest)
     if appearance.get("object_id") != args.object_id:
         raise ValueError("appearance manifest object mismatch")
-    rows, summary = build_demo_pose_rows(p15, p14, annotations["frames"])
+    rows, summary = build_demo_pose_rows(p15, p14, annotations["frames"], object_id=args.object_id)
     source_mesh = Path(completion["render_mesh_contract"]["required_mesh_path"])
     if sha(source_mesh) != completion["render_mesh_contract"]["required_mesh_sha256"]:
         raise ValueError("core completion mesh identity mismatch")

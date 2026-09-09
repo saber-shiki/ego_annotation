@@ -2,7 +2,8 @@
 """Prepare a generic isolated additive visual-v2 demo request.
 
 The request byte-binds the selected object, full SAM2 appearance track/masks,
-P14/P15, completion, P17 inputs and source timeline. It never creates or
+P14/P15, completion, P17 visual judgment and source timeline. Core P16–P19
+factor/solver outputs are not prerequisites. It never creates or
 relabels core prediction outputs.
 """
 from __future__ import annotations
@@ -172,7 +173,6 @@ def main() -> None:
         "hawor": root / "measurements/hand_candidates/hawor_world/hawor_world_hands.npz",
         "mano_bridge": root / "state/base_annotations/v19_mano_bridge_from_hawor_world.npz",
         "judgment": root / f"state/agent_interaction_judgments/{object_id}.json",
-        "p17": root / f"measurements/contact_visibility_factors/{object_id}/{case_id}/v19_visible_contact_ownership_factor_report.json",
         "source_video": Path(runtime_input["input_video"]),
     }
     if args.visual_scale_record:

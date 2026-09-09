@@ -70,6 +70,84 @@ class DemoPoseBinding(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not bracketed"):
             build_demo_pose_rows(unready, {"pose_rows": [pose(8, 8), pose(12, 12)]}, frames)
 
+    def test_empty_placeholder_and_absent_row_share_irregular_time_interpolation(self):
+        frames = [{"frame_idx": idx, "time_s": t} for idx, t in
+                  [(7, 1.0), (21, 1.2), (34, 1.75), (99, 2.0)]]
+        endpoints = [dict(pose(7, 1.0, x=0), object_id="selected"),
+                     dict(pose(99, 2.0, angle=np.pi / 2, x=4), object_id="selected")]
+        placeholder = {"frame_idx": 21, "object_id": "selected",
+                       "status": "missing_accepted_metric_surface", "appearance_mask_path": "source.png",
+                       "rotation_world_from_completed_canonical_matrix": None,
+                       "translation_world_m": None, "rigid_pose_observation_eligible": False,
+                       "generated_geometry_pose_evidence_consumed": False}
+        p14 = {"object_id": "selected", "pose_rows": [endpoints[0], placeholder, endpoints[1]]}
+        p15 = {"object_id": "selected", "annotation_ready": False, "pose_rows": []}
+        original = copy.deepcopy(p14)
+        rows, summary = build_demo_pose_rows(p15, p14, frames)
+        self.assertEqual(p14, original)
+        self.assertEqual(summary["interpolated_frame_ids"], [21, 34])
+        for row, direct in zip((rows[0], rows[-1]), endpoints):
+            self.assertEqual({k: v for k, v in row.items() if k != "demo_visual_provenance"}, direct)
+        for row, alpha in zip(rows[1:3], (.2, .75)):
+            np.testing.assert_allclose(row["translation_world_m"], [alpha * 4, 0, 1])
+            np.testing.assert_allclose(row["rotation_world_from_completed_canonical_matrix"],
+                                       Rotation.from_euler("z", alpha * np.pi / 2).as_matrix(), atol=1e-10)
+            self.assertEqual(row["object_id"], "selected")
+            self.assertFalse(row["annotation_ready"])
+            self.assertFalse(row["direct_visible_measurement"])
+            self.assertFalse(row["rigid_pose_observation_eligible"])
+            self.assertTrue(row["demo_visual_provenance"]["latent_interpolated"])
+        nested = rows[1]["demo_visual_provenance"]["source_placeholder_row"]
+        self.assertEqual(nested, placeholder)
+        self.assertIsNot(nested, placeholder)
+        self.assertIsNone(rows[2]["demo_visual_provenance"]["source_placeholder_row"])
+
+    def test_placeholder_contradictions_unknown_status_and_generated_evidence_rejected(self):
+        frames = [{"frame_idx": i, "time_s": float(i)} for i in (1, 2, 3)]
+        p15 = {"annotation_ready": False, "object_id": "selected", "pose_rows": []}
+        missing = {"frame_idx": 2, "object_id": "selected", "status": "missing_accepted_metric_surface"}
+        cases = [{key: value} for key, value in (
+            ("rotation_world_from_completed_canonical_matrix", np.eye(3).tolist()),
+            ("translation_world_m", [0, 0, 1]), ("translation_world_m", []),
+            ("rigid_pose_observation_eligible", True), ("direct_visible_measurement", True),
+            ("direct_metric_observation_added", True), ("observed", True), ("annotation_ready", True),
+            ("generated_geometry_pose_evidence_consumed", True),
+            ("generated_geometry_pose_evidence_consumed", 1),
+            ("generated_geometry_pose_evidence", True),
+            ("direct_pose_observation_source", "direct"),
+            ("pose_measurement_status", "fit_to_visible_depth_samples"),
+            ("status", "unknown"), ("status", "rigid_pose_observation_ineligible"),
+            ("object_id", "wrong"))]
+        for updates in cases:
+            with self.subTest(updates=updates), self.assertRaises(ValueError):
+                build_demo_pose_rows(p15, {"pose_rows": [pose(1, 1), {**missing, **updates}, pose(3, 3)]}, frames)
+        for key in ("generated_geometry_pose_evidence", "generated_geometry_pose_evidence_consumed"):
+            direct = dict(pose(2, 2), **{key: True})
+            with self.subTest(direct_flag=key), self.assertRaisesRegex(ValueError, "not an eligible direct"):
+                build_demo_pose_rows(p15, {"pose_rows": [pose(1, 1), direct, pose(3, 3)]}, frames)
+            with self.subTest(report_flag=key), self.assertRaisesRegex(ValueError, "not an eligible direct"):
+                build_demo_pose_rows(p15, {"pose_rows": [pose(1, 1), pose(3, 3)], key: True}, frames)
+
+    def test_wrong_object_duplicates_nonfinite_and_missing_endpoints_fail_closed(self):
+        frames = [{"frame_idx": i, "time_s": float(i)} for i in (1, 2, 3)]
+        unready = {"annotation_ready": False, "object_id": "selected", "pose_rows": []}
+        bad_rows = [
+            [dict(pose(1, 1), object_id="wrong"), pose(3, 3)],
+            [pose(1, 1), pose(1, 1), pose(3, 3)],
+            [dict(pose(1, 1), translation_world_m=[np.nan, 0, 0]), pose(3, 3)],
+            [dict(pose(1, 1), rotation_world_from_completed_canonical_matrix=np.full((3, 3), np.inf).tolist()), pose(3, 3)],
+            [dict(pose(1, 1), rigid_pose_observation_eligible=False), pose(3, 3)],
+        ]
+        for rows in bad_rows:
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                build_demo_pose_rows(unready, {"pose_rows": rows}, frames)
+        for endpoint in (1, 3):
+            rows = [pose(i, i) for i in (1, 2, 3) if i != endpoint]
+            placeholder = {"frame_idx": endpoint, "status": "missing_accepted_metric_surface"}
+            for extra in ([], [placeholder]):
+                with self.subTest(endpoint=endpoint, explicit=bool(extra)), self.assertRaisesRegex(ValueError, "not bracketed"):
+                    build_demo_pose_rows(unready, {"pose_rows": rows + extra}, frames)
+
     def test_uniform_scale_preserves_topology_and_rejects_bad_bounds(self):
         import trimesh
         with tempfile.TemporaryDirectory() as tmp:
