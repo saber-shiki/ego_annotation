@@ -58,7 +58,15 @@ log and separate recovery handoff, and continues P10–P21 normally. It never
 restarts P00–P08, re-authors the existing anchor, or treats this continuation as
 another cold run. Managed file/command tools must be strictly sequential.
 
-Any further named phase failure still stops that launch. Another failure is not
+Any further named phase failure still stops that launch. A new P09 failure is
+written exclusively to `state/runtime_recovery/P09/failure.json` by both the
+command failure handler and actor-directed pre-invocation stop instructions.
+The original protected `state/runtime_blockers/P09.json` is never overwritten.
+Existing recovery failure files are cited, not replaced. Transition compatibility
+includes only this reviewed error-reporting change in `v19_runtime_contracts.py`;
+producer/model changes remain forbidden. A tiny actual failed subprocess test
+checks original blocker/prefix preservation, distinct failure retention and no
+successful event or downstream execution. Another failure is not
 authorization to create additional transitions automatically. This first slice
 supports only the present pre-invocation P09 verification failure, not arbitrary
 phase resume or model changes.

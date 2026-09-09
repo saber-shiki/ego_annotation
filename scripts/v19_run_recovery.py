@@ -18,6 +18,7 @@ SCHEMA = "v19_same_run_P09_verification_recovery_v1"
 ALLOWED_CHANGED_FILES = {
     "scripts/v19_run_lineage.py",
     "scripts/v19_run_recovery.py",
+    "scripts/v19_runtime_contracts.py",  # reviewed recovery-only failure destination
     "runtime/rgb_sam3d_runtime_spec.md",
     "runtime/rgb_sam3d_system_prompt.md",
     ".pi/agents/ego-annotation.rgb-sam3d-runtime.md",

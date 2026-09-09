@@ -8,7 +8,7 @@ import unittest
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from v19_runtime_contracts import load, sha
+from v19_runtime_contracts import load, sha, run_command
 from v19_run_lineage import RunLineage
 from v19_run_recovery import (
     SCHEMA,
@@ -167,6 +167,52 @@ class RecoveryLineageIntegration(unittest.TestCase):
         new = RunLineage(self.root, self.new, self.new / "runtime/runtime_config.json")
         self.assertEqual(new.require(output), output)
         self.assertTrue(self.events.read_bytes().startswith(before))
+
+    def test_failed_P09_command_preserves_original_blocker_and_prefix(self):
+        blocker = self.root / 'state/runtime_blockers/P09.json'
+        before_blocker = blocker.read_bytes()
+        before_prefix = self.events.read_bytes()
+        lineage = RunLineage(self.root, self.new, self.new / 'runtime/runtime_config.json')
+        output = self.root / 'measurements/new_P09/not_created.json'
+        downstream = self.root / 'downstream_not_allowed'
+        with self.assertRaisesRegex(RuntimeError, 'P09 failed'):
+            run_command('P09', [sys.executable, '-c', 'raise SystemExit(7)'], [output],
+                        root=self.root, cwd=self.new, env={}, lineage=lineage)
+            downstream.touch()
+        failure_path = self.root / RECOVERY_DIR / 'failure.json'
+        failure = load(failure_path)
+        self.assertEqual(failure['returncode'], 7)
+        self.assertIn('P09 failed', failure['error'])
+        self.assertEqual(blocker.read_bytes(), before_blocker)
+        self.assertTrue(self.events.read_bytes().startswith(before_prefix))
+        self.assertFalse(output.exists())
+        self.assertFalse(downstream.exists())
+        event = json.loads(self.events.read_text().splitlines()[-1])
+        self.assertEqual(event['returncode'], 7)
+        self.assertNotIn('output_sha256', event)
+        # The failure did not invalidate the transition's protected evidence.
+        RunLineage(self.root, self.new, self.new / 'runtime/runtime_config.json')
+        saved = failure_path.read_bytes()
+        with self.assertRaises(FileExistsError):
+            run_command('P09', [sys.executable, '-c', 'raise SystemExit(8)'], [output],
+                        root=self.root, cwd=self.new, env={}, lineage=lineage)
+        self.assertEqual(failure_path.read_bytes(), saved)
+        self.assertEqual(blocker.read_bytes(), before_blocker)
+
+    def test_actor_preinvocation_failure_uses_same_distinct_path(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = (repository / '.pi/agents/ego-annotation.rgb-sam3d-runtime.md').read_text()
+        spec = (repository / 'runtime/rgb_sam3d_runtime_spec.md').read_text()
+        for text in (profile, spec):
+            self.assertIn('state/runtime_recovery/P09/failure.json', text)
+            self.assertIn('pre-invocation', text)
+        self.assertIn('scripts/v19_runtime_contracts.py', __import__('v19_run_recovery').ALLOWED_CHANGED_FILES)
+        original = (self.root / 'state/runtime_blockers/P09.json').read_bytes()
+        failure = self.root / RECOVERY_DIR / 'failure.json'
+        with failure.open('x') as handle:
+            handle.write(json.dumps({'phase':'P09','status':'blocked','source':'pre-invocation'}))
+        self.assertEqual((self.root / 'state/runtime_blockers/P09.json').read_bytes(), original)
+        RunLineage(self.root, self.new, self.new / 'runtime/runtime_config.json')
 
     def test_unbound_new_code_event_cannot_enter_recovery(self):
         d = json.loads(self.events.read_text().splitlines()[0])

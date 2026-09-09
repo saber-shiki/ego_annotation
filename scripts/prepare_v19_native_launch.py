@@ -388,9 +388,9 @@ def prepare_recovery_request(bundle, run_root, output_dir):
             "recovery launch requires an explicit corrected-bundle transition"
         )
     obj = context["contract"]["object_id"]
-    if (root / f"measurements/object_geometry/visible_geometry/{obj}").exists() or (
-        root / "logs/integration/P09.log"
-    ).exists():
+    if ((root / RECOVERY_DIR / 'failure.json').exists()
+            or (root / f"measurements/object_geometry/visible_geometry/{obj}").exists()
+            or (root / "logs/integration/P09.log").exists()):
         raise ValueError("P09 recovery was already started; no automatic relaunch")
     video = Path(birth["input_video"]).resolve(strict=True)
     if not video.is_relative_to(root) or sha(video) != birth["input_video_sha256"]:

@@ -86,6 +86,8 @@ If a phase cannot run because an input, script, model asset, or environment is m
 
 with phase id, missing component, blocked state variable, evidence, and next required repair. Stop that branch rather than inventing substitute outputs.
 
+**Recovery-mode exception for P09:** never write to the protected original `state/runtime_blockers/P09.json`. Any new P09 failure, including a pre-invocation error before a producer command is entered, goes exclusively to `{RUN_ROOT}/state/runtime_recovery/P09/failure.json`. If the command already wrote this file, leave it intact and cite it in the recovery handoff; do not overwrite it. The new launch stops normally, and the original blocker, logs and event prefix remain unchanged.
+
 ## Placeholders
 
 - `{FRAME_END}`: last frame index from P01 manifest.

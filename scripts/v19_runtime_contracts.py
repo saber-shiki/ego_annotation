@@ -120,12 +120,17 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
             lineage.success(event,inputs,outputs,output_roots)
     except Exception as exc:
         event['error'] = str(exc)
-        blockers = root / 'state/runtime_blockers'
+        recovery_failure = key == 'P09' and getattr(lineage, 'recovery', None) is not None
+        blockers = root / ('state/runtime_recovery/P09' if recovery_failure else 'state/runtime_blockers')
         in_run(blockers, root, must_exist=False)
         blockers.mkdir(parents=True, exist_ok=True)
-        (blockers / f'{key}.json').write_text(json.dumps({
-            **event, 'blocked_state_variable': key, 'next_required_repair': 'repair failed command/input before a new run',
-        }, indent=2) + '\n')
+        failure_path = blockers / ('failure.json' if recovery_failure else f'{key}.json')
+        # A stopped run's original P09 blocker is a protected recovery input.
+        # Retain any recovery-attempt failure separately and never replace it.
+        with failure_path.open('x' if recovery_failure else 'w') as handle:
+            handle.write(json.dumps({
+                **event, 'blocked_state_variable': key, 'next_required_repair': 'repair failed command/input before a new run',
+            }, indent=2) + '\n')
         raise
     finally:
         event['elapsed_s'] = time.monotonic() - start
