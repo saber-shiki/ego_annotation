@@ -365,7 +365,7 @@ f=o/'frame.jpg';f.write_bytes(b'raw frame fixture')
             self.assertEqual(len(roles),1,name)
             if name in expected:self.assertEqual(ast.literal_eval(roles[0]),expected[name])
         source=(root/'run_v19_sam3d_integration_stage.py').read_text()
-        self.assertIn("asset_role='geometry_dispatch' if a.stage=='geometry' else a.stage",source)
+        self.assertIn("asset_role = {'geometry': 'geometry_dispatch', 'pose-rgb': 'pose'}.get(a.stage, a.stage)",source)
 
     def test_runtime_asset_roles_hash_only_consumed_subsets(self):
         import v19_runtime_assets as assets

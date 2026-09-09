@@ -15,7 +15,7 @@ from v19_camera_contract import load_contract as load_camera_contract, plane_int
 from v19_runtime_contracts import (in_run, validate_references, validate_timeline,
     run_command, runtime_environment, execution_target)
 
-STAGES=('camera','geometry','pose','interaction','physical-render','demo','export')
+STAGES=('camera','geometry','pose','pose-rgb','interaction','physical-render','demo','export')
 ROOT=Path(__file__).resolve().parents[1]
 _LINEAGE=None
 
@@ -150,7 +150,8 @@ def main():
     p.add_argument('--stage',choices=STAGES,required=True);p.add_argument('--run-root',type=Path,required=True);p.add_argument('--runtime-config',type=Path,required=True)
     p.add_argument('--gpu',type=int,required=True);a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
     execution_target(cfg,a.gpu)
-    _LINEAGE=RunLineage(root,ROOT,a.runtime_config,asset_role='geometry_dispatch' if a.stage=='geometry' else a.stage)
+    asset_role = {'geometry': 'geometry_dispatch', 'pose-rgb': 'pose'}.get(a.stage, a.stage)
+    _LINEAGE=RunLineage(root,ROOT,a.runtime_config,asset_role=asset_role)
     if a.stage == 'camera':
         try:
             camera_stage(a, cfg, root)
@@ -188,14 +189,15 @@ def main():
     def run(key,argv,outputs):
         run_command(key,argv,outputs,root=root,cwd=ROOT,env=runtime_environment(cfg,a.gpu),
                     lineage=_LINEAGE,
-                    gpu=a.gpu if key in {'P12_P13_SAM3D','P14_RGB_observations','P18_interval','D01_demo_fit'} else None)
+                    extra_inputs=[ann.parent/'v19_visible_geometry_adapter_report.json'] if key=='P14_RGB_full_timeline_observations' else [],
+                    gpu=a.gpu if key in {'P12_P13_SAM3D','P14_RGB_full_timeline_observations','P18_interval','D01_demo_fit'} else None)
     depth=root/'state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
     hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz';bridge=root/'state/base_annotations/v19_mano_bridge_from_hawor_world.npz'
     evidence=root/f'measurements/geometry_completion/rigid_evidence/{case}/{obj}/evidence_bundle/evidence_bundle_report.json'
     geom=root/f'measurements/geometry_completion/sam3d_{obj}';original_completion=geom/'completion_report.json'
     completion=geom/'anchor_bound_completion_report.json'
     pose_root=root/f'measurements/pose_fits/{obj}';p14=pose_root/'visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json'
-    rgb=pose_root/'rgb/rgb_edges';initialized=pose_root/'rgb_initialized_pose.json'
+    rgb=pose_root/'rgb_full_timeline/rgb_edges';initialized=pose_root/'rgb_initialized_pose.json'
     support=geom/'multiview/v19_multiview_supported_completion_report.json'
     p15=pose_root/'temporal/v19_rigid_object_pose_graph_report.json'
     p16=root/f'measurements/contact_nonpenetration/{obj}/v18_mano_object_constraint_state.json'
@@ -213,11 +215,18 @@ def main():
         if evidence_document.get('case') != case or evidence_document.get('object_id') != obj or int(evidence_document['selected_frame_idx']) != anchor:
             raise ValueError('P11 evidence does not match the selected case/object/anchor')
         run('P12_P13_SAM3D',[main_python,script('run_v19_sam3d_reconstruction.py'),'--run-root',root,'--evidence-report',evidence,'--annotations',ann,'--output-dir',geom,'--runtime-config',a.runtime_config,'--gpu',a.gpu], [original_completion])
-    elif a.stage=='pose':
+    elif a.stage in {'pose','pose-rgb'}:
         file_in_run(original_completion,root);file_in_run(depth,root)
-        run('P13_anchor_binding',[main_python,script('bind_v19_completion_anchor.py'),'--completion-report',original_completion,'--annotations',ann,'--object-id',obj,'--output',completion],[completion])
-        run('P14_anchor_bound_visible_pose',[main_python,script('fit_v18_compact_rigid_object_pose.py'),'--annotations',ann,'--completion-report',completion,'--object-id',obj,'--output-dir',p14.parent],[p14])
-        run('P14_RGB_observations',[rgb_python,script('run_v19_offline_rgb_edges.py'),'--run-root',root,'--runtime-config',a.runtime_config,'--annotations',ann,'--depth-npz',depth,'--initial-pose-report',p14,'--object-id',obj,'--frame-start',lo,'--frame-end',hi,'--keyframe-interval',5,'--keyframe-neighbor-span',4,'--lightglue-root',cfg['lightglue_root'],'--device','cuda:0','--output-npz',str(rgb)+'.npz','--output-json',str(rgb)+'.json'],[Path(str(rgb)+'.npz'),Path(str(rgb)+'.json')])
+        if a.stage=='pose':
+            run('P13_anchor_binding',[main_python,script('bind_v19_completion_anchor.py'),'--completion-report',original_completion,'--annotations',ann,'--object-id',obj,'--output',completion],[completion])
+            run('P14_anchor_bound_visible_pose',[main_python,script('fit_v18_compact_rigid_object_pose.py'),'--annotations',ann,'--completion-report',completion,'--object-id',obj,'--output-dir',p14.parent],[p14])
+        else:
+            # require() checks the successful same-run producer and byte lineage;
+            # do not overwrite the completed binding/fit or the failed RGB log.
+            file_in_run(completion,root);file_in_run(p14,root)
+        if a.stage=='pose-rgb':
+            file_in_run(ann.parent/'v19_visible_geometry_adapter_report.json',root)
+        run('P14_RGB_full_timeline_observations',[rgb_python,script('run_v19_offline_rgb_edges.py'),'--run-root',root,'--runtime-config',a.runtime_config,'--annotations',ann,'--depth-npz',depth,'--initial-pose-report',p14,'--object-id',obj,'--frame-start',lo,'--frame-end',hi,'--keyframe-interval',5,'--keyframe-neighbor-span',4,'--lightglue-root',cfg['lightglue_root'],'--device','cuda:0','--output-npz',str(rgb)+'.npz','--output-json',str(rgb)+'.json'],[Path(str(rgb)+'.npz'),Path(str(rgb)+'.json')])
         run('P14_RGB_initializer',[main_python,script('build_v19_rgb_pose_initializer.py'),'--run-root',root,'--annotations',ann,'--pose-report',p14,'--rgb-edge-npz',str(rgb)+'.npz','--rgb-edge-json',str(rgb)+'.json','--object-id',obj,'--anchor-frame',anchor,'--output',initialized],[initialized])
         run('P14b_multiview',[main_python,script('filter_v19_rigid_completion_multiview_support.py'),'--annotations',ann,'--completion-report',completion,'--pose-report',initialized,'--depth-npz',depth,'--object-id',obj,'--output-dir',support.parent],[support])
         run('P15_temporal_pose',[main_python,script('solve_v19_rigid_object_pose_graph.py'),'--annotations',ann,'--pose-report',initialized,'--completion-report',support,'--object-id',obj,'--complete-full-timeline-rigid-pose','--output-dir',p15.parent],[p15])

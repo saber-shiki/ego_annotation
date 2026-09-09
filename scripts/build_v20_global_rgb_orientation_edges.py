@@ -115,6 +115,84 @@ def lift_source_world(
     return world, valid
 
 
+def valid_initial_poses(report: dict[str, Any]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    from fit_v20_late_window_prediction_only_se3 import pose_from_values
+    poses = {}
+    for row in report.get("pose_rows", []):
+        pose = pose_from_values(row.get("rotation_world_from_completed_canonical_matrix"), row.get("translation_world_m"))
+        if pose is not None:
+            poses[int(row["frame_idx"])] = pose
+    return poses
+
+
+def rgb_source_eligibility(frame: dict[str, Any], object_id: str, poses: dict) -> str | None:
+    """A target need not have depth/pose; a source must have accepted P09 and P14."""
+    from fit_v20_late_window_prediction_only_se3 import p09_geometry_validation
+    obj = object_for_frame(frame, object_id)
+    geom = obj.get("visible_geometry_candidate") if obj else None
+    if not isinstance(geom, dict):
+        return "missing_p09_visible_geometry"
+    if obj.get("rigid_pose_observation_eligible") is not True or geom.get("rigid_pose_observation_eligible") is not True:
+        return "source_p09_not_explicitly_eligible"
+    points, reason, _ = p09_geometry_validation(obj, frame)
+    if points is None:
+        return reason
+    if int(frame["frame_idx"]) not in poses:
+        return "missing_or_invalid_p14_source_pose"
+    return None
+
+
+def reproduce_source_depth_support(obj: dict[str, Any], mask: np.ndarray, depth: np.ndarray,
+                                   confidence: np.ndarray, intrinsics: np.ndarray,
+                                   parameters: dict[str, Any]) -> np.ndarray:
+    """Replay P09's exact retained raster, not a depth interval or sampled proxy."""
+    from build_v19_visible_geometry_from_sam2_depth import robust_first_surface_depth_ownership
+    geometry = obj["visible_geometry_candidate"]
+    own = geometry["first_surface_depth_ownership"]
+    contract = geometry["mask_depth_transform_contract"]
+    if list(mask.shape[::-1]) != contract["mask_size_wh"] or list(depth.shape[::-1]) != contract["depth_size_wh"]:
+        raise RuntimeError("P09 mask/depth raster size mismatch")
+    sx, sy = depth.shape[1] / mask.shape[1], depth.shape[0] / mask.shape[0]
+    affine = np.array([[sx, 0, (sx-1)/2], [0, sy, (sy-1)/2], [0, 0, 1]])
+    if not np.allclose(affine, contract["A_depth_from_mask_coordinate_model"], atol=1e-8, rtol=0):
+        raise RuntimeError("P09 mask/depth affine is not the declared half-pixel resize")
+    owned = cv2.resize(mask, depth.shape[::-1], interpolation=cv2.INTER_NEAREST_EXACT) > 0
+    valid = owned & np.isfinite(depth) & (depth >= parameters["min_depth_m"]) & (depth <= parameters["max_depth_m"])
+    names = ("mad_sigma", "min_half_width_m", "min_retained_fraction", "fail_raw_to_robust_extent_ratio",
+             "confidence_seed_percentile", "local_depth_step_max_m", "max_removed_distance_inside_mask_px",
+             "max_confidence_flagged_interior_fraction", "min_interior_confidence_flagged_fraction",
+             "max_unexplained_interior_pixels", "min_component_pixels", "max_small_component_fraction")
+    retained, summary = robust_first_surface_depth_ownership(
+        valid, depth, enabled=parameters["robust_first_surface_depth_ownership"],
+        intrinsics=intrinsics, confidence=confidence,
+        **{name: parameters["first_surface_" + name] for name in names})
+    if summary.get("fail_closed") or any(summary.get(k) != own.get(k) for k in ("input_valid_depth_pixels", "retained_depth_pixels", "removed_depth_pixels", "state")):
+        raise RuntimeError(f"P09 retained depth reproduction mismatch at frame {geometry['frame_idx']}")
+    return retained
+
+
+def plan_source_edge_pairs(selected: list[int], key_ids: list[int], sources: set[int],
+                           span: int, max_gap: int) -> tuple[list[tuple[int, int]], list[dict[str, Any]]]:
+    """Preserve valid pairs; reverse one-sided pairs; add at most two brackets."""
+    pairs = set()
+    rejected = []
+    for a, b in build_edge_pairs(selected, key_ids, span):
+        if a in sources:
+            pairs.add((a, b))
+        elif b in sources:
+            pairs.add((b, a))
+        else:
+            rejected.append({"source_frame_idx": a, "target_frame_idx": b, "status": "rejected", "reason": "neither_endpoint_is_valid_source"})
+    for target in selected:
+        if target in sources:
+            continue
+        before = [s for s in sources if 0 < target - s <= max_gap]
+        after = [s for s in sources if 0 < s - target <= max_gap]
+        for source in ([max(before)] if before else []) + ([min(after)] if after else []):
+            pairs.add((source, target))
+    return sorted(pairs), rejected
+
+
 def feature_pair(
     source_idx: int,
     target_idx: int,
@@ -130,7 +208,11 @@ def feature_pair(
     device: torch.device,
     args: argparse.Namespace,
     initial_pose_by_frame: dict[int, tuple[np.ndarray, np.ndarray]],
+    source_support_by_frame: dict[int, np.ndarray],
 ) -> tuple[dict[str, Any], tuple[np.ndarray, np.ndarray] | None, dict[str, np.ndarray] | None]:
+    reason = rgb_source_eligibility(frames[source_idx], args.object_id, initial_pose_by_frame)
+    if reason is not None or source_idx not in source_support_by_frame:
+        return {"source_frame_idx": source_idx, "target_frame_idx": target_idx, "status": "rejected", "reason": reason or "missing_retained_p09_depth_support"}, None, None
     from lightglue.utils import rbd
     with torch.inference_mode():
         matched = rbd(matcher({"image0": features[source_idx], "image1": features[target_idx]}))
@@ -168,6 +250,13 @@ def feature_pair(
     target_camera = np.asarray(target_frame["camera"]["T_world_camera_metric"], dtype=np.float64)
     source_intr = depth_intrinsics[depth_pos[source_idx]]
     target_intr = depth_intrinsics[depth_pos[target_idx]]
+    # Filter in the depth raster before reading/lifting any quarantined depth.
+    support = source_support_by_frame[source_idx]
+    dx = np.clip(np.rint((uv0[:, 0] + .5) * support.shape[1] / mask0.shape[1] - .5).astype(int), 0, support.shape[1]-1)
+    dy = np.clip(np.rint((uv0[:, 1] + .5) * support.shape[0] / mask0.shape[0] - .5).astype(int), 0, support.shape[0]-1)
+    retained = support[dy, dx]
+    uv0, uv1 = uv0[retained], uv1[retained]
+    scores = scores[retained] if len(scores) == len(retained) else np.ones(len(uv0))
     source_world, valid = lift_source_world(source_idx, uv0, mask0, depths[depth_pos[source_idx]], confidences[depth_pos[source_idx]], source_intr, source_camera, float(args.min_confidence))
     source_world = source_world[valid]
     target_uv = uv1[valid]
@@ -210,6 +299,9 @@ def feature_pair(
         "frame_gap": target_idx - source_idx,
         "status": status,
         "reason": reason,
+        "source_samples_quarantined": int((~retained).sum()),
+        "target_initial_pose_present": target_idx in initial_pose_by_frame,
+        "uncertainty": "RGB_PnP_measurement_not_direct_target_metric_surface",
         "matches_total": int(len(pairs)),
         "matches_object": int(len(source_world)),
         "inliers": int(len(inliers)),
@@ -264,6 +356,23 @@ def build_edge_pairs(
     return sorted((a, b) for a, b in pairs if a < b)
 
 
+def diagnostic_motion_chain(anchor: int, poses: dict, motions: dict) -> dict:
+    """Diagnostic traversal accepts reversed edges; never creates source poses."""
+    adjacency = {}
+    for (a, b), (R, t) in motions.items():
+        adjacency.setdefault(a, []).append((b, R, t))
+        adjacency.setdefault(b, []).append((a, R.T, -R.T @ t))
+    chain = {anchor: poses[anchor]}
+    queue = [anchor]
+    for a in queue:
+        Ra, ta = chain[a]
+        for b, R, t in adjacency.get(a, []):
+            if b not in chain:
+                chain[b] = (R @ Ra, R @ ta + t)
+                queue.append(b)
+    return chain
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--annotations", type=Path, required=True)
@@ -295,10 +404,9 @@ def main() -> None:
     parser.add_argument("--output-npz", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--output-pose-report", type=Path, default=None)
+    parser.add_argument("--max-bracketing-source-gap", type=int, default=None,
+                        help="Default: keyframe interval times neighbor span; at most one source per side.")
     args = parser.parse_args()
-    sys.path.insert(0, str(args.lightglue_root.expanduser().resolve()))
-    from lightglue import LightGlue, SuperPoint  # type: ignore
-
     device = torch.device(args.device)
     annotations = load_json(args.annotations)
     assert_prediction_only(
@@ -336,6 +444,36 @@ def main() -> None:
     if len(selected) < 2:
         raise RuntimeError("not enough selected frames")
 
+    initial_pose_by_frame = valid_initial_poses(initial_report)
+    source_rejections = {idx: rgb_source_eligibility(frames[idx], args.object_id, initial_pose_by_frame) for idx in selected}
+    eligible_sources = {idx for idx, reason in source_rejections.items() if reason is None}
+    if not eligible_sources:
+        raise RuntimeError("no eligible P09/P14 RGB source/diagnostic anchor before feature extraction")
+    adapter_path = args.annotations.parent / "v19_visible_geometry_adapter_report.json"
+    adapter = load_json(adapter_path)
+    assert_prediction_only(adapter, label="RGB P09 retained depth parameters", object_id=args.object_id)
+    parameters = adapter["parameters"]
+    max_gap = args.max_bracketing_source_gap
+    if max_gap is None:
+        max_gap = int(args.keyframe_interval) * int(args.keyframe_neighbor_span)
+    if max_gap < 1:
+        raise RuntimeError("max bracketing source gap must be positive")
+    source_support_by_frame = {}
+    # Replay only eligible sources and cache once; rejected frames never lift raw depth.
+    for idx in sorted(eligible_sources):
+        obj = object_for_frame(frames[idx], args.object_id)
+        mask = cv2.imread(str(obj["mask_path"]), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            source_rejections[idx] = "missing_source_mask"
+            continue
+        pos = depth_pos[idx]
+        source_support_by_frame[idx] = reproduce_source_depth_support(
+            obj, mask, depths[pos], confidences[pos], depth_intrinsics[pos], parameters)
+    if not source_support_by_frame:
+        raise RuntimeError("no reproducible P09 RGB source/diagnostic anchor before feature extraction")
+
+    sys.path.insert(0, str(args.lightglue_root.expanduser().resolve()))
+    from lightglue import LightGlue, SuperPoint  # type: ignore
     extractor = SuperPoint(max_num_keypoints=int(args.max_keypoints)).eval().to(device)
     matcher = LightGlue(features="superpoint", depth_confidence=0.9, width_confidence=0.95, filter_threshold=0.2).eval().to(device)
     features: dict[int, dict[str, torch.Tensor]] = {}
@@ -349,6 +487,15 @@ def main() -> None:
         image = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
         if mask is None or image is None:
             continue
+        # Features use the unresized raw RGB raster. P09 masks declare the
+        # source->mask half-pixel resize; align the appearance mask, not the UV.
+        geom = obj.get("visible_geometry_candidate", {})
+        appearance = obj.get("appearance_observation", {})
+        declared_wh = (int(geom.get("source_width", appearance.get("source_width", 0))),
+                       int(geom.get("source_height", appearance.get("source_height", 0))))
+        if image.shape[1::-1] != declared_wh:
+            raise RuntimeError(f"RGB/source image plane mismatch at frame {idx}")
+        mask = cv2.resize(mask, declared_wh, interpolation=cv2.INTER_NEAREST_EXACT)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         tensor = torch.from_numpy(image_rgb).permute(2, 0, 1).float().div(255.0).to(device)
         with torch.inference_mode():
@@ -367,31 +514,14 @@ def main() -> None:
         chosen = [interior[int(round(i * (len(interior) - 1) / max(1, take - 1)))] for i in range(take)] if take and interior else []
         key_ids = sorted(set([key_ids[0], *chosen, key_ids[-1]]))
 
-    edge_pairs = [
-        (a, b)
-        for a, b in build_edge_pairs(
-            selected, key_ids, int(args.keyframe_neighbor_span)
-        )
-        if a in features and b in features
-    ]
-
-    initial_rows = {
-        int(row["frame_idx"]): row
-        for row in initial_report.get("pose_rows", [])
-        if isinstance(row, dict)
-        and row.get("rotation_world_from_completed_canonical_matrix") is not None
-    }
-    initial_pose_by_frame = {
-        idx: (
-            np.asarray(row["rotation_world_from_completed_canonical_matrix"], dtype=np.float64),
-            np.asarray(row["translation_world_m"], dtype=np.float64),
-        )
-        for idx, row in initial_rows.items()
-        if row.get("translation_world_m") is not None
-    }
-    if any(idx not in initial_pose_by_frame for idx in selected):
-        missing_pose = sorted(idx for idx in selected if idx not in initial_pose_by_frame)
-        raise RuntimeError(f"initial pose report lacks selected frames: {missing_pose[:20]}")
+    eligible_sources = set(source_support_by_frame) & set(features)
+    if not eligible_sources:
+        raise RuntimeError("no eligible source has RGB features")
+    edge_pairs, rejected_pairs = plan_source_edge_pairs(
+        selected, key_ids, eligible_sources, int(args.keyframe_neighbor_span), max_gap)
+    unavailable_pairs = [{"source_frame_idx": a, "target_frame_idx": b, "status": "rejected", "reason": "missing_RGB_features"}
+                         for a, b in edge_pairs if a not in features or b not in features]
+    edge_pairs = [(a, b) for a, b in edge_pairs if a in features and b in features]
 
     edges: list[dict[str, Any]] = []
     edge_motions: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
@@ -399,7 +529,7 @@ def main() -> None:
     for n, (a, b) in enumerate(edge_pairs, 1):
         row, motion, evidence = feature_pair(
             a, b, features, masks, frames, depths, confidences, depth_pos,
-            depth_intrinsics, source_wh, matcher, device, args, initial_pose_by_frame
+            depth_intrinsics, source_wh, matcher, device, args, initial_pose_by_frame, source_support_by_frame
         )
         edges.append(row)
         if motion is not None:
@@ -408,18 +538,8 @@ def main() -> None:
             edge_reprojection_evidence[(a, b)] = evidence
         print(f"[global-rgb] edge {n}/{len(edge_pairs)} {a}->{b} {row['status']} matches={row.get('matches_object')} inliers={row.get('inliers')}", flush=True)
 
-    if selected[0] not in initial_rows:
-        raise RuntimeError("initial pose report lacks anchor frame")
-    anchor_R = np.asarray(initial_rows[selected[0]]["rotation_world_from_completed_canonical_matrix"], dtype=np.float64)
-    anchor_t = np.asarray(initial_rows[selected[0]]["translation_world_m"], dtype=np.float64)
-    chain: dict[int, tuple[np.ndarray, np.ndarray]] = {selected[0]: (anchor_R.copy(), anchor_t.copy())}
-    for a, b in zip(selected[:-1], selected[1:]):
-        motion = edge_motions.get((a, b))
-        if motion is None or a not in chain:
-            continue
-        R_delta, t_delta = motion
-        R_prev, t_prev = chain[a]
-        chain[b] = (R_delta @ R_prev, R_delta @ t_prev + t_delta)
+    diagnostic_anchor = min(eligible_sources)
+    chain = diagnostic_motion_chain(diagnostic_anchor, initial_pose_by_frame, edge_motions)
     chain_rows = []
     for original in initial_report.get("pose_rows", []):
         if not isinstance(original, dict):
@@ -460,6 +580,7 @@ def main() -> None:
         "input_sha256": {
             "annotations": sha256_file(args.annotations),
             "depth_npz": sha256_file(args.depth_npz),
+            "p09_adapter_report": sha256_file(adapter_path),
             "initial_pose_report": sha256_file(args.initial_pose_report),
         },
     }
@@ -474,9 +595,18 @@ def main() -> None:
         "rejected_count": sum(row.get("status") != "accepted" for row in edges),
         "reprojection_evidence_edge_count": len(edge_reprojection_evidence),
         "reprojection_evidence_point_count": int(sum(len(value["weights"]) for value in edge_reprojection_evidence.values())),
+        "diagnostic_anchor_frame_idx": diagnostic_anchor,
+        "source_rejections": [{"frame_idx": idx, "reason": reason} for idx, reason in source_rejections.items() if reason],
+        "pair_planning_rejections": rejected_pairs + unavailable_pairs,
+        "eligible_source_frame_ids": sorted(eligible_sources),
+        "missing_pose_target_frame_ids": sorted(set(selected) - set(initial_pose_by_frame)),
+        "targets_without_planned_source": sorted(set(selected) - eligible_sources - {b for _, b in edge_pairs}),
+        "targets_without_accepted_source": sorted(set(selected) - eligible_sources - {b for _, b in edge_motions}),
+        "uncertainty": "Missing metric targets remain RGB-only uncertain observations; no direct P14 poses added.",
         "chain_covered_frame_count": len(chain),
         "rows": edges,
         "parameters": {
+            "max_bracketing_source_gap": max_gap,
             "keyframe_interval": int(args.keyframe_interval),
             "keyframe_neighbor_span": int(args.keyframe_neighbor_span),
             "max_keyframes": int(args.max_keyframes),

@@ -268,7 +268,7 @@ class StageContracts(unittest.TestCase):
         old_log = self.root / 'logs/integration/P14_visible_pose.log'
         old_log.parent.mkdir(parents=True);old_log.write_text('original failed P14 evidence')
         self.invoke('pose')
-        self.assertEqual([c[0] for c in self.calls],['P13_anchor_binding','P14_anchor_bound_visible_pose','P14_RGB_observations','P14_RGB_initializer','P14b_multiview','P15_temporal_pose'])
+        self.assertEqual([c[0] for c in self.calls],['P13_anchor_binding','P14_anchor_bound_visible_pose','P14_RGB_full_timeline_observations','P14_RGB_initializer','P14b_multiview','P15_temporal_pose'])
         self.assertEqual(list(old_visible.iterdir()), [])
         self.assertEqual(old_log.read_text(), 'original failed P14 evidence')
         bound = str(self.geom / 'anchor_bound_completion_report.json')
