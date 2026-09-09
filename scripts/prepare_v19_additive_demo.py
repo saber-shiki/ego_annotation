@@ -107,9 +107,23 @@ def main() -> None:
     parser.add_argument("--demo-id", default="visual_v2")
     parser.add_argument("--render-width", type=int, default=960)
     parser.add_argument("--visual-scale-record", type=Path)
+    parser.add_argument("--reconstruct-visual-mesh", action="store_true")
+    parser.add_argument("--sam3d-seed", type=int, default=42)
+    parser.add_argument("--estimate-visual-scale", action="store_true")
+    parser.add_argument("--visual-scale-bounds", type=float, nargs=2, default=[0.8, 1.2])
+    parser.add_argument("--visual-scale-samples", type=int, default=41)
+    parser.add_argument("--visual-scale-max-frames", type=int, default=7)
+    parser.add_argument("--visual-scale-raster-width", type=int, default=192)
     parser.add_argument("--gpu", type=int, required=True)
     parser.add_argument("--minimum-free-mib", type=int, default=20000)
     args = parser.parse_args()
+    import math
+    lo, hi = args.visual_scale_bounds
+    if (not all(math.isfinite(x) for x in (lo, hi)) or not 0 < lo <= 1 <= hi or lo == hi
+            or not 3 <= args.visual_scale_samples <= 101 or not 3 <= args.visual_scale_max_frames <= 15
+            or not 32 <= args.visual_scale_raster_width <= 512 or not 0 <= args.sam3d_seed < 2**32
+            or (args.estimate_visual_scale and args.visual_scale_record)):
+        raise ValueError("invalid/conflicting native reconstruction or visual scale configuration")
     root, source, bundle, out = (value.resolve() for value in (
         args.run_root, args.source_bundle, args.demo_bundle, args.output_dir))
     if out.exists() or out.is_relative_to(root) or root.is_relative_to(out):
@@ -225,10 +239,16 @@ def main() -> None:
         "core_outputs_are_read_only": True,
         "core_state_modified": False,
         "sam3d_reconditioning": {
-            "mode": "optional_external_demo_only_hook",
-            "enabled": False,
-            "reason": "no fresh demo SAM3D completion supplied; retain full current topology and optional bounded static alignment",
-            "core_completion_fallback": True,
+            "mode": "native_demo_appearance_sam3d" if args.reconstruct_visual_mesh else "disabled_core_mesh",
+            "enabled": args.reconstruct_visual_mesh,
+            "seed": args.sam3d_seed,
+            "core_completion_fallback": not args.reconstruct_visual_mesh,
+        },
+        "visual_scale_alignment": {
+            "mode": "image_uniform_grid" if args.estimate_visual_scale else "disabled",
+            "enabled": args.estimate_visual_scale, "bounds": args.visual_scale_bounds,
+            "samples": args.visual_scale_samples, "max_frames": args.visual_scale_max_frames,
+            "raster_width": args.visual_scale_raster_width,
         },
         "native_handoff": str(contract_dir / "native_handoff.md"),
         "command": [

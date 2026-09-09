@@ -304,6 +304,8 @@ def main() -> None:
     parser.add_argument("--object-id")
     parser.add_argument("--appearance-mask-manifest", type=Path)
     parser.add_argument("--visual-scale-record", type=Path)
+    parser.add_argument("--visual-completion-report", type=Path)
+    parser.add_argument("--demo-launch-contract", type=Path)
     parser.add_argument("--published-output-mesh", type=Path)
     args = parser.parse_args()
     if args.output.exists():
@@ -366,8 +368,39 @@ def main() -> None:
     source_mesh = Path(completion["render_mesh_contract"]["required_mesh_path"])
     if sha(source_mesh) != completion["render_mesh_contract"]["required_mesh_sha256"]:
         raise ValueError("core completion mesh identity mismatch")
+    visual_completion = None
+    if args.visual_completion_report:
+        if args.demo_launch_contract is None:
+            raise ValueError("visual completion requires exact demo launch contract")
+        from v19_demo_reconditioning import validate_visual_completion, record
+        contract = load(args.demo_launch_contract)
+        for key, path in (("p14", args.p14_report), ("p15", args.p15_report),
+                          ("annotations", args.annotations), ("completion", args.completion_report)):
+            if contract["inputs"].get(key) != record(path):
+                raise ValueError("demo binding contract core source mismatch")
+        if contract.get("sam3d_reconditioning", {}).get("enabled") is not True:
+            raise ValueError("visual completion requires enabled reconstruction")
+        source_mesh, visual_completion = validate_visual_completion(
+            args.visual_completion_report, contract, args.appearance_mask_manifest)
+    elif args.demo_launch_contract and load(args.demo_launch_contract).get("sam3d_reconditioning", {}).get("enabled") is True:
+        raise ValueError("enabled reconstruction missing visual completion; no core fallback")
     scale_record = load(args.visual_scale_record) if args.visual_scale_record else None
+    if scale_record and scale_record.get("schema") == "v19_demo_image_uniform_scale_v1":
+        if (scale_record.get("source_mesh") != {"path": str(source_mesh.resolve()), "sha256": sha(source_mesh)}
+                or scale_record.get("appearance_manifest") != {"path": str(args.appearance_mask_manifest.resolve()), "sha256": sha(args.appearance_mask_manifest)}):
+            raise ValueError("estimated scale source binding mismatch")
+        for key, path in (("p14", args.p14_report), ("p15", args.p15_report),
+                          ("annotations", args.annotations), ("completion", args.completion_report)):
+            if scale_record.get("inputs", {}).get(key) != {"path": str(path.resolve()), "sha256": sha(path)}:
+                raise ValueError("estimated scale initializer source mismatch")
     mesh_receipt = scale_mesh(source_mesh, args.output_mesh, scale_record)
+    if scale_record:
+        mesh_receipt["scale_alignment"] = scale_record
+        mesh_receipt["scale_record"] = {"path": str(args.visual_scale_record.resolve()), "sha256": sha(args.visual_scale_record)}
+    if visual_completion:
+        mesh_receipt["visual_completion"] = {
+            "path": str(args.visual_completion_report.resolve()), "sha256": sha(args.visual_completion_report)}
+        mesh_receipt["original_canonical_gauge"] = visual_completion["original_canonical_gauge"]
     if args.published_output_mesh:
         mesh_receipt["output_mesh_path"] = str(args.published_output_mesh.resolve())
     visual = copy.deepcopy(p15)
@@ -385,6 +418,9 @@ def main() -> None:
         },
         "demo_pose_initializer": summary,
         "visual_mesh_receipt": mesh_receipt,
+        "visual_completion_provenance": (None if visual_completion is None else {
+            "path": str(args.visual_completion_report.resolve()), "sha256": sha(args.visual_completion_report),
+            "schema": visual_completion["schema"], "source_model": "native_SAM3D_appearance_conditioned"}),
         "appearance_mask_manifest": {
             "path": str(args.appearance_mask_manifest.resolve()),
             "sha256": sha(args.appearance_mask_manifest),

@@ -195,8 +195,33 @@ def main():
                 or sha(source_manifest) != contract["source_execution_bundle_manifest_sha256"]):
             raise ValueError("source execution bundle changed")
         verify_live_run_identity(contract, root)
-        if contract.get("sam3d_reconditioning", {}).get("enabled") is not False:
-            raise ValueError("demo SAM3D reconditioning is unimplemented; enabled hook rejected")
+        reconditioning = contract.get("sam3d_reconditioning", {})
+        if type(reconditioning.get("enabled")) is not bool:
+            raise ValueError("explicit reconditioning enabled boolean required")
+        if reconditioning["enabled"] and (
+                reconditioning.get("mode") != "native_demo_appearance_sam3d"
+                or reconditioning.get("core_completion_fallback") is not False
+                or type(reconditioning.get("seed")) is not int
+                or not 0 <= reconditioning["seed"] < 2**32):
+            raise ValueError("invalid native reconditioning contract")
+        if (not reconditioning["enabled"] and reconditioning.get("mode") not in
+                (None, "disabled_core_mesh", "optional_external_demo_only_hook")):
+            raise ValueError("disabled reconstruction mode contradicts launch contract")
+        alignment = contract.get("visual_scale_alignment", {"enabled": False, "mode": "disabled"})
+        if type(alignment.get("enabled")) is not bool:
+            raise ValueError("explicit scale alignment boolean required")
+        if not alignment["enabled"] and alignment.get("mode") != "disabled":
+            raise ValueError("disabled scale mode contradicts launch contract")
+        if alignment["enabled"]:
+            import math
+            bounds = alignment.get("bounds", [])
+            if (alignment.get("mode") != "image_uniform_grid" or "visual_scale_record" in contract["inputs"]
+                    or len(bounds) != 2 or not all(math.isfinite(x) for x in bounds)
+                    or not 0 < bounds[0] <= 1 <= bounds[1] or bounds[0] == bounds[1]
+                    or type(alignment.get("samples")) is not int or not 3 <= alignment["samples"] <= 101
+                    or type(alignment.get("max_frames")) is not int or not 3 <= alignment["max_frames"] <= 15
+                    or type(alignment.get("raster_width")) is not int or not 32 <= alignment["raster_width"] <= 512):
+                raise ValueError("invalid image scale launch configuration")
         if socket.gethostname() != contract["compute_host"]:
             raise ValueError("demo host mismatch")
         original_expected = expected_contract_paths(contract, root)
@@ -294,6 +319,36 @@ def main():
             },
         ]
 
+        extra_phases = []
+        visual_completion = measurement_root / "visual_sam3d/visual_completion.json"
+        if reconditioning["enabled"]:
+            native_staging = measurement_root / ".D00b_visual_sam3d.staging"
+            extra_phases.append({
+                "name": "D00b_visual_sam3d", "staging": native_staging,
+                "final": measurement_root / "visual_sam3d",
+                "argv": [py, ROOT / "scripts/run_v19_demo_visual_sam3d.py",
+                         "--contract", args.contract, "--appearance-mask-manifest",
+                         appearance_root / "appearance_mask_manifest.json",
+                         "--anchor-report", appearance_root / "anchor_decision.json",
+                         "--output-dir", native_staging, "--published-output-dir", measurement_root / "visual_sam3d"],
+                "required": [native_staging / "visual_completion.json", native_staging / "original_canonical_mesh.ply"],
+            })
+            phases[1]["argv"] += ["--visual-completion-report", visual_completion,
+                                  "--demo-launch-contract", args.contract]
+        if alignment["enabled"]:
+            scale_staging = measurement_root / ".D00c_visual_scale.staging"
+            extra_phases.append({
+                "name": "D00c_visual_scale", "staging": scale_staging,
+                "final": measurement_root / "visual_scale",
+                "argv": [py, ROOT / "scripts/estimate_v19_demo_visual_scale.py",
+                         "--contract", args.contract, "--appearance-mask-manifest",
+                         appearance_root / "appearance_mask_manifest.json", "--output-dir", scale_staging,
+                         *(["--visual-completion", visual_completion] if reconditioning["enabled"] else [])],
+                "required": [scale_staging / "visual_scale_record.json"],
+            })
+            phases[1]["argv"] += ["--visual-scale-record", measurement_root / "visual_scale/visual_scale_record.json"]
+        phases[1:1] = extra_phases
+
         for phase in phases:
             active_phase = phase["name"]
             active_staging = phase["staging"]
@@ -375,6 +430,7 @@ def main():
             "events": events,
             "outputs": delivered,
             "sam3d_reconditioning": contract["sam3d_reconditioning"],
+            "visual_scale_alignment": alignment,
             "final_package_assembled": False,
         }
         result_path.write_text(json.dumps(result, indent=2) + "\n")

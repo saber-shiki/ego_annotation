@@ -713,6 +713,16 @@ def main():
         },
         "mesh": str(meshpath),
         "mesh_sha256": sha(meshpath),
+        "visual_initializer_provenance": {
+            "pose_binding": {"path": str(args.pose_report.resolve()), "sha256": sha(args.pose_report)},
+            "initializer": rep.get("demo_pose_initializer"),
+            "core_source_identity": rep.get("core_source_identity"),
+            "base_object_semantics": "visual_initializer_not_a_claim_of_core_P15_equality",
+        },
+        "visual_mesh_provenance": {
+            "receipt": rep.get("visual_mesh_receipt"),
+            "completion": rep.get("visual_completion_provenance"),
+        },
         "device": str(device),
         "frame_count": N,
         "fit_image_size_wh": fit_size.tolist(),

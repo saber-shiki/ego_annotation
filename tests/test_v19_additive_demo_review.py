@@ -136,12 +136,64 @@ class AtomicDemoExecution(unittest.TestCase):
             out.mkdir(parents=True)
             names = {
                 "build_v19_demo_visual_inputs.py": ["appearance_mask_manifest.json", "anchor_decision.json"],
+                "run_v19_demo_visual_sam3d.py": ["visual_completion.json", "original_canonical_mesh.ply"],
+                "estimate_v19_demo_visual_scale.py": ["visual_scale_record.json"],
                 "fit_v20_visual_contact_demo.py": ["demo_state.npz", "fit_report.json", "contact_hypotheses.json"],
                 "render_v20_visual_contact_demo.py": ["interaction_demo.mp4", "contact_detail.mp4", "interaction_demo.rrd", "render_report.json"],
             }[script]
             for name in names:
                 (out / name).write_bytes(b"test phase output")
         return SimpleNamespace(returncode=0)
+
+    def enable_native_and_scale(self):
+        self.contract["sam3d_reconditioning"] = {
+            "enabled": True, "mode": "native_demo_appearance_sam3d", "seed": 42,
+            "core_completion_fallback": False,
+        }
+        self.contract["visual_scale_alignment"] = {
+            "enabled": True, "mode": "image_uniform_grid", "bounds": [.8, 1.2],
+            "samples": 41, "max_frames": 7, "raster_width": 192,
+        }
+        dump(self.contract_path, self.contract)
+
+    def test_enabled_native_and_scale_route_published_outputs_to_binding(self):
+        self.enable_native_and_scale()
+        self.invoke()
+        self.assertEqual([Path(call[1]).name for call in self.calls], [
+            "build_v19_demo_visual_inputs.py", "run_v19_demo_visual_sam3d.py",
+            "estimate_v19_demo_visual_scale.py", "build_v19_demo_pose_binding.py",
+            "fit_v20_visual_contact_demo.py", "render_v20_visual_contact_demo.py"])
+        bind = self.calls[3]
+        self.assertEqual(bind[bind.index("--completion-report") + 1], str(self.sources["completion"]))
+        self.assertEqual(bind[bind.index("--visual-completion-report") + 1],
+                         str(self.root / "measurements/demo_visual/object-A/v2/visual_sam3d/visual_completion.json"))
+        self.assertEqual(bind[bind.index("--visual-scale-record") + 1],
+                         str(self.root / "measurements/demo_visual/object-A/v2/visual_scale/visual_scale_record.json"))
+        result = runner.load(self.receipts / "branch_result.json")
+        for event in result["events"]:
+            for path, digest in event["output_sha256"].items():
+                self.assertEqual(runner.sha(path), digest)
+
+    def test_enabled_native_failure_stops_before_binding_without_core_fallback(self):
+        self.enable_native_and_scale()
+        def fail_native(argv, **kwargs):
+            result = self.launch(argv, **kwargs)
+            if Path(argv[1]).name == "run_v19_demo_visual_sam3d.py":
+                return SimpleNamespace(returncode=7)
+            return result
+        with self.assertRaisesRegex(RuntimeError, "D00b_visual_sam3d failed"):
+            self.invoke(fail_native)
+        self.assertEqual(len(self.calls), 2)
+        self.assertFalse((self.root / "state/demo_visual/object-A/v2/visual_binding").exists())
+        self.assertTrue((self.root / "measurements/demo_visual/object-A/v2/.D00b_visual_sam3d.failed").is_dir())
+
+    def test_enabled_invalid_scale_bounds_stop_before_any_phase(self):
+        self.enable_native_and_scale()
+        self.contract["visual_scale_alignment"]["bounds"] = [-1., 1.2]
+        dump(self.contract_path, self.contract)
+        with self.assertRaisesRegex(ValueError, "invalid image scale"):
+            self.invoke()
+        self.assertEqual(self.process_count, 0)
 
     def test_helper_or_config_mutation_and_config_redirect_fail_before_probe(self):
         for changed in (self.helper, self.cfg):
@@ -300,7 +352,9 @@ class AtomicDemoExecution(unittest.TestCase):
         log.write_text("".join(json.dumps(e) + "\n" for e in events))
         argv = ["prepare", "--run-root", str(root), "--source-bundle", str(self.bundle),
                 "--demo-bundle", str(self.bundle), "--output-dir", str(self.base / "request"),
-                "--sam2-track", str(track), "--demo-id", "judgment-only", "--gpu", "5"]
+                "--sam2-track", str(track), "--demo-id", "judgment-only", "--gpu", "5",
+                "--reconstruct-visual-mesh", "--sam3d-seed", "91", "--estimate-visual-scale",
+                "--visual-scale-bounds", "0.85", "1.15", "--visual-scale-max-frames", "5"]
         from v19_run_lineage import RunLineage
         with (patch.object(sys, "argv", argv),
               patch.object(assets, "runtime_asset_subset", side_effect=lambda identity, config, role: identity),
@@ -310,6 +364,10 @@ class AtomicDemoExecution(unittest.TestCase):
         self.assertEqual(lineage.call_count, 1)
         contract = runner.load(root / f"state/demo_visual/{obj}/judgment-only/receipts/launch_contract.json")
         self.assertNotIn("p17", contract["inputs"])
+        self.assertEqual(contract["sam3d_reconditioning"], {"enabled": True,
+            "mode": "native_demo_appearance_sam3d", "seed": 91, "core_completion_fallback": False})
+        self.assertEqual(contract["visual_scale_alignment"]["bounds"], [.85, 1.15])
+        self.assertEqual(contract["visual_scale_alignment"]["max_frames"], 5)
         self.assertEqual(contract["inputs"]["judgment"], {"path": str(judgment), "sha256": runner.sha(judgment)})
         self.assertFalse((root / "measurements/contact_visibility_factors").exists())
         self.assertEqual({e["phase"] for e in events}, {"P01", "P15_temporal_pose", "fixture_upstream"})

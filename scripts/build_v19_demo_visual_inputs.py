@@ -140,7 +140,9 @@ def score_mask(image: np.ndarray, mask: np.ndarray, *, min_area_fraction: float,
     # Fixed normalized terms. Log compression prevents sharpness magnitude from
     # overwhelming silhouette area/clearance while remaining label-independent.
     sharpness_term = min(1.0, np.log1p(max(0.0, sharpness)) / np.log(1001.0))
-    clearance_term = min(1.0, border_fraction / 0.2)
+    # Clearance is truncation safety, not a reward for image-center distance.
+    safe_clearance_fraction = 0.05
+    clearance_term = min(1.0, border_fraction / safe_clearance_fraction)
     area_term = min(1.0, area_fraction / 0.25)
     score = 0.45 * area_term + 0.35 * sharpness_term + 0.20 * clearance_term
     return {
@@ -155,6 +157,7 @@ def score_mask(image: np.ndarray, mask: np.ndarray, *, min_area_fraction: float,
             "area": area_term,
             "sharpness": sharpness_term,
             "border_clearance": clearance_term,
+            "safe_clearance_fraction": safe_clearance_fraction,
             "weights": {"area": 0.45, "sharpness": 0.35, "border_clearance": 0.20},
         },
         "score": float(score),
