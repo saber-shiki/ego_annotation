@@ -78,6 +78,12 @@ A launch declaring `mode: recovery` uses `state/runtime_recovery/P09/recovery.js
 
 For this mode only, begin with P09 canonical visible geometry using the existing selected object/anchor, then execute P10–P21 and the additive demo in normal order. Do not rerun P00–P08/P09-propose, rewrite the existing plan/anchor or delete the original P09 failure evidence. Use `logs/P09_recovery.log` for the outer resumed invocation; the original `logs/P09.log` remains intact. Keep subsequent phase failures as stops. All managed commands and file reads/writes are strictly sequential, not parallel batches.
 
+## Explicit same-run P14 binding continuation
+
+When the launch contract is `state/runtime_recovery/P14/recovery.json` with `resume_phase: P14`, start with the pose-stage dispatcher rather than P09 or P00. The completed P00–P13 predictions, existing SAM3D mesh/completion and P11 atomically selected evidence remain unchanged. The named anchor-binding subprocess produces a new `anchor_bound_completion_report.json` from the original byte-bound inputs; it does not regenerate geometry or alter collision/sign authority. The corrected P14 writes to `visible_anchor_bound/` and a new phase log; the original empty failed `visible/` directory and P14 failure log/blocker remain evidence. Use `logs/P14_recovery.log` for the outer command. Continue the rest of the normal pose/interaction/demo/export phases only after success.
+
+This P14 transition must identify the verified preceding P09 recovery and its event prefix. Old producer records keep their original code identity; new events name the current execution bundle and transition. No other arbitrary recovery sequence or model/solver replacement is authorized. Any new failure during this P14 continuation goes exclusively under `state/runtime_recovery/P14/failure.json`, including pre-invocation errors; preserve an existing file and cite it rather than overwriting. The launch stops on any named command failure.
+
 ## Stop condition
 
 If a phase cannot run because an input, script, model asset, or environment is missing, write:

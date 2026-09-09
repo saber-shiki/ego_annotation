@@ -15,6 +15,9 @@ from v19_runtime_contracts import in_run, load, sha
 RECOVERY_DIR = Path("state/runtime_recovery/P09")
 RECOVERY_FILE = RECOVERY_DIR / "recovery.json"
 SCHEMA = "v19_same_run_P09_verification_recovery_v1"
+P14_RECOVERY_DIR = Path("state/runtime_recovery/P14")
+P14_RECOVERY_FILE = P14_RECOVERY_DIR / "recovery.json"
+P14_SCHEMA = "v19_same_run_P14_anchor_binding_recovery_v1"
 ALLOWED_CHANGED_FILES = {
     "scripts/v19_run_lineage.py",
     "scripts/v19_run_recovery.py",
@@ -53,16 +56,29 @@ def normalized_config(value, bundle):
     return value
 
 
-def validate_transition(old, new, old_config, new_config, old_bundle, new_bundle):
+def validate_transition(
+    old, new, old_config, new_config, old_bundle, new_bundle, phase="P09"
+):
+    allowed = set(ALLOWED_CHANGED_FILES)
+    if phase == "P14":
+        allowed.update(
+            {
+                "scripts/bind_v19_completion_anchor.py",
+                "scripts/run_v19_sam3d_reconstruction.py",
+                "scripts/run_v19_sam3d_integration_stage.py",
+            }
+        )
+    elif phase != "P09":
+        raise ValueError("unsupported explicit recovery phase")
     changed = {
         k
         for k in set(old["files"]) | set(new["files"])
         if old["files"].get(k) != new["files"].get(k)
     }
-    if not changed <= ALLOWED_CHANGED_FILES:
+    if not changed <= allowed:
         raise ValueError(
-            "P09 recovery changed prediction/model code or assets: "
-            + ", ".join(sorted(changed - ALLOWED_CHANGED_FILES))
+            f"{phase} recovery changed prediction/model code or assets: "
+            + ", ".join(sorted(changed - allowed))
         )
     if old.get("external_assets") != new.get("external_assets"):
         raise ValueError("P09 recovery external model/tool identities differ")
@@ -79,13 +95,25 @@ def recovery_context(root, bundle, contract, manifest):
     target_hash = sha(bundle / "runtime/bundle_manifest.json")
     if target_hash == contract["bundle_manifest_sha256"]:
         return None
-    recovery_path = in_run(root / RECOVERY_FILE, root)
+    recovery_path = None
+    for relative in (P14_RECOVERY_FILE, RECOVERY_FILE):
+        candidate = root / relative
+        if (
+            candidate.is_file()
+            and load(candidate).get("target_bundle_manifest_sha256") == target_hash
+        ):
+            recovery_path = in_run(candidate, root)
+            break
+    if recovery_path is None:
+        raise ValueError("missing explicit recovery for execution bundle")
     recovery = load(recovery_path)
+    phase = "P14" if recovery_path == root / P14_RECOVERY_FILE else "P09"
+    schema = P14_SCHEMA if phase == "P14" else SCHEMA
     identity = run_identity(contract)
     if (
-        recovery.get("schema") != SCHEMA
+        recovery.get("schema") != schema
         or recovery.get("mode") != "same_run_recovery"
-        or recovery.get("resume_phase") != "P09"
+        or recovery.get("resume_phase") != phase
         or recovery.get("run_identity") != identity
         or recovery.get("target_bundle") != str(bundle)
         or recovery.get("target_bundle_manifest_sha256") != target_hash
@@ -93,11 +121,35 @@ def recovery_context(root, bundle, contract, manifest):
         != sha(root / "input/runtime_input_contract.json")
     ):
         raise ValueError("P09 recovery identity/phase/bundle mismatch")
-    directory = root / RECOVERY_DIR
+    directory = recovery_path.parent
     old_manifest_path = in_run(directory / "source_bundle_manifest.json", root)
     old_config_path = in_run(directory / "source_runtime_config.json", root)
     old = load(old_manifest_path)
-    if sha(old_manifest_path) != contract["bundle_manifest_sha256"]:
+    previous_context = None
+    if phase == "P14":
+        predecessor_path = in_run(root / RECOVERY_FILE, root)
+        predecessor = load(predecessor_path)
+        if (
+            recovery.get("previous_recovery_sha256") != sha(predecessor_path)
+            or sha(old_manifest_path)
+            != predecessor.get("target_bundle_manifest_sha256")
+            or recovery.get("source_bundle") != predecessor.get("target_bundle")
+            or recovery.get("target_bundle_manifest_sha256")
+            == predecessor.get("target_bundle_manifest_sha256")
+        ):
+            raise ValueError("P14 recovery predecessor binding mismatch")
+        previous_bundle = Path(recovery["source_bundle"]).resolve()
+        if sha(previous_bundle / "runtime/bundle_manifest.json") != sha(
+            old_manifest_path
+        ):
+            raise ValueError("P14 recovery previous execution bundle changed")
+        previous_context = recovery_context(root, previous_bundle, contract, old)
+        if (
+            previous_context is None
+            or previous_context["contract"]["resume_phase"] != "P09"
+        ):
+            raise ValueError("P14 recovery requires one verified P09 transition")
+    elif sha(old_manifest_path) != contract["bundle_manifest_sha256"]:
         raise ValueError("P09 recovery original bundle does not match birth contract")
     if sha(old_config_path) != old["files"]["runtime/runtime_config.json"]:
         raise ValueError("P09 recovery original config snapshot changed")
@@ -108,6 +160,7 @@ def recovery_context(root, bundle, contract, manifest):
         load(bundle / "runtime/runtime_config.json"),
         Path(recovery["source_bundle"]),
         bundle,
+        phase=phase,
     )
     if changed != recovery.get("changed_bundle_files"):
         raise ValueError("P09 recovery change set differs")
@@ -142,9 +195,29 @@ def recovery_context(root, bundle, contract, manifest):
     protected = recovery.get("protected_inputs", {})
     anchor = str(root / "state/anchor_decisions" / (obj + ".json"))
     plan = str(root / "measurements/object_candidates/object_plan_agent.json")
-    blocker = str(root / "state/runtime_blockers/P09.json")
-    if not {anchor, plan, blocker} <= set(protected):
-        raise ValueError("P09 recovery missing protected decision/failure evidence")
+    blocker = str(
+        root
+        / "state/runtime_blockers"
+        / ("P14_visible_pose.json" if phase == "P14" else "P09.json")
+    )
+    required_protected = {anchor, plan, blocker}
+    if phase == "P14":
+        required_protected.update(
+            {
+                str(
+                    root
+                    / f"measurements/geometry_completion/sam3d_{obj}/completion_report.json"
+                ),
+                str(
+                    root
+                    / f"measurements/object_geometry/visible_geometry/{obj}/annotations_v19_visible_geometry.json"
+                ),
+            }
+        )
+    if not required_protected <= set(protected):
+        raise ValueError(
+            "recovery missing protected decision/failure/geometry evidence"
+        )
     for name, digest in protected.items():
         if sha(in_run(name, root)) != digest:
             raise ValueError("P09 recovery protected input changed: " + name)
@@ -153,9 +226,8 @@ def recovery_context(root, bundle, contract, manifest):
     for line in prefix.splitlines():
         event = json.loads(line)
         if event.get("returncode") == 0 and "error" not in event:
-            if (
-                event.get("run_identity") != identity
-                or event.get("code_sha256") != source_code
+            if event.get("run_identity") != identity or not event_code_is_valid(
+                event, source_code, previous_context
             ):
                 raise ValueError(
                     "P09 recovery event does not belong to original run/code"
@@ -176,7 +248,9 @@ def event_code_is_valid(event, current_code, context):
     if context is None:
         return event.get("code_sha256") == current_code
     if event_digest(event) in context["previous_event_digests"]:
-        return event.get("code_sha256") == context["source_code"]
+        # The entire original event, including its original code identity, was
+        # validated at transition preparation and again when loading the prefix.
+        return True
     return (
         event.get("code_sha256") == current_code
         and event.get("execution_bundle_manifest_sha256")

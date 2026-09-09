@@ -18,7 +18,13 @@ import zlib
 
 from v19_video_timing import read_cfr_video_timing
 from v19_runtime_assets import verify_bundle
-from v19_run_recovery import RECOVERY_DIR, RECOVERY_FILE, recovery_context
+from v19_run_recovery import (
+    RECOVERY_DIR,
+    RECOVERY_FILE,
+    P14_RECOVERY_DIR,
+    P14_RECOVERY_FILE,
+    recovery_context,
+)
 
 AGENT = "ego-annotation.rgb-sam3d-runtime"
 PROFILE = Path(".pi/agents/ego-annotation.rgb-sam3d-runtime.md")
@@ -239,11 +245,10 @@ def write_request(bundle, root, mode, contract_path, output_dir):
         if payload["output_json"] != str(agent_output):
             raise ValueError("probe output contract mismatch")
     elif mode == "recovery":
-        if Path(contract_path).resolve() != root / RECOVERY_FILE:
-            raise ValueError(
-                "only the declared same-run P09 recovery contract is supported"
-            )
-        agent_output = root / RECOVERY_DIR / "native_recovery_handoff.md"
+        recovery_path = Path(contract_path).resolve()
+        if recovery_path not in {root / RECOVERY_FILE, root / P14_RECOVERY_FILE}:
+            raise ValueError("only declared P09/P14 recovery transitions are supported")
+        agent_output = recovery_path.parent / "native_recovery_handoff.md"
     else:
         agent_output = root / "state/native_prediction_handoff.md"
     if agent_output.exists():
@@ -388,15 +393,28 @@ def prepare_recovery_request(bundle, run_root, output_dir):
             "recovery launch requires an explicit corrected-bundle transition"
         )
     obj = context["contract"]["object_id"]
-    if ((root / RECOVERY_DIR / 'failure.json').exists()
-            or (root / f"measurements/object_geometry/visible_geometry/{obj}").exists()
-            or (root / "logs/integration/P09.log").exists()):
-        raise ValueError("P09 recovery was already started; no automatic relaunch")
+    phase = context["contract"]["resume_phase"]
+    record = root / (P14_RECOVERY_FILE if phase == "P14" else RECOVERY_FILE)
+    outputs = (
+        [
+            root / f"measurements/pose_fits/{obj}/visible_anchor_bound",
+            root / "logs/integration/P14_anchor_bound_visible_pose.log",
+            root
+            / f"measurements/geometry_completion/sam3d_{obj}/anchor_bound_completion_report.json",
+        ]
+        if phase == "P14"
+        else [
+            root / f"measurements/object_geometry/visible_geometry/{obj}",
+            root / "logs/integration/P09.log",
+        ]
+    )
+    if (record.parent / "failure.json").exists() or any(p.exists() for p in outputs):
+        raise ValueError(f"{phase} recovery was already started; no automatic relaunch")
     video = Path(birth["input_video"]).resolve(strict=True)
     if not video.is_relative_to(root) or sha(video) != birth["input_video_sha256"]:
         raise ValueError("recovery raw video identity mismatch")
     read_cfr_video_timing(video)
-    return write_request(bundle, root, "recovery", root / RECOVERY_FILE, output_dir)
+    return write_request(bundle, root, "recovery", record, output_dir)
 
 
 def main():

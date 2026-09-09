@@ -120,8 +120,10 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
             lineage.success(event,inputs,outputs,output_roots)
     except Exception as exc:
         event['error'] = str(exc)
-        recovery_failure = key == 'P09' and getattr(lineage, 'recovery', None) is not None
-        blockers = root / ('state/runtime_recovery/P09' if recovery_failure else 'state/runtime_blockers')
+        recovery = getattr(lineage, 'recovery', None)
+        resume_phase = recovery['contract']['resume_phase'] if recovery else None
+        recovery_failure = resume_phase == 'P14' or (key == 'P09' and resume_phase == 'P09')
+        blockers = root / (f'state/runtime_recovery/{resume_phase}' if recovery_failure else 'state/runtime_blockers')
         in_run(blockers, root, must_exist=False)
         blockers.mkdir(parents=True, exist_ok=True)
         failure_path = blockers / ('failure.json' if recovery_failure else f'{key}.json')
