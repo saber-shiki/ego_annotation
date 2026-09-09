@@ -122,7 +122,7 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
         event['error'] = str(exc)
         recovery = getattr(lineage, 'recovery', None)
         resume_phase = recovery['contract']['resume_phase'] if recovery else None
-        recovery_failure = resume_phase == 'P14' or (key == 'P09' and resume_phase == 'P09')
+        recovery_failure = resume_phase in {'P14','P14_RGB'} or (key == 'P09' and resume_phase == 'P09')
         blockers = root / (f'state/runtime_recovery/{resume_phase}' if recovery_failure else 'state/runtime_blockers')
         in_run(blockers, root, must_exist=False)
         blockers.mkdir(parents=True, exist_ok=True)

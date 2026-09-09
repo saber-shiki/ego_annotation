@@ -84,6 +84,12 @@ When the launch contract is `state/runtime_recovery/P14/recovery.json` with `res
 
 This P14 transition must identify the verified preceding P09 recovery and its event prefix. Old producer records keep their original code identity; new events name the current execution bundle and transition. No other arbitrary recovery sequence or model/solver replacement is authorized. Any new failure during this P14 continuation goes exclusively under `state/runtime_recovery/P14/failure.json`, including pre-invocation errors; preserve an existing file and cite it rather than overwriting. The launch stops on any named command failure.
 
+## Explicit same-run RGB continuation
+
+A recovery contract `state/runtime_recovery/P14_RGB/recovery.json` with `resume_phase: P14_RGB` retains the current successful P14 anchor-bound report and original completion/SAM3D state. Start with `scripts/run_v19_sam3d_integration_stage.py --stage pose-rgb`, not `pose`, so the normalizer and P14 fitting are not repeated. The failed RGB stage receives a new fixed output directory `rgb_full_timeline/` and producer key `P14_RGB_full_timeline_observations`; old failure logs and the P14 recovery failure record remain unchanged. Use `logs/P14_RGB_recovery.log` for this outer invocation.
+
+Missing P14 pose/accepted-surface frames do not become direct metric observations. RGB edges may use these frames as target images; only validated metric source frames may supply source3D and initial canonical coordinates. Retain uncertainty where no usable edge supports a node. Continue the existing initializer/P14b/P15 and remaining stages after successful RGB production. Any subsequent named failure stops this launch and writes exclusively to `state/runtime_recovery/P14_RGB/failure.json`. This is the fixed successor of P14 recovery, not arbitrary phase resumption or model substitution.
+
 ## Stop condition
 
 If a phase cannot run because an input, script, model asset, or environment is missing, write:

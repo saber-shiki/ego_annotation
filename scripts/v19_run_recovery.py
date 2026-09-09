@@ -18,6 +18,16 @@ SCHEMA = "v19_same_run_P09_verification_recovery_v1"
 P14_RECOVERY_DIR = Path("state/runtime_recovery/P14")
 P14_RECOVERY_FILE = P14_RECOVERY_DIR / "recovery.json"
 P14_SCHEMA = "v19_same_run_P14_anchor_binding_recovery_v1"
+RGB_RECOVERY_DIR = Path("state/runtime_recovery/P14_RGB")
+RGB_RECOVERY_FILE = RGB_RECOVERY_DIR / "recovery.json"
+RGB_SCHEMA = "v19_same_run_RGB_missing_pose_recovery_v1"
+RECOVERY_SCHEMAS = {"P09": SCHEMA, "P14": P14_SCHEMA, "P14_RGB": RGB_SCHEMA}
+RECOVERY_FILES = {
+    "P09": RECOVERY_FILE,
+    "P14": P14_RECOVERY_FILE,
+    "P14_RGB": RGB_RECOVERY_FILE,
+}
+PREVIOUS_PHASE = {"P14": "P09", "P14_RGB": "P14"}
 ALLOWED_CHANGED_FILES = {
     "scripts/v19_run_lineage.py",
     "scripts/v19_run_recovery.py",
@@ -68,6 +78,13 @@ def validate_transition(
                 "scripts/run_v19_sam3d_integration_stage.py",
             }
         )
+    elif phase == "P14_RGB":
+        allowed.update(
+            {
+                "scripts/build_v20_global_rgb_orientation_edges.py",
+                "scripts/run_v19_sam3d_integration_stage.py",
+            }
+        )
     elif phase != "P09":
         raise ValueError("unsupported explicit recovery phase")
     changed = {
@@ -96,7 +113,7 @@ def recovery_context(root, bundle, contract, manifest):
     if target_hash == contract["bundle_manifest_sha256"]:
         return None
     recovery_path = None
-    for relative in (P14_RECOVERY_FILE, RECOVERY_FILE):
+    for relative in (RGB_RECOVERY_FILE, P14_RECOVERY_FILE, RECOVERY_FILE):
         candidate = root / relative
         if (
             candidate.is_file()
@@ -107,8 +124,8 @@ def recovery_context(root, bundle, contract, manifest):
     if recovery_path is None:
         raise ValueError("missing explicit recovery for execution bundle")
     recovery = load(recovery_path)
-    phase = "P14" if recovery_path == root / P14_RECOVERY_FILE else "P09"
-    schema = P14_SCHEMA if phase == "P14" else SCHEMA
+    phase = next(p for p, rel in RECOVERY_FILES.items() if recovery_path == root / rel)
+    schema = RECOVERY_SCHEMAS[phase]
     identity = run_identity(contract)
     if (
         recovery.get("schema") != schema
@@ -126,8 +143,9 @@ def recovery_context(root, bundle, contract, manifest):
     old_config_path = in_run(directory / "source_runtime_config.json", root)
     old = load(old_manifest_path)
     previous_context = None
-    if phase == "P14":
-        predecessor_path = in_run(root / RECOVERY_FILE, root)
+    if phase in PREVIOUS_PHASE:
+        predecessor_phase = PREVIOUS_PHASE[phase]
+        predecessor_path = in_run(root / RECOVERY_FILES[predecessor_phase], root)
         predecessor = load(predecessor_path)
         if (
             recovery.get("previous_recovery_sha256") != sha(predecessor_path)
@@ -137,18 +155,20 @@ def recovery_context(root, bundle, contract, manifest):
             or recovery.get("target_bundle_manifest_sha256")
             == predecessor.get("target_bundle_manifest_sha256")
         ):
-            raise ValueError("P14 recovery predecessor binding mismatch")
+            raise ValueError(f"{phase} recovery predecessor binding mismatch")
         previous_bundle = Path(recovery["source_bundle"]).resolve()
         if sha(previous_bundle / "runtime/bundle_manifest.json") != sha(
             old_manifest_path
         ):
-            raise ValueError("P14 recovery previous execution bundle changed")
+            raise ValueError(f"{phase} recovery previous execution bundle changed")
         previous_context = recovery_context(root, previous_bundle, contract, old)
         if (
             previous_context is None
-            or previous_context["contract"]["resume_phase"] != "P09"
+            or previous_context["contract"]["resume_phase"] != predecessor_phase
         ):
-            raise ValueError("P14 recovery requires one verified P09 transition")
+            raise ValueError(
+                f"{phase} recovery requires one verified {predecessor_phase} transition"
+            )
     elif sha(old_manifest_path) != contract["bundle_manifest_sha256"]:
         raise ValueError("P09 recovery original bundle does not match birth contract")
     if sha(old_config_path) != old["files"]["runtime/runtime_config.json"]:
@@ -195,13 +215,17 @@ def recovery_context(root, bundle, contract, manifest):
     protected = recovery.get("protected_inputs", {})
     anchor = str(root / "state/anchor_decisions" / (obj + ".json"))
     plan = str(root / "measurements/object_candidates/object_plan_agent.json")
-    blocker = str(
-        root
-        / "state/runtime_blockers"
-        / ("P14_visible_pose.json" if phase == "P14" else "P09.json")
+    blocker = (
+        str(root / P14_RECOVERY_DIR / "failure.json")
+        if phase == "P14_RGB"
+        else str(
+            root
+            / "state/runtime_blockers"
+            / ("P14_visible_pose.json" if phase == "P14" else "P09.json")
+        )
     )
     required_protected = {anchor, plan, blocker}
-    if phase == "P14":
+    if phase in {"P14", "P14_RGB"}:
         required_protected.update(
             {
                 str(
@@ -211,6 +235,19 @@ def recovery_context(root, bundle, contract, manifest):
                 str(
                     root
                     / f"measurements/object_geometry/visible_geometry/{obj}/annotations_v19_visible_geometry.json"
+                ),
+            }
+        )
+    if phase == "P14_RGB":
+        required_protected.update(
+            {
+                str(
+                    root
+                    / f"measurements/pose_fits/{obj}/visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json"
+                ),
+                str(
+                    root
+                    / f"measurements/geometry_completion/sam3d_{obj}/anchor_bound_completion_report.json"
                 ),
             }
         )

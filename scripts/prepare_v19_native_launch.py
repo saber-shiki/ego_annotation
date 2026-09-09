@@ -23,6 +23,9 @@ from v19_run_recovery import (
     RECOVERY_FILE,
     P14_RECOVERY_DIR,
     P14_RECOVERY_FILE,
+    RGB_RECOVERY_DIR,
+    RGB_RECOVERY_FILE,
+    RECOVERY_FILES,
     recovery_context,
 )
 
@@ -246,8 +249,10 @@ def write_request(bundle, root, mode, contract_path, output_dir):
             raise ValueError("probe output contract mismatch")
     elif mode == "recovery":
         recovery_path = Path(contract_path).resolve()
-        if recovery_path not in {root / RECOVERY_FILE, root / P14_RECOVERY_FILE}:
-            raise ValueError("only declared P09/P14 recovery transitions are supported")
+        if recovery_path not in {root / rel for rel in RECOVERY_FILES.values()}:
+            raise ValueError(
+                "only declared P09/P14/P14_RGB recovery transitions are supported"
+            )
         agent_output = recovery_path.parent / "native_recovery_handoff.md"
     else:
         agent_output = root / "state/native_prediction_handoff.md"
@@ -394,7 +399,7 @@ def prepare_recovery_request(bundle, run_root, output_dir):
         )
     obj = context["contract"]["object_id"]
     phase = context["contract"]["resume_phase"]
-    record = root / (P14_RECOVERY_FILE if phase == "P14" else RECOVERY_FILE)
+    record = root / RECOVERY_FILES[phase]
     outputs = (
         [
             root / f"measurements/pose_fits/{obj}/visible_anchor_bound",
@@ -408,6 +413,13 @@ def prepare_recovery_request(bundle, run_root, output_dir):
             root / "logs/integration/P09.log",
         ]
     )
+    if phase == "P14_RGB":
+        outputs = [
+            root / f"measurements/pose_fits/{obj}/rgb_full_timeline",
+            root / "logs/integration/P14_RGB_full_timeline_observations.log",
+            root / f"measurements/pose_fits/{obj}/rgb_initialized_pose.json",
+            root / f"measurements/pose_fits/{obj}/temporal",
+        ]
     if (record.parent / "failure.json").exists() or any(p.exists() for p in outputs):
         raise ValueError(f"{phase} recovery was already started; no automatic relaunch")
     video = Path(birth["input_video"]).resolve(strict=True)
