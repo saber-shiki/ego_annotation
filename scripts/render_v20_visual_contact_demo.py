@@ -18,7 +18,8 @@ from v20_demo_geometry import camera, project, sha
 from v19_demo_timeline import hand_validity, state_timeline
 
 
-def scene_for_frame(z, idx, base=False, yaw_deg=0.0, valid=None):
+def scene_geometry_for_frame(z, idx, base=False, yaw_deg=0.0, valid=None):
+    """Return complete camera/inspection-view geometry without changing state."""
     prefix = "base_" if base else ""
     V = z["object_vertices_canonical"]
     F = z["object_faces"]
@@ -41,6 +42,11 @@ def scene_for_frame(z, idx, base=False, yaw_deg=0.0, valid=None):
         pivot = np.mean(vertices[0], axis=0)
         view_R = Rotation.from_euler("y", yaw_deg, degrees=True).as_matrix()
         vertices = [(v - pivot) @ view_R.T + pivot for v in vertices]
+    return vertices, faces, labels
+
+
+def scene_for_frame(z, idx, base=False, yaw_deg=0.0, valid=None):
+    vertices, faces, labels = scene_geometry_for_frame(z, idx, base, yaw_deg, valid)
     scene = o3d.t.geometry.RaycastingScene(nthreads=4)
     for v, f in zip(vertices, faces):
         scene.add_triangles(
@@ -178,6 +184,90 @@ def banner(img, left, right):
     return im
 
 
+def detail_viewports(z, order, intrinsics, size, yaw_deg=0.0, base=False, valid=None):
+    """Fit full original/yawed scene bounds below the banner, then smooth safely.
+
+    Percentile bounds and a display-width cap used to clip tall geometry. Bounds
+    here use every finite positive-depth vertex in both views; smoothing is
+    followed by a containment expansion. Only the viewport changes, never mesh
+    vertices/faces, camera state, or world transforms stored in the recording.
+    """
+    W, H = map(int, size)
+    if W < 2 or H < 2 or not np.isfinite(yaw_deg):
+        raise ValueError("invalid detail viewport size or yaw")
+    n = len(z["frame_idx"])
+    order = np.asarray(order)
+    if (order.shape != (n,) or not np.issubdtype(order.dtype, np.integer)
+            or not np.array_equal(np.sort(order), np.arange(n)) or n == 0):
+        raise ValueError("detail viewport order must cover every state row once")
+    intrinsics = np.asarray(intrinsics, dtype=float)
+    if (intrinsics.shape != (n, 4) or not np.isfinite(intrinsics).all()
+            or np.any(intrinsics[:, :2] <= 0)):
+        raise ValueError("invalid detail intrinsics")
+    margin = np.minimum(np.maximum(np.array([W, H]) * 0.04, 1.0),
+                        (np.array([W, H]) - 1.0) * 0.08)
+    banner_bottom = max(1, round(49 * min(1.0, H / 960)))
+    # Tiny diagnostic rasters cannot reserve the usual header height.
+    top = min(banner_bottom + 1.0, (H - 1.0) * 0.2)
+    lower = np.array([margin[0], top + margin[1]])
+    upper = np.array([W - 1.0 - margin[0], H - 1.0 - margin[1]])
+    usable = upper - lower
+    if np.any(usable <= 0):
+        raise ValueError("detail viewport has no drawable area")
+    target_center = (lower + upper) / 2.0
+    bounds = np.empty((n, 2, 2), dtype=float)
+    excluded = np.zeros(n, dtype=int)
+    for i in range(n):
+        points = []
+        for yaw in ([0.0, yaw_deg] if yaw_deg else [0.0]):
+            vertices, _, _ = scene_geometry_for_frame(z, i, base, yaw, valid)
+            for v in vertices:
+                good = np.isfinite(v).all(axis=1) & (v[:, 2] > 1e-5)
+                excluded[i] += int(np.count_nonzero(~good))
+                if np.any(good):
+                    points.append(project(v[good], intrinsics[i]))
+        if not points:
+            raise ValueError(f"detail frame {int(z['frame_idx'][i])} has no positive-depth geometry")
+        uv = np.concatenate(points)
+        if not np.isfinite(uv).all():
+            raise ValueError("detail projection is nonfinite")
+        bounds[i] = [uv.min(axis=0), uv.max(axis=0)]
+    raw_centers = bounds.mean(axis=1)
+    raw_sizes = W * np.max((bounds[:, 1] - bounds[:, 0]) / usable, axis=1)
+    centers = np.empty_like(raw_centers)
+    sizes = np.empty_like(raw_sizes)
+    centers[order] = gaussian_filter1d(raw_centers[order], 4, axis=0)
+    sizes[order] = gaussian_filter1d(raw_sizes[order], 4)
+    # Smoothed centers/sizes must never exclude geometry of the current frame.
+    half_extent = np.maximum(np.abs(bounds[:, 0] - centers), np.abs(bounds[:, 1] - centers))
+    required_sizes = W * np.max(2.0 * half_extent / usable, axis=1)
+    sizes = np.maximum.reduce([sizes, required_sizes, np.full(n, min(W, H) * 0.385)])
+    ratios = W / sizes
+    offsets = target_center - centers * ratios[:, None]
+    affines = np.zeros((n, 2, 3), dtype=float)
+    affines[:, 0, 0] = affines[:, 1, 1] = ratios
+    affines[:, :, 2] = offsets
+    zoom_K = intrinsics.copy()
+    zoom_K[:, :2] *= ratios[:, None]
+    zoom_K[:, 2:] = intrinsics[:, 2:] * ratios[:, None] + offsets
+    projected_bounds = bounds * ratios[:, None, None] + offsets[:, None, :]
+    if (np.any(projected_bounds[:, 0] < lower - 1e-6)
+            or np.any(projected_bounds[:, 1] > upper + 1e-6)):
+        raise ValueError("detail viewport failed full-scene containment")
+    return zoom_K, affines, {
+        "method": "full_original_and_yawed_positive_depth_vertex_union_with_safe_temporal_framing",
+        "drawable_bounds_uv": [lower.tolist(), upper.tolist()],
+        "projected_bounds_uv": projected_bounds.tolist(),
+        "camera_plane_or_nonfinite_vertex_counts": excluded.tolist(),
+        "geometry_or_world_state_modified": False,
+    }
+
+
+def detail_view_title(yaw_deg, base=False):
+    description = "unfitted geometry" if base else "visual proximity hypothesis"
+    return f"3D inspection ({yaw_deg:+g} deg) | demo-only {description}"
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--state", type=Path, required=True)
@@ -206,27 +296,11 @@ def main():
     selected = order if a.frames == "all" else np.array([id_to_index[int(f)] for f in a.frames.split(",")])
     valid = {side: hand_validity(z, side, n, fitted=True) for side in ["left", "right"]}
     full = a.frames == "all"
+    detail_K, detail_affines, detail_framing = detail_viewports(
+        z, order, intrinsics, (W, H), a.detail_yaw_deg, a.base, valid
+    )
     mp4 = encode_process(out / "interaction_demo.mp4", (2 * W, H), fps) if full else None
     detail = encode_process(out / "contact_detail.mp4", (2 * W, H), fps) if full else None
-    scene_centers = []
-    scene_sizes = []
-    for i in range(n):
-        pts = np.concatenate(
-            [z[s + ("_base_vertices_world" if a.base else "_vertices_world")][i] for s in ["left", "right"] if valid[s][i]]
-            + [
-                z["object_vertices_canonical"][::max(1, len(z["object_vertices_canonical"]) // 5000)] @ z[("base_" if a.base else "") + "object_rotation"][i].T
-                + z[("base_" if a.base else "") + "object_translation_world"][i]
-            ]
-        )
-        uv = project(camera(pts, z["T_world_camera"][i]), intrinsics[i])
-        lo = np.percentile(uv, 1, axis=0)
-        hi = np.percentile(uv, 99, axis=0)
-        scene_centers.append((lo + hi) / 2)
-        scene_sizes.append(max((hi - lo)[0], (hi - lo)[1] * W / H) * 1.18)
-    centers = np.empty((n, 2))
-    sizes = np.empty(n)
-    centers[order] = gaussian_filter1d(np.asarray(scene_centers)[order], 4, axis=0)
-    sizes[order] = np.clip(gaussian_filter1d(np.asarray(scene_sizes)[order], 4), min(W, H) * 0.385, max(W, H) * 0.834)
     if full:
         rr.init("V20_visual_hand_object_demo", spawn=False)
         rr.save(str(out / "interaction_demo.rrd"))
@@ -234,7 +308,7 @@ def main():
         rr.log(
             "/metadata",
             rr.TextDocument(
-                "Visual-fit demo: real SAM3D mesh and MANO surfaces. Contact is fitted hypothesis, not measured physical ground truth. All front faces retained."
+                "Demo-only visual fit: real SAM3D mesh and MANO surfaces. Unsigned visual proximity is not measured contact, collision, sign, SDF or nonpenetration authority. All front faces retained."
             ),
             static=True,
         )
@@ -271,25 +345,14 @@ def main():
                 f"Original video  |  frame {frame_id}",
                 "Visual interaction fit  |  demo-only",
             )
-            size = float(sizes[idx])
-            cx, cy = centers[idx]
-            x0 = cx - size / 2
-            y0 = cy - size * H / W / 2
-            ratio = W / size
-            zoomK = np.r_[K[:2] * ratio, (K[2:] - [x0, y0] + 0.5) * ratio - 0.5]
+            zoomK = detail_K[idx]
             inspect_scene, _, inspect_faces, inspect_normals, inspect_labels = scene_for_frame(
                 z, idx, base=a.base, yaw_deg=a.detail_yaw_deg, valid=valid
             )
             solid, _, _, _ = shade(
                 inspect_scene, zoomK, (W, H), inspect_faces, inspect_normals, inspect_labels
             )
-            affine = np.array(
-                [
-                    [ratio, 0, (-x0 + 0.5) * ratio - 0.5],
-                    [0, ratio, (-y0 + 0.5) * ratio - 0.5],
-                ],
-                np.float32,
-            )
+            affine = detail_affines[idx].astype(np.float32)
             crop = cv2.warpAffine(
                 rgb,
                 affine,
@@ -300,9 +363,8 @@ def main():
             )
             closepair = banner(
                 np.hstack((crop, solid)),
-                "Original grasp detail",
-                f"3D inspection ({a.detail_yaw_deg:+g} deg) | "
-                + ("before fit" if a.base else "fitted contact hypothesis"),
+                "Original detail",
+                detail_view_title(a.detail_yaw_deg, a.base),
             )
             if full:
                 mp4.stdin.write(pair.tobytes())
@@ -434,6 +496,7 @@ def main():
                 "rendering": "full original triangle BVH z-buffer; no point-cloud gate or front-face deletion",
                 "base_mode": a.base,
                 "detail_view_yaw_deg": a.detail_yaw_deg,
+                "detail_framing": detail_framing,
                 "per_frame": stats,
             },
             indent=2,
