@@ -72,6 +72,12 @@ Do not author this provenance on behalf of unseen images or relabel copied judgm
 
 External model/source/interpreter identities are bound in the bundle manifest. Preparation/authorized launch verifies the full inventory; each runtime entrypoint byte-checks its fixed consumed subset. The geometry dispatcher does not repeat its nested SAM3D consumer's inventory; MoGe/DINOv2 and LightGlue checkpoints retain their actual loader hash checks. There is no user skip-cache option or mtime-only replacement. Optional environment overlays cannot enable GPU/network access during import preflight.
 
+## Explicit same-run P09 continuation
+
+A launch declaring `mode: recovery` uses `state/runtime_recovery/P09/recovery.json` and the unchanged `input/runtime_input_contract.json`. The transition is restricted to verification mechanics and launch instructions; prediction code, model assets and settings cannot change. Its original successful event prefix and decision hashes are preserved, not restamped as outputs of the new code. Later producer records carry the actual execution-bundle and recovery-contract hashes.
+
+For this mode only, begin with P09 canonical visible geometry using the existing selected object/anchor, then execute P10–P21 and the additive demo in normal order. Do not rerun P00–P08/P09-propose, rewrite the existing plan/anchor or delete the original P09 failure evidence. Use `logs/P09_recovery.log` for the outer resumed invocation; the original `logs/P09.log` remains intact. Keep subsequent phase failures as stops. All managed commands and file reads/writes are strictly sequential, not parallel batches.
+
 ## Stop condition
 
 If a phase cannot run because an input, script, model asset, or environment is missing, write:

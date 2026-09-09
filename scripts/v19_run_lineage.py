@@ -9,6 +9,7 @@ import json
 import uuid
 from v19_runtime_contracts import in_run, load, sha, validate_references, CLIP_SUFFIXES
 from v19_runtime_assets import verify_bundle
+from v19_run_recovery import recovery_context, event_code_is_valid
 
 AGENT_PATHS = {
     'object_plan_agent.json':'P05', 'anchor_decisions':'P09_anchor',
@@ -26,8 +27,7 @@ class RunLineage:
         self.manifest=verify_bundle(self.bundle,asset_role=asset_role)
         if runtime_config is not None and sha(runtime_config)!=sha(self.bundle/'runtime/runtime_config.json'):
             raise ValueError('runtime config differs from the prepared bundle')
-        if sha(self.bundle/'runtime/bundle_manifest.json') != self.contract['bundle_manifest_sha256']:
-            raise ValueError('run uses a different bundle')
+        self.recovery=recovery_context(self.root,self.bundle,self.contract,self.manifest)
         self.identity={k:self.contract[k] for k in ('run_id','run_root','input_video_sha256','bundle_manifest_sha256')}
         self.raw={str(self.contract_path):sha(self.contract_path),self.contract['input_video']:self.contract['input_video_sha256']}
         if self.contract.get('sensor_calibration_metadata'):
@@ -122,7 +122,8 @@ class RunLineage:
                 producer=id(event)  # All outputs of one loaded event share this object.
                 if producer in epoch['active_producers']:raise ValueError('cyclic producer lineage')
                 if producer not in epoch['producers']:
-                    if event['code_sha256'] != self.code:raise ValueError('producer code identity changed')
+                    if not event_code_is_valid(event,self.code,getattr(self,'recovery',None)):
+                        raise ValueError('producer code identity changed')
                     epoch['active_producers'].add(producer)
                     try:
                         for source,expected in event['input_sha256'].items():
@@ -220,4 +221,7 @@ class RunLineage:
             files.update(p for p in root.rglob('*') if p.is_file() and p.suffix not in {'.log','.jsonl'})
         event.update(run_identity=self.identity,input_sha256=inputs,code_sha256=self.code,
                      output_sha256={str(in_run(p,self.root)):sha(p) for p in sorted(files)})
+        if getattr(self,'recovery',None) is not None:
+            event.update(execution_bundle_manifest_sha256=self.recovery['execution_bundle_sha256'],
+                         recovery_contract_sha256=self.recovery['contract_sha256'])
         for path in event['output_sha256']:self.records[path]=event

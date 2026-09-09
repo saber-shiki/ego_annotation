@@ -18,6 +18,7 @@ import zlib
 
 from v19_video_timing import read_cfr_video_timing
 from v19_runtime_assets import verify_bundle
+from v19_run_recovery import RECOVERY_DIR, RECOVERY_FILE, recovery_context
 
 AGENT = "ego-annotation.rgb-sam3d-runtime"
 PROFILE = Path(".pi/agents/ego-annotation.rgb-sam3d-runtime.md")
@@ -223,7 +224,7 @@ def write_request(bundle, root, mode, contract_path, output_dir):
             "mode": mode,
             "runtime_cwd": str(bundle),
             "contract_path": str(Path(contract_path).resolve()),
-            "run_root" if mode == "prediction" else "probe_root": str(root),
+            "probe_root" if mode == "tool_probe" else "run_root": str(root),
             "tmux_target": "ego_annotation_rgb_sam3d_" + uuid.uuid4().hex[:12],
         },
         sort_keys=True,
@@ -237,6 +238,12 @@ def write_request(bundle, root, mode, contract_path, output_dir):
         agent_output = root / "tool_probe_result.json"
         if payload["output_json"] != str(agent_output):
             raise ValueError("probe output contract mismatch")
+    elif mode == "recovery":
+        if Path(contract_path).resolve() != root / RECOVERY_FILE:
+            raise ValueError(
+                "only the declared same-run P09 recovery contract is supported"
+            )
+        agent_output = root / RECOVERY_DIR / "native_recovery_handoff.md"
     else:
         agent_output = root / "state/native_prediction_handoff.md"
     if agent_output.exists():
@@ -367,9 +374,36 @@ def prepare_prediction_request(bundle, run_root, output_dir):
     return write_request(bundle, root, "prediction", contract_path, output_dir)
 
 
+def prepare_recovery_request(bundle, run_root, output_dir):
+    bundle, root, output_dir = map(
+        lambda p: Path(p).resolve(), (bundle, run_root, output_dir)
+    )
+    require_request_separation(bundle, root, output_dir)
+    verify_workspace(bundle)
+    manifest = verify_bundle(bundle)
+    birth = load(root / "input/runtime_input_contract.json")
+    context = recovery_context(root, bundle, birth, manifest)
+    if context is None:
+        raise ValueError(
+            "recovery launch requires an explicit corrected-bundle transition"
+        )
+    obj = context["contract"]["object_id"]
+    if (root / f"measurements/object_geometry/visible_geometry/{obj}").exists() or (
+        root / "logs/integration/P09.log"
+    ).exists():
+        raise ValueError("P09 recovery was already started; no automatic relaunch")
+    video = Path(birth["input_video"]).resolve(strict=True)
+    if not video.is_relative_to(root) or sha(video) != birth["input_video_sha256"]:
+        raise ValueError("recovery raw video identity mismatch")
+    read_cfr_video_timing(video)
+    return write_request(bundle, root, "recovery", root / RECOVERY_FILE, output_dir)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["tool-probe", "prediction-request"])
+    parser.add_argument(
+        "mode", choices=["tool-probe", "prediction-request", "recovery-request"]
+    )
     for name in ("bundle-root", "run-root", "output-dir"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument(
@@ -396,9 +430,12 @@ def main():
     else:
         if args.probe_marker_bytes != 51 or args.probe_min_write_bytes != 0:
             parser.error("probe size options are only for tool-probe")
-        result = prepare_prediction_request(
-            args.bundle_root, args.run_root, args.output_dir
+        fn = (
+            prepare_prediction_request
+            if args.mode == "prediction-request"
+            else prepare_recovery_request
         )
+        result = fn(args.bundle_root, args.run_root, args.output_dir)
     print(json.dumps(result, indent=2))
 
 
