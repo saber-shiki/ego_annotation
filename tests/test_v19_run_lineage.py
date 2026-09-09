@@ -1,6 +1,8 @@
 """Thin lineage tests with actual tiny subprocesses, never model inference."""
 from pathlib import Path
 import json
+import os
+from collections import Counter
 import shutil
 import sys
 import tempfile
@@ -99,6 +101,115 @@ for i in range(24):
             with self.assertRaisesRegex(ValueError,'mutated source input'):
                 fresh.success({}, {str(depth):snapshots[str(depth)]}, [], [])
             self.assertEqual(calls[str(depth)],4)
+
+    def test_multi_level_mask_dag_is_linear_per_inputs_batch(self):
+        self.install_fixture_producer("""import argparse,json,pathlib
+p=argparse.ArgumentParser();p.add_argument('--source');p.add_argument('--output-dir');a=p.parse_args()
+o=pathlib.Path(a.output_dir);o.mkdir(parents=True)
+masks=[]
+for i in range(24):
+ f=o/f'mask_{i}.png';f.write_bytes(b'tiny produced mask');masks.append(str(f))
+(o/'manifest.json').write_text(json.dumps({'source':a.source,'masks':masks}))
+""")
+        lineage=RunLineage(self.root,self.bundle)
+        masks=self.produce(lineage,'P07',out=self.root/'measurements/masks')
+        base=self.produce(lineage,'P08',source=masks.parent,out=self.root/'state/base')
+        proposals=self.produce(lineage,'P09-propose',source=base.parent,
+                               out=self.root/'measurements/proposals')
+        fresh=RunLineage(self.root,self.bundle);fresh.verified.clear()
+        events=[json.loads(line) for line in fresh.events.read_text().splitlines()]
+        vertices=1+sum(len(e['output_sha256']) for e in events)
+        edges=sum(len(e['input_sha256']) for e in events)
+        hashes=Counter();stats=Counter()
+        original_stat=Path.stat
+        def counted_sha(path):
+            hashes[str(path)]+=1
+            return sha(path)
+        def counted_stat(path,*args,**kwargs):
+            stats[str(path)]+=1
+            return original_stat(path,*args,**kwargs)
+        with patch('v19_run_lineage.sha',side_effect=counted_sha), \
+                patch.object(Path,'stat',counted_stat), \
+                patch.object(fresh,'require',wraps=fresh.require) as requires, \
+                patch.object(fresh,'fingerprint',wraps=fresh.fingerprint) as fingerprints:
+            snapshots=fresh.inputs([str(proposals.parent)],[])
+        roots=len(snapshots)
+        old_counts={}
+        def old_expansion(name):
+            if name not in old_counts:
+                event=fresh.records.get(name,{})
+                old_counts[name]=1+sum(old_expansion(source) for source in event.get('input_sha256',{}))
+            return old_counts[name]
+        old_calls=sum(old_expansion(name) for name in snapshots)
+        self.assertGreater(old_calls,100*requires.call_count)
+        self.assertEqual(roots,25)
+        self.assertEqual(requires.call_count,roots+edges)
+        self.assertEqual(len(hashes),vertices)
+        self.assertEqual(set(hashes.values()),{1})
+        self.assertEqual(fingerprints.call_count,2*vertices)
+        self.assertLessEqual(sum(stats.values()),12*(vertices+edges+roots))
+        print(f'DAG vertices={vertices} edges={edges} roots={roots} '
+              f'require_calls={requires.call_count} sha_reads={sum(hashes.values())} '
+              f'fingerprint_stats={fingerprints.call_count} all_path_stats={sum(stats.values())} '
+              f'old_recursive_calls={old_calls}')
+        self.assertIsNone(fresh._verification)
+        # A new public call cannot trust the prior completed producer closure.
+        ancestor=masks.parent/'mask_0.png';ancestor.write_bytes(b'changed upstream')
+        with self.assertRaisesRegex(ValueError,'producer output changed'):
+            fresh.require(proposals.parent/'mask_0.png')
+        self.assertIsNone(fresh._verification)
+        self.assertFalse(fresh.visiting)
+
+    def test_deduplicated_paths_still_check_each_producer_expected_hash(self):
+        lineage=RunLineage(self.root,self.bundle)
+        first=self.produce(lineage,'P07',out=self.root/'measurements/masks')
+        second=self.produce(lineage,'P08',source=first,out=self.root/'state/base')
+        third=self.produce(lineage,'P09-propose',source=first,out=self.root/'measurements/proposals')
+        lineage.records[str(third)]['input_sha256'][str(first)]='0'*64
+        with self.assertRaisesRegex(ValueError,'producer input changed'):
+            lineage.inputs([str(second),str(third)],[])
+        # A failed batch never leaves a successful closure for the next call.
+        lineage.records[str(third)]['input_sha256'][str(first)]=sha(first)
+        lineage.require(third)
+
+    def test_shared_producer_sibling_cycle_is_rejected(self):
+        lineage=RunLineage(self.root,self.bundle);report=self.produce(lineage)
+        sibling=report.parent/'mesh.ply'
+        lineage.records[str(report)]['input_sha256'][str(sibling)]=sha(sibling)
+        with self.assertRaisesRegex(ValueError,'cyclic producer lineage'):
+            lineage.require(report)
+        self.assertIsNone(lineage._verification)
+        self.assertFalse(lineage.visiting)
+
+    def test_reconciled_metadata_never_overrides_original_expected_hash(self):
+        lineage=RunLineage(self.root,self.bundle);report=self.produce(lineage)
+        judgment=self.root/'state/anchor_decisions/thing.json'
+        proposals=self.produce(lineage,'P09-propose',source=report,
+            out=self.root/'measurements/object_geometry/anchor_candidates/thing')
+        write(judgment,{'visual_judgment_provenance':{
+            'kind':'current_run_visual_judgment','phase':'P09_anchor',
+            'run_identity':lineage.identity,'evidence_sha256':{str(proposals):'0'*64}}})
+        for target,required,message in ((self.raw,self.raw,'prepared input changed'),
+                (report,report,'producer output changed'),
+                (proposals,judgment,'visual judgment evidence changed')):
+            with self.subTest(target=target):
+                original=target.read_bytes()
+                if target!=proposals:target.write_bytes(b'new stable bytes')
+                fresh=object.__new__(RunLineage)
+                fresh.__dict__.update(lineage.__dict__);fresh.verified={};fresh.visiting=set()
+                count=0
+                def refresh(path):
+                    nonlocal count
+                    digest=sha(path)
+                    if Path(path)==target:
+                        count+=1
+                        if count==1:
+                            s=target.stat();os.utime(target,ns=(s.st_atime_ns,s.st_mtime_ns+1000000))
+                    return digest
+                with patch('v19_run_lineage.sha',side_effect=refresh):
+                    with self.assertRaisesRegex(ValueError,message):fresh.require(required)
+                self.assertEqual(count,2)
+                target.write_bytes(original)
 
     def test_cached_digest_does_not_hide_producer_cycles(self):
         lineage=RunLineage(self.root,self.bundle)
@@ -341,6 +452,60 @@ f=o/'frame.jpg';f.write_bytes(b'raw frame fixture')
             env=call.kwargs['env'];self.assertEqual(env['CUDA_VISIBLE_DEVICES'],'')
             self.assertEqual(env['HF_HUB_OFFLINE'],'1');self.assertEqual(env['TRANSFORMERS_OFFLINE'],'1')
             self.assertNotIn('PYTHONPATH',env)
+
+
+class ReadTimeMetadataReconciliation(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.path=Path(self.tmp.name)/'anchor.json';self.path.write_bytes(b'original anchor')
+        self.lineage=object.__new__(RunLineage);self.lineage.verified={}
+
+    def refresh_metadata(self):
+        s=self.path.stat()
+        os.utime(self.path,ns=(s.st_atime_ns,s.st_mtime_ns+1000000))
+
+    def check_read_mutation(self,mutation,*,accept=False):
+        calls=0;original=sha(self.path)
+        def read(path):
+            nonlocal calls
+            calls+=1
+            digest=sha(path)
+            mutation(calls)
+            return digest
+        with patch('v19_run_lineage.sha',side_effect=read):
+            if accept:
+                self.assertEqual(self.lineage.checked_digest(self.path),original)
+            else:
+                with self.assertRaisesRegex(ValueError,'before=.*after=.*reread_before=.*reread_after=.*sha256='):
+                    self.lineage.checked_digest(self.path)
+                self.assertNotIn(str(self.path),self.lineage.verified)
+        self.assertEqual(calls,2)  # Never a third attempt, even for continuous mutation.
+
+    def test_CIFS_like_first_read_metadata_refresh_with_identical_bytes(self):
+        self.check_read_mutation(lambda n:self.refresh_metadata() if n==1 else None,accept=True)
+        with patch('v19_run_lineage.sha') as hashes:
+            self.lineage.checked_digest(self.path)
+        hashes.assert_not_called()
+
+    def test_real_byte_change_between_reads_is_rejected(self):
+        def change(n):
+            if n==1:
+                self.path.write_bytes(b'changed anchor!')  # Same length, different bytes.
+                self.refresh_metadata()  # Deterministic even on coarse-time test filesystems.
+        self.check_read_mutation(change)
+
+    def test_identical_byte_inode_replacement_is_rejected(self):
+        def replace(n):
+            if n==1:
+                other=self.path.with_suffix('.replacement');other.write_bytes(self.path.read_bytes())
+                other.replace(self.path)
+        self.check_read_mutation(replace)
+
+    def test_continuous_metadata_mutation_is_rejected(self):
+        self.check_read_mutation(lambda n:self.refresh_metadata())
+
+    def test_mutation_during_second_read_is_rejected(self):
+        self.check_read_mutation(lambda n:self.refresh_metadata() if n==1 else self.path.write_bytes(b'mutated reread'))
 
 
 if __name__=='__main__':unittest.main()

@@ -4,6 +4,7 @@ Only run_command writes successful execution records. Agent visual judgments
 are checked separately and never receive a fabricated model execution record.
 """
 from pathlib import Path
+from contextlib import contextmanager
 import json
 import uuid
 from v19_runtime_contracts import in_run, load, sha, validate_references, CLIP_SUFFIXES
@@ -41,29 +42,70 @@ class RunLineage:
                     for path in event.get('output_sha256',{}):self.records[path]=event
         for path in self.raw:self.require(path)
 
-    def checked_digest(self, path):
-        """Invocation-local byte digest, reusable only for an unchanged file.
+    @contextmanager
+    def verification_batch(self):
+        """One synchronous verification epoch; nested requires share its DAG.
 
-        This is not a persisted stat-only identity cache. A new fingerprint
-        requires reading bytes again; post-command checks deliberately bypass it.
+        Completed paths/producers and digest lookups expire on exit (also on
+        failure). Separate public calls always walk ancestors again. Only the
+        fingerprint-checked byte cache survives within this verifier instance.
+        No producer command or concurrent writer belongs inside this scope.
+        """
+        owner=getattr(self,'_verification',None) is None
+        if owner:
+            self._verification={'paths':set(), 'producers':set(),
+                                'active_producers':set(), 'digests':{}}
+        try:
+            yield self._verification
+        finally:
+            if owner:self._verification=None
+
+    @staticmethod
+    def fingerprint(path):
+        stat=path.stat()
+        return (stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+
+    def checked_digest(self, path):
+        """Byte identity, with one bounded reconciliation of read-time metadata.
+
+        A changed fingerprint permits one immediate full reread, never a retry
+        loop. Both hashes must agree, the reread must be stable, and device/inode
+        must not change. Callers still enforce the original expected hash.
         """
         path=Path(path);name=str(path)
-        stat=path.stat();fingerprint=(stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+        epoch=getattr(self,'_verification',None)
+        if epoch is not None and name in epoch['digests']:
+            return epoch['digests'][name]
+        before=self.fingerprint(path)
         cached=self.verified.get(name)
-        if cached is not None and cached[0]==fingerprint:
-            return cached[1]
-        digest=sha(path)
-        stat=path.stat()
-        if (stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)!=fingerprint:
-            raise ValueError(f'input changed during byte verification: {name}')
-        self.verified[name]=(fingerprint,digest)
+        if cached is not None and cached[0]==before:
+            digest=cached[1]
+        else:
+            digest=sha(path)
+            after=self.fingerprint(path)
+            if after!=before:
+                second_before=self.fingerprint(path)
+                second_digest=sha(path)
+                second_after=self.fingerprint(path)
+                if (digest!=second_digest or second_before!=second_after
+                        or before[:2]!=after[:2] or before[:2]!=second_before[:2]):
+                    raise ValueError(f'input changed during byte verification: {name}; '
+                                     f'before={before}, after={after}, '
+                                     f'reread_before={second_before}, reread_after={second_after}, '
+                                     f'sha256={digest}, reread_sha256={second_digest}')
+                after=second_after
+            self.verified[name]=(after,digest)
+        if epoch is not None:epoch['digests'][name]=digest
         return digest
 
     def require(self, value):
+        with self.verification_batch() as epoch:
+            return self._require(value,epoch)
+
+    def _require(self, value, epoch):
         path=in_run(value,self.root);name=str(path)
-        # Recheck dependencies even when this output's bytes are cached: an
-        # unchanged mask must not conceal a changed input of its producer.
         if name in self.visiting:raise ValueError('cyclic producer lineage')
+        if name in epoch['paths']:return path
         self.visiting.add(name)
         try:
             digest=self.checked_digest(path)
@@ -76,11 +118,19 @@ class RunLineage:
             else:
                 event=self.records.get(name)
                 if event is None:raise ValueError(f'no successful current-run producer for {name}')
-                if event['code_sha256'] != self.code:raise ValueError('producer code identity changed')
                 if digest!=event['output_sha256'][name]:raise ValueError(f'producer output changed: {name}')
-                for source,expected in event['input_sha256'].items():
-                    checked=self.require(source)
-                    if self.checked_digest(checked)!=expected:raise ValueError(f'producer input changed: {source}')
+                producer=id(event)  # All outputs of one loaded event share this object.
+                if producer in epoch['active_producers']:raise ValueError('cyclic producer lineage')
+                if producer not in epoch['producers']:
+                    if event['code_sha256'] != self.code:raise ValueError('producer code identity changed')
+                    epoch['active_producers'].add(producer)
+                    try:
+                        for source,expected in event['input_sha256'].items():
+                            checked=self.require(source)
+                            if self.checked_digest(checked)!=expected:raise ValueError(f'producer input changed: {source}')
+                        epoch['producers'].add(producer)
+                    finally:epoch['active_producers'].remove(producer)
+            epoch['paths'].add(name)
             return path
         finally:self.visiting.remove(name)
 
@@ -128,6 +178,10 @@ class RunLineage:
         raise ValueError('P17 judgment requires at least one current P01 raw frame')
 
     def inputs(self, argv, output_roots, extra=()):
+        with self.verification_batch():
+            return self._inputs(argv,output_roots,extra)
+
+    def _inputs(self, argv, output_roots, extra):
         selected=set()
         def include(path):
             path=Path(path)
