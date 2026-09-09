@@ -24,6 +24,8 @@ from v19_runtime_assets import external_asset_identity, verify_bundle
 SPEC = 'runtime/rgb_sam3d_runtime_spec.md'
 PROMPT = 'runtime/rgb_sam3d_system_prompt.md'
 NATIVE_PROFILE = '.pi/agents/ego-annotation.rgb-sam3d-runtime.md'
+DEMO_PROFILE = '.pi/agents/ego-annotation.rgb-sam3d-demo.md'
+ADDITIVE_DEMO_HELPER = 'scripts/run_v19_additive_demo_branch.py'
 NATIVE_PROVIDER = '/mnt/user-home/kupingxin/ego_annotation_worktrees/shellgate_native_write_transport_fix_20260909/extensions/shellgate.ts'
 SCRIPT_RE = re.compile(r'scripts/[A-Za-z0-9_]+\.(?:py|sh)')
 ASSET_KEYS = {
@@ -234,10 +236,17 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
             if token.lower() in text.lower():
                 raise ValueError(f'forbidden instruction context: {instruction}: {token}')
     native_assets=validate_native_profile(source/NATIVE_PROFILE)
+    demo_profile=(source/DEMO_PROFILE).read_text()
+    for required in ['name: rgb-sam3d-demo','package: ego-annotation','systemPromptMode: replace',
+                     'inheritProjectContext: false','inheritGlobalContext: false','inheritSkills: false',
+                     'defaultContext: fresh',f'subagentOnlyExtensions: {NATIVE_PROVIDER}']:
+        if required not in demo_profile:raise ValueError('additive demo native profile mismatch: '+required)
     for path in native_assets:
         if not path.is_file():raise ValueError(f'native provider file missing: {path}')
     bundle.mkdir(parents=True)
-    for relative in [*selected, Path(SPEC), Path(PROMPT), Path(NATIVE_PROFILE)]:
+    runtime_files=[*selected,Path(SPEC),Path(PROMPT),Path(NATIVE_PROFILE),Path(DEMO_PROFILE),Path(ADDITIVE_DEMO_HELPER)]
+    if len(runtime_files)!=len(set(runtime_files)):raise ValueError('duplicate curated runtime file')
+    for relative in runtime_files:
         target = bundle / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source / relative, target)
@@ -272,7 +281,7 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
         asset_identity['files'][str(path)]={'sha256':sha(path),'resolved_path':str(path.resolve())}
     results = import_preflight(bundle, config) if check_imports else []
     files = {str(p.relative_to(bundle)): sha(p) for p in sorted(bundle.rglob('*')) if p.is_file()}
-    manifest = {'schema': 'v19_rgb_sam3d_bundle_v1', 'scripts': list(map(str, selected)), 'files': files,
+    manifest = {'schema': 'v19_rgb_sam3d_bundle_v1', 'scripts': list(map(str, [*selected,Path(ADDITIVE_DEMO_HELPER)])), 'files': files,
                 'external_assets':asset_identity,
                 'preflight_status': 'imports_checked' if results and all(r['returncode'] == 0 for r in results) else 'imports_unchecked_or_failed',
                 'source_commit': subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()}
