@@ -246,8 +246,8 @@ def main():
     elif a.stage=='demo':
         for path in [p15,hawor,bridge,judgments,physical,completion]:file_in_run(path,root)
         source=load(p15);geomreport=load(completion);contract=geomreport['render_mesh_contract'];file_in_run(contract['required_mesh_path'],root)
-        run('D00_demo_binding',[main_python,script('build_v19_demo_pose_binding.py'),'--pose-report',p15,'--completion-report',completion,'--output',demo_pose],[demo_pose])
-        run('D01_demo_fit',[demo_python,script('fit_v20_visual_contact_demo.py'),'--annotations',ann,'--pose-report',demo_pose,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',cfg['mano_models'],'--object-id',obj,'--device','cuda:0','--interaction-judgments',judgments,'--render-width',cfg.get('render_width',960),'--output-dir',demodir],[demo_state,demodir/'fit_report.json'])
+        run('D00_demo_binding',[main_python,script('build_v19_demo_pose_binding.py'),'--pose-report',p15,'--completion-report',completion,'--legacy-ready-p15-binding','--output',demo_pose],[demo_pose])
+        run('D01_demo_fit',[demo_python,script('fit_v20_visual_contact_demo.py'),'--annotations',ann,'--pose-report',demo_pose,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',cfg['mano_models'],'--object-id',obj,'--device','cuda:0','--interaction-judgments',judgments,'--legacy-owned-mask','--render-width',cfg.get('render_width',960),'--output-dir',demodir],[demo_state,demodir/'fit_report.json'])
         input_manifest=load(file_in_run(root/'input/raw_frame_manifest/manifest.json',root));video=input_manifest.get('input_video') or input_manifest.get('video')
         if not video:raise ValueError('raw manifest has no original video path')
         video=file_in_run(video,root)

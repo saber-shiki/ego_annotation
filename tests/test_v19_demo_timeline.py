@@ -139,6 +139,23 @@ class DemoTimeline(unittest.TestCase):
         z["right_valid"] = [False]
         self.assertEqual(scene_for_frame(z, 0)[4], [0])
 
+    def test_p17_factor_report_states_gate_by_frame_and_side(self):
+        payload = {
+            "schema": "v19_visible_contact_ownership_factor_v2",
+            "target_entity_id": "object:item",
+            "factor_rows": [
+                {"frame_idx": 40, "hand_side": "left", "agent_contact_state": "likely_contact"},
+                {"frame_idx": 42, "hand_side": "right", "agent_contact_state": "no_contact"},
+            ],
+        }
+        states = interaction_states(payload, np.array([42, 40, 41]), "item")
+        self.assertEqual(states.tolist(), [["unresolved", "no_contact"],
+                                           ["likely_contact", "unresolved"],
+                                           ["unresolved", "unresolved"]])
+        payload["target_entity_id"] = "object:other"
+        with self.assertRaisesRegex(ValueError, "target mismatch"):
+            interaction_states(payload, np.array([42, 40, 41]), "item")
+
     def test_small_fit_export_single_hand_and_p17_gating(self):
         import torch
         import trimesh
@@ -191,6 +208,7 @@ class DemoTimeline(unittest.TestCase):
                     "--mano-bridge", str(root / "bridge.npz"), "--hawor-params", str(root / "params.npz"),
                     "--mano-models", str(root), "--output-dir", str(root / "out"), "--device", "cpu",
                     "--iterations", "1", "--object-id", "item", "--render-width", "40",
+                    "--legacy-owned-mask",
                     "--interaction-judgments", str(root / "judgments.json")]
             with patch.object(sys, "argv", argv), patch.object(fitter, "mano_models", return_value={s: TestMano() for s in ["left", "right"]}), contextlib.redirect_stdout(io.StringIO()):
                 fitter.main()
@@ -318,7 +336,8 @@ class DemoTimeline(unittest.TestCase):
                 argv = ["fit", "--annotations", str(root / "ann.json"), "--pose-report", str(root / "poses.json"),
                         "--mano-bridge", str(root / "bridge.npz"), "--hawor-params", str(root / "params.npz"),
                         "--mano-models", str(root), "--output-dir", str(out), "--device", "cpu",
-                        "--iterations", "3", "--object-id", "item", "--render-width", str(width)]
+                        "--iterations", "3", "--object-id", "item", "--render-width", str(width),
+                        "--legacy-owned-mask"]
                 with (patch.object(sys, "argv", argv), patch.object(fitter, "cKDTree", side_effect=record_tree),
                       patch.object(fitter, "mano_models", return_value={s: TestMano() for s in ["left", "right"]}),
                       contextlib.redirect_stdout(io.StringIO())):

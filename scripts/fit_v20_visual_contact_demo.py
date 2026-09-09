@@ -32,6 +32,45 @@ from v19_demo_timeline import (annotation_timeline, hand_validity, fit_keyframes
 FIT_REFERENCE_WIDTH = 960
 
 
+def appearance_mask_rows(manifest, annotation_path, object_id, frame_ids, source_size):
+    """Validate and bind the raw-appearance plane; never fall back to owned masks."""
+    if not isinstance(manifest, dict) or manifest.get("object_id") != object_id:
+        raise ValueError("appearance manifest object mismatch")
+    if manifest.get("metric_owned_masks_consumed") is not False:
+        raise ValueError("appearance manifest does not exclude metric-owned masks")
+    if manifest.get("source_annotations_sha256") != sha(annotation_path):
+        raise ValueError("appearance manifest annotations identity mismatch")
+    rows = manifest.get("frames")
+    if not isinstance(rows, list):
+        raise ValueError("appearance manifest frames missing")
+    indexed = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("object_id") != object_id:
+            raise ValueError("invalid appearance manifest row")
+        idx = int(row["frame_idx"])
+        if idx in indexed:
+            raise ValueError(f"duplicate appearance frame {idx}")
+        path = row.get("appearance_mask_path")
+        if row.get("status") == "available":
+            if not path or sha(path) != row.get("appearance_mask_sha256"):
+                raise ValueError(f"appearance mask identity mismatch at frame {idx}")
+            mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            declared = row.get("source_size_wh")
+            if (mask is None or not isinstance(declared, list) or len(declared) != 2
+                    or mask.shape != (int(declared[1]), int(declared[0]))
+                    or abs(mask.shape[1] / mask.shape[0] - float(source_size[0]) / float(source_size[1])) > 0.01):
+                raise ValueError(f"appearance mask dimensions mismatch at frame {idx}")
+            indexed[idx] = path if np.any(mask) else None
+        elif row.get("status") == "unavailable_not_substituted" and path is None:
+            indexed[idx] = None
+        else:
+            raise ValueError(f"invalid appearance availability at frame {idx}")
+    expected = {int(value) for value in frame_ids}
+    if set(indexed) != expected:
+        raise ValueError("appearance manifest frame coverage mismatch")
+    return indexed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in [
@@ -43,12 +82,17 @@ def main():
         "output-dir",
     ]:
         parser.add_argument("--" + name, type=Path, required=True)
-    parser.add_argument("--object-id", default="carton_milk")
+    parser.add_argument("--object-id", required=True)
+    parser.add_argument("--appearance-mask-manifest", type=Path)
+    parser.add_argument("--legacy-owned-mask", action="store_true",
+                        help="Explicit compatibility mode; never used by additive visual-v2 runner")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--iterations", type=int, default=240)
     parser.add_argument("--render-width", type=int, help="Display width (default source size); fitting uses a 960-width reference plane")
     parser.add_argument("--interaction-judgments", type=Path)
     args = parser.parse_args()
+    if (args.appearance_mask_manifest is None) == (not args.legacy_owned_mask):
+        parser.error("choose exactly one of --appearance-mask-manifest or --legacy-owned-mask")
     out = args.output_dir
     if out.exists():
         raise ValueError("new output directory required")
@@ -81,6 +125,17 @@ def main():
         for f in frames
     ])
     ids = z["frame_idx"]
+    if args.appearance_mask_manifest:
+        appearance_paths = appearance_mask_rows(
+            load(args.appearance_mask_manifest), args.annotations, args.object_id, ids, source_size
+        )
+    else:
+        appearance_paths = {}
+        for frame, idx in zip(frames, ids):
+            matches = [obj for obj in frame.get("objects", []) if obj.get("object_id") == args.object_id]
+            if len(matches) != 1:
+                raise ValueError(f"legacy owned-mask mode requires one object at frame {idx}")
+            appearance_paths[int(idx)] = matches[0].get("mask_path")
     N = len(ids)
     valid = {side: hand_validity(z, side, N) for side in ["left", "right"]}
     key = fit_keyframes(N, valid)
@@ -155,11 +210,10 @@ def main():
     # (not substituted for object reconstruction). Full triangles are rendered.
     mask_contours = []
     contact_gate = np.zeros((B, 2, 5), np.float32)
+    contact_diagnostics = []
     for k, i in enumerate(key):
-        obj = next(
-            (o for o in frames[i]["objects"] if o["object_id"] == args.object_id), None
-        )
-        m = cv2.imread(obj["mask_path"], 0) if obj and obj.get("mask_path") else None
+        appearance_path = appearance_paths[int(ids[i])]
+        m = cv2.imread(str(appearance_path), 0) if appearance_path else None
         if m is None or not np.any(m):
             mask_contours.append(None)
             continue
@@ -190,14 +244,25 @@ def main():
         dist = cv2.distanceTransform((m == 0).astype("uint8"), cv2.DIST_L2, 5)
         for si, side in enumerate(["left", "right"]):
             if not valid[side][i] or judgments[i, si] not in {"likely_contact", "possible_contact", "legacy_visual_hypothesis"}:
+                for finger in range(5):
+                    contact_diagnostics.append({
+                        "frame_idx": int(ids[i]), "side": side, "finger_index": finger,
+                        "P17_state": str(judgments[i, si]), "in_frame": None,
+                        "appearance_mask_distance_reference_px": None,
+                        "real_triangle_surface_gap_m": None, "weight": 0.0,
+                        "selected_patch_vertex_ids": [],
+                        "decision": ("rejected_invalid_hand" if not valid[side][i]
+                                     else "rejected_by_P17_state"),
+                    })
                 continue
             local = int(np.flatnonzero(data[side]["ki"] == k)[0])
             uv = data[side]["base_joint_pixel"][local, [4, 8, 12, 16, 20]].cpu().numpy()
             p = np.rint(uv).astype(int)
             inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < fit_size[0]) & (p[:, 1] < fit_size[1])
             p = np.clip(p, [0, 0], fit_size - 1)
-            # Geometric candidates remain demo hypotheses, gated by supplied agent states.
-            contact_gate[k, si, 0] = float(inside[0] and dist[p[0, 1], p[0, 0]] < 16)
+            image_distances = [float(dist[p[finger, 1], p[finger, 0]]) if inside[finger] else None for finger in range(5)]
+            # Geometric candidates remain demo hypotheses, gated by supplied P17 states.
+            contact_gate[k, si, 0] = float(inside[0] and image_distances[0] < 16)
             base = data[side]["base_vertices"][local].cpu().numpy()
             q = (base[TIP_VERTICES] - t0[i]) @ R0[i]
             near, n = closest(scene, q)
@@ -205,9 +270,24 @@ def main():
             for finger in range(1, 5):
                 contact_gate[k, si, finger] = 0.12 * float(
                     inside[finger]
-                    and dist[p[finger, 1], p[finger, 0]] < 8
+                    and image_distances[finger] < 8
                     and gap[finger] < 0.012
                 )
+            for finger in range(5):
+                weight = float(contact_gate[k, si, finger])
+                contact_diagnostics.append({
+                    "frame_idx": int(ids[i]),
+                    "side": side,
+                    "finger_index": finger,
+                    "P17_state": str(judgments[i, si]),
+                    "in_frame": bool(inside[finger]),
+                    "appearance_mask_distance_reference_px": image_distances[finger],
+                    "real_triangle_surface_gap_m": float(gap[finger]),
+                    "weight": weight,
+                    "selected_patch_vertex_ids": data[side]["patch"][local, finger].astype(int).tolist(),
+                    "decision": ("demo_visual_contact_hypothesis" if weight else
+                                 "rejected_by_image_or_triangle_gap"),
+                })
     (out / "contact_hypotheses.json").write_text(
         json.dumps(
             {
@@ -217,6 +297,7 @@ def main():
                 "tip_vertices": TIP_VERTICES.tolist(),
                 "interaction_source": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
                 "interaction_states": judgments[key].tolist(),
+                "diagnostics": contact_diagnostics,
                 "fit_image_size_wh": fit_size.tolist(),
             },
             indent=2,
@@ -561,25 +642,33 @@ def main():
         "gt_consumed": False,
         "generated_mesh_role": "demo_visual_contact_reference_not_physical_truth",
         "inputs": {
-            k: str(getattr(args, k).resolve())
-            for k in [
-                "annotations",
-                "pose_report",
-                "mano_bridge",
-                "hawor_params",
-                "mano_models",
-            ]
+            **{
+                k: str(getattr(args, k).resolve())
+                for k in ["annotations", "pose_report", "mano_bridge", "hawor_params", "mano_models"]
+            },
+            **({"appearance_mask_manifest": str(args.appearance_mask_manifest.resolve())}
+               if args.appearance_mask_manifest else {}),
         },
         "input_hashes": {
             **{
                 k: sha(getattr(args, k))
                 for k in ["annotations", "pose_report", "mano_bridge", "hawor_params"]
             },
+            **({"appearance_mask_manifest": sha(args.appearance_mask_manifest)}
+               if args.appearance_mask_manifest else {}),
             **({"interaction_judgments": sha(args.interaction_judgments)} if args.interaction_judgments else {}),
             **{
                 "mano_" + side: sha(args.mano_models / f"MANO_{side.upper()}.pkl")
                 for side in ["left", "right"]
             },
+        },
+        "appearance_masks": {
+            "manifest": (str(args.appearance_mask_manifest.resolve())
+                         if args.appearance_mask_manifest else None),
+            "semantic_role": ("raw_SAM2_appearance_silhouette_only_not_metric_surface"
+                              if args.appearance_mask_manifest else "explicit_legacy_metric_owned_mask"),
+            "metric_owned_mask_fallback": bool(args.legacy_owned_mask),
+            "unavailable_frame_ids": [int(idx) for idx, path in appearance_paths.items() if path is None],
         },
         "mesh": str(meshpath),
         "mesh_sha256": sha(meshpath),

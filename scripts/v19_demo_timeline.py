@@ -141,6 +141,30 @@ def interaction_states(payload, ids, object_id):
     if not isinstance(payload, dict):
         raise ValueError("interaction judgments payload is not an object")
     ids = frame_ids(ids)
+    if payload.get("schema") == "v19_visible_contact_ownership_factor_v2":
+        target = payload.get("target_entity_id")
+        if not isinstance(target, str) or target.split(":", 1)[-1] != object_id.split(":", 1)[-1]:
+            raise ValueError("P17 interaction report target mismatch")
+        rows = payload.get("factor_rows")
+        if not isinstance(rows, list):
+            raise ValueError("P17 interaction report lacks factor_rows")
+        states[:] = "unresolved"
+        lookup = {int(value): position for position, value in enumerate(ids)}
+        occupied = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("invalid P17 factor row")
+            idx = int(row["frame_idx"])
+            side = row.get("hand_side", row.get("side"))
+            state = row.get("agent_contact_state")
+            if idx not in lookup or side not in SIDES or state not in {"likely_contact", "possible_contact", "no_contact", "unresolved"}:
+                raise ValueError("invalid P17 frame/side/contact state")
+            key = (idx, side)
+            if key in occupied:
+                raise ValueError("duplicate P17 frame/side state")
+            occupied.add(key)
+            states[lookup[idx], SIDES.index(side)] = state
+        return states
     if payload.get("status") not in (None, "ok"):
         raise ValueError("interaction judgments status is not ok")
     rows = payload.get("interaction_judgments", payload.get("judgments", payload.get("segments")))

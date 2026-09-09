@@ -40,7 +40,7 @@ class DemoRunner(unittest.TestCase):
         )
 
     def fit_args(self):
-        values = ["--mode", "fit-render"]
+        values = ["--mode", "fit-render", "--object-id", "generic_fixture"]
         for name in runner.FIT_INPUTS[:-1]:
             path = self.root / f"{name}.json"
             path.write_text("{}")

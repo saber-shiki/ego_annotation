@@ -76,6 +76,7 @@ def closure(source):
     available.update({Path(p).name: Path(p) for p in EXPERIMENT_HELPERS})
     modules = {Path(k).stem: v for k, v in available.items()}
     queue = [Path(p) for p in SCRIPT_RE.findall((source / SPEC).read_text())]
+    queue.append(Path(ADDITIVE_DEMO_HELPER))
     selected = set()
     while queue:
         relative = queue.pop()
@@ -244,7 +245,7 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
     for path in native_assets:
         if not path.is_file():raise ValueError(f'native provider file missing: {path}')
     bundle.mkdir(parents=True)
-    runtime_files=[*selected,Path(SPEC),Path(PROMPT),Path(NATIVE_PROFILE),Path(DEMO_PROFILE),Path(ADDITIVE_DEMO_HELPER)]
+    runtime_files=[*selected,Path(SPEC),Path(PROMPT),Path(NATIVE_PROFILE),Path(DEMO_PROFILE)]
     if len(runtime_files)!=len(set(runtime_files)):raise ValueError('duplicate curated runtime file')
     for relative in runtime_files:
         target = bundle / relative
@@ -281,7 +282,7 @@ def build(source, bundle, assets, report_dir, *, check_imports=True):
         asset_identity['files'][str(path)]={'sha256':sha(path),'resolved_path':str(path.resolve())}
     results = import_preflight(bundle, config) if check_imports else []
     files = {str(p.relative_to(bundle)): sha(p) for p in sorted(bundle.rglob('*')) if p.is_file()}
-    manifest = {'schema': 'v19_rgb_sam3d_bundle_v1', 'scripts': list(map(str, [*selected,Path(ADDITIVE_DEMO_HELPER)])), 'files': files,
+    manifest = {'schema': 'v19_rgb_sam3d_bundle_v1', 'scripts': list(map(str, selected)), 'files': files,
                 'external_assets':asset_identity,
                 'preflight_status': 'imports_checked' if results and all(r['returncode'] == 0 for r in results) else 'imports_unchecked_or_failed',
                 'source_commit': subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()}

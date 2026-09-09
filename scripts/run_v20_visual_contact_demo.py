@@ -24,6 +24,7 @@ FIT_INPUTS = (
     "pose_report",
     "mano_bridge",
     "hawor_params",
+    "appearance_mask_manifest",
     "mano_models",
 )
 PACKAGES = (
@@ -50,7 +51,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--render-width", type=int)
     result.add_argument("--frames", default="all", help="Renderer frame IDs, or all")
     result.add_argument("--interaction-judgments", type=Path)
-    result.add_argument("--object-id", default="carton_milk")
+    result.add_argument("--object-id")
     result.add_argument("--device", default="cuda:0")
     result.add_argument("--iterations", type=int, default=240)
     result.add_argument("--detail-yaw-deg", type=float, default=20.0)
@@ -88,6 +89,8 @@ def build_plan(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
         missing = [name for name in FIT_INPUTS if getattr(args, name) is None]
         if missing:
             raise ValueError(f"fit-render requires inputs: {', '.join(missing)}")
+        if args.object_id is None:
+            raise ValueError("fit-render requires --object-id")
         for name in FIT_INPUTS[:-1]:
             if not getattr(args, name).is_file():
                 raise ValueError(f"input not found: {name}={getattr(args, name)}")
