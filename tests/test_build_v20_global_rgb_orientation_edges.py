@@ -36,11 +36,16 @@ class RGBMissingPose(unittest.TestCase):
         target_camera = np.eye(4)
         target_camera[:3, :3] = Rotation.from_rotvec([-.03, .02, .04]).as_matrix()
         target_camera[:3, 3] = [.05, -.04, .02]
-        world, _ = rgb.lift_source_world(2, uv, mask, depth, np.ones_like(depth), intr, source_camera, .05)
+        # Independent pinhole/rigid equations, not the producer's lifting helper.
+        pixels = np.rint((uv + .5) * 2 - .5).astype(int)
+        z = depth[pixels[:,1], pixels[:,0]].astype(float)
+        camera_points = np.column_stack(((pixels[:,0]-intr[2])*z/intr[0],
+                                         (pixels[:,1]-intr[3])*z/intr[1], z))
+        world = camera_points @ source_camera[:3,:3].T + source_camera[:3,3]
         R = Rotation.from_rotvec([.04, -.06, .05]).as_matrix(); t = np.array([.03, .01, .02])
         Rc = target_camera[:3, :3].T @ R
         tc = target_camera[:3, :3].T @ (t-target_camera[:3, 3])
-        K = rgb.resize_intrinsics(np.array([[intr[0], 0, intr[2]], [0, intr[1], intr[3]], [0, 0, 1]]), (160,160), (80,80))
+        K = np.array([[65., 0., 39.5], [0., 66., 39.5], [0., 0., 1.]])
         target_uv, _ = cv2.projectPoints(world.astype(np.float64).reshape(-1, 1, 3), cv2.Rodrigues(Rc)[0], tc.reshape(3,1), K, np.zeros(5))
         obj = {'object_id': 'thing', 'rigid_pose_observation_eligible': True,
                'visible_geometry_candidate': {'rigid_pose_observation_eligible': True,
@@ -107,6 +112,96 @@ class RGBMissingPose(unittest.TestCase):
         from filter_v19_rigid_completion_multiview_support import trusted_pose_rows
         self.assertEqual([r['frame_idx'] for r in trusted_pose_rows(out)],[2])
         self.assertNotIn('translation_world_m',base['pose_rows'][0])
+
+    def test_manifest_plane_and_P09_support_replay_feed_real_PnP(self):
+        kwargs, _, R, t = self.fixture()
+        yy, xx = np.mgrid[:160,:160]
+        depth = (1 + .009*np.sin(xx/17) + .008*np.cos(yy/19)).astype(np.float32)
+        depth[40,40] = 3.5
+        intr = kwargs['depth_intrinsics'][0]
+        uv = kwargs['features'][2]['keypoints'].numpy()[0]
+        pixels = np.rint((uv+.5)*2-.5).astype(int)
+        z = depth[pixels[:,1],pixels[:,0]].astype(float)
+        camera_points=np.column_stack(((pixels[:,0]-79.5)*z/130,(pixels[:,1]-79.5)*z/132,z))
+        source_T=np.asarray(kwargs['frames'][2]['camera']['T_world_camera_metric'])
+        world=camera_points@source_T[:3,:3].T+source_T[:3,3]
+        target_T=np.asarray(kwargs['frames'][0]['camera']['T_world_camera_metric'])
+        predicted=(world@R.T+t-target_T[:3,3])@target_T[:3,:3]
+        target_uv=predicted[:,:2]/predicted[:,2,None]*[65.,66.]+[39.5,39.5]
+        kwargs['features'][0]['keypoints']=torch.tensor(target_uv[None])
+        kwargs['depths']=np.stack([depth,np.full_like(depth,np.nan)])
+        obj=kwargs['frames'][2]['objects'][0]
+        geometry=obj['visible_geometry_candidate']
+        geometry.update(source_width=160,source_height=160,frame_idx=2,
+            world_vertices_sample_m=world[1:].tolist(),
+            mask_depth_transform_contract={'mask_size_wh':[40,40],'depth_size_wh':[160,160],
+                'A_depth_from_mask_coordinate_model':[[4,0,1.5],[0,4,1.5],[0,0,1]]},
+            first_surface_depth_ownership={'input_valid_depth_pixels':25600,'retained_depth_pixels':25599,
+                'removed_depth_pixels':1,'state':'validated_sparse_interior_and_boundary_depth_quarantined'})
+        parameters={'min_depth_m':.1,'max_depth_m':5.,'robust_first_surface_depth_ownership':True}
+        settings={'mad_sigma':2.5,'min_half_width_m':.03,'min_retained_fraction':.9,
+                  'fail_raw_to_robust_extent_ratio':2.,'confidence_seed_percentile':95.,
+                  'local_depth_step_max_m':.005,'max_removed_distance_inside_mask_px':10.,
+                  'max_confidence_flagged_interior_fraction':.015,'min_interior_confidence_flagged_fraction':.95,
+                  'max_unexplained_interior_pixels':5,'min_component_pixels':20,'max_small_component_fraction':.01}
+        parameters.update({'first_surface_'+key:value for key,value in settings.items()})
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);manifest_path=root/'manifest.json';rows=[]
+            for index in [0,2]:
+                image=root/f'{index}.jpg';cv2.imwrite(str(image),np.full((80,80,3),125,np.uint8))
+                mask=root/f'mask_{index}.png';cv2.imwrite(str(mask),np.full((40,40),255,np.uint8))
+                kwargs['frames'][index]['time_s']=index/30
+                kwargs['frames'][index]['objects'][0]['mask_path']=str(mask)
+                rows.append({'frame_idx':index,'time_s':index/30,'source_width':160,'source_height':160,
+                             'manifest_width':80,'manifest_height':80,'rgb':str(image)})
+            manifest_path.write_text(json.dumps({'frames':rows}))
+            images,native,masks,planes=rgb.preflight_manifest_images(manifest_path,kwargs['frames'],[0,2],'thing',(160,160))
+            self.assertEqual(images[0].shape,(80,80,3))
+            self.assertEqual(native[2].shape,(40,40))
+            self.assertEqual(masks[2].shape,(80,80))
+            self.assertEqual(planes[0]['source_size_wh'],[160,160])
+            support=rgb.reproduce_source_depth_support(obj,native[2],depth,np.ones_like(depth),intr,parameters)
+            expected=np.ones((160,160),bool);expected[40,40]=False
+            np.testing.assert_array_equal(support,expected)
+            kwargs['masks']=masks;kwargs['source_support_by_frame']={2:support}
+            kwargs['target_evidence_size_wh']=(40,40)
+            row,motion,evidence=self.pair(kwargs)
+            self.assertEqual(row['status'],'accepted')
+            self.assertEqual(row['source_samples_quarantined'],1)
+            np.testing.assert_allclose(motion[0],R,atol=1e-6)
+            np.testing.assert_allclose(motion[1],t,atol=1e-6)
+            # Serialized coordinates match original mask raster, as expected by
+            # material consumers, not the feature or source-video dimensions.
+            np.testing.assert_allclose(evidence['target_uv'],(target_uv[1:]+.5)*.5-.5,atol=1e-9)
+            np.testing.assert_allclose(evidence['target_intrinsics'],[32.5,33.,19.5,19.5],atol=1e-12)
+            self.assertNotIn(0,kwargs['initial_pose_by_frame'])
+            wrong=json.loads(manifest_path.read_text());wrong['frames'][0]['manifest_width']=160
+            manifest_path.write_text(json.dumps(wrong))
+            with self.assertRaisesRegex(RuntimeError,'RGB/manifest'):
+                rgb.preflight_manifest_images(manifest_path,kwargs['frames'],[0,2],'thing',(160,160))
+
+    def test_actual_1408_source_and_960_manifest_preflight_needs_no_target_pose(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);rows=[];frames={}
+            for idx in [0,30]:
+                image=root/f'{idx}.jpg';mask=root/f'{idx}.png'
+                cv2.imwrite(str(image),np.zeros((960,960,3),np.uint8))
+                cv2.imwrite(str(mask),np.full((960,960),255,np.uint8))
+                rows.append({'frame_idx':idx,'time_s':idx/30,'source_width':1408,'source_height':1408,
+                    'manifest_width':960,'manifest_height':960,'rgb':str(image)})
+                obj={'object_id':'thing','mask_path':str(mask)}
+                if idx==0:obj['visible_geometry_candidate']={'source_width':1408,'source_height':1408,
+                    'mask_depth_transform_contract':{'mask_size_wh':[960,960]}}
+                frames[idx]={'frame_idx':idx,'time_s':idx/30,'objects':[obj]}
+            path=root/'manifest.json';path.write_text(json.dumps({'frames':rows}))
+            images,native,masks,_=rgb.preflight_manifest_images(path,frames,[0,30],'thing',(1408,1408))
+            self.assertEqual(set(images),{0,30})
+            np.testing.assert_array_equal(masks[30],native[30])
+            # This is the exact old assertion's failure, independent of models.
+            self.assertNotEqual(images[0].shape[1::-1],(1408,1408))
+            import inspect
+            main=inspect.getsource(rgb.main)
+            self.assertLess(main.index('preflight_manifest_images('),main.index('SuperPoint('))
 
     def test_rejected_source_guard_precedes_matching_or_depth_access(self):
         for kind in ('missing_p09','explicitly_rejected','missing_pose','invalid_surface'):

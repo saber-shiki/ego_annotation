@@ -189,7 +189,7 @@ def main():
     def run(key,argv,outputs):
         run_command(key,argv,outputs,root=root,cwd=ROOT,env=runtime_environment(cfg,a.gpu),
                     lineage=_LINEAGE,
-                    extra_inputs=[ann.parent/'v19_visible_geometry_adapter_report.json'] if key=='P14_RGB_full_timeline_observations' else [],
+                    extra_inputs=[ann.parent/'v19_visible_geometry_adapter_report.json',root/'input/raw_frame_manifest/manifest.json'] if key=='P14_RGB_full_timeline_observations' else [],
                     gpu=a.gpu if key in {'P12_P13_SAM3D','P14_RGB_full_timeline_observations','P18_interval','D01_demo_fit'} else None)
     depth=root/'state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
     hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz';bridge=root/'state/base_annotations/v19_mano_bridge_from_hawor_world.npz'

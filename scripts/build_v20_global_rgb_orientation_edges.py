@@ -193,6 +193,60 @@ def plan_source_edge_pairs(selected: list[int], key_ids: list[int], sources: set
     return sorted(pairs), rejected
 
 
+def preflight_manifest_images(manifest_path: Path, frames: dict[int, dict[str, Any]],
+                              selected: list[int], object_id: str, source_wh: tuple[int, int]):
+    """Validate the P01 raster before constructing feature models.
+
+    P09 source dimensions describe the video/depth plane, not the P01 JPEG.
+    Return both untouched owned masks (P09/material evidence) and appearance
+    masks resized to the actual manifest image for feature matching.
+    """
+    manifest = load_json(manifest_path)
+    by_id = {}
+    for row in manifest.get('frames', []):
+        idx = row.get('frame_idx')
+        if type(idx) is not int or idx in by_id:
+            raise RuntimeError('invalid or duplicate manifest frame ID')
+        by_id[idx] = row
+    images, native_masks, matching_masks, planes = {}, {}, {}, {}
+    for idx in selected:
+        if idx not in by_id:
+            raise RuntimeError(f'manifest RGB frame missing: {idx}')
+        row, frame = by_id[idx], frames[idx]
+        video_wh = (row.get('source_width'), row.get('source_height'))
+        manifest_wh = (row.get('manifest_width'), row.get('manifest_height'))
+        if (video_wh != tuple(source_wh) or any(type(v) is not int or v <= 0 for v in manifest_wh)
+                or not np.isclose(float(row['time_s']), float(frame['time_s']), atol=1e-6, rtol=0)):
+            raise RuntimeError(f'manifest/source/depth/time contract mismatch at frame {idx}')
+        path = Path(row.get('rgb') or row.get('raw_frame_path') or '')
+        if not path.is_absolute() or not path.resolve().is_relative_to(manifest_path.resolve().parent):
+            raise RuntimeError(f'manifest RGB path escapes declared input at frame {idx}')
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None or image.shape[1::-1] != manifest_wh:
+            raise RuntimeError(f'RGB/manifest image plane mismatch at frame {idx}')
+        obj = object_for_frame(frame, object_id)
+        if obj is None:
+            continue
+        mask = cv2.imread(str(obj.get('mask_path') or ''), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            continue
+        geometry = obj.get('visible_geometry_candidate') or {}
+        if geometry:
+            if (geometry.get('source_width'), geometry.get('source_height')) != video_wh:
+                raise RuntimeError(f'P09/source image plane mismatch at frame {idx}')
+            declared_mask = (geometry.get('mask_depth_transform_contract') or {}).get('mask_size_wh')
+            if declared_mask is not None and list(mask.shape[::-1]) != declared_mask:
+                raise RuntimeError(f'P09 owned-mask size mismatch at frame {idx}')
+        images[idx] = image
+        native_masks[idx] = mask
+        matching_masks[idx] = cv2.resize(mask, manifest_wh, interpolation=cv2.INTER_NEAREST_EXACT)
+        planes[idx] = {'source_size_wh': list(video_wh), 'manifest_size_wh': list(manifest_wh),
+                       'owned_mask_size_wh': list(mask.shape[::-1]), 'rgb_path': str(path),
+                       'matching_plane': 'manifest_rgb', 'serialized_evidence_plane': 'original_owned_mask',
+                       'pixel_affine': 'u_to=(u_from+0.5)*size_to/size_from-0.5'}
+    return images, native_masks, matching_masks, planes
+
+
 def feature_pair(
     source_idx: int,
     target_idx: int,
@@ -209,6 +263,7 @@ def feature_pair(
     args: argparse.Namespace,
     initial_pose_by_frame: dict[int, tuple[np.ndarray, np.ndarray]],
     source_support_by_frame: dict[int, np.ndarray],
+    target_evidence_size_wh: tuple[int, int] | None = None,
 ) -> tuple[dict[str, Any], tuple[np.ndarray, np.ndarray] | None, dict[str, np.ndarray] | None]:
     reason = rgb_source_eligibility(frames[source_idx], args.object_id, initial_pose_by_frame)
     if reason is not None or source_idx not in source_support_by_frame:
@@ -320,14 +375,17 @@ def feature_pair(
             raise RuntimeError(f"initial pose report lacks RGB source frame {source_idx}")
         source_R0, source_t0 = initial_pose_by_frame[source_idx]
         canonical_points = (source_world[inliers] - source_t0[None, :]) @ source_R0
+        evidence_size = target_evidence_size_wh or (mask1.shape[1], mask1.shape[0])
+        evidence_K = resize_intrinsics(K_target, (mask1.shape[1], mask1.shape[0]), evidence_size)
+        evidence_uv = (target_uv[inliers] + 0.5) * (np.asarray(evidence_size) / np.asarray(mask1.shape[::-1])) - 0.5
         target_intrinsics = np.asarray(
-            [K_target[0, 0], K_target[1, 1], K_target[0, 2], K_target[1, 2]],
+            [evidence_K[0, 0], evidence_K[1, 1], evidence_K[0, 2], evidence_K[1, 2]],
             dtype=np.float64,
         )
         point_weights = np.clip(np.exp(-reprojection / 2.0), 0.25, 1.0)
         evidence = {
             "canonical_points": np.asarray(canonical_points, dtype=np.float64),
-            "target_uv": np.asarray(target_uv[inliers], dtype=np.float64),
+            "target_uv": np.asarray(evidence_uv, dtype=np.float64),
             "target_intrinsics": target_intrinsics,
             "target_camera": np.asarray(target_camera, dtype=np.float64),
             "weights": point_weights,
@@ -445,6 +503,9 @@ def main() -> None:
         raise RuntimeError("not enough selected frames")
 
     initial_pose_by_frame = valid_initial_poses(initial_report)
+    manifest_path = case_root / 'input/raw_frame_manifest/manifest.json'
+    images, native_masks, masks, image_planes = preflight_manifest_images(
+        manifest_path, frames, selected, args.object_id, source_wh)
     source_rejections = {idx: rgb_source_eligibility(frames[idx], args.object_id, initial_pose_by_frame) for idx in selected}
     eligible_sources = {idx for idx, reason in source_rejections.items() if reason is None}
     if not eligible_sources:
@@ -462,7 +523,7 @@ def main() -> None:
     # Replay only eligible sources and cache once; rejected frames never lift raw depth.
     for idx in sorted(eligible_sources):
         obj = object_for_frame(frames[idx], args.object_id)
-        mask = cv2.imread(str(obj["mask_path"]), cv2.IMREAD_GRAYSCALE)
+        mask = native_masks.get(idx)
         if mask is None:
             source_rejections[idx] = "missing_source_mask"
             continue
@@ -477,30 +538,14 @@ def main() -> None:
     extractor = SuperPoint(max_num_keypoints=int(args.max_keypoints)).eval().to(device)
     matcher = LightGlue(features="superpoint", depth_confidence=0.9, width_confidence=0.95, filter_threshold=0.2).eval().to(device)
     features: dict[int, dict[str, torch.Tensor]] = {}
-    masks: dict[int, np.ndarray] = {}
     for n, idx in enumerate(selected, 1):
-        obj = object_for_frame(frames[idx], args.object_id)
-        if obj is None:
+        if idx not in images or idx not in masks:
             continue
-        mask = cv2.imread(str(obj.get("mask_path") or ""), cv2.IMREAD_GRAYSCALE)
-        rgb_path = case_root / "input/raw_frame_manifest/rgb" / f"{idx:06d}.jpg"
-        image = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
-        if mask is None or image is None:
-            continue
-        # Features use the unresized raw RGB raster. P09 masks declare the
-        # source->mask half-pixel resize; align the appearance mask, not the UV.
-        geom = obj.get("visible_geometry_candidate", {})
-        appearance = obj.get("appearance_observation", {})
-        declared_wh = (int(geom.get("source_width", appearance.get("source_width", 0))),
-                       int(geom.get("source_height", appearance.get("source_height", 0))))
-        if image.shape[1::-1] != declared_wh:
-            raise RuntimeError(f"RGB/source image plane mismatch at frame {idx}")
-        mask = cv2.resize(mask, declared_wh, interpolation=cv2.INTER_NEAREST_EXACT)
+        image = images.pop(idx)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         tensor = torch.from_numpy(image_rgb).permute(2, 0, 1).float().div(255.0).to(device)
         with torch.inference_mode():
             features[idx] = {key: value.detach() for key, value in extractor.extract(tensor, resize=None).items()}
-        masks[idx] = mask
         if n == 1 or n % 25 == 0 or n == len(selected):
             print(f"[global-rgb] extracted {n}/{len(selected)}", flush=True)
 
@@ -529,7 +574,8 @@ def main() -> None:
     for n, (a, b) in enumerate(edge_pairs, 1):
         row, motion, evidence = feature_pair(
             a, b, features, masks, frames, depths, confidences, depth_pos,
-            depth_intrinsics, source_wh, matcher, device, args, initial_pose_by_frame, source_support_by_frame
+            depth_intrinsics, source_wh, matcher, device, args, initial_pose_by_frame, source_support_by_frame,
+            target_evidence_size_wh=tuple(native_masks[b].shape[::-1])
         )
         edges.append(row)
         if motion is not None:
@@ -576,11 +622,15 @@ def main() -> None:
             "depth_raster_shape": list(depths.shape[1:]),
             "intrinsics_plane": "depth_source_plane",
             "target_intrinsics_resize_from_source_wh": list(source_wh),
+            "matching_uv_plane": "manifest_rgb",
+            "reprojection_evidence_uv_plane": "original_owned_mask",
+            "per_frame_planes": {str(k): v for k, v in image_planes.items()},
         },
         "input_sha256": {
             "annotations": sha256_file(args.annotations),
             "depth_npz": sha256_file(args.depth_npz),
             "p09_adapter_report": sha256_file(adapter_path),
+            "raw_frame_manifest": sha256_file(manifest_path),
             "initial_pose_report": sha256_file(args.initial_pose_report),
         },
     }
