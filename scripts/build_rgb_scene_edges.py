@@ -81,6 +81,18 @@ def find_case_root(annotation_path: Path) -> Path:
     return annotation_path.expanduser().resolve().parents[4]
 
 
+def resolve_raw_frame_manifest(annotation_path: Path, explicit: Path | None = None) -> Path:
+    """Separate the shared raw-video input from a candidate's annotation root.
+
+    Legacy runs keep their existing adjacent input lookup. Candidate callers
+    explicitly pass the source P01 manifest, whose own frame/raster checks and
+    recorded input hash still apply at consumption.
+    """
+    if explicit is not None:
+        return explicit.expanduser().resolve()
+    return find_case_root(annotation_path) / 'input/raw_frame_manifest/manifest.json'
+
+
 def object_for_frame(frame: dict[str, Any], object_id: str) -> dict[str, Any] | None:
     for obj in frame.get("objects", []) if isinstance(frame.get("objects"), list) else []:
         if isinstance(obj, dict) and obj.get("object_id") == object_id:
@@ -437,6 +449,8 @@ def diagnostic_motion_chain(anchor: int, poses: dict, motions: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--annotations", type=Path, required=True)
+    parser.add_argument("--raw-frame-manifest", type=Path,
+                        help="Source P01 manifest; explicit for candidate-local annotations.")
     parser.add_argument("--depth-npz", type=Path, required=True)
     parser.add_argument("--initial-pose-report", type=Path, required=True)
     parser.add_argument("--object-id", required=True)
@@ -519,7 +533,7 @@ def main() -> None:
         raise RuntimeError("not enough selected frames")
 
     initial_pose_by_frame = valid_initial_poses(initial_report)
-    manifest_path = case_root / 'input/raw_frame_manifest/manifest.json'
+    manifest_path = resolve_raw_frame_manifest(args.annotations, args.raw_frame_manifest)
     images, native_masks, masks, image_planes = preflight_manifest_images(
         manifest_path, frames, selected, args.object_id, source_wh)
     source_rejections = {idx: rgb_source_eligibility(frames[idx], args.object_id, initial_pose_by_frame) for idx in selected}
@@ -617,6 +631,7 @@ def main() -> None:
         "annotations": str(args.annotations.expanduser().resolve()),
         "depth_npz": str(args.depth_npz.expanduser().resolve()),
         "initial_pose_report": str(args.initial_pose_report.expanduser().resolve()),
+        "raw_frame_manifest": str(manifest_path),
         "object_id": args.object_id,
         "prediction_side_only": True,
         "generated_geometry_consumed": False,
