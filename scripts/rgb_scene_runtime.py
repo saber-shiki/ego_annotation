@@ -75,6 +75,29 @@ class SceneLineage(RunLineage):
                 raise ValueError('standalone visual/export dependency inventory missing')
             verify_external_assets({'files':{name:identity['files'][name] for name in names},'trees':{}})
 
+    def inputs(self, argv, output_roots, extra=()):
+        """Do not treat the candidate root control flag as a data directory.
+
+        Candidate-local files named explicitly in argv/extra remain verified;
+        only the directory-valued ``--candidate-root`` control argument is
+        removed before the base recursive input walk.  Otherwise lineage would
+        descend into launch/ and attempt to require inspection shell scripts as
+        producer outputs.
+        """
+        if self.candidate is not None:
+            candidate_root = self.candidate.root.resolve()
+
+            def is_candidate_root(value):
+                try:
+                    path = Path(value)
+                except (TypeError, ValueError):
+                    return False
+                return path.is_absolute() and path.resolve() == candidate_root
+
+            argv = [value for value in argv if not is_candidate_root(value)]
+            extra = [value for value in extra if not is_candidate_root(value)]
+        return super().inputs(argv, output_roots, extra)
+
     def agent_phase(self,path):
         if self.candidate is not None and Path(path).is_relative_to(self.candidate.root):
             name=Path(path).name

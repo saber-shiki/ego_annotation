@@ -47,6 +47,20 @@ class RuntimeTests(unittest.TestCase):
         with patch('v19_runtime_contracts.subprocess.run',side_effect=responses(util=0)):
             with self.assertRaises(RuntimeError):live_gpu_probe(2)
 
+    def test_candidate_root_control_argument_is_not_recursive_input(self):
+        candidate_root = Path('/tmp/run/candidates/example')
+        lineage = object.__new__(runtime.SceneLineage)
+        lineage.candidate = SimpleNamespace(root=candidate_root)
+        with patch.object(runtime.RunLineage, 'inputs', return_value={'ok': 'ok'}) as parent:
+            result = lineage.inputs(
+                ['--candidate-root', str(candidate_root), '--output-dir',
+                 str(candidate_root / 'measurements')], [], [candidate_root])
+        self.assertEqual(result, {'ok': 'ok'})
+        argv, output_roots, extra = parent.call_args.args
+        self.assertIn('--candidate-root', argv)
+        self.assertNotIn(str(candidate_root), argv)
+        self.assertEqual(extra, [])
+
     def test_byte_bound_successful_resume_rejects_tamper(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)/'run';bundle=Path(td)/'bundle';root.mkdir();bundle.mkdir()
