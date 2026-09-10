@@ -1,6 +1,7 @@
 # Standalone raw-RGB scene pipeline
 
 Source design: [STANDALONE_RGB_SCENE_PIPELINE_DESIGN.md](STANDALONE_RGB_SCENE_PIPELINE_DESIGN.md).
+Anchor policy: [STANDALONE_ANCHOR_SELECTION_POLICY.md](STANDALONE_ANCHOR_SELECTION_POLICY.md). Preserve the existing ranking/weights; inspect the top candidate by default, and override only for concrete evidenced defects. The runtime spec contains the matching instructions. This is an instruction/documentation change, not a new automatic scorer or deployed bundle update.
 This independent entry produces **only `final/annotation.json` and `final/world.rrd`**. It does not run the physical/P19 branch, additive-demo runner, annotation-video renderer, or package-video exporter. Existing entrypoints are unchanged.
 
 ## Implemented callgraph
