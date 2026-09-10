@@ -8,6 +8,7 @@ import json, subprocess, time, os, hashlib
 from v19_runtime_contracts import in_run, load, sha
 from rgb_scene_lineage_base import RunLineage
 from rgb_scene_candidates import CandidatePaths, load_candidate, append_event
+from rgb_scene_recovery import event_code_is_valid
 from rgb_scene_process import run_owned, OwnedProcessFailure, OUTER_TIMEOUT_S
 
 
@@ -33,19 +34,33 @@ def probe(config, gpu, minimum_free_mib=0):
 class SceneLineage(RunLineage):
     def __init__(self, root, bundle, runtime_config=None, *, asset_role=None, candidate=None):
         self.candidate = candidate
-        super().__init__(root, bundle, runtime_config, asset_role=asset_role)
+        self.candidate_value = load_candidate(candidate)[1] if candidate is not None else None
+        self.candidate_contract_sha256 = (self.candidate_value or {}).get('candidate_contract_sha256')
+        super().__init__(root, bundle, runtime_config, asset_role=asset_role,
+                         candidate_context=candidate is not None)
         if candidate is not None:
-            # Source events remain visible through the parent lineage; candidate
-            # events are an append-only suffix with the same immutable identity.
-            self.events = candidate.events
+            context_path=Path(self.candidate_value.get('source_context_path',''))
+            if not context_path.is_file() or sha(context_path)!=self.candidate_value.get('source_context_sha256'):
+                raise ValueError('verified source context changed')
+            context=load(context_path)
+            source_events=Path(context.get('source_events',''))
+            if source_events.is_file() and context.get('source_events_sha256')!=sha(source_events):
+                raise ValueError('verified source event snapshot changed')
+            if source_events.is_file():
+                for line in source_events.read_text().splitlines():
+                    event=json.loads(line)
+                    if (event.get('returncode')==0 and 'error' not in event
+                            and event.get('run_identity')==self.identity):
+                        for path in event.get('output_sha256',{}): self.records[path]=event
             if candidate.events.exists():
                 for line in candidate.events.read_text().splitlines():
                     event=json.loads(line)
+                    accepted_import = (event.get('kind')=='verified_external_native_import'
+                                       and event.get('candidate_id')==candidate.candidate_id
+                                       and event.get('candidate_contract_sha256')==self.candidate_contract_sha256)
                     if (event.get('returncode')==0 and 'error' not in event
                             and event.get('run_identity')==self.identity
-                            and (event_code_is_valid(event,self.code,self.recovery)
-                                 or (self.candidate is not None and event.get('kind')=='verified_external_native_import'
-                                     and event.get('candidate_id')==self.candidate.candidate_id))):
+                            and (accepted_import or event_code_is_valid(event,self.code,self.recovery))):
                         for path in event.get('output_sha256',{}): self.records[path]=event
         if asset_role in {'demo','export'}:
             from v19_runtime_assets import verify_external_assets
@@ -54,22 +69,6 @@ class SceneLineage(RunLineage):
             if not names:
                 raise ValueError('standalone visual/export dependency inventory missing')
             verify_external_assets({'files':{name:identity['files'][name] for name in names},'trees':{}})
-
-    def require_judgment(self,path):
-        # Candidate decisions are authored after inspecting candidate evidence.
-        # Validate their identity/evidence DAG without consulting source
-        # selection or source anchor files.
-        if self.candidate is not None and Path(path).is_relative_to(self.candidate.root):
-            payload=load(path); phase=self.agent_phase(path)
-            source=payload.get('visual_judgment_provenance',{})
-            if (source.get('kind')!='current_run_visual_judgment' or source.get('phase')!=phase
-                    or source.get('run_identity')!=self.identity or not source.get('evidence_sha256')):
-                raise ValueError('candidate decision needs current-run visual evidence identity')
-            for name,digest in source['evidence_sha256'].items():
-                checked=self.require(name)
-                if self.checked_digest(checked)!=digest: raise ValueError('candidate visual evidence changed')
-            return
-        return super().require_judgment(path)
 
     def agent_phase(self,path):
         if self.candidate is not None and Path(path).is_relative_to(self.candidate.root):
@@ -105,9 +104,16 @@ class SceneLineage(RunLineage):
             if (selected is None or (row['frame_idx'],name)==selected) and name in evidence:
                 if self.producer_evidence(name,evidence,'P01') is producer:
                     return
+            if selected is not None and row['frame_idx']==selected[0] and name not in evidence:
+                derived=[candidate for candidate in evidence if self.candidate is not None
+                         and Path(candidate).is_relative_to(self.candidate.root)
+                         and Path(candidate).is_file() and Path(candidate).suffix.lower() in {'.jpg','.jpeg','.png'}]
+                if any(self.checked_digest(candidate)==self.checked_digest(name) for candidate in derived):
+                    return
         raise ValueError('required manifest-owned current P01 image missing')
 
     def require_judgment(self,path):
+        base = self.candidate.root if self.candidate is not None and Path(path).resolve().is_relative_to(self.candidate.root) else self.root
         phase=self.agent_phase(path)
         if phase not in {'P05','P09_anchor','P10','appearance_anchor'}:
             return super().require_judgment(path)
@@ -128,10 +134,10 @@ class SceneLineage(RunLineage):
         obj=plan['objects'][0]['object_id']
         if phase in {'P09_anchor','appearance_anchor'}:
             directory='anchor_decisions' if phase=='P09_anchor' else 'appearance_decisions'
-            if path!=self.root/f'state/{directory}/{obj}.json' or payload.get('object_id')!=obj:
+            if path!=base/f'state/{directory}/{obj}.json' or payload.get('object_id')!=obj:
                 raise ValueError('visual decision selected object/path mismatch')
         if phase=='P09_anchor':
-            directory=self.root/f'measurements/object_geometry/anchor_candidates/{obj}'
+            directory=base/f'measurements/object_geometry/anchor_candidates/{obj}'
             proposal=directory/'anchor_candidate_proposals.json'
             producer=self.producer_evidence(proposal,evidence,'P09-propose')
             value=load(proposal);review=directory/'anchor_candidate_review.jpg'
@@ -144,26 +150,26 @@ class SceneLineage(RunLineage):
                 raise ValueError('anchor review producer mismatch')
             return
         if phase=='P10':
-            annotations=self.root/f'measurements/object_geometry/visible_geometry/{obj}/annotations_v19_visible_geometry.json'
+            annotations=base/f'measurements/object_geometry/visible_geometry/{obj}/annotations_v19_visible_geometry.json'
             producer=self.producer_evidence(annotations,evidence,'P09')
             images=[Path(name) for name in evidence if Path(name).suffix.lower() in {'.jpg','.jpeg','.png'}
                     and self.records.get(name,{}).get('phase')=='P09']
             if not images or not any(self.producer_evidence(image,evidence,'P09') is producer for image in images):
                 raise ValueError('P10 decision needs a current P09-owned image')
-            if path == self.root/f'state/physical_branch_decisions/{obj}.json':
+            if path == base/f'state/physical_branch_decisions/{obj}.json':
                 if payload.get('object_id')!=obj or payload.get('physical_branch')!='rigid':
                     raise ValueError('P10 rigid branch identity mismatch')
-            elif path == self.root/'state/object_selection.json':
-                anchor=load(self.require(self.root/f'state/anchor_decisions/{obj}.json'))
+            elif path == base/'state/object_selection.json':
+                anchor=load(self.require(base/f'state/anchor_decisions/{obj}.json'))
                 track=plan['objects'][0].get('track_id',obj)
                 if (payload.get('object_id')!=obj or payload.get('case')!=self.contract['case']
                         or payload.get('track_id')!=track
                         or payload.get('anchor_frame')!=anchor.get('selected_anchor_frame_idx')):
                     raise ValueError('P10 object selection differs from plan/anchor')
-                self.require(self.root/f'state/physical_branch_decisions/{obj}.json')
+                self.require(base/f'state/physical_branch_decisions/{obj}.json')
             else: raise ValueError('P10 judgment path mismatch')
             return
-        manifest=self.root/f'measurements/demo_visual/{obj}/appearance_evidence/appearance_mask_manifest.json'
+        manifest=base/f'measurements/demo_visual/{obj}/appearance_evidence/appearance_mask_manifest.json'
         producer=self.producer_evidence(manifest,evidence,'scene_appearance')
         value=load(manifest);idx=payload.get('selected_frame_idx')
         rows=[r for r in value.get('frames',[]) if r.get('frame_idx')==idx]
@@ -175,21 +181,48 @@ class SceneLineage(RunLineage):
         self.raw_image_evidence(evidence,selected=(idx,row['raw_rgb_path']))
 
     def require_interaction_evidence(self, judgment, evidence):
-        selection=load(self.root/'state/object_selection.json');obj=selection['object_id']
-        if judgment!=self.root/f'state/agent_interaction_judgments/{obj}.json':raise ValueError('interaction judgment selected object mismatch')
-        posterior=str(self.root/f'state/scene/{obj}/refined_pose.json')
+        base = self.candidate.root if self.candidate is not None and Path(judgment).resolve().is_relative_to(self.candidate.root) else self.root
+        selection=load(base/'state/object_selection.json');obj=selection['object_id']
+        if judgment!=base/f'state/agent_interaction_judgments/{obj}.json':raise ValueError('interaction judgment selected object mismatch')
+        posterior=str(base/f'state/scene/{obj}/refined_pose.json')
         if posterior not in evidence: raise ValueError('interaction judgment needs refined trajectory')
         self.require(posterior)
         self.raw_image_evidence(evidence)
 
     def _require(self,value,epoch):
         event=self.records.get(str(Path(value).resolve()))
-        if event is not None and event.get('input_contract_sha256')!=sha(self.contract_path):
+        is_candidate_path=self.candidate is not None and Path(value).resolve().is_relative_to(self.candidate.root)
+        expected_contract=sha(self.candidate.contract_path if is_candidate_path else self.contract_path)
+        if event is not None and event.get('input_contract_sha256') != expected_contract:
             raise ValueError('prepared scene contract changed since producer')
+        if event is not None and event.get('kind')=='verified_external_native_import':
+            if self.candidate is None or event.get('candidate_id') != self.candidate.candidate_id or event.get('candidate_contract_sha256') != self.candidate_contract_sha256:
+                raise ValueError('imported native event belongs to another candidate')
+            for name,expected in event.get('input_sha256',{}).items():
+                source_path=Path(name)
+                checked=self.checked_digest(source_path) if not source_path.resolve().is_relative_to(self.root) else self.require(source_path)
+                if checked != expected:
+                    raise ValueError('imported native source changed: '+name)
+            if self.checked_digest(Path(value)) != event['output_sha256'][str(Path(value).resolve())]:
+                raise ValueError('imported native output changed')
+            epoch['paths'].add(str(Path(value).resolve()))
+            return Path(value).resolve()
+        if event is not None and not is_candidate_path:
+            if self.checked_digest(Path(value)) != event['output_sha256'][str(Path(value).resolve())]:
+                raise ValueError('source producer output changed')
+            producer=id(event)
+            if producer not in epoch['producers']:
+                for name,expected in event.get('input_sha256',{}).items():
+                    if self.checked_digest(self.require(name)) != expected:
+                        raise ValueError('source producer input changed: '+name)
+                epoch['producers'].add(producer)
+            epoch['paths'].add(str(Path(value).resolve()))
+            return Path(value).resolve()
         return super()._require(value,epoch)
 
+
     def success(self,event,inputs,outputs,output_roots):
-        event['input_contract_sha256']=sha(self.contract_path)
+        event['input_contract_sha256']=sha(self.candidate.contract_path if self.candidate is not None else self.contract_path)
         super().success(event,inputs,outputs,output_roots)
 
 def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, lineage=None, extra_inputs=(), capture_roots=(), timeout=OUTER_TIMEOUT_S):

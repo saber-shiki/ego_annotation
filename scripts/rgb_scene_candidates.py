@@ -79,6 +79,19 @@ def prepare_candidate(run_root: Path, candidate_id: str, *, frame: int | None = 
     paths.root.mkdir(parents=True)
     (paths.root/'logs').mkdir()
     object_id = proposal_value.get('object_id') or proposals[0].parent.name
+    source_events = run_root/'logs/integration/events.jsonl'
+    source_bundle_manifest = run_root/'runtime/bundle_manifest.json'
+    source_context = paths.path('state/verified_source_context.json')
+    source_context.parent.mkdir(parents=True, exist_ok=True)
+    source_context.write_text(json.dumps({
+        'schema':'rgb_scene_verified_source_context_v1',
+        'source_contract':str(contract_path), 'source_contract_sha256':sha(contract_path),
+        'source_proposal':str(proposals[0]), 'source_proposal_sha256':sha(proposals[0]),
+        'source_events':str(source_events),
+        'source_events_sha256':sha(source_events) if source_events.is_file() else None,
+        'source_bundle_manifest':str(source_bundle_manifest),
+        'source_bundle_manifest_sha256':sha(source_bundle_manifest) if source_bundle_manifest.is_file() else source_contract.get('bundle_manifest_sha256'),
+    }, indent=2)+'\n')
     value = {'schema':'rgb_scene_candidate_v1','candidate_id':candidate_id,
              'run_id':source_contract['run_id'],'run_root':str(run_root),
              'source_contract_sha256':sha(contract_path),'source_proposal_path':str(proposals[0]),
@@ -87,7 +100,12 @@ def prepare_candidate(run_root: Path, candidate_id: str, *, frame: int | None = 
              'default_ranked_frame_idx':default_frame,'native_mode':native_mode,
              'source_native':str(Path(source_native).resolve()) if source_native else None,
              'source_identity':_identity(source_contract),
+             'source_context_path':str(source_context),'source_context_sha256':sha(source_context),
+             'candidate_execution_identity':{'candidate_id':candidate_id,'candidate_contract_sha256':'pending',
+                                             'source_bundle_manifest_sha256':source_contract['bundle_manifest_sha256']},
              'selection_requires_visual_confirmation':True}
+    paths.contract_path.write_text(json.dumps(value, indent=2)+'\n')
+    value['candidate_execution_identity']['candidate_contract_sha256']=sha(paths.contract_path)
     paths.contract_path.write_text(json.dumps(value, indent=2)+'\n')
     paths.events.write_text('')
     return value
@@ -129,6 +147,11 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
     if candidate['native_mode'] != 'reuse': raise ValueError('candidate is not a reuse candidate')
     source_qc = Path(source_qc).resolve(); execution = Path(execution_receipt).resolve(); control_path=Path(control_contract).resolve()
     image = Path(image).resolve(); mask = Path(mask).resolve()
+    source_native = Path(candidate['source_native']).resolve()
+    if not source_native.is_dir(): raise ValueError('declared source native directory missing')
+    for supplied in (source_qc, execution, control_path):
+        if not supplied.is_relative_to(source_native):
+            raise ValueError('native receipt/control is outside declared source_native')
     if not source_qc.is_file() or not execution.is_file() or not control_path.is_file() or not image.is_file() or not mask.is_file(): raise ValueError('native import input missing')
     qc = load(source_qc)
     if qc.get('status') != 'ok': raise ValueError('native model receipt is not successful')
@@ -141,10 +164,14 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
         raise ValueError('native execution/control contract mismatch')
     if expected_contract.get('sha256') and sha(control_path)!=expected_contract['sha256']:
         raise ValueError('native control contract changed')
-    returncode = execution_value.get('returncode', execution_value.get('execution',{}).get('returncode'))
-    cleanup = execution_value.get('cleanup', execution_value.get('execution',{}).get('cleanup',{}))
-    if returncode != 0 or cleanup.get('status') not in {None,'stopped'}:
-        raise ValueError('native execution did not return zero with stopped cleanup')
+    model_execution = execution_value.get('execution') if isinstance(execution_value.get('execution'),dict) else execution_value
+    model_returncode = model_execution.get('returncode')
+    model_cleanup = model_execution.get('cleanup', execution_value.get('cleanup',{}))
+    if model_returncode != 0 or (model_cleanup and model_cleanup.get('status') not in {None,'stopped'}):
+        raise ValueError('native model execution did not return zero with stopped cleanup')
+    wrapper_disposition = {'returncode':execution_value.get('returncode'),
+                           'status':execution_value.get('status'),
+                           'failure_path':str(execution.parent/'failure.json') if (execution.parent/'failure.json').is_file() else None}
     if execution_value.get('source_run_id') not in {None,candidate['run_id']}:
         raise ValueError('native receipt source run mismatch')
     if execution_value.get('frame_idx') not in {None,candidate['selected_frame_idx']}:
@@ -164,8 +191,10 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
     if outputs:
         qc_records=[r for r in outputs.values() if isinstance(r,dict) and Path(r.get('path','')).resolve()==source_qc]
         if len(qc_records)!=1 or qc_records[0].get('sha256')!=sha(source_qc):
-            raise ValueError('native QC differs from execution receipt')
+            raise ValueError('native output differs from execution receipt')
     actual_identity={'seed':qc.get('seed')}
+    for source in (qc, execution_value, model_execution):
+        if isinstance(source.get('model_identity'),dict): actual_identity.update(source['model_identity'])
     argv=execution_value.get('execution',{}).get('argv',execution_value.get('argv',[]))
     if isinstance(argv,list):
         for flag,key in (('--config','config'),('--moge-checkpoint','moge_checkpoint'),('--dinov2-checkpoint','dinov2_checkpoint')):
@@ -175,18 +204,22 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
     for source,key in (('moge_offline','moge_checkpoint_sha256'),('dinov2_offline','dinov2_checkpoint_sha256')):
         if isinstance(qc.get(source),dict) and qc[source].get('checkpoint_sha256'):
             actual_identity[key]=qc[source]['checkpoint_sha256']
-    if model_identity is not None:
-        if not isinstance(model_identity,dict) or any(k not in actual_identity for k in model_identity):
-            raise ValueError('native model identity is not bound by receipt')
-        if any(model_identity[k] != actual_identity[k] for k in model_identity):
-            raise ValueError('native model identity mismatch')
+    requested_identity = model_identity
+    if not isinstance(requested_identity,dict) or not requested_identity:
+        raise ValueError('explicit receipt-bound native model identity required')
 
-    # Preserve complete raw/camera mesh family and topology-related outputs.
+    if any(k not in actual_identity for k in requested_identity) or any(requested_identity[k] != actual_identity[k] for k in requested_identity):
+        raise ValueError('native model identity is not bound by receipt')
+    if 'seed' not in requested_identity or not any(k in requested_identity for k in ('config','config_sha256','moge_checkpoint','moge_checkpoint_sha256','dinov2_checkpoint','dinov2_checkpoint_sha256')):
+        raise ValueError('native model identity must include seed and model/config binding')
     names = ('mesh','native_pose_mesh_opencv_camera','native_pose_mesh_pytorch3d_camera','glb')
     if any(not isinstance(qc.get(k), str) for k in names): raise ValueError('complete native mesh receipt required')
     out = paths.path(f'measurements/scene_native/{candidate["object_id"]}/imported')
     if out.exists(): raise ValueError('native import is create-only')
     out.mkdir(parents=True)
+    input_out=paths.path('state/native_reuse_inputs'); input_out.mkdir(parents=True,exist_ok=True)
+    mapped_image=input_out/('rgb'+image.suffix.lower()); mapped_mask=input_out/('mask'+mask.suffix.lower())
+    _copy_receipt_asset(image,mapped_image); _copy_receipt_asset(mask,mapped_mask)
     copied = {}
     for key in names:
         src = Path(qc[key]).resolve()
@@ -196,7 +229,7 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
         dst = out / src.name
         _copy_receipt_asset(src, dst); copied[key] = str(dst)
     mapped = copy.deepcopy(qc)
-    mapped.update(image=str(image), mask=str(mask), **copied)
+    mapped.update(image=str(mapped_image), mask=str(mapped_mask), **copied)
     failure_source=execution.parent/'failure.json'
     failure_copy=None
     if failure_source.is_file():
@@ -216,15 +249,20 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
               'execution_receipt_path':str(execution),'execution_receipt_sha256':sha(execution),
               'input_rgb_sha256':sha(image),'input_mask_sha256':sha(mask),
               'native_outputs':copied,'failure_preserved':mapped['source_native_receipt']['wrapper_failure_preserved']}
-    receipt = paths.path('state/native_reuse_receipt.json'); receipt.parent.mkdir(parents=True)
+    receipt = paths.path('state/native_reuse_receipt.json'); receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps(result,indent=2)+'\n')
-    imported_files=[receipt,destination,*map(Path,copied.values())]
+    imported_files=[receipt,destination,mapped_image,mapped_mask,*map(Path,copied.values())]
     if failure_copy: imported_files.append(failure_copy)
     append_event(paths, {'phase':'native_import','candidate_id':paths.candidate_id,
+                         'candidate_contract_sha256':candidate.get('candidate_execution_identity',{}).get('candidate_contract_sha256'),
+                         'input_contract_sha256':sha(paths.contract_path),
+                         'input_sha256':{str(p):sha(p) for p in (source_qc,execution,control_path,image,mask)},
                          'returncode':0,
                          'run_identity':candidate['source_identity'],'outputs':[str(p) for p in imported_files],
                          'output_sha256':{str(p):sha(p) for p in imported_files},
                          'kind':'verified_external_native_import','source_execution_receipt':str(execution),
-                         'source_control_contract':str(control_path),'source_output_sha256':{str(p):sha(p) for p in [source_qc,*map(Path,copied.values())]},
-                         'code_sha256':{}})
+                         'source_control_contract':str(control_path),
+                         'source_control_contract_sha256':sha(control_path),
+                         'source_model_identity':actual_identity,
+                         'code_sha256':{'scripts/rgb_scene_candidates.py':sha(Path(__file__))}})
     return result

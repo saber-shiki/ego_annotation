@@ -1,6 +1,9 @@
 import json
 import tempfile
 import unittest
+import cv2
+import numpy as np
+import trimesh
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -25,20 +28,24 @@ class CandidateWorkflowTests(unittest.TestCase):
         self.proposal=proposal/'anchor_candidate_proposals.json'
         self.proposal.write_text(json.dumps({'object_id':'tool','ranked_candidates':[
             {'frame_idx':7,'score':.9},{'frame_idx':42,'score':.8}]}))
-        self.rgb=self.root/'frame-7.jpg'; self.mask=self.root/'mask-7.png'
-        self.rgb.write_bytes(b'rgb-7'); self.mask.write_bytes(b'mask-7')
+        self.rgb=self.root/'input/frame-7.jpg'; self.mask=self.root/'input/mask-7.png'
+        cv2.imwrite(str(self.rgb),np.full((6,8,3),128,dtype=np.uint8))
+        cv2.imwrite(str(self.mask),np.full((6,8),255,dtype=np.uint8))
         self.native=Path(self.tmp.name)/'native'; self.native.mkdir()
         self.qcdir=self.native/'case_tool_frame_7'; self.qcdir.mkdir()
+        tri=trimesh.Trimesh(vertices=[[0,0,0],[1,0,0],[0,1,0]],faces=[[0,1,2]],process=False)
         paths={}
-        for name in ('mesh.ply','native_pose_mesh_opencv_camera.ply','native_pose_mesh_pytorch3d_camera.ply','mesh.glb'):
-            p=self.qcdir/name; p.write_bytes((b'ply triangle '+name.encode())); paths[name]=str(p)
+        for name in ('mesh.ply','native_pose_mesh_opencv_camera.ply','native_pose_mesh_pytorch3d_camera.ply'):
+            p=self.qcdir/name; tri.export(str(p),file_type='ply'); paths[name]=str(p)
+        glb=self.qcdir/'mesh.glb'; tri.export(str(glb),file_type='glb'); paths['glb']=str(glb)
         self.qc=self.qcdir/'qc_sam3d_objects_mesh_v7.json'
         self.qc.write_text(json.dumps({'status':'ok','seed':42,'image':str(self.rgb),'mask':str(self.mask),
             'mesh':paths['mesh.ply'],'native_pose_mesh_opencv_camera':paths['native_pose_mesh_opencv_camera.ply'],
             'native_pose_mesh_pytorch3d_camera':paths['native_pose_mesh_pytorch3d_camera.ply'],
-            'glb':paths['mesh.glb']}))
+            'glb':paths['glb'],'model_identity':{'config':'sam3d-config-v1','moge_checkpoint_sha256':'moge-hash','dinov2_checkpoint_sha256':'dino-hash'}}))
         self.execution=self.native/'execution_receipt.json'
         self.execution.write_text(json.dumps({'returncode':0,'source_run_id':'aa5f4afc-2dc4-4cfe-aae6-25cd98aafc11','frame_idx':7,'seed':42,'native_qc':str(self.qc),
+            'model_identity':{'config':'sam3d-config-v1','moge_checkpoint_sha256':'moge-hash','dinov2_checkpoint_sha256':'dino-hash'},
             'outputs':{str(p):{'path':str(p),'sha256':sha(p)} for p in [self.qc,*map(Path,paths.values())]}}))
         self.control=self.native/'control_contract.json'
         self.control.write_text(json.dumps({'frame_idx':7,'seed':42,'input_records':{'rgb':{'sha256':sha(self.rgb)},'owned_mask':{'sha256':sha(self.mask)}}}))
@@ -59,9 +66,13 @@ class CandidateWorkflowTests(unittest.TestCase):
     def test_import_requires_receipt_and_preserves_derived_mapping(self):
         value=prepare_candidate(self.root,'reuse-a',frame=7,native_mode='reuse',source_native=self.native)
         paths,_=load_candidate(paths:=self.root/'candidates/reuse-a/candidate_contract.json')
-        result=import_native_receipt(paths,self.qc,self.execution,self.control,self.rgb,self.mask,model_identity={'seed':42})
+        model_identity={'seed':42,'config':'sam3d-config-v1','moge_checkpoint_sha256':'moge-hash','dinov2_checkpoint_sha256':'dino-hash'}
+        result=import_native_receipt(paths,self.qc,self.execution,self.control,self.rgb,self.mask,model_identity=model_identity)
         mapped=Path(result['qc_path'])
-        self.assertEqual(json.loads(mapped.read_text())['derived_qc_mapping']['input_rgb_sha256'],sha(self.rgb))
+        mapped_payload=json.loads(mapped.read_text())
+        self.assertEqual(mapped_payload['derived_qc_mapping']['input_rgb_sha256'],sha(self.rgb))
+        self.assertEqual(Path(mapped_payload['image']).read_bytes(),self.rgb.read_bytes())
+        self.assertEqual(Path(mapped_payload['mask']).read_bytes(),self.mask.read_bytes())
         self.assertTrue(result['execution_receipt_path'])
         self.assertTrue(result['native_outputs']['mesh'].endswith('mesh.ply'))
         self.assertNotEqual(sha(mapped),sha(self.qc))

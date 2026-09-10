@@ -100,7 +100,11 @@ def main():
         lineage.require(evidence)
         geometry_argv=[py,script('run_rgb_scene_reconstruction.py'),'--run-root',root,'--evidence-report',evidence,'--annotations',ann,'--output-dir',geom,'--runtime-config',a.runtime_config,'--gpu',a.gpu]
         if candidate is not None: geometry_argv.extend(['--candidate-context',str(candidate.contract_path)])
-        run('scene_geometry',geometry_argv,[original],True)
+        if native_reuse:
+            geometry_argv.extend(['--reuse-native-qc',str(native/'imported/qc_sam3d_objects_mesh_v7.json')])
+            run('scene_geometry',geometry_argv,[original],False,extra=[native/'imported/qc_sam3d_objects_mesh_v7.json'])
+        else:
+            run('scene_geometry',geometry_argv,[original],True)
     elif a.stage=='initial-pose':
         run('scene_anchor_binding',[py,script('bind_v19_completion_anchor.py'),'--completion-report',original,'--annotations',ann,'--object-id',obj,'--output',completion],[completion])
         run('scene_source_pose',[py,script('fit_v18_compact_rigid_object_pose.py'),'--annotations',ann,'--completion-report',completion,'--object-id',obj,'--output-dir',p14.parent],[p14])
@@ -109,9 +113,12 @@ def main():
         run('scene_refined_pose',[py,script('rgb_scene_pose_io.py'),'--annotations',ann,'--source-pose',p14,'--rgb-edges',rgb,'--rgb-report',rgb.with_suffix('.json'),'--object-id',obj,'--anchor',anchor,'--run-root',root,'--output',posterior],[posterior])
     elif a.stage=='appearance':
         sam2=root/f'measurements/object_tracks/sam2_owlv2_box_points/{track}/sam2/sam2_track.json'
-        ownership=root/f'measurements/object_tracks/depth_order_owned/{track}/depth_order_ownership_report.json'
+        ownership=(root/f'measurements/object_tracks/depth_order_owned/{track}/depth_order_ownership_report.json'
+                   if candidate is None else out(f'measurements/object_tracks/depth_order_owned/{track}/depth_order_ownership_report.json'))
         lineage.require(ownership)
-        run('scene_appearance',[py,script('rgb_scene_depth_order_appearance.py'),'--run-root',root,'--object-id',obj,'--case-id',case,'--track-id',track,'--raw-frame-manifest',raw,'--annotations',ann,'--raw-sam2-track',sam2,'--depth-order-report',ownership,'--output-dir',appearance.parent],[appearance,appearance.with_name('anchor_decision.json')],extra=[ownership,sam2])
+        appearance_args=['--run-root',root,'--object-id',obj,'--case-id',case,'--track-id',track,'--raw-frame-manifest',raw,'--annotations',ann,'--raw-sam2-track',sam2,'--depth-order-report',ownership,'--output-dir',appearance.parent]
+        if candidate is not None: appearance_args.extend(['--candidate-root',candidate.root])
+        run('scene_appearance',[py,script('rgb_scene_depth_order_appearance.py'),*appearance_args],[appearance,appearance.with_name('anchor_decision.json')],extra=[ownership,sam2])
     elif a.stage=='native-shape':
         lineage.require(visual_decision);lineage.require(appearance);lineage.require(posterior)
         chosen=load(visual_decision)

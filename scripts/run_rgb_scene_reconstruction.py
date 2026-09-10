@@ -52,6 +52,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for k in ['run-root','evidence-report','annotations','output-dir','runtime-config']:p.add_argument('--'+k,type=Path,required=True)
     p.add_argument('--candidate-context',type=Path)
+    p.add_argument('--reuse-native-qc',type=Path)
     p.add_argument('--gpu',type=int,required=True);p.add_argument('--seed',type=int,default=42);a=p.parse_args()
     root=a.run_root.resolve();evidence=inside(a.evidence_report,root);out=a.output_dir.resolve()
     if not out.is_relative_to(root) or out.exists():raise ValueError('new output directory within run root required')
@@ -64,6 +65,8 @@ def main():
         candidate,_=load_candidate(a.candidate_context)
         if candidate.run_root!=root: raise ValueError('candidate context belongs to another run')
     lineage=RunLineage(root,Path(__file__).resolve().parents[1],a.runtime_config,asset_role='geometry',candidate=candidate)
+    if a.reuse_native_qc is not None and candidate is None:
+        raise ValueError('native reuse requires candidate context')
     lineage.require(evidence);lineage.require(annotations_path)
     validate_clip_references(ev,root)
     repo=Path(__file__).resolve().parents[1];exp=repo/'experiments/sam3d_p11_p12_branch'
@@ -93,14 +96,33 @@ def main():
     image=inside(contract['image'],root);mask=inside(contract['mask'],root)
     if contract.get('external_pointmap') is not None:raise ValueError('SAM3D external pointmap not authorized')
     name=p12.safe_id(f"{ev.get('case')}_{ev.get('object_id')}_frame_{ev['selected_frame_idx']}")
-    command=[sam_python,repo/'scripts/remote_run_sam3d_objects_mesh_v7.py','--repo',config['sam3d_repo'],'--config',config['sam3d_config'],
-             '--moge-checkpoint',config['sam3d_moge_checkpoint'],'--dinov2-repo',config['sam3d_dinov2_repo'],'--dinov2-checkpoint',config['sam3d_dinov2_checkpoint'],
-             '--case',f'{name}|{image}|{mask}|{a.seed}','--output-dir',out/'native_reconstruction']
-    run('P12_SAM3D',command)
-    raw_report=inside(out/f'native_reconstruction/{name}/qc_sam3d_objects_mesh_v7.json',root)
-    candidate=p12.sam3d_candidate_record(raw_report,name,image,mask,{'mode':'fresh_native_SAM3D_only','command':list(map(str,command)),'gpu_preflight':gpu_record})
-    # Native geometry records are clip outputs; weights/configs in the runner's
-    # separate offline-asset binding intentionally remain reusable assets.
+    if a.reuse_native_qc is not None:
+        imported_qc=inside(a.reuse_native_qc,root); imported=json.loads(imported_qc.read_text())
+        # Rebind only the conditioning paths: bytes and selected frame must be
+        # identical to current P11 inputs. The imported QC and source receipt
+        # remain immutable evidence; this is a derived path mapping.
+        for key,current in (('image',image),('mask',mask)):
+            old=inside(imported.get(key,''),root)
+            if p12.sha256_file(old) != p12.sha256_file(current):
+                raise ValueError(f'reused native {key} differs from current P11 conditioning')
+        mapped=dict(imported); mapped['image']=str(image); mapped['mask']=str(mask)
+        mapped['reuse_source_qc']={'path':str(imported_qc),'sha256':p12.sha256_file(imported_qc)}
+        mapped['derived_qc_mapping']={**(mapped.get('derived_qc_mapping') or {}),
+                                      'current_p11_image':str(image),'current_p11_mask':str(mask),
+                                      'current_p11_image_sha256':p12.sha256_file(image),
+                                      'current_p11_mask_sha256':p12.sha256_file(mask)}
+        reuse_dir=out/'native_reuse_mapping';reuse_dir.mkdir(parents=True)
+        raw_report=reuse_dir/'qc_sam3d_objects_mesh_v7.json';raw_report.write_text(json.dumps(mapped,indent=2)+'\n')
+        candidate=p12.sam3d_candidate_record(raw_report,name,image,mask,{'mode':'verified_native_reuse','source_qc':str(imported_qc)})
+    else:
+        # Native geometry records are clip outputs; weights/configs in the runner's
+        # separate offline-asset binding intentionally remain reusable assets.
+        command=[sam_python,repo/'scripts/remote_run_sam3d_objects_mesh_v7.py','--repo',config['sam3d_repo'],'--config',config['sam3d_config'],
+                 '--moge-checkpoint',config['sam3d_moge_checkpoint'],'--dinov2-repo',config['sam3d_dinov2_repo'],'--dinov2-checkpoint',config['sam3d_dinov2_checkpoint'],
+                 '--case',f'{name}|{image}|{mask}|{a.seed}','--output-dir',out/'native_reconstruction']
+        run('P12_SAM3D',command)
+        raw_report=inside(out/f'native_reconstruction/{name}/qc_sam3d_objects_mesh_v7.json',root)
+        candidate=p12.sam3d_candidate_record(raw_report,name,image,mask,{'mode':'fresh_native_SAM3D_only','command':list(map(str,command)),'gpu_preflight':gpu_record})
     validate_clip_references(candidate['native_outputs'],root)
     p12report=out/'sam3d_prior_report.json';p12report.write_text(json.dumps({'schema':'v19_sam3d_only_prior_v1','status':'ok','candidates':{'sam3d_objects':candidate},'gt_consumed':False,'native_input_report':str(native_path)},indent=2)+'\n')
     run('P13_native_bridge',[python,exp/'build_p13_sam3d_native_metric_bridge.py','--evidence-report',evidence,'--p12-report',p12report,'--output-dir',out/'metric_bridge'])

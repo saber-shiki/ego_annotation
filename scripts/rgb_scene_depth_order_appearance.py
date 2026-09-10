@@ -78,7 +78,13 @@ def build(args: argparse.Namespace) -> tuple[dict, dict]:
     if not SAFE_ID.fullmatch(args.object_id):
         raise ValueError("unsafe object ID")
     output = args.output_dir.resolve()
-    allowed = root / "measurements" / "demo_visual" / args.object_id
+    candidate_root = getattr(args, 'candidate_root', None)
+    allowed = (candidate_root.resolve() if candidate_root is not None else
+               root / "measurements" / "demo_visual" / args.object_id)
+    if candidate_root is None and output.parent != allowed:
+        raise ValueError("new output under measurements/demo_visual/<object> required")
+    if candidate_root is not None:
+        allowed = allowed / "measurements" / "demo_visual" / args.object_id
     if not output.is_relative_to(allowed) or output.exists():
         raise ValueError("new output under measurements/demo_visual/<object> required")
     raw_manifest_path = in_run_file(args.raw_frame_manifest, root, "raw frame manifest")
@@ -104,6 +110,11 @@ def build(args: argparse.Namespace) -> tuple[dict, dict]:
     for idx in sorted(raw, key=lambda value: float(annotations[value]["time_s"])):
         ann, track_row = annotations[idx], track[idx]
         image_path = rgb_path(raw[idx], root)
+        if candidate_root is not None:
+            candidate_image = candidate_root.resolve() / "state" / "native_reuse_inputs" / ("rgb" + image_path.suffix.lower())
+            if not candidate_image.is_file():
+                raise ValueError("candidate RGB materialization missing")
+            image_path = candidate_image
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError(f"unreadable RGB at frame {idx}")
@@ -189,6 +200,7 @@ def parse_args() -> argparse.Namespace:
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("object-id", "case-id", "track-id"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--candidate-root", type=Path)
     parser.add_argument("--min-area-fraction", type=float, default=.002)
     parser.add_argument("--min-border-fraction", type=float, default=.005)
     parser.add_argument("--min-sharpness", type=float, default=2.)

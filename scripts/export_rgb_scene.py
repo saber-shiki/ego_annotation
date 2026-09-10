@@ -10,6 +10,7 @@ from v19_runtime_contracts import load,sha
 
 from rgb_scene_visibility import validate_visibility, apply_display_visibility, POLICY
 from rgb_scene_identity import InputIdentity, input_identity
+from dataclasses import replace
 from rgb_scene_candidates import load_candidate
 
 
@@ -199,10 +200,16 @@ def main():
     calibration=load(root/'state/calibration/v19_camera_calibration_contract.json')
     judgment=load(out(f"state/agent_interaction_judgments/{binding['object_id']}.json"))
 
-    from v19_runtime_assets import verify_bundle
-    from rgb_scene_recovery import recovery_context
-    recovery=recovery_context(root,bundle,contract,verify_bundle(bundle,asset_role='export'))
-    identity=input_identity(root/'input/runtime_input_contract.json',root,bundle/'runtime/bundle_manifest.json',recovery)
+    if candidate is None:
+        from v19_runtime_assets import verify_bundle
+        from rgb_scene_recovery import recovery_context
+        recovery=recovery_context(root,bundle,contract,verify_bundle(bundle,asset_role='export'))
+        identity=input_identity(root/'input/runtime_input_contract.json',root,bundle/'runtime/bundle_manifest.json',recovery)
+    else:
+        identity=InputIdentity(contract['run_id'],contract['case'],contract['input_video_sha256'],
+            contract['bundle_manifest_sha256'],contract.get('sensor_calibration_sha256'),
+            sha(root/'input/runtime_input_contract.json'),
+            json.dumps(contract['source_timing'],sort_keys=True),contract.get('target_description'))
     if selection.get('case')!=contract['case'] or selection.get('object_id')!=binding['object_id']:raise ValueError('runtime selection identity mismatch')
     if fit.get('display_visibility',{}).get('judgment_sha256')!=sha(out(f"state/agent_interaction_judgments/{binding['object_id']}.json")):raise ValueError('fit visibility judgment changed')
     provenance={'input_hashes':fit['input_hashes'],'replay_max_vertex_error_m':fit['zero_state_max_vertex_error_m']}
@@ -210,6 +217,10 @@ def main():
         provenance['candidate_identity']=load_candidate(candidate.contract_path)[1]
         reuse_receipt=out(f"state/native_reuse_receipt.json")
         if reuse_receipt.is_file(): provenance['native_reuse_receipt']=load(reuse_receipt)
+        identity=replace(identity, candidate_id=candidate.candidate_id,
+                         candidate_contract_sha256=sha(candidate.contract_path),
+                         native_reuse_provenance_json=(json.dumps(provenance['native_reuse_receipt'],sort_keys=True)
+                                                       if 'native_reuse_receipt' in provenance else None))
     export(z,binding,contract['case'],binding['object_id'],selection.get('track_id',binding['object_id']),a.output_dir,
            raw_frames=raw,calibration=calibration,visibility=judgment,identity=identity,provenance=provenance)
 

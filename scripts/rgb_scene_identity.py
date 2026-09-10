@@ -25,6 +25,9 @@ class InputIdentity:
     source_timing_json: str
     target_description: str | None
     recovery_execution_json: str | None = None
+    candidate_id: str | None = None
+    candidate_contract_sha256: str | None = None
+    native_reuse_provenance_json: str | None = None
 
     def __post_init__(self):
         try:
@@ -46,6 +49,9 @@ class InputIdentity:
                     digest(recovery[key])
                 if recovery['birth_bundle_manifest_sha256'] != self.bundle_manifest_sha256:
                     raise ValueError('recovery birth bundle identity mismatch')
+            if self.candidate_id is not None and (not isinstance(self.candidate_id,str) or re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]*',self.candidate_id) is None):
+                raise ValueError('invalid candidate identity')
+            if self.candidate_contract_sha256 is not None: digest(self.candidate_contract_sha256)
             timing = json.loads(self.source_timing_json)
             if (type(timing['frame_count']) is not int or timing['frame_count'] <= 0
                     or Fraction(timing['fps_ratio']) <= 0 or Fraction(timing['time_base_s']) <= 0
