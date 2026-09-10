@@ -7,6 +7,7 @@ from pathlib import Path
 import json, subprocess, time, os, hashlib
 from v19_runtime_contracts import in_run, load, sha
 from rgb_scene_lineage_base import RunLineage
+from rgb_scene_candidates import CandidatePaths, load_candidate, append_event
 from rgb_scene_process import run_owned, OwnedProcessFailure, OUTER_TIMEOUT_S
 
 
@@ -30,8 +31,22 @@ def probe(config, gpu, minimum_free_mib=0):
 
 
 class SceneLineage(RunLineage):
-    def __init__(self, root, bundle, runtime_config=None, *, asset_role=None):
+    def __init__(self, root, bundle, runtime_config=None, *, asset_role=None, candidate=None):
+        self.candidate = candidate
         super().__init__(root, bundle, runtime_config, asset_role=asset_role)
+        if candidate is not None:
+            # Source events remain visible through the parent lineage; candidate
+            # events are an append-only suffix with the same immutable identity.
+            self.events = candidate.events
+            if candidate.events.exists():
+                for line in candidate.events.read_text().splitlines():
+                    event=json.loads(line)
+                    if (event.get('returncode')==0 and 'error' not in event
+                            and event.get('run_identity')==self.identity
+                            and (event_code_is_valid(event,self.code,self.recovery)
+                                 or (self.candidate is not None and event.get('kind')=='verified_external_native_import'
+                                     and event.get('candidate_id')==self.candidate.candidate_id))):
+                        for path in event.get('output_sha256',{}): self.records[path]=event
         if asset_role in {'demo','export'}:
             from v19_runtime_assets import verify_external_assets
             identity=self.manifest['external_assets']
@@ -40,12 +55,33 @@ class SceneLineage(RunLineage):
                 raise ValueError('standalone visual/export dependency inventory missing')
             verify_external_assets({'files':{name:identity['files'][name] for name in names},'trees':{}})
 
+    def require_judgment(self,path):
+        # Candidate decisions are authored after inspecting candidate evidence.
+        # Validate their identity/evidence DAG without consulting source
+        # selection or source anchor files.
+        if self.candidate is not None and Path(path).is_relative_to(self.candidate.root):
+            payload=load(path); phase=self.agent_phase(path)
+            source=payload.get('visual_judgment_provenance',{})
+            if (source.get('kind')!='current_run_visual_judgment' or source.get('phase')!=phase
+                    or source.get('run_identity')!=self.identity or not source.get('evidence_sha256')):
+                raise ValueError('candidate decision needs current-run visual evidence identity')
+            for name,digest in source['evidence_sha256'].items():
+                checked=self.require(name)
+                if self.checked_digest(checked)!=digest: raise ValueError('candidate visual evidence changed')
+            return
+        return super().require_judgment(path)
+
     def agent_phase(self,path):
+        if self.candidate is not None and Path(path).is_relative_to(self.candidate.root):
+            name=Path(path).name
+            if 'anchor_decisions' in Path(path).parts:return 'P09_anchor'
+            if 'physical_branch_decisions' in Path(path).parts or name=='object_selection.json':return 'P10'
+            if 'appearance_decisions' in Path(path).parts:return 'appearance_anchor'
         if Path(path).name == 'object_selection.json': return 'P10'
-        if 'appearance_decisions' in path.parts: return 'appearance_anchor'
+        if 'appearance_decisions' in Path(path).parts: return 'appearance_anchor'
         return super().agent_phase(path)
 
-    def producer_evidence(self, path, evidence, phase):
+    def producer_evidence(self,path,evidence,phase):
         name=str(path)
         if name not in evidence:
             raise ValueError('visual decision missing required evidence: '+name)
@@ -168,9 +204,17 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
         for event in events:
             for path in event['output_sha256']: lineage.require(path)
         return
+    if lineage is not None and getattr(lineage,'candidate',None) is not None:
+        candidate_events=lineage.candidate.events
+        if candidate_events.exists():
+            for line in candidate_events.read_text().splitlines():
+                prior=json.loads(line)
+                if prior.get('returncode') != 0 or 'error' in prior:
+                    raise ValueError('failed/partial candidate is create-only; use a new candidate_id')
     for path in outputs:
         if path.exists():
             raise ValueError(f'{key} output already exists; not a fresh stage: {path}')
+
     output_roots=[]
     for flag in ('--output-dir', '--output-root', '--review-dir'):
         if flag in argv:
@@ -183,6 +227,10 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
         if directory.exists():raise ValueError(f'{key} output directory already exists: {directory}')
         output_roots.append(directory)
     logdir = Path(logdir) if logdir else (lineage.recovery['log_dir'] if lineage and lineage.recovery else root / 'logs/integration')
+    if lineage is not None and getattr(lineage,'candidate',None) is not None:
+        logdir = lineage.candidate.events.parent
+        logdir.mkdir(parents=True, exist_ok=True)
+
     in_run(logdir, root, must_exist=False)
     logdir.mkdir(parents=True, exist_ok=True)
     log = logdir / f'{key}.log'

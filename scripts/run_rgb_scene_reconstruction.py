@@ -51,13 +51,19 @@ def recorded_step(key, argv, *, out, steps, repo, environment, timeout):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for k in ['run-root','evidence-report','annotations','output-dir','runtime-config']:p.add_argument('--'+k,type=Path,required=True)
+    p.add_argument('--candidate-context',type=Path)
     p.add_argument('--gpu',type=int,required=True);p.add_argument('--seed',type=int,default=42);a=p.parse_args()
     root=a.run_root.resolve();evidence=inside(a.evidence_report,root);out=a.output_dir.resolve()
     if not out.is_relative_to(root) or out.exists():raise ValueError('new output directory within run root required')
     config=json.loads(a.runtime_config.read_text());execution_target(config,a.gpu)
     ev,evidence_sha256=read_report(evidence);assert_prediction_only(ev,label='SAM3D evidence')
     annotations_path=inside(a.annotations,root)
-    lineage=RunLineage(root,Path(__file__).resolve().parents[1],a.runtime_config,asset_role='geometry')
+    from rgb_scene_candidates import load_candidate
+    candidate=None
+    if a.candidate_context:
+        candidate,_=load_candidate(a.candidate_context)
+        if candidate.run_root!=root: raise ValueError('candidate context belongs to another run')
+    lineage=RunLineage(root,Path(__file__).resolve().parents[1],a.runtime_config,asset_role='geometry',candidate=candidate)
     lineage.require(evidence);lineage.require(annotations_path)
     validate_clip_references(ev,root)
     repo=Path(__file__).resolve().parents[1];exp=repo/'experiments/sam3d_p11_p12_branch'

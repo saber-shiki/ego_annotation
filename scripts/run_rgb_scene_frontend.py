@@ -6,6 +6,7 @@ from v19_runtime_contracts import load, interpreter, execution_target, runtime_e
 from rgb_scene_runtime import run_command
 from rgb_scene_runtime import SceneLineage as RunLineage
 from rgb_scene_recovery import RECOVERY_FILE, require_recovery_command, require_recovery_scope
+from rgb_scene_candidates import load_candidate
 
 ROOT=Path(__file__).resolve().parents[1]
 PHASES=('P01','P06','P07','P08','P09_DEPTH_ORDER','P09-propose','P09','P11')
@@ -19,16 +20,26 @@ def main():
     p.add_argument('--gpu',type=int,required=True)
     p.add_argument('--object-id')
     p.add_argument('--recovery-contract',type=Path)
+    p.add_argument('--candidate-context',type=Path)
     a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
+    candidate=None;candidate_value=None
+    if a.candidate_context:
+        candidate,candidate_value=load_candidate(a.candidate_context)
+        if candidate.run_root!=root: raise ValueError('candidate context belongs to another run')
     recovery_requested=False
     if a.recovery_contract:
         if a.recovery_contract.resolve()!=root/RECOVERY_FILE:raise ValueError('recovery contract must be the applied fixed P08 transition')
         require_recovery_scope('frontend',a.phase);recovery_requested=True
     execution_target(cfg,a.gpu)
     asset_role='P09-propose' if a.phase=='P09_DEPTH_ORDER' else a.phase
-    lineage=RunLineage(root,ROOT,a.runtime_config,asset_role=asset_role);contract=lineage.contract;case=contract['case']
-    if recovery_requested:require_recovery_command(lineage.recovery,'frontend',a.phase)
+    lineage=RunLineage(root,ROOT,a.runtime_config,asset_role=asset_role,candidate=candidate);contract=lineage.contract;case=contract['case']
+
+    if candidate is not None and a.phase in {'P01','P06','P07','P08'}:
+        raise ValueError('candidate continuation preserves source P01-P08; phase is not rerunnable')
+
+    def out(rel): return candidate.path(rel) if candidate is not None else root/rel
     python=interpreter(cfg['main_python']);env=runtime_environment(cfg,a.gpu)
+
     def run(script,args,outputs,extra=(),heavy=False,exe=python):
         run_command(a.phase,[exe,ROOT/'scripts'/script,*args],outputs,root=root,cwd=ROOT,env=env,
                     lineage=lineage,extra_inputs=extra,gpu=a.gpu if heavy else None)
@@ -53,13 +64,13 @@ def main():
     calibration=root/'state/calibration/v19_camera_calibration_contract.json'
     base=root/'state/base_annotations/annotations_v19_base.json'
     depth=root/'state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
-    owned=root/f'measurements/object_tracks/depth_order_owned/{track}'
+    owned=root/f'measurements/object_tracks/depth_order_owned/{track}' if candidate is None else out(f'measurements/object_tracks/depth_order_owned/{track}')
     owned_track=owned/'sam2_track.json'
     ownership_report=owned/'depth_order_ownership_report.json'
     metric_eligibility=owned/'native_depth_metric_eligibility.json'
-    visible=root/f'measurements/object_geometry/visible_geometry/{object_id}'
-    proposals=root/f'measurements/object_geometry/anchor_candidates/{object_id}'
-    anchor_path=root/f'state/anchor_decisions/{object_id}.json'
+    visible=root/f'measurements/object_geometry/visible_geometry/{object_id}' if candidate is None else out(f'measurements/object_geometry/visible_geometry/{object_id}')
+    proposals=root/f'measurements/object_geometry/anchor_candidates/{object_id}' if candidate is None else out(f'measurements/object_geometry/anchor_candidates/{object_id}')
+    anchor_path=root/f'state/anchor_decisions/{object_id}.json' if candidate is None else out(f'state/anchor_decisions/{object_id}.json')
     if a.phase=='P06':
         interval=obj['detector_active_interval']
         if isinstance(interval,dict):start,stop=interval['start_frame'],interval['end_frame']
@@ -112,15 +123,15 @@ def main():
             *extra],outputs,[ownership_report,metric_eligibility,*inputs])
     else:
         lineage.require(anchor_path);anchor=load(anchor_path)['selected_anchor_frame_idx']
-        branch=root/f'state/physical_branch_decisions/{object_id}.json';lineage.require(branch)
+        branch=(root/f'state/physical_branch_decisions/{object_id}.json' if candidate is None else out(f'state/physical_branch_decisions/{object_id}.json'));lineage.require(branch)
         if load(branch).get('physical_branch')!='rigid':raise ValueError('rigid P11 requires explicit P10 rigid branch')
-        out=root/'measurements/geometry_completion/rigid_evidence'
+        evidence_root=root/'measurements/geometry_completion/rigid_evidence' if candidate is None else out('measurements/geometry_completion/rigid_evidence')
         run('build_v18_compact_rigid_evidence_bundle.py',['--case',case,'--object-id',object_id,
             '--annotations',visible/'annotations_v19_visible_geometry.json',
             '--depth-fused-report',visible/'v19_visible_geometry_depth_fused_report.json',
-            '--output-root',out,'--selected-frame-idx',anchor,
+            '--output-root',evidence_root,'--selected-frame-idx',anchor,
             '--selection-note','current-run visual anchor decision'],
-            [out/case/object_id/'evidence_bundle/evidence_bundle_report.json'],[anchor_path,branch])
+            [evidence_root/case/object_id/'evidence_bundle/evidence_bundle_report.json'],[anchor_path,branch])
 
 
 if __name__=='__main__':main()

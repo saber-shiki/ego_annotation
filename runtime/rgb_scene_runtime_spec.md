@@ -41,7 +41,34 @@ A fixed validator-only continuation is the sole exception to starting with `P09_
 
 Then invoke stages `geometry`, `initial-pose`, `refined-pose`, `appearance`, `native-shape`, `shape`, `visual-fit`, and `export` in that order, each with the same `--run-root`, `--runtime-config`, `--gpu`, and `--recovery-contract` arguments. Perform the new appearance and interaction decision/inspection pauses at their normal points. Code rejects `P01`, `camera`, `P06`, `P07`, and `P08` in recovery mode. A recovery failure is create-only at `state/runtime_recovery/P09_DEPTH_ORDER/failure.json`; stop rather than retry. The recovery actor handoff is separate at the supplied `state/runtime_recovery/P09_DEPTH_ORDER/native_recovery_handoff.md`; do not overwrite or claim a missing old actor handoff. The final JSON and RRD retain the birth identity and add execution-bundle, recovery-contract, retained-prefix, original-event, and stop identities.
 
-## Sequence and actual visual decisions
+## Generic candidate continuation
+
+A continuation is an isolated create-only namespace below the prepared run. The
+parent prepares it (outside prediction execution) with the pinned interpreter:
+
+```bash
+"$PYTHON" scripts/prepare_rgb_scene_runtime.py prepare-candidate --run-root "$RUN" --candidate-id "$CANDIDATE" --native-mode new
+```
+
+For a ranking-first default omit `--frame`; an explicit `--frame` is allowed
+only after inspecting that current RGB/mask and must be a frame in the current
+proposal list. Candidate-local P09/P11 decisions must be authored and visually
+confirmed with current provenance; source P01--P08 and anchor files are never
+copied or relabeled. Run each normal suffix stage with
+`--candidate-context "$RUN/candidates/$CANDIDATE/candidate_contract.json"`.
+Candidate IDs are create-only and failed/partial candidates stop without retry.
+
+Verified native reuse is explicit and byte-bound. First prepare with
+`--native-mode reuse`, then run `prepare_rgb_scene_runtime.py import-native`
+with a complete successful native QC, zero-return model execution receipt,
+source control contract, source RGB/mask, and model/config/seed identity. The importer writes a derived
+QC/path mapping and preserves source wrapper failure evidence. A mesh file
+without these matching receipts is not cacheable. `native-shape` consumes only
+that imported QC or runs the pinned native producer once for `new`; shape,
+posterior, MANO fit, and export stay on the same candidate mesh and frame.
+Outputs/events under `candidates/<candidate_id>` are distinct from source
+outputs and are included in final identity metadata.
+
 
 1. `frontend --phase P01`: raw frame manifest at `input/raw_frame_manifest/manifest.json`. Inspect representative images named by that manifest.
 2. `camera`: supplied/estimated intrinsics, conditioned full depth, camera binding and full HaWoR MANO surfaces/parameters in `measurements/hand_candidates/hawor_world/hawor_world_hands.npz`.

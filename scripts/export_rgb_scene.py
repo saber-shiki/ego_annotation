@@ -10,6 +10,7 @@ from v19_runtime_contracts import load,sha
 
 from rgb_scene_visibility import validate_visibility, apply_display_visibility, POLICY
 from rgb_scene_identity import InputIdentity, input_identity
+from rgb_scene_candidates import load_candidate
 
 
 def mesh(vertices,faces):
@@ -167,7 +168,14 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for n in ('state','binding','fit-report','run-root','output-dir'):p.add_argument('--'+n,type=Path,required=True)
+    p.add_argument('--candidate-context',type=Path)
     a=p.parse_args();root=a.run_root.resolve();binding=load(a.binding)
+    candidate=None
+    if a.candidate_context:
+        candidate,_=load_candidate(a.candidate_context)
+        if candidate.run_root!=root: raise ValueError('candidate context belongs to another run')
+    def out(rel): return candidate.path(rel) if candidate is not None else root/rel
+
     source=binding['refined_posterior']
     if sha(source['path'])!=source['sha256']:raise ValueError('refined state changed')
     validate_posterior(load(source['path']),binding['object_id'],root)
@@ -185,18 +193,24 @@ def main():
     bundle=Path(__file__).resolve().parents[1]
     cfg=load(bundle/'runtime/runtime_config.json')
     if rr.__version__!=cfg['scene_rerun_version']:raise ValueError('Rerun dependency differs from prepared identity')
-    selection=load(root/'state/object_selection.json')
+    selection=load(out('state/object_selection.json'))
     contract=load(root/'input/runtime_input_contract.json')
     raw=indexed(load(root/'input/raw_frame_manifest/manifest.json')['frames'])
     calibration=load(root/'state/calibration/v19_camera_calibration_contract.json')
-    judgment=load(root/f"state/agent_interaction_judgments/{binding['object_id']}.json")
+    judgment=load(out(f"state/agent_interaction_judgments/{binding['object_id']}.json"))
+
     from v19_runtime_assets import verify_bundle
     from rgb_scene_recovery import recovery_context
     recovery=recovery_context(root,bundle,contract,verify_bundle(bundle,asset_role='export'))
     identity=input_identity(root/'input/runtime_input_contract.json',root,bundle/'runtime/bundle_manifest.json',recovery)
     if selection.get('case')!=contract['case'] or selection.get('object_id')!=binding['object_id']:raise ValueError('runtime selection identity mismatch')
-    if fit.get('display_visibility',{}).get('judgment_sha256')!=sha(root/f"state/agent_interaction_judgments/{binding['object_id']}.json"):raise ValueError('fit visibility judgment changed')
+    if fit.get('display_visibility',{}).get('judgment_sha256')!=sha(out(f"state/agent_interaction_judgments/{binding['object_id']}.json")):raise ValueError('fit visibility judgment changed')
+    provenance={'input_hashes':fit['input_hashes'],'replay_max_vertex_error_m':fit['zero_state_max_vertex_error_m']}
+    if candidate is not None:
+        provenance['candidate_identity']=load_candidate(candidate.contract_path)[1]
+        reuse_receipt=out(f"state/native_reuse_receipt.json")
+        if reuse_receipt.is_file(): provenance['native_reuse_receipt']=load(reuse_receipt)
     export(z,binding,contract['case'],binding['object_id'],selection.get('track_id',binding['object_id']),a.output_dir,
-           raw_frames=raw,calibration=calibration,visibility=judgment,identity=identity,provenance={'input_hashes':fit['input_hashes'],'replay_max_vertex_error_m':fit['zero_state_max_vertex_error_m']})
+           raw_frames=raw,calibration=calibration,visibility=judgment,identity=identity,provenance=provenance)
 
 if __name__=='__main__':main()

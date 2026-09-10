@@ -14,6 +14,8 @@ SPEC='runtime/rgb_scene_runtime_spec.md'
 PROMPT='runtime/rgb_scene_system_prompt.md'
 PROFILE='.pi/agents/ego-annotation.rgb-scene-runtime.md'
 UNUSED_DYNAMIC={}
+UNRELATED_RUNTIME_SCRIPTS={'run_v19_sam3d_integration_stage.py','run_v19_additive_demo_branch.py',
+    'render_v20_visual_contact_demo.py','render_v19_annotation_layers_video.py','assemble_v19_annotation_layers.py'}
 
 def closure(source):
     source = Path(source).resolve()
@@ -24,6 +26,8 @@ def closure(source):
     selected = set()
     while queue:
         relative = queue.pop()
+        if relative.name in UNRELATED_RUNTIME_SCRIPTS:
+            continue
         if relative in selected:
             continue
         path = source / relative
@@ -71,7 +75,7 @@ def build(source,bundle,assets,report_dir):
     for required in ('name: rgb-scene-runtime','systemPromptMode: replace','inheritProjectContext: false','inheritGlobalContext: false','inheritSkills: false','defaultContext: fresh',f'subagentOnlyExtensions: {NATIVE_PROVIDER}'):
         if required not in profile:raise ValueError('native profile isolation mismatch')
     selected=closure(source)
-    forbidden={'run_v19_sam3d_integration_stage.py','run_v19_additive_demo_branch.py','render_v20_visual_contact_demo.py','render_v19_annotation_layers_video.py','assemble_v19_annotation_layers.py'}
+    forbidden=UNRELATED_RUNTIME_SCRIPTS
     if forbidden & {p.name for p in selected}:raise ValueError('scene closure includes unrelated pipeline dispatchers')
     native=Path(NATIVE_PROVIDER)
     native_assets=[native,native.with_name('shellgate-broker.py'),native.parent.parent/'package.json',native.parent.parent/'package-lock.json']
@@ -183,6 +187,15 @@ def main():
     for n in ('bundle-root','run-root','video'):r.add_argument('--'+n,type=Path,required=True)
     r.add_argument('--case',required=True);r.add_argument('--target-description')
     r.add_argument('--sensor-metadata',type=Path);r.add_argument('--sensor-source-video',type=Path)
+    c=sub.add_parser('prepare-candidate',help='create one isolated candidate continuation contract')
+    c.add_argument('--run-root',type=Path,required=True);c.add_argument('--candidate-id',required=True)
+    c.add_argument('--frame',type=int);c.add_argument('--native-mode',choices=('new','reuse'),default='new')
+    c.add_argument('--source-native',type=Path)
+    i=sub.add_parser('import-native',help='import one verified complete native receipt into a reuse candidate')
+    i.add_argument('--candidate-context',type=Path,required=True);i.add_argument('--source-qc',type=Path,required=True)
+    i.add_argument('--execution-receipt',type=Path,required=True);i.add_argument('--control-contract',type=Path,required=True)
+    i.add_argument('--image',type=Path,required=True);i.add_argument('--mask',type=Path,required=True)
+    i.add_argument('--model-identity')
     s=sub.add_parser('resume-contract')
     for n in ('bundle-root','run-root','output'):s.add_argument('--'+n,type=Path,required=True)
     pr=sub.add_parser('prepare-recovery',help='read-only run verification; write an external migration package')
@@ -200,7 +213,15 @@ def main():
     ar=sub.add_parser('apply-recovery',help='archive the bounded invalid suffix and install the recovery contract')
     ar.add_argument('--package-dir',type=Path,required=True)
     a=p.parse_args()
-    if a.command=='bundle':value=build(a.source_root,a.bundle_root,a.asset_paths,a.report_dir)
+    if a.command=='prepare-candidate':
+        from rgb_scene_candidates import prepare_candidate
+        value=prepare_candidate(a.run_root,a.candidate_id,frame=a.frame,native_mode=a.native_mode,source_native=a.source_native)
+    elif a.command=='import-native':
+        from rgb_scene_candidates import CandidatePaths, import_native_receipt
+        model_identity=json.loads(a.model_identity) if a.model_identity else None
+        paths,_=__import__('rgb_scene_candidates',fromlist=['load_candidate']).load_candidate(a.candidate_context)
+        value=import_native_receipt(paths,a.source_qc,a.execution_receipt,a.control_contract,a.image,a.mask,model_identity=model_identity)
+    elif a.command=='bundle':value=build(a.source_root,a.bundle_root,a.asset_paths,a.report_dir)
     elif a.command=='prepare-run':value=prepare_run(a.bundle_root,a.run_root,a.video,a.case,a.target_description,a.sensor_metadata,a.sensor_source_video)
     elif a.command=='resume-contract':value=resume_contract(a.bundle_root,a.run_root,a.output)
     else:
