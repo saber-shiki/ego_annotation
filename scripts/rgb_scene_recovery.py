@@ -133,7 +133,20 @@ def validate_transition(old, new, old_config, new_config, old_bundle, new_bundle
                 "scripts/build_v19_visible_geometry_from_sam2_depth.py", "scripts/rgb_scene_recovery.py"}
     if not required <= changed:
         raise ValueError("depth-order recovery bundle is missing the reviewed mechanism/eligibility/transition")
-    if old.get("external_assets") != new.get("external_assets"):
+    # This is a file inventory, not an ordered execution plan. The bundle
+    # builder discovers the two Rerun package roots through a set, so their
+    # enumeration order may differ despite identical per-file identities.
+    old_assets = dict(old.get("external_assets", {}))
+    new_assets = dict(new.get("external_assets", {}))
+    for assets in (old_assets, new_assets):
+        if "scene_rrd_files" in assets:
+            inventory = assets["scene_rrd_files"]
+            if (not isinstance(inventory, list)
+                    or not all(isinstance(path, str) for path in inventory)
+                    or len(set(inventory)) != len(inventory)):
+                raise ValueError("invalid recovery Rerun asset inventory")
+            assets["scene_rrd_files"] = sorted(inventory)
+    if old_assets != new_assets:
         raise ValueError("depth-order recovery external assets/models differ")
     if normalized_config(old_config, old_bundle) != normalized_config(new_config, new_bundle):
         raise ValueError("depth-order recovery runtime/model config differs")
