@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import uuid
 
@@ -35,6 +36,12 @@ INVALIDATED_PHASES = {
     "scene_source_pose", "scene_rgb", "scene_refined_pose", "scene_appearance",
     "scene_native_appearance", "scene_refined_shape", "scene_visual_fit", "scene_export",
 }
+RECOVERY_PHASE_SEQUENCE = (
+    "P09_DEPTH_ORDER", "P09-propose", "P09", "P11", "scene_geometry",
+    "scene_anchor_binding", "scene_source_pose", "scene_rgb", "scene_refined_pose",
+    "scene_appearance", "scene_native_appearance", "scene_refined_shape",
+    "scene_visual_fit", "scene_export",
+)
 RECOVERY_FRONTEND_PHASES = {"P09_DEPTH_ORDER", "P09-propose", "P09", "P11"}
 RECOVERY_STAGES = {
     "geometry", "initial-pose", "refined-pose", "appearance", "native-shape",
@@ -46,8 +53,10 @@ ALLOWED_CHANGED_BUNDLE_FILES = {
     ".pi/agents/ego-annotation.rgb-scene-runtime.md",
     "runtime/rgb_scene_runtime_spec.md",
     "runtime/runtime_config.json",
+    "scripts/build_v19_visible_geometry_from_sam2_depth.py",
     "scripts/export_rgb_scene.py",
     "scripts/rgb_scene_depth_order.py",
+    "scripts/rgb_scene_metric_eligibility.py",
     "scripts/rgb_scene_depth_order_appearance.py",
     "scripts/rgb_scene_identity.py",
     "scripts/rgb_scene_lineage_base.py",
@@ -56,12 +65,28 @@ ALLOWED_CHANGED_BUNDLE_FILES = {
     "scripts/run_rgb_scene_frontend.py",
     "scripts/run_rgb_scene_stage.py",
 }
-OWNED_PROCESS_TOKENS = (
-    "run_rgb_scene_stage.py", "run_rgb_scene_frontend.py", "run_rgb_scene_reconstruction.py",
-    "rgb_scene_depth_order.py", "remote_run_sam3d_objects_mesh_v7.py",
-    "run_unidepth_full_frame_v3.py", "run_sam2_vlm_points_multiobject.py",
-    "export_hawor_world.py", "build_v19_visible_geometry_from_sam2_depth.py",
-)
+# Every executable/module reachable from the standalone frontend, stage,
+# camera, nested reconstruction dispatch, plus the archived appearance leaf.
+# Matching remains additionally bound to the exact run root.
+OWNED_PROCESS_EXECUTABLES = {
+    "run_rgb_scene_stage.py", "run_rgb_scene_frontend.py", "rgb_scene_camera.py",
+    "run_rgb_scene_reconstruction.py", "build_v19_raw_frame_manifest.py",
+    "run_unidepth_full_frame_v3.py", "resolve_v19_camera_contract.py",
+    "adapt_v19_depth_to_camera_contract.py", "remote_run_hawor_export.sh",
+    "export_hawor_world.py", "build_v19_owlv2_object_box_prompts.py",
+    "run_sam2_vlm_points_multiobject.py", "build_v19_base_annotations.py",
+    "rgb_scene_depth_order.py", "build_v19_visible_geometry_from_sam2_depth.py",
+    "build_v18_compact_rigid_evidence_bundle.py", "bind_v19_completion_anchor.py",
+    "fit_v18_compact_rigid_object_pose.py", "build_rgb_scene_edges.py",
+    "rgb_scene_pose_io.py", "rgb_scene_depth_order_appearance.py",
+    "remote_run_sam3d_objects_mesh_v7.py", "bind_rgb_scene_shape.py",
+    "fit_rgb_scene_visual.py", "export_rgb_scene.py",
+    "build_p11_dual_geometry_inputs.py", "run_p12_parallel_geometry_priors.py",
+    "build_p13_sam3d_native_metric_bridge.py",
+    "build_v18_compact_rigid_trellis_completion.py",
+    "build_v19_demo_visual_inputs.py",
+}
+OWNED_PROCESS_MODULES = {Path(name).stem for name in OWNED_PROCESS_EXECUTABLES if name.endswith(".py")}
 
 
 def _json_bytes(value):
@@ -104,8 +129,10 @@ def validate_transition(old, new, old_config, new_config, old_bundle, new_bundle
     unexpected = changed - ALLOWED_CHANGED_BUNDLE_FILES
     if unexpected:
         raise ValueError("depth-order recovery changed non-allowlisted bundle files: " + ", ".join(sorted(unexpected)))
-    if not {"scripts/rgb_scene_depth_order.py", "scripts/rgb_scene_recovery.py"} <= changed:
-        raise ValueError("depth-order recovery bundle is missing the reviewed mechanism/transition")
+    required = {"scripts/rgb_scene_depth_order.py", "scripts/rgb_scene_metric_eligibility.py",
+                "scripts/build_v19_visible_geometry_from_sam2_depth.py", "scripts/rgb_scene_recovery.py"}
+    if not required <= changed:
+        raise ValueError("depth-order recovery bundle is missing the reviewed mechanism/eligibility/transition")
     if old.get("external_assets") != new.get("external_assets"):
         raise ValueError("depth-order recovery external assets/models differ")
     if normalized_config(old_config, old_bundle) != normalized_config(new_config, new_bundle):
@@ -130,7 +157,14 @@ def active_owned_processes(root, process_rows=None):
             pid, argv = -1, text
         if pid == os.getpid():
             continue
-        if root in argv and any(token in argv for token in OWNED_PROCESS_TOKENS):
+        try:
+            words = shlex.split(argv)
+        except ValueError:
+            words = argv.split()
+        basenames = {Path(word).name for word in words}
+        module_names = {words[i + 1].split(".")[-1] for i, word in enumerate(words[:-1]) if word == "-m"}
+        owned_executable = bool(basenames & OWNED_PROCESS_EXECUTABLES or module_names & OWNED_PROCESS_MODULES)
+        if root in argv and owned_executable:
             found.append({"pid": pid, "argv": argv})
     return found
 
@@ -447,6 +481,156 @@ def verify_applied_recovery(root, bundle, *, process_rows=None, check_processes=
     return context
 
 
+def _validate_recovery_judgment(path, *, root, contract, records, retained_records, obj, track, case):
+    """Validate an authored canonical suffix decision against current producers."""
+    path = Path(path).resolve()
+    payload = load(path)
+    provenance = payload.get("visual_judgment_provenance")
+    if (not isinstance(provenance, dict)
+            or provenance.get("kind") != "current_run_visual_judgment"
+            or provenance.get("run_identity") != run_identity(contract)
+            or not isinstance(provenance.get("evidence_sha256"), dict)
+            or not provenance["evidence_sha256"]):
+        raise ValueError("regenerated judgment lacks strict current-run provenance: " + str(path))
+    evidence = provenance["evidence_sha256"]
+
+    def producer(name, phase, *, retained=False):
+        source = in_run(name, root)
+        event = (retained_records if retained else records).get(str(source))
+        if (event is None or event.get("phase") != phase
+                or str(source) not in event.get("output_sha256", {})
+                or evidence.get(str(source)) != sha(source)
+                or event["output_sha256"][str(source)] != sha(source)):
+            raise ValueError("regenerated judgment evidence has wrong producer/hash: " + str(source))
+        return event
+
+    anchor = root / f"state/anchor_decisions/{obj}.json"
+    branch = root / f"state/physical_branch_decisions/{obj}.json"
+    selection = root / "state/object_selection.json"
+    appearance = root / f"state/appearance_decisions/{obj}.json"
+    visibility = root / f"state/agent_interaction_judgments/{obj}.json"
+    phase = provenance.get("phase")
+    if path == anchor:
+        if phase != "P09_anchor" or payload.get("object_id") != obj or type(payload.get("selected_anchor_frame_idx")) is not int:
+            raise ValueError("regenerated anchor decision identity mismatch")
+        proposal = root / f"measurements/object_geometry/anchor_candidates/{obj}/anchor_candidate_proposals.json"
+        review = root / f"measurements/object_geometry/anchor_candidates/{obj}/anchor_candidate_review.jpg"
+        event = producer(proposal, "P09-propose")
+        if producer(review, "P09-propose") is not event:
+            raise ValueError("regenerated anchor evidence producer mismatch")
+        proposed = load(proposal)
+        if (payload["selected_anchor_frame_idx"] not in [r.get("frame_idx") for r in proposed.get("review_candidates", [])]
+                or proposed.get("outputs", {}).get("anchor_candidate_review") != str(review)):
+            raise ValueError("regenerated anchor selection is absent from current review")
+    elif path in {branch, selection}:
+        if phase != "P10" or payload.get("object_id") != obj:
+            raise ValueError("regenerated P10/selection identity mismatch")
+        annotation = root / f"measurements/object_geometry/visible_geometry/{obj}/annotations_v19_visible_geometry.json"
+        producer(annotation, "P09")
+        current_p09_images = [name for name in evidence if Path(name).suffix.lower() in {".jpg", ".jpeg", ".png"}
+                              and records.get(name, {}).get("phase") == "P09"]
+        if not current_p09_images or not all(evidence[name] == sha(in_run(name, root)) for name in current_p09_images):
+            raise ValueError("regenerated P10/selection lacks current P09 image evidence")
+        if path == branch and payload.get("physical_branch") != "rigid":
+            raise ValueError("bounded rigid recovery requires a new rigid P10 decision")
+        if path == selection:
+            anchor_value = load(anchor)
+            if (payload.get("case") != case or payload.get("track_id") != track
+                    or payload.get("anchor_frame") != anchor_value.get("selected_anchor_frame_idx")):
+                raise ValueError("regenerated object selection differs from current anchor/plan")
+            _validate_recovery_judgment(branch, root=root, contract=contract, records=records,
+                                        retained_records=retained_records, obj=obj, track=track, case=case)
+    elif path == appearance:
+        if phase != "appearance_anchor" or payload.get("object_id") != obj or type(payload.get("selected_frame_idx")) is not int:
+            raise ValueError("regenerated appearance decision identity mismatch")
+        manifest = root / f"measurements/demo_visual/{obj}/appearance_evidence/appearance_mask_manifest.json"
+        event = producer(manifest, "scene_appearance")
+        rows = [row for row in load(manifest).get("frames", []) if row.get("frame_idx") == payload["selected_frame_idx"]]
+        if len(rows) != 1 or rows[0].get("status") != "available" or producer(rows[0]["appearance_mask_path"], "scene_appearance") is not event:
+            raise ValueError("regenerated appearance selection lacks current mask evidence")
+        producer(rows[0]["raw_rgb_path"], "P01", retained=True)
+    elif path == visibility:
+        if phase != "P17_judgment" or payload.get("object_id") != obj:
+            raise ValueError("regenerated visibility judgment identity mismatch")
+        producer(root / f"state/scene/{obj}/refined_pose.json", "scene_refined_pose")
+        raw_images = [name for name in evidence if retained_records.get(name, {}).get("phase") == "P01"
+                      and Path(name).suffix.lower() in {".jpg", ".jpeg", ".png"}]
+        if not raw_images or not all(evidence[name] == sha(in_run(name, root)) for name in raw_images):
+            raise ValueError("regenerated visibility judgment lacks retained P01 image evidence")
+    else:
+        raise ValueError("unrecognized regenerated authored suffix path: " + str(path))
+    return True
+
+
+def _validated_recovery_events(*, root, contract, current_code, target_hash, contract_hash,
+                               retained_rows, retained_outputs, obj, track, case):
+    event_path = root / RECOVERY_EVENTS
+    retained_records = {}
+    for event in retained_rows:
+        for name in event.get("output_sha256", {}):
+            retained_records[name] = event
+    available = dict(retained_outputs)
+    available[str(root / "input/runtime_input_contract.json")] = sha(root / "input/runtime_input_contract.json")
+    available[contract["input_video"]] = contract["input_video_sha256"]
+    p05_path = root / "measurements/object_candidates/object_plan_agent.json"
+    available[str(p05_path)] = sha(p05_path)
+    records = {}
+    authorized = {}
+    if not event_path.exists():
+        return records, retained_records, authorized
+    if not event_path.is_file() or not event_path.read_bytes().endswith(b"\n"):
+        raise ValueError("recovery event log is partial/malformed")
+    events = [json.loads(line) for line in event_path.read_text().splitlines()]
+    phases = [event.get("phase") for event in events]
+    if tuple(phases) != RECOVERY_PHASE_SEQUENCE[:len(phases)]:
+        raise ValueError("recovery producer completion ordering is not the canonical suffix prefix")
+    judgment_paths = {
+        str(root / f"state/anchor_decisions/{obj}.json"),
+        str(root / f"state/physical_branch_decisions/{obj}.json"),
+        str(root / "state/object_selection.json"),
+        str(root / f"state/appearance_decisions/{obj}.json"),
+        str(root / f"state/agent_interaction_judgments/{obj}.json"),
+    }
+    for event in events:
+        if (event.get("returncode") != 0 or "error" in event
+                or event.get("run_identity") != run_identity(contract)
+                or event.get("input_contract_sha256") != sha(root / "input/runtime_input_contract.json")
+                or not event_code_is_valid(event, current_code, {
+                    "retained_event_digests": set(), "execution_bundle_sha256": target_hash,
+                    "contract_sha256": contract_hash,
+                })):
+            raise ValueError("foreign/unbound/failed recovery producer event")
+        for name, expected in event.get("input_sha256", {}).items():
+            source = in_run(name, root)
+            if str(source) in judgment_paths:
+                _validate_recovery_judgment(source, root=root, contract=contract, records=records,
+                                            retained_records=retained_records, obj=obj, track=track, case=case)
+                available[str(source)] = sha(source)
+            if available.get(str(source)) != expected or sha(source) != expected:
+                raise ValueError("recovery producer input lacks completed bound ancestor: " + str(source))
+        output_hashes = event.get("output_sha256")
+        if not isinstance(output_hashes, dict) or not output_hashes:
+            raise ValueError("successful recovery producer has no recorded outputs")
+        for name, expected in output_hashes.items():
+            output = in_run(name, root)
+            if sha(output) != expected:
+                raise ValueError("recovery producer output changed: " + str(output))
+            if str(output) in records:
+                raise ValueError("recovery output has multiple producers: " + str(output))
+            records[str(output)] = event
+            available[str(output)] = expected
+            authorized[str(output)] = expected
+        if not set(map(str, event.get("outputs", []))) <= set(output_hashes):
+            raise ValueError("recovery producer declared output lacks recorded SHA")
+    for judgment in judgment_paths:
+        path = Path(judgment)
+        if path.exists():
+            _validate_recovery_judgment(path, root=root, contract=contract, records=records,
+                                        retained_records=retained_records, obj=obj, track=track, case=case)
+            authorized[judgment] = sha(path)
+    return records, retained_records, authorized
+
+
 def recovery_context(root, bundle, contract, manifest):
     root, bundle = Path(root).resolve(), Path(bundle).resolve()
     target_hash = sha(bundle / "runtime/bundle_manifest.json")
@@ -501,33 +685,27 @@ def recovery_context(root, bundle, contract, manifest):
         if sha(in_run(name, root)) != digest: raise ValueError("retained prefix output changed: " + name)
     if sha(in_run(value["p05_judgment_path"], root)) != value["p05_judgment_sha256"]:
         raise ValueError("retained P05 judgment changed")
+    current_code = code_identity(manifest)
+    recovery_records, retained_records, authorized_active = _validated_recovery_events(
+        root=root, contract=contract, current_code=current_code, target_hash=target_hash,
+        contract_hash=sha(path), retained_rows=rows,
+        retained_outputs=value["retained_outputs_sha256"], obj=value["object_id"],
+        track=value["track_id"], case=contract["case"],
+    )
     archive = load(archive_path)
     if complete.get("file_count") != len(archive["files"]): raise ValueError("archive completion count differs")
     for row in archive["files"]:
         source = root / row["source_relative"]
         archived = directory / row["archive_relative"]
-        if source.exists(): raise ValueError("stale invalidated suffix restored as active: " + str(source))
+        if source.exists():
+            expected = authorized_active.get(str(source))
+            if expected is None or sha(source) != expected:
+                raise ValueError("stale invalidated suffix restored as active: " + str(source))
         if not archived.is_file() or sha(archived) != row["sha256"] or archived.stat().st_size != row["bytes"]:
             raise ValueError("invalidated archive file missing/changed: " + str(archived))
-    current_code = code_identity(manifest)
     recovery_events = root / RECOVERY_EVENTS
     failure = root / RECOVERY_REL / "failure.json"
     if failure.exists(): raise ValueError("recovery already failed; relaunch is forbidden")
-    if recovery_events.exists():
-        if not recovery_events.is_file() or not recovery_events.read_bytes().endswith(b"\n"):
-            raise ValueError("recovery event log is partial/malformed")
-        allowed_events = INVALIDATED_PHASES | {TRANSITION}
-        for line in recovery_events.read_text().splitlines():
-            event = json.loads(line)
-            if event.get("phase") not in allowed_events:
-                raise ValueError("recovery event phase is outside suffix allowlist")
-            if event.get("returncode") == 0 and "error" not in event:
-                if event.get("run_identity") != run_identity(contract) or not event_code_is_valid(event, current_code, {
-                    "retained_event_digests": retained_digests,
-                    "execution_bundle_sha256": target_hash,
-                    "contract_sha256": sha(path),
-                }):
-                    raise ValueError("foreign/unbound recovery producer event")
     return {"contract": value, "contract_sha256": sha(path), "execution_bundle_sha256": target_hash,
             "source_code": old_code, "retained_event_digests": retained_digests,
             "event_sources": [directory / "retained_events.jsonl", root / RECOVERY_EVENTS],

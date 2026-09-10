@@ -24,6 +24,7 @@ from v19_camera_contract import plane_intrinsics as camera_contract_plane_intrin
 from v19_camera_contract import resize_affine as camera_contract_resize_affine
 from v19_camera_contract import sha256_file as camera_contract_sha256_file
 from v19_camera_contract import summarize_contract as summarize_camera_contract_v2
+from rgb_scene_metric_eligibility import MetricEligibility
 
 
 def load_json(path: Path) -> Any:
@@ -1242,6 +1243,7 @@ def build_anchor_candidate_proposals(
                 "world_extent_diag_m": float(diag),
                 "intrinsics_source": str(vis.get("intrinsics_source")),
                 "camera_source": str(vis.get("camera_source")),
+                "native_depth_metric_eligibility": vis.get("native_depth_metric_eligibility"),
             }
         )
     if not rows:
@@ -1491,6 +1493,22 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     sam2, sam2_path = load_sam2_track(args)
     object_plan_record = load_object_plan_record(args.object_plan, args.track_id)
     object_id = args.object_id or f"object:{args.track_id}"
+    metric_eligibility_path = getattr(args, "metric_eligibility_manifest", None)
+    metric_eligibility = (
+        MetricEligibility(
+            metric_eligibility_path,
+            case=args.case,
+            object_id=object_id,
+            track_id=args.track_id,
+            sam2_track=sam2_path,
+            depth_npz=args.depth_npz,
+            base_annotations=args.base_annotations,
+            calibration_contract=args.calibration_contract,
+            frame_to_depth_i=depth["frame_to_i"],
+            depth=depth["depth"],
+        )
+        if metric_eligibility_path is not None else None
+    )
     indices = frame_range(raw_frames, args.frame_start, args.frame_end)
     output_indices = sorted(raw_frames) if bool(args.preserve_source_index) else list(indices)
     rng = np.random.default_rng(int(args.seed))
@@ -1674,6 +1692,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "source_size": depth["source_size"].astype(float).tolist() if depth["source_size"] is not None else None,
             }
         valid = mask_depth_owned & np.isfinite(depth_m) & (depth_m >= float(args.min_depth_m)) & (depth_m <= float(args.max_depth_m))
+        metric_eligibility_summary = None
+        if metric_eligibility is not None:
+            eligible, metric_eligibility_summary = metric_eligibility.frame(
+                idx, owned_mask_path=mask_path, depth_shape=depth_m.shape,
+                A_depth_from_mask=A_depth_from_mask, K_depth=np.asarray([
+                    [intr[0], 0.0, intr[2]], [0.0, intr[1], intr[3]], [0.0, 0.0, 1.0]
+                ], dtype=float))
+            valid &= eligible
         confidence_m = (
             np.asarray(depth["confidence"][depth_i], dtype=float)
             if depth.get("confidence") is not None
@@ -1747,6 +1773,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_shape": list(depth_m.shape),
             "object_surface_ownership_filter": ownership_summary,
             "first_surface_depth_ownership": depth_ownership_summary,
+            "native_depth_metric_eligibility": metric_eligibility_summary,
             "source_width": int(source_width),
             "source_height": int(source_height),
         }
@@ -1963,6 +1990,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "sample_summary": vis["sample_summary"],
             "object_surface_ownership_filter": vis.get("object_surface_ownership_filter"),
             "first_surface_depth_ownership": vis.get("first_surface_depth_ownership"),
+            "native_depth_metric_eligibility": vis.get("native_depth_metric_eligibility"),
             "claim_scope": "visible metric surface measurement only; hand-owned and non-first-surface depth pixels are excluded before metric lifting; not hidden geometry and not final object pose",
         }
         row_obj = {
@@ -2026,6 +2054,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "depth_image_plane": args.depth_image_plane,
             "mask_image_plane": args.mask_image_plane,
             "pixel_center_convention": args.pixel_center_convention,
+            "metric_eligibility_manifest": str(metric_eligibility_path) if metric_eligibility_path else None,
+            "metric_eligibility_manifest_sha256": camera_contract_sha256_file(metric_eligibility_path) if metric_eligibility_path else None,
             "depth_camera_contract_binding_validation": depth_contract_binding_validation,
             "anchor_frame_idx": int(anchor),
             "claim_scope": "visible metric surfel and initial-pose adapter for rigid branch; downstream completion/pose/interval solvers must produce the physical object pose claim",
@@ -2090,6 +2120,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "object_plan": str(args.object_plan) if args.object_plan else None,
             "remote_root": str(args.remote_root) if args.remote_root else None,
             "local_root": str(args.local_root) if args.local_root else None,
+            "metric_eligibility_manifest": str(metric_eligibility_path) if metric_eligibility_path else None,
+            "metric_eligibility_manifest_sha256": camera_contract_sha256_file(metric_eligibility_path) if metric_eligibility_path else None,
         },
         "outputs": {
             "annotations": str(annotations_path),
@@ -2138,6 +2170,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "hand_ownership_primitive": "projected_full_hawor_mano_triangle_silhouette",
             "hand_bbox_subtraction_used": False,
             "hand_silhouette_exclusion_pad_px": int(args.hand_bbox_exclusion_pad_px),
+            "native_depth_metric_eligibility_enabled": metric_eligibility is not None,
             "robust_first_surface_depth_ownership": bool(args.robust_first_surface_depth_ownership),
             "first_surface_mad_sigma": float(args.first_surface_mad_sigma),
             "first_surface_min_half_width_m": float(args.first_surface_min_half_width_m),
@@ -2195,6 +2228,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-frame-manifest", type=Path, required=True)
     parser.add_argument("--sam2-root", type=Path, default=Path("."))
     parser.add_argument("--sam2-track-json", type=Path, default=None)
+    parser.add_argument("--metric-eligibility-manifest", type=Path, default=None, help="Optional hash-bound native-depth eligibility raster manifest. Default None preserves legacy P09 behavior.")
     parser.add_argument("--depth-npz", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--base-annotations", type=Path, default=None)

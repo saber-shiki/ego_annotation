@@ -41,6 +41,7 @@ class SceneLineage(RunLineage):
             verify_external_assets({'files':{name:identity['files'][name] for name in names},'trees':{}})
 
     def agent_phase(self,path):
+        if Path(path).name == 'object_selection.json': return 'P10'
         if 'appearance_decisions' in path.parts: return 'appearance_anchor'
         return super().agent_phase(path)
 
@@ -72,7 +73,7 @@ class SceneLineage(RunLineage):
 
     def require_judgment(self,path):
         phase=self.agent_phase(path)
-        if phase not in {'P05','P09_anchor','appearance_anchor'}:
+        if phase not in {'P05','P09_anchor','P10','appearance_anchor'}:
             return super().require_judgment(path)
         from v19_runtime_contracts import validate_references
         payload=load(path);validate_references(payload,self.root)
@@ -89,9 +90,10 @@ class SceneLineage(RunLineage):
         plan=load(self.require(self.root/'measurements/object_candidates/object_plan_agent.json'))
         if len(plan['objects'])!=1:raise ValueError('one selected object required')
         obj=plan['objects'][0]['object_id']
-        directory='anchor_decisions' if phase=='P09_anchor' else 'appearance_decisions'
-        if path!=self.root/f'state/{directory}/{obj}.json' or payload.get('object_id')!=obj:
-            raise ValueError('visual decision selected object/path mismatch')
+        if phase in {'P09_anchor','appearance_anchor'}:
+            directory='anchor_decisions' if phase=='P09_anchor' else 'appearance_decisions'
+            if path!=self.root/f'state/{directory}/{obj}.json' or payload.get('object_id')!=obj:
+                raise ValueError('visual decision selected object/path mismatch')
         if phase=='P09_anchor':
             directory=self.root/f'measurements/object_geometry/anchor_candidates/{obj}'
             proposal=directory/'anchor_candidate_proposals.json'
@@ -104,6 +106,26 @@ class SceneLineage(RunLineage):
                 raise ValueError('anchor proposal object/frame/review mismatch')
             if self.producer_evidence(review,evidence,'P09-propose') is not producer:
                 raise ValueError('anchor review producer mismatch')
+            return
+        if phase=='P10':
+            annotations=self.root/f'measurements/object_geometry/visible_geometry/{obj}/annotations_v19_visible_geometry.json'
+            producer=self.producer_evidence(annotations,evidence,'P09')
+            images=[Path(name) for name in evidence if Path(name).suffix.lower() in {'.jpg','.jpeg','.png'}
+                    and self.records.get(name,{}).get('phase')=='P09']
+            if not images or not any(self.producer_evidence(image,evidence,'P09') is producer for image in images):
+                raise ValueError('P10 decision needs a current P09-owned image')
+            if path == self.root/f'state/physical_branch_decisions/{obj}.json':
+                if payload.get('object_id')!=obj or payload.get('physical_branch')!='rigid':
+                    raise ValueError('P10 rigid branch identity mismatch')
+            elif path == self.root/'state/object_selection.json':
+                anchor=load(self.require(self.root/f'state/anchor_decisions/{obj}.json'))
+                track=plan['objects'][0].get('track_id',obj)
+                if (payload.get('object_id')!=obj or payload.get('case')!=self.contract['case']
+                        or payload.get('track_id')!=track
+                        or payload.get('anchor_frame')!=anchor.get('selected_anchor_frame_idx')):
+                    raise ValueError('P10 object selection differs from plan/anchor')
+                self.require(self.root/f'state/physical_branch_decisions/{obj}.json')
+            else: raise ValueError('P10 judgment path mismatch')
             return
         manifest=self.root/f'measurements/demo_visual/{obj}/appearance_evidence/appearance_mask_manifest.json'
         producer=self.producer_evidence(manifest,evidence,'scene_appearance')

@@ -22,6 +22,13 @@ from build_v19_visible_geometry_from_sam2_depth import (
     load_depth_npz,
     validate_depth_camera_contract_binding,
 )
+from rgb_scene_metric_eligibility import (
+    CLASS_CODES as METRIC_CLASS_CODES,
+    RASTER_SCHEMA as METRIC_RASTER_SCHEMA,
+    SCHEMA as METRIC_ELIGIBILITY_SCHEMA,
+    array_sha256,
+    classify_native_depth,
+)
 from v19_camera_contract import K_from_intrinsics, load_contract, plane_intrinsics
 
 SCHEMA = "rgb_scene_depth_order_owned_sam2_v1"
@@ -342,8 +349,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     output_dir.mkdir(parents=True)
     mask_dir = output_dir / "sam2_masks"
     mask_dir.mkdir()
+    eligibility_dir = output_dir / "native_depth_metric_eligibility"
+    eligibility_dir.mkdir()
     output_track: dict[str, Any] = {}
     rows = []
+    eligibility_rows = []
     bridge = np.load(bridge_path, mmap_mode="r", allow_pickle=False)
     hawor = np.load(hawor_path, mmap_mode="r", allow_pickle=False)
     try:
@@ -360,6 +370,22 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 }
                 output_track[str(frame_idx)] = output_row
                 rows.append({"frame_idx": frame_idx, "status": "raw_track_not_visible"})
+                depth_row = np.asarray(depth["depth"][depth["frame_to_i"][frame_idx]])
+                raster_path = eligibility_dir / f"{frame_idx:06d}.npz"
+                class_code = np.zeros(depth_row.shape, dtype=np.uint8)
+                eligible = np.zeros(depth_row.shape, dtype=bool)
+                np.savez_compressed(raster_path, schema=np.asarray(METRIC_RASTER_SCHEMA),
+                                    frame_idx=np.asarray(frame_idx, dtype=np.int64),
+                                    class_code=class_code, metric_candidate_eligible=eligible)
+                eligibility_rows.append({
+                    "frame_idx": frame_idx, "status": "raw_track_not_visible",
+                    "owned_mask": None, "depth_array_sha256": array_sha256(depth_row),
+                    "class_code_array_sha256": array_sha256(class_code),
+                    "metric_candidate_array_sha256": array_sha256(eligible),
+                    "raster": record(raster_path),
+                    "counts": {name: int(np.count_nonzero(class_code == code))
+                               for name, code in METRIC_CLASS_CODES.items()},
+                })
                 continue
             source_mask_path = Path(source_mask_value).expanduser().resolve()
             source_ref = record(source_mask_path)
@@ -389,6 +415,56 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             if not cv2.imwrite(str(destination), owned.astype(np.uint8) * 255):
                 raise RuntimeError(f"failed to write owned mask {destination}")
             destination_ref = record(destination)
+            depth_row = np.asarray(depth["depth"][depth["frame_to_i"][frame_idx]])
+            nearest_depth_z, native_hand_reports = nearest_hand_first_hits(
+                hands, K_from_intrinsics(depth_intrinsics), depth_row.shape, args.near_m)
+            declared_hands = frames[frame_idx].get("hands")
+            complete_hand_geometry = (
+                isinstance(declared_hands, list) and len(declared_hands) > 0
+                and len(hands) == len(declared_hands)
+                and all(identity.get("status") == "full_mano_surface" for identity in hand_identities)
+            )
+            validated_hand_absence = isinstance(declared_hands, list) and len(declared_hands) == 0
+            class_code, metric_eligible, metric_counts = classify_native_depth(
+                owned_mask=owned, raw_mask=raw_mask,
+                hand_z=nearest_depth_z, depth_z=depth_row,
+                A_depth_from_mask=A_depth_from_mask,
+                complete_hand_geometry=complete_hand_geometry,
+                validated_hand_absence=validated_hand_absence,
+                tolerance_m=args.depth_order_tolerance_m,
+                uncertainty_padding_mask_px=args.uncertainty_padding_mask_px,
+            )
+            raster_path = eligibility_dir / f"{frame_idx:06d}.npz"
+            np.savez_compressed(raster_path, schema=np.asarray(METRIC_RASTER_SCHEMA),
+                                frame_idx=np.asarray(frame_idx, dtype=np.int64),
+                                class_code=class_code,
+                                metric_candidate_eligible=metric_eligible)
+            hand_surface_arrays = [{
+                "vertices_sha256": array_sha256(vertices),
+                "vertices_shape": list(np.asarray(vertices).shape),
+                "faces_sha256": array_sha256(faces),
+                "faces_shape": list(np.asarray(faces).shape),
+            } for vertices, faces in hands]
+            eligibility_rows.append({
+                "frame_idx": frame_idx,
+                "status": "native_depth_classified",
+                "owned_mask": destination_ref,
+                "source_mask": source_ref,
+                "depth_array_sha256": array_sha256(depth_row),
+                "depth_size_wh": [int(depth_row.shape[1]), int(depth_row.shape[0])],
+                "mask_size_wh": [int(raw_mask.shape[1]), int(raw_mask.shape[0])],
+                "A_depth_from_mask": A_depth_from_mask.tolist(),
+                "K_depth": K_from_intrinsics(depth_intrinsics).tolist(),
+                "complete_hand_geometry": complete_hand_geometry,
+                "validated_hand_absence": validated_hand_absence,
+                "hand_identities": hand_identities,
+                "hand_surface_arrays": hand_surface_arrays,
+                "hand_raster_reports": native_hand_reports,
+                "class_code_array_sha256": array_sha256(class_code),
+                "metric_candidate_array_sha256": array_sha256(metric_eligible),
+                "raster": record(raster_path),
+                "counts": metric_counts,
+            })
             geometry = mask_geometry(owned, A_mask_from_calibration)
             output_row.update(geometry)
             output_row["mask_path"] = str(destination)
@@ -424,6 +500,37 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     track_path = output_dir / "sam2_track.json"
     track_path.write_text(json.dumps(output_track, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     track_ref = record(track_path)
+    eligibility_manifest = {
+        "schema": METRIC_ELIGIBILITY_SCHEMA,
+        "status": "ok",
+        "case": args.case,
+        "object_id": args.object_id,
+        "track_id": args.track_id,
+        "native_raster_plane": args.depth_image_plane,
+        "class_codes": METRIC_CLASS_CODES,
+        "policy": {
+            "metric_candidates": "hand clearly behind or clear no-hand non-overlap only; existing P09 robust depth/confidence filtering still required",
+            "ineligible": "front, near, unsupported depth, invalid mask coordinates, unresolved hand geometry, and no-hit uncertainty fringe",
+            "ordinary_object_body": "clear no-hit support outside the coordinate-bound projected-hand uncertainty band remains a candidate",
+            "appearance_masks_unchanged_by_metric_eligibility": True,
+            "physical_authority": False,
+        },
+        "parameters": {
+            "depth_order_tolerance_m": float(args.depth_order_tolerance_m),
+            "uncertainty_padding_mask_px": int(args.uncertainty_padding_mask_px),
+            "depth_image_plane": args.depth_image_plane,
+            "mask_image_plane": args.mask_image_plane,
+        },
+        "inputs": {
+            **input_records,
+            "owned_sam2_track": track_ref,
+        },
+        "frames": eligibility_rows,
+    }
+    eligibility_manifest_path = output_dir / "native_depth_metric_eligibility.json"
+    eligibility_manifest_path.write_text(
+        json.dumps(eligibility_manifest, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    eligibility_manifest_ref = record(eligibility_manifest_path)
     totals = {key: int(sum((row.get("counts") or {}).get(key, 0) for row in rows))
               for key in ("raw_pixels", "removed_front_pixels", "preserved_behind_pixels",
                           "preserved_near_pixels", "preserved_no_hit_pixels",
@@ -435,7 +542,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "case": args.case, "object_id": args.object_id, "track_id": args.track_id,
         "claim_scope": "derived P09 mask support only; raw SAM2 appearance is immutable and separately bound",
         "inputs": input_records,
-        "outputs": {"owned_sam2_track": track_ref, "owned_mask_dir": str(mask_dir)},
+        "outputs": {"owned_sam2_track": track_ref, "owned_mask_dir": str(mask_dir),
+                    "native_depth_metric_eligibility": eligibility_manifest_ref,
+                    "native_depth_metric_eligibility_dir": str(eligibility_dir)},
         "policy": {
             "front": "remove only when nearest MANO z < measured depth z - tolerance",
             "behind": "preserve when nearest MANO z > measured depth z + tolerance",
@@ -447,7 +556,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         },
         "parameters": {"depth_order_tolerance_m": float(args.depth_order_tolerance_m),
                        "near_m": float(args.near_m), "depth_image_plane": args.depth_image_plane,
-                       "mask_image_plane": args.mask_image_plane},
+                       "mask_image_plane": args.mask_image_plane,
+                       "uncertainty_padding_mask_px": int(args.uncertainty_padding_mask_px)},
         "frame_count": len(rows), "totals": totals, "rows": rows,
     }
     report_path = output_dir / "depth_order_ownership_report.json"
@@ -466,9 +576,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mask-image-plane", default="sam2_mask")
     parser.add_argument("--depth-order-tolerance-m", type=float, default=0.005)
     parser.add_argument("--near-m", type=float, default=1e-6)
+    parser.add_argument("--uncertainty-padding-mask-px", type=int, default=4)
     args = parser.parse_args()
     if (not np.isfinite(args.depth_order_tolerance_m) or args.depth_order_tolerance_m < 0
-            or not np.isfinite(args.near_m) or args.near_m <= 0):
+            or not np.isfinite(args.near_m) or args.near_m <= 0
+            or args.uncertainty_padding_mask_px < 0):
         parser.error("invalid depth-order tolerance or near plane")
     return args
 

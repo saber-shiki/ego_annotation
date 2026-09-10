@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,8 @@ class RecoveryFixture:
             write(bundle / "runtime/runtime_config.json", {"model": "same", "copied_root": str(bundle / "asset")})
             write(bundle / "scripts/producer.py", {"producer": "same"})
         write(self.new / "scripts/rgb_scene_depth_order.py", {"mechanism": "front-only"})
+        write(self.new / "scripts/rgb_scene_metric_eligibility.py", {"mechanism": "native-depth-eligibility"})
+        write(self.new / "scripts/build_v19_visible_geometry_from_sam2_depth.py", {"seam": "default-off"})
         write(self.new / "scripts/rgb_scene_recovery.py", {"transition": "P09_DEPTH_ORDER"})
         self._manifest(self.old); self._manifest(self.new)
         raw = write(self.root / "input/source.mp4", b"synthetic raw bytes")
@@ -62,9 +65,11 @@ class RecoveryFixture:
             "objects": [{"object_id": "arbitrary_object", "track_id": "arbitrary_track"}],
             "visual_judgment_provenance": {"kind": "current_run_visual_judgment", "phase": "P05",
                                            "run_identity": identity, "evidence_sha256": evidence}})
+        proposal_path = self.root / "measurements/object_geometry/anchor_candidates/arbitrary_object/anchor_candidate_proposals.json"
         suffix_paths = [
-            write(self.root / "measurements/object_geometry/anchor_candidates/arbitrary_object/proposal.json", {"old": True}),
-            write(self.root / "measurements/object_geometry/visible_geometry/arbitrary_object/annotations.json", {"old": True}),
+            write(proposal_path, {"object_id": "arbitrary_object", "review_candidates": [{"frame_idx": 7}],
+                                  "outputs": {"anchor_candidate_review": str(proposal_path.with_name("anchor_candidate_review.jpg"))}}),
+            write(self.root / "measurements/object_geometry/visible_geometry/arbitrary_object/annotations_v19_visible_geometry.json", {"old": True}),
             write(self.root / "measurements/geometry_completion/sam3d_arbitrary_object/mesh.ply", b"old mesh"),
             write(self.root / "state/scene/arbitrary_object/refined_pose.json", {"old": True}),
             write(self.root / "measurements/demo_visual/arbitrary_object/appearance_evidence/mask.png", b"old mask"),
@@ -106,6 +111,26 @@ class RecoveryFixture:
     def prepare(self):
         return recovery.prepare_recovery(self.root, self.old, self.new, self.stop, self.package, process_rows=[])
 
+    def append_recovery_event(self, phase, outputs, *, inputs=None):
+        context = {"execution_bundle_sha256": sha(self.new / "runtime/bundle_manifest.json"),
+                   "contract_sha256": sha(self.root / recovery.RECOVERY_FILE)}
+        outputs = list(map(Path, outputs))
+        event = {
+            "phase": phase, "returncode": 0, "run_identity": recovery.run_identity(self.contract),
+            "input_contract_sha256": sha(self.contract_path),
+            "code_sha256": recovery.code_identity(load(self.new / "runtime/bundle_manifest.json")),
+            "execution_bundle_manifest_sha256": context["execution_bundle_sha256"],
+            "recovery_contract_sha256": context["contract_sha256"],
+            "inputs": list(map(str, (inputs or {}).keys())),
+            "input_sha256": {str(Path(path)): digest for path, digest in (inputs or {}).items()},
+            "outputs": list(map(str, outputs)),
+            "output_sha256": {str(path): sha(path) for path in outputs},
+        }
+        path = self.root / recovery.RECOVERY_EVENTS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as handle: handle.write(json.dumps(event) + "\n")
+        return event
+
 
 class RGBSceneRecoveryTests(unittest.TestCase):
     def fixture(self):
@@ -118,7 +143,9 @@ class RGBSceneRecoveryTests(unittest.TestCase):
         value = load(contract_path); archive = load(f.package / "archive_manifest.json")
         self.assertEqual(value["retained_phases"], list(recovery.RETAINED_PHASES))
         self.assertEqual(value["stop_identity"]["actor_resumable"], False)
-        self.assertEqual(set(value["changed_bundle_files"]), {"runtime/runtime_config.json", "scripts/rgb_scene_depth_order.py", "scripts/rgb_scene_recovery.py"})
+        self.assertEqual(set(value["changed_bundle_files"]), {"runtime/runtime_config.json", "scripts/rgb_scene_depth_order.py",
+            "scripts/rgb_scene_metric_eligibility.py", "scripts/build_v19_visible_geometry_from_sam2_depth.py",
+            "scripts/rgb_scene_recovery.py"})
         archived_sources = {row["source"] for row in archive["files"]}
         self.assertTrue({str(p) for p in f.decisions} <= archived_sources)
         self.assertNotIn(str(f.plan), archived_sources)
@@ -225,6 +252,124 @@ class RGBSceneRecoveryTests(unittest.TestCase):
         profile = (Path(__file__).resolve().parents[1] / ".pi/agents/ego-annotation.rgb-scene-runtime.md").read_text()
         self.assertIn("p08_depth_order_recovery", profile); self.assertIn("never invoke P01, camera, P06, P07, or P08", profile)
         self.assertIn("native_recovery_handoff.md", profile)
+
+    def test_canonical_regeneration_receipts_judgments_and_nested_ordering(self):
+        f = self.fixture(); f.prepare(); recovery.apply_recovery(f.package, process_rows=[])
+        identity = recovery.run_identity(f.contract)
+        def judgment(path, phase, payload, evidence):
+            return write(path, {**payload, "visual_judgment_provenance": {
+                "kind": "current_run_visual_judgment", "phase": phase,
+                "run_identity": identity, "evidence_sha256": {str(p): sha(p) for p in evidence}}})
+
+        owned = write(f.root / "measurements/object_tracks/depth_order_owned/arbitrary_track/native_depth_metric_eligibility.json", {"new": True})
+        f.append_recovery_event("P09_DEPTH_ORDER", [owned])
+        recovery.verify_applied_recovery(f.root, f.new)
+
+        proposal = f.root / "measurements/object_geometry/anchor_candidates/arbitrary_object/anchor_candidate_proposals.json"
+        review = write(proposal.with_name("anchor_candidate_review.jpg"), b"new review pixels")
+        # A genuine deterministic current producer may recreate the exact old
+        # proposal bytes at its canonical archived source path.
+        archived_proposal = f.root / recovery.RECOVERY_REL / "invalidated" / proposal.relative_to(f.root)
+        proposal.parent.mkdir(parents=True, exist_ok=True); proposal.write_bytes(archived_proposal.read_bytes())
+        f.append_recovery_event("P09-propose", [proposal, review], inputs={owned: sha(owned)})
+        recovery.verify_applied_recovery(f.root, f.new)
+
+        anchor = judgment(f.root / "state/anchor_decisions/arbitrary_object.json", "P09_anchor",
+                          {"object_id": "arbitrary_object", "selected_anchor_frame_idx": 7}, [proposal, review])
+        recovery.verify_applied_recovery(f.root, f.new)
+        annotations = write(f.root / "measurements/object_geometry/visible_geometry/arbitrary_object/annotations_v19_visible_geometry.json", {"new": "P09"})
+        p09_image = write(annotations.parent / "object_owned_masks/000007.png", b"new P09 owned pixels")
+        f.append_recovery_event("P09", [annotations, p09_image], inputs={anchor: sha(anchor), proposal: sha(proposal)})
+        recovery.verify_applied_recovery(f.root, f.new)
+
+        branch = judgment(f.root / "state/physical_branch_decisions/arbitrary_object.json", "P10",
+                          {"object_id": "arbitrary_object", "physical_branch": "rigid"}, [annotations, p09_image])
+        selection = judgment(f.root / "state/object_selection.json", "P10",
+                             {"case": "arbitrary_case", "object_id": "arbitrary_object",
+                              "track_id": "arbitrary_track", "anchor_frame": 7}, [annotations, p09_image])
+        recovery.verify_applied_recovery(f.root, f.new)
+        p11 = write(f.root / "measurements/geometry_completion/rigid_evidence/arbitrary_case/arbitrary_object/evidence_bundle/evidence_bundle_report.json", {"new": "P11"})
+        f.append_recovery_event("P11", [p11], inputs={branch: sha(branch), selection: sha(selection), annotations: sha(annotations)})
+        recovery.verify_applied_recovery(f.root, f.new)
+        self.assertEqual(SceneLineage(f.root, f.new).require(p11), p11)
+
+        geometry = write(f.root / "measurements/geometry_completion/sam3d_arbitrary_object/completion_report.json", {"new": "geometry"})
+        f.append_recovery_event("scene_geometry", [geometry], inputs={p11: sha(p11)})
+        bound = write(geometry.with_name("anchor_bound_completion_report.json"), {"new": "bound"})
+        f.append_recovery_event("scene_anchor_binding", [bound], inputs={geometry: sha(geometry), annotations: sha(annotations)})
+        pose = write(f.root / "measurements/pose_fits/arbitrary_object/visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json", {"new": "pose"})
+        f.append_recovery_event("scene_source_pose", [pose], inputs={bound: sha(bound), annotations: sha(annotations)})
+        self.assertEqual(SceneLineage(f.root, f.new).require(pose), pose)
+
+        rgb = write(f.root / "measurements/pose_fits/arbitrary_object/scene_rgb/edges.npz", b"rgb edges")
+        f.append_recovery_event("scene_rgb", [rgb], inputs={pose: sha(pose), annotations: sha(annotations)})
+        posterior = write(f.root / "state/scene/arbitrary_object/refined_pose.json", {"new": "posterior"})
+        f.append_recovery_event("scene_refined_pose", [posterior], inputs={rgb: sha(rgb), pose: sha(pose)})
+        raw_image = Path(f.prefix_events[0]["outputs"][1])
+        appearance_manifest = f.root / "measurements/demo_visual/arbitrary_object/appearance_evidence/appearance_mask_manifest.json"
+        appearance_mask = write(appearance_manifest.with_name("mask.png"), b"new appearance mask")
+        write(appearance_manifest, {"object_id": "arbitrary_object", "frames": [{"frame_idx": 0,
+            "status": "available", "raw_rgb_path": str(raw_image), "appearance_mask_path": str(appearance_mask)}]})
+        f.append_recovery_event("scene_appearance", [appearance_manifest, appearance_mask],
+                                inputs={posterior: sha(posterior), annotations: sha(annotations)})
+        appearance_decision = judgment(f.root / "state/appearance_decisions/arbitrary_object.json", "appearance_anchor",
+            {"object_id": "arbitrary_object", "selected_frame_idx": 0}, [appearance_manifest, appearance_mask, raw_image])
+        recovery.verify_applied_recovery(f.root, f.new)
+        native = write(f.root / "measurements/scene_native/arbitrary_object/native.json", {"new": "native"})
+        f.append_recovery_event("scene_native_appearance", [native], inputs={appearance_decision: sha(appearance_decision)})
+        binding = write(f.root / "measurements/scene_shape/arbitrary_object/pose_mesh.json", {"new": "shape"})
+        f.append_recovery_event("scene_refined_shape", [binding], inputs={native: sha(native), posterior: sha(posterior)})
+        visibility = judgment(f.root / "state/agent_interaction_judgments/arbitrary_object.json", "P17_judgment",
+            {"object_id": "arbitrary_object", "status": "ok", "interaction_judgments": [], "frames": []},
+            [posterior, raw_image])
+        recovery.verify_applied_recovery(f.root, f.new)
+        fit = write(f.root / "measurements/scene_fit/arbitrary_object/fit_report.json", {"new": "fit"})
+        f.append_recovery_event("scene_visual_fit", [fit], inputs={binding: sha(binding), visibility: sha(visibility)})
+        final = write(f.root / "final/annotation.json", {"new": "final"})
+        f.append_recovery_event("scene_export", [final], inputs={fit: sha(fit), visibility: sha(visibility)})
+        self.assertEqual(SceneLineage(f.root, f.new).require(final), final)
+        cli = Path(__file__).resolve().parents[1] / "scripts/prepare_rgb_scene_runtime.py"
+        done = subprocess.run([sys.executable, str(cli), "verify-applied-recovery",
+                               "--run-root", str(f.root), "--target-bundle", str(f.new)],
+                              check=True, capture_output=True, text=True, timeout=30)
+        self.assertEqual(json.loads(done.stdout)["transition"], "P09_DEPTH_ORDER")
+
+    def test_recovery_rejects_out_of_order_or_modified_canonical_producer(self):
+        f = self.fixture(); f.prepare(); recovery.apply_recovery(f.package, process_rows=[])
+        output = write(f.root / "measurements/geometry_completion/sam3d_arbitrary_object/completion_report.json", {"bad": "skip"})
+        f.append_recovery_event("scene_geometry", [output])
+        with self.assertRaisesRegex(ValueError, "completion ordering"):
+            recovery.verify_applied_recovery(f.root, f.new)
+
+    def test_owned_process_inventory_covers_dispatch_leaves_modules_and_run_binding(self):
+        source = Path(__file__).resolve().parents[1]
+        import re
+        dispatched = set()
+        for relative in ("scripts/run_rgb_scene_frontend.py", "scripts/run_rgb_scene_stage.py",
+                         "scripts/run_rgb_scene_reconstruction.py", "scripts/rgb_scene_camera.py",
+                         "scripts/remote_run_hawor_export.sh"):
+            dispatched.update(re.findall(r"[A-Za-z0-9_]+(?:\.py|\.sh)", (source / relative).read_text()))
+        existing_names = {path.name for path in source.rglob("*") if path.is_file()}
+        dispatched &= existing_names
+        self.assertTrue(dispatched <= recovery.OWNED_PROCESS_EXECUTABLES,
+                        sorted(dispatched - recovery.OWNED_PROCESS_EXECUTABLES))
+        self.assertIn("build_v19_demo_visual_inputs.py", recovery.OWNED_PROCESS_EXECUTABLES)
+        root = "/runs/current"
+        leaves = [
+            f"101 python run_rgb_scene_frontend.py --run-root {root}",
+            f"102 python build_v18_compact_rigid_evidence_bundle.py --run-root {root}",
+            f"103 python fit_rgb_scene_visual.py --run-root {root} --device cuda:0",
+            f"104 python remote_run_sam3d_objects_mesh_v7.py --output-dir {root}/native",
+            f"105 python -m rgb_scene_pose_io --run-root {root}",
+            f"106 python build_v19_demo_visual_inputs.py --run-root {root}",
+        ]
+        self.assertEqual({row["pid"] for row in recovery.active_owned_processes(root, leaves)},
+                         {101, 102, 103, 104, 105, 106})
+        self.assertEqual(recovery.active_owned_processes(root, [
+            "201 python fit_rgb_scene_visual.py --run-root /runs/foreign",
+            f"202 python unrelated.py --run-root {root}"]), [])
+        with patch.object(recovery.os, "getpid", return_value=103):
+            self.assertNotIn(103, {row["pid"] for row in recovery.active_owned_processes(root, leaves)})
 
     def test_recovery_identity_retains_birth_and_execution_for_json_and_rrd_document(self):
         from rgb_scene_identity import InputIdentity

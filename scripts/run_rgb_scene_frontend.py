@@ -54,6 +54,7 @@ def main():
     owned=root/f'measurements/object_tracks/depth_order_owned/{track}'
     owned_track=owned/'sam2_track.json'
     ownership_report=owned/'depth_order_ownership_report.json'
+    metric_eligibility=owned/'native_depth_metric_eligibility.json'
     visible=root/f'measurements/object_geometry/visible_geometry/{object_id}'
     proposals=root/f'measurements/object_geometry/anchor_candidates/{object_id}'
     anchor_path=root/f'state/anchor_decisions/{object_id}.json'
@@ -90,9 +91,9 @@ def main():
             '--mano-bridge',base.parent/'v19_mano_bridge_from_hawor_world.npz',
             '--hawor-npz',root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz',
             '--output-dir',owned],
-            [owned_track,ownership_report])
+            [owned_track,ownership_report,metric_eligibility])
     elif a.phase in {'P09-propose','P09'}:
-        lineage.require(owned_track);lineage.require(ownership_report)
+        lineage.require(owned_track);lineage.require(ownership_report);lineage.require(metric_eligibility)
         if a.phase=='P09-propose':
             out=proposals;extra=['--propose-anchor-candidates-only','--anchor-candidate-count',12];inputs=[]
             outputs=[out/'anchor_candidate_proposals.json',out/'anchor_candidate_review.jpg']
@@ -102,10 +103,11 @@ def main():
             outputs=[out/'v19_visible_geometry_depth_fused_report.json',out/'annotations_v19_visible_geometry.json']
         run('build_v19_visible_geometry_from_sam2_depth.py',['--case',case,'--track-id',track,'--object-id',object_id,
             '--raw-frame-manifest',manifest,'--sam2-root',sam2,'--sam2-track-json',owned_track,
+            '--metric-eligibility-manifest',metric_eligibility,
             '--depth-npz',depth,'--output-dir',out,
             '--base-annotations',base,'--calibration-contract',calibration,'--depth-image-plane','source_rgb',
             '--mask-image-plane','sam2_mask','--object-plan',plan,'--preserve-source-index','--no-exclude-hand-bboxes',
-            *extra],outputs,[ownership_report,*inputs])
+            *extra],outputs,[ownership_report,metric_eligibility,*inputs])
     else:
         lineage.require(anchor_path);anchor=load(anchor_path)['selected_anchor_frame_idx']
         branch=root/f'state/physical_branch_decisions/{object_id}.json';lineage.require(branch)

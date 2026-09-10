@@ -43,7 +43,7 @@ def main():
         import rgb_scene_camera
         rgb_scene_camera._LINEAGE=lineage
         rgb_scene_camera.camera_stage(a,cfg,root);return
-    selection=load(root/'state/object_selection.json');obj=selection['object_id'];case=selection['case'];anchor=selection['anchor_frame'];track=selection.get('track_id',obj)
+    selection=load(lineage.require(root/'state/object_selection.json'));obj=selection['object_id'];case=selection['case'];anchor=selection['anchor_frame'];track=selection.get('track_id',obj)
     import re
     if not all(isinstance(v,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',v) for v in (obj,case,track)):raise ValueError('unsafe case/object/track')
     plan=load(lineage.require(root/'measurements/object_candidates/object_plan_agent.json'))
