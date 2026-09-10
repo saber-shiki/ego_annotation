@@ -40,6 +40,23 @@ def terminal_evidence(fixture, path):
     })
 
 
+def second_terminal_evidence(fixture, prior_bundle, event_bytes, path):
+    manifest = load(prior_bundle / "runtime/bundle_manifest.json")
+    return write(path, {
+        "workflow": str(uuid.uuid4()), "actor": str(uuid.uuid4()),
+        "actor_state": "complete", "process_terminal": "observed",
+        "task_result": "blocked before P09 producer",
+        "error": "P09 ancestry validation failure",
+        "run_root": str(fixture.root), "runtime_cwd": str(prior_bundle),
+        "completed_phases": ["P09_DEPTH_ORDER", "P09-propose"],
+        "recovery_event_bytes": len(event_bytes),
+        "recovery_event_sha256": hashlib.sha256(event_bytes).hexdigest(),
+        "P09_producer_executed": False, "SAM3D_executed": False,
+        "owned_stage_processes": [],
+        "source_state": {"head": manifest.get("source_commit"), "status": ""},
+    })
+
+
 class RetainedInputAliasTests(unittest.TestCase):
     def fixture(self):
         td = tempfile.TemporaryDirectory(); self.addCleanup(td.cleanup)
@@ -145,6 +162,72 @@ class ValidatorRevisionTests(unittest.TestCase):
         with (f.root / recovery.RECOVERY_EVENTS).open("a") as handle:
             handle.write(json.dumps(event) + "\n")
         self.assertEqual(RunLineage(f.root, revised).require(proposal), proposal)
+
+    def test_historical_first_event_prefix_ignores_valid_later_anchor_but_full_validation_binds_it(self):
+        f, depth_output, _ = self.fixture(); revised = self.revised_bundle(f)
+        self.prepare_revision(f, revised)
+        lineage = RunLineage(f.root, revised, revised / "runtime/runtime_config.json")
+        proposal = write(f.root / "measurements/object_geometry/anchor_candidates/arbitrary_object/anchor_candidate_proposals.json",
+                         {"object_id": "arbitrary_object", "review_candidates": [{"frame_idx": 145}],
+                          "outputs": {"anchor_candidate_review": str(f.root / "measurements/object_geometry/anchor_candidates/arbitrary_object/anchor_candidate_review.jpg")}})
+        review = write(proposal.with_name("anchor_candidate_review.jpg"), b"review pixels")
+        event = {"phase": "P09-propose", "returncode": 0, "outputs": [str(proposal), str(review)],
+                 "input_contract_sha256": sha(f.contract_path)}
+        lineage.success(event, {str(depth_output): sha(depth_output)}, [proposal, review], [])
+        with (f.root / recovery.RECOVERY_EVENTS).open("a") as handle:
+            handle.write(json.dumps(event) + "\n")
+        anchor = write(f.root / "state/anchor_decisions/arbitrary_object.json", {
+            "object_id": "arbitrary_object", "selected_anchor_frame_idx": 145,
+            "visual_judgment_provenance": {
+                "kind": "current_run_visual_judgment", "phase": "P09_anchor",
+                "run_identity": recovery.run_identity(f.contract),
+                "evidence_sha256": {str(proposal): sha(proposal), str(review): sha(review)}}})
+        context = recovery.verify_validator_revision(f.root, revised)
+        self.assertEqual(context["validator_revision"]["resume_phase"], "P09-propose")
+        bad = load(anchor)
+        bad["visual_judgment_provenance"]["evidence_sha256"][str(proposal)] = "0" * 64
+        write(anchor, bad)
+        with self.assertRaisesRegex(ValueError, "evidence changed|wrong producer/hash"):
+            recovery.verify_validator_revision(f.root, revised)
+
+    def test_second_fixed_revision_preserves_two_receipts_and_anchor_then_resumes_p09(self):
+        f, depth_output, _ = self.fixture(); first = self.revised_bundle(f)
+        self.prepare_revision(f, first)
+        lineage = RunLineage(f.root, first, first / "runtime/runtime_config.json")
+        proposal = write(f.root / "measurements/object_geometry/anchor_candidates/arbitrary_object/anchor_candidate_proposals.json",
+                         {"object_id": "arbitrary_object", "review_candidates": [{"frame_idx": 145}],
+                          "outputs": {"anchor_candidate_review": str(f.root / "measurements/object_geometry/anchor_candidates/arbitrary_object/anchor_candidate_review.jpg")}})
+        review = write(proposal.with_name("anchor_candidate_review.jpg"), b"review pixels")
+        event = {"phase": "P09-propose", "returncode": 0, "outputs": [str(proposal), str(review)],
+                 "input_contract_sha256": sha(f.contract_path)}
+        lineage.success(event, {str(depth_output): sha(depth_output)}, [proposal, review], [])
+        with (f.root / recovery.RECOVERY_EVENTS).open("a") as handle:
+            handle.write(json.dumps(event) + "\n")
+        anchor = write(f.root / "state/anchor_decisions/arbitrary_object.json", {
+            "object_id": "arbitrary_object", "selected_anchor_frame_idx": 145,
+            "visual_judgment_provenance": {
+                "kind": "current_run_visual_judgment", "phase": "P09_anchor",
+                "run_identity": recovery.run_identity(f.contract),
+                "evidence_sha256": {str(proposal): sha(proposal), str(review): sha(review)}}})
+        recovery.verify_validator_revision(f.root, first)
+
+        second = f.base / "second_revised_bundle"
+        shutil.copytree(first, second)
+        (second / "runtime/bundle_manifest.json").unlink()
+        write(second / "scripts/rgb_scene_recovery.py", {"validator": "second fixed revision"})
+        write(second / "scripts/rgb_scene_lineage_base.py", {"stamp": "second fixed revision"})
+        config = load(second / "runtime/runtime_config.json")
+        config["copied_root"] = str(second / "asset")
+        write(second / "runtime/runtime_config.json", config)
+        f._manifest(second)
+        event_bytes = (f.root / recovery.RECOVERY_EVENTS).read_bytes()
+        terminal = second_terminal_evidence(f, first, event_bytes, f.base / "terminal_second.json")
+        revision_path = recovery.prepare_validator_revision(f.root, first, second, terminal, process_rows=[])
+        context = recovery.verify_validator_revision(f.root, second)
+        self.assertEqual(context["validator_revision"]["resume_phase"], "P09")
+        self.assertEqual(len(context["validator_revision"]["accepted_prior_receipts"]), 2)
+        self.assertEqual(context["validator_revision"]["anchor_decision_sha256"], sha(anchor))
+        self.assertTrue(revision_path.with_suffix(".native_handoff.md").is_file())
 
     def test_changed_prefix_or_accepted_output_is_rejected(self):
         f, output, _ = self.fixture(); revised = self.revised_bundle(f); self.prepare_revision(f, revised)
