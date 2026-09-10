@@ -109,12 +109,9 @@ def build(args: argparse.Namespace) -> tuple[dict, dict]:
     ranked = []
     for idx in sorted(raw, key=lambda value: float(annotations[value]["time_s"])):
         ann, track_row = annotations[idx], track[idx]
+        # Always use the RGB from this exact timeline row. A reused native
+        # candidate is a single-frame input, never a replacement for the video.
         image_path = rgb_path(raw[idx], root)
-        if candidate_root is not None:
-            candidate_image = candidate_root.resolve() / "state" / "native_reuse_inputs" / ("rgb" + image_path.suffix.lower())
-            if not candidate_image.is_file():
-                raise ValueError("candidate RGB materialization missing")
-            image_path = candidate_image
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError(f"unreadable RGB at frame {idx}")

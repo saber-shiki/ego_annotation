@@ -35,7 +35,7 @@ class SceneLineage(RunLineage):
     def __init__(self, root, bundle, runtime_config=None, *, asset_role=None, candidate=None):
         self.candidate = candidate
         self.candidate_value = load_candidate(candidate)[1] if candidate is not None else None
-        self.candidate_contract_sha256 = (self.candidate_value or {}).get('candidate_contract_sha256')
+        self.candidate_contract_sha256 = sha(candidate.contract_path) if candidate is not None else None
         super().__init__(root, bundle, runtime_config, asset_role=asset_role,
                          candidate_context=candidate is not None)
         if candidate is not None:
@@ -43,10 +43,12 @@ class SceneLineage(RunLineage):
             if not context_path.is_file() or sha(context_path)!=self.candidate_value.get('source_context_sha256'):
                 raise ValueError('verified source context changed')
             context=load(context_path)
-            source_events=Path(context.get('source_events',''))
-            if source_events.is_file() and context.get('source_events_sha256')!=sha(source_events):
-                raise ValueError('verified source event snapshot changed')
-            if source_events.is_file():
+            streams=context.get('source_event_streams') or [
+                {'path':context.get('source_events',''),'sha256':context.get('source_events_sha256')}]
+            for stream in streams:
+                source_events=Path(stream['path'])
+                if not source_events.is_file() or stream['sha256']!=sha(source_events):
+                    raise ValueError('verified source event snapshot changed')
                 for line in source_events.read_text().splitlines():
                     event=json.loads(line)
                     if (event.get('returncode')==0 and 'error' not in event
@@ -200,7 +202,9 @@ class SceneLineage(RunLineage):
                 raise ValueError('imported native event belongs to another candidate')
             for name,expected in event.get('input_sha256',{}).items():
                 source_path=Path(name)
-                checked=self.checked_digest(source_path) if not source_path.resolve().is_relative_to(self.root) else self.require(source_path)
+                if source_path.resolve().is_relative_to(self.root):
+                    self.require(source_path)
+                checked=self.checked_digest(source_path)
                 if checked != expected:
                     raise ValueError('imported native source changed: '+name)
             if self.checked_digest(Path(value)) != event['output_sha256'][str(Path(value).resolve())]:

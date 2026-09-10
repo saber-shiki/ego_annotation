@@ -131,8 +131,13 @@ def main():
         image=lineage.require(mask['raw_rgb_path']);maskpath=lineage.require(mask['appearance_mask_path'])
         name=f'{case}_{obj}_frame_{idx}'
         if native_reuse:
-            qc=native/'imported/qc_sam3d_objects_mesh_v7.json'
-            lineage.require(qc)
+            imported_qc=native/'imported/qc_sam3d_objects_mesh_v7.json'
+            lineage.require(imported_qc)
+            qc=native/'appearance_binding/qc_sam3d_objects_mesh_v7.json'
+            run('scene_native_appearance',[py,script('bind_rgb_scene_reused_appearance.py'),
+                '--candidate-context',candidate.contract_path,'--source-qc',imported_qc,
+                '--image',image,'--mask',maskpath,'--output',qc],[qc],
+                extra=[appearance,visual_decision,posterior,image,maskpath])
         else:
             argv=[interpreter(cfg['sam3d_python']),script('remote_run_sam3d_objects_mesh_v7.py'),'--repo',cfg['sam3d_repo'],'--config',cfg['sam3d_config'],'--moge-checkpoint',cfg['sam3d_moge_checkpoint'],'--dinov2-repo',cfg['sam3d_dinov2_repo'],'--dinov2-checkpoint',cfg['sam3d_dinov2_checkpoint'],'--case',f'{name}|{image}|{maskpath}|42','--output-dir',native]
             run('scene_native_appearance',argv,[native/name/'qc_sam3d_objects_mesh_v7.json'],True,extra=[appearance,visual_decision,posterior,image,maskpath],environment={**runtime_environment(cfg,a.gpu),**cfg['sam3d_environment']})
@@ -143,7 +148,7 @@ def main():
         if candidate_value is not None and idx != candidate_value['selected_frame_idx']:
             raise ValueError('candidate shape must consume selected candidate frame')
         if native_reuse:
-            qc=native/'imported/qc_sam3d_objects_mesh_v7.json'
+            qc=native/'appearance_binding/qc_sam3d_objects_mesh_v7.json'
         else:
             qc=native/f'{case}_{obj}_frame_{idx}/qc_sam3d_objects_mesh_v7.json'
 

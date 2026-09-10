@@ -80,6 +80,10 @@ def prepare_candidate(run_root: Path, candidate_id: str, *, frame: int | None = 
     (paths.root/'logs').mkdir()
     object_id = proposal_value.get('object_id') or proposals[0].parent.name
     source_events = run_root/'logs/integration/events.jsonl'
+    source_event_paths = [source_events]
+    recovered_events = run_root/'logs/recovery/P09_DEPTH_ORDER/events.jsonl'
+    if recovered_events.is_file():
+        source_event_paths.append(recovered_events)
     source_bundle_manifest = run_root/'runtime/bundle_manifest.json'
     source_context = paths.path('state/verified_source_context.json')
     source_context.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +93,7 @@ def prepare_candidate(run_root: Path, candidate_id: str, *, frame: int | None = 
         'source_proposal':str(proposals[0]), 'source_proposal_sha256':sha(proposals[0]),
         'source_events':str(source_events),
         'source_events_sha256':sha(source_events) if source_events.is_file() else None,
+        'source_event_streams':[{'path':str(p),'sha256':sha(p)} for p in source_event_paths if p.is_file()],
         'source_bundle_manifest':str(source_bundle_manifest),
         'source_bundle_manifest_sha256':sha(source_bundle_manifest) if source_bundle_manifest.is_file() else source_contract.get('bundle_manifest_sha256'),
     }, indent=2)+'\n')
@@ -101,11 +106,9 @@ def prepare_candidate(run_root: Path, candidate_id: str, *, frame: int | None = 
              'source_native':str(Path(source_native).resolve()) if source_native else None,
              'source_identity':_identity(source_contract),
              'source_context_path':str(source_context),'source_context_sha256':sha(source_context),
-             'candidate_execution_identity':{'candidate_id':candidate_id,'candidate_contract_sha256':'pending',
+             'candidate_execution_identity':{'candidate_id':candidate_id,
                                              'source_bundle_manifest_sha256':source_contract['bundle_manifest_sha256']},
              'selection_requires_visual_confirmation':True}
-    paths.contract_path.write_text(json.dumps(value, indent=2)+'\n')
-    value['candidate_execution_identity']['candidate_contract_sha256']=sha(paths.contract_path)
     paths.contract_path.write_text(json.dumps(value, indent=2)+'\n')
     paths.events.write_text('')
     return value
@@ -214,6 +217,8 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
         raise ValueError('native model identity must include seed and model/config binding')
     names = ('mesh','native_pose_mesh_opencv_camera','native_pose_mesh_pytorch3d_camera','glb')
     if any(not isinstance(qc.get(k), str) for k in names): raise ValueError('complete native mesh receipt required')
+    if qc.get('gaussian'):
+        names += ('gaussian',)
     out = paths.path(f'measurements/scene_native/{candidate["object_id"]}/imported')
     if out.exists(): raise ValueError('native import is create-only')
     out.mkdir(parents=True)
@@ -228,7 +233,13 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
             raise ValueError('native output differs from execution receipt')
         dst = out / src.name
         _copy_receipt_asset(src, dst); copied[key] = str(dst)
-    mapped = copy.deepcopy(qc)
+    path_mapping = {str(Path(qc[key]).resolve()): copied[key] for key in names}
+    path_mapping.update({str(image):str(mapped_image), str(mask):str(mapped_mask)})
+    def remap(value):
+        if isinstance(value, dict): return {k:remap(v) for k,v in value.items()}
+        if isinstance(value, list): return [remap(v) for v in value]
+        return path_mapping.get(value,value) if isinstance(value,str) else value
+    mapped = remap(copy.deepcopy(qc))
     mapped.update(image=str(mapped_image), mask=str(mapped_mask), **copied)
     failure_source=execution.parent/'failure.json'
     failure_copy=None
@@ -254,7 +265,7 @@ def import_native_receipt(paths: CandidatePaths, source_qc: Path, execution_rece
     imported_files=[receipt,destination,mapped_image,mapped_mask,*map(Path,copied.values())]
     if failure_copy: imported_files.append(failure_copy)
     append_event(paths, {'phase':'native_import','candidate_id':paths.candidate_id,
-                         'candidate_contract_sha256':candidate.get('candidate_execution_identity',{}).get('candidate_contract_sha256'),
+                         'candidate_contract_sha256':sha(paths.contract_path),
                          'input_contract_sha256':sha(paths.contract_path),
                          'input_sha256':{str(p):sha(p) for p in (source_qc,execution,control_path,image,mask)},
                          'returncode':0,
