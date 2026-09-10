@@ -10,12 +10,12 @@ import importlib.util
 import json
 import math
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
 from bind_v19_completion_anchor import normalize_completion, read_report
 from rgb_scene_runtime import SceneLineage as RunLineage, probe
+from rgb_scene_process import run_owned, OwnedProcessFailure, RECONSTRUCTION_BUDGET_S
 from v20_prediction_contracts import assert_prediction_only
 from v19_runtime_contracts import validate_references, runtime_environment, execution_target
 
@@ -34,6 +34,18 @@ def inside(path, root):
 def validate_clip_references(value, root):
     """Check prediction assets before legacy producers can copy an outside file."""
     validate_references(value, root, must_exist=True)
+
+
+def recorded_step(key, argv, *, out, steps, repo, environment, timeout):
+    """Persist the precise inner outcome, including cancellation and cleanup."""
+    try:
+        record=run_owned(key,argv,cwd=repo,env=environment,log=out/f'{key}.log',timeout=timeout)
+    except OwnedProcessFailure as exc:
+        steps.append(exc.record)
+        (out/'execution.json').write_text(json.dumps({'steps':steps,'source_artifacts_mutated':False},indent=2)+'\n')
+        raise
+    steps.append(record)
+    (out/'execution.json').write_text(json.dumps({'steps':steps,'source_artifacts_mutated':False},indent=2)+'\n')
 
 
 def main():
@@ -58,22 +70,15 @@ def main():
     for k in required:
         if not Path(config[k]).exists():raise ValueError(f'model asset missing: {k}')
     out.mkdir(parents=True);steps=[]
+    deadline=time.monotonic()+RECONSTRUCTION_BUDGET_S
     def run(key,argv):
-        started=time.monotonic();log=out/f'{key}.log'
         overlay=config.get('sam3d_environment',{}) if key=='P12_SAM3D' else {}
         if not isinstance(overlay,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in overlay.items()):
             raise ValueError('sam3d_environment must contain string environment values')
         environment={**runtime_environment(config,a.gpu),**overlay,'CUDA_VISIBLE_DEVICES':str(a.gpu)}
-        try:
-            if key == 'P12_SAM3D': probe(config,a.gpu,int(config.get('sam3d_min_free_mib',12000)))
-            with log.open('x') as f:done=subprocess.run(list(map(str,argv)),cwd=repo,stdout=f,stderr=subprocess.STDOUT,env=environment,timeout=1200)
-        except OSError as exc:
-            steps.append({'phase':key,'argv':list(map(str,argv)),'error':str(exc),'log':str(log)})
-            (out/'execution.json').write_text(json.dumps({'steps':steps},indent=2)+'\n')
-            raise
-        steps.append({'phase':key,'argv':list(map(str,argv)),'returncode':done.returncode,'elapsed_s':time.monotonic()-started,'log':str(log)})
-        (out/'execution.json').write_text(json.dumps({'steps':steps,'source_artifacts_mutated':False},indent=2)+'\n')
-        if done.returncode:raise RuntimeError(f'{key} failed: {log}')
+        if key == 'P12_SAM3D': probe(config,a.gpu,int(config.get('sam3d_min_free_mib',12000)))
+        recorded_step(key,argv,out=out,steps=steps,repo=repo,environment=environment,
+                      timeout=max(0,deadline-time.monotonic()))
     # Preflight validates model placement; this also checks live availability.
     gpu_record=probe(config,a.gpu,int(config.get('sam3d_min_free_mib',12000)))
     run('P11_native_inputs',[python,exp/'build_p11_dual_geometry_inputs.py','--evidence-report',evidence,'--output-dir',out/'native_inputs'])

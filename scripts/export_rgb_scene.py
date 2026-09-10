@@ -8,7 +8,8 @@ from rgb_scene_pose_io import RKEY,TKEY,indexed,pose_from_values
 from bind_rgb_scene_shape import validate_posterior
 from v19_runtime_contracts import load,sha
 
-VISIBILITY={'visible','partially_visible','occluded','out_of_frame','unresolved'}
+from rgb_scene_visibility import validate_visibility, apply_display_visibility, POLICY
+from rgb_scene_identity import InputIdentity, input_identity
 
 
 def mesh(vertices,faces):
@@ -32,7 +33,8 @@ def timeline(z):
         pose_from_values(t[:3,:3],t[:3,3])
         if not np.allclose(t[3],[0,0,0,1]):raise ValueError('invalid camera homogeneous row')
     if np.asarray(z['object_rotation']).shape!=(n,3,3) or np.asarray(z['object_translation_world']).shape!=(n,3):raise ValueError('object pose length mismatch')
-    valid=np.asarray(z.get('object_valid',np.ones(n,dtype=bool)))
+    if 'object_valid' not in z:raise ValueError('explicit object_valid required from standalone fit')
+    valid=np.asarray(z['object_valid'])
     if valid.shape!=(n,) or valid.dtype!=bool:raise ValueError('object validity must be boolean')
     for i in np.flatnonzero(valid):pose_from_values(z['object_rotation'][i],z['object_translation_world'][i])
     for side in ('left','right'):
@@ -43,20 +45,22 @@ def timeline(z):
     return ids,times,order,T,K,size,valid
 
 
-def uncertainty(value=None):
-    value=value or {}
-    state=value.get('state','unresolved')
-    if state not in VISIBILITY:raise ValueError('invalid visibility state')
-    return {'state':state,'occluder':value.get('occluder'),'uncertainty':value.get('uncertainty','not resolved by current image/depth/temporal evidence')}
-
-
-def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibration=None,visibility=None,provenance=None):
+def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibration=None,visibility=None,provenance=None,identity=None):
     """All backing arrays are embedded in RRD or numeric JSON, never NPZ/PLY refs."""
     for value in (case,object_id,track_id):
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',value):raise ValueError('unsafe scene identity')
     if binding.get('object_id')!=object_id or binding.get('schema')!='rgb_scene_visual_refined_binding_v1':raise ValueError('typed selected-object binding required')
     if output.exists():raise ValueError('final directory already exists')
     ids,times,order,T,K,size,valid=timeline(z)
+    if not isinstance(identity,InputIdentity) or identity.case!=case or binding.get('case',case)!=case:
+        raise ValueError('typed immutable input identity/case mismatch')
+    if identity.document()['source_timing']['frame_count'] != len(ids):
+        raise ValueError('input identity/full timeline mismatch')
+    visibility=validate_visibility(visibility,ids,object_id)
+    expected=apply_display_visibility(z,{'object_id':object_id,'frames':[{'frame_idx':i,'visibility':v} for i,v in visibility.items()]},object_id)
+    for key in ('object_valid','object_pose_valid','left_display_valid','right_display_valid','display_visibility_policy'):
+        if key not in z or not np.array_equal(z[key],expected[key]):
+            raise ValueError('fitted display validity/policy differs from judgment')
     poses=indexed(binding['pose_rows']);source=indexed(binding['source_pose_rows'])
     if set(poses)!=set(ids.tolist()):raise ValueError('binding/full timeline mismatch')
     for i,idx in enumerate(ids):
@@ -71,6 +75,7 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
     recording_id=str(uuid.uuid4())
     recording=rr.RecordingStream('rgb_scene_annotation',recording_id=recording_id)
     recording.save(str(staging/'world.rrd'))
+    recording.log('/scene/input_identity',rr.TextDocument(json.dumps(identity.document(),sort_keys=True)),static=True)
     recording.log('/world',rr.ViewCoordinates.RDF,static=True)
     recording.log('/scene/semantics',rr.TextDocument('Complete native reconstructed object and MANO surfaces. Camera-origin hand similarity and unsigned triangle proximity are visual hypotheses, not measured contact or signed collision authority.'),static=True)
     objpath='/world/objects/'+object_id
@@ -105,18 +110,18 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
                 recording.log('/world/camera/image',rr.Image(rgb).compress(jpeg_quality=90))
             handstates={}
             for si,side in enumerate(('left','right')):
-                hv=bool(z[side+'_valid'][i]);path=handpaths[side]
+                hv=bool(z[side+'_display_valid'][i]);path=handpaths[side]
                 if hv:recording.log(path,rr.Mesh3D(vertex_positions=z[side+'_vertices_world'][i],triangle_indices=z[side+'_faces'],albedo_factor=[235,183,158,255]))
                 else:recording.log(path,rr.Clear(recursive=True))
                 params={}
-                if hv:
+                if bool(z[side+'_valid'][i]):
                     for key in ('hand_articulation','hand_root','hand_translation_camera','hand_log_scale'):
                         if key in z:params[key]=np.asarray(z[key][i,si]).tolist()
                     for suffix in ('root_orient_axis_angle','hand_pose_axis_angle','betas','trans_world_m'):
                         key=side+'_source_'+suffix
                         if key in z:params['source_'+suffix]=np.asarray(z[key][i]).tolist()
-                handstates[side]={'id':side,'surface_valid':hv,'surface':ref(path,['Mesh3D:vertex_positions','Mesh3D:triangle_indices']) if hv else None,
-                    'visibility':uncertainty((visibility or {}).get(idx,{}).get(side)),
+                handstates[side]={'id':side,'surface_valid':hv,'source_surface_valid':bool(z[side+'_valid'][i]),'surface':ref(path,['Mesh3D:vertex_positions','Mesh3D:triangle_indices']) if hv else None,
+                    'visibility':visibility[idx][side],
                     'parameters':params,'semantics':'MANO LBS with fixed beta; world wrist-root rotation, then camera-origin exp(log_scale) similarity and camera translation',
                     'uncertainty':'visual similarity changes metric depth/extent; occluded states are uncertain',
                     'interaction':str(z['interaction_states'][i,si]) if 'interaction_states' in z else 'unresolved'}
@@ -124,14 +129,16 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
                 'camera':{'T_world_camera':T[i].tolist(),'intrinsics_fx_fy_cx_cy':K[i].tolist(),'image_size_wh':size.tolist(),'entity':ref('/world/camera',['Transform3D']),'uncertainty':'prediction-side calibrated or estimated camera; see calibration provenance'},
                 'object':{'id':object_id,'track_id':track_id,'source_prior':source.get(idx),
                     'refined_graph_pose':{RKEY:poses[idx][RKEY],TKEY:poses[idx][TKEY]},
-                    'visual_fitted_pose':{RKEY:np.asarray(z['object_rotation'][i]).tolist(),TKEY:np.asarray(z['object_translation_world'][i]).tolist()} if valid[i] else None,
+                    'visual_fitted_pose':{RKEY:np.asarray(z['object_rotation'][i]).tolist(),TKEY:np.asarray(z['object_translation_world'][i]).tolist()} if z['object_pose_valid'][i] else None,
                     'geometry':ref(objpath,['Mesh3D:vertex_positions','Mesh3D:triangle_indices','Transform3D']) if valid[i] else None,
+                    'fitted_pose_valid':bool(z['object_pose_valid'][i]),'display_valid':bool(valid[i]),
                     'metric_observation':poses[idx].get('metric_observation',False),'uncertainty':poses[idx].get('uncertainty',1.),
-                    'visibility':uncertainty((visibility or {}).get(idx,{}).get('object'))},'hands':handstates})
+                    'visibility':visibility[idx]['object']},'hands':handstates})
         recording.flush()
     finally:
         recording.disconnect()
     document={'schema':'rgb_scene_annotation_v1','scene_id':case,'object_id':object_id,'track_id':track_id,
+        'input_identity':identity.document(),'display_visibility_policy':POLICY,
         'units':'meters','transform_convention':'column vectors; world_from_camera and world_from_object; left SO3 plus additive world translation',
         'canonical_gauge':binding['canonical_gauge'],
         'shape_provenance':binding.get('visual_mesh_receipt',{}),
@@ -182,8 +189,10 @@ def main():
     raw=indexed(load(root/'input/raw_frame_manifest/manifest.json')['frames'])
     calibration=load(root/'state/calibration/v19_camera_calibration_contract.json')
     judgment=load(root/f"state/agent_interaction_judgments/{binding['object_id']}.json")
-    visibility={int(f['frame_idx']):f.get('visibility',{}) for f in judgment.get('frames',[])}
+    identity=input_identity(root/'input/runtime_input_contract.json',root,Path(__file__).resolve().parents[1]/'runtime/bundle_manifest.json')
+    if selection.get('case')!=contract['case'] or selection.get('object_id')!=binding['object_id']:raise ValueError('runtime selection identity mismatch')
+    if fit.get('display_visibility',{}).get('judgment_sha256')!=sha(root/f"state/agent_interaction_judgments/{binding['object_id']}.json"):raise ValueError('fit visibility judgment changed')
     export(z,binding,contract['case'],binding['object_id'],selection.get('track_id',binding['object_id']),a.output_dir,
-           raw_frames=raw,calibration=calibration,visibility=visibility,provenance={'input_hashes':fit['input_hashes'],'replay_max_vertex_error_m':fit['zero_state_max_vertex_error_m']})
+           raw_frames=raw,calibration=calibration,visibility=judgment,identity=identity,provenance={'input_hashes':fit['input_hashes'],'replay_max_vertex_error_m':fit['zero_state_max_vertex_error_m']})
 
 if __name__=='__main__':main()
