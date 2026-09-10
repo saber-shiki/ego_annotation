@@ -13,7 +13,7 @@ STAGES=('frontend','camera','geometry','initial-pose','refined-pose','appearance
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stage',choices=STAGES,required=True)
-    p.add_argument('--phase',choices=('P01','P06','P07','P08','P09-propose','P09','P11'))
+    p.add_argument('--phase',choices=('P01','P06','P07','P08','P09_DEPTH_ORDER','P09-propose','P09','P11'))
     for n in ('run-root','runtime-config'):p.add_argument('--'+n,type=Path,required=True)
     p.add_argument('--gpu',type=int,required=True)
     p.add_argument('--resume-contract',type=Path)
@@ -76,7 +76,9 @@ def main():
         run('scene_refined_pose',[py,script('rgb_scene_pose_io.py'),'--annotations',ann,'--source-pose',p14,'--rgb-edges',rgb,'--rgb-report',rgb.with_suffix('.json'),'--object-id',obj,'--anchor',anchor,'--run-root',root,'--output',posterior],[posterior])
     elif a.stage=='appearance':
         sam2=root/f'measurements/object_tracks/sam2_owlv2_box_points/{track}/sam2/sam2_track.json'
-        run('scene_appearance',[py,script('build_v19_demo_visual_inputs.py'),'--run-root',root,'--object-id',obj,'--case-id',case,'--track-id',track,'--raw-frame-manifest',raw,'--annotations',ann,'--sam2-track',sam2,'--output-dir',appearance.parent],[appearance,appearance.with_name('anchor_decision.json')])
+        ownership=root/f'measurements/object_tracks/depth_order_owned/{track}/depth_order_ownership_report.json'
+        lineage.require(ownership)
+        run('scene_appearance',[py,script('rgb_scene_depth_order_appearance.py'),'--run-root',root,'--object-id',obj,'--case-id',case,'--track-id',track,'--raw-frame-manifest',raw,'--annotations',ann,'--raw-sam2-track',sam2,'--depth-order-report',ownership,'--output-dir',appearance.parent],[appearance,appearance.with_name('anchor_decision.json')],extra=[ownership,sam2])
     elif a.stage=='native-shape':
         lineage.require(visual_decision);lineage.require(appearance);lineage.require(posterior)
         chosen=load(visual_decision)

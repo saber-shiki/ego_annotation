@@ -7,7 +7,7 @@ from rgb_scene_runtime import run_command
 from rgb_scene_runtime import SceneLineage as RunLineage
 
 ROOT=Path(__file__).resolve().parents[1]
-PHASES=('P01','P06','P07','P08','P09-propose','P09','P11')
+PHASES=('P01','P06','P07','P08','P09_DEPTH_ORDER','P09-propose','P09','P11')
 
 
 def main():
@@ -19,7 +19,8 @@ def main():
     p.add_argument('--object-id')
     a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
     execution_target(cfg,a.gpu)
-    lineage=RunLineage(root,ROOT,a.runtime_config,asset_role=a.phase);contract=lineage.contract;case=contract['case']
+    asset_role='P09-propose' if a.phase=='P09_DEPTH_ORDER' else a.phase
+    lineage=RunLineage(root,ROOT,a.runtime_config,asset_role=asset_role);contract=lineage.contract;case=contract['case']
     python=interpreter(cfg['main_python']);env=runtime_environment(cfg,a.gpu)
     def run(script,args,outputs,extra=(),heavy=False,exe=python):
         run_command(a.phase,[exe,ROOT/'scripts'/script,*args],outputs,root=root,cwd=ROOT,env=env,
@@ -45,6 +46,9 @@ def main():
     calibration=root/'state/calibration/v19_camera_calibration_contract.json'
     base=root/'state/base_annotations/annotations_v19_base.json'
     depth=root/'state/calibration/depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
+    owned=root/f'measurements/object_tracks/depth_order_owned/{track}'
+    owned_track=owned/'sam2_track.json'
+    ownership_report=owned/'depth_order_ownership_report.json'
     visible=root/f'measurements/object_geometry/visible_geometry/{object_id}'
     proposals=root/f'measurements/object_geometry/anchor_candidates/{object_id}'
     anchor_path=root/f'state/anchor_decisions/{object_id}.json'
@@ -72,7 +76,18 @@ def main():
             '--hawor-npz',root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz',
             '--object-plan',plan,'--sam2-output-root',sam2,'--calibration-contract',calibration,
             '--output-dir',base.parent],[base,base.parent/'v19_mano_bridge_from_hawor_world.npz'])
+    elif a.phase=='P09_DEPTH_ORDER':
+        run('rgb_scene_depth_order.py',[
+            '--case',case,'--object-id',object_id,'--track-id',track,
+            '--base-annotations',base,
+            '--raw-sam2-track',sam2/track/'sam2/sam2_track.json',
+            '--depth-npz',depth,'--calibration-contract',calibration,
+            '--mano-bridge',base.parent/'v19_mano_bridge_from_hawor_world.npz',
+            '--hawor-npz',root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz',
+            '--output-dir',owned],
+            [owned_track,ownership_report])
     elif a.phase in {'P09-propose','P09'}:
+        lineage.require(owned_track);lineage.require(ownership_report)
         if a.phase=='P09-propose':
             out=proposals;extra=['--propose-anchor-candidates-only','--anchor-candidate-count',12];inputs=[]
             outputs=[out/'anchor_candidate_proposals.json',out/'anchor_candidate_review.jpg']
@@ -81,10 +96,11 @@ def main():
             out=visible;extra=['--anchor-frame',anchor,'--require-anchor-frame'];inputs=[anchor_path]
             outputs=[out/'v19_visible_geometry_depth_fused_report.json',out/'annotations_v19_visible_geometry.json']
         run('build_v19_visible_geometry_from_sam2_depth.py',['--case',case,'--track-id',track,'--object-id',object_id,
-            '--raw-frame-manifest',manifest,'--sam2-root',sam2,'--depth-npz',depth,'--output-dir',out,
+            '--raw-frame-manifest',manifest,'--sam2-root',sam2,'--sam2-track-json',owned_track,
+            '--depth-npz',depth,'--output-dir',out,
             '--base-annotations',base,'--calibration-contract',calibration,'--depth-image-plane','source_rgb',
-            '--mask-image-plane','sam2_mask','--object-plan',plan,'--preserve-source-index','--exclude-hand-regions',
-            '--hand-bbox-exclusion-pad-px',4,*extra],outputs,inputs)
+            '--mask-image-plane','sam2_mask','--object-plan',plan,'--preserve-source-index','--no-exclude-hand-bboxes',
+            *extra],outputs,[ownership_report,*inputs])
     else:
         lineage.require(anchor_path);anchor=load(anchor_path)['selected_anchor_frame_idx']
         branch=root/f'state/physical_branch_decisions/{object_id}.json';lineage.require(branch)
