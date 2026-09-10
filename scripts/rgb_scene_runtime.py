@@ -43,6 +43,9 @@ class SceneLineage(RunLineage):
             if not context_path.is_file() or sha(context_path)!=self.candidate_value.get('source_context_sha256'):
                 raise ValueError('verified source context changed')
             context=load(context_path)
+            # Explicit prepared inputs of this candidate, not model outputs.
+            self.raw[str(candidate.contract_path)] = sha(candidate.contract_path)
+            self.raw[str(context_path)] = self.candidate_value['source_context_sha256']
             streams=context.get('source_event_streams') or [
                 {'path':context.get('source_events',''),'sha256':context.get('source_events_sha256')}]
             for stream in streams:
@@ -301,7 +304,10 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
         event['elapsed_s']=time.monotonic()-start
         event['error'] = str(exc)
         recovery = getattr(lineage, 'recovery', None)
-        if recovery:
+        if lineage is not None and getattr(lineage,'candidate',None) is not None:
+            blockers = lineage.candidate.path('state/runtime_blockers')
+            failure_path = blockers / f'{key}.json'
+        elif recovery:
             blockers = root / 'state/runtime_recovery/P09_DEPTH_ORDER'
             failure_path = blockers / 'failure.json'
         else:
@@ -311,7 +317,7 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
         blockers.mkdir(parents=True, exist_ok=True)
         # Recovery failure is create-only and cannot replace the migration journal,
         # retained old prefix, stop evidence, or original integration blocker/logs.
-        with failure_path.open('x' if recovery else 'w') as handle:
+        with failure_path.open('x' if recovery or (lineage is not None and getattr(lineage,'candidate',None) is not None) else 'w') as handle:
             handle.write(json.dumps({
                 **event, 'blocked_state_variable': key, 'next_required_repair': 'repair failed command/input before a new run',
             }, indent=2) + '\n')
