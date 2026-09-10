@@ -168,14 +168,20 @@ def validate_transition(old, new, old_config, new_config, old_bundle, new_bundle
     return sorted(changed)
 
 
-def validate_validator_transition(old, new, old_config, new_config, old_bundle, new_bundle):
+def validate_validator_transition(old, new, old_config, new_config, old_bundle, new_bundle,
+                                  *, require_lineage_change=True):
     """Permit only the fixed validator deployment revision after P09 depth order."""
     changed = {name for name in set(old["files"]) | set(new["files"])
                if old["files"].get(name) != new["files"].get(name)}
     unexpected = changed - ALLOWED_VALIDATOR_REVISION_FILES
     if unexpected:
         raise ValueError("validator revision changed producer code/assets: " + ", ".join(sorted(unexpected)))
-    required = {"scripts/rgb_scene_recovery.py", "scripts/rgb_scene_lineage_base.py"}
+    required = {"scripts/rgb_scene_recovery.py"}
+    if require_lineage_change:
+        required.add("scripts/rgb_scene_lineage_base.py")
+    elif ("scripts/rgb_scene_lineage_base.py" not in old["files"]
+            or "scripts/rgb_scene_lineage_base.py" not in new["files"]):
+        raise ValueError("second validator revision requires existing lineage stamping")
     if not required <= changed:
         raise ValueError("validator revision is missing validator/lineage changes")
     old_assets = dict(old.get("external_assets", {}))
@@ -907,7 +913,7 @@ def _validate_second_validator_revision(root, bundle, manifest, contract, recove
             raise ValueError("second validator revision identity mismatch: " + key)
     changed = validate_validator_transition(prior_manifest, manifest,
         load(prior_bundle / "runtime/runtime_config.json"), load(bundle / "runtime/runtime_config.json"),
-        prior_bundle, bundle)
+        prior_bundle, bundle, require_lineage_change=False)
     if revision.get("changed_bundle_files") != changed:
         raise ValueError("second validator revision bundle change set differs")
     terminal_identity = _validate_second_validator_terminal_evidence(
@@ -929,7 +935,7 @@ def _prepare_second_validator_revision(root, prior_bundle, new_bundle, terminal_
     manifest = verify_bundle(new_bundle)
     changed = validate_validator_transition(prior_manifest, manifest,
         load(prior_bundle / "runtime/runtime_config.json"), load(new_bundle / "runtime/runtime_config.json"),
-        prior_bundle, new_bundle)
+        prior_bundle, new_bundle, require_lineage_change=False)
     events_path = in_run(root / RECOVERY_EVENTS, root)
     events = events_path.read_bytes()
     if not events.endswith(b"\n"):

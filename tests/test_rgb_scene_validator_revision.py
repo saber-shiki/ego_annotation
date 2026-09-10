@@ -215,7 +215,10 @@ class ValidatorRevisionTests(unittest.TestCase):
         shutil.copytree(first, second)
         (second / "runtime/bundle_manifest.json").unlink()
         write(second / "scripts/rgb_scene_recovery.py", {"validator": "second fixed revision"})
-        write(second / "scripts/rgb_scene_lineage_base.py", {"stamp": "second fixed revision"})
+        # Regression: the actual scope fix does not change existing receipt
+        # stamping. Do not require an unrelated lineage edit for a new bundle.
+        self.assertEqual(sha(second / "scripts/rgb_scene_lineage_base.py"),
+                         sha(first / "scripts/rgb_scene_lineage_base.py"))
         config = load(second / "runtime/runtime_config.json")
         config["copied_root"] = str(second / "asset")
         write(second / "runtime/runtime_config.json", config)
