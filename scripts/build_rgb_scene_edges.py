@@ -154,9 +154,32 @@ def rgb_source_eligibility(frame: dict[str, Any], object_id: str, poses: dict) -
     return None
 
 
+def load_p09_metric_eligibility(adapter: dict[str, Any], depth_path: Path,
+                               depth_ids: np.ndarray, depths: np.ndarray):
+    """Use the same recorded per-pixel eligibility consumer as P09."""
+    inputs = adapter.get('inputs', {})
+    recorded = inputs.get('metric_eligibility_manifest')
+    enabled = adapter.get('parameters', {}).get('native_depth_metric_eligibility_enabled', False)
+    if not enabled:
+        if recorded:
+            raise ValueError('P09 eligibility input conflicts with disabled parameter')
+        return None
+    if not recorded or sha256_file(Path(recorded)) != inputs.get('metric_eligibility_manifest_sha256'):
+        raise ValueError('P09 metric eligibility manifest missing or changed')
+    if Path(inputs['depth_npz']).resolve() != depth_path.resolve():
+        raise ValueError('RGB depth differs from P09 eligibility depth')
+    from rgb_scene_metric_eligibility import MetricEligibility
+    return MetricEligibility(
+        Path(recorded), case=adapter['case'], object_id=adapter['object_id'],
+        track_id=adapter['track_id'], sam2_track=Path(inputs['sam2_track']),
+        depth_npz=depth_path, base_annotations=Path(inputs['base_annotations']),
+        calibration_contract=Path(inputs['calibration_contract']),
+        frame_to_depth_i={int(frame): i for i, frame in enumerate(depth_ids)}, depth=depths)
+
+
 def reproduce_source_depth_support(obj: dict[str, Any], mask: np.ndarray, depth: np.ndarray,
                                    confidence: np.ndarray, intrinsics: np.ndarray,
-                                   parameters: dict[str, Any]) -> np.ndarray:
+                                   parameters: dict[str, Any], metric_eligibility=None) -> np.ndarray:
     """Replay P09's exact retained raster, not a depth interval or sampled proxy."""
     from build_v19_visible_geometry_from_sam2_depth import robust_first_surface_depth_ownership
     geometry = obj["visible_geometry_candidate"]
@@ -170,6 +193,24 @@ def reproduce_source_depth_support(obj: dict[str, Any], mask: np.ndarray, depth:
         raise RuntimeError("P09 mask/depth affine is not the declared half-pixel resize")
     owned = cv2.resize(mask, depth.shape[::-1], interpolation=cv2.INTER_NEAREST_EXACT) > 0
     valid = owned & np.isfinite(depth) & (depth >= parameters["min_depth_m"]) & (depth <= parameters["max_depth_m"])
+    if parameters.get('native_depth_metric_eligibility_enabled') or geometry.get('native_depth_metric_eligibility'):
+        if metric_eligibility is None:
+            raise ValueError('P09 metric eligibility is required for RGB support replay')
+        binding = geometry['native_depth_metric_eligibility']
+        if Path(binding['manifest']).resolve() != metric_eligibility.path:
+            raise ValueError('RGB/P09 metric eligibility identity differs')
+        source_mask = Path(geometry['source_mask_path']).resolve()
+        source_pixels = cv2.imread(str(source_mask), cv2.IMREAD_GRAYSCALE)
+        if source_pixels is None or not np.array_equal(source_pixels > 0, mask > 0):
+            raise ValueError('P09 emitted mask differs from its eligibility input')
+        fx, fy, cx, cy = np.asarray(intrinsics, dtype=float).reshape(4)
+        eligible, checked = metric_eligibility.frame(
+            int(geometry['frame_idx']), owned_mask_path=source_mask,
+            depth_shape=depth.shape, A_depth_from_mask=affine,
+            K_depth=np.array([[fx,0,cx],[0,fy,cy],[0,0,1.]],dtype=float))
+        if Path(checked['raster']).resolve() != Path(binding['raster']).resolve():
+            raise ValueError('RGB/P09 metric eligibility raster differs')
+        valid &= eligible
     names = ("mad_sigma", "min_half_width_m", "min_retained_fraction", "fail_raw_to_robust_extent_ratio",
              "confidence_seed_percentile", "local_depth_step_max_m", "max_removed_distance_inside_mask_px",
              "max_confidence_flagged_interior_fraction", "min_interior_confidence_flagged_fraction",
@@ -544,6 +585,8 @@ def main() -> None:
     adapter = load_json(adapter_path)
     assert_prediction_only(adapter, label="RGB P09 retained depth parameters", object_id=args.object_id)
     parameters = adapter["parameters"]
+    metric_eligibility = load_p09_metric_eligibility(
+        adapter, args.depth_npz.expanduser().resolve(), depth_ids, depths)
     max_gap = args.max_bracketing_source_gap
     if max_gap is None:
         max_gap = int(args.keyframe_interval) * int(args.keyframe_neighbor_span)
@@ -559,7 +602,8 @@ def main() -> None:
             continue
         pos = depth_pos[idx]
         source_support_by_frame[idx] = reproduce_source_depth_support(
-            obj, mask, depths[pos], confidences[pos], depth_intrinsics[pos], parameters)
+            obj, mask, depths[pos], confidences[pos], depth_intrinsics[pos], parameters,
+            metric_eligibility=metric_eligibility)
     if not source_support_by_frame:
         raise RuntimeError("no reproducible P09 RGB source/diagnostic anchor before feature extraction")
 
@@ -660,6 +704,10 @@ def main() -> None:
             "initial_pose_report": sha256_file(args.initial_pose_report),
         },
     }
+    if metric_eligibility is not None:
+        metadata['metric_eligibility_manifest'] = str(metric_eligibility.path)
+        metadata['input_sha256']['metric_eligibility_manifest'] = sha256_file(metric_eligibility.path)
+        metadata['source_metric_support_policy'] = 'exact_P09_eligibility_intersection_then_robust_depth_replay'
     report = {
         **metadata,
         "frame_start": int(args.frame_start),
