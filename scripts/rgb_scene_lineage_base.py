@@ -229,4 +229,6 @@ class RunLineage:
         if getattr(self,'recovery',None) is not None:
             event.update(execution_bundle_manifest_sha256=self.recovery['execution_bundle_sha256'],
                          recovery_contract_sha256=self.recovery['contract_sha256'])
+            if self.recovery.get('validator_revision_sha256') is not None:
+                event['validator_revision_sha256']=self.recovery['validator_revision_sha256']
         for path in event['output_sha256']:self.records[path]=event

@@ -28,6 +28,8 @@ A launch with `mode: p08_depth_order_recovery` supplies the already-applied abso
 
 The only allowed recovery commands, in order with the same decision/inspection pauses described below, are:
 
+A fixed validator-only continuation is the sole exception to starting with `P09_DEPTH_ORDER`. Its launch supplies `validator_revision_contract` at `state/runtime_recovery/P09_DEPTH_ORDER/validator_revisions/{NEW_BUNDLE_MANIFEST_SHA}.json` and a new handoff path distinct from the immutable old `native_recovery_handoff.md`. The runtime validator independently resolves and verifies that sidecar, the terminal failed-actor snapshot, exact one-event recovery prefix, accepted P09_DEPTH_ORDER receipt/outputs/ancestors, old and new bundle identities, and validator-only bundle diff. Start the command list at `P09-propose`; do not rerun P09_DEPTH_ORDER and do not resume the old actor. All new receipts are stamped with the new bundle, original recovery contract, and validator revision SHA.
+
 ```
 "{PYTHON}" scripts/run_rgb_scene_stage.py --stage frontend --phase P09_DEPTH_ORDER --run-root "{RUN}" --runtime-config runtime/runtime_config.json --gpu {GPU} --recovery-contract "{RUN}/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json"
 "{PYTHON}" scripts/run_rgb_scene_stage.py --stage frontend --phase P09-propose --run-root "{RUN}" --runtime-config runtime/runtime_config.json --gpu {GPU} --recovery-contract "{RUN}/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json"

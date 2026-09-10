@@ -191,6 +191,10 @@ def main():
     for n in ('package-dir','run-root','target-bundle'):vr.add_argument('--'+n,type=Path,required=True)
     va=sub.add_parser('verify-applied-recovery',help='verify completed archive/lineage state and absence of owned processes')
     for n in ('run-root','target-bundle'):va.add_argument('--'+n,type=Path,required=True)
+    pv=sub.add_parser('prepare-validator-revision',help='install create-only validator continuation after exact P09 depth-order receipt')
+    for n in ('run-root','prior-bundle','new-bundle','terminal-actor-evidence'):pv.add_argument('--'+n,type=Path,required=True)
+    vv=sub.add_parser('verify-validator-revision',help='verify fixed validator-only continuation and absence of owned processes')
+    for n in ('run-root','new-bundle'):vv.add_argument('--'+n,type=Path,required=True)
     ar=sub.add_parser('apply-recovery',help='archive the bounded invalid suffix and install the recovery contract')
     ar.add_argument('--package-dir',type=Path,required=True)
     a=p.parse_args()
@@ -198,14 +202,26 @@ def main():
     elif a.command=='prepare-run':value=prepare_run(a.bundle_root,a.run_root,a.video,a.case,a.target_description,a.sensor_metadata,a.sensor_source_video)
     elif a.command=='resume-contract':value=resume_contract(a.bundle_root,a.run_root,a.output)
     else:
-        from rgb_scene_recovery import prepare_recovery,verify_prepared_recovery,verify_applied_recovery,apply_recovery
+        from rgb_scene_recovery import (prepare_recovery,verify_prepared_recovery,
+            verify_applied_recovery,apply_recovery,prepare_validator_revision,
+            verify_validator_revision)
         if a.command=='prepare-recovery':
             result=prepare_recovery(a.run_root,a.source_bundle,a.target_bundle,a.stop_evidence,a.package_dir)
             value={'recovery_contract':str(result),'run_mutated':False}
         elif a.command=='verify-recovery':value=verify_prepared_recovery(a.package_dir,root=a.run_root,target_bundle=a.target_bundle)
         elif a.command=='verify-applied-recovery':
             context=verify_applied_recovery(a.run_root,a.target_bundle,check_processes=True)
-            value={'recovery_contract_sha256':context['contract_sha256'],'execution_bundle_manifest_sha256':context['execution_bundle_sha256'],'transition':context['contract']['transition']}
+            value={'recovery_contract_sha256':context['contract_sha256'],
+                   'execution_bundle_manifest_sha256':context['execution_bundle_sha256'],
+                   'transition':context['contract']['transition']}
+        elif a.command=='prepare-validator-revision':
+            value={'validator_revision_contract':str(prepare_validator_revision(
+                a.run_root,a.prior_bundle,a.new_bundle,a.terminal_actor_evidence))}
+        elif a.command=='verify-validator-revision':
+            context=verify_validator_revision(a.run_root,a.new_bundle,check_processes=True)
+            value={'validator_revision_sha256':context['validator_revision_sha256'],
+                   'execution_bundle_manifest_sha256':context['execution_bundle_sha256'],
+                   'resume_phase':context['validator_revision']['resume_phase']}
         else:value={'applied_recovery_contract':str(apply_recovery(a.package_dir))}
     print(json.dumps(value,indent=2))
 

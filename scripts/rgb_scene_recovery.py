@@ -27,6 +27,19 @@ COMPLETE_FILE = RECOVERY_REL / "apply_complete.json"
 JOURNAL_FILE = RECOVERY_REL / "apply_journal.jsonl"
 RECOVERY_EVENTS = Path("logs/recovery/P09_DEPTH_ORDER/events.jsonl")
 RECOVERY_LOG_DIR = RECOVERY_EVENTS.parent
+VALIDATOR_REVISION_SCHEMA = "rgb_scene_P09_depth_order_validator_revision_v1"
+VALIDATOR_REVISION_DIR = RECOVERY_REL / "validator_revisions"
+VALIDATOR_REVISION_RESUME_PHASE = "P09-propose"
+# A validator revision may only replace the ancestry validator/stamping seam and
+# its runtime instructions/config paths. Producer implementations and assets
+# must remain byte-identical to the already-executed recovery bundle.
+ALLOWED_VALIDATOR_REVISION_FILES = {
+    ".pi/agents/ego-annotation.rgb-scene-runtime.md",
+    "runtime/rgb_scene_runtime_spec.md",
+    "runtime/runtime_config.json",
+    "scripts/rgb_scene_lineage_base.py",
+    "scripts/rgb_scene_recovery.py",
+}
 RETAINED_PHASES = (
     "P01", "P03a_intrinsics_probe", "P03b_camera", "P03_conditioned_depth",
     "P03c_depth_binding", "P04_HaWoR", "P06", "P07", "P08",
@@ -150,6 +163,33 @@ def validate_transition(old, new, old_config, new_config, old_bundle, new_bundle
         raise ValueError("depth-order recovery external assets/models differ")
     if normalized_config(old_config, old_bundle) != normalized_config(new_config, new_bundle):
         raise ValueError("depth-order recovery runtime/model config differs")
+    return sorted(changed)
+
+
+def validate_validator_transition(old, new, old_config, new_config, old_bundle, new_bundle):
+    """Permit only the fixed validator deployment revision after P09 depth order."""
+    changed = {name for name in set(old["files"]) | set(new["files"])
+               if old["files"].get(name) != new["files"].get(name)}
+    unexpected = changed - ALLOWED_VALIDATOR_REVISION_FILES
+    if unexpected:
+        raise ValueError("validator revision changed producer code/assets: " + ", ".join(sorted(unexpected)))
+    required = {"scripts/rgb_scene_recovery.py", "scripts/rgb_scene_lineage_base.py"}
+    if not required <= changed:
+        raise ValueError("validator revision is missing validator/lineage changes")
+    old_assets = dict(old.get("external_assets", {}))
+    new_assets = dict(new.get("external_assets", {}))
+    for assets in (old_assets, new_assets):
+        if "scene_rrd_files" in assets:
+            inventory = assets["scene_rrd_files"]
+            if (not isinstance(inventory, list)
+                    or not all(isinstance(path, str) for path in inventory)
+                    or len(set(inventory)) != len(inventory)):
+                raise ValueError("invalid validator revision Rerun asset inventory")
+            assets["scene_rrd_files"] = sorted(inventory)
+    if old_assets != new_assets:
+        raise ValueError("validator revision external assets/models differ")
+    if normalized_config(old_config, old_bundle) != normalized_config(new_config, new_bundle):
+        raise ValueError("validator revision runtime/model config differs")
     return sorted(changed)
 
 
@@ -575,25 +615,63 @@ def _validate_recovery_judgment(path, *, root, contract, records, retained_recor
     return True
 
 
+def _retained_input_seeds(root, retained_rows, contract):
+    """Revalidate run-local inputs explicitly recorded by retained producers.
+
+    These are ancestry leaves, not newly produced outputs.  Acceptance is bound
+    to the old-code successful receipt, run containment, and current bytes.  A
+    HaWoR video copy is additionally required to equal the immutable birth
+    video, matching ordinary lineage semantics.
+    """
+    seeds = {}
+    hawor_video_dir = root / "input/hawor_sequence"
+    for event in retained_rows:
+        inputs = event.get("input_sha256", {})
+        if not isinstance(inputs, dict):
+            raise ValueError("retained producer input hashes are malformed")
+        for name, expected in inputs.items():
+            if not isinstance(name, str) or not isinstance(expected, str):
+                raise ValueError("retained producer input identity is malformed")
+            source = in_run(name, root)
+            actual = sha(source)
+            if actual != expected:
+                raise ValueError("retained producer input changed: " + str(source))
+            if source.parent == hawor_video_dir and source.suffix.lower() == ".mp4":
+                if expected != contract["input_video_sha256"]:
+                    raise ValueError("retained HaWoR raw copy differs from birth video")
+            previous = seeds.get(str(source))
+            if previous is not None and previous != expected:
+                raise ValueError("retained producer input has conflicting hashes: " + str(source))
+            seeds[str(source)] = expected
+    return seeds
+
+
 def _validated_recovery_events(*, root, contract, current_code, target_hash, contract_hash,
-                               retained_rows, retained_outputs, obj, track, case):
+                               retained_rows, retained_outputs, obj, track, case,
+                               accepted_event_digests=(), revision_hash=None,
+                               event_bytes=None):
     event_path = root / RECOVERY_EVENTS
     retained_records = {}
     for event in retained_rows:
         for name in event.get("output_sha256", {}):
             retained_records[name] = event
     available = dict(retained_outputs)
+    available.update(_retained_input_seeds(root, retained_rows, contract))
     available[str(root / "input/runtime_input_contract.json")] = sha(root / "input/runtime_input_contract.json")
     available[contract["input_video"]] = contract["input_video_sha256"]
     p05_path = root / "measurements/object_candidates/object_plan_agent.json"
     available[str(p05_path)] = sha(p05_path)
     records = {}
     authorized = {}
-    if not event_path.exists():
-        return records, retained_records, authorized
-    if not event_path.is_file() or not event_path.read_bytes().endswith(b"\n"):
+    if event_bytes is None:
+        if not event_path.exists():
+            return records, retained_records, authorized
+        if not event_path.is_file():
+            raise ValueError("recovery event log is partial/malformed")
+        event_bytes = event_path.read_bytes()
+    if not event_bytes.endswith(b"\n"):
         raise ValueError("recovery event log is partial/malformed")
-    events = [json.loads(line) for line in event_path.read_text().splitlines()]
+    events = [json.loads(line) for line in event_bytes.splitlines()]
     phases = [event.get("phase") for event in events]
     if tuple(phases) != RECOVERY_PHASE_SEQUENCE[:len(phases)]:
         raise ValueError("recovery producer completion ordering is not the canonical suffix prefix")
@@ -609,8 +687,9 @@ def _validated_recovery_events(*, root, contract, current_code, target_hash, con
                 or event.get("run_identity") != run_identity(contract)
                 or event.get("input_contract_sha256") != sha(root / "input/runtime_input_contract.json")
                 or not event_code_is_valid(event, current_code, {
-                    "retained_event_digests": set(), "execution_bundle_sha256": target_hash,
-                    "contract_sha256": contract_hash,
+                    "retained_event_digests": set(), "accepted_revision_event_digests": set(accepted_event_digests),
+                    "execution_bundle_sha256": target_hash, "contract_sha256": contract_hash,
+                    "validator_revision_sha256": revision_hash,
                 })):
             raise ValueError("foreign/unbound/failed recovery producer event")
         for name, expected in event.get("input_sha256", {}).items():
@@ -644,6 +723,178 @@ def _validated_recovery_events(*, root, contract, current_code, target_hash, con
     return records, retained_records, authorized
 
 
+def _validator_revision_paths(root, manifest_hash):
+    if (not isinstance(manifest_hash, str) or len(manifest_hash) != 64
+            or any(c not in "0123456789abcdef" for c in manifest_hash)):
+        raise ValueError("validator revision manifest SHA is malformed")
+    directory = root / VALIDATOR_REVISION_DIR
+    return directory / f"{manifest_hash}.json", directory / f"{manifest_hash}.terminal_actor.json"
+
+
+def _validate_validator_terminal_evidence(value, *, root, prior_bundle, prior_manifest, contract):
+    required = {
+        "state": "failed", "process_terminal": "observed",
+        "completed_phases": ["P09_DEPTH_ORDER"],
+    }
+    for key, expected in required.items():
+        if value.get(key) != expected:
+            raise ValueError("validator revision terminal actor evidence mismatch: " + key)
+    try:
+        uuid.UUID(value["actor"]); uuid.UUID(value["workflow"])
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("validator revision actor/workflow identity malformed") from exc
+    source = value.get("source_state")
+    if not isinstance(source, dict) or source.get("cwd") != str(prior_bundle):
+        raise ValueError("validator revision prior actor bundle mismatch")
+    if prior_manifest.get("source_commit") is not None and source.get("head") != prior_manifest["source_commit"]:
+        raise ValueError("validator revision prior actor source commit mismatch")
+    if source.get("git_status") not in (None, ""):
+        raise ValueError("validator revision prior actor source was dirty")
+    if not isinstance(value.get("pipeline_error"), str) or "P09-propose" not in value["pipeline_error"]:
+        raise ValueError("validator revision terminal evidence lacks P09-propose failure")
+    if (value.get("alias_sha256") != contract["input_video_sha256"]
+            or value.get("birth_video_sha256") != contract["input_video_sha256"]):
+        raise ValueError("validator revision terminal evidence birth alias mismatch")
+    return {"actor": value["actor"], "workflow": value["workflow"],
+            "state": value["state"], "process_terminal": value["process_terminal"]}
+
+
+def _validate_validator_revision(root, bundle, manifest, contract, recovery_contract,
+                                 recovery_contract_path, prior_bundle, prior_manifest,
+                                 recovery_events):
+    target_hash = sha(bundle / "runtime/bundle_manifest.json")
+    revision_path, terminal_path = _validator_revision_paths(root, target_hash)
+    if not revision_path.is_file() or not terminal_path.is_file():
+        raise ValueError("missing fixed validator revision contract")
+    revision = load(revision_path)
+    prefix_bytes = revision.get("recovery_events_bytes")
+    if type(prefix_bytes) is not int or prefix_bytes <= 0 or prefix_bytes > len(recovery_events):
+        raise ValueError("validator revision recovery prefix length malformed")
+    recovery_prefix = recovery_events[:prefix_bytes]
+    expected = {
+        "schema": VALIDATOR_REVISION_SCHEMA,
+        "transition": "P09_DEPTH_ORDER_VALIDATOR_REVISION",
+        "run_identity": run_identity(contract),
+        "input_contract_sha256": sha(root / "input/runtime_input_contract.json"),
+        "original_recovery_contract_path": str(recovery_contract_path),
+        "original_recovery_contract_sha256": sha(recovery_contract_path),
+        "prior_execution_bundle": str(prior_bundle),
+        "prior_execution_bundle_manifest_sha256": sha(prior_bundle / "runtime/bundle_manifest.json"),
+        "new_execution_bundle": str(bundle),
+        "new_execution_bundle_manifest_sha256": target_hash,
+        "recovery_events_path": str(root / RECOVERY_EVENTS),
+        "recovery_events_bytes": prefix_bytes,
+        "recovery_events_sha256": hashlib.sha256(recovery_prefix).hexdigest(),
+        "resume_phase": VALIDATOR_REVISION_RESUME_PHASE,
+        "terminal_actor_evidence_path": str(terminal_path),
+        "terminal_actor_evidence_sha256": sha(terminal_path),
+        "birth_input_video": contract["input_video"],
+        "birth_input_video_sha256": contract["input_video_sha256"],
+    }
+    for key, wanted in expected.items():
+        if revision.get(key) != wanted:
+            raise ValueError("validator revision identity mismatch: " + key)
+    if not recovery_prefix.endswith(b"\n"):
+        raise ValueError("validator revision recovery prefix is partial")
+    rows = [json.loads(line) for line in recovery_prefix.splitlines()]
+    if len(rows) != 1 or rows[0].get("phase") != "P09_DEPTH_ORDER":
+        raise ValueError("validator revision requires exactly completed P09_DEPTH_ORDER")
+    receipt = {"phase": "P09_DEPTH_ORDER", "event_sha256": event_digest(rows[0]),
+               "output_sha256": rows[0].get("output_sha256")}
+    if revision.get("accepted_prior_receipts") != [receipt]:
+        raise ValueError("validator revision accepted prior receipt differs")
+    changed = validate_validator_transition(
+        prior_manifest, manifest, load(prior_bundle / "runtime/runtime_config.json"),
+        load(bundle / "runtime/runtime_config.json"), prior_bundle, bundle)
+    if revision.get("changed_bundle_files") != changed:
+        raise ValueError("validator revision bundle change set differs")
+    terminal = load(terminal_path)
+    terminal_identity = _validate_validator_terminal_evidence(
+        terminal, root=root, prior_bundle=prior_bundle,
+        prior_manifest=prior_manifest, contract=contract)
+    if revision.get("terminal_actor_identity") != terminal_identity:
+        raise ValueError("validator revision terminal actor identity differs")
+    return revision_path, revision, {receipt["event_sha256"]}
+
+
+def prepare_validator_revision(root, prior_bundle, new_bundle, terminal_actor_evidence, *, process_rows=None):
+    """Install the one bounded validator-only continuation sidecar, create-only."""
+    root, prior_bundle, new_bundle = map(lambda p: Path(p).resolve(), (root, prior_bundle, new_bundle))
+    terminal_actor_evidence = Path(terminal_actor_evidence).resolve()
+    require_no_active_owned_processes(root, process_rows)
+    contract = load(in_run(root / "input/runtime_input_contract.json", root))
+    prior_manifest = verify_bundle(prior_bundle)
+    context = recovery_context(root, prior_bundle, contract, prior_manifest)
+    if context is None or context.get("validator_revision") is not None:
+        raise ValueError("validator revision requires the original applied recovery bundle")
+    recovery_contract_path = root / RECOVERY_FILE
+    recovery_contract = load(recovery_contract_path)
+    if (recovery_contract.get("target_bundle") != str(prior_bundle)
+            or recovery_contract.get("target_bundle_manifest_sha256") != sha(prior_bundle / "runtime/bundle_manifest.json")):
+        raise ValueError("prior execution bundle is not the applied recovery bundle")
+    manifest = verify_bundle(new_bundle)
+    changed = validate_validator_transition(
+        prior_manifest, manifest, load(prior_bundle / "runtime/runtime_config.json"),
+        load(new_bundle / "runtime/runtime_config.json"), prior_bundle, new_bundle)
+    events_path = in_run(root / RECOVERY_EVENTS, root)
+    events = events_path.read_bytes()
+    rows = [json.loads(line) for line in events.splitlines()]
+    if len(rows) != 1 or rows[0].get("phase") != "P09_DEPTH_ORDER":
+        raise ValueError("validator revision requires exactly completed P09_DEPTH_ORDER")
+    terminal = load(terminal_actor_evidence)
+    terminal_identity = _validate_validator_terminal_evidence(
+        terminal, root=root, prior_bundle=prior_bundle,
+        prior_manifest=prior_manifest, contract=contract)
+    target_hash = sha(new_bundle / "runtime/bundle_manifest.json")
+    revision_path, terminal_path = _validator_revision_paths(root, target_hash)
+    if revision_path.exists() or terminal_path.exists():
+        raise ValueError("validator revision target already exists")
+    _write_new(terminal_path, terminal_actor_evidence.read_bytes())
+    receipt = {"phase": "P09_DEPTH_ORDER", "event_sha256": event_digest(rows[0]),
+               "output_sha256": rows[0].get("output_sha256")}
+    revision = {
+        "schema": VALIDATOR_REVISION_SCHEMA,
+        "transition": "P09_DEPTH_ORDER_VALIDATOR_REVISION",
+        "run_identity": run_identity(contract),
+        "input_contract_sha256": sha(root / "input/runtime_input_contract.json"),
+        "original_recovery_contract_path": str(recovery_contract_path),
+        "original_recovery_contract_sha256": sha(recovery_contract_path),
+        "prior_execution_bundle": str(prior_bundle),
+        "prior_execution_bundle_manifest_sha256": sha(prior_bundle / "runtime/bundle_manifest.json"),
+        "new_execution_bundle": str(new_bundle),
+        "new_execution_bundle_manifest_sha256": target_hash,
+        "changed_bundle_files": changed,
+        "recovery_events_path": str(events_path),
+        "recovery_events_bytes": len(events),
+        "recovery_events_sha256": hashlib.sha256(events).hexdigest(),
+        "accepted_prior_receipts": [receipt],
+        "resume_phase": VALIDATOR_REVISION_RESUME_PHASE,
+        "terminal_actor_evidence_path": str(terminal_path),
+        "terminal_actor_evidence_sha256": sha(terminal_path),
+        "terminal_actor_identity": terminal_identity,
+        "birth_input_video": contract["input_video"],
+        "birth_input_video_sha256": contract["input_video_sha256"],
+        "claim_scope": "validator-only continuation after exact successful P09_DEPTH_ORDER receipt; resume at P09-propose",
+    }
+    _write_new(revision_path, revision)
+    # Revalidate the installed bytes and all old ancestry before returning.
+    revised = recovery_context(root, new_bundle, contract, manifest)
+    if revised.get("validator_revision_sha256") != sha(revision_path):
+        raise ValueError("installed validator revision did not activate")
+    return revision_path
+
+
+def verify_validator_revision(root, new_bundle, *, process_rows=None, check_processes=False):
+    root, new_bundle = Path(root).resolve(), Path(new_bundle).resolve()
+    if check_processes:
+        require_no_active_owned_processes(root, process_rows)
+    contract = load(in_run(root / "input/runtime_input_contract.json", root))
+    context = recovery_context(root, new_bundle, contract, verify_bundle(new_bundle))
+    if context is None or context.get("validator_revision") is None:
+        raise ValueError("fixed validator revision expected")
+    return context
+
+
 def recovery_context(root, bundle, contract, manifest):
     root, bundle = Path(root).resolve(), Path(bundle).resolve()
     target_hash = sha(bundle / "runtime/bundle_manifest.json")
@@ -654,15 +905,20 @@ def recovery_context(root, bundle, contract, manifest):
     if not path.is_file() or not complete_path.is_file():
         raise ValueError("incomplete or missing explicit P08 recovery apply")
     value = load(path); complete = load(complete_path)
+    prior_bundle = Path(value.get("target_bundle", "")).resolve()
+    prior_hash = value.get("target_bundle_manifest_sha256")
     expected = {
         "schema": SCHEMA, "mode": "same_run_recovery", "transition": TRANSITION,
         "run_identity": run_identity(contract), "input_contract_sha256": sha(root / "input/runtime_input_contract.json"),
-        "target_bundle": str(bundle), "target_bundle_manifest_sha256": target_hash,
+        "target_bundle": str(prior_bundle), "target_bundle_manifest_sha256": prior_hash,
         "recovery_events_path": str(root / RECOVERY_EVENTS),
         "native_handoff_path": str(root / RECOVERY_REL / "native_recovery_handoff.md"),
     }
     for key, wanted in expected.items():
         if value.get(key) != wanted: raise ValueError("depth-order recovery identity mismatch: " + key)
+    if sha(prior_bundle / "runtime/bundle_manifest.json") != prior_hash:
+        raise ValueError("applied recovery execution bundle changed")
+    prior_manifest = verify_bundle(prior_bundle)
     if complete.get("schema") != "rgb_scene_recovery_apply_complete_v1" or complete.get("transition") != TRANSITION or complete.get("recovery_contract_sha256") != sha(path):
         raise ValueError("depth-order recovery completion marker mismatch")
     journal_path = in_run(root / JOURNAL_FILE, root)
@@ -678,8 +934,8 @@ def recovery_context(root, bundle, contract, manifest):
     old = load(directory / "source_bundle_manifest.json")
     if sha(directory / "source_bundle_manifest.json") != value["source_bundle_manifest_sha256"] or sha(Path(value["source_bundle"]) / "runtime/bundle_manifest.json") != value["source_bundle_manifest_sha256"]:
         raise ValueError("birth producer bundle/snapshot changed")
-    changed = validate_transition(old, manifest, load(directory / "source_runtime_config.json"),
-                                  load(bundle / "runtime/runtime_config.json"), Path(value["source_bundle"]), bundle)
+    changed = validate_transition(old, prior_manifest, load(directory / "source_runtime_config.json"),
+                                  load(prior_bundle / "runtime/runtime_config.json"), Path(value["source_bundle"]), prior_bundle)
     if changed != value["changed_bundle_files"]: raise ValueError("applied recovery change set differs")
     events = in_run(root / "logs/integration/events.jsonl", root).read_bytes()
     if len(events) != value["original_events_bytes"] or hashlib.sha256(events).hexdigest() != value["original_events_sha256"]:
@@ -698,13 +954,45 @@ def recovery_context(root, bundle, contract, manifest):
         if sha(in_run(name, root)) != digest: raise ValueError("retained prefix output changed: " + name)
     if sha(in_run(value["p05_judgment_path"], root)) != value["p05_judgment_sha256"]:
         raise ValueError("retained P05 judgment changed")
-    current_code = code_identity(manifest)
-    recovery_records, retained_records, authorized_active = _validated_recovery_events(
-        root=root, contract=contract, current_code=current_code, target_hash=target_hash,
+
+    # First validate the existing suffix against the immutable recovery bundle.
+    # This proves the accepted P09_DEPTH_ORDER receipt and all of its outputs and
+    # ancestors before a validator-only revision may preserve that exact event.
+    recovery_event_bytes = b""
+    recovery_event_path = root / RECOVERY_EVENTS
+    if recovery_event_path.exists():
+        recovery_event_bytes = recovery_event_path.read_bytes()
+    base_event_bytes = None
+    if target_hash != prior_hash:
+        preliminary_path, _ = _validator_revision_paths(root, target_hash)
+        if not preliminary_path.is_file():
+            raise ValueError("missing fixed validator revision contract")
+        preliminary = load(preliminary_path)
+        count = preliminary.get("recovery_events_bytes")
+        if type(count) is not int or count <= 0 or count > len(recovery_event_bytes):
+            raise ValueError("validator revision recovery prefix length malformed")
+        base_event_bytes = recovery_event_bytes[:count]
+    base_records, retained_records, authorized_active = _validated_recovery_events(
+        root=root, contract=contract, current_code=code_identity(prior_manifest), target_hash=prior_hash,
         contract_hash=sha(path), retained_rows=rows,
         retained_outputs=value["retained_outputs_sha256"], obj=value["object_id"],
-        track=value["track_id"], case=contract["case"],
+        track=value["track_id"], case=contract["case"], event_bytes=base_event_bytes,
     )
+    revision_path = None; revision = None; accepted_revision_digests = set()
+    if target_hash != prior_hash:
+        revision_path, revision, accepted_revision_digests = _validate_validator_revision(
+            root, bundle, manifest, contract, value, path, prior_bundle, prior_manifest,
+            recovery_event_bytes)
+        recovery_records, retained_records, authorized_active = _validated_recovery_events(
+            root=root, contract=contract, current_code=code_identity(manifest), target_hash=target_hash,
+            contract_hash=sha(path), retained_rows=rows,
+            retained_outputs=value["retained_outputs_sha256"], obj=value["object_id"],
+            track=value["track_id"], case=contract["case"],
+            accepted_event_digests=accepted_revision_digests,
+            revision_hash=sha(revision_path),
+        )
+    else:
+        recovery_records = base_records
     archive = load(archive_path)
     if complete.get("file_count") != len(archive["files"]): raise ValueError("archive completion count differs")
     for row in archive["files"]:
@@ -716,21 +1004,27 @@ def recovery_context(root, bundle, contract, manifest):
                 raise ValueError("stale invalidated suffix restored as active: " + str(source))
         if not archived.is_file() or sha(archived) != row["sha256"] or archived.stat().st_size != row["bytes"]:
             raise ValueError("invalidated archive file missing/changed: " + str(archived))
-    recovery_events = root / RECOVERY_EVENTS
     failure = root / RECOVERY_REL / "failure.json"
     if failure.exists(): raise ValueError("recovery already failed; relaunch is forbidden")
     return {"contract": value, "contract_sha256": sha(path), "execution_bundle_sha256": target_hash,
             "source_code": old_code, "retained_event_digests": retained_digests,
+            "accepted_revision_event_digests": accepted_revision_digests,
+            "validator_revision": revision,
+            "validator_revision_sha256": sha(revision_path) if revision_path else None,
             "event_sources": [directory / "retained_events.jsonl", root / RECOVERY_EVENTS],
             "events_path": root / RECOVERY_EVENTS, "log_dir": root / RECOVERY_LOG_DIR}
 
 
 def event_code_is_valid(event, current_code, context):
     if context is None: return event.get("code_sha256") == current_code
-    if event_digest(event) in context["retained_event_digests"]: return True
-    return (event.get("code_sha256") == current_code
-            and event.get("execution_bundle_manifest_sha256") == context["execution_bundle_sha256"]
-            and event.get("recovery_contract_sha256") == context["contract_sha256"])
+    digest = event_digest(event)
+    if digest in context["retained_event_digests"]: return True
+    if digest in context.get("accepted_revision_event_digests", set()): return True
+    valid = (event.get("code_sha256") == current_code
+             and event.get("execution_bundle_manifest_sha256") == context["execution_bundle_sha256"]
+             and event.get("recovery_contract_sha256") == context["contract_sha256"])
+    revision_hash = context.get("validator_revision_sha256")
+    return valid and (revision_hash is None or event.get("validator_revision_sha256") == revision_hash)
 
 
 def require_recovery_command(context, stage, phase=None):
@@ -745,10 +1039,17 @@ def require_recovery_command(context, stage, phase=None):
 def execution_identity(context):
     if context is None: return None
     c = context["contract"]
-    return {"schema": "rgb_scene_recovery_execution_identity_v1", "transition": TRANSITION,
-            "birth_bundle_manifest_sha256": c["run_identity"]["bundle_manifest_sha256"],
-            "execution_bundle_manifest_sha256": context["execution_bundle_sha256"],
-            "recovery_contract_sha256": context["contract_sha256"],
-            "source_events_sha256": c["original_events_sha256"],
-            "retained_events_sha256": c["retained_events_sha256"],
-            "stop_identity": c["stop_identity"]}
+    value = {"schema": "rgb_scene_recovery_execution_identity_v1", "transition": TRANSITION,
+             "birth_bundle_manifest_sha256": c["run_identity"]["bundle_manifest_sha256"],
+             "execution_bundle_manifest_sha256": context["execution_bundle_sha256"],
+             "recovery_contract_sha256": context["contract_sha256"],
+             "source_events_sha256": c["original_events_sha256"],
+             "retained_events_sha256": c["retained_events_sha256"],
+             "stop_identity": c["stop_identity"]}
+    if context.get("validator_revision_sha256") is not None:
+        revision = context["validator_revision"]
+        value.update(validator_revision_sha256=context["validator_revision_sha256"],
+                     prior_execution_bundle_manifest_sha256=revision["prior_execution_bundle_manifest_sha256"],
+                     accepted_prior_receipts=revision["accepted_prior_receipts"],
+                     validator_revision_terminal_actor_identity=revision["terminal_actor_identity"])
+    return value
