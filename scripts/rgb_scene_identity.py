@@ -24,6 +24,7 @@ class InputIdentity:
     input_contract_sha256: str
     source_timing_json: str
     target_description: str | None
+    recovery_execution_json: str | None = None
 
     def __post_init__(self):
         try:
@@ -37,6 +38,14 @@ class InputIdentity:
                 digest(self.sensor_calibration_sha256)
             if self.target_description is not None and (not isinstance(self.target_description, str) or not self.target_description.strip()):
                 raise ValueError('invalid target description')
+            if self.recovery_execution_json is not None:
+                recovery = json.loads(self.recovery_execution_json)
+                if recovery.get('schema') != 'rgb_scene_recovery_execution_identity_v1':
+                    raise ValueError('invalid recovery execution identity')
+                for key in ('birth_bundle_manifest_sha256','execution_bundle_manifest_sha256','recovery_contract_sha256','source_events_sha256','retained_events_sha256'):
+                    digest(recovery[key])
+                if recovery['birth_bundle_manifest_sha256'] != self.bundle_manifest_sha256:
+                    raise ValueError('recovery birth bundle identity mismatch')
             timing = json.loads(self.source_timing_json)
             if (type(timing['frame_count']) is not int or timing['frame_count'] <= 0
                     or Fraction(timing['fps_ratio']) <= 0 or Fraction(timing['time_base_s']) <= 0
@@ -52,20 +61,30 @@ class InputIdentity:
     def document(self):
         result = asdict(self)
         result['source_timing'] = json.loads(result.pop('source_timing_json'))
+        recovery = result.pop('recovery_execution_json')
+        if recovery is not None:result['recovery_execution_identity'] = json.loads(recovery)
         result['schema'] = 'rgb_scene_input_identity_v1'
         return result
 
 
-def input_identity(contract_path, run_root, bundle_manifest):
+def input_identity(contract_path, run_root, bundle_manifest, recovery=None):
     contract = load(contract_path)
     if contract.get('schema') != 'rgb_scene_input_v1' or contract.get('run_root') != str(run_root.resolve()):
         raise ValueError('input contract run/schema mismatch')
-    if sha(in_run(contract['input_video'],run_root)) != contract['input_video_sha256'] or sha(bundle_manifest) != contract['bundle_manifest_sha256']:
+    actual_bundle_sha = sha(bundle_manifest)
+    if sha(in_run(contract['input_video'],run_root)) != contract['input_video_sha256']:
         raise ValueError('input raw/bundle identity changed')
+    recovery_json = None
+    if actual_bundle_sha != contract['bundle_manifest_sha256']:
+        from rgb_scene_recovery import execution_identity
+        value = execution_identity(recovery)
+        if value is None or value['birth_bundle_manifest_sha256'] != contract['bundle_manifest_sha256'] or value['execution_bundle_manifest_sha256'] != actual_bundle_sha:
+            raise ValueError('input raw/bundle identity changed')
+        recovery_json = json.dumps(value,sort_keys=True,allow_nan=False)
     sensor = contract.get('sensor_calibration_metadata')
     if 'sensor_calibration_sha256' not in contract or (sha(in_run(sensor,run_root)) if sensor else None) != contract['sensor_calibration_sha256']:
         raise ValueError('sensor calibration identity changed')
     return InputIdentity(contract['run_id'], contract['case'], contract['input_video_sha256'],
                          contract['bundle_manifest_sha256'], contract['sensor_calibration_sha256'],
                          sha(contract_path), json.dumps(contract['source_timing'], sort_keys=True, allow_nan=False),
-                         contract.get('target_description'))
+                         contract.get('target_description'), recovery_json)

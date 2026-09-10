@@ -18,6 +18,27 @@ Bind `PYTHON` from config `main_python`, `GPU` from config `gpu`, and `RUN` from
 
 For frontend stages add `--phase {PHASE}`. A verified-resume launch additionally supplies `--resume-contract {RESUME_CONTRACT}` on every command. Only byte-verified successful producers are skipped; a failed or partial producer is not resumable. Do not rewrite decisions in a resumed run. Existing logs and results are immutable.
 
+### Fixed P08 depth-order recovery mode
+
+A launch with `mode: p08_depth_order_recovery` supplies the already-applied absolute `recovery_contract`. The immutable birth input contract and original `logs/integration/events.jsonl` remain unchanged. Invalid P09-propose-and-later files have been hash-archived under `state/runtime_recovery/P09_DEPTH_ORDER/invalidated/`; do not read, restore, or reuse them. New producer logs/events are append-only under `logs/recovery/P09_DEPTH_ORDER/`. Every executable command must add:
+
+```
+--recovery-contract "{RUN}/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json"
+```
+
+The only allowed recovery commands, in order with the same decision/inspection pauses described below, are:
+
+```
+"{PYTHON}" scripts/run_rgb_scene_stage.py --stage frontend --phase P09_DEPTH_ORDER --run-root "{RUN}" --runtime-config runtime/runtime_config.json --gpu {GPU} --recovery-contract "{RUN}/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json"
+"{PYTHON}" scripts/run_rgb_scene_stage.py --stage frontend --phase P09-propose --run-root "{RUN}" --runtime-config runtime/runtime_config.json --gpu {GPU} --recovery-contract "{RUN}/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json"
+# inspect and author a new P09 anchor decision; never copy the archived anchor
+"{PYTHON}" scripts/run_rgb_scene_stage.py --stage frontend --phase P09 --run-root "{RUN}" --runtime-config runtime/runtime_config.json --gpu {GPU} --recovery-contract "{RUN}/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json"
+# inspect and author new P10 rigid/object-selection decisions
+"{PYTHON}" scripts/run_rgb_scene_stage.py --stage frontend --phase P11 --run-root "{RUN}" --runtime-config runtime/runtime_config.json --gpu {GPU} --recovery-contract "{RUN}/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json"
+```
+
+Then invoke stages `geometry`, `initial-pose`, `refined-pose`, `appearance`, `native-shape`, `shape`, `visual-fit`, and `export` in that order, each with the same `--run-root`, `--runtime-config`, `--gpu`, and `--recovery-contract` arguments. Perform the new appearance and interaction decision/inspection pauses at their normal points. Code rejects `P01`, `camera`, `P06`, `P07`, and `P08` in recovery mode. A recovery failure is create-only at `state/runtime_recovery/P09_DEPTH_ORDER/failure.json`; stop rather than retry. The recovery actor handoff is separate at the supplied `state/runtime_recovery/P09_DEPTH_ORDER/native_recovery_handoff.md`; do not overwrite or claim a missing old actor handoff. The final JSON and RRD retain the birth identity and add execution-bundle, recovery-contract, retained-prefix, original-event, and stop identities.
+
 ## Sequence and actual visual decisions
 
 1. `frontend --phase P01`: raw frame manifest at `input/raw_frame_manifest/manifest.json`. Inspect representative images named by that manifest.

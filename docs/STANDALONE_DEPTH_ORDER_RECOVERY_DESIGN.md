@@ -83,3 +83,38 @@ Recovery fixtures: valid retained-prefix + invalid suffix, preservation hashes, 
 Run focused numerical/ownership/lineage/recovery tests, full unittest/compile/diffcheck, local commits and clean handoff. Include exact parent oldbundle→newbundle preparation/apply and native launch payload. No actual run migration or model execution by worker. IndependentAstra/Sol review follows, then parent stops/reconciles oldactor, applies recovery and launches corrected suffix.
 
 Be concise in docs/receipt scope. The artifact-changing point is the real first-hit depth comparison preserving visible object support and making fresh corrected P09 drive the entire suffix, not a new uncertainty label alone.
+
+## Part B implementation contract (bounded P08 recovery)
+
+Part B is implemented by `scripts/rgb_scene_recovery.py` and the three developer-only subcommands in `scripts/prepare_rgb_scene_runtime.py`. Preparation and verification are read-only with respect to the run and write only a new external package directory. Apply is the sole run-mutating command. It hashes and moves the explicit P09-propose-and-later file inventory into `state/runtime_recovery/P09_DEPTH_ORDER/invalidated/`, appends intent/completion rows to `apply_journal.jsonl`, removes emptied invalid suffix directories, and installs `recovery.json` plus `apply_complete.json` only after every move verifies. An interrupted apply has no completion contract and runtime launch refuses it.
+
+The old `logs/integration/events.jsonl` and `logs/integration/*.log` files stay byte-unchanged. Runtime lineage loads only the snapshotted exact P01-through-P08 event prefix plus new `logs/recovery/P09_DEPTH_ORDER/events.jsonl`; merely restoring an archived old suffix path cannot make it a producer. Retained receipts require the original bundle code identity. New receipts require both the new bundle manifest SHA and recovery contract SHA. Runtime code rejects all recovery frontend phases except `P09_DEPTH_ORDER`, `P09-propose`, `P09`, and `P11`, and rejects the `camera` stage; the remaining fixed standalone suffix stages are allowlisted.
+
+The stopped-run evidence is an owner stop/reconciliation record, not a prediction actor receipt. Its exact run UUID, actor/workflow UUIDs, terminal-observed/non-resumable state, empty owned-process snapshot, immutable input SHA, full original-event SHA/length, and P08 prefix SHA/length are checked. No nonexistent actor handoff is required or synthesized. Preparation and apply also perform a live run-root-bound owned-process check; the run owner must independently reconcile owned processes immediately before apply.
+
+Developer command sequence from this reviewed source checkout (the target bundle and package paths must be new):
+
+```bash
+PY=/mnt/user-home/kupingxin/ego_annotation/.venv/bin/python
+SRC=/mnt/user-home/kupingxin/ego_annotation_worktrees/standalone_rgb_scene_depth_order_20260910
+RUN=/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/integration_validation/rgb_sam3d_visual_annotation_20260908/standalone_pipeline_20260910/cold_raw_rgb_v1
+OLD=/mnt/user-home/kupingxin/ego_annotation_runtime/rgb_scene_standalone_candidate_9b829c0_gpu5_20260910
+STOP=/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/integration_validation/rgb_sam3d_visual_annotation_20260908/standalone_pipeline_20260910/hand_depth_order_audit/owner_stop_03526946/stopped_run_evidence.json
+NEW=/mnt/user-home/kupingxin/ego_annotation_runtime/rgb_scene_standalone_depth_order_recovery_<reviewed-commit>_gpu5_20260910
+PKG=/mnt/truenas-user-home/kupingxin/ego_annotation_outputs/integration_validation/rgb_sam3d_visual_annotation_20260908/standalone_pipeline_20260910/hand_depth_order_audit/P08_recovery_<reviewed-commit>
+
+# First build NEW with the existing bundle command and the preflighted asset-path JSON.
+"$PY" "$SRC/scripts/prepare_rgb_scene_runtime.py" prepare-recovery --run-root "$RUN" --source-bundle "$OLD" --target-bundle "$NEW" --stop-evidence "$STOP" --package-dir "$PKG"
+"$PY" "$SRC/scripts/prepare_rgb_scene_runtime.py" verify-recovery --package-dir "$PKG" --run-root "$RUN" --target-bundle "$NEW"
+# Reconcile owned processes again, inspect/review the package, then and only then:
+"$PY" "$SRC/scripts/prepare_rgb_scene_runtime.py" apply-recovery --package-dir "$PKG"
+"$PY" "$SRC/scripts/prepare_rgb_scene_runtime.py" verify-applied-recovery --run-root "$RUN" --target-bundle "$NEW"
+```
+
+The new native task payload is exactly:
+
+```json
+{"mode":"p08_depth_order_recovery","runtime_cwd":"<NEW>","run_root":"<RUN>","recovery_contract":"<RUN>/state/runtime_recovery/P09_DEPTH_ORDER/recovery.json","handoff_path":"<RUN>/state/runtime_recovery/P09_DEPTH_ORDER/native_recovery_handoff.md","tmux_target":"<new dedicated visible target>"}
+```
+
+The runtime profile and sole runtime spec define the executable continuation commands. No agent CLI is invoked by these developer helpers. Fresh prediction and same-code verified resume remain on their existing paths.

@@ -182,14 +182,18 @@ def main():
     if not np.array_equal(z['object_faces'],faces) or np.shape(z['object_vertices_canonical'])!=vertices.shape or not np.allclose(z['object_vertices_canonical'],vertices,atol=1e-6,rtol=0):
         raise ValueError('fitted state dropped or changed bound native geometry')
     import rerun as rr
-    cfg=load(Path(__file__).resolve().parents[1]/'runtime/runtime_config.json')
+    bundle=Path(__file__).resolve().parents[1]
+    cfg=load(bundle/'runtime/runtime_config.json')
     if rr.__version__!=cfg['scene_rerun_version']:raise ValueError('Rerun dependency differs from prepared identity')
     selection=load(root/'state/object_selection.json')
     contract=load(root/'input/runtime_input_contract.json')
     raw=indexed(load(root/'input/raw_frame_manifest/manifest.json')['frames'])
     calibration=load(root/'state/calibration/v19_camera_calibration_contract.json')
     judgment=load(root/f"state/agent_interaction_judgments/{binding['object_id']}.json")
-    identity=input_identity(root/'input/runtime_input_contract.json',root,Path(__file__).resolve().parents[1]/'runtime/bundle_manifest.json')
+    from v19_runtime_assets import verify_bundle
+    from rgb_scene_recovery import recovery_context
+    recovery=recovery_context(root,bundle,contract,verify_bundle(bundle,asset_role='export'))
+    identity=input_identity(root/'input/runtime_input_contract.json',root,bundle/'runtime/bundle_manifest.json',recovery)
     if selection.get('case')!=contract['case'] or selection.get('object_id')!=binding['object_id']:raise ValueError('runtime selection identity mismatch')
     if fit.get('display_visibility',{}).get('judgment_sha256')!=sha(root/f"state/agent_interaction_judgments/{binding['object_id']}.json"):raise ValueError('fit visibility judgment changed')
     export(z,binding,contract['case'],binding['object_id'],selection.get('track_id',binding['object_id']),a.output_dir,

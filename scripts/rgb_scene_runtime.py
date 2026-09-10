@@ -160,7 +160,7 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
         directory=in_run(value,root,must_exist=False)
         if directory.exists():raise ValueError(f'{key} output directory already exists: {directory}')
         output_roots.append(directory)
-    logdir = Path(logdir) if logdir else root / 'logs/integration'
+    logdir = Path(logdir) if logdir else (lineage.recovery['log_dir'] if lineage and lineage.recovery else root / 'logs/integration')
     in_run(logdir, root, must_exist=False)
     logdir.mkdir(parents=True, exist_ok=True)
     log = logdir / f'{key}.log'
@@ -194,15 +194,17 @@ def run_command(key, argv, outputs, *, root, cwd, env, logdir=None, gpu=None, li
         event['elapsed_s']=time.monotonic()-start
         event['error'] = str(exc)
         recovery = getattr(lineage, 'recovery', None)
-        resume_phase = recovery['contract']['resume_phase'] if recovery else None
-        recovery_failure = resume_phase in {'P14','P14_RGB'} or (key == 'P09' and resume_phase == 'P09')
-        blockers = root / (f'state/runtime_recovery/{resume_phase}' if recovery_failure else 'state/runtime_blockers')
+        if recovery:
+            blockers = root / 'state/runtime_recovery/P09_DEPTH_ORDER'
+            failure_path = blockers / 'failure.json'
+        else:
+            blockers = root / 'state/runtime_blockers'
+            failure_path = blockers / f'{key}.json'
         in_run(blockers, root, must_exist=False)
         blockers.mkdir(parents=True, exist_ok=True)
-        failure_path = blockers / ('failure.json' if recovery_failure else f'{key}.json')
-        # A stopped run's original P09 blocker is a protected recovery input.
-        # Retain any recovery-attempt failure separately and never replace it.
-        with failure_path.open('x') as handle:
+        # Recovery failure is create-only and cannot replace the migration journal,
+        # retained old prefix, stop evidence, or original integration blocker/logs.
+        with failure_path.open('x' if recovery else 'w') as handle:
             handle.write(json.dumps({
                 **event, 'blocked_state_variable': key, 'next_required_repair': 'repair failed command/input before a new run',
             }, indent=2) + '\n')

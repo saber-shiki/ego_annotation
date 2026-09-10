@@ -185,10 +185,28 @@ def main():
     r.add_argument('--sensor-metadata',type=Path);r.add_argument('--sensor-source-video',type=Path)
     s=sub.add_parser('resume-contract')
     for n in ('bundle-root','run-root','output'):s.add_argument('--'+n,type=Path,required=True)
+    pr=sub.add_parser('prepare-recovery',help='read-only run verification; write an external migration package')
+    for n in ('run-root','source-bundle','target-bundle','stop-evidence','package-dir'):pr.add_argument('--'+n,type=Path,required=True)
+    vr=sub.add_parser('verify-recovery',help='reverify a prepared migration package without changing the run')
+    for n in ('package-dir','run-root','target-bundle'):vr.add_argument('--'+n,type=Path,required=True)
+    va=sub.add_parser('verify-applied-recovery',help='verify completed archive/lineage state and absence of owned processes')
+    for n in ('run-root','target-bundle'):va.add_argument('--'+n,type=Path,required=True)
+    ar=sub.add_parser('apply-recovery',help='archive the bounded invalid suffix and install the recovery contract')
+    ar.add_argument('--package-dir',type=Path,required=True)
     a=p.parse_args()
     if a.command=='bundle':value=build(a.source_root,a.bundle_root,a.asset_paths,a.report_dir)
     elif a.command=='prepare-run':value=prepare_run(a.bundle_root,a.run_root,a.video,a.case,a.target_description,a.sensor_metadata,a.sensor_source_video)
-    else:value=resume_contract(a.bundle_root,a.run_root,a.output)
+    elif a.command=='resume-contract':value=resume_contract(a.bundle_root,a.run_root,a.output)
+    else:
+        from rgb_scene_recovery import prepare_recovery,verify_prepared_recovery,verify_applied_recovery,apply_recovery
+        if a.command=='prepare-recovery':
+            result=prepare_recovery(a.run_root,a.source_bundle,a.target_bundle,a.stop_evidence,a.package_dir)
+            value={'recovery_contract':str(result),'run_mutated':False}
+        elif a.command=='verify-recovery':value=verify_prepared_recovery(a.package_dir,root=a.run_root,target_bundle=a.target_bundle)
+        elif a.command=='verify-applied-recovery':
+            context=verify_applied_recovery(a.run_root,a.target_bundle,check_processes=True)
+            value={'recovery_contract_sha256':context['contract_sha256'],'execution_bundle_manifest_sha256':context['execution_bundle_sha256'],'transition':context['contract']['transition']}
+        else:value={'applied_recovery_contract':str(apply_recovery(a.package_dir))}
     print(json.dumps(value,indent=2))
 
 if __name__=='__main__':main()

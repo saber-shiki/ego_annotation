@@ -5,6 +5,7 @@ from pathlib import Path
 from v19_runtime_contracts import load, interpreter, execution_target, runtime_environment
 from rgb_scene_runtime import run_command
 from rgb_scene_runtime import SceneLineage as RunLineage
+from rgb_scene_recovery import RECOVERY_FILE, verify_applied_recovery, require_recovery_command
 
 ROOT=Path(__file__).resolve().parents[1]
 PHASES=('P01','P06','P07','P08','P09_DEPTH_ORDER','P09-propose','P09','P11')
@@ -17,7 +18,11 @@ def main():
     p.add_argument('--runtime-config',type=Path,required=True)
     p.add_argument('--gpu',type=int,required=True)
     p.add_argument('--object-id')
+    p.add_argument('--recovery-contract',type=Path)
     a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
+    if a.recovery_contract:
+        if a.recovery_contract.resolve()!=root/RECOVERY_FILE:raise ValueError('recovery contract must be the applied fixed P08 transition')
+        require_recovery_command(verify_applied_recovery(root,ROOT),'frontend',a.phase)
     execution_target(cfg,a.gpu)
     asset_role='P09-propose' if a.phase=='P09_DEPTH_ORDER' else a.phase
     lineage=RunLineage(root,ROOT,a.runtime_config,asset_role=asset_role);contract=lineage.contract;case=contract['case']

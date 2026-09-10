@@ -9,8 +9,7 @@ import json
 import uuid
 from v19_runtime_contracts import in_run, load, sha, validate_references, CLIP_SUFFIXES
 from v19_runtime_assets import verify_bundle
-def event_code_is_valid(event,code,recovery):
-    return event.get("code_sha256")==code
+from rgb_scene_recovery import recovery_context, event_code_is_valid
 
 
 AGENT_PATHS = {
@@ -29,21 +28,23 @@ class RunLineage:
         self.manifest=verify_bundle(self.bundle,asset_role=asset_role)
         if runtime_config is not None and sha(runtime_config)!=sha(self.bundle/'runtime/runtime_config.json'):
             raise ValueError('runtime config differs from the prepared bundle')
-        self.recovery=None
-        if self.contract["bundle_manifest_sha256"] != sha(self.bundle/"runtime/bundle_manifest.json"):
-            raise ValueError("scene bundle changed")
+        self.recovery=recovery_context(self.root,self.bundle,self.contract,self.manifest)
         self.identity={k:self.contract[k] for k in ('run_id','run_root','input_video_sha256','bundle_manifest_sha256')}
         self.raw={str(self.contract_path):sha(self.contract_path),self.contract['input_video']:self.contract['input_video_sha256']}
         if self.contract.get('sensor_calibration_metadata'):
             self.raw[self.contract['sensor_calibration_metadata']]=self.contract['sensor_calibration_sha256']
         self.code={name:digest for name,digest in self.manifest['files'].items() if name.endswith(('.py','.sh'))}
         self.verified={};self.visiting=set();self.records={}
-        self.events=self.root/'logs/integration/events.jsonl'
-        if self.events.exists():
-            for line in self.events.read_text().splitlines():
-                event=json.loads(line)
-                if event.get('returncode')==0 and 'error' not in event and event.get('run_identity')==self.identity:
-                    for path in event.get('output_sha256',{}):self.records[path]=event
+        self.events=self.recovery['events_path'] if self.recovery else self.root/'logs/integration/events.jsonl'
+        sources=self.recovery['event_sources'] if self.recovery else [self.events]
+        for source in sources:
+            if source.exists():
+                for line in source.read_text().splitlines():
+                    event=json.loads(line)
+                    if (event.get('returncode')==0 and 'error' not in event
+                            and event.get('run_identity')==self.identity
+                            and event_code_is_valid(event,self.code,self.recovery)):
+                        for path in event.get('output_sha256',{}):self.records[path]=event
         for path in self.raw:self.require(path)
 
     @contextmanager
