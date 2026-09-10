@@ -28,7 +28,8 @@ class RunLineage:
         self.manifest=verify_bundle(self.bundle,asset_role=asset_role)
         if runtime_config is not None and sha(runtime_config)!=sha(self.bundle/'runtime/runtime_config.json'):
             raise ValueError('runtime config differs from the prepared bundle')
-        self.recovery=recovery_context(self.root,self.bundle,self.contract,self.manifest)
+        self.recovery=recovery_context(
+            self.root,self.bundle,self.contract,self.manifest,asset_role=asset_role)
         self.identity={k:self.contract[k] for k in ('run_id','run_root','input_video_sha256','bundle_manifest_sha256')}
         self.raw={str(self.contract_path):sha(self.contract_path),self.contract['input_video']:self.contract['input_video_sha256']}
         if self.contract.get('sensor_calibration_metadata'):

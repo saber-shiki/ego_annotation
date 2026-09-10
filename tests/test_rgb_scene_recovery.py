@@ -237,7 +237,7 @@ class RGBSceneRecoveryTests(unittest.TestCase):
         f = self.fixture(); cfg = write(f.base / "runtime_config.json", {"compute_host": "fixture", "gpu": 5})
         applied = f.root / recovery.RECOVERY_FILE
         forwarded = []
-        with patch.object(stage, "verify_applied_recovery", return_value={"contract": {}}), \
+        with patch.object(stage, "require_recovery_scope", wraps=stage.require_recovery_scope), \
              patch.object(stage, "execution_target", return_value=None), \
              patch.object(stage.runpy, "run_path", side_effect=lambda *a, **k: forwarded.append(list(sys.argv))):
             with patch.object(sys, "argv", ["stage", "--stage", "frontend", "--phase", "P08", "--run-root", str(f.root),

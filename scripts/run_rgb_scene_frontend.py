@@ -5,7 +5,7 @@ from pathlib import Path
 from v19_runtime_contracts import load, interpreter, execution_target, runtime_environment
 from rgb_scene_runtime import run_command
 from rgb_scene_runtime import SceneLineage as RunLineage
-from rgb_scene_recovery import RECOVERY_FILE, verify_applied_recovery, require_recovery_command
+from rgb_scene_recovery import RECOVERY_FILE, require_recovery_command, require_recovery_scope
 
 ROOT=Path(__file__).resolve().parents[1]
 PHASES=('P01','P06','P07','P08','P09_DEPTH_ORDER','P09-propose','P09','P11')
@@ -20,12 +20,14 @@ def main():
     p.add_argument('--object-id')
     p.add_argument('--recovery-contract',type=Path)
     a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
+    recovery_requested=False
     if a.recovery_contract:
         if a.recovery_contract.resolve()!=root/RECOVERY_FILE:raise ValueError('recovery contract must be the applied fixed P08 transition')
-        require_recovery_command(verify_applied_recovery(root,ROOT),'frontend',a.phase)
+        require_recovery_scope('frontend',a.phase);recovery_requested=True
     execution_target(cfg,a.gpu)
     asset_role='P09-propose' if a.phase=='P09_DEPTH_ORDER' else a.phase
     lineage=RunLineage(root,ROOT,a.runtime_config,asset_role=asset_role);contract=lineage.contract;case=contract['case']
+    if recovery_requested:require_recovery_command(lineage.recovery,'frontend',a.phase)
     python=interpreter(cfg['main_python']);env=runtime_environment(cfg,a.gpu)
     def run(script,args,outputs,extra=(),heavy=False,exe=python):
         run_command(a.phase,[exe,ROOT/'scripts'/script,*args],outputs,root=root,cwd=ROOT,env=env,

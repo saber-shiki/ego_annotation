@@ -5,7 +5,7 @@ import argparse, json, os, runpy, sys
 from pathlib import Path
 from v19_runtime_contracts import load,interpreter,execution_target,runtime_environment,validate_timeline
 from rgb_scene_runtime import SceneLineage,run_command,verify_resume
-from rgb_scene_recovery import RECOVERY_FILE, verify_applied_recovery, require_recovery_command
+from rgb_scene_recovery import RECOVERY_FILE, require_recovery_command, require_recovery_scope
 
 ROOT=Path(__file__).resolve().parents[1]
 STAGES=('frontend','camera','geometry','initial-pose','refined-pose','appearance','native-shape','shape','visual-fit','export')
@@ -21,11 +21,10 @@ def main():
     p.add_argument('--recovery-contract',type=Path)
     a=p.parse_args();root=a.run_root.resolve();cfg=load(a.runtime_config)
     if a.resume_contract and a.recovery_contract:p.error('--resume-contract and --recovery-contract are mutually exclusive')
-    recovery=None
+    recovery_requested=False
     if a.recovery_contract:
         if a.recovery_contract.resolve()!=root/RECOVERY_FILE:raise ValueError('recovery contract must be the applied fixed P08 transition')
-        recovery=verify_applied_recovery(root,ROOT)
-        require_recovery_command(recovery,a.stage,a.phase)
+        require_recovery_scope(a.stage,a.phase);recovery_requested=True
     execution_target(cfg,a.gpu)
     os.environ.pop('RGB_SCENE_VERIFIED_RESUME',None)
     if a.resume_contract:
@@ -39,6 +38,7 @@ def main():
         runpy.run_path(str(script),run_name='__main__');return
     role={'camera':'camera','geometry':'geometry_dispatch','native-shape':'geometry','initial-pose':'pose','refined-pose':'pose','appearance':'P09','shape':'pose','visual-fit':'demo','export':'export'}[a.stage]
     lineage=SceneLineage(root,ROOT,a.runtime_config,asset_role=role)
+    if recovery_requested:require_recovery_command(lineage.recovery,a.stage,a.phase)
     if a.stage=='camera':
         import rgb_scene_camera
         rgb_scene_camera._LINEAGE=lineage
