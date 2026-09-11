@@ -34,14 +34,16 @@ VISUAL_PROXIMITY_MAX_GAP_M = 0.012
 PRIMARY_PROXIMITY_MAX_GAP_M = 0.045
 HAND_TRANSLATION_BOUND_M = 0.025
 HAND_SCALE_BOUNDS = (0.85, 1.18)
+SHARED_TRANSLATION_TOLERANCE_M = 0.001
 
 
 def primary_similarity_reachable(points_camera, targets_camera, active=None):
     """Test one shared camera-origin scale/translation for active primary pads.
 
     The same hand-level similarity correction must explain every declared
-    primary pad.  Independent per-point feasibility is insufficient: it could
-    activate mutually incompatible pads that require different scales.
+    primary pad.  A one-millimeter tolerance covers the fact that each closest
+    triangle target is a sampled visual hypothesis; it is not a second free
+    translation per pad.  Independent per-point feasibility is insufficient.
     """
     points = np.asarray(points_camera, float)
     targets = np.asarray(targets_camera, float)
@@ -55,20 +57,40 @@ def primary_similarity_reachable(points_camera, targets_camera, active=None):
     if not len(active_ids):
         return reachable
     low, high = HAND_SCALE_BOUNDS
-    for i in active_ids:
-        p, q = points[i], targets[i]
-        if not np.isfinite([p, q]).all() or p[2] <= 0 or q[2] <= 0:
-            return reachable
-        for x, y in zip(p, q):
-            if abs(x) < 1e-12:
-                if abs(y) > HAND_TRANSLATION_BOUND_M:
+    tolerance = SHARED_TRANSLATION_TOLERANCE_M
+    # For each coordinate, q - s*p is the one common translation coordinate,
+    # up to the declared closest-triangle target tolerance. Intersect its
+    # bounded translation feasibility and all pairwise common-translation
+    # inequalities before activating any of the declared pads.
+    for axis in range(3):
+        for i in active_ids:
+            p, q = points[i, axis], targets[i, axis]
+            if not np.isfinite([p, q]).all():
+                return reachable
+            bound = HAND_TRANSLATION_BOUND_M + tolerance
+            if abs(p) < 1e-12:
+                if abs(q) > bound:
                     return reachable
                 continue
-            a, b = sorted(((y-HAND_TRANSLATION_BOUND_M) / x,
-                           (y+HAND_TRANSLATION_BOUND_M) / x))
+            a, b = sorted(((q-bound) / p, (q+bound) / p))
             low, high = max(low, a), min(high, b)
             if low > high:
                 return reachable
+        for i in active_ids:
+            for j in active_ids:
+                if i == j:
+                    continue
+                coefficient = points[i, axis] - points[j, axis]
+                lower = targets[i, axis] - targets[j, axis] - 2.0*tolerance
+                if abs(coefficient) < 1e-12:
+                    if lower > 0.0:
+                        return reachable
+                elif coefficient > 0.0:
+                    low = max(low, lower / coefficient)
+                else:
+                    high = min(high, lower / coefficient)
+                if low > high:
+                    return reachable
     reachable[active_ids] = True
     return reachable
 

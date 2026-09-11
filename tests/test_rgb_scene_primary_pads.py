@@ -85,7 +85,14 @@ class PrimaryPads(unittest.TestCase):
         self.assertTrue(independent[1])
         self.assertFalse(primary_similarity_reachable(points,target,active=[True,True,False,False,False]).any())
 
-    def test_reachability_is_directional_not_unlimited_norm_budget(self):
+    def test_shared_translation_rejects_individually_feasible_symmetric_targets(self):
+        points=np.array([[-.03,0.,1.],[.03,0.,1.],[0.,.03,1.],[0.,-.03,1.],[0.,0.,1.]])
+        target=np.array([[-.01,0.,1.],[.01,0.,1.],[0.,.03,1.],[0.,-.03,1.],[0.,0.,1.]])
+        self.assertTrue(primary_similarity_reachable(points,target,active=[True,False,False,False,False])[0])
+        self.assertTrue(primary_similarity_reachable(points,target,active=[False,True,False,False,False])[1])
+        self.assertFalse(primary_similarity_reachable(points,target,active=[True,True,False,False,False]).any())
+
+
         points=np.tile([0.,0.,.1],(5,1))
         target=points+[.04,0.,0.]
         self.assertFalse(primary_similarity_reachable(points,target).any())
