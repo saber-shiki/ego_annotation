@@ -10,6 +10,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
 from scipy.spatial.transform import Rotation
+from rgb_scene_rotation_chain import local_rotation_evidence, observed_rotation_authority
 from rgb_scene_pose_kernels import (
     PoseNode, RGBEdge, RGBReprojectionFactor, SolverConfig, valid_rotation,
     apply_left_correction, pose_correction, inverse_pose, rgb_edge_residual,
@@ -95,7 +96,17 @@ def depth_violation(depths, weights, cfg):
     return float(np.sum(weights * np.maximum(cfg.near_depth_m - depths, 0)))
 
 
-def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rotation_only=False):
+def conditioned_observed_pose(node, poses, reference=None, scales=None):
+    r, t = poses[node.frame_idx]
+    if reference is not None:
+        base = reference[node.frame_idx][0]
+        delta = Rotation.from_matrix(r @ base.T).as_rotvec()
+        r = Rotation.from_rotvec(scales[node.frame_idx] * delta).as_matrix() @ base
+    return r, t
+
+
+def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rotation_only=False,
+                    observed_reference=None, observed_scales=None):
     """Each block names its incident positions for exact finite-difference sparsity."""
     positions = {n.frame_idx: i for i, n in enumerate(nodes)}
     corrections = [pose_correction(n.initial_rotation, n.initial_translation, *poses[n.frame_idx]) for n in nodes]
@@ -127,7 +138,8 @@ def residual_blocks(poses, nodes, times, edges, points, reprojections, cfg, rota
             add([f.source_pos, f.target_pos], weights * np.maximum(cfg.near_depth_m - depths, 0) / cfg.depth_restoration_m)
         for f in points:
             a, b = nodes[f.source_pos], nodes[f.target_pos]
-            delta = inverse_pose(f.source_world, *poses[a.frame_idx]) - inverse_pose(f.target_world, *poses[b.frame_idx])
+            delta = (inverse_pose(f.source_world, *conditioned_observed_pose(a, poses, observed_reference, observed_scales))
+                     - inverse_pose(f.target_world, *conditioned_observed_pose(b, poses, observed_reference, observed_scales)))
             weights = np.sqrt(f.weights * cfg.observed_weight / max(1, len(delta)))
             # Unsigned observed point/plane alignment; normals have no inside/outside authority.
             plane = np.einsum('ij,ij->i', f.target_normals, delta)
@@ -163,15 +175,22 @@ def solve(nodes, times, edges, anchor, config=None, reprojections=()):
     times = validate(nodes, times, edges, anchor)
     if cfg.loss not in {'soft_l1', 'linear'} or min(cfg.rotation_step_rad, cfg.translation_step_m, cfg.depth_restoration_m, cfg.near_depth_m) <= 0:
         raise ValueError('invalid graph configuration')
+    # Work on distinct seed nodes: original arrays/rows remain immutable. Rotation
+    # priors and correction velocity now refer to current RGB evidence, not ICP.
+    nodes, edges, reprojections, chain = local_rotation_evidence(nodes, times, edges, anchor, reprojections)
+    observed_scales = observed_rotation_authority(nodes, chain)
     poses = {n.frame_idx: (n.initial_rotation.copy(), n.initial_translation.copy()) for n in nodes}
     # Eliminating this variable fixes the sole gauge exactly, without a huge numerical weight.
     free = [i for i, n in enumerate(nodes) if n.frame_idx != anchor]
     trace = []
+    snapshots = {}
     for rotation_only in (True, False):
+        observed_reference = {i: (r.copy(), t.copy()) for i, (r, t) in poses.items()}
         dof = 3 if rotation_only else 6
         for outer in range(cfg.outer_iterations):
             kernel = SolverConfig(max_points=250, min_pairs=3)
-            points, info = ([], {}) if rotation_only else build_observed_point_factors(nodes, poses, anchor, kernel, outer)
+            observed_poses = {n.frame_idx: conditioned_observed_pose(n, poses, observed_reference, observed_scales) for n in nodes}
+            points, info = ([], {}) if rotation_only else build_observed_point_factors(nodes, observed_poses, anchor, kernel, outer)
             base = poses
             def unpack(x):
                 result = dict(base)
@@ -180,7 +199,8 @@ def solve(nodes, times, edges, anchor, config=None, reprojections=()):
                     result[nodes[i].frame_idx] = apply_left_correction(*base[nodes[i].frame_idx], delta[:3], np.zeros(3) if rotation_only else delta[3:])
                 return result
             def blocks(x):
-                return residual_blocks(unpack(x), nodes, times, edges, points, reprojections, cfg, rotation_only)
+                return residual_blocks(unpack(x), nodes, times, edges, points, reprojections, cfg, rotation_only,
+                                       observed_reference, observed_scales)
             def fun(x):
                 return np.concatenate([v for _, v in blocks(x)])
             x0 = np.zeros(len(free) * dof)
@@ -255,6 +275,9 @@ def solve(nodes, times, edges, anchor, config=None, reprojections=()):
                           'remaining_invalid_depths': int(np.sum((candidate_depths if accepted else initial_depths) < cfg.near_depth_m))})
             if not accepted or np.max(np.abs(step)) < 1e-5:
                 break
+        snapshots['SO3' if rotation_only else 'SE3'] = [
+            {'frame_idx': n.frame_idx, 'rotation': poses[n.frame_idx][0].tolist(),
+             'translation_world_m': poses[n.frame_idx][1].tolist()} for n in nodes]
     diagnostics = []
     for e in edges:
         dr, dt = rgb_edge_residual(e, poses)
@@ -274,6 +297,9 @@ def solve(nodes, times, edges, anchor, config=None, reprojections=()):
         if np.any(active) and np.any(reprojection_depths(replace(f, source_world=f.source_world[active]), poses, nodes) < cfg.near_depth_m):
             invalid_ids.update((f.source_frame_idx, f.target_frame_idx))
     return poses, {'trace': trace, 'edges': diagnostics, 'gauge_anchor': anchor,
+                   'local_RGB_rotation': chain, 'stage_snapshots': snapshots,
+                   'observed_rotation_authority': {'policy': 'covariance_min_max_ratio_over_0.02_on_local_RGB_supported_nodes; translation_unchanged',
+                                                   'scales_by_frame': observed_scales},
                    'depth_restoration': {'affected_frame_ids': sorted(invalid_ids), 'remaining_invalid': int(np.sum(depth_state(poses, nodes, reprojections, cfg)[0] < cfg.near_depth_m)),
                                          'policy': 'weighted restoration; retain uncertainty when infeasible'},
                    'relative_evidence_disconnected_ids': [n.frame_idx for n in nodes if n.frame_idx not in connected]}

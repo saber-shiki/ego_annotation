@@ -58,7 +58,8 @@ class PoseGraphTests(unittest.TestCase):
         linear,_=solve(n,t,e,a,GraphConfig(**{**cfg.__dict__,'loss':'linear'}))
         self.assertLess(error(robust,truth),error(linear,truth))
         self.assertLess(error(robust,truth),.13)
-        self.assertLess(min(diag['edges'][-1]['robust_rotation_precision']),.1)
+        self.assertEqual(diag['local_RGB_rotation']['edges'][-1]['weight_scale'],0.)
+        self.assertEqual(diag['local_RGB_rotation']['edges'][-1]['reason'],'rejected_independent_local_cycle')
 
     def test_relative_reversed_and_reprojection_source_target_jacobians(self):
         rs=Rotation.from_rotvec([.2,.1,-.1]).as_matrix();rt=Rotation.from_rotvec([-.3,.2,.5]).as_matrix()

@@ -3,6 +3,52 @@ import numpy as np
 from v20_demo_geometry import resized_K
 
 SIDES = ("left", "right")
+PRIMARY_DIGITS = ("thumb", "index", "middle", "ring", "little")
+
+
+def primary_contact_pads(payload, ids, object_id):
+    """Optional P17 interval declarations; missing designation grants no reach.
+
+    Names select existing MANO fingertip pads, never caller-supplied vertices.
+    Expanded reach requires likely_contact and visible image support at fit time.
+    """
+    ids = frame_ids(ids)
+    states = interaction_states(payload, ids, object_id)
+    selected = np.zeros((len(ids), 2, 5), bool)
+    if payload is None:
+        return selected
+    rows = payload.get('interaction_judgments', payload.get('judgments', payload.get('segments', [])))
+    for row in rows:
+        declaration = row.get('primary_contact_pads')
+        if declaration is None:
+            continue
+        if (not isinstance(declaration, dict) or set(declaration) != {'digits', 'rationale'}
+                or not isinstance(declaration['digits'], list)
+                or any(not isinstance(d, str) or d not in PRIMARY_DIGITS for d in declaration['digits'])
+                or len(set(declaration['digits'])) != len(declaration['digits'])
+                or not isinstance(declaration['rationale'], str) or not declaration['rationale'].strip()):
+            raise ValueError('primary_contact_pads requires unique anatomical digits and nonempty rationale')
+        target = row.get('target_entity_id', row.get('object_id', row.get('track_id')))
+        if target and target.split(':', 1)[-1] != object_id.split(':', 1)[-1]:
+            continue
+        side = row.get('hand_side', row.get('side'))
+        si = SIDES.index(side)
+        start = int(row.get('frame_start', row.get('start_frame', int(min(ids)))))
+        end = int(row.get('frame_end', row.get('end_frame', int(max(ids)))))
+        mask = (ids >= start) & (ids <= end) & (states[:, si] == 'likely_contact')
+        for digit in declaration['digits']:
+            selected[mask, si, PRIMARY_DIGITS.index(digit)] = True
+    # Standalone P17 has explicit visibility; occluded or unresolved poses are
+    # retained but do not gain expanded attraction from an image-only hypothesis.
+    for row in payload.get('frames', []):
+        at = np.flatnonzero(ids == row['frame_idx'])
+        visibility = row.get('visibility', {})
+        for si, side in enumerate(SIDES):
+            if any(visibility.get(entity, {}).get('state') not in {'visible', 'partially_visible'}
+                   for entity in (side, 'object')):
+                selected[at, si] = False
+    return selected
+
 
 
 def frame_ids(values, label="frame_idx"):

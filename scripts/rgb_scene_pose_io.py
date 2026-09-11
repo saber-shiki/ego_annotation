@@ -155,6 +155,7 @@ def refine(annotations_path, source_path, edge_path, edge_report, object_id, anc
         raise ValueError('gauge anchor must have current retained metric support')
     edges,reprojections=load_edges(edge_path,edge_report,source_path,annotations_path,nodes,root)
     poses,diagnostics=solve(nodes,times,edges,anchor,reprojections=reprojections)
+    seed_rows = {row['frame_idx']: row for row in diagnostics['local_RGB_rotation']['seed_rows']}
     rows=[]
     for n,stamp in zip(nodes,times):
         r,t=poses[n.frame_idx]
@@ -162,9 +163,10 @@ def refine(annotations_path, source_path, edge_path, edge_report, object_id, anc
                      'pose_source':'global_SO3_observed_RGB_SE3_visual_posterior',
                      'metric_observation':n.metric_observation,
                      'depth_feasibility_uncertain':n.frame_idx in diagnostics['depth_restoration']['affected_frame_ids'],
-                     'uncertainty':max(.9 if n.frame_idx in diagnostics['depth_restoration']['affected_frame_ids'] else 0., n.uncertainty, .6 if n.frame_idx in diagnostics['relative_evidence_disconnected_ids'] else .2),
+                     'uncertainty':max(seed_rows[n.frame_idx]['uncertainty'], .9 if n.frame_idx in diagnostics['depth_restoration']['affected_frame_ids'] else 0., n.uncertainty, .6 if n.frame_idx in diagnostics['relative_evidence_disconnected_ids'] else .2),
                      'uncertainty_kind':'heuristic_support_uncertainty_not_marginal_covariance',
                      'relative_evidence_connected':n.frame_idx not in diagnostics['relative_evidence_disconnected_ids'],
+                     'local_RGB_seed':seed_rows[n.frame_idx],
                      'source_prior':n.source_row})
     report={'schema':'rgb_scene_refined_pose_v1','object_id':object_id,
             'prediction_side_only':True,'annotation_ready':False,'physical_contact_authority':False,

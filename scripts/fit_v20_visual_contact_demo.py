@@ -22,7 +22,7 @@ from v20_demo_geometry import (
 )
 from v20_prediction_contracts import assert_prediction_only
 from v19_demo_timeline import (annotation_timeline, hand_validity, fit_keyframes,
-    interpolate_supported, interaction_states, render_size)
+    interpolate_supported, interaction_states, primary_contact_pads, PRIMARY_DIGITS, render_size)
 
 
 # Pixel thresholds and residual scales were tuned on the original 960-wide demo.
@@ -31,10 +31,46 @@ from v19_demo_timeline import (annotation_timeline, hand_validity, fit_keyframes
 # contact distances and silhouette correspondences. Height follows source aspect.
 FIT_REFERENCE_WIDTH = 960
 VISUAL_PROXIMITY_MAX_GAP_M = 0.012
+PRIMARY_PROXIMITY_MAX_GAP_M = 0.045
+HAND_TRANSLATION_BOUND_M = 0.025
+HAND_SCALE_BOUNDS = (0.85, 1.18)
+
+
+def primary_similarity_reachable(points_camera, targets_camera):
+    """Can the existing camera-origin scale + bounded translation reach a target?
+
+    Intersect the per-coordinate feasible scale intervals. This uses an actual
+    feasible correction, not the sum of unrelated maximum displacements. Root,
+    articulation and object motion are not needed to justify initial activation.
+    """
+    points = np.asarray(points_camera, float)
+    targets = np.asarray(targets_camera, float)
+    if points.shape != (5, 3) or targets.shape != (5, 3):
+        raise ValueError('five camera-space pad/triangle points required')
+    reachable = np.zeros(5, bool)
+    for i, (p, q) in enumerate(zip(points, targets)):
+        if not np.isfinite([p, q]).all() or p[2] <= 0 or q[2] <= 0:
+            continue
+        low, high = HAND_SCALE_BOUNDS
+        for x, y in zip(p, q):
+            if abs(x) < 1e-12:
+                if abs(y) > HAND_TRANSLATION_BOUND_M:
+                    low, high = 1., 0.
+                    break
+            else:
+                a, b = sorted(((y-HAND_TRANSLATION_BOUND_M)/x, (y+HAND_TRANSLATION_BOUND_M)/x))
+                low, high = max(low, a), min(high, b)
+        reachable[i] = low <= high
+    return reachable
+
+
+def unsigned_pad_loss(delta, weight):
+    """Three nearest actual MANO pad samples to full triangle correspondences."""
+    return weight * torch.topk(delta.square().sum(-1), 3, largest=False).values.mean() / 0.003**2
 
 
 def visual_proximity_weights(inside, image_distances, triangle_gaps,
-                             *, state="likely_contact"):
+                             *, state="likely_contact", primary=None, reachable=None):
     """Demo-only image/triangle proximity weights; never a contact measurement."""
     inside = np.asarray(inside, dtype=bool)
     gaps = np.asarray(triangle_gaps, dtype=float)
@@ -43,14 +79,20 @@ def visual_proximity_weights(inside, image_distances, triangle_gaps,
     result = np.zeros(5, np.float32)
     if state not in {"likely_contact", "possible_contact", "legacy_visual_hypothesis"}:
         return result
+    primary = np.zeros(5, bool) if primary is None else np.asarray(primary, bool)
+    reachable = np.zeros(5, bool) if reachable is None else np.asarray(reachable, bool)
+    if primary.shape != (5,) or reachable.shape != (5,):
+        raise ValueError('five primary/reachability values required')
     image_bounds = [16.0, 8.0, 8.0, 8.0, 8.0]
     strengths = [1.0, 0.12, 0.12, 0.12, 0.12]
     for finger in range(5):
+        expanded = state == 'likely_contact' and primary[finger] and reachable[finger]
+        bound = PRIMARY_PROXIMITY_MAX_GAP_M if expanded else VISUAL_PROXIMITY_MAX_GAP_M
         distance = image_distances[finger]
         if (inside[finger] and distance is not None and np.isfinite(distance)
-                and float(distance) < image_bounds[finger]
-                and np.isfinite(gaps[finger]) and 0 <= gaps[finger] < VISUAL_PROXIMITY_MAX_GAP_M):
-            result[finger] = strengths[finger]
+                and float(distance) < (16. if expanded else image_bounds[finger])
+                and np.isfinite(gaps[finger]) and 0 <= gaps[finger] < bound):
+            result[finger] = 1. if expanded else strengths[finger]
     return result
 
 
@@ -186,10 +228,9 @@ def main():
     valid = {side: hand_validity(z, side, N) for side in ["left", "right"]}
     key = fit_keyframes(N, valid)
     B = len(key)
-    judgments = interaction_states(
-        load(args.interaction_judgments) if args.interaction_judgments else None,
-        ids, args.object_id,
-    )
+    judgment_payload = load(args.interaction_judgments) if args.interaction_judgments else None
+    judgments = interaction_states(judgment_payload, ids, args.object_id)
+    primary = primary_contact_pads(judgment_payload, ids, args.object_id)
     R0 = np.asarray([r["rotation_world_from_completed_canonical_matrix"] for r in rows])
     t0 = np.asarray([r["translation_world_m"] for r in rows])
     if (R0.shape != (N, 3, 3) or t0.shape != (N, 3) or not np.isfinite(R0).all()
@@ -307,13 +348,17 @@ def main():
             inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < fit_size[0]) & (p[:, 1] < fit_size[1])
             p = np.clip(p, [0, 0], fit_size - 1)
             image_distances = [float(dist[p[finger, 1], p[finger, 0]]) if inside[finger] else None for finger in range(5)]
-            # Every fingertip requires both image and finite bounded actual-triangle proximity.
+            # A declared primary may need bounded correction before proximity.
+            # The target remains an unsigned point on the complete triangle mesh.
             base = data[side]["base_vertices"][local].cpu().numpy()
             q = (base[TIP_VERTICES] - t0[i]) @ R0[i]
             near, n = closest(scene, q)
             gap = np.linalg.norm(q - near, axis=1)
+            reachable = primary_similarity_reachable(
+                camera(base[TIP_VERTICES], T[i]), camera(near @ R0[i].T + t0[i], T[i]))
             contact_gate[k, si] = visual_proximity_weights(
-                inside, image_distances, gap, state=str(judgments[i, si])
+                inside, image_distances, gap, state=str(judgments[i, si]),
+                primary=primary[i, si], reachable=reachable,
             )
             for finger in range(5):
                 weight = float(contact_gate[k, si, finger])
@@ -321,6 +366,10 @@ def main():
                     "frame_idx": int(ids[i]),
                     "side": side,
                     "finger_index": finger,
+                    "digit": PRIMARY_DIGITS[finger],
+                    "primary_designated_and_visible": bool(primary[i, si, finger]),
+                    "bounded_similarity_reachable": bool(reachable[finger]),
+                    "expanded_primary_active": bool(primary[i, si, finger] and reachable[finger] and weight > 0),
                     "P17_state": str(judgments[i, si]),
                     "in_frame": bool(inside[finger]),
                     "appearance_mask_distance_reference_px": image_distances[finger],
@@ -341,6 +390,11 @@ def main():
                 "tip_vertices": TIP_VERTICES.tolist(),
                 "interaction_source": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
                 "interaction_states": judgments[key].tolist(),
+                "primary_contact_pads": primary[key].tolist(),
+                "primary_policy": {"max_initial_gap_m": PRIMARY_PROXIMITY_MAX_GAP_M,
+                                   "reachability": "closest_triangle_target_reachable_by_camera_origin_scale_and_translation",
+                                   "hand_scale_bounds": HAND_SCALE_BOUNDS,
+                                   "hand_translation_component_bound_m": HAND_TRANSLATION_BOUND_M},
                 "diagnostics": contact_diagnostics,
                 "fit_image_size_wh": fit_size.tolist(),
             },
@@ -487,10 +541,8 @@ def main():
                         continue
                     ix = torch.tensor(d["patch"][local, finger], device=device)
                     delta = qc[local, ix] - q[local, ix]
-                    dist = delta.square().sum(-1)
-                    visual_proximity_loss = visual_proximity_loss + weights[k, si, finger] * torch.topk(
-                        dist, 3, largest=False
-                    ).values.mean() / 0.003**2 / (B * 2)
+                    visual_proximity_loss = visual_proximity_loss + unsigned_pad_loss(
+                        delta, weights[k, si, finger]) / (B * 2)
         boundary_loss = to(0.0)
         for k in outline:
             vc = (ov @ R[k].T + t[k] - cam_t[k]) @ cam_R[k]
@@ -538,8 +590,8 @@ def main():
         with torch.no_grad():
             hand_delta.clamp_(-0.35, 0.35)
             hand_root.clamp_(-0.15, 0.15)
-            hand_t.clamp_(-0.025, 0.025)
-            hand_scale.clamp_(np.log(0.85), np.log(1.18))
+            hand_t.clamp_(-HAND_TRANSLATION_BOUND_M, HAND_TRANSLATION_BOUND_M)
+            hand_scale.clamp_(np.log(HAND_SCALE_BOUNDS[0]), np.log(HAND_SCALE_BOUNDS[1]))
             obj_delta[:, :3].clamp_(-0.08, 0.08)
             obj_delta[:, 3:5].clamp_(-0.015, 0.015)
             obj_delta[:, 5].clamp_(-0.035, 0.035)
@@ -580,6 +632,8 @@ def main():
         "source_size_wh": source_size, "intrinsics_render": K,
         "left_valid": valid["left"], "right_valid": valid["right"],
         "interaction_states": judgments,
+        "primary_contact_pads": primary,
+        "primary_contact_digit_order": np.asarray(PRIMARY_DIGITS),
         "object_vertices_canonical": V, "object_faces": F,
         "keyframe_idx": ids[key], **interp,
     }
@@ -631,13 +685,16 @@ def main():
             bc = (z[side + "_vertices_world_m"][i] - t0[i]) @ R0[i]
             qb, nb = closest(scene, bc)
             tips = []
-            for tip in TIP_VERTICES:
+            for finger, tip in enumerate(TIP_VERTICES):
                 patch = cKDTree(z[side + "_vertices_world_m"][i]).query(
                     z[side + "_vertices_world_m"][i, tip], k=12
                 )[1]
                 tips.append(
                     {
                         "tip_vertex": int(tip),
+                        "digit": PRIMARY_DIGITS[finger],
+                        "primary_designated_and_visible": bool(primary[i, si, finger]),
+                        "P17_state": str(judgments[i, si]),
                         "base_gap_mm": float(
                             np.sort(np.linalg.norm(bc[patch] - qb[patch], axis=1))[
                                 :3

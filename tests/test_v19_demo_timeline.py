@@ -408,6 +408,50 @@ class DemoTimeline(unittest.TestCase):
             uv_half = project(half[0]["left_vertices_world"][0], half[0]["intrinsics_render"][0])
             np.testing.assert_allclose(uv_half, (uv_full + .5) / 2 - .5, atol=1e-6)
 
+            # Execute the actual fitter entrypoint with a 30 mm pad gap. Only
+            # the MANO model is a differentiable synthetic fixture; triangle
+            # queries, P17 parsing, gating, loss and exported timeline are real.
+            vertices[:, 2] = .92
+            vertices[TIP_VERTICES, 0] = (tip_u - 479.5) * .92 / 720
+            joints = np.concatenate([vertices[:16], vertices[TIP_VERTICES]])[JOINT_ORDER]
+            with np.load(root / 'params.npz') as z:
+                params = dict(z)
+            params['left_vertices_world_m'] = np.tile(vertices, (4, 1, 1))
+            params['left_joints_world_m'] = np.tile(joints, (4, 1, 1))
+            np.savez(root / 'params.npz', **params)
+            np.savez(root / 'bridge.npz', frame_idx=ids, hand_side=np.array(['left']*4),
+                     vertices_current_v18_world_from_hawor_projection_relift_m=params['left_vertices_world_m'])
+            fits = []
+            for name, contact_state, declaration in [
+                    ('absent', 'likely_contact', {}),
+                    ('primary', 'likely_contact', {'primary_contact_pads': {'digits': ['index'], 'rationale': 'Synthetic index support'}}),
+                    ('noncontact', 'no_contact', {'primary_contact_pads': {'digits': ['index'], 'rationale': 'Explicit no-contact wins'}})]:
+                p17 = {'interaction_judgments': [{'hand_side': 'left', 'frame_start': 40, 'frame_end': 43,
+                                                'contact_state': contact_state, **declaration}]}
+                (root / 'p17.json').write_text(json.dumps(p17))
+                candidate_argv = argv.copy()
+                candidate_argv[candidate_argv.index('--output-dir')+1] = str(root / name)
+                with (patch.object(sys, 'argv', candidate_argv),
+                      patch.object(fitter, 'mano_models', return_value={s: TestMano() for s in ['left','right']}),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    fitter.main()
+                hypothesis = json.loads((root / name / 'contact_hypotheses.json').read_text())
+                report = json.loads((root / name / 'fit_report.json').read_text())
+                with np.load(root / name / 'demo_state.npz') as z:
+                    state = dict(z)
+                np.testing.assert_array_equal(state['frame_idx'], [40,41,42,43])
+                self.assertFalse(state['right_valid'].any())
+                np.testing.assert_array_equal(state['left_source_betas'], params['left_betas'])
+                self.assertEqual(len(state['object_faces']),12)
+                fits.append((hypothesis, report, state))
+            self.assertEqual(fits[0][1]['trace'][0]['visual_proximity'], 0.)
+            self.assertEqual(fits[2][1]['trace'][0]['visual_proximity'], 0.)
+            self.assertGreater(fits[1][1]['trace'][0]['visual_proximity'], 0.)
+            active = [r for r in fits[1][0]['diagnostics'] if r.get('expanded_primary_active')]
+            self.assertEqual(len(active), len(fits[1][0]['keyframes']))
+            self.assertTrue(all(r['digit']=='index' and .02 < r['real_triangle_surface_gap_m'] < .04 for r in active))
+            self.assertGreater(np.linalg.norm(fits[1][2]['hand_log_scale']-fits[0][2]['hand_log_scale']),1e-5)
+
     def test_short_rrd_logs_timestamp_camera_and_clears_missing_hand(self):
         import render_v20_visual_contact_demo as renderer
         vertices = np.array([[-.2, -.2, 0], [.2, -.2, 0], [0, .2, 0]], np.float32)
