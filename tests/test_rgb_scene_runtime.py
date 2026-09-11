@@ -47,7 +47,12 @@ class RuntimeTests(unittest.TestCase):
         with patch('v19_runtime_contracts.subprocess.run',side_effect=responses(util=0)):
             with self.assertRaises(RuntimeError):live_gpu_probe(2)
 
-    def test_candidate_root_control_argument_is_not_recursive_input(self):
+    def test_runtime_spec_p17_uses_exact_frame_idx_key(self):
+        spec = (ROOT / 'runtime/rgb_scene_runtime_spec.md').read_text()
+        self.assertIn('Every frame row must use the exact integer key `frame_idx`', spec)
+        self.assertIn('No `frame_id` alias', spec)
+
+
         candidate_root = Path('/tmp/run/candidates/example')
         lineage = object.__new__(runtime.SceneLineage)
         lineage.candidate = SimpleNamespace(root=candidate_root)
