@@ -36,31 +36,40 @@ HAND_TRANSLATION_BOUND_M = 0.025
 HAND_SCALE_BOUNDS = (0.85, 1.18)
 
 
-def primary_similarity_reachable(points_camera, targets_camera):
-    """Can the existing camera-origin scale + bounded translation reach a target?
+def primary_similarity_reachable(points_camera, targets_camera, active=None):
+    """Test one shared camera-origin scale/translation for active primary pads.
 
-    Intersect the per-coordinate feasible scale intervals. This uses an actual
-    feasible correction, not the sum of unrelated maximum displacements. Root,
-    articulation and object motion are not needed to justify initial activation.
+    The same hand-level similarity correction must explain every declared
+    primary pad.  Independent per-point feasibility is insufficient: it could
+    activate mutually incompatible pads that require different scales.
     """
     points = np.asarray(points_camera, float)
     targets = np.asarray(targets_camera, float)
     if points.shape != (5, 3) or targets.shape != (5, 3):
         raise ValueError('five camera-space pad/triangle points required')
+    active = np.ones(5, bool) if active is None else np.asarray(active, bool)
+    if active.shape != (5,):
+        raise ValueError('five active primary-pad values required')
     reachable = np.zeros(5, bool)
-    for i, (p, q) in enumerate(zip(points, targets)):
+    active_ids = np.flatnonzero(active)
+    if not len(active_ids):
+        return reachable
+    low, high = HAND_SCALE_BOUNDS
+    for i in active_ids:
+        p, q = points[i], targets[i]
         if not np.isfinite([p, q]).all() or p[2] <= 0 or q[2] <= 0:
-            continue
-        low, high = HAND_SCALE_BOUNDS
+            return reachable
         for x, y in zip(p, q):
             if abs(x) < 1e-12:
                 if abs(y) > HAND_TRANSLATION_BOUND_M:
-                    low, high = 1., 0.
-                    break
-            else:
-                a, b = sorted(((y-HAND_TRANSLATION_BOUND_M)/x, (y+HAND_TRANSLATION_BOUND_M)/x))
-                low, high = max(low, a), min(high, b)
-        reachable[i] = low <= high
+                    return reachable
+                continue
+            a, b = sorted(((y-HAND_TRANSLATION_BOUND_M) / x,
+                           (y+HAND_TRANSLATION_BOUND_M) / x))
+            low, high = max(low, a), min(high, b)
+            if low > high:
+                return reachable
+    reachable[active_ids] = True
     return reachable
 
 
@@ -355,7 +364,8 @@ def main():
             near, n = closest(scene, q)
             gap = np.linalg.norm(q - near, axis=1)
             reachable = primary_similarity_reachable(
-                camera(base[TIP_VERTICES], T[i]), camera(near @ R0[i].T + t0[i], T[i]))
+                camera(base[TIP_VERTICES], T[i]), camera(near @ R0[i].T + t0[i], T[i]),
+                active=primary[i, si])
             contact_gate[k, si] = visual_proximity_weights(
                 inside, image_distances, gap, state=str(judgments[i, si]),
                 primary=primary[i, si], reachable=reachable,
@@ -392,7 +402,7 @@ def main():
                 "interaction_states": judgments[key].tolist(),
                 "primary_contact_pads": primary[key].tolist(),
                 "primary_policy": {"max_initial_gap_m": PRIMARY_PROXIMITY_MAX_GAP_M,
-                                   "reachability": "closest_triangle_target_reachable_by_camera_origin_scale_and_translation",
+                                   "reachability": "one_shared_closest_triangle_target_scale_and_translation_for_declared_primary_pads",
                                    "hand_scale_bounds": HAND_SCALE_BOUNDS,
                                    "hand_translation_component_bound_m": HAND_TRANSLATION_BOUND_M},
                 "diagnostics": contact_diagnostics,

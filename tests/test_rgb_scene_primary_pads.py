@@ -74,6 +74,17 @@ class PrimaryPads(unittest.TestCase):
         weights=visual_proximity_weights([True]*5,[0.]*5,[.05,np.nan,np.inf,-.1,.03],primary=[True]*5,reachable=[True]*5)
         self.assertEqual(np.flatnonzero(weights).tolist(),[4])
 
+    def test_reachability_requires_one_shared_similarity_for_all_active_pads(self):
+        points=np.array([[.5,.1,.5],[.5,-.1,.5],[.03,.04,.20],[.02,-.04,.20],[.01,.03,.20]])
+        # Each point separately admits a scale/translation, but the two active
+        # targets demand incompatible shared scales; no expanded gate is safe.
+        target=points.copy(); target[0]*=1.18; target[1]*=.85
+        independent=primary_similarity_reachable(points,target,active=[True,False,False,False,False])
+        self.assertTrue(independent[0])
+        independent=primary_similarity_reachable(points,target,active=[False,True,False,False,False])
+        self.assertTrue(independent[1])
+        self.assertFalse(primary_similarity_reachable(points,target,active=[True,True,False,False,False]).any())
+
     def test_reachability_is_directional_not_unlimited_norm_budget(self):
         points=np.tile([0.,0.,.1],(5,1))
         target=points+[.04,0.,0.]
