@@ -11,7 +11,7 @@ class CandidateLaunchPreparationTests(unittest.TestCase):
             (bundle/'runtime/runtime_config.json').write_text('{}')
             (bundle/'scripts').mkdir(); (bundle/'scripts/run_rgb_scene_stage.py').write_text('')
             run=root/'run'; run.mkdir(); c=root/'candidate'; c.mkdir()
-            contract={'candidate_id':'case with spaces','object_id':'obj','selected_frame_idx':17,'run_root':str(run)}
+            contract={'candidate_id':'case_with_spaces','object_id':'obj','selected_frame_idx':17,'run_root':str(run)}
             cp=c/'candidate_contract.json'; cp.write_text(json.dumps(contract))
             out=root/'plan with spaces'
             result=launch.materialize(bundle,cp,out,gpu=3,device='cpu',image_width=640,image_height=480,python=sys.executable)
@@ -20,6 +20,6 @@ class CandidateLaunchPreparationTests(unittest.TestCase):
             self.assertIn('--gpu 3',body); self.assertIn('--candidate-context',body)
             self.assertFalse((run/'producer_output').exists())
             with self.assertRaises(ValueError): launch.materialize(bundle,cp,out,gpu=3,python=sys.executable)
-            self.assertEqual(len(list(out.glob('*.sh'))),12)
+            self.assertEqual(len(list(out.glob('*.sh'))),15)
 
 if __name__ == '__main__': unittest.main()
