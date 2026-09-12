@@ -43,11 +43,12 @@ def materialize(bundle,candidate,output,*,gpu,device='cuda:0',image_width=None,i
     if not context.is_file() or hashlib.sha256(context.read_bytes()).hexdigest()!=contract.get('source_context_sha256'): raise ValueError('source context hash mismatch')
     context_value=_json(context)
     if context_value.get('source_contract_sha256') != contract['source_contract_sha256'] or context_value.get('source_contract') != str(source_contract): raise ValueError('source context binding mismatch')
-    event_paths=[run_root/'logs/integration/events.jsonl']
-    recovered=run_root/'logs/recovery/P09_DEPTH_ORDER/events.jsonl'
-    if recovered.is_file(): event_paths.append(recovered)
-    for event_path in event_paths:
-        if not event_path.is_file(): raise ValueError(f'missing source event snapshot: {event_path}')
+    event_bindings=context_value.get('source_event_streams')
+    if not isinstance(event_bindings,list) or not event_bindings: raise ValueError('source event bindings missing')
+    for binding in event_bindings:
+        if not isinstance(binding,dict) or not isinstance(binding.get('path'),str) or not re.fullmatch(r'[0-9a-f]{64}',str(binding.get('sha256',''))): raise ValueError('invalid source event binding')
+        event_path=Path(binding['path']).expanduser()
+        if not event_path.is_file() or hashlib.sha256(event_path.read_bytes()).hexdigest()!=binding['sha256']: raise ValueError('source event snapshot hash mismatch')
     source_value=_json(source_contract)
     if identity.get('input_video_sha256') != source_value.get('input_video_sha256'): raise ValueError('source video identity mismatch')
     if type(cfg.get('gpu')) is int and cfg['gpu']!=gpu: raise ValueError('gpu differs from current runtime config')
@@ -64,16 +65,18 @@ def materialize(bundle,candidate,output,*,gpu,device='cuda:0',image_width=None,i
         if phase: args += ['--phase',phase]
         body='#!/bin/bash\nset -euo pipefail\ncd '+shlex.quote(str(bundle))+'\nexec '+' '.join(shlex.quote(x) for x in args)+'\n'
         bodies[name]=body
+    proposal= candidate.parent/'measurements/object_geometry/anchor_candidates'/contract['object_id']/'anchor_candidate_proposals.json'
+    p09= candidate.parent/'measurements/object_geometry/visible_geometry'/contract['object_id']/'v19_visible_geometry_adapter_report.json'
     recipes={
-      'startup': shlex.join([str(lexical),'-c',f'import json; print(json.load(open({str(candidate)!r}))["candidate_id"])']),
-      'proposal': shlex.join([str(lexical),'-c',f'import hashlib,pathlib; print(hashlib.sha256(pathlib.Path({str(candidate)!r}).read_bytes()).hexdigest())']),
-      'P09': shlex.join([str(lexical),'-c',f'import json; d=json.load(open({str(candidate)!r})); print(json.dumps({{"object_id":d["object_id"],"selected_frame_idx":d["selected_frame_idx"],"native_mode":d.get("native_mode")}}))'])
+      'startup': shlex.join([str(lexical),'-c',f'import json; print(json.load(open({str(candidate)!r}))['"'"'candidate_id'"'"'])']),
+      'proposal': shlex.join([str(lexical),'-c',f'import hashlib,pathlib,json; p=pathlib.Path({str(proposal)!r}); d=json.loads(p.read_text()); print(json.dumps({{"candidate_count":d.get("candidate_count"),"top_ranked":d.get("ranked_candidates",[])[:3],"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}}))']),
+      'P09': shlex.join([str(lexical),'-c',f'import hashlib,pathlib,json; p=pathlib.Path({str(p09)!r}); d=json.loads(p.read_text()); print(json.dumps({{"status":d.get("status"),"output_frame_count":d.get("output_frame_count"),"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}}))'])
     }
     for name,body in bodies.items():
         check=__import__('subprocess').run(['/bin/bash','-n'],input=body,text=True,capture_output=True)
         if check.returncode: raise ValueError(f'bash syntax failed: {name}')
         path=output/f'{name}.sh'; scripts[name]=str(path); hashes[str(path)]=hashlib.sha256(body.encode()).hexdigest()
-    metadata={'kind':'rgb_scene_candidate_launch_plan','bundle':str(bundle),'candidate_context':str(candidate),'run_root':str(run_root),'candidate_id':contract['candidate_id'],'object_id':contract['object_id'],'selected_frame_idx':contract['selected_frame_idx'],'python':str(lexical),'gpu':gpu,'device':device,'image_width':image_width,'image_height':image_height,'stages':scripts,'stage_count':len(STAGES),'inspection_recipes':{k:f'/bin/bash {output}/inspect-{k}.sh' for k in recipes},'judgment_paths':{k:str(candidate.parent/p) for k,p in {'P09_anchor':'state/anchor_decisions/'+contract['object_id']+'.json','P10_branch':'state/physical_branch_decisions/'+contract['object_id']+'.json','P10_selection':'state/object_selection.json','appearance_anchor':'state/appearance_decisions/'+contract['object_id']+'.json','P17':'state/agent_interaction_judgments/'+contract['object_id']+'.json'}.items()},'producer_execution':'not performed'}
+    metadata={'kind':'rgb_scene_candidate_launch_plan','bundle':str(bundle),'candidate_context':str(candidate),'run_root':str(run_root),'candidate_id':contract['candidate_id'],'object_id':contract['object_id'],'selected_frame_idx':contract['selected_frame_idx'],'python':str(lexical),'gpu':gpu,'device':device,'image_width':image_width,'image_height':image_height,'dimensions_metadata_only':True,'stages':scripts,'stage_count':len(STAGES),'inspection_recipes':{k:shlex.join(['/bin/bash',str(output/f'inspect-{k}.sh')]) for k in recipes},'judgment_paths':{k:str(candidate.parent/p) for k,p in {'P09_anchor':'state/anchor_decisions/'+contract['object_id']+'.json','P10_branch':'state/physical_branch_decisions/'+contract['object_id']+'.json','P10_selection':'state/object_selection.json','appearance_anchor':'state/appearance_decisions/'+contract['object_id']+'.json','P17':'state/agent_interaction_judgments/'+contract['object_id']+'.json'}.items()},'producer_execution':'not performed'}
     metadata['script_sha256']=hashes
     # All validation above and all bodies are complete before any output exists.
     output.mkdir(parents=True)
