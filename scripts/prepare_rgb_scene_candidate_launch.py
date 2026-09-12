@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create-only, producer-free launch plan from current RGB contracts."""
 from __future__ import annotations
-import argparse, hashlib, json, os, re, shlex
+import argparse, hashlib, json, os, re, shlex, uuid
 from pathlib import Path
 
 STAGES=(('frontend-P09_DEPTH_ORDER','frontend','P09_DEPTH_ORDER'),('frontend-P09-propose','frontend','P09-propose'),('frontend-P09','frontend','P09'),('frontend-P11','frontend','P11'),('geometry','geometry',None),('initial-pose','initial-pose',None),('refined-pose','refined-pose',None),('appearance','appearance',None),('native-shape','native-shape',None),('shape','shape',None),('visual-fit','visual-fit',None),('export','export',None))
@@ -27,11 +27,17 @@ def materialize(bundle,candidate,output,*,gpu,device='cuda:0',image_width=None,i
     if any(k not in contract for k in required): raise ValueError('candidate contract missing required key')
     if not all(isinstance(contract[k],str) and _ID.fullmatch(contract[k]) for k in ('candidate_id','object_id')): raise ValueError('unsafe candidate/object ID')
     if type(contract['selected_frame_idx']) is not int or contract['selected_frame_idx']<0: raise ValueError('selected_frame_idx must be non-negative integer')
-    run_root=_path(contract['run_root'],directory=True); runtime=bundle/'runtime/runtime_config.json'; _path(runtime)
-    cfg=_json(runtime)
+    run_root=_path(contract['run_root'],directory=True); runtime=bundle/'runtime/runtime_config.json'; _path(runtime); cfg=_json(runtime)
+    if candidate != run_root/'candidates'/contract['candidate_id']/'candidate_contract.json': raise ValueError('candidate contract path/identity mismatch')
+    if contract.get('schema') != 'rgb_scene_candidate_v1' or not isinstance(contract.get('run_id'),str): raise ValueError('candidate schema/identity missing')
+    try: uuid.UUID(contract['run_id'])
+    except ValueError as exc: raise ValueError('invalid candidate run_id') from exc
+    if contract.get('native_mode') not in {'new','reuse'}: raise ValueError('invalid native_mode')
+    if not isinstance(contract.get('source_contract_sha256'),str) or not re.fullmatch(r'[0-9a-f]{64}',contract['source_contract_sha256']): raise ValueError('source contract identity missing')
+    if not isinstance(contract.get('source_identity'),dict): raise ValueError('source identity missing')
     if type(gpu) is not int or gpu<0: raise ValueError('gpu must be non-negative integer')
     if type(cfg.get('gpu')) is int and cfg['gpu']!=gpu: raise ValueError('gpu differs from current runtime config')
-    if not isinstance(device,str) or not device: raise ValueError('device must be non-empty string')
+    if not isinstance(device,str) or device != 'cuda:0': raise ValueError('device must be cuda:0; current CLI does not support device overrides')
     if image_width is not None and (type(image_width) is not int or image_width<=0): raise ValueError('image_width must be positive integer')
     if image_height is not None and (type(image_height) is not int or image_height<=0): raise ValueError('image_height must be positive integer')
     if python is None: raise ValueError('pinned Python is required')
