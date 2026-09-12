@@ -35,7 +35,21 @@ def materialize(bundle,candidate,output,*,gpu,device='cuda:0',image_width=None,i
     if contract.get('native_mode') not in {'new','reuse'}: raise ValueError('invalid native_mode')
     if not isinstance(contract.get('source_contract_sha256'),str) or not re.fullmatch(r'[0-9a-f]{64}',contract['source_contract_sha256']): raise ValueError('source contract identity missing')
     if not isinstance(contract.get('source_identity'),dict): raise ValueError('source identity missing')
-    if type(gpu) is not int or gpu<0: raise ValueError('gpu must be non-negative integer')
+    identity=contract['source_identity']
+    if identity.get('run_id') != contract['run_id'] or identity.get('run_root') != str(run_root): raise ValueError('source identity run mismatch')
+    source_contract=run_root/'input/runtime_input_contract.json'
+    context=Path(contract.get('source_context_path','')).expanduser()
+    if not source_contract.is_file() or hashlib.sha256(source_contract.read_bytes()).hexdigest()!=contract['source_contract_sha256']: raise ValueError('source input contract hash mismatch')
+    if not context.is_file() or hashlib.sha256(context.read_bytes()).hexdigest()!=contract.get('source_context_sha256'): raise ValueError('source context hash mismatch')
+    context_value=_json(context)
+    if context_value.get('source_contract_sha256') != contract['source_contract_sha256'] or context_value.get('source_contract') != str(source_contract): raise ValueError('source context binding mismatch')
+    event_paths=[run_root/'logs/integration/events.jsonl']
+    recovered=run_root/'logs/recovery/P09_DEPTH_ORDER/events.jsonl'
+    if recovered.is_file(): event_paths.append(recovered)
+    for event_path in event_paths:
+        if not event_path.is_file(): raise ValueError(f'missing source event snapshot: {event_path}')
+    source_value=_json(source_contract)
+    if identity.get('input_video_sha256') != source_value.get('input_video_sha256'): raise ValueError('source video identity mismatch')
     if type(cfg.get('gpu')) is int and cfg['gpu']!=gpu: raise ValueError('gpu differs from current runtime config')
     if not isinstance(device,str) or device != 'cuda:0': raise ValueError('device must be cuda:0; current CLI does not support device overrides')
     if image_width is not None and (type(image_width) is not int or image_width<=0): raise ValueError('image_width must be positive integer')
@@ -71,7 +85,7 @@ def materialize(bundle,candidate,output,*,gpu,device='cuda:0',image_width=None,i
 
 def main():
     p=argparse.ArgumentParser();
-    for n in ('bundle','candidate_context','output'): p.add_argument('--'+n,required=True,type=Path)
+    p.add_argument('--bundle',required=True,type=Path); p.add_argument('--candidate-context','--candidate_context',dest='candidate_context',required=True,type=Path); p.add_argument('--output',required=True,type=Path)
     p.add_argument('--gpu',required=True,type=int); p.add_argument('--device',default='cuda:0'); p.add_argument('--image-width',type=int); p.add_argument('--image-height',type=int); p.add_argument('--python',required=True)
     a=p.parse_args(); print(json.dumps(materialize(a.bundle,a.candidate_context,a.output,gpu=a.gpu,device=a.device,image_width=a.image_width,image_height=a.image_height,python=a.python),indent=2))
 if __name__=='__main__': main()
