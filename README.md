@@ -5,8 +5,7 @@ hand–object visual fitting and rendering path**. The delivered example is a
 150-frame milk-carton clip. It is not a claim of measured physical contact,
 annotation readiness, or arbitrary-video support.
 
-## Start here
-
+- **[Standalone RGB scene v7 baseline](docs/STANDALONE_RGB_SCENE_V7_BASELINE.md)**: frozen research baseline, external artifacts and create-only launch preparation.
 - **[Demo replay and refitting](docs/V20_VISUAL_CONTACT_DEMO_REPRODUCE.md)**:
   required inputs, verified case limits, environment notes, commands and outputs.
 - [Demo design](docs/V20_VISUAL_CONTACT_DEMO_DESIGN.md) and
