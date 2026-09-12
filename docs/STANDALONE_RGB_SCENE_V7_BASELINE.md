@@ -23,15 +23,40 @@ depth-owned masks and metric eligibility remain separate. P17 uses exact
 integer `frame_idx`; optional real-evidence primary pads use one shared
 transform. Only the final annotation/world pair is published.
 
-Preparation is create-only and producer-free:
-`python scripts/prepare_rgb_scene_candidate_launch.py --bundle BUNDLE
---candidate-context CANDIDATE/candidate_contract.json --output PLAN --gpu N
---device cuda:0 --python /absolute/pinned/python`. It derives all 12 stage
-scripts and inspection recipes directly from the current bundle/CLI and
-candidate contract. It accepts arbitrary identifiers, frame indices, dimensions,
-device and paths containing spaces, rejects collisions before writing, validates
-bash syntax, and never chmods an output mount or rewrites old paths. The helper
-is intentionally not a VLM planner and does not author visual judgments.
+Preparation is create-only and producer-free (from the reviewed source checkout):
+```bash
+PREP_PYTHON=/mnt/user-home/kupingxin/ego_annotation/.venv/bin/python
+"$PREP_PYTHON" scripts/prepare_rgb_scene_candidate_launch.py \
+  --bundle "$BUNDLE" --candidate-context "$CANDIDATE/candidate_contract.json" \
+  --output "$NEW_PLAN" --gpu "$GPU" --python "$PREP_PYTHON"
+```
+It derives all 12 stage scripts and three bounded inspection recipes directly
+from the current bundle/candidate contracts, without previous candidate templates.
+The physical GPU must match the bundle configuration; the internal logical
+`--device` is fixed to `cuda:0`. `--image-width` / `--image-height` are optional
+**metadata only**, not stage or image-resolution overrides. Valid identifiers,
+selected frame indices, and paths containing spaces are supported. The helper
+checks source contract/context/event-snapshot bindings before writing, validates
+all shell bodies, rejects existing output directories, and never chmods an
+output mount. Runtime still validates model/assets/producer lineage at execution;
+this is not a replacement for full preflight or a VLM planner.
+
+`launch_manifest.json` includes exact startup, judgment and final paths plus
+quoted `/bin/bash` commands. Run startup/proposal/P09 inspection commands only
+after the corresponding inputs exist. Proposal summaries show selected scalar
+ranking fields; P09 summaries hash both the adapter report and the complete
+annotation file using streaming SHA256. Output is bounded to 12,001 bytes
+including the final newline. These recipes **do not inspect pixels or author
+judgments**. The native runtime must inspect the actual current RGB/mask evidence
+and author P09, P10, appearance and full-timeline P17 judgments.
+
+See [raw-video build/prepare-run instructions](STANDALONE_RGB_SCENE_README.md)
+and [prepare-candidate/import-native commands](STANDALONE_RGB_SCENE_CANDIDATE_WORKFLOW.md).
+These are distinct paths: a fresh video requires its own perception/model outputs;
+validated prefix/native reuse requires exact current-video receipts, not another
+video's cache or a copied old mesh. Execute producers only via the isolated native
+project agent and its pinned ShellGate provider, not by running these scripts as
+a development-agent prediction substitute.
 
 The external baseline depends on preflighted pinned Python/model environments,
 MANO and HaWoR assets, LightGlue, SAM3D, and the native ShellGate provider.
@@ -41,7 +66,8 @@ GPU sharing remain current limitations, not solved capabilities.
 ## Quality and scope limits
 
 The candidate events all returned rc0 and the final JSON/RRD hashes are recorded
-in the developer-only publication record. This is not a quality pass:
+in the [developer-only publication record](STANDALONE_RGB_SCENE_V7_RECORD.md).
+This is not a quality pass:
 `annotation_ready=false`, `demo_only=true`, and contact, collision, sign/SDF,
 and nonpenetration were not measured. No MP4 is shipped. Numerical comparison
 is post-freeze evaluation only; GT is never a prediction input. Birth bundle
@@ -50,5 +76,8 @@ identity and execution bundle identity are preserved distinctly.
 Design note: the helper materializes literal `/bin/bash` scripts from parsed
 stage arguments, rather than copying historical v2–v6 templates, because
 historical template substitution can silently retain stale bundle, candidate,
-GPU, frame, or inspection paths. Complete input contracts are validated before
-create-only output creation; any existing output is rejected.
+GPU, frame, or inspection paths. Source bindings, configuration arguments and
+all generated contents are validated before create-only output creation; any
+existing output is rejected. No inference/math or frozen runtime changes are
+part of this helper. Runtime/model asset verification remains with runtime
+preflight. This is publication support, not improved physical annotation.

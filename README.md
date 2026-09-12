@@ -6,6 +6,7 @@ hand–object visual fitting and rendering path**. The delivered example is a
 annotation readiness, or arbitrary-video support.
 
 - **[Standalone RGB scene v7 baseline](docs/STANDALONE_RGB_SCENE_V7_BASELINE.md)**: frozen research baseline, external artifacts and create-only launch preparation.
+- [Developer-only v7 publication evidence](docs/STANDALONE_RGB_SCENE_V7_RECORD.md): exact frozen identities, prerequisites, actual validation and known limits.
 - **[Demo replay and refitting](docs/V20_VISUAL_CONTACT_DEMO_REPRODUCE.md)**:
   required inputs, verified case limits, environment notes, commands and outputs.
 - [Demo design](docs/V20_VISUAL_CONTACT_DEMO_DESIGN.md) and
