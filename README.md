@@ -1,3 +1,28 @@
+# Grouped ego annotation
+
+The grouped entry is `python main.py`. Numerical stages are owned by
+`optimization/solve.py`; observation eligibility and physical acceptance remain
+separate from candidate estimates.
+
+## Implemented checkpoint
+
+`python main.py refine-pose --annotations ANNOTATIONS --source-pose SOURCE
+--rgb-edges EDGES_NPZ --rgb-report EDGES_JSON --object-id OBJECT --anchor FRAME
+--run-root RUN --output POSTERIOR` consumes hash-bound, same-run metric/RGB
+observations and runs local RGB seeding, robust SO(3), and refreshed full SE(3).
+The posterior is create-only and explicitly lacks physical/contact authority.
+Source arrays and their provenance remain unchanged. Inputs are prepared
+prediction observations, not raw video or ground truth.
+
+CPU regression: `python -m unittest test_pipeline optimization.test_optimization
+observations.test_observations -v` (NumPy and SciPy required).
+
+Raw-video orchestration, remaining model adapters, judgments, formal/MANO paths,
+and grouped exports are under migration. The historical documentation below
+is retained only during extraction and does not describe the new CLI.
+
+---
+
 # Ego Annotation — visual-contact demo branch
 
 This branch preserves the V19/V20 research pipeline and adds a **demo-only
