@@ -31,8 +31,8 @@
         "validate_contract"
       ],
       "load_json": [
-        "gates.camera.calibration",
-        "load_json"
+        "utils.data",
+        "read_json_mapping"
       ],
       "finite_intrinsics": [
         "gates.camera.calibration",
@@ -117,8 +117,8 @@
     },
     "build_v19_calibration_contract": {
       "load_json": [
-        "observations.camera.calibration",
-        "load_json"
+        "utils.data",
+        "read_json_mapping"
       ],
       "raw_frames": [
         "observations.camera.calibration",
@@ -143,8 +143,8 @@
     },
     "resolve_v19_camera_contract": {
       "write_json": [
-        "observations.camera.calibration",
-        "camera_write_json"
+        "utils.data",
+        "write_json_utf8"
       ],
       "parse_affine": [
         "observations.camera.calibration",
@@ -197,8 +197,8 @@
     },
     "adapt_v19_depth_to_camera_contract": {
       "write_json": [
-        "observations.camera.calibration",
-        "depth_write_json"
+        "utils.data",
+        "write_json_utf8"
       ],
       "array_sha256": [
         "observations.camera.calibration",
@@ -223,8 +223,8 @@
         "FULL_K_RECTIFIED_MODE"
       ],
       "sha256_file": [
-        "observations.common",
-        "sha256_file"
+        "utils.state",
+        "content_sha256"
       ],
       "aggregate_file_sha256": [
         "observations.common",
@@ -239,16 +239,16 @@
         "validate_hawor_camera_image_plane_contract"
       ],
       "load_json": [
-        "observations.common",
-        "load_json"
+        "utils.data",
+        "read_json_mapping"
       ],
       "write_json": [
-        "observations.common",
-        "write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "as_list": [
-        "observations.common",
-        "as_list"
+        "utils.data",
+        "list_or_empty"
       ],
       "finite_matrix4": [
         "observations.common",
@@ -365,11 +365,11 @@
         "file_record"
       ],
       "conservative_mask_on_depth": [
-        "observations.object.surface",
+        "gates.object.observation",
         "conservative_mask_on_depth"
       ],
       "classify_native_depth": [
-        "observations.object.surface",
+        "gates.object.observation",
         "classify_native_depth"
       ],
       "MetricEligibility": [
@@ -379,20 +379,20 @@
     },
     "build_v19_visible_geometry_from_sam2_depth": {
       "load_json": [
-        "observations.object.surface",
-        "load_json"
+        "utils.data",
+        "read_json"
       ],
       "write_json": [
-        "observations.object.surface",
-        "write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "safe_name": [
         "observations.object.surface",
         "safe_name"
       ],
       "as_list": [
-        "observations.object.surface",
-        "as_list"
+        "utils.data",
+        "list_or_empty"
       ],
       "export_anchor_visible_surface_mesh": [
         "observations.object.surface",
@@ -415,7 +415,7 @@
         "load_calibration_contract"
       ],
       "validate_depth_camera_contract_binding": [
-        "observations.object.surface",
+        "gates.camera.calibration",
         "validate_depth_camera_contract_binding"
       ],
       "load_camera_npz": [
@@ -561,11 +561,11 @@
         "indexed_track"
       ],
       "first_hit_z": [
-        "observations.object.surface",
+        "optimization.common.correspondences",
         "first_hit_z"
       ],
       "nearest_hand_first_hits": [
-        "observations.object.surface",
+        "optimization.common.correspondences",
         "nearest_hand_first_hits"
       ],
       "front_only": [
@@ -603,8 +603,8 @@
         "load_json"
       ],
       "sha256_file": [
-        "optimization.object.pose",
-        "sha256_file"
+        "utils.state",
+        "content_sha256"
       ],
       "load_mesh": [
         "optimization.object.pose",
@@ -615,7 +615,7 @@
         "deterministic_sample_mesh"
       ],
       "rigid_umeyama": [
-        "optimization.object.pose",
+        "optimization.common.solvers",
         "rigid_umeyama"
       ],
       "apply_pose": [
@@ -639,23 +639,23 @@
         "rotation_observability_summary"
       ],
       "rigid_pose_observation_eligibility": [
-        "optimization.object.pose",
+        "gates.object.observation",
         "rigid_pose_observation_eligibility"
       ],
       "correspondence_state": [
-        "optimization.object.pose",
+        "optimization.common.correspondences",
         "correspondence_state"
       ],
       "register_adjacent_observed_surfaces": [
-        "optimization.object.pose",
+        "observations.object.registration",
         "register_adjacent_observed_surfaces"
       ],
       "refine_translation_from_observed_anchor": [
-        "optimization.object.pose",
+        "observations.object.registration",
         "refine_translation_from_observed_anchor"
       ],
       "refine_pose_from_observed_anchor": [
-        "optimization.object.pose",
+        "observations.object.registration",
         "refine_pose_from_observed_anchor"
       ],
       "frame_object": [
@@ -675,11 +675,11 @@
         "frame_camera_for_raster"
       ],
       "select_flow_seed_points": [
-        "optimization.object.pose",
+        "observations.object.rgb_tracking",
         "select_flow_seed_points"
       ],
       "estimate_optical_flow_pnp_bridge": [
-        "optimization.object.pose",
+        "observations.object.rgb_tracking",
         "estimate_optical_flow_pnp_bridge"
       ],
       "bridge_positions_for_gap": [
@@ -691,7 +691,7 @@
         "complete_translation_measurements"
       ],
       "regularize_translation_timeline": [
-        "optimization.object.pose",
+        "optimization.common.solvers",
         "regularize_translation_timeline"
       ],
       "main": [
@@ -861,8 +861,8 @@
     },
     "build_v18_compact_rigid_evidence_bundle": {
       "load_json": [
-        "observations.object.surface",
-        "anchor_load_json"
+        "utils.data",
+        "read_json"
       ],
       "safe_id": [
         "observations.object.surface",
@@ -1011,16 +1011,16 @@
         "native_bridge_load_json"
       ],
       "write_json": [
-        "observations.object.shape",
-        "write_json"
+        "utils.data",
+        "write_json_utf8"
       ],
       "require_file": [
         "observations.object.shape",
         "native_bridge_require_file"
       ],
       "sha256_file": [
-        "observations.object.shape",
-        "native_bridge_sha256_file"
+        "utils.state",
+        "content_sha256"
       ],
       "finite_vector": [
         "observations.object.shape",
@@ -1039,7 +1039,7 @@
         "nearest_surface_summary"
       ],
       "observed_front_quality_decision": [
-        "observations.object.shape",
+        "gates.object.geometry",
         "observed_front_quality_decision"
       ],
       "mesh_from_path": [
@@ -1073,12 +1073,12 @@
     },
     "build_v18_compact_rigid_trellis_completion": {
       "load_json": [
-        "observations.object.shape",
-        "completion_support_load_json"
+        "utils.data",
+        "read_json"
       ],
       "sha256_file": [
-        "observations.object.shape",
-        "completion_support_sha256_file"
+        "utils.state",
+        "content_sha256"
       ],
       "safe_id": [
         "observations.object.shape",
@@ -1093,11 +1093,11 @@
         "load_mesh"
       ],
       "pca_basis": [
-        "observations.object.shape",
+        "observations.object.registration",
         "pca_basis"
       ],
       "rotation_candidates": [
-        "observations.object.shape",
+        "observations.object.registration",
         "rotation_candidates"
       ],
       "nearest_stats": [
@@ -1105,7 +1105,7 @@
         "nearest_stats"
       ],
       "umeyama_similarity": [
-        "observations.object.shape",
+        "optimization.common.solvers",
         "umeyama_similarity"
       ],
       "deterministic_sample_mesh": [
@@ -1113,15 +1113,15 @@
         "completion_support_deterministic_sample_mesh"
       ],
       "align_trellis_to_observed": [
-        "observations.object.shape",
+        "observations.object.registration",
         "align_trellis_to_observed"
       ],
       "identity_metric_canonical_alignment": [
-        "observations.object.shape",
+        "observations.object.registration",
         "identity_metric_canonical_alignment"
       ],
       "transform_mesh": [
-        "observations.object.shape",
+        "observations.object.registration",
         "transform_mesh"
       ],
       "face_center_labels": [
@@ -1217,27 +1217,27 @@
         "CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS"
       ],
       "PoseObservation": [
-        "optimization.object.pose",
+        "utils.data",
         "PoseObservation"
       ],
       "ImageFactorObservation": [
-        "optimization.object.pose",
+        "utils.data",
         "ImageFactorObservation"
       ],
       "load_json": [
-        "optimization.object.pose",
-        "formal_object_load_json"
+        "utils.data",
+        "read_json"
       ],
       "write_json": [
-        "optimization.object.pose",
-        "write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "sha256_file": [
         "optimization.object.pose",
         "formal_object_sha256_file"
       ],
       "validate_camera_transform": [
-        "optimization.object.pose",
+        "gates.camera.calibration",
         "validate_camera_transform"
       ],
       "as_array": [
@@ -1269,7 +1269,7 @@
         "formal_object_apply_pose"
       ],
       "corrected_pose": [
-        "optimization.object.pose",
+        "optimization.common.variables",
         "corrected_pose"
       ],
       "pose_row_sigma": [
@@ -1293,7 +1293,7 @@
         "build_observations"
       ],
       "unpack": [
-        "optimization.object.pose",
+        "optimization.common.variables",
         "unpack"
       ],
       "image_factors_active": [
@@ -1329,11 +1329,11 @@
         "formal_object_rotation_observability_summary"
       ],
       "sparse_conditional_rotation_tail_decision": [
-        "optimization.object.pose",
+        "gates.object.trajectory",
         "sparse_conditional_rotation_tail_decision"
       ],
       "temporal_readiness_diagnostics": [
-        "optimization.object.pose",
+        "gates.object.trajectory",
         "temporal_readiness_diagnostics"
       ],
       "surface_metrics": [
@@ -1359,8 +1359,8 @@
         "load_json"
       ],
       "sha256_file": [
-        "gates.hand.acceptance",
-        "sha256_file"
+        "utils.state",
+        "content_sha256"
       ],
       "write_json": [
         "gates.hand.acceptance",
@@ -1401,12 +1401,12 @@
     },
     "evaluate_v19_hot3d_hawor_boxes": {
       "load_json": [
-        "evaluate",
-        "load_json"
+        "utils.data",
+        "read_json_mapping"
       ],
       "write_json": [
-        "evaluate",
-        "write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "iou_xyxy": [
         "evaluate",
@@ -1451,12 +1451,12 @@
         "patch_legacy_numpy"
       ],
       "load_json": [
-        "evaluate",
-        "mano_eval_load_json"
+        "utils.data",
+        "read_json_mapping"
       ],
       "write_json": [
-        "evaluate",
-        "mano_eval_write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "quat_wxyz_to_matrix": [
         "evaluate",
@@ -1595,12 +1595,12 @@
     },
     "aggregate_v19_hot3d_box_evals": {
       "load_json": [
-        "evaluate",
-        "box_summary_load_json"
+        "utils.data",
+        "read_json_mapping"
       ],
       "write_json": [
-        "evaluate",
-        "box_summary_write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "summarize": [
         "evaluate",
@@ -1621,12 +1621,12 @@
         "METRIC_KEYS"
       ],
       "load_json": [
-        "evaluate",
-        "mano_summary_load_json"
+        "utils.data",
+        "read_json_mapping"
       ],
       "write_json": [
-        "evaluate",
-        "mano_summary_write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "summarize": [
         "evaluate",
@@ -1721,12 +1721,12 @@
         "load_json"
       ],
       "write_json": [
-        "observations.object.signed_geometry",
-        "write_json"
+        "utils.data",
+        "write_json_utf8"
       ],
       "sha256_file": [
-        "observations.object.signed_geometry",
-        "sha256_file"
+        "utils.state",
+        "content_sha256"
       ],
       "value_sha256": [
         "observations.object.signed_geometry",
@@ -1891,8 +1891,8 @@
         "multiview_load_json"
       ],
       "write_json": [
-        "observations.object.signed_geometry",
-        "multiview_write_json"
+        "utils.data",
+        "write_json_utf8"
       ],
       "sha256_file": [
         "observations.object.signed_geometry",
@@ -2007,12 +2007,12 @@
         "write_json"
       ],
       "sha256_file": [
-        "observations.interaction.evidence",
-        "sha256_file"
+        "utils.state",
+        "content_sha256"
       ],
       "as_list": [
-        "observations.interaction.evidence",
-        "as_list"
+        "utils.data",
+        "list_or_empty"
       ],
       "parse_args": [
         "observations.interaction.evidence",
@@ -2031,19 +2031,19 @@
         "finite_float"
       ],
       "load_agent_interaction_judgments": [
-        "observations.interaction.evidence",
+        "gates.interaction.contact",
         "load_agent_interaction_judgments"
       ],
       "ownership_quarantine_mode": [
-        "observations.interaction.evidence",
+        "gates.interaction.visibility",
         "ownership_quarantine_mode"
       ],
       "contact_row_state_from_judgment": [
-        "observations.interaction.evidence",
+        "gates.interaction.contact",
         "contact_row_state_from_judgment"
       ],
       "combine_contact_prior": [
-        "observations.interaction.evidence",
+        "optimization.problems",
         "combine_contact_prior"
       ],
       "agent_judgment_provenance": [
@@ -2121,12 +2121,12 @@
         "formal_state_parse_args"
       ],
       "load_json": [
-        "render",
-        "load_json"
+        "utils.data",
+        "read_json"
       ],
       "write_json": [
-        "render",
-        "write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "parse_rewrites": [
         "render",
@@ -2333,8 +2333,8 @@
     },
     "build_v18_mano_object_constraint_state": {
       "load_json": [
-        "observations.interaction.evidence",
-        "geometry_constraints_load_json"
+        "utils.data",
+        "read_json"
       ],
       "pose_graph_readiness": [
         "observations.interaction.evidence",
@@ -2365,7 +2365,7 @@
         "visible_2d_consistency"
       ],
       "least_norm_halfspace_escape": [
-        "observations.interaction.evidence",
+        "optimization.common.solvers",
         "least_norm_halfspace_escape"
       ],
       "inverse_object": [
@@ -2420,10 +2420,6 @@
       ]
     },
     "build_v18_visible_surface_track_factor": {
-      "DEFAULT_OUTPUT": [
-        "observations.object.surface",
-        "DEFAULT_OUTPUT"
-      ],
       "STATE_ACTIVE": [
         "observations.object.surface",
         "STATE_ACTIVE"
@@ -2502,10 +2498,6 @@
       ]
     },
     "build_v18_surface_eligibility_factor": {
-      "DEFAULT_OUTPUT": [
-        "observations.object.surface",
-        "face_eligibility_DEFAULT_OUTPUT"
-      ],
       "STATE_OBSERVED": [
         "observations.object.surface",
         "STATE_OBSERVED"
@@ -2589,16 +2581,16 @@
     },
     "build_v18_hand_observation_visibility_factor": {
       "load_json": [
-        "observations.interaction.evidence",
-        "hand_visibility_load_json"
+        "utils.data",
+        "read_json"
       ],
       "write_json": [
-        "observations.interaction.evidence",
-        "hand_visibility_write_json"
+        "utils.data",
+        "write_json_payload"
       ],
       "as_list": [
-        "observations.interaction.evidence",
-        "hand_visibility_as_list"
+        "utils.data",
+        "list_or_empty"
       ],
       "normalize_zero_observation_interval": [
         "observations.interaction.evidence",
@@ -2725,7 +2717,20 @@
     }
   },
   "notes": [
-    "Initial symbol moves precede subsequent grouped-owner consolidation; use git history/references for final owner.",
-    "Historical standalone experimental CLIs are retired; only their retained mathematical helper closure was extracted."
+    "Relative source symbols resolve to actual grouped owners after owner consolidation and IO deduplication.",
+    "This map describes extracted implementation provenance, not evidence that every optional path was executed on a real video.",
+    "Historical independent CLI/problem families excluded by the approved scope remain in baseline Git history."
+  ],
+  "retired_configuration_symbols": [
+    {
+      "source": "build_v18_visible_surface_track_factor",
+      "symbol": "DEFAULT_OUTPUT",
+      "reason": "hard-coded historical machine output directory replaced by explicit output argument"
+    },
+    {
+      "source": "build_v18_surface_eligibility_factor",
+      "symbol": "DEFAULT_OUTPUT",
+      "reason": "hard-coded historical machine output directory replaced by explicit output argument"
+    }
   ]
 }

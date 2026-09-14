@@ -167,3 +167,9 @@ The formal renderer accepts a distinct physical-completion report so display mes
 identity cannot overwrite signed-proxy readiness or collision-surface provenance.
 WiLoR's optional worker is a raw hand-provider API, not a replacement for HaWoR's
 world-camera trajectory and downstream archive contract.
+
+See [MIGRATION.md](MIGRATION.md) for the callable capability matrix, final symbol
+provenance, and explicit remaining equivalence gaps. In particular, the new raw
+entry is create-only: old automatic resume/rewind and candidate-prefix reuse are
+not implemented by the producer receipt ledger. Do not claim full migration or
+three-case completion from the CPU/build evidence alone.
