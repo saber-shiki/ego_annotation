@@ -87,6 +87,33 @@ def refine(annotations_path, source_path, edge_path, edge_report, object_id, anc
 
 
 
+def fit_prepared(problem, run_root):
+    from gates.object.geometry import validate_posterior
+    from gates.interaction.visibility import validate_visibility, apply_display_visibility, POLICY
+    binding=load(problem.pose_report)
+    if binding.get('schema')!='rgb_scene_visual_refined_binding_v1':
+        raise ValueError('typed visual-refined binding required')
+    reference=binding['refined_posterior']
+    if sha(reference['path'])!=reference['sha256']:
+        raise ValueError('refined posterior changed')
+    posterior=validate_posterior(load(reference['path']),problem.object_id,run_root)
+    if binding['pose_rows']!=posterior['pose_rows']:
+        raise ValueError('binding discarded refined trajectory')
+    judgment=load(problem.interaction_judgments)
+    validate_visibility(judgment,[r['frame_idx'] for r in binding['pose_rows']],problem.object_id)
+    solve(problem)
+    path=problem.output_dir/'demo_state.npz'
+    with np.load(path,allow_pickle=False) as archive:
+        state=apply_display_visibility(dict(archive),judgment,problem.object_id)
+    np.savez_compressed(path,**state)
+    path=problem.output_dir/'fit_report.json'
+    report=load(path)
+    report['display_visibility']={'policy':POLICY,
+        'judgment_sha256':sha(problem.interaction_judgments),'source_geometry_mutated':False}
+    path.write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
+    return report
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     commands=parser.add_subparsers(dest='command', required=True)
@@ -95,9 +122,21 @@ def main(argv=None):
         pose.add_argument('--'+name,type=Path,required=True)
     pose.add_argument('--object-id',required=True)
     pose.add_argument('--anchor',type=int,required=True)
+    visual=commands.add_parser('fit-visual',help='fit MANO/object from prepared current-run observations')
+    for name in ('run-root','annotations','pose-report','mano-bridge','hawor-params','mano-models',
+                 'output-dir','appearance-mask-manifest','interaction-judgments'):
+        visual.add_argument('--'+name,type=Path,required=True)
+    visual.add_argument('--object-id',required=True)
+    visual.add_argument('--device',default='cpu')
+    visual.add_argument('--iterations',type=int,default=240)
+    visual.add_argument('--render-width',type=int)
     args=parser.parse_args(argv)
-    return refine(args.annotations,args.source_pose,args.rgb_edges,args.rgb_report,
-                  args.object_id,args.anchor,args.output,args.run_root)
+    if args.command=='refine-pose':
+        return refine(args.annotations,args.source_pose,args.rgb_edges,args.rgb_report,
+                      args.object_id,args.anchor,args.output,args.run_root)
+    from optimization.problems import PreparedVisualFit
+    values=vars(args).copy();values.pop('command');run_root=values.pop('run_root')
+    return fit_prepared(PreparedVisualFit(**values),run_root)
 
 if __name__=='__main__':
     main()

@@ -17,8 +17,20 @@ prediction observations, not raw video or ground truth.
 CPU regression: `python -m unittest test_pipeline optimization.test_optimization
 observations.test_observations -v` (NumPy and SciPy required).
 
-Raw-video orchestration, remaining model adapters, judgments, formal/MANO paths,
-and grouped exports are under migration. The historical documentation below
+`python main.py fit-visual --help` exposes the prepared complete-MANO/object
+optimizer. It preserves two-hand Adam variables, camera-origin hand scale,
+unsigned top-three pad distances, source replay, supported-segment interpolation,
+and the 12-iteration correspondence refresh. `render.export` produces a portable
+JSON/RRD pair with complete triangles and explicit visibility clears. Native-shape
+binding uses extracted front-depth helpers, not a dynamic research-script loader.
+
+Full CPU regression: `python -m unittest test_pipeline factors.test_factors
+optimization.test_optimization observations.test_observations -v`.
+Set `EGO_MANO_MODELS` to licensed MANO assets to exercise the real two-hand CPU
+optimizer smoke test; model assets are never downloaded by tests.
+
+Raw-video orchestration, remaining model adapters, judgments, formal paths,
+MP4/evaluation and final legacy removal are under migration. The historical documentation below
 is retained only during extraction and does not describe the new CLI.
 
 ---

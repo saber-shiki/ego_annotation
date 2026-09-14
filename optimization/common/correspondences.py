@@ -90,3 +90,25 @@ def build_observed_point_factors(
         ))
         pair_diagnostics.append({"source_frame_idx": source_id, "target_frame_idx": target_id, "kind": kind, "pair_count": int(len(si)), "median_initial_canonical_distance_m": float(np.median(distance)), "accepted": True})
     return factors, {"outer_iteration": int(outer_iteration), "pair_count": len(pair_diagnostics), "factor_count": len(factors), "pairs": pair_diagnostics, "rebuilt_from": "P09 world_vertices_sample_m or camera_vertices_sample_m", "generated_factors_included": False}
+
+def make_scene(vertices, faces):
+    import open3d as o3d
+
+    scene = o3d.t.geometry.RaycastingScene(nthreads=4)
+    scene.add_triangles(
+        o3d.core.Tensor(np.asarray(vertices, dtype=np.float32)),
+        o3d.core.Tensor(np.asarray(faces, dtype=np.uint32)),
+    )
+    return scene
+
+
+def closest(scene, points):
+    import open3d as o3d
+
+    shape = points.shape
+    out = scene.compute_closest_points(
+        o3d.core.Tensor(np.asarray(points, dtype=np.float32).reshape(-1, 3)), nthreads=4
+    )
+    q = out["points"].numpy().reshape(shape)
+    n = out["primitive_normals"].numpy().reshape(shape)
+    return q, n

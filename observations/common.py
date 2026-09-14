@@ -49,3 +49,41 @@ def build_nodes(annotations, source, object_id):
                               .1 if idx in known and points is not None else .95,
                               copy.deepcopy(rows.get(idx, {'frame_idx': idx}))))
     return nodes, np.array([times[n.frame_idx] for n in nodes])
+
+from utils.data import frame_ids, join_indices, validate_times, render_size
+from utils.geometry import validate_transforms, resized_K
+def annotation_timeline(ann, params, pose_rows, width=None):
+    frames = ann["frames"]
+    aid = frame_ids([f["frame_idx"] for f in frames], "annotation")
+    order = np.argsort([f["time_s"] for f in frames])
+    frames = [frames[i] for i in order]
+    ids = aid[order]
+    times = validate_times([f["time_s"] for f in frames], len(ids))
+    zi = join_indices(params["frame_idx"], ids)
+    if "time_s" in params:
+        parameter_times = np.asarray(params["time_s"], dtype=float)
+        if parameter_times.shape != (len(ids),) or not np.allclose(parameter_times[zi], times, atol=1e-6, rtol=0):
+            raise ValueError("HaWoR/annotation timestamp mismatch")
+    pi = join_indices([r["frame_idx"] for r in pose_rows], ids)
+    poses = [pose_rows[i] for i in pi]
+    for row, time_s in zip(poses, times):
+        if "time_s" in row and not np.isclose(row["time_s"], time_s, atol=1e-6, rtol=0):
+            raise ValueError("pose/annotation timestamp mismatch")
+    source = np.array([[f["source_width"], f["source_height"]] for f in frames])
+    if not np.all(source == source[0]):
+        raise ValueError("source video dimensions change across timeline")
+    size = render_size(source[0], width)
+    K = np.array([resized_K(f["camera"]["intrinsics_fx_fy_cx_cy"], source[0], size) for f in frames])
+    T = validate_transforms([f["camera"]["T_world_camera_metric"] for f in frames])
+    aligned = {k: np.asarray(v) for k, v in params.items()}
+    for side in SIDES:
+        for suffix in ("root_orient_axis_angle", "hand_pose_axis_angle", "betas", "trans_world_m", "vertices_world_m", "joints_world_m", "valid"):
+            k = side + "_" + suffix
+            if k in aligned:
+                if len(aligned[k]) != len(zi):
+                    raise ValueError(f"{k}: timeline length mismatch")
+                aligned[k] = aligned[k][zi]
+    aligned["frame_idx"] = ids
+    return frames, aligned, poses, times, T, K, size, source[0]
+
+SIDES = ("left", "right")

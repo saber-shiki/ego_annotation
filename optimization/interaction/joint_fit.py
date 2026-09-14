@@ -1,0 +1,637 @@
+"""Joint visual MANO/object fitting with bounded Adam and 12-step correspondence refresh."""
+from pathlib import Path
+import json, time
+import numpy as np
+import cv2
+import torch
+from scipy.spatial import cKDTree
+from utils.data import load, render_size
+from utils.state import sha, assert_prediction_only
+from utils.geometry import camera, project, resized_K, torch_project, torch_rodrigues
+from optimization.hand.mano import JOINT_ORDER, TIP_VERTICES, mano_models, hand_validity, fit_keyframes, interpolate_supported
+from optimization.common.correspondences import make_scene, closest
+from observations.common import annotation_timeline
+from observations.interaction.evidence import appearance_mask_rows
+from gates.interaction.contact import (interaction_states, primary_contact_pads, PRIMARY_DIGITS,
+    primary_similarity_reachable, visual_proximity_weights, validate_visual_proximity_contract,
+    HAND_TRANSLATION_BOUND_M, HAND_SCALE_BOUNDS, PRIMARY_PROXIMITY_MAX_GAP_M)
+from factors.interaction.contact import unsigned_pad_loss
+from factors.hand.priors import visual_articulation, visual_root_orientation, visual_translation, hand_log_scale
+from factors.hand.observation import visual_surface_reprojection, visual_joint_reprojection
+from factors.common import mean_square
+FIT_REFERENCE_WIDTH = 960
+
+
+def fit_visual(args):
+    out = args.output_dir
+    if out.exists():
+        raise ValueError("new output directory required")
+    out.mkdir(parents=True)
+    start = time.monotonic()
+    device = torch.device(args.device)
+    import trimesh
+
+    ann = load(args.annotations)
+    rep = load(args.pose_report)
+    assert_prediction_only(rep, label="demo initial pose", object_id=args.object_id,
+                           allow_annotation_ready=True, allow_nondiagnostic_prediction=True)
+    validate_visual_proximity_contract(rep, args.appearance_mask_manifest)
+    meshpath = Path(rep["render_mesh_contract"]["required_mesh_path"])
+    if sha(meshpath) != rep["render_mesh_contract"]["required_mesh_sha256"]:
+        raise ValueError("mesh identity mismatch")
+    mesh = trimesh.load(meshpath, process=False)
+    V = np.asarray(mesh.vertices)
+    F = np.asarray(mesh.faces)
+    scene = make_scene(V, F)
+    with np.load(args.hawor_params, allow_pickle=False) as archive:
+        z = dict(archive)
+    with np.load(args.mano_bridge, allow_pickle=False) as archive:
+        bridge = dict(archive)
+    frames, z, rows, times, T, K, size, source_size = annotation_timeline(
+        ann, dict(z), rep["pose_rows"], args.render_width
+    )
+    fit_size = render_size(source_size, FIT_REFERENCE_WIDTH)
+    fit_K = np.asarray([
+        resized_K(f["camera"]["intrinsics_fx_fy_cx_cy"], source_size, fit_size)
+        for f in frames
+    ])
+    ids = z["frame_idx"]
+    appearance_paths = appearance_mask_rows(
+        load(args.appearance_mask_manifest), args.annotations, args.object_id, ids, source_size)
+    N = len(ids)
+    valid = {side: hand_validity(z, side, N) for side in ["left", "right"]}
+    key = fit_keyframes(N, valid)
+    B = len(key)
+    judgment_payload = load(args.interaction_judgments) if args.interaction_judgments else None
+    judgments = interaction_states(judgment_payload, ids, args.object_id)
+    primary = primary_contact_pads(judgment_payload, ids, args.object_id)
+    R0 = np.asarray([r["rotation_world_from_completed_canonical_matrix"] for r in rows])
+    t0 = np.asarray([r["translation_world_m"] for r in rows])
+    if (R0.shape != (N, 3, 3) or t0.shape != (N, 3) or not np.isfinite(R0).all()
+            or not np.isfinite(t0).all() or not np.allclose(R0.transpose(0, 2, 1) @ R0, np.eye(3), atol=1e-4)
+            or not np.allclose(np.linalg.det(R0), 1, atol=1e-4)):
+        raise ValueError("full-timeline rigid object poses required")
+    models = mano_models(args.mano_models, device)
+    for model in models.values():
+        model.requires_grad_(False)
+    to = lambda x: torch.as_tensor(x, dtype=torch.float32, device=device)
+    # Check full MANO replay against the original 778-vertex geometry, not just parameters/schema.
+    data = {}
+    maxreplay = {}
+    for side in ["left", "right"]:
+        vi = np.flatnonzero(valid[side])
+        if not len(vi):
+            maxreplay[side] = None
+            continue
+        root = z[side + "_root_orient_axis_angle"]
+        pose = z[side + "_hand_pose_axis_angle"]
+        beta = z[side + "_betas"]
+        trans = z[side + "_trans_world_m"]
+        with torch.no_grad():
+            rr = models[side](global_orient=to(root[vi]), hand_pose=to(pose[vi]), betas=to(beta[vi]))
+            replay = rr.vertices + to(trans[vi])[:, None]
+        source = z[side + "_vertices_world_m"]
+        bi = []
+        for i in ids[vi]:
+            matches = np.flatnonzero((bridge["frame_idx"] == i) & (bridge["hand_side"] == side))
+            if len(matches) != 1:
+                raise ValueError(f"MANO bridge requires unique valid frame/side {i}/{side}")
+            bi.append(matches[0])
+        if not np.allclose(bridge["vertices_current_v18_world_from_hawor_projection_relift_m"][bi], source[vi], atol=1e-6):
+            raise ValueError("MANO bridge/source mismatch")
+        err = np.linalg.norm(replay.cpu().numpy() - source[vi], axis=-1)
+        maxreplay[side] = float(err.max())
+        if not np.isfinite(err).all() or err.max() > 1e-4:
+            raise ValueError(f"MANO replay inconsistent {side}: {err.max()}")
+        joints = z[side + "_joints_world_m"]
+        joints_replay = (torch.cat([rr.joints[:, :16], rr.vertices[:, TIP_VERTICES]], dim=1)[:, JOINT_ORDER] + to(trans[vi])[:, None]).detach().cpu().numpy()
+        if not np.allclose(joints_replay, joints[vi], atol=1e-4, rtol=0):
+            raise ValueError(f"MANO joint order inconsistent {side}")
+        ki = np.flatnonzero(valid[side][key])
+        skey = key[ki]
+        # Surface pad samples: fixed vertex ids around each fingertip in actual MANO topology.
+        sample = np.asarray(
+            [cKDTree(source[i]).query(source[i, TIP_VERTICES], k=12)[1] for i in skey]
+        )
+        pix = np.asarray([project(camera(source[i], T[i]), fit_K[i]) for i in skey])
+        jpix = np.asarray([project(camera(joints[i], T[i]), fit_K[i]) for i in skey])
+        data[side] = dict(
+            ki=ki,
+            root=to(root[skey]),
+            pose=to(pose[skey]),
+            beta=to(beta[skey]),
+            trans=to(trans[skey]),
+            base_vertices=to(source[skey]),
+            base_joints=to(joints[skey]),
+            base_pixel=to(pix),
+            base_joint_pixel=to(jpix),
+            patch=sample,
+        )
+    # Convex silhouette SUPPORT of the actual mesh, used only as an image loss
+    # (not substituted for object reconstruction). Full triangles are rendered.
+    mask_contours = []
+    contact_gate = np.zeros((B, 2, 5), np.float32)
+    contact_diagnostics = []
+    for k, i in enumerate(key):
+        appearance_path = appearance_paths[int(ids[i])]
+        m = cv2.imread(str(appearance_path), 0) if appearance_path else None
+        if m is None or not np.any(m):
+            mask_contours.append(None)
+            continue
+        if abs(m.shape[1] / m.shape[0] - source_size[0] / source_size[1]) > 0.01:
+            raise ValueError("object mask aspect ratio is not the source image plane")
+        m = cv2.resize(m, tuple(fit_size), interpolation=cv2.INTER_NEAREST)
+        ys, xs = np.where(m > 0)
+        if not len(xs):
+            mask_contours.append(None)
+            continue
+        hull = cv2.convexHull(np.column_stack([xs, ys]).astype("float32")).reshape(
+            -1, 2
+        )
+        if len(hull) < 3:
+            mask_contours.append(None)
+            continue
+        edge = np.roll(hull, -1, axis=0) - hull
+        length = np.linalg.norm(edge, axis=1)
+        cum = np.r_[0, np.cumsum(length)]
+        # Uniform arclength fractions on the common fitting plane: sample count
+        # and effective reference-pixel spacing do not depend on render width.
+        positions = np.linspace(0, cum[-1], 160, endpoint=False)
+        ix = np.searchsorted(cum, positions, side="right") - 1
+        contour = (
+            hull[ix] + (positions - cum[ix])[:, None] / length[ix, None] * edge[ix]
+        )
+        mask_contours.append(contour)
+        dist = cv2.distanceTransform((m == 0).astype("uint8"), cv2.DIST_L2, 5)
+        for si, side in enumerate(["left", "right"]):
+            if not valid[side][i] or judgments[i, si] not in {"likely_contact", "possible_contact", "legacy_visual_hypothesis"}:
+                for finger in range(5):
+                    contact_diagnostics.append({
+                        "frame_idx": int(ids[i]), "side": side, "finger_index": finger,
+                        "P17_state": str(judgments[i, si]), "in_frame": None,
+                        "appearance_mask_distance_reference_px": None,
+                        "real_triangle_surface_gap_m": None, "weight": 0.0,
+                        "selected_patch_vertex_ids": [],
+                        "decision": ("rejected_invalid_hand" if not valid[side][i]
+                                     else "rejected_by_P17_state"),
+                    })
+                continue
+            local = int(np.flatnonzero(data[side]["ki"] == k)[0])
+            uv = data[side]["base_joint_pixel"][local, [4, 8, 12, 16, 20]].cpu().numpy()
+            p = np.rint(uv).astype(int)
+            inside = (p[:, 0] >= 0) & (p[:, 1] >= 0) & (p[:, 0] < fit_size[0]) & (p[:, 1] < fit_size[1])
+            p = np.clip(p, [0, 0], fit_size - 1)
+            image_distances = [float(dist[p[finger, 1], p[finger, 0]]) if inside[finger] else None for finger in range(5)]
+            # A declared primary may need bounded correction before proximity.
+            # The target remains an unsigned point on the complete triangle mesh.
+            base = data[side]["base_vertices"][local].cpu().numpy()
+            q = (base[TIP_VERTICES] - t0[i]) @ R0[i]
+            near, n = closest(scene, q)
+            gap = np.linalg.norm(q - near, axis=1)
+            reachable = primary_similarity_reachable(
+                camera(base[TIP_VERTICES], T[i]), camera(near @ R0[i].T + t0[i], T[i]),
+                active=primary[i, si])
+            contact_gate[k, si] = visual_proximity_weights(
+                inside, image_distances, gap, state=str(judgments[i, si]),
+                primary=primary[i, si], reachable=reachable,
+            )
+            for finger in range(5):
+                weight = float(contact_gate[k, si, finger])
+                contact_diagnostics.append({
+                    "frame_idx": int(ids[i]),
+                    "side": side,
+                    "finger_index": finger,
+                    "digit": PRIMARY_DIGITS[finger],
+                    "primary_designated_and_visible": bool(primary[i, si, finger]),
+                    "bounded_similarity_reachable": bool(reachable[finger]),
+                    "expanded_primary_active": bool(primary[i, si, finger] and reachable[finger] and weight > 0),
+                    "P17_state": str(judgments[i, si]),
+                    "in_frame": bool(inside[finger]),
+                    "appearance_mask_distance_reference_px": image_distances[finger],
+                    "real_triangle_surface_gap_m": float(gap[finger]),
+                    "weight": weight,
+                    "selected_patch_vertex_ids": data[side]["patch"][local, finger].astype(int).tolist(),
+                    "decision": ("demo_visual_triangle_proximity_fit_hypothesis" if weight else
+                                 "rejected_by_image_or_finite_triangle_gap"),
+                })
+    (out / "contact_hypotheses.json").write_text(
+        json.dumps(
+            {
+                "kind": "demo_visual_triangle_proximity_fit_hypothesis_not_measured_contact",
+                "demo_visual_proximity_fit_eligible": True,
+                "physical_contact_authority": False,
+                "keyframes": ids[key].tolist(),
+                "weights": contact_gate.tolist(),
+                "tip_vertices": TIP_VERTICES.tolist(),
+                "interaction_source": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
+                "interaction_states": judgments[key].tolist(),
+                "primary_contact_pads": primary[key].tolist(),
+                "primary_policy": {"max_initial_gap_m": PRIMARY_PROXIMITY_MAX_GAP_M,
+                                   "reachability": "one_shared_closest_triangle_target_scale_and_translation_for_declared_primary_pads",
+                                   "hand_scale_bounds": HAND_SCALE_BOUNDS,
+                                   "hand_translation_component_bound_m": HAND_TRANSLATION_BOUND_M},
+                "diagnostics": contact_diagnostics,
+                "fit_image_size_wh": fit_size.tolist(),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    # Only ~1000 surface points are needed to derive silhouette indices. The
+    # original full mesh is used for every contact query and output render.
+    vid = np.linspace(0, len(V) - 1, 5000, dtype=int)
+    ov = to(V[vid])
+    base_R = to(R0[key])
+    base_t = to(t0[key])
+    cam_R = to(T[key, :3, :3])
+    cam_t = to(T[key, :3, 3])
+    intr = to(fit_K[key])[:, None]
+    hand_delta = torch.nn.Parameter(torch.zeros((B, 2, 45), device=device))
+    hand_root = torch.nn.Parameter(torch.zeros((B, 2, 3), device=device))
+    hand_t = torch.nn.Parameter(torch.zeros((B, 2, 3), device=device))
+    hand_scale = torch.nn.Parameter(torch.zeros((B, 2, 1), device=device))
+    obj_delta = torch.nn.Parameter(torch.zeros((B, 6), device=device))
+    params = [hand_delta, hand_root, hand_t, hand_scale, obj_delta]
+    opt = torch.optim.Adam(params, lr=0.008)
+    weights = to(contact_gate)
+    targets = {}
+    outline = {}
+    trace = []
+    samp = np.unique(np.r_[np.arange(0, 778, 4), TIP_VERTICES])
+    sample_indices = to(samp).long()
+
+    def forward():
+        R = torch_rodrigues(obj_delta[:, :3]) @ base_R
+        t = base_t + torch.einsum("bij,bj->bi", cam_R, obj_delta[:, 3:])
+        hands = {}
+        for si, side in enumerate(["left", "right"]):
+            if side not in data:
+                continue
+            d = data[side]
+            ki = d["ki"]
+            o = models[side](
+                global_orient=d["root"],
+                hand_pose=d["pose"] + hand_delta[ki, si],
+                betas=d["beta"],
+            )
+            vw = o.vertices + d["trans"][:, None]
+            jw = (
+                torch.cat([o.joints[:, :16], o.vertices[:, TIP_VERTICES]], dim=1)[
+                    :, JOINT_ORDER
+                ]
+                + d["trans"][:, None]
+            )
+            pivot = jw[:, :1]
+            dR = torch_rodrigues(hand_root[ki, si])
+            vw = (vw - pivot) @ dR.transpose(1, 2) + pivot
+            jw = (jw - pivot) @ dR.transpose(1, 2) + pivot
+            vc = (vw - cam_t[ki, None]) @ cam_R[ki]
+            jc = (jw - cam_t[ki, None]) @ cam_R[ki]
+            scale = torch.exp(hand_scale[ki, si])[:, None]
+            vc = vc * scale + hand_t[ki, si, None]
+            jc = jc * scale + hand_t[ki, si, None]
+            vw = vc @ cam_R[ki].transpose(1, 2) + cam_t[ki, None]
+            jw = jc @ cam_R[ki].transpose(1, 2) + cam_t[ki, None]
+            hands[side] = (vw, jw, vc, jc)
+        return R, t, hands
+
+    for it in range(args.iterations):
+        opt.zero_grad()
+        R, t, hands = forward()
+        if it % 12 == 0:
+            with torch.no_grad():
+                for si, side in enumerate(["left", "right"]):
+                    if side not in data:
+                        continue
+                    ki = data[side]["ki"]
+                    vw = hands[side][0]
+                    qc = (vw - t[ki, None]) @ R[ki]
+                    q, n = closest(scene, qc.cpu().numpy())
+                    targets[side] = (to(q), to(n))
+                for k, i in enumerate(key):
+                    if mask_contours[k] is None:
+                        continue
+                    vc = (ov @ R[k].T + t[k] - cam_t[k]) @ cam_R[k]
+                    uv = torch_project(vc, intr[k]).cpu().numpy()
+                    h = cv2.convexHull(
+                        uv.astype("float32"), returnPoints=False
+                    ).reshape(-1)
+                    # Sample the full projected mesh boundary, not only hull
+                    # corner vertices. Corner-only reverse matching falsely
+                    # pulled long carton edges toward corners.
+                    hu = uv[h]
+                    length = np.linalg.norm(np.roll(hu, -1, axis=0) - hu, axis=1)
+                    cum = np.r_[0, np.cumsum(length)]
+                    pos = np.linspace(0, cum[-1], 160, endpoint=False)
+                    edge = np.searchsorted(cum, pos, side="right") - 1
+                    frac = (pos - cum[edge]) / np.maximum(length[edge], 1e-6)
+                    pa = h[edge]
+                    pb = h[(edge + 1) % len(h)]
+                    boundary = uv[pa] * (1 - frac[:, None]) + uv[pb] * frac[:, None]
+                    contour = mask_contours[k]
+                    nearest = cKDTree(contour).query(boundary)[1]
+                    reverse = cKDTree(boundary).query(contour)[1]
+                    outline[k] = (
+                        torch.tensor(pa, device=device),
+                        torch.tensor(pb, device=device),
+                        to(frac)[:, None],
+                        to(contour[nearest]),
+                        torch.tensor(reverse, device=device),
+                        to(contour),
+                    )
+        loss = (
+            visual_articulation(hand_delta)
+            + visual_root_orientation(hand_root)
+            + visual_translation(hand_t)
+            + hand_log_scale(hand_scale)
+        )
+        loss = (
+            loss
+            + obj_delta[:, :3].square().mean() / 0.05**2
+            + obj_delta[:, 3:5].square().mean() / 0.006**2
+            + obj_delta[:, 5].square().mean() / 0.025**2
+        )
+        image_loss = to(0.0)
+        visual_proximity_loss = to(0.0)
+        for si, side in enumerate(["left", "right"]):
+            if side not in data:
+                continue
+            vw, jw, vc, jc = hands[side]
+            d = data[side]
+            ki = d["ki"]
+            pix = torch_project(vc[:, sample_indices], intr[ki])
+            jpix = torch_project(jc, intr[ki])
+            image_loss = (
+                image_loss
+                + visual_surface_reprojection(pix, d["base_pixel"][:, sample_indices])
+                + visual_joint_reprojection(jpix, d["base_joint_pixel"])
+            )
+            qc = (vw - t[ki, None]) @ R[ki]
+            q, n = targets[side]
+            # Generated normals have no inside/outside authority. Do not apply
+            # a signed intrusion/nonpenetration penalty to this visual surface.
+            for local, k in enumerate(ki):
+                for finger in range(5):
+                    if contact_gate[k, si, finger] == 0:
+                        continue
+                    ix = torch.tensor(d["patch"][local, finger], device=device)
+                    delta = qc[local, ix] - q[local, ix]
+                    visual_proximity_loss = visual_proximity_loss + unsigned_pad_loss(
+                        delta, weights[k, si, finger]) / (B * 2)
+        boundary_loss = to(0.0)
+        for k in outline:
+            vc = (ov @ R[k].T + t[k] - cam_t[k]) @ cam_R[k]
+            uv = torch_project(vc, intr[k])
+            ia, ib, fraction, targ, rev, contour = outline[k]
+            boundary = uv[ia] * (1 - fraction) + uv[ib] * fraction
+            boundary_loss += (
+                ((boundary - targ) / 5.0).square().mean()
+                + ((boundary[rev] - contour) / 5.0).square().mean()
+            ) / B
+        temporal = 0
+        for p, scale in [
+            (hand_delta, 0.05),
+            (hand_root, 0.035),
+            (hand_t, 0.006),
+            (hand_scale, 0.025),
+            (obj_delta, 0.008),
+        ]:
+            # Do not couple corrections across missing-hand segments.
+            if p is obj_delta:
+                if B > 1:
+                    temporal += ((p[1:] - p[:-1]) / scale).square().mean() * 0.06
+                if B > 2:
+                    temporal += ((p[2:] - 2 * p[1:-1] + p[:-2]) / scale).square().mean() * 0.06
+            else:
+                for si, side in enumerate(["left", "right"]):
+                    edges = [j for j in range(B - 1) if valid[side][key[j]:key[j + 1] + 1].all()]
+                    if edges:
+                        e = np.asarray(edges)
+                        temporal += ((p[e + 1, si] - p[e, si]) / scale).square().mean() * 0.06
+                    triples = [j for j in range(B - 2) if valid[side][key[j]:key[j + 2] + 1].all()]
+                    if triples:
+                        e = np.asarray(triples)
+                        temporal += ((p[e + 2, si] - 2 * p[e + 1, si] + p[e, si]) / scale).square().mean() * 0.06
+        loss = (
+            loss
+            + image_loss * 3
+            + visual_proximity_loss * 1.7
+            + boundary_loss * 3
+            + temporal
+        )
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(params, 20.0)
+        opt.step()
+        with torch.no_grad():
+            hand_delta.clamp_(-0.35, 0.35)
+            hand_root.clamp_(-0.15, 0.15)
+            hand_t.clamp_(-HAND_TRANSLATION_BOUND_M, HAND_TRANSLATION_BOUND_M)
+            hand_scale.clamp_(np.log(HAND_SCALE_BOUNDS[0]), np.log(HAND_SCALE_BOUNDS[1]))
+            obj_delta[:, :3].clamp_(-0.08, 0.08)
+            obj_delta[:, 3:5].clamp_(-0.015, 0.015)
+            obj_delta[:, 5].clamp_(-0.035, 0.035)
+        if it % 30 == 0 or it == args.iterations - 1:
+            row = {
+                "iteration": it,
+                "total": float(loss.detach()),
+                "image": float(image_loss.detach()),
+                "contact": float(visual_proximity_loss.detach()),  # legacy diagnostic key
+                "visual_proximity": float(visual_proximity_loss.detach()),
+                "intrusion": 0.0,  # legacy diagnostic key; signed term disabled
+                "boundary": float(boundary_loss.detach()),
+            }
+            trace.append(row)
+            print(row, flush=True)
+    # Parameter corrections, not vertex morphing: replay source MANO at each frame.
+    interp = {}
+    for name, p in zip(
+        [
+            "hand_articulation",
+            "hand_root",
+            "hand_translation_camera",
+            "hand_log_scale",
+            "object_delta",
+        ],
+        params,
+    ):
+        a = p.detach().cpu().numpy()
+        if name == "object_delta":
+            full = interpolate_supported(times, key, a, np.ones(N, bool))
+        else:
+            full = np.stack([interpolate_supported(times, key, a[:, si], valid[side])
+                             for si, side in enumerate(["left", "right"])], axis=1)
+        interp[name] = full
+    state = {
+        "frame_idx": ids, "time_s": times,
+        "T_world_camera": T, "render_size_wh": size,
+        "source_size_wh": source_size, "intrinsics_render": K,
+        "left_valid": valid["left"], "right_valid": valid["right"],
+        "interaction_states": judgments,
+        "primary_contact_pads": primary,
+        "primary_contact_digit_order": np.asarray(PRIMARY_DIGITS),
+        "object_vertices_canonical": V, "object_faces": F,
+        "keyframe_idx": ids[key], **interp,
+    }
+    if np.array_equal(size, [960, 960]):
+        state["intrinsics_960"] = K
+    from scipy.spatial.transform import Rotation
+
+    RR = Rotation.from_rotvec(interp["object_delta"][:, :3]).as_matrix() @ R0
+    tt = t0 + np.einsum("bij,bj->bi", T[:, :3, :3], interp["object_delta"][:, 3:])
+    state["object_rotation"] = RR
+    state["object_translation_world"] = tt
+    measurements = []
+    for si, side in enumerate(["left", "right"]):
+        vi = np.flatnonzero(valid[side])
+        state[side + "_vertices_world"] = np.full((N, 778, 3), np.nan, np.float32)
+        state[side + "_joints_world"] = np.full((N, 21, 3), np.nan, np.float32)
+        state[side + "_faces"] = z.get(side + "_faces", models[side].faces)
+        for suffix in ["vertices_world_m", "joints_world_m", "root_orient_axis_angle", "hand_pose_axis_angle", "betas", "trans_world_m", "valid"]:
+            if side + "_" + suffix in z:
+                state[side + "_source_" + suffix] = z[side + "_" + suffix]
+        state[side + "_base_vertices_world"] = z.get(side + "_vertices_world_m", state[side + "_vertices_world"].copy())
+        state[side + "_base_joints_world"] = z.get(side + "_joints_world_m", state[side + "_joints_world"].copy())
+        if not len(vi):
+            continue
+        with torch.no_grad():
+            o = models[side](
+                global_orient=to(z[side + "_root_orient_axis_angle"][vi]),
+                hand_pose=to(z[side + "_hand_pose_axis_angle"][vi] + interp["hand_articulation"][vi, si]),
+                betas=to(z[side + "_betas"][vi]),
+            )
+            vw = (o.vertices + to(z[side + "_trans_world_m"][vi])[:, None]).cpu().numpy()
+            jw = (torch.cat([o.joints[:, :16], o.vertices[:, TIP_VERTICES]], dim=1)[:, JOINT_ORDER] + to(z[side + "_trans_world_m"][vi])[:, None]).cpu().numpy()
+        dR = Rotation.from_rotvec(interp["hand_root"][vi, si]).as_matrix()
+        pivot = jw[:, :1]
+        vw = (vw - pivot) @ dR.transpose(0, 2, 1) + pivot
+        jw = (jw - pivot) @ dR.transpose(0, 2, 1) + pivot
+        vc = (vw - T[vi, :3, 3][:, None]) @ T[vi, :3, :3]
+        jc = (jw - T[vi, :3, 3][:, None]) @ T[vi, :3, :3]
+        sc = np.exp(interp["hand_log_scale"][vi, si])[:, None]
+        vc = vc * sc + interp["hand_translation_camera"][vi, si, None]
+        jc = jc * sc + interp["hand_translation_camera"][vi, si, None]
+        vw = vc @ T[vi, :3, :3].transpose(0, 2, 1) + T[vi, :3, 3][:, None]
+        jw = jc @ T[vi, :3, :3].transpose(0, 2, 1) + T[vi, :3, 3][:, None]
+        state[side + "_vertices_world"][vi] = vw.astype("float32")
+        state[side + "_joints_world"][vi] = jw.astype("float32")
+        for local, i in enumerate(vi):
+            qc = (vw[local] - tt[i]) @ RR[i]
+            q, n = closest(scene, qc)
+            bc = (z[side + "_vertices_world_m"][i] - t0[i]) @ R0[i]
+            qb, nb = closest(scene, bc)
+            tips = []
+            for finger, tip in enumerate(TIP_VERTICES):
+                patch = cKDTree(z[side + "_vertices_world_m"][i]).query(
+                    z[side + "_vertices_world_m"][i, tip], k=12
+                )[1]
+                tips.append(
+                    {
+                        "tip_vertex": int(tip),
+                        "digit": PRIMARY_DIGITS[finger],
+                        "primary_designated_and_visible": bool(primary[i, si, finger]),
+                        "P17_state": str(judgments[i, si]),
+                        "base_gap_mm": float(
+                            np.sort(np.linalg.norm(bc[patch] - qb[patch], axis=1))[
+                                :3
+                            ].mean()
+                            * 1000
+                        ),
+                        "fitted_gap_mm": float(
+                            np.sort(np.linalg.norm(qc[patch] - q[patch], axis=1))[
+                                :3
+                            ].mean()
+                            * 1000
+                        ),
+                    }
+                )
+            before = project(camera(z[side + "_joints_world_m"][i], T[i]), K[i])
+            after = project(jc[local], K[i])
+            measurements.append(
+                {
+                    "frame": int(ids[i]),
+                    "time_s": float(times[i]),
+                    "side": side,
+                    "pad_gaps": tips,
+                    "joint_projection_delta_median_px": float(
+                        np.median(np.linalg.norm(after - before, axis=1))
+                    ),
+                    "unsigned_visual_triangle_gap_median_m": float(
+                        np.median(np.linalg.norm(qc - q, axis=1))
+                    ),
+                }
+            )
+    state["base_object_rotation"] = R0
+    state["base_object_translation_world"] = t0
+    np.savez_compressed(out / "demo_state.npz", **state)
+    report = {
+        "schema": "v20_visual_contact_demo_fit_v1",
+        "status": "demo_fitted_pending_visual_review",
+        "demo_only": True,
+        "diagnostic_only": True,
+        "annotation_ready": False,
+        "gt_consumed": False,
+        "generated_mesh_role": "demo_visual_proximity_fitting_surface_not_physical_contact_truth",
+        "demo_visual_proximity_fit_eligible": True,
+        "physical_contact_authority": False,
+        "signed_intrusion_loss_enabled": False,
+        "inputs": {
+            **{
+                k: str(getattr(args, k).resolve())
+                for k in ["annotations", "pose_report", "mano_bridge", "hawor_params", "mano_models"]
+            },
+            **({"appearance_mask_manifest": str(args.appearance_mask_manifest.resolve())}
+               if args.appearance_mask_manifest else {}),
+        },
+        "input_hashes": {
+            **{
+                k: sha(getattr(args, k))
+                for k in ["annotations", "pose_report", "mano_bridge", "hawor_params"]
+            },
+            **({"appearance_mask_manifest": sha(args.appearance_mask_manifest)}
+               if args.appearance_mask_manifest else {}),
+            **({"interaction_judgments": sha(args.interaction_judgments)} if args.interaction_judgments else {}),
+            **{
+                "mano_" + side: sha(args.mano_models / f"MANO_{side.upper()}.pkl")
+                for side in ["left", "right"]
+            },
+        },
+        "appearance_masks": {
+            "manifest": (str(args.appearance_mask_manifest.resolve())
+                         if args.appearance_mask_manifest else None),
+            "semantic_role": ("raw_SAM2_appearance_silhouette_only_not_metric_surface"
+                              if args.appearance_mask_manifest else "explicit_legacy_metric_owned_mask"),
+            "metric_owned_mask_fallback": False,
+            "unavailable_frame_ids": [int(idx) for idx, path in appearance_paths.items() if path is None],
+        },
+        "mesh": str(meshpath),
+        "mesh_sha256": sha(meshpath),
+        "visual_initializer_provenance": {
+            "pose_binding": {"path": str(args.pose_report.resolve()), "sha256": sha(args.pose_report)},
+            "initializer": rep.get("demo_pose_initializer"),
+            "core_source_identity": rep.get("core_source_identity"),
+            "base_object_semantics": "visual_initializer_not_a_claim_of_core_P15_equality",
+        },
+        "visual_mesh_provenance": {
+            "receipt": rep.get("visual_mesh_receipt"),
+            "completion": rep.get("visual_completion_provenance"),
+        },
+        "device": str(device),
+        "frame_count": N,
+        "fit_image_size_wh": fit_size.tolist(),
+        "pixel_loss_plane": "legacy_960_width_reference_not_render_plane",
+        "projection_delta_image_plane": "render",
+        "hand_uncertainty": {side: {"invalid_frame_ids": ids[~valid[side]].tolist(), "invalid_state": "unresolved_not_rendered", "valid_state": "source_MANO_replayed_demo_hypothesis"} for side in ["left", "right"]},
+        "interaction_judgments": str(args.interaction_judgments) if args.interaction_judgments else "legacy_visual_hypothesis",
+        "zero_state_max_vertex_error_m": maxreplay,
+        "trace": trace,
+        "measurements": measurements,
+        "elapsed_s": time.monotonic() - start,
+        "parameters": {k: v for k, v in vars(args).items() if not isinstance(v, Path)},
+        "claim": "image-and-triangle fitted demo visual proximity hypothesis; no measured contact/collision/sign/SDF/nonpenetration claim",
+    }
+    (out / "fit_report.json").write_text(
+        json.dumps(report, indent=2, allow_nan=False) + "\n"
+    )
+    print("DONE", out, flush=True)
+
+    return report

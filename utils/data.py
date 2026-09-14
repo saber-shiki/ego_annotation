@@ -125,3 +125,85 @@ def time_source_pairs(ids, keys, sources, span, times, max_gap):
         if before: pairs.add((max(before, key=times.get), b))
         if after: pairs.add((min(after, key=times.get), b))
     return sorted(pairs, key=lambda p: (times[p[0]], times[p[1]])), rejected
+
+from utils.geometry import resized_K, validate_transforms
+def frame_ids(values, label="frame_idx"):
+    raw = np.asarray(values)
+    if raw.ndim != 1 or not len(raw) or not np.issubdtype(raw.dtype, np.integer):
+        raise ValueError(f"{label}: expected nonempty integer IDs")
+    ids = raw.astype(np.int64)
+    if len(np.unique(ids)) != len(ids):
+        raise ValueError(f"{label}: duplicate frame IDs")
+    return ids
+
+
+def join_indices(source_ids, target_ids):
+    source = frame_ids(source_ids)
+    target = frame_ids(target_ids)
+    lookup = {int(f): i for i, f in enumerate(source)}
+    if set(source) != set(target):
+        raise ValueError("frame ID coverage mismatch")
+    return np.array([lookup[int(f)] for f in target], dtype=int)
+
+
+def validate_times(values, count):
+    times = np.asarray(values, dtype=float)
+    if times.shape != (count,) or not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
+        raise ValueError("time_s must be finite and strictly increasing")
+    return times
+
+
+def render_size(source_wh, width=None):
+    wh = np.asarray(source_wh)
+    if wh.shape != (2,) or not np.isfinite(wh).all() or np.any(wh <= 0) or np.any(wh != wh.astype(int)):
+        raise ValueError("invalid image size")
+    if width is None:
+        return wh.astype(int)
+    if width < 2:
+        raise ValueError("render width must be at least 2")
+    return np.array([width, max(1, round(wh[1] * width / wh[0]))], dtype=int)
+
+
+def state_timeline(z, fps, video_count, width=None):
+    ids = frame_ids(z["frame_idx"])
+    if not np.isfinite(fps) or fps <= 0 or video_count != len(ids):
+        raise ValueError("source video/state timeline mismatch")
+    legacy = "time_s" not in z
+    if legacy and not np.array_equal(np.sort(ids), np.arange(len(ids))):
+        raise ValueError("legacy state needs zero-based source frame IDs")
+    times = np.asarray(z["time_s"] if not legacy else ids / fps, float)
+    if times.shape != (len(ids),) or not np.isfinite(times).all():
+        raise ValueError("invalid state time_s")
+    order = np.argsort(times)
+    times_sorted = validate_times(times[order], len(ids))
+    # The MP4 writer is constant-rate. Reject an ambiguous/VFR mapping rather than seek by IDs.
+    if not np.allclose(times_sorted - times_sorted[0], np.arange(len(ids)) / fps, atol=0.5 / fps, rtol=0):
+        raise ValueError("timestamps do not map one-to-one to source video frames")
+    source_size = np.asarray(z.get("render_size_wh", [960, 960]))
+    size = render_size(source_size, width)
+    intr = np.asarray(z["intrinsics_render"] if "intrinsics_render" in z else z["intrinsics_960"])
+    if intr.shape != (len(ids), 4):
+        raise ValueError("intrinsics timeline mismatch")
+    K = np.array([resized_K(k, source_size, size) for k in intr])
+    T = validate_transforms(z["T_world_camera"])
+    if len(T) != len(ids):
+        raise ValueError("camera timeline mismatch")
+    if "object_vertices_canonical" in z:
+        vertices = np.asarray(z["object_vertices_canonical"])
+        faces = np.asarray(z["object_faces"])
+        if (vertices.ndim != 2 or vertices.shape[1] != 3 or len(vertices) < 3
+                or not np.isfinite(vertices).all() or faces.ndim != 2 or faces.shape[1] != 3
+                or not len(faces) or not np.issubdtype(faces.dtype, np.integer)
+                or faces.min() < 0 or faces.max() >= len(vertices)):
+            raise ValueError("intact object triangle geometry required")
+        for prefix in ("", "base_"):
+            if prefix and prefix + "object_rotation" not in z:
+                continue
+            R = np.asarray(z[prefix + "object_rotation"])
+            t = np.asarray(z[prefix + "object_translation_world"])
+            if R.shape != (len(ids), 3, 3) or t.shape != (len(ids), 3):
+                raise ValueError("full-timeline object poses required")
+            object_T = np.tile(np.eye(4), (len(ids), 1, 1))
+            object_T[:, :3, :3], object_T[:, :3, 3] = R, t
+            validate_transforms(object_T)
+    return ids, times, order, size, K
