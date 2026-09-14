@@ -10,6 +10,7 @@ calls a retired ego-annotation script.
 
 | Entry | Implemented behavior | Verification boundary |
 |---|---|---|
+| `main.py resume` | Same-run immutable code/config/raw/sensor/target identity, complete stage-file hashes and original producer receipts; explicit suffix rewind/candidate attempts, partial-output quarantine | CPU fake-producer execution-count and real CLI failure/recovery tests; no cross-code/config or old-run import |
 | `main.py annotate` | Fresh raw video, fixed/estimated K, conditioned camera-z depth, private-input HaWoR, OWLv2/SAM2, metric ownership, full native SAM3D shape, observed/RGB SO3+SE3, full-MANO unsigned visual fit, batched Astra judgments, complete JSON/RRD and triangle MP4 | CPU contracts and real worker-interface checks; full fresh-video acceptance requires the separately executed runtime cases |
 | `main.py refine-pose` | Same-run role/raw/object/timeline-bound prepared observations and paired RGB producer inputs | Numerical/gradient/restoration/PnP tests; empty accepted RGB is a valid measured outcome, absent producer is an error |
 | `main.py fit-visual` | Prepared full MANO/object candidate; immutable source replay, scale/rotation/articulation bounds, 12-step triangle/outline refresh | Real MANO CPU smoke and baseline loss parity; physical acceptance remains false |
@@ -41,18 +42,30 @@ calls a retired ego-annotation script.
 
 ## Explicit remaining gaps
 
-The new raw entry is create-only. The former version-specific automatic
-resume/rewind, cross-version candidate-prefix reuse and native-reuse launch flows
-were not migrated into a public recovery API. Producer receipts and immutable
-input checks preserve evidence, but are not a substitute for that missing
-execution capability. Prepared numerical entries can write a new candidate from
-same-run inputs; they do not claim automatic recovery of a failed cold run.
+The initial raw entry remains create-only. `main.py resume` now verifies the
+same run's input contract, code manifest, model configuration and declared model
+asset bytes, then reuses only its successful stage prefix. Each stage binds all
+files it produced, including native meshes, private caches, rendered images,
+Astra responses and logs; missing or changed evidence invalidates that stage and
+the ordered dependent suffix. Original producer IDs and receipts are retained.
+Unreceipted output is moved into this run's quarantine before recomputation.
+Explicit rewind stores before/after manifests and a reason; an optional candidate
+label identifies the new suffix, while prior candidate artifacts remain archived.
+Final output provenance distinguishes retained original producers from this
+attempt's executions. Reusing a receipted same-run native stage is supported;
+importing arbitrary old meshes, foreign videos or old-version receipts is refused.
 
-Real three-case outputs and full formal/shared-tail execution are runtime
-acceptance obligations outside the CPU/build evidence. A build, an import, or an
-empty signed active set does not establish those outcomes. The refactor must not
-be described as fully equivalent until this recovery gap is resolved or an
-explicit scope decision is recorded.
+Cross-code or model-configuration changes are refused even with `--rewind`.
+There is no approved interface-patch exception or per-producer cross-version
+compatibility inference. Runs created before this stage journal existed cannot
+be imported by pretending their loose artifacts are new successful receipts.
+Provisioned interpreter binaries and declared source/model trees are byte-bound;
+installed site-packages are not recursively fingerprinted and must remain frozen.
+
+Real three-case outputs and full formal/shared-tail execution remain runtime
+acceptance obligations outside the CPU/build evidence. Recovery never substitutes
+for the first fresh observation execution of each case. A build, import or empty
+signed active set does not establish complete annotations or physical accuracy.
 
 ## Retired independent historical families
 

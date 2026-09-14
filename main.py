@@ -170,6 +170,14 @@ def main(argv=None):
     video.add_argument('--gpu-uuid')
     video.add_argument('--sensor-calibration',type=Path)
     video.add_argument('--target-description')
+    resume=commands.add_parser('resume',help='continue a verified same-code, same-input run')
+    resume.add_argument('--run-root',type=Path,required=True)
+    resume.add_argument('--assets-manifest',type=Path,required=True)
+    resume.add_argument('--gpu',type=int,required=True)
+    resume.add_argument('--gpu-uuid')
+    resume.add_argument('--rewind',help='invalidate this named stage and its dependent suffix')
+    resume.add_argument('--reason',help='required explanation for explicit rewind')
+    resume.add_argument('--candidate',help='label the new same-run suffix; retained receipts stay unchanged')
     internal=commands.add_parser('_worker',help=argparse.SUPPRESS)
     internal.add_argument('kind',choices=['rgb'])
     internal.add_argument('arguments',nargs=argparse.REMAINDER)
@@ -201,7 +209,7 @@ def main(argv=None):
         from utils.config import preflight_providers
         result=preflight_providers(load(args.assets_manifest));print(json.dumps(result,indent=2));return result
     if args.command=='formal-tail':return formal_tail(load(args.spec))
-    if args.command=='annotate':
+    if args.command in {'annotate','resume'}:
         result=annotate(args);print(json.dumps(result,indent=2));return result
     if args.command=='_worker':
         from observations.object.rgb_tracking import build_rgb_edges
@@ -317,292 +325,401 @@ def annotate(args):
     from optimization.problems import ObservedObjectPose, StandaloneShape
     from render import render_video, export_scene
     from utils.config import preflight_providers
-    preflight_providers(load(args.assets_manifest))
-    root=args.run_root.resolve();root.mkdir(parents=True,exist_ok=False)
-    (root/'input').mkdir();(root/'logs').mkdir()
-    raw=root/'input/raw.mp4'
-    with args.video.open('rb') as source,raw.open('xb') as destination:shutil.copyfileobj(source,destination)
-    if sha(raw)!=sha(args.video):raise ValueError('raw copy identity mismatch')
-    timing=read_cfr_video_timing(raw)
+    from utils.state import StageRecovery
+    from utils.config import recovery_asset_manifest
     assets=load(args.assets_manifest)
     if assets.get('agent_model')!='gpt-6-astra' or assets.get('agent_provider')!='dexgem-responses' or assets.get('agent_disable_fallbacks') is not True:
         raise ValueError('asset manifest must pin Astra without fallbacks')
     os.environ['EGO_ASTRA_CREDENTIAL_FILE']=assets['agent_credential_file']
     code_root=Path(__file__).resolve().parent
-    code_manifest=root/'input/code_manifest.json'
     code_files=[code_root/'main.py',code_root/'render.py']
     for directory in ('utils','observations','gates','factors','optimization'):
         code_files.extend((code_root/directory).rglob('*.py'))
     code_hashes={str(p.relative_to(code_root)):sha(p) for p in code_files}
-    code_manifest.write_text(json.dumps({'files':code_hashes},sort_keys=True))
-    sensor=None
-    if args.sensor_calibration is not None:
-        sensor=root/'input/sensor_calibration.json';shutil.copyfile(args.sensor_calibration,sensor)
-    contract={'schema':'rgb_scene_input_v1','run_id':str(uuid.uuid4()),'case':args.case,
-        'run_root':str(root),'input_video':str(raw),'input_video_sha256':sha(raw),
-        'bundle_manifest_sha256':sha(code_manifest),'sensor_calibration_metadata':str(sensor) if sensor else None,
-        'sensor_calibration_sha256':sha(sensor) if sensor else None,'source_timing':timing.report(),
-        'target_description':args.target_description}
-    (root/'input/runtime_input_contract.json').write_text(json.dumps(contract,indent=2))
-    ledger=RunState(root);ids=list(range(len(timing.presentation_ticks)));object_id=None
-    environment={**os.environ,'CUDA_VISIBLE_DEVICES':str(args.gpu),'HF_HUB_OFFLINE':'1',
-        'TRANSFORMERS_OFFLINE':'1','EGO_SAM2_SOURCE':assets['sam2_source'],
-        'PYTHONPATH':str(code_root)+os.pathsep+os.environ.get('PYTHONPATH','')}
-    def verify_code():
-        if any(sha(code_root/name)!=digest for name,digest in code_hashes.items()):
-            raise RuntimeError('source code changed during the run; deploy an immutable snapshot')
-    def record(stage,outputs,command=None):
-        verify_code()
-        return ledger.record(stage,outputs,object_id=object_id,frame_ids=ids,command=command)
-    gpu_uuid=args.gpu_uuid
-    def worker(stage,python,module,argv,outputs,overlay=None):
-        nonlocal gpu_uuid
-        verify_code()
-        command=[str(python),'-m',module,*map(str,argv)]
-        with (root/'logs'/f'{stage}.log').open('x') as log:
-            resources=run_model(command,cwd=code_root,environment={**environment,**(overlay or {})},
-                gpu=args.gpu,expected_uuid=gpu_uuid,min_free_mib=int(assets.get('sam3d_min_free_mib',12000)),stdout=log)
-        gpu_uuid=resources['uuid']
-        (root/'logs'/f'{stage}.resources.json').write_text(json.dumps(resources,indent=2))
-        record(stage,outputs,command)
-    def ask(name,evidence,images,path):
-        if path.exists():raise ValueError('judgment output already exists')
-        module=importlib.import_module('observations.judgments.judge_'+name)
-        value=module.judge({'frame_ids':ids,**({'object_id':object_id} if object_id else {}),**evidence},images)
-        path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value,indent=2,allow_nan=False))
-        ledger.record('judge_'+name,[(path,'judgment')],object_id=object_id,frame_ids=evidence.get('frame_ids',ids));return value
-    manifest=root/'input/raw_frame_manifest/manifest.json'
-    calibration.build(SimpleNamespace(video=raw,output_dir=manifest.parent,render_width=960,
-        frame_start=None,frame_end=None,jpeg_quality=95))
-    record('raw_frames',[(manifest,'raw_manifest')])
-    frames=load(manifest)['frames'];raw_by_id=indexed(frames)
-    sampled=[ids[i] for i in np.unique(np.linspace(0,len(ids)-1,min(12,len(ids)),dtype=int))]
-    images=[Path(raw_by_id[i]['raw_frame_path']) for i in sampled]
-    plan_path=root/'measurements/object_candidates/object_plan_agent.json'
-    plan=ask('object',{'case':args.case,'target_description':args.target_description},images,plan_path)
-    obj=plan['objects'][0];object_id=obj['object_id'];track=obj['track_id']
-    if not all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',v) for v in (args.case,object_id,track)):
-        raise ValueError('unsafe case/object/track identity')
-    detector_contract=detector_prompt_contract(obj,images,assets,root/'state/detector_text')
-    record('detector_text',[(root/'state/detector_text/contract.json','detector_text_contract')])
-    width,height=timing.source_size_wh
-    camera_dir=root/'state/calibration';camera=camera_dir/'v19_camera_calibration_contract.json'
-    def depth_job(stage,output,conditioned=False):
-        argv=['--manifest',manifest,'--output-dir',output,'--frame-start',0,'--frame-end',ids[-1],
-            '--unidepth-repo',assets['unidepth_repo'],'--model-id',assets['unidepth_model'],
-            '--source-width',width,'--source-height',height]
-        if conditioned:argv+=['--camera-contract',camera,'--camera-input-plane','manifest_rgb','--camera-output-plane','source_rgb']
-        path=output/'unidepth_full_frame_depth_v3.npz'
-        worker(stage,assets['unidepth_python'],'observations.camera.unidepth',argv,[(path,'depth')])
-        return path
-    if sensor:
-        extra=['--sensor-calibration-contract',sensor,'--sensor-calibration-authority','prediction_side_sensor_metadata',
-            '--prediction-source-video',raw,'--sensor-source-video',raw]
+    root=args.run_root.resolve()
+    recovering=getattr(args,'command',None)=='resume'
+    code_manifest=root/'input/code_manifest.json'
+    raw=root/'input/raw.mp4'
+    if recovering:
+        contract=load(root/'input/runtime_input_contract.json')
+        if contract['run_root']!=str(root) or sha(raw)!=contract['input_video_sha256']:
+            raise ValueError('run/raw identity changed')
+        if load(code_manifest)!={'files':code_hashes} or sha(code_manifest)!=contract['bundle_manifest_sha256']:
+            raise ValueError('source code changed; cross-version recovery refused')
+        if sha(args.assets_manifest)!=contract.get('assets_manifest_sha256'):
+            raise ValueError('model configuration changed; cross-config recovery refused')
+        sensor=Path(contract['sensor_calibration_metadata']) if contract['sensor_calibration_metadata'] else None
+        if (sha(sensor) if sensor else None)!=contract['sensor_calibration_sha256']:
+            raise ValueError('sensor identity changed')
+        if sha(root/'input/model_asset_manifest.json')!=contract.get('model_asset_manifest_sha256') or recovery_asset_manifest(assets)!=load(root/'input/model_asset_manifest.json'):
+            raise ValueError('declared model asset bytes changed; asset reuse refused')
+        args.case=contract['case'];args.target_description=contract['target_description']
+        timing=read_cfr_video_timing(raw)
+        if timing.report()!=contract['source_timing']:
+            raise ValueError('raw timeline changed')
     else:
-        probe=depth_job('intrinsics_probe',root/'measurements/depth_slam/unidepth_intrinsics_probe')
-        extra=['--unidepth-npz',probe,'--aggregation','median','--square-focal']
-    calibration.resolve_camera(calibration.camera_parse_args(list(map(str,['--case',args.case,
-        '--raw-frame-manifest',manifest,'--output-dir',camera_dir,*extra]))))
-    record('camera',[(camera,'calibration')])
-    camera_payload,camera_normal=load_contract(camera,expected_frame_ids=ids)
-    K,_=plane_intrinsics(camera_payload,camera_normal,plane_name='source_rgb',actual_size_wh=(width,height))
-    if not np.isclose(K[0],K[1],atol=1e-6,rtol=1e-6):raise ValueError('HaWoR requires square focal; sensor K cannot be averaged')
-    depth=depth_job('conditioned_depth',root/'measurements/depth_slam/unidepth_full_frame',True)
-    bound=camera_dir/'depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
-    calibration.bind_depth_contract(calibration.depth_parse_args(list(map(str,['--source-depth-npz',depth,
-        '--camera-contract',camera,'--depth-plane','source_rgb','--output-dir',bound.parent]))))
-    record('depth_binding',[(bound,'depth')])
-    hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz'
-    worker('hawor',assets['hawor_python'],'observations.hand.hawor',
-        ['--hawor-root',assets['hawor_root'],'--run-root',root,'--video_path',raw,
-         '--camera-intrinsics',*K,'--output-dir',hawor.parent],[(hawor,'hands')])
-    detector=root/'measurements/object_candidates/object_box_prompts_owlv2'
-    owlargs=['--raw-frame-manifest',manifest,'--output-root',detector,'--review-dir',root/'renders/owlv2',
-        '--case-id',args.case,'--object-id',object_id,'--track-id',track,'--description',obj['description'],
-        '--prompt-frames',','.join(map(str,obj['detector_prompt_frames'])),
-        '--active-start',obj['detector_active_interval'][0],'--active-end',obj['detector_active_interval'][1],
-        '--owlv2-model',assets['owlv2_model'],'--box-threshold',.03,'--device','cuda','--box-only']
-    for prompt in detector_contract['effective_prompts']:owlargs+=['--text-prompt',prompt]
-    worker('owlv2',assets['owlv2_python'],'observations.object.owlv2',owlargs,
-        [(detector/object_id/'object_point_prompts_vlm.json','object_boxes')])
-    sam2=root/'measurements/object_tracks/sam2_owlv2_box_points';track_path=sam2/track/'sam2/sam2_track.json'
-    worker('sam2',assets['unidepth_python'],'observations.object.sam2',
-        ['--clip',raw,'--point-root',detector,'--output-root',sam2,'--checkpoint',assets['sam2_checkpoint'],
-         '--frame-start',0,'--frame-end',ids[-1]],[(track_path,'object_masks')])
-    track_payload=load(track_path);mask_reviews=[]
-    for frame in sampled:
-        raw_image=cv2.imread(raw_by_id[frame]['raw_frame_path'])
-        row=track_payload.get(str(frame),{})
-        mask_path=row.get('mask_path')
-        if mask_path:
-            mask=cv2.imread(str(mask_path),0)
-            if mask is None:raise ValueError('SAM2 declared mask image is missing')
-            selected_mask=cv2.resize(mask,(raw_image.shape[1],raw_image.shape[0]),interpolation=cv2.INTER_NEAREST)>0
-            raw_image[selected_mask]=(raw_image[selected_mask]*.5+np.array([50,200,50])*.5).astype('uint8')
-        path=root/'renders/mask_review'/f'{frame:06d}.jpg';path.parent.mkdir(parents=True,exist_ok=True)
-        if not cv2.imwrite(str(path),raw_image):raise RuntimeError('mask evidence render failed')
-        mask_reviews.append(path)
-    mask_judgment=ask('mask_track',{'track':track_payload,'inspected_frame_ids':sampled},mask_reviews,root/'state/mask_track_judgment.json')
-    if mask_judgment['identity_consistent'] is False:
-        raise ValueError('mask identity review rejected the selected-object track; no scene is published')
-    base=root/'state/base_annotations/annotations_v19_base.json'
-    build_base_annotations(base_parse_args(list(map(str,['--case',args.case,'--raw-frame-manifest',manifest,
-        '--output-dir',base.parent,'--depth-npz',bound,'--calibration-contract',camera,
-        '--hawor-npz',hawor,'--object-plan',plan_path,'--sam2-output-root',sam2]))))
-    bridge=base.parent/'v19_mano_bridge_from_hawor_world.npz'
-    record('base',[(base,'base_observations'),(bridge,'mano_bridge')])
-    owned=root/'measurements/object_tracks/depth_order_owned'/track
-    surface.build_depth_order(surface.depth_order_parse_args(list(map(str,['--base-annotations',base,
-        '--raw-sam2-track',track_path,'--depth-npz',bound,'--calibration-contract',camera,
-        '--mano-bridge',bridge,'--hawor-npz',hawor,'--output-dir',owned,'--case',args.case,
-        '--object-id',object_id,'--track-id',track]))))
-    record('ownership',[(owned/'sam2_track.json','owned_masks'),(owned/'native_depth_metric_eligibility.json','metric_eligibility')])
-    proposals=root/'measurements/object_geometry/anchor_candidates'/object_id
-    surface.build_visible_geometry(surface.surface_parse_args(owned_surface_arguments(root,args.case,object_id,track,proposals)))
-    proposal_path=proposals/'anchor_candidate_proposals.json'
-    decision=ask('pose_anchor',{'frame_ids':[r['frame_idx'] for r in load(proposal_path)['review_candidates']],'candidates':load(proposal_path),'candidate_report_path':str(proposal_path)},
-        [proposals/'anchor_candidate_review.jpg'],root/'state/anchor_decisions'/f'{object_id}.json')
-    anchor=decision['selected_anchor_frame_idx']
-    visible=root/'measurements/object_geometry/visible_geometry'/object_id
-    surface.build_visible_geometry(surface.surface_parse_args(owned_surface_arguments(root,args.case,object_id,track,visible,anchor=anchor)))
-    ann=visible/'annotations_v19_visible_geometry.json'
-    record('surface',[(ann,'observations'),(visible/'v19_visible_geometry_adapter_report.json','surface_report')])
-    rigidity=ask('rigidity',{},images,root/'state/rigidity.json')
-    if rigidity['physical_branch']!='rigid':raise ValueError('selected standalone scene requires rigid object evidence')
-    evidence_root=root/'measurements/geometry_completion/rigid_evidence'
-    surface.build_anchor_evidence(list(map(str,['--case',args.case,'--object-id',object_id,'--annotations',ann,
-        '--depth-fused-report',visible/'v19_visible_geometry_depth_fused_report.json',
-        '--output-root',evidence_root,'--selected-frame-idx',anchor,'--selection-note',decision['visual_rationale']])))
-    evidence=evidence_root/args.case/object_id/'evidence_bundle/evidence_bundle_report.json'
-    geometry=root/'measurements/geometry_completion'/('sam3d_'+object_id)
-    shape.build_completion_inputs(shape.conditioning_parse_args(list(map(str,['--evidence-report',evidence,'--output-dir',geometry/'native_inputs']))))
-    native_input=geometry/'native_inputs/p11_dual_geometry_inputs_report.json'
-    conditioning=load(native_input)['conditioning_contracts']['sam3d_objects_native']
-    def native_job(stage,image,mask,out,frame):
-        name=f'{args.case}_{object_id}_frame_{frame}'
-        argv=['--repo',assets['sam3d_repo'],'--config',assets['sam3d_config'],
-            '--moge-checkpoint',assets['sam3d_moge_checkpoint'],'--dinov2-repo',assets['sam3d_dinov2_repo'],
-            '--dinov2-checkpoint',assets['sam3d_dinov2_checkpoint'],'--case',f'{name}|{image}|{mask}|42','--output-dir',out]
-        qc=out/name/'qc_sam3d_objects_mesh_v7.json'
-        worker(stage,assets['sam3d_python'],'observations.object.sam3d',argv,[(qc,'native_geometry')],assets.get('sam3d_environment',{}))
-        return name,qc,argv
-    name,qc,command=native_job('metric_native',conditioning['image'],conditioning['mask'],geometry/'native_reconstruction',anchor)
-    candidate=shape.sam3d_candidate_record(qc,name,Path(conditioning['image']),Path(conditioning['mask']),{'mode':'fresh_native_SAM3D_only','command':list(map(str,command))})
-    prior=geometry/'sam3d_prior_report.json';prior.write_text(json.dumps({'schema':'v19_sam3d_only_prior_v1','status':'ok',
-        'candidates':{'sam3d_objects':candidate},'gt_consumed':False,'native_input_report':str(native_input)},indent=2))
-    shape.bind_sam3d_metric(shape.native_bridge_parse_args(list(map(str,['--evidence-report',evidence,'--p12-report',prior,'--output-dir',geometry/'metric_bridge']))))
-    metric_bridge=geometry/'metric_bridge/sam3d_native_sensor_metric_canonical_bridge_report.json'
-    canonical=Path(load(metric_bridge)['outputs']['metric_canonical_render_prior'])
-    shape.build_completion_face_support(list(map(str,['--evidence-report',evidence,'--trellis-report',geometry/'metric_bridge/p13_metric_canonical_input.json',
-        '--input-mesh-already-metric-canonical','--output-dir',geometry/'face_support',
-        '--observed-band-scale',np.sqrt(3.),'--silhouette-free-space-filter','--planar-slab-support-filter'])))
-    completion=load(geometry/'face_support/v18_compact_rigid_trellis_completion_report.json')
-    completion.update(schema='v19_sam3d_only_completion_v1',source_model='sam3d_objects',gt_consumed=False)
-    completion['render_mesh_contract']={'required_mesh_path':str(canonical),'required_mesh_sha256':sha(canonical),'renderer_must_match':True}
-    completion['outputs']['intact_generated_render_mesh']=str(canonical)
-    completion=normalize_completion(completion,load(ann),object_id)
-    completion_path=geometry/'completion_report.json';completion_path.write_text(json.dumps(completion,indent=2))
-    source_pose=root/'measurements/pose_fits'/object_id/'visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json'
-    solve(ObservedObjectPose(tuple(map(str,['--annotations',ann,'--completion-report',completion_path,'--object-id',object_id,'--output-dir',source_pose.parent]))))
-    record('observed_pose',[(source_pose,'source_pose')])
-    edges=root/'measurements/pose_fits'/object_id/'scene_rgb/edges.npz'
-    worker('rgb_edges',assets['rgb_python'],'main',['_worker','rgb','--annotations',ann,'--raw-frame-manifest',manifest,
-        '--depth-npz',bound,'--initial-pose-report',source_pose,'--object-id',object_id,'--frame-start',0,
-        '--frame-end',ids[-1],'--keyframe-seconds',.5,'--source-gap-seconds',2.,'--keyframe-neighbor-span',4,
-        '--lightglue-root',assets['lightglue_root'],'--assets-manifest',args.assets_manifest,'--device','cuda:0',
-        '--output-npz',edges,'--output-json',edges.with_suffix('.json')],[(edges,'rgb_edges'),(edges.with_suffix('.json'),'rgb_edge_report')])
-    posterior=root/'state/scene'/object_id/'refined_pose.json'
-    refine(ann,source_pose,edges,edges.with_suffix('.json'),object_id,anchor,posterior,root)
-    record('refined_pose',[(posterior,'candidate_pose')])
-    appearance= root/'measurements/demo_visual'/object_id/'appearance_evidence/appearance_mask_manifest.json'
-    shape.build_appearance(shape.appearance_order_parse_args(list(map(str,['--run-root',root,'--object-id',object_id,
-        '--case-id',args.case,'--track-id',track,'--raw-frame-manifest',manifest,'--annotations',ann,
-        '--raw-sam2-track',track_path,'--depth-order-report',owned/'depth_order_ownership_report.json','--output-dir',appearance.parent]))))
-    appearance_rows=indexed(load(appearance)['frames'])
-    choice_path=root/'state/appearance_decisions'/f'{object_id}.json'
-    preferred=load(appearance.with_name('anchor_decision.json'))['selected_frame_idx']
-    appearance_candidates=appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred)
-    if not appearance_candidates:raise ValueError('no inspected available appearance anchor')
-    appearance_images=[]
-    for frame in appearance_candidates:
-        appearance_images.extend([Path(appearance_rows[frame]['raw_rgb_path']),Path(appearance_rows[frame]['appearance_mask_path'])])
-    choice=ask('appearance_anchor',{'frame_ids':appearance_candidates,'preferred_frame_idx':preferred,'appearance':load(appearance)},appearance_images,choice_path)
-    selected=choice['selected_frame_idx'];selected_row=appearance_rows[selected]
-    if selected not in appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred):raise ValueError('selected appearance anchor lacks same-frame metric alignment')
-    _,native_qc,_=native_job('appearance_native',selected_row['raw_rgb_path'],selected_row['appearance_mask_path'],
-        root/'measurements/scene_native'/object_id,selected)
-    binding_dir=root/'measurements/scene_shape'/object_id
-    solve(StandaloneShape(posterior,ann,appearance,choice_path,native_qc,binding_dir,object_id,root))
-    binding=binding_dir/'pose_mesh.json'
-    from render import pose_review_images
-    pose_images=pose_review_images(load(ann),load(binding),hawor,sampled,root/'renders/refined_pose')
-    trajectory_judgment=ask('pose_trajectory',{'posterior':load(posterior),'inspected_frame_ids':sampled},pose_images,
-        root/'state/pose_trajectory_judgment.json')
-    depth_images={}
-    with np.load(bound,allow_pickle=False) as archive:
-        depth_data=archive['depth'];depth_ids=archive['frame_idx']
-        for position,frame in enumerate(depth_ids):
-            depth_frame=depth_data[position];finite=np.isfinite(depth_frame)&(depth_frame>0)
-            if not finite.any():raise ValueError('conditioned depth frame contains no positive measurements')
-            low,high=np.percentile(depth_frame[finite],[2,98])
-            gray=np.clip((np.nan_to_num(depth_frame,nan=low)-low)/max(high-low,1e-6)*255,0,255).astype('uint8')
-            color=cv2.applyColorMap(gray,cv2.COLORMAP_TURBO);color[~finite]=0
-            color=cv2.resize(color,(frames[0]['manifest_width'],frames[0]['manifest_height']))
-            cv2.putText(color,f'frame {int(frame)}: camera-z {low:.3f} .. {high:.3f} m',(8,24),cv2.FONT_HERSHEY_SIMPLEX,.55,(255,255,255),1)
-            path=root/'renders/depth'/f'{int(frame):06d}.jpg';path.parent.mkdir(parents=True,exist_ok=True)
-            if not cv2.imwrite(str(path),color):raise RuntimeError('depth review raster write failed')
-            depth_images[int(frame)]=path
-    interaction={'object_id':object_id,'status':'ok','interaction_judgments':[],'frames':[],
-        'diagnostics':{'occlusion':[],'depth_reliability':[]},'timeline_evidence':{'contact':[],'pads':[]}}
-    for offset in range(0,len(ids),12):
-        batch=ids[offset:offset+12];batch_images=[Path(raw_by_id[i]['raw_frame_path']) for i in batch]
-        evidence_batch={'frame_ids':batch}
-        destination=root/'state/judgments'/f'batch_{offset:06d}'
-        contact=ask('contact',evidence_batch,batch_images,destination/'contact.json')
-        pads=ask('contact_pads',{**evidence_batch,'contact':contact},batch_images,destination/'pads.json')
-        occlusion=ask('occlusion',evidence_batch,batch_images,destination/'occlusion.json')
-        reliability=ask('depth_reliability',evidence_batch,batch_images+[depth_images[i] for i in batch],destination/'depth_reliability.json')
-        for name,result in [('occlusion',occlusion),('depth_reliability',reliability)]:
-            interaction['diagnostics'][name].append({'role':'diagnostic_only_not_a_visual_fit_factor',
-                'intervals':result['intervals'],'judgment_sha256':sha(destination/f'{name}.json')})
-        visibility=ask('visibility',evidence_batch,batch_images,destination/'visibility.json')
-        interaction['frames'].extend(visibility['frames'])
-        interaction['timeline_evidence']['contact'].append({'judgment_sha256':sha(destination/'contact.json'),
-            'intervals':contact['interaction_judgments'],'provenance':contact['judgment_provenance']})
-        interaction['timeline_evidence']['pads'].append({'judgment_sha256':sha(destination/'pads.json'),
-            'intervals':pads['intervals'],'provenance':pads['judgment_provenance']})
-        for row in contact['interaction_judgments']:
-            # Expand supplied intervals only to attach the independently judged anatomical pads.
-            for frame in batch:
-                if row['frame_start']<=frame<=row['frame_end']:
-                    candidates=[r for r in pads['intervals'] if r['hand_side']==row['hand_side'] and r['frame_start']<=frame<=r['frame_end']]
-                    if len(candidates)>1:raise ValueError('overlapping anatomical pad judgments')
-                    entry={**row,'frame_start':frame,'frame_end':frame}
-                    if candidates:entry['primary_contact_pads']={'digits':candidates[0]['digits'],'rationale':candidates[0]['rationale']}
-                    interaction['interaction_judgments'].append(entry)
-    judgments=root/'state/agent_interaction_judgments'/f'{object_id}.json';judgments.parent.mkdir(parents=True,exist_ok=True)
-    judgments.write_text(json.dumps(interaction,indent=2));record('interaction_assembly',[(judgments,'interaction_judgment')])
-    fit=root/'measurements/scene_fit'/object_id
-    worker('visual_fit',assets['demo_python'],'main',['fit-visual','--run-root',root,'--annotations',ann,
-        '--pose-report',binding,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',assets['mano_models'],
-        '--object-id',object_id,'--appearance-mask-manifest',appearance,'--interaction-judgments',judgments,
-        '--device','cuda:0','--output-dir',fit],[(fit/'demo_state.npz','visual_state'),(fit/'fit_report.json','visual_fit_report')])
-    reviews=render_video(fit/'demo_state.npz',manifest,root/'renders/annotation.mp4')
-    review_images=[Path(r['path']) for r in reviews]
-    backend_judgment=ask('backend_geometry',{'backends':['sam3d'],'binding':load(binding)},
-        [review_images[i] for i in np.unique(np.linspace(0,len(ids)-1,min(12,len(ids)),dtype=int))],root/'state/backend_judgment.json')
-    inspections=[]
-    for offset in range(0,len(ids),12):
-        inspections.append(ask('final_inspection',{'frame_ids':ids[offset:offset+12]},review_images[offset:offset+12],
-            root/'state/final_inspection'/f'{offset:06d}.json'))
-    output=root/'final'
-    review=scene_review_summary(mask_judgment,trajectory_judgment,inspections)
-    review['backend_geometry']={'role':'diagnostic_only','judgment':{k:v for k,v in backend_judgment.items() if k!='judgment_provenance'},'judgment_sha256':sha(root/'state/backend_judgment.json')}
-    result=export_scene(fit/'demo_state.npz',binding,fit/'fit_report.json',root,code_manifest,output,visual_review=review)
-    return {'run_root':str(root),'annotation':str(output/'annotation.json'),'rrd':str(output/'world.rrd'),
-        'video':str(root/'renders/annotation.mp4'),'annotation_ready':False,
-        'visual_review':review}
-
+        preflight_providers(assets)
+        asset_identity=recovery_asset_manifest(assets)
+        root.mkdir(parents=True,exist_ok=False)
+        (root/'input').mkdir();(root/'logs').mkdir()
+        with args.video.open('rb') as source,raw.open('xb') as destination:shutil.copyfileobj(source,destination)
+        if sha(raw)!=sha(args.video):raise ValueError('raw copy identity mismatch')
+        timing=read_cfr_video_timing(raw)
+        code_manifest.write_text(json.dumps({'files':code_hashes},sort_keys=True))
+        (root/'input/model_asset_manifest.json').write_text(json.dumps(asset_identity,sort_keys=True))
+        sensor=None
+        if args.sensor_calibration is not None:
+            sensor=root/'input/sensor_calibration.json';shutil.copyfile(args.sensor_calibration,sensor)
+        contract={'schema':'rgb_scene_input_v1','run_id':str(uuid.uuid4()),'case':args.case,
+            'run_root':str(root),'input_video':str(raw),'input_video_sha256':sha(raw),
+            'bundle_manifest_sha256':sha(code_manifest),'sensor_calibration_metadata':str(sensor) if sensor else None,
+            'sensor_calibration_sha256':sha(sensor) if sensor else None,'source_timing':timing.report(),
+            'target_description':args.target_description,'assets_manifest_sha256':sha(args.assets_manifest),
+            'model_asset_manifest_sha256':sha(root/'input/model_asset_manifest.json')}
+        (root/'input/runtime_input_contract.json').write_text(json.dumps(contract,indent=2))
+    ledger=RunState(root);ids=list(range(len(timing.presentation_ticks)));object_id=None
+    recovery=StageRecovery(ledger,{'contract_sha256':sha(root/'input/runtime_input_contract.json'),
+        'code_sha256':sha(code_manifest),'assets_manifest_sha256':sha(args.assets_manifest),
+        'agent_model':'gpt-6-astra','run_id':contract['run_id']},resume=recovering,
+        rewind=getattr(args,'rewind',None),reason=getattr(args,'reason',None),candidate=getattr(args,'candidate',None))
+    try:
+        def stage(name):
+            def execute(function):
+                verify_code()
+                return recovery.run(name,function)
+            return execute
+        environment={**os.environ,'CUDA_VISIBLE_DEVICES':str(args.gpu),'HF_HUB_OFFLINE':'1',
+            'TRANSFORMERS_OFFLINE':'1','EGO_SAM2_SOURCE':assets['sam2_source'],
+            'PYTHONPATH':str(code_root)+os.pathsep+os.environ.get('PYTHONPATH','')}
+        def verify_code():
+            if sha(args.assets_manifest)!=contract['assets_manifest_sha256']:
+                raise RuntimeError('model configuration changed during the run')
+            if any(sha(code_root/name)!=digest for name,digest in code_hashes.items()):
+                raise RuntimeError('source code changed during the run; deploy an immutable snapshot')
+        def record(stage,outputs,command=None):
+            verify_code()
+            return ledger.record(stage,outputs,object_id=object_id,frame_ids=ids,command=command)
+        gpu_uuid=args.gpu_uuid
+        def worker(stage_name,python,module,argv,outputs,overlay=None):
+            nonlocal gpu_uuid
+            def execute():
+                verify_code()
+                command=[str(python),'-m',module,*map(str,argv)]
+                (root/'logs').mkdir(parents=True,exist_ok=True)
+                with (root/'logs'/f'{stage_name}.log').open('x') as log:
+                    resources=run_model(command,cwd=code_root,environment={**environment,**(overlay or {})},
+                        gpu=args.gpu,expected_uuid=gpu_uuid,min_free_mib=int(assets.get('sam3d_min_free_mib',12000)),stdout=log)
+                (root/'logs'/f'{stage_name}.resources.json').write_text(json.dumps(resources,indent=2))
+                record(stage_name,outputs,command)
+                return resources
+            resources=recovery.run(stage_name,execute)
+            gpu_uuid=resources['uuid']
+        def ask(name,evidence,images,path):
+            def execute():
+                verify_code()
+                if path.exists():raise ValueError('judgment output already exists')
+                module=importlib.import_module('observations.judgments.judge_'+name)
+                value=module.judge({'frame_ids':ids,**({'object_id':object_id} if object_id else {}),**evidence},images)
+                path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value,indent=2,allow_nan=False))
+                ledger.record('judge_'+name,[(path,'judgment')],object_id=object_id,frame_ids=evidence.get('frame_ids',ids))
+                return value
+            return recovery.run('judge_'+name+':'+str(path.relative_to(root)),execute)
+        manifest=root/'input/raw_frame_manifest/manifest.json'
+        @stage('raw_frames')
+        def _stage_raw_frames():
+            calibration.build(SimpleNamespace(video=raw,output_dir=manifest.parent,render_width=960,
+                frame_start=None,frame_end=None,jpeg_quality=95))
+            record('raw_frames',[(manifest,'raw_manifest')])
+        frames=load(manifest)['frames'];raw_by_id=indexed(frames)
+        sampled=[ids[i] for i in np.unique(np.linspace(0,len(ids)-1,min(12,len(ids)),dtype=int))]
+        images=[Path(raw_by_id[i]['raw_frame_path']) for i in sampled]
+        plan_path=root/'measurements/object_candidates/object_plan_agent.json'
+        plan=ask('object',{'case':args.case,'target_description':args.target_description},images,plan_path)
+        obj=plan['objects'][0];object_id=obj['object_id'];track=obj['track_id']
+        if not all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',v) for v in (args.case,object_id,track)):
+            raise ValueError('unsafe case/object/track identity')
+        @stage('detector_text')
+        def _stage_detector_text():
+            detector_contract=detector_prompt_contract(obj,images,assets,root/'state/detector_text')
+            record('detector_text',[(root/'state/detector_text/contract.json','detector_text_contract')])
+            return detector_contract
+        detector_contract = _stage_detector_text
+        width,height=timing.source_size_wh
+        camera_dir=root/'state/calibration';camera=camera_dir/'v19_camera_calibration_contract.json'
+        def depth_job(stage,output,conditioned=False):
+            argv=['--manifest',manifest,'--output-dir',output,'--frame-start',0,'--frame-end',ids[-1],
+                '--unidepth-repo',assets['unidepth_repo'],'--model-id',assets['unidepth_model'],
+                '--source-width',width,'--source-height',height]
+            if conditioned:argv+=['--camera-contract',camera,'--camera-input-plane','manifest_rgb','--camera-output-plane','source_rgb']
+            path=output/'unidepth_full_frame_depth_v3.npz'
+            worker(stage,assets['unidepth_python'],'observations.camera.unidepth',argv,[(path,'depth')])
+            return path
+        if sensor:
+            extra=['--sensor-calibration-contract',sensor,'--sensor-calibration-authority','prediction_side_sensor_metadata',
+                '--prediction-source-video',raw,'--sensor-source-video',raw]
+        else:
+            probe=depth_job('intrinsics_probe',root/'measurements/depth_slam/unidepth_intrinsics_probe')
+            extra=['--unidepth-npz',probe,'--aggregation','median','--square-focal']
+        @stage('camera')
+        def _stage_camera():
+            calibration.resolve_camera(calibration.camera_parse_args(list(map(str,['--case',args.case,
+                '--raw-frame-manifest',manifest,'--output-dir',camera_dir,*extra]))))
+            record('camera',[(camera,'calibration')])
+        camera_payload,camera_normal=load_contract(camera,expected_frame_ids=ids)
+        K,_=plane_intrinsics(camera_payload,camera_normal,plane_name='source_rgb',actual_size_wh=(width,height))
+        if not np.isclose(K[0],K[1],atol=1e-6,rtol=1e-6):raise ValueError('HaWoR requires square focal; sensor K cannot be averaged')
+        depth=depth_job('conditioned_depth',root/'measurements/depth_slam/unidepth_full_frame',True)
+        bound=camera_dir/'depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
+        @stage('depth_binding')
+        def _stage_depth_binding():
+            calibration.bind_depth_contract(calibration.depth_parse_args(list(map(str,['--source-depth-npz',depth,
+                '--camera-contract',camera,'--depth-plane','source_rgb','--output-dir',bound.parent]))))
+            record('depth_binding',[(bound,'depth')])
+        hawor=root/'measurements/hand_candidates/hawor_world/hawor_world_hands.npz'
+        worker('hawor',assets['hawor_python'],'observations.hand.hawor',
+            ['--hawor-root',assets['hawor_root'],'--run-root',root,'--video_path',raw,
+             '--camera-intrinsics',*K,'--output-dir',hawor.parent],[(hawor,'hands')])
+        detector=root/'measurements/object_candidates/object_box_prompts_owlv2'
+        owlargs=['--raw-frame-manifest',manifest,'--output-root',detector,'--review-dir',root/'renders/owlv2',
+            '--case-id',args.case,'--object-id',object_id,'--track-id',track,'--description',obj['description'],
+            '--prompt-frames',','.join(map(str,obj['detector_prompt_frames'])),
+            '--active-start',obj['detector_active_interval'][0],'--active-end',obj['detector_active_interval'][1],
+            '--owlv2-model',assets['owlv2_model'],'--box-threshold',.03,'--device','cuda','--box-only']
+        for prompt in detector_contract['effective_prompts']:owlargs+=['--text-prompt',prompt]
+        worker('owlv2',assets['owlv2_python'],'observations.object.owlv2',owlargs,
+            [(detector/object_id/'object_point_prompts_vlm.json','object_boxes')])
+        sam2=root/'measurements/object_tracks/sam2_owlv2_box_points';track_path=sam2/track/'sam2/sam2_track.json'
+        worker('sam2',assets['unidepth_python'],'observations.object.sam2',
+            ['--clip',raw,'--point-root',detector,'--output-root',sam2,'--checkpoint',assets['sam2_checkpoint'],
+             '--frame-start',0,'--frame-end',ids[-1]],[(track_path,'object_masks')])
+        @stage('mask_review')
+        def _stage_mask_review():
+            track_payload=load(track_path);mask_reviews=[]
+            for frame in sampled:
+                raw_image=cv2.imread(raw_by_id[frame]['raw_frame_path'])
+                row=track_payload.get(str(frame),{})
+                mask_path=row.get('mask_path')
+                if mask_path:
+                    mask=cv2.imread(str(mask_path),0)
+                    if mask is None:raise ValueError('SAM2 declared mask image is missing')
+                    selected_mask=cv2.resize(mask,(raw_image.shape[1],raw_image.shape[0]),interpolation=cv2.INTER_NEAREST)>0
+                    raw_image[selected_mask]=(raw_image[selected_mask]*.5+np.array([50,200,50])*.5).astype('uint8')
+                path=root/'renders/mask_review'/f'{frame:06d}.jpg';path.parent.mkdir(parents=True,exist_ok=True)
+                if not cv2.imwrite(str(path),raw_image):raise RuntimeError('mask evidence render failed')
+                mask_reviews.append(path)
+            return track_payload, mask_reviews
+        track_payload, mask_reviews = _stage_mask_review
+        mask_judgment=ask('mask_track',{'track':track_payload,'inspected_frame_ids':sampled},mask_reviews,root/'state/mask_track_judgment.json')
+        if mask_judgment['identity_consistent'] is False:
+            raise ValueError('mask identity review rejected the selected-object track; no scene is published')
+        base=root/'state/base_annotations/annotations_v19_base.json'
+        @stage('base')
+        def _stage_base():
+            build_base_annotations(base_parse_args(list(map(str,['--case',args.case,'--raw-frame-manifest',manifest,
+                '--output-dir',base.parent,'--depth-npz',bound,'--calibration-contract',camera,
+                '--hawor-npz',hawor,'--object-plan',plan_path,'--sam2-output-root',sam2]))))
+            bridge=base.parent/'v19_mano_bridge_from_hawor_world.npz'
+            record('base',[(base,'base_observations'),(bridge,'mano_bridge')])
+            return bridge
+        bridge = _stage_base
+        owned=root/'measurements/object_tracks/depth_order_owned'/track
+        @stage('ownership')
+        def _stage_ownership():
+            surface.build_depth_order(surface.depth_order_parse_args(list(map(str,['--base-annotations',base,
+                '--raw-sam2-track',track_path,'--depth-npz',bound,'--calibration-contract',camera,
+                '--mano-bridge',bridge,'--hawor-npz',hawor,'--output-dir',owned,'--case',args.case,
+                '--object-id',object_id,'--track-id',track]))))
+            record('ownership',[(owned/'sam2_track.json','owned_masks'),(owned/'native_depth_metric_eligibility.json','metric_eligibility')])
+        proposals=root/'measurements/object_geometry/anchor_candidates'/object_id
+        @stage('anchor_candidates')
+        def _stage_anchor_candidates():
+            surface.build_visible_geometry(surface.surface_parse_args(owned_surface_arguments(root,args.case,object_id,track,proposals)))
+        proposal_path=proposals/'anchor_candidate_proposals.json'
+        decision=ask('pose_anchor',{'frame_ids':[r['frame_idx'] for r in load(proposal_path)['review_candidates']],'candidates':load(proposal_path),'candidate_report_path':str(proposal_path)},
+            [proposals/'anchor_candidate_review.jpg'],root/'state/anchor_decisions'/f'{object_id}.json')
+        anchor=decision['selected_anchor_frame_idx']
+        visible=root/'measurements/object_geometry/visible_geometry'/object_id
+        @stage('surface')
+        def _stage_surface():
+            surface.build_visible_geometry(surface.surface_parse_args(owned_surface_arguments(root,args.case,object_id,track,visible,anchor=anchor)))
+            ann=visible/'annotations_v19_visible_geometry.json'
+            record('surface',[(ann,'observations'),(visible/'v19_visible_geometry_adapter_report.json','surface_report')])
+            return ann
+        ann = _stage_surface
+        rigidity=ask('rigidity',{},images,root/'state/rigidity.json')
+        if rigidity['physical_branch']!='rigid':raise ValueError('selected standalone scene requires rigid object evidence')
+        @stage('metric_inputs')
+        def _stage_metric_inputs():
+            evidence_root=root/'measurements/geometry_completion/rigid_evidence'
+            surface.build_anchor_evidence(list(map(str,['--case',args.case,'--object-id',object_id,'--annotations',ann,
+                '--depth-fused-report',visible/'v19_visible_geometry_depth_fused_report.json',
+                '--output-root',evidence_root,'--selected-frame-idx',anchor,'--selection-note',decision['visual_rationale']])))
+            evidence=evidence_root/args.case/object_id/'evidence_bundle/evidence_bundle_report.json'
+            geometry=root/'measurements/geometry_completion'/('sam3d_'+object_id)
+            shape.build_completion_inputs(shape.conditioning_parse_args(list(map(str,['--evidence-report',evidence,'--output-dir',geometry/'native_inputs']))))
+            native_input=geometry/'native_inputs/p11_dual_geometry_inputs_report.json'
+            conditioning=load(native_input)['conditioning_contracts']['sam3d_objects_native']
+            return evidence, geometry, native_input, conditioning
+        evidence, geometry, native_input, conditioning = _stage_metric_inputs
+        def native_job(stage,image,mask,out,frame):
+            name=f'{args.case}_{object_id}_frame_{frame}'
+            argv=['--repo',assets['sam3d_repo'],'--config',assets['sam3d_config'],
+                '--moge-checkpoint',assets['sam3d_moge_checkpoint'],'--dinov2-repo',assets['sam3d_dinov2_repo'],
+                '--dinov2-checkpoint',assets['sam3d_dinov2_checkpoint'],'--case',f'{name}|{image}|{mask}|42','--output-dir',out]
+            qc=out/name/'qc_sam3d_objects_mesh_v7.json'
+            worker(stage,assets['sam3d_python'],'observations.object.sam3d',argv,[(qc,'native_geometry')],assets.get('sam3d_environment',{}))
+            return name,qc,argv
+        name,qc,command=native_job('metric_native',conditioning['image'],conditioning['mask'],geometry/'native_reconstruction',anchor)
+        @stage('metric_geometry')
+        def _stage_metric_geometry():
+            candidate=shape.sam3d_candidate_record(qc,name,Path(conditioning['image']),Path(conditioning['mask']),{'mode':'fresh_native_SAM3D_only','command':list(map(str,command))})
+            prior=geometry/'sam3d_prior_report.json';prior.write_text(json.dumps({'schema':'v19_sam3d_only_prior_v1','status':'ok',
+                'candidates':{'sam3d_objects':candidate},'gt_consumed':False,'native_input_report':str(native_input)},indent=2))
+            shape.bind_sam3d_metric(shape.native_bridge_parse_args(list(map(str,['--evidence-report',evidence,'--p12-report',prior,'--output-dir',geometry/'metric_bridge']))))
+            metric_bridge=geometry/'metric_bridge/sam3d_native_sensor_metric_canonical_bridge_report.json'
+            canonical=Path(load(metric_bridge)['outputs']['metric_canonical_render_prior'])
+            shape.build_completion_face_support(list(map(str,['--evidence-report',evidence,'--trellis-report',geometry/'metric_bridge/p13_metric_canonical_input.json',
+                '--input-mesh-already-metric-canonical','--output-dir',geometry/'face_support',
+                '--observed-band-scale',np.sqrt(3.),'--silhouette-free-space-filter','--planar-slab-support-filter'])))
+            completion=load(geometry/'face_support/v18_compact_rigid_trellis_completion_report.json')
+            completion.update(schema='v19_sam3d_only_completion_v1',source_model='sam3d_objects',gt_consumed=False)
+            completion['render_mesh_contract']={'required_mesh_path':str(canonical),'required_mesh_sha256':sha(canonical),'renderer_must_match':True}
+            completion['outputs']['intact_generated_render_mesh']=str(canonical)
+            completion=normalize_completion(completion,load(ann),object_id)
+            completion_path=geometry/'completion_report.json';completion_path.write_text(json.dumps(completion,indent=2))
+            return completion_path
+        completion_path = _stage_metric_geometry
+        source_pose=root/'measurements/pose_fits'/object_id/'visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json'
+        @stage('observed_pose')
+        def _stage_observed_pose():
+            solve(ObservedObjectPose(tuple(map(str,['--annotations',ann,'--completion-report',completion_path,'--object-id',object_id,'--output-dir',source_pose.parent]))))
+            record('observed_pose',[(source_pose,'source_pose')])
+        edges=root/'measurements/pose_fits'/object_id/'scene_rgb/edges.npz'
+        worker('rgb_edges',assets['rgb_python'],'main',['_worker','rgb','--annotations',ann,'--raw-frame-manifest',manifest,
+            '--depth-npz',bound,'--initial-pose-report',source_pose,'--object-id',object_id,'--frame-start',0,
+            '--frame-end',ids[-1],'--keyframe-seconds',.5,'--source-gap-seconds',2.,'--keyframe-neighbor-span',4,
+            '--lightglue-root',assets['lightglue_root'],'--assets-manifest',args.assets_manifest,'--device','cuda:0',
+            '--output-npz',edges,'--output-json',edges.with_suffix('.json')],[(edges,'rgb_edges'),(edges.with_suffix('.json'),'rgb_edge_report')])
+        posterior=root/'state/scene'/object_id/'refined_pose.json'
+        @stage('refined_pose')
+        def _stage_refined_pose():
+            refine(ann,source_pose,edges,edges.with_suffix('.json'),object_id,anchor,posterior,root)
+            record('refined_pose',[(posterior,'candidate_pose')])
+        appearance= root/'measurements/demo_visual'/object_id/'appearance_evidence/appearance_mask_manifest.json'
+        @stage('appearance_inputs')
+        def _stage_appearance_inputs():
+            shape.build_appearance(shape.appearance_order_parse_args(list(map(str,['--run-root',root,'--object-id',object_id,
+                '--case-id',args.case,'--track-id',track,'--raw-frame-manifest',manifest,'--annotations',ann,
+                '--raw-sam2-track',track_path,'--depth-order-report',owned/'depth_order_ownership_report.json','--output-dir',appearance.parent]))))
+        appearance_rows=indexed(load(appearance)['frames'])
+        choice_path=root/'state/appearance_decisions'/f'{object_id}.json'
+        preferred=load(appearance.with_name('anchor_decision.json'))['selected_frame_idx']
+        appearance_candidates=appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred)
+        if not appearance_candidates:raise ValueError('no inspected available appearance anchor')
+        appearance_images=[]
+        for frame in appearance_candidates:
+            appearance_images.extend([Path(appearance_rows[frame]['raw_rgb_path']),Path(appearance_rows[frame]['appearance_mask_path'])])
+        choice=ask('appearance_anchor',{'frame_ids':appearance_candidates,'preferred_frame_idx':preferred,'appearance':load(appearance)},appearance_images,choice_path)
+        selected=choice['selected_frame_idx'];selected_row=appearance_rows[selected]
+        if selected not in appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred):raise ValueError('selected appearance anchor lacks same-frame metric alignment')
+        _,native_qc,_=native_job('appearance_native',selected_row['raw_rgb_path'],selected_row['appearance_mask_path'],
+            root/'measurements/scene_native'/object_id,selected)
+        binding_dir=root/'measurements/scene_shape'/object_id
+        @stage('shape_binding')
+        def _stage_shape_binding():
+            solve(StandaloneShape(posterior,ann,appearance,choice_path,native_qc,binding_dir,object_id,root))
+            binding=binding_dir/'pose_mesh.json'
+            return binding
+        binding = _stage_shape_binding
+        from render import pose_review_images
+        @stage('pose_review')
+        def _stage_pose_review():
+            pose_images=pose_review_images(load(ann),load(binding),hawor,sampled,root/'renders/refined_pose')
+            return pose_images
+        pose_images = _stage_pose_review
+        trajectory_judgment=ask('pose_trajectory',{'posterior':load(posterior),'inspected_frame_ids':sampled},pose_images,
+            root/'state/pose_trajectory_judgment.json')
+        @stage('depth_review')
+        def _stage_depth_review():
+            depth_images={}
+            with np.load(bound,allow_pickle=False) as archive:
+                depth_data=archive['depth'];depth_ids=archive['frame_idx']
+                for position,frame in enumerate(depth_ids):
+                    depth_frame=depth_data[position];finite=np.isfinite(depth_frame)&(depth_frame>0)
+                    if not finite.any():raise ValueError('conditioned depth frame contains no positive measurements')
+                    low,high=np.percentile(depth_frame[finite],[2,98])
+                    gray=np.clip((np.nan_to_num(depth_frame,nan=low)-low)/max(high-low,1e-6)*255,0,255).astype('uint8')
+                    color=cv2.applyColorMap(gray,cv2.COLORMAP_TURBO);color[~finite]=0
+                    color=cv2.resize(color,(frames[0]['manifest_width'],frames[0]['manifest_height']))
+                    cv2.putText(color,f'frame {int(frame)}: camera-z {low:.3f} .. {high:.3f} m',(8,24),cv2.FONT_HERSHEY_SIMPLEX,.55,(255,255,255),1)
+                    path=root/'renders/depth'/f'{int(frame):06d}.jpg';path.parent.mkdir(parents=True,exist_ok=True)
+                    if not cv2.imwrite(str(path),color):raise RuntimeError('depth review raster write failed')
+                    depth_images[int(frame)]=path
+            return depth_images
+        depth_images = {int(key):value for key,value in _stage_depth_review.items()}
+        interaction={'object_id':object_id,'status':'ok','interaction_judgments':[],'frames':[],
+            'diagnostics':{'occlusion':[],'depth_reliability':[]},'timeline_evidence':{'contact':[],'pads':[]}}
+        for offset in range(0,len(ids),12):
+            batch=ids[offset:offset+12];batch_images=[Path(raw_by_id[i]['raw_frame_path']) for i in batch]
+            evidence_batch={'frame_ids':batch}
+            destination=root/'state/judgments'/f'batch_{offset:06d}'
+            contact=ask('contact',evidence_batch,batch_images,destination/'contact.json')
+            pads=ask('contact_pads',{**evidence_batch,'contact':contact},batch_images,destination/'pads.json')
+            occlusion=ask('occlusion',evidence_batch,batch_images,destination/'occlusion.json')
+            reliability=ask('depth_reliability',evidence_batch,batch_images+[depth_images[i] for i in batch],destination/'depth_reliability.json')
+            for name,result in [('occlusion',occlusion),('depth_reliability',reliability)]:
+                interaction['diagnostics'][name].append({'role':'diagnostic_only_not_a_visual_fit_factor',
+                    'intervals':result['intervals'],'judgment_sha256':sha(destination/f'{name}.json')})
+            visibility=ask('visibility',evidence_batch,batch_images,destination/'visibility.json')
+            interaction['frames'].extend(visibility['frames'])
+            interaction['timeline_evidence']['contact'].append({'judgment_sha256':sha(destination/'contact.json'),
+                'intervals':contact['interaction_judgments'],'provenance':contact['judgment_provenance']})
+            interaction['timeline_evidence']['pads'].append({'judgment_sha256':sha(destination/'pads.json'),
+                'intervals':pads['intervals'],'provenance':pads['judgment_provenance']})
+            for row in contact['interaction_judgments']:
+                # Expand supplied intervals only to attach the independently judged anatomical pads.
+                for frame in batch:
+                    if row['frame_start']<=frame<=row['frame_end']:
+                        candidates=[r for r in pads['intervals'] if r['hand_side']==row['hand_side'] and r['frame_start']<=frame<=r['frame_end']]
+                        if len(candidates)>1:raise ValueError('overlapping anatomical pad judgments')
+                        entry={**row,'frame_start':frame,'frame_end':frame}
+                        if candidates:entry['primary_contact_pads']={'digits':candidates[0]['digits'],'rationale':candidates[0]['rationale']}
+                        interaction['interaction_judgments'].append(entry)
+        @stage('interaction_assembly')
+        def _stage_interaction_assembly():
+            judgments=root/'state/agent_interaction_judgments'/f'{object_id}.json';judgments.parent.mkdir(parents=True,exist_ok=True)
+            judgments.write_text(json.dumps(interaction,indent=2));record('interaction_assembly',[(judgments,'interaction_judgment')])
+            return judgments
+        judgments = _stage_interaction_assembly
+        fit=root/'measurements/scene_fit'/object_id
+        worker('visual_fit',assets['demo_python'],'main',['fit-visual','--run-root',root,'--annotations',ann,
+            '--pose-report',binding,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',assets['mano_models'],
+            '--object-id',object_id,'--appearance-mask-manifest',appearance,'--interaction-judgments',judgments,
+            '--device','cuda:0','--output-dir',fit],[(fit/'demo_state.npz','visual_state'),(fit/'fit_report.json','visual_fit_report')])
+        @stage('render_video')
+        def _stage_render_video():
+            reviews=render_video(fit/'demo_state.npz',manifest,root/'renders/annotation.mp4')
+            return reviews
+        reviews = _stage_render_video
+        review_images=[Path(r['path']) for r in reviews]
+        backend_judgment=ask('backend_geometry',{'backends':['sam3d'],'binding':load(binding)},
+            [review_images[i] for i in np.unique(np.linspace(0,len(ids)-1,min(12,len(ids)),dtype=int))],root/'state/backend_judgment.json')
+        inspections=[]
+        for offset in range(0,len(ids),12):
+            inspections.append(ask('final_inspection',{'frame_ids':ids[offset:offset+12]},review_images[offset:offset+12],
+                root/'state/final_inspection'/f'{offset:06d}.json'))
+        output=root/'final'
+        review=scene_review_summary(mask_judgment,trajectory_judgment,inspections)
+        review['backend_geometry']={'role':'diagnostic_only','judgment':{k:v for k,v in backend_judgment.items() if k!='judgment_provenance'},'judgment_sha256':sha(root/'state/backend_judgment.json')}
+        @stage('export')
+        def _stage_export():
+            result=export_scene(fit/'demo_state.npz',binding,fit/'fit_report.json',root,code_manifest,output,visual_review=review)
+            return {'run_root':str(root),'annotation':str(output/'annotation.json'),'rrd':str(output/'world.rrd'),
+                'video':str(root/'renders/annotation.mp4'),'annotation_ready':False,
+                'visual_review':review}
+        return _stage_export
+    finally:
+        recovery.close()
 
 
 

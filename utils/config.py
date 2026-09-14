@@ -65,3 +65,43 @@ def preflight_providers(assets, *, include_optional=False):
         results.append({'provider':name,'interpreter':str(interpreter),'consumer_root':str(root),
                         'consumer_imported':module,'status':'ok'})
     return results
+
+
+def recovery_asset_manifest(assets):
+    """Bind the declared cold-path model/source trees and checkpoint bytes.
+
+    Interpreter binaries are included; installed site-packages are provisioned
+    environments, not recursively inventoried. Credentials and mutable caches
+    never enter the manifest. No cross-code/config reuse is inferred from this.
+    """
+    from utils.state import sha
+    keys = ('main_python','demo_python','rgb_python','owlv2_python','unidepth_python',
+            'hawor_python','sam3d_python','owlv2_model','sam2_checkpoint','mano_models',
+            'lightglue_root','sam3d_repo','sam3d_config','sam3d_moge_checkpoint',
+            'sam3d_dinov2_repo','sam3d_dinov2_checkpoint','unidepth_repo','unidepth_model',
+            'sam2_source','hawor_root')
+    roots = {key: Path(assets[key]).expanduser().absolute() for key in keys}
+    # SAM3D config resolves sibling checkpoint files through its checkpoint root.
+    roots['sam3d_checkpoint_root'] = roots['sam3d_config'].parent
+    for key, item in assets['lightglue_weights'].items():
+        roots['lightglue_weights:'+key] = Path(item['path']).expanduser().absolute()
+    ignored = {'.git', '__pycache__', '.pytest_cache'}
+    content = {}
+    hashed = {}
+    def visit(path, ancestors):
+        resolved = path.resolve(strict=True)
+        if resolved.is_dir():
+            if resolved in ancestors:
+                raise ValueError(f'cyclic model asset directory: {path}')
+            for child in sorted(path.iterdir()):
+                if child.name not in ignored:
+                    visit(child, ancestors | {resolved})
+        elif resolved.is_file():
+            if resolved not in hashed:
+                hashed[resolved] = sha(resolved)
+            content[str(path)] = {'resolved_path': str(resolved), 'sha256': hashed[resolved]}
+        else:
+            raise ValueError(f'unsupported model asset: {path}')
+    for path in roots.values():
+        visit(path, set())
+    return {'schema': 'cold_declared_model_assets_v1', 'roots': {key:str(path) for key,path in roots.items()}, 'files': content}

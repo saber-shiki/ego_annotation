@@ -139,7 +139,7 @@ def export(z, binding, case, object_id, track_id, output, *, raw_frames=None, ra
 
 def export_scene(state_path, binding_path, fit_report_path, run_root, bundle_manifest, output, *, visual_review=None):
     """Validate an actual fitted archive and publish complete JSON/RRD geometry."""
-    from utils.state import in_run, input_identity
+    from utils.state import in_run, input_identity, recovery_provenance
     from gates.object.geometry import validate_posterior
     from observations.object.shape import mesh_arrays
     root = Path(run_root).resolve()
@@ -168,7 +168,7 @@ def export_scene(state_path, binding_path, fit_report_path, run_root, bundle_man
         raise ValueError('interaction judgment changed since fit')
     identity = input_identity(root / 'input/runtime_input_contract.json', root, bundle_manifest)
     raw = indexed(load(root / 'input/raw_frame_manifest/manifest.json')['frames'])
-    return export(state, binding, identity.case, binding['object_id'], binding.get('track_id', binding['object_id']), Path(output), raw_source=RawFrameSource(root / 'input/raw_frame_manifest/manifest.json', root), visibility=load(judgment_path), identity=identity, visual_review=visual_review, provenance={'fit_report_sha256': sha(fit_report_path), 'input_hashes': fit['input_hashes'], 'interaction_diagnostics': load(judgment_path).get('diagnostics', {}), 'timeline_evidence': load(judgment_path).get('timeline_evidence', {})})
+    return export(state, binding, identity.case, binding['object_id'], binding.get('track_id', binding['object_id']), Path(output), raw_source=RawFrameSource(root / 'input/raw_frame_manifest/manifest.json', root), visibility=load(judgment_path), identity=identity, visual_review=visual_review, provenance={'recovery': recovery_provenance(root), 'fit_report_sha256': sha(fit_report_path), 'input_hashes': fit['input_hashes'], 'interaction_diagnostics': load(judgment_path).get('diagnostics', {}), 'timeline_evidence': load(judgment_path).get('timeline_evidence', {})})
 
 def main(argv=None):
     import argparse

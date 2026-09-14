@@ -1092,5 +1092,276 @@ class FormalGeometryRoleTests(unittest.TestCase):
             self.assertTrue(state['object_geometry']['physical_surface']['signed_geometry_ready'])
             self.assertEqual(state['object_geometry']['physical_surface']['completion_report_sha256'],sha(physical_report))
 
+
+
+class StageRecoveryTests(unittest.TestCase):
+    def fixture(self, root):
+        import json
+        from utils.state import RunState, sha
+        (root/'input').mkdir()
+        (root/'input/raw.mp4').write_bytes(b'CPU-only raw identity fixture')
+        contract={'run_id':'fixture-run','run_root':str(root),'input_video':str(root/'input/raw.mp4'),
+            'input_video_sha256':sha(root/'input/raw.mp4')}
+        (root/'input/runtime_input_contract.json').write_text(json.dumps(contract))
+        return RunState(root), {'run_id':'fixture-run','agent_model':'gpt-6-astra','code':'fixed-code','config':'fixed-config',
+            'contract':sha(root/'input/runtime_input_contract.json')}
+
+    def produce(self, ledger, name, counts, *, fail=False):
+        import json
+        def producer():
+            counts[name]=counts.get(name,0)+1
+            directory=ledger.root/name
+            directory.mkdir(parents=True,exist_ok=False)
+            path=directory/'value.json'
+            path.write_text(json.dumps({'name':name,'attempt':counts[name]}))
+            (directory/'native.mesh').write_bytes(b'real fixture native bytes')
+            logs=ledger.root/'logs';logs.mkdir(exist_ok=True)
+            (logs/(name+'.log')).write_text('failed-output-evidence' if fail else 'success-output-evidence')
+            if fail:raise RuntimeError('injected producer failure')
+            ledger.record(name,[(path,'fixture')],object_id='object',frame_ids=[0,1])
+            return (path, {'count':counts[name], 'native':directory/'native.mesh'})
+        return producer
+
+    def test_failed_partial_is_quarantined_prefix_keeps_original_receipts(self):
+        import json
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root);counts={}
+            recovery=StageRecovery(ledger,identity)
+            first=recovery.run('depth',self.produce(ledger,'depth',counts))
+            old=json.loads(ledger.registry.read_text())['records'][0]
+            with self.assertRaisesRegex(RuntimeError,'injected'):
+                recovery.run('native',self.produce(ledger,'native',counts,fail=True))
+            recovery.close()
+            recovery=StageRecovery(ledger,identity,resume=True)
+            self.assertFalse((root/'native').exists())
+            replay=recovery.run('depth',self.produce(ledger,'depth',counts))
+            self.assertEqual(first,replay)
+            recovery.run('native',self.produce(ledger,'native',counts))
+            recovery.run('fit',self.produce(ledger,'fit',counts))
+            recovery.close()
+            self.assertEqual(counts,{'depth':1,'native':2,'fit':1})
+            self.assertEqual(json.loads(ledger.registry.read_text())['records'][0],old)
+            self.assertEqual(list((root/'quarantine').glob('*/artifacts/logs/native.log'))[0].read_text(),'failed-output-evidence')
+            self.assertEqual(list((root/'quarantine').glob('*/artifacts/native/native.mesh'))[0].read_bytes(),b'real fixture native bytes')
+            # Finished replay neither executes nor mints replacement producer IDs.
+            receipts=ledger.registry.read_text()
+            recovery=StageRecovery(ledger,identity,resume=True)
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            recovery.close()
+            self.assertEqual(ledger.registry.read_text(),receipts)
+            self.assertEqual(counts,{'depth':1,'native':2,'fit':1})
+
+    def test_changed_native_dependency_invalidates_only_suffix(self):
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root);counts={}
+            recovery=StageRecovery(ledger,identity)
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            recovery.close()
+            (root/'native/native.mesh').write_bytes(b'mutated native dependency')
+            recovery=StageRecovery(ledger,identity,resume=True)
+            self.assertTrue((root/'depth/value.json').is_file())
+            self.assertFalse((root/'fit').exists())
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            recovery.close()
+            self.assertEqual(counts,{'depth':1,'native':2,'fit':2})
+            self.assertEqual(list((root/'quarantine').glob('*/artifacts/native/native.mesh'))[0].read_bytes(),b'mutated native dependency')
+
+    def test_explicit_candidate_rewind_preserves_native_prefix_and_manifests(self):
+        import json
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root);counts={}
+            recovery=StageRecovery(ledger,identity)
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            recovery.close()
+            native=json.loads(ledger.registry.read_text())['records'][1]
+            recovery=StageRecovery(ledger,identity,resume=True,rewind='fit',reason='new optimization attempt',candidate='attempt-b')
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            recovery.close()
+            self.assertEqual(counts,{'depth':1,'native':1,'fit':2})
+            self.assertEqual(json.loads(ledger.registry.read_text())['records'][1],native)
+            audit=json.loads(next((root/'quarantine').glob('*/recovery.json')).read_text())
+            self.assertEqual(audit['candidate'],'attempt-b')
+            self.assertEqual(audit['invalidated_stages'],['fit'])
+            self.assertEqual(audit['retained_stages'],['depth','native'])
+            self.assertTrue(list((root/'quarantine').glob('*/stages.before.json')))
+            self.assertTrue(list((root/'quarantine').glob('*/stages.after.json')))
+
+    def test_identity_changes_rejected_without_quarantining_or_rewriting(self):
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root)
+            recovery=StageRecovery(ledger,identity);recovery.run('depth',self.produce(ledger,'depth',{}));recovery.close()
+            before=ledger.registry.read_bytes()
+            for key in ('run_id','code','config','contract','agent_model'):
+                with self.subTest(key=key),self.assertRaises(ValueError):
+                    StageRecovery(ledger,{**identity,key:'different'},resume=True,rewind='depth',reason='cannot waive identity')
+            self.assertEqual(ledger.registry.read_bytes(),before)
+            self.assertFalse((root/'quarantine').exists())
+            (root/'input/raw.mp4').write_bytes(b'other video')
+            with self.assertRaisesRegex(ValueError,'immutable run input'):
+                StageRecovery(ledger,identity,resume=True)
+
+    def test_unreceipted_success_files_do_not_skip_and_missing_record_reexecutes(self):
+        import json
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root);counts={}
+            recovery=StageRecovery(ledger,identity);recovery.run('depth',self.produce(ledger,'depth',counts));recovery.close()
+            self.produce(ledger,'native',counts)()  # public row exists, no successful stage receipt
+            recovery=StageRecovery(ledger,identity,resume=True)
+            recovery.run('depth',self.produce(ledger,'depth',counts))
+            recovery.run('native',self.produce(ledger,'native',counts));recovery.close()
+            self.assertEqual(counts,{'depth':1,'native':2})
+            registry=json.loads(ledger.registry.read_text());registry['records']=registry['records'][:1]
+            ledger.registry.write_text(json.dumps(registry))
+            recovery=StageRecovery(ledger,identity,resume=True)
+            recovery.run('depth',self.produce(ledger,'depth',counts));recovery.run('native',self.produce(ledger,'native',counts));recovery.close()
+            self.assertEqual(counts,{'depth':1,'native':3})
+
+    def test_run_lock_rejects_parallel_writer(self):
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root)
+            recovery=StageRecovery(ledger,identity)
+            with self.assertRaisesRegex(ValueError,'another process'):StageRecovery(ledger,identity,resume=True)
+            recovery.close()
+
+
+def _cpu_resume_cli_fixture():
+    """Subprocess-only synthetic providers; real main CLI, raw decode and journals."""
+    import json, os, sys
+    from unittest.mock import patch
+    from contextlib import ExitStack
+    import main
+    from observations.judgments import judge_object
+    from observations.camera import calibration
+    from gates.camera import calibration as camera_gate
+    control=Path(os.environ['EGO_TEST_RECOVERY_CONTROL'])
+    def count(name):
+        values=json.loads(control.read_text())
+        values['counts'][name]=values['counts'].get(name,0)+1
+        control.write_text(json.dumps(values))
+        return values['fail']
+    def object_judge(evidence, images):
+        count('judge_object')
+        return {'objects':[{'object_id':'item','track_id':'track','description':'bottle',
+            'detector_text_prompts':['bottle'],'detector_prompt_frames':[0,2],'detector_active_interval':[0,2]}],
+            'judgment_provenance':{'request_model':'gpt-6-astra','response_model':'gpt-6-astra',
+                'disable_fallbacks':True,'synthetic_cpu_fixture':True}}
+    def text_contract(obj,images,assets,directory):
+        count('detector_text');directory.mkdir(parents=True)
+        value={'effective_prompts':['bottle.']}
+        (directory/'contract.json').write_text(json.dumps(value));return value
+    def camera(args):
+        count('camera');args.output_dir.mkdir(parents=True)
+        (args.output_dir/'v19_camera_calibration_contract.json').write_text('{}')
+    def bind(args):
+        count('depth_binding');args.output_dir.mkdir(parents=True)
+        np.savez(args.output_dir/'unidepth_full_frame_depth_camera_contract_v2.npz',depth=np.ones((3,4,4)),frame_idx=np.arange(3))
+    def worker(command,*,stdout,**kwargs):
+        module=command[2];name=module.rsplit('.',1)[-1]
+        failure=count(name)
+        output=Path(command[command.index('--output-dir' if '--output-dir' in command else '--output-root')+1])
+        output.mkdir(parents=True,exist_ok=True)
+        (output/'partial.bin').write_bytes(b'synthetic '+name.encode())
+        stdout.write('synthetic '+name+' attempt log\n');stdout.flush()
+        if name==failure:raise RuntimeError('synthetic transient failure: '+name)
+        if name=='unidepth':np.savez(output/'unidepth_full_frame_depth_v3.npz',depth=np.ones((3,4,4)))
+        elif name=='hawor':np.savez(output/'hawor_world_hands.npz',frame_idx=np.arange(3))
+        else:raise AssertionError('fixture intentionally stops before '+name)
+        return {'uuid':'CPU-fixture-only','index':0,'exclusive_compute_check':True}
+    with ExitStack() as stack:
+        for target,value in [('utils.config.preflight_providers',lambda assets:[]),
+            ('utils.config.recovery_asset_manifest',lambda assets:{'synthetic_cpu_fixture':True}),
+            ('utils.runtime.run_model',worker),('main.detector_prompt_contract',text_contract),
+            ('observations.judgments.judge_object.judge',object_judge),
+            ('observations.camera.calibration.resolve_camera',camera),
+            ('observations.camera.calibration.bind_depth_contract',bind),
+            ('gates.camera.calibration.load_contract',lambda *a,**k:({},{})),
+            ('gates.camera.calibration.plane_intrinsics',lambda *a,**k:([100.,100.,32.,32.],None))]:
+            stack.enter_context(patch(target,value))
+        main.main(sys.argv[1:])
+
+
+class MainResumeCLITests(unittest.TestCase):
+    def test_cold_failure_resumes_same_run_and_refuses_config_and_model_changes(self):
+        import cv2,json,os,subprocess,sys
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);video=root/'raw.mp4';run=root/'run';assets=root/'assets.json';control=root/'control.json'
+            writer=cv2.VideoWriter(str(video),cv2.VideoWriter_fourcc(*'mp4v'),30.,(64,64))
+            for index in range(3):writer.write(np.full((64,64,3),index*80,dtype=np.uint8))
+            writer.release()
+            sensor=root/'sensor.json';sensor.write_text('{}')
+            config={'agent_model':'gpt-6-astra','agent_provider':'dexgem-responses','agent_disable_fallbacks':True,
+                'agent_credential_file':'unused-fixture','sam2_source':'unused-fixture','unidepth_python':'unused-fixture',
+                'unidepth_repo':'unused-fixture','unidepth_model':'unused-fixture','hawor_python':'unused-fixture',
+                'hawor_root':'unused-fixture','owlv2_python':'unused-fixture','owlv2_model':'unused-fixture'}
+            assets.write_text(json.dumps(config));control.write_text(json.dumps({'fail':'hawor','counts':{}}))
+            prefix=[sys.executable,'-c','from test_pipeline import _cpu_resume_cli_fixture; _cpu_resume_cli_fixture()']
+            env={**os.environ,'EGO_TEST_RECOVERY_CONTROL':str(control)}
+            cold=subprocess.run([*prefix,'annotate','--video',str(video),'--run-root',str(run),'--case','case',
+                '--assets-manifest',str(assets),'--gpu','0','--sensor-calibration',str(sensor)],env=env,capture_output=True,text=True)
+            self.assertIn('synthetic transient failure: hawor',cold.stderr)
+            journal=run/'state/recovery/stages.json'
+            self.assertEqual(json.loads(journal.read_text())['stages'][-1]['name'],'depth_binding')
+            old=json.loads((run/'state/producer_receipts.json').read_text())['records']
+            values=json.loads(control.read_text());values['fail']='owlv2';control.write_text(json.dumps(values))
+            command=[*prefix,'resume','--run-root',str(run),'--assets-manifest',str(assets),'--gpu','0']
+            resumed=subprocess.run(command,env=env,capture_output=True,text=True)
+            self.assertIn('synthetic transient failure: owlv2',resumed.stderr)
+            counts=json.loads(control.read_text())['counts']
+            self.assertEqual(counts,{'judge_object':1,'detector_text':1,'camera':1,'unidepth':1,'depth_binding':1,'hawor':2,'owlv2':1})
+            self.assertEqual(json.loads((run/'state/producer_receipts.json').read_text())['records'][:len(old)],old)
+            self.assertEqual(len(list((run/'quarantine').glob('*/artifacts/logs/hawor.log'))),1)
+            forked=subprocess.run([*command,'--rewind','conditioned_depth','--reason','repeat synthetic fit prefix','--candidate','candidate-b'],env=env,capture_output=True,text=True)
+            self.assertIn('synthetic transient failure: owlv2',forked.stderr)
+            counts=json.loads(control.read_text())['counts']
+            self.assertEqual(counts['judge_object'],1);self.assertEqual(counts['unidepth'],2)
+            from utils.state import input_identity,recovery_provenance
+            identity=input_identity(run/'input/runtime_input_contract.json',run,run/'input/code_manifest.json')
+            self.assertEqual(identity.candidate_id,'candidate-b')
+            provenance=recovery_provenance(run)
+            self.assertEqual(provenance['candidate']['branch_stage'],'conditioned_depth')
+            self.assertEqual(provenance['stages'][0]['execution'],'retained_original_producer')
+            self.assertEqual(provenance['stages'][-1]['execution'],'executed_in_current_attempt')
+            frozen=journal.read_bytes()
+            assets.write_text(json.dumps({**config,'unidepth_model':'changed-fixture'}))
+            mismatch=subprocess.run(command,env=env,capture_output=True,text=True)
+            self.assertIn('cross-config recovery refused',mismatch.stderr)
+            self.assertEqual(journal.read_bytes(),frozen)
+            assets.write_text(json.dumps({**config,'agent_model':'other-model'}))
+            mismatch=subprocess.run(command,env=env,capture_output=True,text=True)
+            self.assertIn('pin Astra without fallbacks',mismatch.stderr)
+            self.assertEqual(json.loads(control.read_text())['counts'],counts)
+
+
+class RecoveryAssetTests(unittest.TestCase):
+    def test_declared_assets_bind_bytes_symlink_destinations_and_ignore_only_caches(self):
+        import json
+        from utils.config import recovery_asset_manifest
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir();weight=source/'weights.bin';weight.write_bytes(b'first')
+            (source/'model.py').write_text('pass\n')
+            config={key:str(source) for key in ('main_python','demo_python','rgb_python','owlv2_python','unidepth_python',
+                'hawor_python','sam3d_python','owlv2_model','sam2_checkpoint','mano_models','lightglue_root','sam3d_repo',
+                'sam3d_config','sam3d_moge_checkpoint','sam3d_dinov2_repo','sam3d_dinov2_checkpoint','unidepth_repo',
+                'unidepth_model','sam2_source','hawor_root')}
+            config['sam3d_config']=str(source/'pipeline.yaml');(source/'pipeline.yaml').write_text('weight: weights.bin\n')
+            config['lightglue_weights']={'matcher':{'path':str(weight)}}
+            original=recovery_asset_manifest(config)
+            (source/'__pycache__').mkdir();(source/'__pycache__/model.pyc').write_bytes(b'cache')
+            self.assertEqual(original,recovery_asset_manifest(config))
+            weight.write_bytes(b'other')
+            self.assertNotEqual(original,recovery_asset_manifest(config))
+            original=recovery_asset_manifest(config)
+            (source/'new-checkpoint.bin').write_bytes(b'new')
+            self.assertNotEqual(original,recovery_asset_manifest(config))
+            (source/'cycle').symlink_to(source,target_is_directory=True)
+            with self.assertRaisesRegex(ValueError,'cyclic'):recovery_asset_manifest(config)
+
+
 if __name__ == '__main__':
     unittest.main()

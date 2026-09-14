@@ -28,6 +28,59 @@ annotations. Standalone results explicitly retain `annotation_ready=false` and
 RGB bytes; `mode="geometry_debug"` is explicitly partial and is never used by the
 cold entry.
 
+## Same-run recovery and candidate attempts
+
+The first attempt of each case must still use `annotate` with a new run directory.
+For a transient failure, continue the existing run with the **same installed code,
+model configuration and declared assets**:
+
+```bash
+python main.py resume --run-root RUN_DIRECTORY \
+  --assets-manifest SAME_MODEL_ENVIRONMENTS_JSON --gpu SAME_GPU_INDEX
+```
+
+`resume` reads the original case, target, raw video and sensor identity from the
+run contract. It verifies the full raw/input hashes, source hashes, model config,
+declared model/source trees and successful stage receipts before skipping any
+producer. The run has one writer lock. The original Astra response and producer
+ID are reused; no replacement API receipt is minted. The original GPU UUID is
+retained and the next actual worker still performs the normal availability check.
+No GPU is allocated for a fully cached replay.
+
+Inspect `state/recovery/stages.json` for exact stage names and the complete ordered
+prefix. To intentionally recompute a candidate suffix while retaining its verified
+observation/native prefix:
+
+```bash
+python main.py resume --run-root RUN_DIRECTORY \
+  --assets-manifest SAME_MODEL_ENVIRONMENTS_JSON --gpu SAME_GPU_INDEX \
+  --rewind visual_fit --reason 'repeat the fit after a transient execution failure' \
+  --candidate fit-attempt-b
+```
+
+Rewind invalidates the named stage and its ordered dependent suffix, leaving the
+prefix unchanged. `quarantine/ATTEMPT/` keeps prior suffix artifacts, worker logs,
+producer manifests, before/after stage manifests and the explicit reason. Missing,
+changed or unreceipted partial output is also quarantined before the corresponding
+stage is rerun. `state/recovery/events.jsonl` is append-only and records success,
+failure and retained-producer reuse. Candidate identity and retained-versus-new
+execution provenance appear in the final annotation. Native reuse means reusing
+this run's successful byte-bound native producer, including its mesh and inputs;
+there is no arbitrary old-mesh import.
+
+Code/config/asset changes are rejected, including with `--rewind`; install a new
+frozen version and start a fresh run instead. Pre-journal runs, including frozen
+older integration attempts, are not automatically importable. Asset verification
+reads all declared cold-path model/source files (and interpreter binaries), so
+startup includes real checkpoint hashing; installed site-packages must remain
+frozen separately. No credentials are hashed or copied into the run. These rules
+preserve the requirement that all three cases receive their own fresh observations.
+
+Recovery CPU tests: `python -m unittest test_pipeline.StageRecoveryTests
+ test_pipeline.MainResumeCLITests test_pipeline.RecoveryAssetTests -v` (join the
+command onto one line). The CLI fixture uses clearly labeled synthetic producers
+and a real three-frame decoded video, not a production annotation or API call.
+
 ## Prepared numerical entries
 
 `python main.py refine-pose --annotations ANNOTATIONS --source-pose SOURCE

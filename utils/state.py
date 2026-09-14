@@ -172,7 +172,17 @@ def input_identity(contract_path, run_root, bundle_manifest, recovery=None):
     sensor = contract.get('sensor_calibration_metadata')
     if 'sensor_calibration_sha256' not in contract or (sha(in_run(sensor, run_root)) if sensor else None) != contract['sensor_calibration_sha256']:
         raise ValueError('sensor calibration identity changed')
-    return InputIdentity(contract['run_id'], contract['case'], contract['input_video_sha256'], contract['bundle_manifest_sha256'], contract['sensor_calibration_sha256'], sha(contract_path), json.dumps(contract['source_timing'], sort_keys=True, allow_nan=False), contract.get('target_description'), recovery_json)
+    identity = InputIdentity(contract['run_id'], contract['case'], contract['input_video_sha256'], contract['bundle_manifest_sha256'], contract['sensor_calibration_sha256'], sha(contract_path), json.dumps(contract['source_timing'], sort_keys=True, allow_nan=False), contract.get('target_description'), recovery_json)
+    stages_path = Path(run_root) / 'state/recovery/stages.json'
+    if stages_path.exists():
+        journal = load(stages_path)
+        if journal['identity']['contract_sha256'] != sha(contract_path):
+            raise ValueError('candidate journal input identity mismatch')
+        candidate = journal.get('candidate')
+        if candidate:
+            from dataclasses import replace
+            identity = replace(identity, candidate_id=candidate['id'], candidate_contract_sha256=document_sha(candidate))
+    return identity
 
 def require_run_artifact(path, root, role, *, object_id=None, frame_ids=None):
     """Bind a prediction artifact to this raw input and its registered producer.
@@ -223,7 +233,7 @@ class RunState:
         self.registry = self.root / 'state/producer_receipts.json'
         if self.registry.exists():
             value = load(self.registry)
-            if value['run_id'] != self.contract['run_id']:
+            if value['run_id'] != self.contract['run_id'] or value.get('input_video_sha256') != self.contract['input_video_sha256']:
                 raise ValueError('producer ledger belongs to another run')
         else:
             self.registry.parent.mkdir(parents=True, exist_ok=True)
@@ -276,3 +286,243 @@ def content_sha256(path: Path) -> str:
         for block in iter(lambda : handle.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _stage_json(value):
+    """Lossless JSON result types used by the main-owned stage functions."""
+    if isinstance(value, Path):
+        return {'__stage_path__': str(value)}
+    if isinstance(value, tuple):
+        return {'__stage_tuple__': [_stage_json(item) for item in value]}
+    if isinstance(value, list):
+        return [_stage_json(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _stage_json(item) for key, item in value.items()}
+    return value
+
+
+def _stage_value(value):
+    if isinstance(value, list):
+        return [_stage_value(item) for item in value]
+    if isinstance(value, dict):
+        if set(value) == {'__stage_path__'}:
+            return Path(value['__stage_path__'])
+        if set(value) == {'__stage_tuple__'}:
+            return tuple(_stage_value(item) for item in value['__stage_tuple__'])
+        return {key: _stage_value(item) for key, item in value.items()}
+    return value
+
+
+def document_sha(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+class StageRecovery:
+    """Same-run linear prefix recovery; main owns stage ordering and computation.
+
+    Files, including auxiliary native outputs, are hashed before reuse. Public
+    producer rows retain their original identities. Recovery never synthesizes
+    successful model or judgment receipts from loose output files.
+    """
+    def __init__(self, ledger, identity, *, resume=False, rewind=None, reason=None, candidate=None):
+        import fcntl
+        if identity.get('agent_model') != 'gpt-6-astra':
+            raise ValueError('stage recovery requires Astra model identity')
+        self.ledger = ledger
+        self.root = ledger.root
+        self.control = self.root / 'state/recovery'
+        self.control.mkdir(parents=True, exist_ok=True)
+        self.lock = (self.control / 'lock').open('a')
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.lock.close()
+            raise ValueError('another process owns this run recovery lock')
+        self.path = self.control / 'stages.json'
+        self.cache = {}
+        self.position = 0
+        self.failed = False
+        self.identity = identity
+        try:
+            if resume:
+                if not self.path.is_file():
+                    raise ValueError('run has no recoverable stage receipts; legacy/frozen imports are refused')
+                self.value = load(self.path)
+                if self.value['identity'] != identity:
+                    raise ValueError('run/code/model configuration/input identity changed; cross-version recovery refused')
+                self._recover(rewind, reason, candidate)
+            else:
+                if self.path.exists():
+                    raise ValueError('cold stage journal already exists')
+                self.value = {'schema': 'same_run_stage_receipts_v1', 'identity': identity,
+                              'baseline': self.snapshot(), 'stages': []}
+                self.save()
+        except BaseException:
+            self.lock.close()
+            raise
+
+    def close(self):
+        self.lock.close()
+
+    def save(self):
+        temporary = self.path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(self.value, indent=2, sort_keys=True, allow_nan=False))
+        temporary.replace(self.path)
+
+    def snapshot(self):
+        result = {}
+        for path in sorted(self.root.rglob('*')):
+            relative = str(path.relative_to(self.root))
+            if relative.startswith(('quarantine/', 'state/recovery/')) or path == self.ledger.registry:
+                continue
+            if path.is_symlink():
+                # Prediction outputs must not redirect writes or reads outside the run.
+                raise ValueError(f'symlink in run artifacts is not recoverable: {relative}')
+            if path.is_file():
+                info = path.stat()
+                stamp = (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino)
+                previous = self.cache.get(relative)
+                digest = previous[1] if previous and previous[0] == stamp else sha(path)
+                self.cache[relative] = (stamp, digest)
+                result[relative] = digest
+        return result
+
+    def _recover(self, rewind, reason, candidate):
+        import shutil
+        from datetime import datetime, timezone
+        current = self.snapshot()
+        for name, digest in self.value['baseline'].items():
+            if current.get(name) != digest:
+                raise ValueError(f'immutable run input changed: {name}')
+        stages = self.value['stages']
+        cutoff = len(stages)
+        cause = 'continue_missing_stage'
+        previous = document_sha(self.identity)
+        actual_records = load(self.ledger.registry)['records']
+        for index, stage in enumerate(stages):
+            valid = (stage['dependency_receipt_sha256'] == previous
+                     and stage['receipt_sha256'] == document_sha({k:v for k,v in stage.items() if k != 'receipt_sha256'})
+                     and all(current.get(name) == digest for name,digest in stage['outputs'].items())
+                     and all(row in actual_records for row in stage['producer_records']))
+            if not valid:
+                cutoff = index
+                cause = 'missing_or_changed_stage_artifact_or_receipt'
+                break
+            previous = stage['receipt_sha256']
+        if rewind is not None:
+            if not reason or not reason.strip():
+                raise ValueError('explicit rewind requires a nonempty reason')
+            matches = [i for i,s in enumerate(stages) if s['name'] == rewind]
+            if len(matches) != 1:
+                raise ValueError('rewind must name an existing stage exactly (see state/recovery/stages.json)')
+            cutoff = min(cutoff, matches[0])
+            cause = 'explicit_rewind: ' + reason
+        if candidate is not None and (rewind is None or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', candidate)):
+            raise ValueError('candidate label requires explicit rewind and a safe name')
+        retained = dict(self.value['baseline'])
+        retained_records = []
+        for stage in stages[:cutoff]:
+            retained.update(stage['outputs'])
+            retained_records.extend(stage['producer_records'])
+        unexpected = set(current) - set(retained)
+        # Even a receipt-less worker result is evidence, never proof of success.
+        identifier = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ') + '-' + str(uuid.uuid4())[:8]
+        archive = self.root / 'quarantine' / identifier
+        archive.mkdir(parents=True)
+        shutil.copyfile(self.path, archive / 'stages.before.json')
+        shutil.copyfile(self.ledger.registry, archive / 'producers.before.json')
+        for name in sorted(unexpected):
+            source = self.root / name
+            destination = archive / 'artifacts' / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(destination))
+        # Remove empty generated directories so create-only producers can restart.
+        for directory in sorted(self.root.rglob('*'), key=lambda p: len(p.parts), reverse=True):
+            if directory.is_dir() and not directory.is_relative_to(self.root/'quarantine') and not directory.is_relative_to(self.control):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+        self.value['stages'] = stages[:cutoff]
+        self.value['continuation'] = {'archive': str(archive), 'reason': cause,
+            'retained_receipt_sha256': [stage['receipt_sha256'] for stage in stages[:cutoff]]}
+        if rewind is not None:
+            self.value['candidate'] = {'id': candidate or ('attempt-' + identifier), 'reason': reason,
+                'run_id': self.identity['run_id'], 'parent_candidate': self.value.get('candidate'),
+                'branch_stage': rewind, 'retained_receipt_sha256': self.value['continuation']['retained_receipt_sha256']}
+        registry = load(self.ledger.registry)
+        if registry['records'] != retained_records:
+            registry['records'] = retained_records
+            self.ledger.registry.write_text(json.dumps(registry, indent=2, allow_nan=False))
+        self.save()
+        shutil.copyfile(self.path, archive / 'stages.after.json')
+        shutil.copyfile(self.ledger.registry, archive / 'producers.after.json')
+        (archive / 'recovery.json').write_text(json.dumps({'reason': cause, 'candidate': candidate,
+            'identity': self.identity, 'retained_stages': [s['name'] for s in stages[:cutoff]],
+            'invalidated_stages': [s['name'] for s in stages[cutoff:]],
+            'quarantined_artifact_sha256': {name: current[name] for name in sorted(unexpected)},
+            'before_sha256': sha(archive/'stages.before.json'), 'after_sha256': sha(self.path)}, indent=2))
+        self.event('recovery', archive=str(archive), reason=cause)
+
+    def event(self, action, **details):
+        from datetime import datetime, timezone
+        with (self.control/'events.jsonl').open('a') as handle:
+            handle.write(json.dumps({'time': datetime.now(timezone.utc).isoformat(), 'action': action, **details})+'\n')
+
+    def run(self, name, producer):
+        if self.failed:
+            raise ValueError('failed stage requires explicit resume before further execution')
+        stages = self.value['stages']
+        if self.position < len(stages):
+            stage = stages[self.position]
+            if stage['name'] != name:
+                raise ValueError('main stage order differs from committed same-code receipt')
+            self.position += 1
+            self.event('reuse', stage=name, receipt_sha256=stage['receipt_sha256'])
+            return _stage_value(stage['result'])
+        if any(stage['name'] == name for stage in stages):
+            raise ValueError('stage names must be unique within one run')
+        before = self.snapshot()
+        expected = dict(self.value['baseline'])
+        for prior in stages:
+            expected.update(prior['outputs'])
+        if before != expected:
+            raise ValueError('unreceipted or changed artifacts require explicit resume')
+        old_records = load(self.ledger.registry)['records']
+        self.event('start', stage=name)
+        try:
+            result = producer()
+            after = self.snapshot()
+            changed = [key for key,digest in before.items() if after.get(key) != digest]
+            if changed:
+                raise ValueError('stage mutated earlier immutable artifacts: ' + ', '.join(changed[:10]))
+            records = load(self.ledger.registry)['records']
+            if records[:len(old_records)] != old_records:
+                raise ValueError('stage rewrote prior producer records')
+            stage = {'name': name, 'outputs': {key:value for key,value in after.items() if key not in before},
+                'producer_records': records[len(old_records):], 'result': _stage_json(result),
+                'dependency_receipt_sha256': stages[-1]['receipt_sha256'] if stages else document_sha(self.identity)}
+            stage['receipt_sha256'] = document_sha(stage)
+            stages.append(stage)
+            self.save()
+        except BaseException as error:
+            self.failed = True
+            self.event('failed', stage=name, error_type=type(error).__name__, message=str(error))
+            raise
+        self.position += 1
+        self.event('success', stage=name, receipt_sha256=stage['receipt_sha256'])
+        return result
+
+
+def recovery_provenance(root):
+    path = Path(root) / 'state/recovery/stages.json'
+    if not path.exists():
+        return None
+    value = load(path)
+    retained = set(value.get('continuation', {}).get('retained_receipt_sha256', []))
+    return {'policy': 'same_run_same_code_and_assets_verified_prefix',
+        'candidate': value.get('candidate'), 'continuation': value.get('continuation'),
+        'stages': [{'name': stage['name'], 'receipt_sha256': stage['receipt_sha256'],
+                    'execution': 'retained_original_producer' if stage['receipt_sha256'] in retained else 'executed_in_current_attempt',
+                    'producer_ids': list(dict.fromkeys(row['producer_id'] for row in stage['producer_records']))}
+                   for stage in value['stages']]}
