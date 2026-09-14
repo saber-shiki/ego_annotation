@@ -444,7 +444,7 @@ def annotate(args):
             def execute():
                 verify_code()
                 if path.exists():raise ValueError('judgment output already exists')
-                value=module.judge(request_evidence,images)
+                value=module.judge(request_evidence,images, audit_dir=path.with_suffix('.request')) if name=='pose_trajectory' else module.judge(request_evidence,images)
                 path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value,indent=2,allow_nan=False))
                 ledger.record('judge_'+name,[(path,'judgment')],object_id=object_id,frame_ids=evidence.get('frame_ids',ids))
                 return value
@@ -700,13 +700,23 @@ def annotate(args):
             return binding
         binding = _stage_shape_binding
         from render import pose_review_images
-        @stage('pose_review', inputs={'annotations':ann,'binding':binding,'hawor':hawor,'sampled':sampled},
-            parameters={'output_dir':root/'renders/refined_pose'})
+        from observations.judgments.judge_pose_trajectory import compact_trajectory_evidence, trajectory_review_sheets
+        @stage('pose_review', inputs={'annotations':ann,'binding':binding,'hawor':hawor,'posterior':posterior,'manifest':manifest},
+            parameters={'output_dir':root/'renders/refined_pose','compact_schema':'trajectory_review_compact_v1'})
         def _stage_pose_review():
-            pose_images=pose_review_images(load(ann),load(binding),hawor,sampled,root/'renders/refined_pose')
-            return pose_images
-        pose_images = _stage_pose_review
-        trajectory_judgment=ask('pose_trajectory',{'posterior':load(posterior),'inspected_frame_ids':sampled},pose_images,
+            evidence=compact_trajectory_evidence(posterior)
+            overlays=pose_review_images(load(ann),load(binding),hawor,evidence['review_frame_ids'],root/'renders/refined_pose')
+            sheets,sources=trajectory_review_sheets(evidence,raw_by_id,overlays,root/'renders/trajectory_sheets')
+            evidence['review_images']=sheets
+            evidence['review_source_images']=sources
+            evidence['inspected_frame_ids']=evidence['review_frame_ids']
+            from utils.state import sha
+            evidence['run_binding']={'run_id':contract['run_id'],'raw_manifest_sha256':sha(manifest),'annotations_sha256':sha(ann),'pose_mesh_binding_sha256':sha(binding)}
+            path=root/'state/trajectory_review_evidence.json';path.write_text(json.dumps(evidence,indent=2,allow_nan=False))
+            record('pose_review',[(path,'trajectory_review_evidence')])
+            return evidence,[Path(row['path']) for row in sheets]
+        trajectory_evidence,pose_images = _stage_pose_review
+        trajectory_judgment=ask('pose_trajectory',trajectory_evidence,pose_images,
             root/'state/pose_trajectory_judgment.json')
         @stage('depth_review', inputs={'bound':bound,'manifest':manifest},
             parameters={'output_dir':root/'renders/depth','percentiles':[2,98]})

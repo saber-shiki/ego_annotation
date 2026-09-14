@@ -47,14 +47,9 @@ def astra_stage_inputs(prompt, schema, evidence, images):
                     'mime': mimetypes.guess_type(str(image))[0]} for image in images]}
 
 
-def astra_request(prompt, schema, evidence, images):
-    credential_path=Path(os.environ['EGO_ASTRA_CREDENTIAL_FILE'])
-    info=credential_path.stat()
-    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-        raise PermissionError('Astra credential must be owner-only and owned by the runtime user')
-    key=credential_path.read_text().strip()
-    if not key:
-        raise ValueError('empty Astra credential')
+def encode_astra_request(prompt, schema, evidence, images):
+    """Encode once: audit hashes describe exactly the bytes sent to Astra."""
+    import hashlib
     images=[Path(p).resolve() for p in images]
     if not images:
         raise ValueError('visual judgment requires actual image evidence')
@@ -72,12 +67,43 @@ def astra_request(prompt, schema, evidence, images):
     payload={'model':ASTRA_MODEL,'disable_fallbacks':True,'store':False,'stream':False,
              'instructions':prompt+'\nReturn only a JSON object satisfying this schema:\n'+json.dumps(schema),
              'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_object'}}}
-    request=urllib.request.Request(ASTRA_ENDPOINT,data=json.dumps(payload).encode(),
+    request_bytes=json.dumps(payload, separators=(',', ':'), allow_nan=False).encode()
+    input_bytes=json.dumps({'prompt':prompt,'schema':schema,'evidence':evidence},sort_keys=True,allow_nan=False).encode()
+    return request_bytes, {'request_model':ASTRA_MODEL,'disable_fallbacks':True, 'endpoint':ASTRA_ENDPOINT,
+        'input_sha256':hashlib.sha256(input_bytes).hexdigest(), 'effective_payload_sha256':hashlib.sha256(request_bytes).hexdigest(),
+        'effective_payload_bytes':len(request_bytes),'image_sha256':image_hashes,
+        'ordered_images':[{'path':str(p),'sha256':image_hashes[str(p)]} for p in images],
+        'prompt':prompt,'schema':schema,'gateway_model_group':None}
+
+
+def astra_request(prompt, schema, evidence, images, *, audit_dir=None, max_request_bytes=None):
+    credential_path=Path(os.environ['EGO_ASTRA_CREDENTIAL_FILE'])
+    info=credential_path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise PermissionError('Astra credential must be owner-only and owned by the runtime user')
+    key=credential_path.read_text().strip()
+    if not key:
+        raise ValueError('empty Astra credential')
+    request_bytes, request_provenance = encode_astra_request(prompt, schema, evidence, images)
+    if audit_dir is not None:
+        audit_dir=Path(audit_dir);audit_dir.mkdir(parents=True,exist_ok=False)
+        (audit_dir/'effective_payload.json').write_bytes(request_bytes)
+        (audit_dir/'request_manifest.json').write_text(json.dumps(request_provenance,indent=2))
+    if max_request_bytes is not None and len(request_bytes)>max_request_bytes:
+        raise ValueError(f'Astra request exceeds {max_request_bytes} bytes; exact payload retained for explicit review')
+    request=urllib.request.Request(ASTRA_ENDPOINT,data=request_bytes,
         headers={'Content-Type':'application/json','User-Agent':'ego-annotation/1.0','Authorization':'Bearer '+key},method='POST')
-    with urllib.request.urlopen(request,timeout=120) as response:
-        raw=json.load(response)
-        group=response.headers.get('x-litellm-model-group')
-        request_id=response.headers.get('x-request-id')
+    try:
+        with urllib.request.urlopen(request,timeout=120) as response:
+            raw=json.load(response)
+            group=response.headers.get('x-litellm-model-group')
+            request_id=response.headers.get('x-request-id')
+    except Exception as exc:
+        if audit_dir is not None:
+            (audit_dir/'transport_failure.json').write_text(json.dumps({'error_type':type(exc).__name__, 'request_sha256':request_provenance['effective_payload_sha256'], 'retry':False, 'gateway_model_group':None}))
+        raise
+    if audit_dir is not None:
+        (audit_dir/'response_identity.json').write_text(json.dumps({'response_model':raw.get('model'),'gateway_model_group':group,'request_id':request_id,'response_id':raw.get('id')}))
     if raw.get('model')!=ASTRA_MODEL or (group is not None and group!=ASTRA_MODEL):
         raise RuntimeError('Astra response model/routing group mismatch')
     if raw.get('status')!='completed' or raw.get('error'):
@@ -90,7 +116,7 @@ def astra_request(prompt, schema, evidence, images):
     jsonschema.validate(result,schema)
     return result, {'request_model':ASTRA_MODEL,'response_model':raw['model'],
         'gateway_model_group':group,'disable_fallbacks':True,'response_id':raw.get('id'),
-        'request_id':request_id,'image_sha256':image_hashes}
+        'request_id':request_id,**{k:v for k,v in request_provenance.items() if k!='gateway_model_group'}}
 
 
 def judgment_cli(judge):
