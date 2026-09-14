@@ -1,5 +1,6 @@
 """Grouped observation/numerical implementation."""
 from __future__ import annotations
+from utils.state import content_sha256
 import argparse
 import hashlib
 import json
@@ -9,13 +10,6 @@ import numpy as np
 
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding='utf-8'))
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for block in iter(lambda : handle.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +105,7 @@ def signed_full_mano_acceptance(contact_state: dict[str, Any], rows: list[dict[s
         blockers.append('p18_physical_state_quarantined')
     if not archive.is_file() or archive.stat().st_size <= 0:
         blockers.append('missing_full_mano_vertices_archive')
-    elif not expected_sha or sha256_file(archive) != expected_sha:
+    elif not expected_sha or content_sha256(archive) != expected_sha:
         blockers.append('full_mano_vertices_archive_hash_mismatch')
     keys = {(int(row['frame_idx']), str(row['hand_side'])) for row in rows}
     object_delta_max = 0.0

@@ -1,4 +1,7 @@
 from __future__ import annotations
+from utils.data import read_json
+from utils.data import write_json_payload
+from utils.data import list_or_empty
 from gates.object.observation import conservative_mask_on_depth
 'Extracted formal interval mechanisms; no historical script imports.'
 
@@ -220,19 +223,8 @@ from gates.camera.calibration import resize_affine as camera_contract_resize_aff
 from gates.camera.calibration import sha256_file as camera_contract_sha256_file
 from gates.camera.calibration import summarize_contract as summarize_camera_contract_v2
 
-def load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-8') as f:
-        return json.load(f)
-
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-
 def safe_name(value: str) -> str:
     return re.sub('[^A-Za-z0-9_.-]+', '_', value).strip('_') or 'object'
-
-def as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
 
 def export_anchor_visible_surface_mesh(*, output_dir: Path, object_id: str, anchor_frame: int, anchor_centroid_world_m: np.ndarray, anchor_points_world_m: np.ndarray, min_voxel_m: float, voxel_divisor: float, poisson_depth: int, poisson_density_quantile: float) -> dict[str, Any]:
     import open3d as o3d
@@ -305,7 +297,7 @@ def export_anchor_visible_surface_mesh(*, output_dir: Path, object_id: str, anch
     return out
 
 def raw_frame_map(manifest_path: Path) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
-    payload = load_json(manifest_path)
+    payload = read_json(manifest_path)
     frames = payload.get('frames')
     if not isinstance(frames, list) or not frames:
         raise RuntimeError(f'{manifest_path} must contain a nonempty frames list')
@@ -361,7 +353,7 @@ def load_calibration_contract(path: Path | None, *, frame_ids: list[int] | None=
         return (None, None, None, None)
     if not path.exists():
         raise FileNotFoundError(f'missing calibration contract: {path}')
-    payload = load_json(path)
+    payload = read_json(path)
     v2_declared = payload.get('schema') == CAMERA_CONTRACT_V2_SCHEMA
     v2_fields_present = 'calibration_plane' in payload or 'image_planes' in payload
     if v2_declared or v2_fields_present:
@@ -418,7 +410,7 @@ def load_camera_npz(path: Path | None) -> dict[int, tuple[np.ndarray, str]]:
 def load_base_annotations(path: Path | None) -> dict[int, dict[str, Any]]:
     if path is None:
         return {}
-    payload = load_json(path)
+    payload = read_json(path)
     frames = payload.get('frames')
     if not isinstance(frames, list):
         raise RuntimeError(f'{path} must contain frames list')
@@ -437,11 +429,11 @@ def load_base_annotations(path: Path | None) -> dict[int, dict[str, Any]]:
 def load_object_plan_record(path: Path | None, track_id: str) -> dict[str, Any] | None:
     if path is None:
         return None
-    payload = load_json(path)
+    payload = read_json(path)
     plan = payload.get('plan') if isinstance(payload, dict) else None
     if not isinstance(plan, dict):
         plan = payload if isinstance(payload, dict) else {}
-    for row in as_list(plan.get('objects')):
+    for row in list_or_empty(plan.get('objects')):
         if isinstance(row, dict) and str(row.get('track_id')) == str(track_id):
             return row
     return None
@@ -451,7 +443,7 @@ def load_sam2_track(args: argparse.Namespace) -> tuple[dict[int, dict[str, Any]]
         path = args.sam2_track_json
     else:
         path = args.sam2_root / args.track_id / 'sam2' / 'sam2_track.json'
-    payload = load_json(path)
+    payload = read_json(path)
     if not isinstance(payload, dict):
         raise RuntimeError(f'SAM2 track must be an object: {path}')
     out: dict[int, dict[str, Any]] = {}
@@ -636,7 +628,7 @@ def subtract_hand_owned_bbox_regions(mask: np.ndarray, base_frame: dict[str, Any
         return (mask, {'state': 'disabled', 'input_mask_pixels': int(mask.sum()), 'output_mask_pixels': int(mask.sum()), 'fail_closed': False})
     out = mask.copy()
     input_pixels = int(mask.sum())
-    hand_rows = [hand for hand in as_list(base_frame.get('hands')) if isinstance(hand, dict) and (not (hand.get('same_frame_detection') is False and (not hand.get('hawor_candidate_present'))))]
+    hand_rows = [hand for hand in list_or_empty(base_frame.get('hands')) if isinstance(hand, dict) and (not (hand.get('same_frame_detection') is False and (not hand.get('hawor_candidate_present'))))]
     records: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for hand in hand_rows:
@@ -954,7 +946,7 @@ def build_anchor_candidate_proposals(*, args: argparse.Namespace, object_id: str
     review_path = args.output_dir / 'anchor_candidate_review.jpg'
     review_status = render_anchor_candidate_review(review_rows=review_rows, review_path=review_path, panel_width=int(args.anchor_candidate_panel_width))
     report = {'method': 'build_v19_visible_geometry_from_sam2_depth_anchor_candidate_proposals', 'status': 'ok', 'object_id': object_id, 'track_id': args.track_id, 'claim_scope': 'Anchor candidates for agent subjective selection. This report does not choose or accept an anchor frame.', 'selection_required': True, 'selection_instruction': 'Inspect anchor_candidate_review.jpg and ranked_candidates; write an agent anchor decision before running P09/P11 with --anchor-frame/--selected-frame-idx. When supported single-component conditioning_coherence_preferred candidates exist, choose among them unless image inspection finds wrong ownership or inadequate target identity; disconnected rows remain valid evidence but are ambiguous single-image completion anchors.', 'proposal_score_policy': 'Supported non-border one-component owned masks are reviewed first, then a weighted heuristic over owned mask area, visible depth support, low hand-owned removal, non-border support, metric extent consistency, component count, and depth stability; neither ordering nor score is an acceptance gate.', 'conditioning_coherence_policy': {'preferred_candidate_count': preferred_count, 'review_order': 'supported_single_owned_component_first_then_proposal_score', 'minimum_population_fraction': 0.2, 'minimum_mask_area_px_floor': 1000, 'minimum_visible_depth_points_floor': 100, 'claim_scope': 'single-image completion conditioning review priority only'}, 'candidate_count': int(len(rows)), 'review_candidate_count': int(len(review_rows)), 'review_diversity_min_frame_gap': int(min_gap), 'outputs': {'anchor_candidate_proposals': str(report_path), 'anchor_candidate_review': str(review_path) if review_status.get('status') == 'ok' else None}, 'review_status': review_status, 'ranked_candidates': ranked, 'review_candidates': review_rows, 'score_population_summary': {'max_mask_area_px': int(area_hi), 'max_visible_depth_vertex_count': int(point_hi), 'median_world_extent_diag_m': float(median_diag), 'depth_spread_p90_m': float(depth_spread_hi)}}
-    write_json(report_path, report)
+    write_json_payload(report_path, report)
     return report
 
 def render_anchor_candidate_review(*, review_rows: list[dict[str, Any]], review_path: Path, panel_width: int) -> dict[str, Any]:
@@ -1199,7 +1191,7 @@ def build_visible_geometry(args: argparse.Namespace) -> dict[str, Any]:
         except RuntimeError:
             if idx in visible_data:
                 raise
-        objects = remove_existing_object(as_list(frame.get('objects')), object_id, args.track_id)
+        objects = remove_existing_object(list_or_empty(frame.get('objects')), object_id, args.track_id)
         vis = visible_data.get(idx)
         if vis is None:
             track_row = sam2.get(idx, {})
@@ -1246,16 +1238,16 @@ def build_visible_geometry(args: argparse.Namespace) -> dict[str, Any]:
         annotations['raw_video'] = raw_payload['video']
     args.output_dir.mkdir(parents=True, exist_ok=True)
     annotations_path = args.output_dir / 'annotations_v19_visible_geometry.json'
-    write_json(annotations_path, annotations)
+    write_json_payload(annotations_path, annotations)
     visible_mask_rows = [{'frame_idx': int(row['frame_idx']), 'target_entity_id': object_id, 'object_id': object_id, 'track_id': args.track_id, 'status': 'v19_visible_metric_surface_mask', 'measurement_type': 'sam2_mask_with_metric_depth_support', 'mask_path': str(row['mask_path']), 'saved_mask_path': str(row['mask_path']), 'mask_area_px': row.get('owned_mask_area_source_px'), 'mask_bbox_xyxy': row.get('owned_mask_bbox_source_xyxy'), 'raw_sam2_mask_area_px': None if sam2.get(int(row['frame_idx']), {}).get('area_px') is None else float(sam2[int(row['frame_idx'])]['area_px']), 'depth_median_m': row.get('depth_median_m'), 'visible_vertex_count': row.get('vertex_count'), 'coordinate_frame': 'source_image_mask_plus_metric_depth', 'claim_scope': 'visible model mask measurement with metric-depth support; not hidden geometry or object pose'} for row in rows if row.get('status') == 'visible_metric_surface_measurement' and row.get('mask_path')]
     visible_mask_report_path = args.output_dir / 'v19_visible_mask_report.json'
     visible_mask_report = {'method': 'build_v19_visible_geometry_from_sam2_depth_visible_mask_report', 'status': 'ok', 'case': args.case, 'target_entity_id': object_id, 'track_id': args.track_id, 'claim_scope': 'SAM2 mask rows with metric depth support for downstream visible-surface/ownership factor builders. This report is a mask measurement index, not object pose.', 'surface_rows': visible_mask_rows}
-    write_json(visible_mask_report_path, visible_mask_report)
+    write_json_payload(visible_mask_report_path, visible_mask_report)
     report = {'method': 'build_v19_visible_geometry_from_sam2_depth', 'status': 'ok', 'case': args.case, 'track_id': args.track_id, 'object_id': object_id, 'claim_scope': 'SAM2 masks plus metric depth/camera are lifted to visible object surfels and centroid initial poses. This is measurement/adaptation input for the rigid branch, not final object pose.', 'inputs': {'raw_frame_manifest': str(args.raw_frame_manifest), 'sam2_track': str(sam2_path), 'depth_npz': str(args.depth_npz), 'base_annotations': str(args.base_annotations) if args.base_annotations else None, 'camera_npz': str(args.camera_npz) if args.camera_npz else None, 'calibration_contract': str(args.calibration_contract) if args.calibration_contract else None, 'depth_image_plane': args.depth_image_plane, 'mask_image_plane': args.mask_image_plane, 'pixel_center_convention': args.pixel_center_convention, 'object_plan': str(args.object_plan) if args.object_plan else None, 'remote_root': str(args.remote_root) if args.remote_root else None, 'local_root': str(args.local_root) if args.local_root else None, 'metric_eligibility_manifest': str(metric_eligibility_path) if metric_eligibility_path else None, 'metric_eligibility_manifest_sha256': camera_contract_sha256_file(metric_eligibility_path) if metric_eligibility_path else None}, 'outputs': {'annotations': str(annotations_path), 'depth_fused_report': str(args.output_dir / 'v19_visible_geometry_depth_fused_report.json'), 'visible_mask_report': str(visible_mask_report_path), 'anchor_candidate_proposals': anchor_candidate_report.get('outputs', {}).get('anchor_candidate_proposals') if isinstance(anchor_candidate_report, dict) else None, 'anchor_candidate_review': anchor_candidate_report.get('outputs', {}).get('anchor_candidate_review') if isinstance(anchor_candidate_report, dict) else None, 'anchor_visible_surface_mesh': anchor_mesh_reconstruction.get('poisson_mesh_path') or anchor_mesh_reconstruction.get('convex_hull_mesh_path') or anchor_mesh_reconstruction.get('fused_point_cloud_path')}, 'requested_frame_start': int(indices[0]), 'requested_frame_end': int(indices[-1]), 'requested_frame_count': int(len(indices)), 'output_frame_count': int(len(output_indices)), 'preserve_source_index': bool(args.preserve_source_index), 'visible_metric_frame_count': int(sum((1 for row in rows if row.get('status') == 'visible_metric_surface_measurement'))), 'anchor_frame_idx': int(anchor), 'anchor_centroid_world_m': anchor_centroid.astype(float).tolist(), 'anchor_extent_world_m': anchor_extent_m.astype(float).tolist(), 'extent_consistency_reference': {'method': 'orientation_invariant_visible_population_median', 'sorted_axis_extent_median_m': population_sorted_extent_median.astype(float).tolist(), 'extent_diag_median_m': population_diag_median, 'frame_count': int(len(population_extents)), 'anchor_not_used_as_extent_gate_reference': True}, 'anchor_visible_surface_mesh_reconstruction': anchor_mesh_reconstruction, 'camera_pose_source_counts': dict(camera_source_counts), 'intrinsics_source_counts': dict(Counter((str(vis.get('intrinsics_source')) for vis in visible_data.values()))), 'calibration_contract': calibration_summary, 'depth_camera_contract_binding_validation': depth_contract_binding_validation, 'parameters': {'allow_implicit_depth_resize': bool(args.allow_implicit_depth_resize), 'allow_implicit_mask_resize': bool(args.allow_implicit_mask_resize), 'depth_image_plane': args.depth_image_plane, 'mask_image_plane': args.mask_image_plane, 'pixel_center_convention': args.pixel_center_convention, 'pixel_stride': int(args.pixel_stride), 'max_points': int(args.max_points), 'min_valid_points': int(args.min_valid_points), 'min_depth_m': float(args.min_depth_m), 'max_depth_m': float(args.max_depth_m), 'allow_camera_frame_world': bool(args.allow_camera_frame_world), 'carry_invisible_pose': bool(args.carry_invisible_pose), 'preserve_source_index': bool(args.preserve_source_index), 'exclude_hand_regions': bool(args.exclude_hand_bboxes), 'hand_ownership_primitive': 'projected_full_hawor_mano_triangle_silhouette', 'hand_bbox_subtraction_used': False, 'hand_silhouette_exclusion_pad_px': int(args.hand_bbox_exclusion_pad_px), 'native_depth_metric_eligibility_enabled': metric_eligibility is not None, 'robust_first_surface_depth_ownership': bool(args.robust_first_surface_depth_ownership), 'first_surface_mad_sigma': float(args.first_surface_mad_sigma), 'first_surface_min_half_width_m': float(args.first_surface_min_half_width_m), 'first_surface_min_retained_fraction': float(args.first_surface_min_retained_fraction), 'first_surface_confidence_seed_percentile': float(args.first_surface_confidence_seed_percentile), 'first_surface_local_depth_step_max_m': float(args.first_surface_local_depth_step_max_m), 'first_surface_max_removed_distance_inside_mask_px': float(args.first_surface_max_removed_distance_inside_mask_px), 'first_surface_max_confidence_flagged_interior_fraction': float(args.first_surface_max_confidence_flagged_interior_fraction), 'first_surface_min_interior_confidence_flagged_fraction': float(args.first_surface_min_interior_confidence_flagged_fraction), 'first_surface_max_unexplained_interior_pixels': int(args.first_surface_max_unexplained_interior_pixels), 'first_surface_min_component_pixels': int(args.first_surface_min_component_pixels), 'first_surface_max_small_component_fraction': float(args.first_surface_max_small_component_fraction), 'first_surface_fail_raw_to_robust_extent_ratio': float(args.first_surface_fail_raw_to_robust_extent_ratio), 'rigid_extent_ratio_max': float(args.rigid_extent_ratio_max), 'rigid_extent_axis_ratio_max': float(args.rigid_extent_axis_ratio_max), 'anchor_candidate_count': int(args.anchor_candidate_count), 'anchor_candidate_min_gap': int(args.anchor_candidate_min_gap), 'require_anchor_frame': bool(args.require_anchor_frame)}, 'rows': rows, 'skipped_rows_preview': skipped_rows[:200]}
     report_path = args.output_dir / 'v19_visible_geometry_adapter_report.json'
-    write_json(report_path, report)
+    write_json_payload(report_path, report)
     depth_fused = {'method': 'build_v19_visible_geometry_from_sam2_depth_depth_fused_compat_report', 'status': 'ok', 'case': args.case, 'claim': 'Compatibility report for V18 rigid evidence bundle. Visible geometry lives in annotations; no hidden geometry is claimed here.', 'object_rows': [{'object_id': object_id, 'track_id': args.track_id, 'frame_surface_rows': report['visible_metric_frame_count'], 'visible_geometry_adapter_report': str(report_path), 'visible_mask_report': str(visible_mask_report_path), 'annotations': str(annotations_path), 'mesh_reconstruction': anchor_mesh_reconstruction, 'object_geometry_complete': False, 'hidden_geometry_reconstructed': False, 'complete_object_pose_ready': False}]}
-    write_json(args.output_dir / 'v19_visible_geometry_depth_fused_report.json', depth_fused)
+    write_json_payload(args.output_dir / 'v19_visible_geometry_depth_fused_report.json', depth_fused)
     return report
 
 def surface_parse_args(argv=None) -> argparse.Namespace:
@@ -1599,10 +1591,6 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-def anchor_load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-8') as f:
-        return json.load(f)
-
 def safe_id(value: str) -> str:
     return re.sub('[^A-Za-z0-9_.-]+', '_', value).strip('_')
 
@@ -1662,7 +1650,7 @@ def make_rgba_crop(raw_path: Path, mask_path: Path, out_path: Path) -> dict[str,
     return {'raw_image': str(raw_path), 'mask': str(mask_path), 'crop_rgba': str(out_path), 'source_size': [raw.width, raw.height], 'mask_bbox_xyxy': list(box), 'crop_bbox_xyxy': list(crop_box), 'mask_area_px': int(mask.sum()), 'crop_size': list(crop.size)}
 
 def find_depth_fused_object(report_path: Path, object_id: str) -> dict[str, Any]:
-    report = anchor_load_json(report_path)
+    report = read_json(report_path)
     for row in report.get('object_rows', []):
         if isinstance(row, dict) and row.get('object_id') == object_id:
             return row
@@ -1762,7 +1750,7 @@ def build_anchor_evidence(argv=None) -> None:
     parser.add_argument('--selected-frame-idx', type=int, default=None, help='documented override when the top support mask is visually/geometrically invalid')
     parser.add_argument('--selection-note', default=None)
     args = parser.parse_args(argv)
-    ann = anchor_load_json(args.annotations)
+    ann = read_json(args.annotations)
     object_safe = safe_id(args.object_id.replace('object:', 'object_'))
     out_dir = args.output_root / args.case / object_safe / 'evidence_bundle'
     crop_dir = out_dir / 'crops'

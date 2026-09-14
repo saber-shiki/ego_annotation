@@ -5,6 +5,9 @@ source timeline into one row per source frame under the current run root. It has
 no dependency on V16/V17/V18 cached artifacts.
 """
 from __future__ import annotations
+from utils.data import write_json_payload
+from utils.data import read_json_mapping
+from utils.data import write_json_utf8
 import argparse
 import json
 import time
@@ -23,10 +26,6 @@ class VideoInfo:
     @property
     def duration_s(self) -> float:
         return float(self.frame_count / self.fps) if self.fps > 0 else 0.0
-
-def write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
 
 def open_video(path: Path) -> tuple[cv2.VideoCapture, VideoInfo]:
     cap = cv2.VideoCapture(str(path))
@@ -86,9 +85,9 @@ def build(args: argparse.Namespace) -> dict:
         raise RuntimeError('no frames extracted')
     manifest = {'status': 'ok', 'method': 'build_v19_raw_frame_manifest', 'claim_scope': 'fresh V19 source-timeline extraction; frame rows are measurements of video timing and image paths only', 'input_video': str(video), 'input_video_sha256': sha256_file(video), 'video': {**asdict(info), 'duration_s': info.duration_s}, 'frame_start': int(frame_start), 'frame_end': int(frame_end), 'frame_count': int(extracted), 'full_source_timeline': bool(frame_start == 0 and frame_end == int(info.frame_count) - 1), 'manifest_width': int(manifest_width), 'manifest_height': int(manifest_height), 'rgb_dir': str(rgb_dir), 'frames': frames}
     manifest_path = output_dir / 'manifest.json'
-    write_json(manifest_path, manifest)
+    write_json_payload(manifest_path, manifest)
     report = {'status': 'ok', 'method': 'build_v19_raw_frame_manifest', 'input_video': str(video), 'manifest': str(manifest_path), 'rgb_dir': str(rgb_dir), 'source_frame_count': int(info.frame_count), 'extracted_frame_count': int(extracted), 'frame_start': int(frame_start), 'frame_end': int(frame_end), 'full_source_timeline': bool(manifest['full_source_timeline']), 'source_width': int(info.width), 'source_height': int(info.height), 'manifest_width': int(manifest_width), 'manifest_height': int(manifest_height), 'fps': float(info.fps), 'elapsed_s': float(time.time() - started)}
-    write_json(output_dir / 'v19_raw_frame_manifest_report.json', report)
+    write_json_payload(output_dir / 'v19_raw_frame_manifest_report.json', report)
     return report
 
 def parse_args() -> argparse.Namespace:
@@ -106,7 +105,6 @@ def main() -> None:
     print(json.dumps(report, indent=2))
 if __name__ == '__main__':
     main()
-
 import argparse
 import json
 import math
@@ -114,14 +112,8 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 
-def load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
-
 def raw_frames(path: Path) -> tuple[list[int], tuple[int, int], dict[str, Any]]:
-    payload = load_json(path)
+    payload = read_json_mapping(path)
     frames = payload.get('frames')
     if not isinstance(frames, list) or not frames:
         raise RuntimeError(f'raw frame manifest has no frames: {path}')
@@ -208,7 +200,6 @@ def aggregate_intrinsics(intr: np.ndarray, method: str, trim_low: float, trim_hi
     else:
         raise RuntimeError(f'unsupported aggregation method: {method}')
     return (k, {'method': method, 'trim_low_quantile': float(trim_low) if method == 'trimmed_mean' else None, 'trim_high_quantile': float(trim_high) if method == 'trimmed_mean' else None, 'used_frame_count': int(np.count_nonzero(used)), 'input_frame_count': int(len(intr))})
-
 import argparse
 import json
 from pathlib import Path
@@ -219,7 +210,7 @@ from gates.camera.calibration import K_from_intrinsics
 from gates.camera.calibration import finite_affine
 from gates.camera.calibration import finite_intrinsics
 from gates.camera.calibration import fov_degrees
-from gates.camera.calibration import load_json as camera_load_json
+from utils.data import read_json_mapping as camera_load_json
 from gates.camera.calibration import normalize_authority
 from gates.camera.calibration import plane_record
 from gates.camera.calibration import resize_affine
@@ -227,10 +218,6 @@ from gates.camera.calibration import sha256_file
 from gates.camera.calibration import size_wh
 from gates.camera.calibration import transform_intrinsics
 from gates.camera.calibration import validate_contract
-
-def camera_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
 
 def parse_affine(values: list[float] | None, label: str) -> np.ndarray | None:
     if values is None:
@@ -410,7 +397,7 @@ def sensor_contract(args: argparse.Namespace) -> dict[str, Any]:
     contract = {'schema': SCHEMA, 'status': 'ok', 'method': 'resolve_v19_camera_contract', 'case': args.case, 'claim_scope': 'prediction-side camera calibration and explicit image-plane transforms only; no object/hand/CAD/pose/contact/evaluator labels are consumed', 'calibration_authority': authority, 'source_contract': {'path': str(source_path), 'sha256': sha256_file(source_path), 'method': source_payload.get('method'), 'schema': source_payload.get('schema')}, 'fallback': {'used': False, 'reason': None}, 'inputs': {'raw_frame_manifest': str(args.raw_frame_manifest.resolve()), 'sensor_calibration_contract': str(source_path), 'unidepth_npz': None}, 'outputs': {'contract_json': str(contract_path), 'intrinsics_npz': str(intrinsics_npz_path)}, 'raw_video': raw_payload.get('video') if isinstance(raw_payload.get('video'), dict) else None, 'frame_ids': frame_ids, 'intrinsics_model': 'constant_pinhole_fx_fy_cx_cy', 'intrinsics_coordinate_plane': 'calibration', 'intrinsics_vary_per_frame': False, 'calibration_plane': {'width': calibration_size[0], 'height': calibration_size[1], 'pixel_center_convention': args.pixel_center_convention, 'camera_coordinate_convention': args.camera_coordinate_convention, 'depth_convention': args.depth_convention}, 'intrinsics_fx_fy_cx_cy': intrinsics_calibration.tolist(), 'K': K_from_intrinsics(intrinsics_calibration).tolist(), 'focal_px': float(intrinsics_calibration[0]), 'focal_geom_px': float(np.sqrt(intrinsics_calibration[0] * intrinsics_calibration[1])), 'fov_degrees': fov_degrees(calibration_size[0], calibration_size[1], intrinsics_calibration), 'intrinsics_source': intrinsics_source, 'image_planes': build_planes(calibration_size=calibration_size, source_size=source_size, manifest_size=manifest_size, A_source_from_calibration=A_source, A_render_from_source=A_render_from_source, pixel_center_convention=args.pixel_center_convention), 'image_transform_contract': {'formula': 'K_plane = A_plane_from_calibration @ K_calibration', 'source_affine_reason': source_affine_reason, 'no_implicit_crop_pad_rotation': True}, 'source_plane_intrinsics_fx_fy_cx_cy': source_plane_intrinsics.tolist(), 'provenance': {'dataset_name': args.dataset_name, 'sensor_stream': args.sensor_stream, 'calibration_is_prediction_side_metadata': True, 'evaluator_gt_consumed': False, 'intrinsics_extraction': intrinsics_extraction, 'source_timeline_validation': source_timeline_validation}}
     validate_contract(contract, expected_frame_ids=frame_ids)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    camera_write_json(contract_path, contract)
+    write_json_utf8(contract_path, contract)
     save_intrinsics_npz(path=intrinsics_npz_path, frame_ids=frame_ids, calibration_intrinsics=intrinsics_calibration, calibration_size=calibration_size, source_intrinsics=source_plane_intrinsics, source_size=source_size, contract_path=contract_path, intrinsics_source=intrinsics_source, authority=authority)
     return contract
 
@@ -435,7 +422,7 @@ def fallback_contract(args: argparse.Namespace) -> dict[str, Any]:
     contract = {'schema': SCHEMA, 'status': 'ok', 'method': 'resolve_v19_camera_contract', 'case': args.case, 'claim_scope': 'estimated camera fallback from robust UniDepth intrinsics; same downstream contract as sensor calibration', 'calibration_authority': 'estimated_from_rgb_depth_model', 'source_contract': None, 'fallback': {'used': True, 'reason': args.fallback_reason, 'method': 'robust_unidepth_video_constant'}, 'inputs': {'raw_frame_manifest': str(args.raw_frame_manifest.resolve()), 'sensor_calibration_contract': None, 'unidepth_npz': str(args.unidepth_npz.resolve())}, 'outputs': {'contract_json': str(contract_path), 'intrinsics_npz': str(intrinsics_npz_path)}, 'frame_ids': frame_ids, 'intrinsics_model': 'constant_pinhole_fx_fy_cx_cy', 'intrinsics_coordinate_plane': 'calibration', 'intrinsics_vary_per_frame': False, 'calibration_plane': {'width': source_size[0], 'height': source_size[1], 'pixel_center_convention': args.pixel_center_convention, 'camera_coordinate_convention': args.camera_coordinate_convention, 'depth_convention': args.depth_convention}, 'intrinsics_fx_fy_cx_cy': intrinsics.tolist(), 'K': K_from_intrinsics(intrinsics).tolist(), 'focal_px': float(intrinsics[0]), 'focal_geom_px': float(np.sqrt(intrinsics[0] * intrinsics[1])), 'fov_degrees': fov_degrees(source_size[0], source_size[1], intrinsics), 'intrinsics_source': 'v19_calibration_contract_unidepth_robust_video_constant', 'aggregation': aggregation, 'image_planes': build_planes(calibration_size=source_size, source_size=source_size, manifest_size=manifest_size, A_source_from_calibration=np.eye(3), A_render_from_source=A_render_from_source, pixel_center_convention=args.pixel_center_convention), 'image_transform_contract': {'formula': 'K_plane = A_plane_from_calibration @ K_calibration', 'source_affine_reason': 'identity_estimator_and_source_plane', 'no_implicit_crop_pad_rotation': True}, 'diagnostics': {'selected_frame_count': int(len(selected_frame_idx)), 'selected_stats': {'fx': summarize(selected_intrinsics[:, 0]), 'fy': summarize(selected_intrinsics[:, 1]), 'cx': summarize(selected_intrinsics[:, 2]), 'cy': summarize(selected_intrinsics[:, 3])}}, 'provenance': {'dataset_name': args.dataset_name, 'sensor_stream': args.sensor_stream, 'calibration_is_prediction_side_metadata': False, 'evaluator_gt_consumed': False}}
     validate_contract(contract, expected_frame_ids=frame_ids)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    camera_write_json(contract_path, contract)
+    write_json_utf8(contract_path, contract)
     save_intrinsics_npz(path=intrinsics_npz_path, frame_ids=frame_ids, calibration_intrinsics=intrinsics, calibration_size=source_size, source_intrinsics=intrinsics, source_size=source_size, contract_path=contract_path, intrinsics_source=contract['intrinsics_source'], authority=contract['calibration_authority'])
     return contract
 
@@ -481,7 +468,6 @@ def camera_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--square-focal', action='store_true')
     parser.add_argument('--center-principal-point', action='store_true')
     return parser.parse_args(argv)
-
 import argparse
 import hashlib
 import json
@@ -492,10 +478,6 @@ from gates.camera.calibration import load_contract
 from gates.camera.calibration import plane_intrinsics
 from gates.camera.calibration import sha256_file as depth_sha256_file
 from gates.camera.calibration import summarize_contract
-
-def depth_write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
 
 def array_sha256(array: np.ndarray) -> str:
     contiguous = np.ascontiguousarray(array)
@@ -604,7 +586,7 @@ def bind_depth_contract(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f'depth camera-contract adapter invariant failed: {invariants}')
     delta = model_estimated_intrinsics - intrinsics[None, :]
     report = {'status': 'ok', 'method': 'adapt_v19_depth_to_camera_contract', 'claim_scope': 'fail-closed ray-contract binding; metric depth values, frame rows, raster size, and dtype are unchanged; no evaluator/object/hand labels are consumed', 'inputs': {'source_depth_npz': str(source), 'camera_contract': str(contract_path)}, 'outputs': {'depth_npz': str(output_path), 'report': str(report_path)}, 'frame_count': int(depth.shape[0]), 'depth_shape': list(depth.shape), 'depth_dtype': str(depth.dtype), 'active_intrinsics_dtype': str(resolved_rows.dtype), 'depth_plane': args.depth_plane, 'source_depth_camera_conditioning': source_conditioning, 'depth_ray_geometry_reprojected': source_depth_rays_reprojected, 'source_and_resolved_rays_match': same_rays, 'metadata_only_ray_relabel_override': bool(not same_rays and args.allow_metadata_only_ray_relabel), 'resolved_intrinsics_fx_fy_cx_cy': intrinsics.tolist(), 'camera_contract': summarize_contract(contract_path, contract, normalized), 'image_transform': transform, 'source_model_estimated_intrinsics_delta_from_resolved': {'median_fx_fy_cx_cy': np.median(delta, axis=0).tolist(), 'max_abs_fx_fy_cx_cy': np.max(np.abs(delta), axis=0).tolist()}, 'array_invariants': invariants, 'source_depth_archive_sha256': depth_sha256_file(source), 'output_depth_archive_sha256': depth_sha256_file(output_path), 'downstream_contract': 'Visible geometry may consume this byte-identical archive only when source_and_resolved_rays_match=true. A metadata-only override is forensic legacy reproduction and must fail downstream metric backprojection.'}
-    depth_write_json(report_path, report)
+    write_json_utf8(report_path, report)
     return report
 
 def depth_parse_args(argv=None) -> argparse.Namespace:

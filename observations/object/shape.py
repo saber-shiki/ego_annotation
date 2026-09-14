@@ -1,5 +1,8 @@
 """Full-topology native-gauge and image-scale kernels extracted from visual fitting."""
 from __future__ import annotations
+from utils.data import read_json
+from utils.state import content_sha256
+from utils.data import write_json_utf8
 from pathlib import Path
 import hashlib, json
 import cv2, numpy as np, trimesh
@@ -609,22 +612,11 @@ def native_bridge_load_json(path: Path) -> dict[str, Any]:
         raise RuntimeError(f'expected JSON object: {path}')
     return payload
 
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
-
 def native_bridge_require_file(path: Path, description: str) -> Path:
     path = path.expanduser().resolve()
     if not path.is_file() or path.stat().st_size <= 0:
         raise RuntimeError(f'missing or empty {description}: {path}')
     return path
-
-def native_bridge_sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for block in iter(lambda : handle.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
 
 def native_bridge_finite_vector(value: Any, size: int, label: str) -> np.ndarray:
     array = np.asarray(value, dtype=np.float64).reshape(-1)
@@ -871,10 +863,10 @@ def bind_sam3d_metric(args: argparse.Namespace) -> dict[str, Any]:
     output_mesh.export(str(output_mesh_path))
     report_path = output_dir / 'sam3d_native_sensor_metric_canonical_bridge_report.json'
     compatibility_path = output_dir / 'p13_metric_canonical_input.json'
-    report = {'schema': native_bridge_SCHEMA, 'status': 'ok_render_prior_metric_canonical', 'method': 'bridge_sam3d_native_pose_to_sensor_metric_canonical', 'annotation_ready': False, 'claim_scope': 'Prediction-side SAM3D generated render prior only. Native orientation/image pose are preserved; sensor metric scale comes from robust owned first-surface depth. Generated faces are not pose, contact, collision, sign, or nonpenetration evidence.', 'inputs': {'evidence_report': str(evidence_path), 'p12_report': str(p12_path), 'raw_mesh': str(raw_mesh_path), 'raw_mesh_sha256': native_bridge_sha256_file(raw_mesh_path), 'object_owned_mask': str(mask_path)}, 'native_pose_contract': {**native_contract, 'p12_exported_contract': candidate['native_pose_contract'], 'exported_native_pose_opencv_mesh': str(candidate['native_opencv_mesh']), 'exported_vs_recomputed_max_abs_error': native_pose_mesh_max_abs_error}, 'native_pose': {'rotation_wxyz': rotation.tolist(), 'translation_native_scene': translation.tolist(), 'scale_native_scene_per_model_unit': scale.astype(float).tolist(), 'native_pytorch3d_camera_stats': robust_point_stats(native_p3d), 'native_opencv_camera_stats': robust_point_stats(native_opencv)}, 'projection_validation': {**projection, 'minimum_convex_projection_iou': float(args.min_native_convex_projection_iou), 'minimum_owned_zbuffer_pixels': int(args.min_native_owned_zbuffer_pixels), 'raster_contract': raster_contract}, 'sensor_metric_scene_similarity': {'sensor_robust_first_surface_median_depth_m': sensor_depth_median, 'native_owned_zbuffer_median_depth': native_front_depth, 'camera_origin_scene_similarity_scale': metric_scale, 'formula': 'p_cv_metric = lambda * (((p_raw * native_scale) @ R_wxyz + native_translation) @ diag(-1,-1,1))', 'translation_and_object_scale_scaled_together': True, 'robust_first_surface_depth_ownership': ownership}, 'shared_canonical_frame': {'T_world_camera_metric': T_world_camera.tolist(), 'anchor_centroid_world_m': anchor_centroid_world.tolist(), 'formula': 'p_canonical = p_cv_metric @ R_world_camera.T + t_world_camera - anchor_centroid_world'}, 'geometry_validation': {'observed_robust_camera_surface': observed_stats, 'generated_metric_canonical': generated_stats, 'complete_to_observed_robust_extent_diag_ratio': extent_ratio, 'observed_front_surface_quality': geometry_quality, 'allowed_extent_ratio': [float(args.min_complete_to_observed_extent_ratio), float(args.max_complete_to_observed_extent_ratio)]}, 'semantics': {'generated_faces_render_underlay': True, 'generated_faces_pose_eligible': False, 'generated_faces_collision_eligible': False, 'generated_faces_contact_eligible': False, 'generated_faces_signed_distance_eligible': False, 'observed_front_quality_acceptance_mode': geometry_quality['acceptance_mode'], 'conditional_observed_tail_uncertainty': geometry_quality['conditional_tail_uncertainty']}, 'outputs': {'metric_canonical_render_prior': str(output_mesh_path), 'p13_metric_canonical_input': str(compatibility_path)}}
-    write_json(report_path, report)
-    compatibility = {'schema': COMPATIBILITY_SCHEMA, 'status': 'verified_sam3d_native_sensor_metric_canonical_render_prior', 'source_model': 'sam3d_objects', 'mesh': str(output_mesh_path), 'mesh_sha256': native_bridge_sha256_file(output_mesh_path), 'bridge_report': str(report_path), 'bridge_report_sha256': native_bridge_sha256_file(report_path), 'metric_canonical_input_contract': {'frame': 'shared_completed_canonical_meters', 'alignment_must_be_identity': True, 'generated_faces_render_only': True, 'native_orientation_preserved': True, 'camera_origin_scene_similarity_applied': True}}
-    write_json(compatibility_path, compatibility)
+    report = {'schema': native_bridge_SCHEMA, 'status': 'ok_render_prior_metric_canonical', 'method': 'bridge_sam3d_native_pose_to_sensor_metric_canonical', 'annotation_ready': False, 'claim_scope': 'Prediction-side SAM3D generated render prior only. Native orientation/image pose are preserved; sensor metric scale comes from robust owned first-surface depth. Generated faces are not pose, contact, collision, sign, or nonpenetration evidence.', 'inputs': {'evidence_report': str(evidence_path), 'p12_report': str(p12_path), 'raw_mesh': str(raw_mesh_path), 'raw_mesh_sha256': content_sha256(raw_mesh_path), 'object_owned_mask': str(mask_path)}, 'native_pose_contract': {**native_contract, 'p12_exported_contract': candidate['native_pose_contract'], 'exported_native_pose_opencv_mesh': str(candidate['native_opencv_mesh']), 'exported_vs_recomputed_max_abs_error': native_pose_mesh_max_abs_error}, 'native_pose': {'rotation_wxyz': rotation.tolist(), 'translation_native_scene': translation.tolist(), 'scale_native_scene_per_model_unit': scale.astype(float).tolist(), 'native_pytorch3d_camera_stats': robust_point_stats(native_p3d), 'native_opencv_camera_stats': robust_point_stats(native_opencv)}, 'projection_validation': {**projection, 'minimum_convex_projection_iou': float(args.min_native_convex_projection_iou), 'minimum_owned_zbuffer_pixels': int(args.min_native_owned_zbuffer_pixels), 'raster_contract': raster_contract}, 'sensor_metric_scene_similarity': {'sensor_robust_first_surface_median_depth_m': sensor_depth_median, 'native_owned_zbuffer_median_depth': native_front_depth, 'camera_origin_scene_similarity_scale': metric_scale, 'formula': 'p_cv_metric = lambda * (((p_raw * native_scale) @ R_wxyz + native_translation) @ diag(-1,-1,1))', 'translation_and_object_scale_scaled_together': True, 'robust_first_surface_depth_ownership': ownership}, 'shared_canonical_frame': {'T_world_camera_metric': T_world_camera.tolist(), 'anchor_centroid_world_m': anchor_centroid_world.tolist(), 'formula': 'p_canonical = p_cv_metric @ R_world_camera.T + t_world_camera - anchor_centroid_world'}, 'geometry_validation': {'observed_robust_camera_surface': observed_stats, 'generated_metric_canonical': generated_stats, 'complete_to_observed_robust_extent_diag_ratio': extent_ratio, 'observed_front_surface_quality': geometry_quality, 'allowed_extent_ratio': [float(args.min_complete_to_observed_extent_ratio), float(args.max_complete_to_observed_extent_ratio)]}, 'semantics': {'generated_faces_render_underlay': True, 'generated_faces_pose_eligible': False, 'generated_faces_collision_eligible': False, 'generated_faces_contact_eligible': False, 'generated_faces_signed_distance_eligible': False, 'observed_front_quality_acceptance_mode': geometry_quality['acceptance_mode'], 'conditional_observed_tail_uncertainty': geometry_quality['conditional_tail_uncertainty']}, 'outputs': {'metric_canonical_render_prior': str(output_mesh_path), 'p13_metric_canonical_input': str(compatibility_path)}}
+    write_json_utf8(report_path, report)
+    compatibility = {'schema': COMPATIBILITY_SCHEMA, 'status': 'verified_sam3d_native_sensor_metric_canonical_render_prior', 'source_model': 'sam3d_objects', 'mesh': str(output_mesh_path), 'mesh_sha256': content_sha256(output_mesh_path), 'bridge_report': str(report_path), 'bridge_report_sha256': content_sha256(report_path), 'metric_canonical_input_contract': {'frame': 'shared_completed_canonical_meters', 'alignment_must_be_identity': True, 'generated_faces_render_only': True, 'native_orientation_preserved': True, 'camera_origin_scene_similarity_applied': True}}
+    write_json_utf8(compatibility_path, compatibility)
     print(json.dumps({'status': report['status'], 'output_mesh': str(output_mesh_path), 'metric_scale': metric_scale, 'projection_iou': projection['convex_projection_iou'], 'extent_ratio': extent_ratio, 'report': str(report_path), 'p13_input': str(compatibility_path)}, indent=2))
     return report
 
@@ -910,17 +902,6 @@ from typing import Any
 import cv2
 import numpy as np
 from scipy.spatial import cKDTree
-
-def completion_support_load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-8') as f:
-        return json.load(f)
-
-def completion_support_sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for block in iter(lambda : handle.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
 
 def completion_support_safe_id(value: str) -> str:
     return re.sub('[^A-Za-z0-9_.-]+', '_', value).strip('_')
@@ -1111,11 +1092,11 @@ def build_completion_face_support(argv=None) -> None:
     args = parser.parse_args(argv)
     if args.input_mesh_already_metric_canonical and args.promote_single_view_hidden_prior_to_collision:
         raise RuntimeError('verified generated render priors cannot be promoted to collision geometry')
-    evidence = completion_support_load_json(args.evidence_report)
+    evidence = read_json(args.evidence_report)
     binding = evidence.get('selected_anchor_atomic_binding')
     if not isinstance(binding, dict) or binding.get('validated') is not True:
         raise RuntimeError('P13 requires a validated atomic P11 selected-anchor binding')
-    trellis_report = completion_support_load_json(args.trellis_report)
+    trellis_report = read_json(args.trellis_report)
     partial_paths = evidence.get('partial_metric_geometry_paths', {})
     fused_points_path = Path(partial_paths.get('fused_point_cloud_path') or '')
     poisson_path = Path(partial_paths.get('poisson_mesh_path') or '')

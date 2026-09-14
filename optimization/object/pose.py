@@ -4,6 +4,9 @@ Port of the published repair's relative rotation kernel and late-window residual
 Priors are immutable; retractions are bounded per step, never in accumulated angle.
 """
 from __future__ import annotations
+from utils.data import read_json
+from utils.data import write_json_payload
+from utils.state import content_sha256
 from dataclasses import dataclass, replace
 import math
 import numpy as np
@@ -255,13 +258,6 @@ def load_json(path: Path) -> Any:
     with path.open('r', encoding='utf-8') as handle:
         return json.load(handle)
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for block in iter(lambda : handle.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
 def load_mesh(path: Path) -> trimesh.Trimesh:
     import trimesh
     geom = trimesh.load(str(path), process=False)
@@ -497,7 +493,7 @@ def fit_observed_pose(argv=None) -> None:
     expected_evidence_sha256 = str(completion_inputs.get('candidate_evidence_report_sha256') or '')
     if not evidence_path.is_file() or not expected_evidence_sha256:
         raise RuntimeError('P14 completion lacks a byte-bound selected-anchor evidence report')
-    actual_evidence_sha256 = sha256_file(evidence_path)
+    actual_evidence_sha256 = content_sha256(evidence_path)
     if actual_evidence_sha256 != expected_evidence_sha256:
         raise RuntimeError('P14 selected-anchor evidence report hash changed after P14 reference creation')
     anchor_evidence = load_json(evidence_path)
@@ -699,14 +695,6 @@ COMPLETED_POSE_STATUS = 'completed_temporal_rigid_pose_uncertain'
 STRICT_ROTATION_STEP_DEG = 15.0
 CONDITIONAL_ROTATION_STEP_POLICY_CEILINGS = {'max_rotation_step_deg': 18.0, 'max_count': 2, 'max_fraction': 0.015, 'max_translation_step_m': 0.02, 'max_endpoint_observability_score': 0.03}
 
-def formal_object_load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-8') as f:
-        return json.load(f)
-
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-
 def formal_object_sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.expanduser().resolve().open('rb') as handle:
@@ -795,7 +783,7 @@ def annotation_object(frame: dict[str, Any], object_id: str) -> dict[str, Any] |
 def constraint_targets(path: Path | None, max_target_m: float, accepted_states: set[str]) -> dict[int, tuple[np.ndarray, float, int]]:
     if path is None:
         return {}
-    data = formal_object_load_json(path)
+    data = read_json(path)
     by_frame: dict[int, list[np.ndarray]] = {}
     for row in data.get('constraint_rows', []) if isinstance(data, dict) else []:
         state = str(row.get('candidate_application_state') or '')
@@ -892,7 +880,7 @@ def load_image_factor_observations(path: Path | None, observations: list[PoseObs
         raise RuntimeError('image factor depth weights must be in (0,1]')
     if not np.isin(silhouette_kind, np.asarray([0, 1], dtype=np.int8)).all():
         raise RuntimeError('image factor silhouette_kind must contain only outside=0 or missing=1')
-    annotations = formal_object_load_json(args.annotations)
+    annotations = read_json(args.annotations)
     frames_by_idx = {int(frame['frame_idx']): frame for frame in annotations.get('frames', []) if isinstance(frame, dict) and frame.get('frame_idx') is not None}
     expected_frames = {int(obs.frame_idx) for obs in observations}
     actual_frames = set((int(value) for value in frame_idx.tolist()))
@@ -1312,10 +1300,10 @@ def build_pose_rows(original_pose_rows: list[dict[str, Any]], observations: list
 def fit_formal_object(args: argparse.Namespace) -> dict[str, Any]:
     from gates.object.trajectory import temporal_readiness_diagnostics
     started = time.time()
-    annotations = formal_object_load_json(args.annotations)
-    pose_report = formal_object_load_json(args.pose_report)
+    annotations = read_json(args.annotations)
+    pose_report = read_json(args.pose_report)
     pose_measurement_candidates = [row for row in (pose_report.get('pose_rows', []) if isinstance(pose_report.get('pose_rows'), list) else []) if isinstance(row, dict) and str(row.get('status') or '') in POSE_MEASUREMENT_STATUSES and (args.frame_start is None or int(row.get('frame_idx', -1)) >= int(args.frame_start)) and (args.frame_end is None or int(row.get('frame_idx', -1)) <= int(args.frame_end))]
-    completion = formal_object_load_json(args.completion_report) if args.completion_report else {}
+    completion = read_json(args.completion_report) if args.completion_report else {}
     if args.completion_report:
         pose_binding = pose_report.get('selected_anchor_atomic_binding')
         completion_binding = (completion.get('inputs') or {}).get('selected_anchor_atomic_binding') if isinstance(completion.get('inputs'), dict) else None
@@ -1398,8 +1386,8 @@ def fit_formal_object(args: argparse.Namespace) -> dict[str, Any]:
             row['annotation_readiness_mode'] = annotation_readiness_mode
     report = {'method': 'solve_v19_rigid_object_pose_graph', 'status': status, 'annotation_ready': annotation_ready, 'annotation_readiness_mode': annotation_readiness_mode, 'rotation_step_acceptance_mode': rotation_acceptance_mode, 'conditional_temporal_uncertainty': temporal_readiness.get('conditional_temporal_uncertainty'), 'claim_scope': 'Temporal rigid-object pose correction over eligible visible-frame SE(3) measurements. Visible-surface ICP rows are pose observations; nonpenetration rows exert only clipped soft pressure. Optional first-hit/silhouette rows are frozen local image correspondences over the observed-only pose-hypothesis mesh, with hand projection treated as unknown support. Annotation readiness additionally requires full timeline coverage, direct-observation density, bounded gaps/holds, conservative rotation observability, and bounded per-frame SE(3) steps. A named sparse conditional rotation tail is explicit uncertainty, not clipping or ground-truth angular velocity. Optimizer success alone is insufficient.', 'object_id': args.object_id, 'inputs': {'annotations': str(args.annotations), 'pose_report': str(args.pose_report), 'completion_report': str(args.completion_report) if args.completion_report else None, 'completed_mesh': str(mesh_path), 'pose_mesh_semantics': pose_mesh_semantics, 'collision_eligible_mesh_not_used_as_pose_body': completion_collision_mesh, 'completion_geometry_readiness': completion_geometry_readiness, 'constraint_report': str(args.constraint_report) if args.constraint_report else None, 'image_factor_npz': str(args.image_factor_npz) if args.image_factor_npz else None, 'image_factor_strict_contract_requested': bool(args.require_strict_image_factor_contract), 'image_factor_metadata': image_factor_metadata}, 'geometry_contract': {'pose_hypothesis_mesh': str(mesh_path), 'pose_mesh_semantics': pose_mesh_semantics, 'collision_eligible_mesh': completion_collision_mesh, 'completion_geometry_readiness': completion_geometry_readiness, 'pose_graph_consumes_collision_surface': False, 'claim_scope': 'P15 estimates temporal SE(3) in the P13 pose-hypothesis canonical frame. Collision/sign readiness is recorded for P16/P15b but does not replace the pose body or turn completion rows into observations.'}, 'graph_frames': [obs.frame_idx for obs in observations], 'graph_frame_count': int(len(observations)), 'graph_support': {'sufficient': graph_support_sufficient, 'configured_min_graph_frames': int(args.min_graph_frames), 'actual_graph_frames': int(len(observations)), 'frame_span': [int(observations[0].frame_idx), int(observations[-1].frame_idx)], 'continued_only_as_uncertain_full_timeline_completion': bool(not graph_support_sufficient and args.complete_full_timeline_rigid_pose)}, 'pose_observation_eligibility_policy': {'explicit_false': 'included_only_with_override' if args.include_ineligible_rigid_pose_observations else 'hard_rejected', 'missing_field': 'allowed_for_legacy_compatibility', 'include_ineligible_override': bool(args.include_ineligible_rigid_pose_observations), 'candidate_measurement_row_count': len(pose_measurement_candidates), 'explicit_eligible_candidate_count': int(sum((row.get('rigid_pose_observation_eligible') is True for row in pose_measurement_candidates))), 'eligibility_unspecified_candidate_count': int(sum((not isinstance(row.get('rigid_pose_observation_eligible'), bool) for row in pose_measurement_candidates))), 'explicit_ineligible_candidate_count': int(sum((row.get('rigid_pose_observation_eligible') is False for row in pose_measurement_candidates))), 'explicit_ineligible_skipped_count': int(sum((row.get('reason') == 'explicit upstream rigid_pose_observation_eligible=false' for row in skipped))), 'explicit_ineligible_admitted_count': int(sum((obs.source_row.get('rigid_pose_observation_eligible') is False for obs in observations)))}, 'skipped_pose_observations': skipped, 'nonpenetration_target_frame_count': int(sum((1 for obs in observations if obs.nonpenetration_target_world_m is not None))), 'nonpenetration_target_source_frame_count': int(len(targets)), 'parameters': {'max_nonpenetration_target_m': float(args.max_nonpenetration_target_m), 'sigma_nonpenetration_target_m': float(args.sigma_nonpenetration_target_m), 'sigma_translation_delta_step_m': float(args.sigma_translation_delta_step_m), 'sigma_rotation_delta_step_rad': float(args.sigma_rotation_delta_step_rad), 'sigma_translation_delta_accel_m': float(args.sigma_translation_delta_accel_m), 'sigma_rotation_delta_accel_rad': float(args.sigma_rotation_delta_accel_rad), 'max_surface_median_degradation_m': float(args.max_surface_median_degradation_m), 'min_graph_frames': int(args.min_graph_frames), 'nonpenetration_states': list(args.nonpenetration_states), 'complete_full_timeline_rigid_pose': bool(args.complete_full_timeline_rigid_pose), 'max_rigid_pose_interpolation_gap_frames': int(args.max_rigid_pose_interpolation_gap_frames), 'max_rigid_pose_extrapolation_gap_frames': int(args.max_rigid_pose_extrapolation_gap_frames), 'min_direct_pose_fraction': float(args.min_direct_pose_fraction), 'max_direct_pose_gap_frames': int(args.max_direct_pose_gap_frames), 'max_completed_pose_fraction': float(args.max_completed_pose_fraction), 'max_nearest_hold_fraction': float(args.max_nearest_hold_fraction), 'max_rotation_step_deg': float(args.max_rotation_step_deg), 'allow_sparse_conditional_rotation_tail': bool(args.allow_sparse_conditional_rotation_tail), 'conditional_max_rotation_step_deg': float(args.conditional_max_rotation_step_deg), 'conditional_max_rotation_step_count': int(args.conditional_max_rotation_step_count), 'conditional_max_rotation_step_fraction': float(args.conditional_max_rotation_step_fraction), 'conditional_max_rotation_step_translation_m': float(args.conditional_max_rotation_step_translation_m), 'conditional_max_endpoint_rotation_observability_score': float(args.conditional_max_endpoint_rotation_observability_score), 'max_translation_step_m': float(args.max_translation_step_m), 'min_rotation_observable_fraction': float(args.min_rotation_observable_fraction), 'min_rotation_observability_score': float(args.min_rotation_observability_score), 'image_first_hit_weight': float(args.image_first_hit_weight), 'image_silhouette_weight': float(args.image_silhouette_weight), 'sigma_image_first_hit_m': float(args.sigma_image_first_hit_m), 'sigma_image_silhouette_px': float(args.sigma_image_silhouette_px), 'max_image_first_hit_residual_m': float(args.max_image_first_hit_residual_m), 'max_image_silhouette_residual_px': float(args.max_image_silhouette_residual_px), 'require_strict_image_factor_contract': bool(args.require_strict_image_factor_contract)}, 'optimizer': {'success': bool(result.success), 'message': str(result.message), 'nfev': int(result.nfev), 'cost': float(result.cost), 'residual_rms_before': float(np.sqrt(np.mean(before * before))), 'residual_rms_after': float(np.sqrt(np.mean(after * after)))}, 'correction_summary': correction_summary(result.x, observations), 'optimization_effect': optimization_effect, 'temporal_readiness': temporal_readiness, 'nonpenetration_target_before': before_target, 'nonpenetration_target_after': after_target, 'image_factor_before': before_image, 'image_factor_after': after_image, 'image_factor_rms_improvement': float(before_image_rms) - float(after_image_rms) if before_image_rms is not None and after_image_rms is not None else None, 'surface_before': before_surface, 'surface_after': after_surface, 'surface_observed_to_mesh_median_degradation_m': surface_degraded_m, 'full_timeline_rigid_pose_completion': full_timeline_completion, 'pose_rows': pose_rows, 'outputs': {'pose_graph_report': str(args.output_dir / 'v19_rigid_object_pose_graph_report.json'), 'v18_compatible_pose_report': str(args.output_dir / 'v18_compact_rigid_object_pose_fit_report.json')}, 'elapsed_s': float(time.time() - started)}
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(args.output_dir / 'v19_rigid_object_pose_graph_report.json', report)
-    write_json(args.output_dir / 'v18_compact_rigid_object_pose_fit_report.json', report)
+    write_json_payload(args.output_dir / 'v19_rigid_object_pose_graph_report.json', report)
+    write_json_payload(args.output_dir / 'v18_compact_rigid_object_pose_fit_report.json', report)
     print(json.dumps({k: report[k] for k in ['status', 'annotation_ready', 'graph_frame_count', 'nonpenetration_target_frame_count', 'optimizer', 'correction_summary', 'optimization_effect', 'temporal_readiness', 'full_timeline_rigid_pose_completion', 'nonpenetration_target_before', 'nonpenetration_target_after', 'image_factor_before', 'image_factor_after', 'image_factor_rms_improvement', 'surface_observed_to_mesh_median_degradation_m']}, indent=2))
     return report
 

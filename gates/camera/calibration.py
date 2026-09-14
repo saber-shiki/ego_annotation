@@ -6,6 +6,7 @@ rasters. Dataset sensor calibration and estimated calibration use the same
 schema; provenance and authority differ, downstream projection does not.
 """
 from __future__ import annotations
+from utils.data import read_json_mapping
 from utils.state import sha as sha256_file
 import hashlib
 import json
@@ -14,12 +15,6 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 SCHEMA = 'v19_camera_image_transform_contract_v2'
-
-def load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
 
 def finite_intrinsics(value: Any, label: str) -> np.ndarray:
     intrinsics = np.asarray(value, dtype=np.float64).reshape(-1)
@@ -138,7 +133,7 @@ def validate_contract(payload: dict[str, Any], *, expected_frame_ids: list[int] 
     return {'schema': schema, 'calibration_authority': authority, 'intrinsics_model': model, 'intrinsics_coordinate_plane': intrinsics_coordinate_plane, 'intrinsics_fx_fy_cx_cy': intrinsics.tolist(), 'calibration_size_wh': [int(calibration_size[0]), int(calibration_size[1])], 'image_planes': normalized_planes, 'frame_ids': frame_ids}
 
 def load_contract(path: Path, *, expected_frame_ids: list[int] | None=None) -> tuple[dict[str, Any], dict[str, Any]]:
-    payload = load_json(path)
+    payload = read_json_mapping(path)
     normalized = validate_contract(payload, expected_frame_ids=expected_frame_ids)
     return (payload, normalized)
 

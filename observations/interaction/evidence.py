@@ -1,5 +1,9 @@
 """Appearance observations are distinct from metric ownership masks."""
 from __future__ import annotations
+from utils.data import read_json
+from utils.data import write_json_payload
+from utils.data import list_or_empty
+from utils.state import content_sha256
 from pathlib import Path
 from utils.state import sha
 
@@ -377,9 +381,9 @@ def load_depth_order_first_surface_for_row(diag: dict[str, Any], cache: dict[Pat
     npz_path = Path(npz_raw)
     expected_mask_sha256 = str(diag.get('depth_order_query_support_mask_sha256') or '')
     expected_npz_sha256 = str(diag.get('depth_order_first_surface_npz_sha256') or '')
-    if not expected_mask_sha256 or sha256_file(mask_path) != expected_mask_sha256:
+    if not expected_mask_sha256 or content_sha256(mask_path) != expected_mask_sha256:
         raise RuntimeError('depth-order support mask SHA256 binding failed')
-    if not expected_npz_sha256 or sha256_file(npz_path) != expected_npz_sha256:
+    if not expected_npz_sha256 or content_sha256(npz_path) != expected_npz_sha256:
         raise RuntimeError('depth-order first-surface NPZ SHA256 binding failed')
     support = load_binary_mask(mask_path, cache)
     with np.load(npz_path, allow_pickle=False) as archive:
@@ -496,11 +500,11 @@ def load_visible_object_mask_paths(report_path: Path | None) -> dict[int, Path]:
     payload = load_json(report_path)
     rows = []
     if isinstance(payload, dict):
-        rows.extend(as_list(payload.get('saved_mask_rows_after_start')))
+        rows.extend(list_or_empty(payload.get('saved_mask_rows_after_start')))
         if not rows:
-            rows.extend(as_list(payload.get('target_mask_rows')))
+            rows.extend(list_or_empty(payload.get('target_mask_rows')))
         if not rows:
-            rows.extend(as_list(payload.get('surface_rows')))
+            rows.extend(list_or_empty(payload.get('surface_rows')))
     out: dict[int, Path] = {}
     for row in rows:
         if not isinstance(row, dict) or 'frame_idx' not in row:
@@ -557,16 +561,6 @@ def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for block in iter(lambda : handle.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
-def as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
 def interaction_parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--annotations', type=Path, required=True)
@@ -596,7 +590,7 @@ def interaction_parse_args(argv=None) -> argparse.Namespace:
 def target_object(frame: dict[str, Any], target_entity_id: str) -> dict[str, Any] | None:
     target_id = str(target_entity_id)
     bare = target_id.split(':', 1)[-1]
-    for obj in as_list(frame.get('objects')):
+    for obj in list_or_empty(frame.get('objects')):
         if not isinstance(obj, dict):
             continue
         ids = {str(obj.get('object_id')), str(obj.get('track_id')), f"object:{obj.get('track_id')}", f"object:{obj.get('object_id')}"}
@@ -816,7 +810,7 @@ def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
     from gates.interaction.contact import load_agent_interaction_judgments
     from gates.interaction.visibility import ownership_quarantine_mode
     payload = load_json(args.annotations)
-    frames = as_list(payload.get('frames')) if isinstance(payload, dict) else []
+    frames = list_or_empty(payload.get('frames')) if isinstance(payload, dict) else []
     (start, end) = [int(x) for x in args.frame_span]
     out_case = args.output_root / args.case
     mask_dir = out_case / 'ownership_masks'
@@ -857,7 +851,7 @@ def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError(f'frame {frame_idx}: P09 accepted first-surface K {candidate_K.tolist()} != active source K {active_K.tolist()}')
         (depth_order_query_support, depth_order_query_depth, depth_order_diag) = accepted_first_surface_query_raster(candidate, plane_contract, object_mask.shape, float(args.depth_order_query_radius_mask_px))
         object_contact_band = dilate(object_mask, int(args.contact_image_band_px))
-        for hand in as_list(frame.get('hands')):
+        for hand in list_or_empty(frame.get('hands')):
             if not isinstance(hand, dict):
                 continue
             side = str(hand.get('hand_side') or hand.get('side') or '')
@@ -890,8 +884,8 @@ def interaction_build(args: argparse.Namespace) -> dict[str, Any]:
             save_bool_mask(hand_support_path, hand_mask)
             save_bool_mask(depth_order_support_path, depth_order_query_support)
             np.savez_compressed(depth_order_npz_path, depth_mask_plane_m=depth_order_query_depth.astype(np.float32), support_mask=depth_order_query_support.astype(np.uint8), A_mask_from_source_coordinate_model=np.asarray(plane_contract['A_mask_from_source_coordinate_model'], dtype=np.float64), source_size_wh=np.asarray(plane_contract['source_size_wh'], dtype=np.int32), mask_size_wh=np.asarray(plane_contract['mask_size_wh'], dtype=np.int32), source=np.asarray('P09 accepted first-surface samples; nearest sample within bounded mask-plane radius'))
-            depth_order_support_sha256 = sha256_file(depth_order_support_path)
-            depth_order_npz_sha256 = sha256_file(depth_order_npz_path)
+            depth_order_support_sha256 = content_sha256(depth_order_support_path)
+            depth_order_npz_sha256 = content_sha256(depth_order_npz_path)
             counts = {'non_object_owned_px': int(np.count_nonzero(non_object_owned)), 'visible_object_owned_px': int(np.count_nonzero(visible_object_owned)), 'constraint_eligible_entity_px': int(np.count_nonzero(constraint_eligible)), 'depth_order_query_support_px': int(np.count_nonzero(depth_order_query_support)), **hand_diag, **prox, 'contact_image_px': int(contact_image_px)}
             judgment_fields = agent_judgment_provenance(judgment)
             ownership_rows.append({'factor_family': 'visible_ownership', 'target_entity_id': str(args.target_entity_id), 'frame_idx': int(frame_idx), 'hand_side': side, 'variable_affected': 'O_t_surface_visibility', 'observation_type': 'projected_mano_visible_hand_ownership_mask', 'residual_or_quarantine_rule': 'quarantine object hard-surface constraints whose projected support overlaps the projected MANO hand support; this marks hand-owned/uncertain first-surface pixels, not accepted contact', 'provenance': {'annotations': str(args.annotations), 'object_mask_path': str(mask_path_raw), 'hand_support_mask_path': str(hand_support_path), 'reason': 'current MANO projection supplies hand-owned visible support where monocular depth at hand pixels is unreliable; Pi-agent interaction judgment configures whether this support quarantines object-surface constraints', **judgment_fields}, 'rendered_uncertainty_channel': 'visible object pixels under projected hand support are rendered/treated as ownership-uncertain rather than hard object surface when the agent interaction judgment says the hand is in front or unresolved', 'state': 'active_visible_ownership', 'agent_ownership_quarantine_mode': str(quarantine_mode), 'agent_contact_state': judgment.get('contact_state') if isinstance(judgment, dict) else None, 'agent_occlusion_relation': judgment.get('occlusion_relation') if isinstance(judgment, dict) else None, 'agent_depth_reliability': judgment.get('depth_reliability') if isinstance(judgment, dict) else None, 'image_plane_transform': plane_contract, 'non_object_owned_mask_path': str(non_object_path), 'visible_object_owned_mask_path': str(visible_object_path), 'constraint_eligible_entity_mask_path': str(constraint_path), 'adjusted_entity_mask_path': str(constraint_path), 'depth_order_query_support_mask_path': str(depth_order_support_path), 'depth_order_query_support_mask_sha256': depth_order_support_sha256, 'depth_order_first_surface_npz_path': str(depth_order_npz_path), 'depth_order_first_surface_npz_sha256': depth_order_npz_sha256, 'depth_order_query_semantics': 'projected MANO may query nearby P09-accepted object first-hit depth even where ownership mask marks hand/unknown; raw depth under hand is forbidden', 'depth_order_first_surface': depth_order_diag, 'counts': counts})
@@ -945,10 +939,6 @@ import numpy as np
 from scipy.optimize import LinearConstraint, minimize
 from scipy.spatial import cKDTree
 from gates.object.geometry import load_signed_face_authority
-
-def geometry_constraints_load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-8') as f:
-        return json.load(f)
 
 def pose_graph_readiness(report: dict[str, Any]) -> dict[str, Any]:
     """Treat an explicit unready/support-false P15 report as a physical-factor quarantine.
@@ -1064,7 +1054,7 @@ def same_mesh_path(left: Path, right: Path) -> bool:
 
 def signed_geometry_source_readiness(completion_readiness: dict[str, Any], sign_mesh_source_report: Path | None, sign_mesh_is_completion_surface: bool, sign_mesh_path: Path | None=None) -> dict[str, Any]:
     if sign_mesh_source_report is not None:
-        payload = geometry_constraints_load_json(sign_mesh_source_report)
+        payload = read_json(sign_mesh_source_report)
         readiness = payload.get('geometry_readiness') if isinstance(payload.get('geometry_readiness'), dict) else {}
         outputs = payload.get('outputs') if isinstance(payload.get('outputs'), dict) else {}
         declared = readiness.get('signed_geometry_ready')
@@ -1095,12 +1085,12 @@ def build_geometric_constraints(argv=None) -> None:
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--object-id', required=True)
     args = parser.parse_args(argv)
-    annotations = geometry_constraints_load_json(args.annotations)
-    pose_report = geometry_constraints_load_json(args.pose_report)
+    annotations = read_json(args.annotations)
+    pose_report = read_json(args.pose_report)
     pose_readiness = pose_graph_readiness(pose_report)
     quarantine_unready_pose = bool(pose_readiness['explicitly_unready'])
     pose_input_explicitly_ready = bool(pose_readiness['annotation_ready'] is True and pose_readiness['graph_support_sufficient'] is not False)
-    completion = geometry_constraints_load_json(args.completion_report)
+    completion = read_json(args.completion_report)
     (mesh_path, surface_mesh_semantics, geometry_readiness) = completion_surface_contract(completion)
     observed_band_m = float(completion.get('observed_band_m') or 0.0)
     surface_mesh = load_mesh(mesh_path)
@@ -1113,7 +1103,7 @@ def build_geometric_constraints(argv=None) -> None:
     sign_mesh = load_mesh(sign_mesh_path)
     sign_mesh_watertight = bool(sign_mesh.is_watertight)
     sign_source_readiness = signed_geometry_source_readiness(geometry_readiness, args.sign_mesh_source_report, sign_mesh_is_completion_surface=args.sign_mesh is None, sign_mesh_path=sign_mesh_path)
-    authority_payload = geometry_constraints_load_json(args.sign_mesh_source_report) if args.sign_mesh_source_report is not None else completion if args.sign_mesh is None else {}
+    authority_payload = read_json(args.sign_mesh_source_report) if args.sign_mesh_source_report is not None else completion if args.sign_mesh is None else {}
     authority_report_path = args.sign_mesh_source_report if args.sign_mesh_source_report is not None else args.completion_report if args.sign_mesh is None else None
     signed_face_authority = load_signed_face_authority(authority_payload, source_report_path=authority_report_path, mesh_path=sign_mesh_path, mesh_face_count=len(sign_mesh.faces))
     signed_face_authority_mask = np.asarray(signed_face_authority.pop('mask'), dtype=bool)
@@ -1302,17 +1292,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-def hand_visibility_load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-8') as f:
-        return json.load(f)
-
-def hand_visibility_write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-
-def hand_visibility_as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
 def normalize_zero_observation_interval(raw: Any, *, source: str) -> dict[str, Any]:
     """Normalize a visual-boundary interval into a durable factor-input record."""
     if isinstance(raw, str):
@@ -1361,7 +1340,7 @@ def parse_zero_observation_interval(spec: str) -> dict[str, Any]:
 def load_zero_observation_interval_files(paths: list[Path]) -> list[dict[str, Any]]:
     intervals: list[dict[str, Any]] = []
     for path in paths:
-        payload = hand_visibility_load_json(path)
+        payload = read_json(path)
         if isinstance(payload, dict):
             raw_items = payload.get('intervals', payload.get('zero_observation_intervals'))
         else:
@@ -1374,9 +1353,9 @@ def load_zero_observation_interval_files(paths: list[Path]) -> list[dict[str, An
 
 def load_remeasurement_cache(path: Path, cache: dict[Path, dict[tuple[int, str], dict[str, Any]]]) -> dict[tuple[int, str], dict[str, Any]]:
     if path not in cache:
-        payload = hand_visibility_load_json(path)
+        payload = read_json(path)
         rows = {}
-        for row in hand_visibility_as_list(payload.get('rows')) if isinstance(payload, dict) else []:
+        for row in list_or_empty(payload.get('rows')) if isinstance(payload, dict) else []:
             if not isinstance(row, dict):
                 continue
             rows[int(row['frame_idx']), str(row['hand_side'])] = row
@@ -1413,10 +1392,10 @@ def hand_visibility_parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 def build_hand_visibility(args: argparse.Namespace) -> dict[str, Any]:
-    ownership = hand_visibility_load_json(args.ownership_factor_report)
+    ownership = read_json(args.ownership_factor_report)
     factor_rows: list[dict[str, Any]] = []
     skipped = Counter()
-    for row in hand_visibility_as_list(ownership.get('ownership_rows')) if isinstance(ownership, dict) else []:
+    for row in list_or_empty(ownership.get('ownership_rows')) if isinstance(ownership, dict) else []:
         if not isinstance(row, dict):
             continue
         if str(row.get('target_entity_id')) != str(args.target_entity_id):
@@ -1435,7 +1414,7 @@ def build_hand_visibility(args: argparse.Namespace) -> dict[str, Any]:
             continue
         state = 'active_hand_observation_visibility'
         factor_rows.append({'factor_family': 'hand_observation_visibility', 'target_entity_id': str(args.target_entity_id), 'frame_idx': int(row['frame_idx']), 'hand_side': str(row['hand_side']), 'variable_affected': 'H_t', 'observation_type': 'visible_object_surface_conflicts_with_mano_prompted_hand_candidate_without_independent_visible_hand', 'residual_or_quarantine_rule': 'multiply MANO joint/pose visible-observation weights by joint_observation_weight_multiplier for this frame/side; keep visible object first-surface constraints active', 'rendered_uncertainty_channel': 'ownership review frame renders MANO-prompt self-confirmed hand candidate as orange occluded_or_unresolved, not hard hand-owned', 'state': state, 'candidate_px': int(candidate_px), 'hard_non_object_owned_px': int(hard_px), 'joint_observation_weight_multiplier': float(args.joint_observation_weight_multiplier), 'source_hard_ownership_state': hard_state, 'provenance': {'ownership_factor_report': str(args.ownership_factor_report), 'ownership_review_frame_path': row.get('review_frame_path'), 'ownership_hand_prompt_source': (row.get('provenance') or {}).get('hand_prompt_source') if isinstance(row.get('provenance'), dict) else None, 'reason': 'candidate visible-hand/entity overlap came from MANO-seeded prompt without independent visible-hand confirmation'}})
-    transition_intervals = [parse_zero_observation_interval(spec) for spec in hand_visibility_as_list(args.zero_observation_interval)]
+    transition_intervals = [parse_zero_observation_interval(spec) for spec in list_or_empty(args.zero_observation_interval)]
     transition_intervals.extend(load_zero_observation_interval_files(list(args.zero_observation_intervals_json or [])))
     rows_by_key = {(int(r['frame_idx']), str(r['hand_side'])): r for r in factor_rows}
     transition_extension_row_count = 0

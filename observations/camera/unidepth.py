@@ -1,4 +1,5 @@
 from __future__ import annotations
+from utils.data import read_json_mapping
 import argparse
 import json
 import sys
@@ -182,11 +183,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     run(parse_args())
-def load_json(path: Path) -> dict:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
 
 def summarize(values: list[float]) -> dict:
     arr = np.asarray(values, dtype=np.float64)
@@ -196,7 +192,7 @@ def summarize(values: list[float]) -> dict:
     return {'count': int(len(arr)), 'median': float(np.median(arr)), 'p05': float(np.percentile(arr, 5.0)), 'p95': float(np.percentile(arr, 95.0)), 'max': float(np.max(arr))}
 
 def read_manifest(path: Path, frame_start: int, frame_end: int) -> list[dict]:
-    frames = load_json(path).get('frames')
+    frames = read_json_mapping(path).get('frames')
     if not isinstance(frames, list) or not frames:
         raise RuntimeError(f'{path} must contain a nonempty frames list')
     rows = [row for row in frames if int(frame_start) <= int(row['frame_idx']) <= int(frame_end)]
@@ -296,6 +292,5 @@ def load_model(model_id: str, device: torch.device) -> object:
     else:
         raise RuntimeError('UniDepthV2.from_pretrained is missing in this checkout')
     return model.to(device).eval()
-
 if __name__ == '__main__':
     main()

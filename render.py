@@ -1,5 +1,7 @@
 from __future__ import annotations
 'Complete triangle-scene JSON/RRD export and publication, preserving display authority.'
+from utils.data import read_json
+from utils.data import write_json_payload
 from pathlib import Path
 import json, re, uuid
 import numpy as np
@@ -166,7 +168,7 @@ def export_scene(state_path, binding_path, fit_report_path, run_root, bundle_man
         raise ValueError('interaction judgment changed since fit')
     identity = input_identity(root / 'input/runtime_input_contract.json', root, bundle_manifest)
     raw = indexed(load(root / 'input/raw_frame_manifest/manifest.json')['frames'])
-    return export(state, binding, identity.case, binding['object_id'], binding.get('track_id', binding['object_id']), Path(output), raw_source=RawFrameSource(root / 'input/raw_frame_manifest/manifest.json', root), visibility=load(judgment_path), identity=identity, visual_review=visual_review, provenance={'fit_report_sha256': sha(fit_report_path), 'input_hashes': fit['input_hashes'], 'interaction_diagnostics': load(judgment_path).get('diagnostics', {}), 'timeline_evidence':load(judgment_path).get('timeline_evidence',{})})
+    return export(state, binding, identity.case, binding['object_id'], binding.get('track_id', binding['object_id']), Path(output), raw_source=RawFrameSource(root / 'input/raw_frame_manifest/manifest.json', root), visibility=load(judgment_path), identity=identity, visual_review=visual_review, provenance={'fit_report_sha256': sha(fit_report_path), 'input_hashes': fit['input_hashes'], 'interaction_diagnostics': load(judgment_path).get('diagnostics', {}), 'timeline_evidence': load(judgment_path).get('timeline_evidence', {})})
 
 def main(argv=None):
     import argparse
@@ -299,7 +301,7 @@ def formal_state_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--annotations', type=Path, required=True)
     parser.add_argument('--pose-report', type=Path, required=True)
     parser.add_argument('--completion-report', type=Path, required=True)
-    parser.add_argument('--physical-completion-report',type=Path,help='Separate accepted physical surface/readiness; never changes display geometry')
+    parser.add_argument('--physical-completion-report', type=Path, help='Separate accepted physical surface/readiness; never changes display geometry')
     parser.add_argument('--completed-mesh', type=Path, default=None)
     parser.add_argument('--constraint-report', type=Path, required=True)
     parser.add_argument('--temporal-mano-state', type=Path, default=None)
@@ -308,14 +310,6 @@ def formal_state_parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--path-rewrite', action='append', default=[], metavar='OLD=NEW', help='Rewrite absolute path prefixes while building state, useful when testing remote-run artifacts locally.')
     parser.add_argument('--allow-missing-poses', action='store_true', help='Write explicit missing-pose uncertainty instead of failing when the rigid trajectory is not full-timeline.')
     return parser.parse_args(argv)
-
-def load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-8') as f:
-        return json.load(f)
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
 
 def parse_rewrites(items: list[str]) -> list[tuple[str, str]]:
     rewrites: list[tuple[str, str]] = []
@@ -339,7 +333,7 @@ def rewrite_path(path: Path | str | None, rewrites: list[tuple[str, str]]) -> Pa
     return Path(text)
 
 def completion_report_completed_mesh(path: Path, rewrites: list[tuple[str, str]]) -> Path:
-    data = load_json(path)
+    data = read_json(path)
     outputs = data.get('outputs') if isinstance(data, dict) else None
     if not isinstance(outputs, dict):
         raise RuntimeError(f'completion report {path} has no outputs object')
@@ -394,7 +388,7 @@ def frame_ids_from_annotations(annotations: dict[str, Any]) -> list[int]:
 def load_optional_json(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
-    payload = load_json(path)
+    payload = read_json(path)
     if not isinstance(payload, dict):
         raise RuntimeError(f'{path} must contain a JSON object')
     return payload
@@ -410,10 +404,10 @@ def build_formal_render_state(args: argparse.Namespace) -> dict[str, Any]:
     hidden_validation_path = rewrite_path(args.hidden_volume_validation, rewrites)
     if annotations_path is None or pose_report_path is None or completion_report_path is None or (constraint_report_path is None):
         raise RuntimeError('required input path unexpectedly resolved to None')
-    annotations = load_json(annotations_path)
-    pose_data = load_json(pose_report_path)
-    completion_data = load_json(completion_report_path)
-    constraint_data = load_json(constraint_report_path)
+    annotations = read_json(annotations_path)
+    pose_data = read_json(pose_report_path)
+    completion_data = read_json(completion_report_path)
+    constraint_data = read_json(constraint_report_path)
     if not isinstance(annotations, dict) or not isinstance(pose_data, dict) or (not isinstance(completion_data, dict)) or (not isinstance(constraint_data, dict)):
         raise RuntimeError('annotations, pose report, completion report, and constraint report must be JSON objects')
     graph_support = pose_data.get('graph_support') if isinstance(pose_data.get('graph_support'), dict) else {}
@@ -423,12 +417,12 @@ def build_formal_render_state(args: argparse.Namespace) -> dict[str, Any]:
     pose_trajectory_quarantined = bool(pose_annotation_ready is False or graph_support_sufficient is False)
     expected_mesh = completion_report_completed_mesh(completion_report_path, rewrites)
     completion_outputs = completion_data.get('outputs') if isinstance(completion_data.get('outputs'), dict) else {}
-    physical_report_path=rewrite_path(getattr(args,'physical_completion_report',None),rewrites) or completion_report_path
-    physical_data=load_json(physical_report_path)
-    physical_outputs=physical_data.get('outputs') or {}
-    completion_readiness=physical_data.get('geometry_readiness') or {}
+    physical_report_path = rewrite_path(getattr(args, 'physical_completion_report', None), rewrites) or completion_report_path
+    physical_data = read_json(physical_report_path)
+    physical_outputs = physical_data.get('outputs') or {}
+    completion_readiness = physical_data.get('geometry_readiness') or {}
     physical_surface = rewrite_path(physical_outputs.get('collision_eligible_mesh_labeled') or expected_mesh, rewrites)
-    if physical_report_path!=completion_report_path and 'collision_eligible_mesh_labeled' not in physical_outputs:
+    if physical_report_path != completion_report_path and 'collision_eligible_mesh_labeled' not in physical_outputs:
         raise ValueError('explicit physical report must declare its physical surface')
     if physical_surface is None:
         raise RuntimeError('completion physical surface could not be resolved')
@@ -456,8 +450,8 @@ def build_formal_render_state(args: argparse.Namespace) -> dict[str, Any]:
     if output is None:
         raise RuntimeError('output path resolved to None')
     object_label = args.object_label or args.object_id
-    state = {'status': 'ok_with_unready_object_pose_quarantine' if pose_trajectory_quarantined else 'ok', 'method': 'build_v19_rigid_render_state', 'annotation_ready': False, 'physical_state_quarantined': pose_trajectory_quarantined, 'claim_scope': 'explicit render-consumed state for a rigid object body, pose trajectory, MANO/contact uncertainty, and projection contract', 'case': str(args.case), 'object_id': str(args.object_id), 'object_label': str(object_label), 'created_unix_s': time.time(), 'inputs': {'annotations': str(annotations_path), 'pose_report': str(pose_report_path), 'completion_report': str(completion_report_path), 'physical_completion_report':str(physical_report_path), 'completed_mesh': str(completed_mesh), 'constraint_report': str(constraint_report_path), 'temporal_mano_state': str(temporal_mano_path) if temporal_mano_path is not None else None, 'hidden_volume_validation': str(hidden_validation_path) if hidden_validation_path is not None else None}, 'annotation_backbone': {'path': str(annotations_path), 'frame_count': len(frame_ids), 'frame_ids': frame_ids, 'raw_video': annotations.get('raw_video') if isinstance(annotations.get('raw_video'), dict) else None}, 'object_geometry': {'state': 'completed_canonical_rigid_mesh', 'completed_mesh_path': str(completed_mesh), 'completion_report_path': str(completion_report_path), 'completion_outputs': completion_outputs, 'mesh_frame': 'completed_canonical', 'raw_trellis_mesh_is_renderable': False, 'observation_surface_path': str(completed_mesh), 'physical_surface': {'mesh': str(physical_surface), 'completion_report':str(physical_report_path),'completion_report_sha256':sha256(physical_report_path), 'source': completion_readiness.get('signed_geometry_source') or completion_readiness.get('collision_surface_source') or 'completion_report_collision_surface', 'signed_geometry_ready': completion_readiness.get('signed_geometry_ready') is True, 'signed_geometry_consumer_policy': completion_readiness.get('signed_geometry_consumer_policy'), 'generated_faces_collision_eligible': completion_readiness.get('generated_faces_collision_eligible') is True, 'generated_faces_contact_eligible': completion_readiness.get('generated_faces_contact_eligible') is True, 'generated_faces_signed_distance_eligible': completion_readiness.get('generated_faces_signed_distance_eligible') is True, 'geometry_readiness': completion_readiness}}, 'object_pose_trajectory': {'state': 'full_timeline_unresolved_sparse_support_hypothesis' if pose_trajectory_quarantined else 'full_timeline_rigid_pose_trajectory' if not missing_pose_frames else 'rigid_pose_trajectory_with_explicit_missing_frames', 'pose_report_path': str(pose_report_path), 'pose_report_status': pose_data.get('status'), 'annotation_ready': pose_annotation_ready if isinstance(pose_annotation_ready, bool) else None, 'graph_support': graph_support, 'graph_support_sufficient': graph_support_sufficient if isinstance(graph_support_sufficient, bool) else None, 'readiness_legacy_fields_missing': pose_readiness_legacy_fields_missing, 'physical_state_quarantined': pose_trajectory_quarantined, 'accepted_statuses': sorted(ACCEPTED_RIGID_POSE_STATUSES), 'pose_rows': pose_rows, 'frame_count_with_pose': len(pose_frame_ids), 'missing_pose_frames': missing_pose_frames, 'full_timeline_rigid_pose_completion': pose_data.get('full_timeline_rigid_pose_completion'), 'correction_summary': pose_data.get('correction_summary')}, 'mano_constraint_state': {'state': 'constraint_rows_quarantined_unready_object_pose' if pose_trajectory_quarantined else 'constraint_rows_embedded_for_render_labels', 'constraint_report_path': str(constraint_report_path), 'constraint_report_status': constraint_data.get('status'), 'physical_constraint_quarantined': bool(pose_trajectory_quarantined or constraint_data.get('physical_constraint_quarantined') is True), 'constraint_rows': constraint_rows}, 'temporal_mano_state': {'state': 'embedded_object_pose_quarantine' if pose_trajectory_quarantined and temporal_payload is not None else 'embedded' if temporal_payload is not None else 'not_supplied', 'path': str(temporal_mano_path) if temporal_mano_path is not None else None, 'status': temporal_payload.get('status') if isinstance(temporal_payload, dict) else None, 'physical_constraint_quarantined': bool(isinstance(temporal_payload, dict) and temporal_payload.get('physical_constraint_quarantined') is True), 'payload': temporal_payload}, 'hidden_volume_validation': {'state': 'embedded' if hidden_payload is not None else 'not_supplied', 'path': str(hidden_validation_path) if hidden_validation_path is not None else None, 'payload': hidden_payload}, 'projection_contract': {'intrinsics_coordinate_rule': "Use camera/hand fx_fy_cx_cy in the annotation frame's source coordinate system; scale fx,cx by rendered_width/source_width and fy,cy by rendered_height/source_height before projection.", 'source_size_fields': ['frame.source_width/source_height', 'raw_video.width/height'], 'render_size_source': 'actual decoded raw_frame_path image size', 'forbidden_projection_rule': 'Do not project a 1408x1408/source-size K directly onto a 960x960 rendered frame.'}, 'outputs': {'render_state_json': str(output)}, 'evidence': {'total_frames': len(frame_ids), 'pose_rows': len(pose_rows), 'constraint_rows': len(constraint_rows), 'temporal_mano_rows': len(temporal_payload.get('per_frame_states', [])) if isinstance(temporal_payload, dict) and isinstance(temporal_payload.get('per_frame_states'), list) else 0, 'missing_pose_frame_count': len(missing_pose_frames), 'pose_trajectory_annotation_ready': pose_annotation_ready if isinstance(pose_annotation_ready, bool) else None, 'graph_support_sufficient': graph_support_sufficient if isinstance(graph_support_sufficient, bool) else None, 'pose_readiness_legacy_fields_missing': pose_readiness_legacy_fields_missing, 'physical_state_quarantined': pose_trajectory_quarantined}, 'total_elapsed_s': time.time() - started}
-    write_json(output, state)
+    state = {'status': 'ok_with_unready_object_pose_quarantine' if pose_trajectory_quarantined else 'ok', 'method': 'build_v19_rigid_render_state', 'annotation_ready': False, 'physical_state_quarantined': pose_trajectory_quarantined, 'claim_scope': 'explicit render-consumed state for a rigid object body, pose trajectory, MANO/contact uncertainty, and projection contract', 'case': str(args.case), 'object_id': str(args.object_id), 'object_label': str(object_label), 'created_unix_s': time.time(), 'inputs': {'annotations': str(annotations_path), 'pose_report': str(pose_report_path), 'completion_report': str(completion_report_path), 'physical_completion_report': str(physical_report_path), 'completed_mesh': str(completed_mesh), 'constraint_report': str(constraint_report_path), 'temporal_mano_state': str(temporal_mano_path) if temporal_mano_path is not None else None, 'hidden_volume_validation': str(hidden_validation_path) if hidden_validation_path is not None else None}, 'annotation_backbone': {'path': str(annotations_path), 'frame_count': len(frame_ids), 'frame_ids': frame_ids, 'raw_video': annotations.get('raw_video') if isinstance(annotations.get('raw_video'), dict) else None}, 'object_geometry': {'state': 'completed_canonical_rigid_mesh', 'completed_mesh_path': str(completed_mesh), 'completion_report_path': str(completion_report_path), 'completion_outputs': completion_outputs, 'mesh_frame': 'completed_canonical', 'raw_trellis_mesh_is_renderable': False, 'observation_surface_path': str(completed_mesh), 'physical_surface': {'mesh': str(physical_surface), 'completion_report': str(physical_report_path), 'completion_report_sha256': sha256(physical_report_path), 'source': completion_readiness.get('signed_geometry_source') or completion_readiness.get('collision_surface_source') or 'completion_report_collision_surface', 'signed_geometry_ready': completion_readiness.get('signed_geometry_ready') is True, 'signed_geometry_consumer_policy': completion_readiness.get('signed_geometry_consumer_policy'), 'generated_faces_collision_eligible': completion_readiness.get('generated_faces_collision_eligible') is True, 'generated_faces_contact_eligible': completion_readiness.get('generated_faces_contact_eligible') is True, 'generated_faces_signed_distance_eligible': completion_readiness.get('generated_faces_signed_distance_eligible') is True, 'geometry_readiness': completion_readiness}}, 'object_pose_trajectory': {'state': 'full_timeline_unresolved_sparse_support_hypothesis' if pose_trajectory_quarantined else 'full_timeline_rigid_pose_trajectory' if not missing_pose_frames else 'rigid_pose_trajectory_with_explicit_missing_frames', 'pose_report_path': str(pose_report_path), 'pose_report_status': pose_data.get('status'), 'annotation_ready': pose_annotation_ready if isinstance(pose_annotation_ready, bool) else None, 'graph_support': graph_support, 'graph_support_sufficient': graph_support_sufficient if isinstance(graph_support_sufficient, bool) else None, 'readiness_legacy_fields_missing': pose_readiness_legacy_fields_missing, 'physical_state_quarantined': pose_trajectory_quarantined, 'accepted_statuses': sorted(ACCEPTED_RIGID_POSE_STATUSES), 'pose_rows': pose_rows, 'frame_count_with_pose': len(pose_frame_ids), 'missing_pose_frames': missing_pose_frames, 'full_timeline_rigid_pose_completion': pose_data.get('full_timeline_rigid_pose_completion'), 'correction_summary': pose_data.get('correction_summary')}, 'mano_constraint_state': {'state': 'constraint_rows_quarantined_unready_object_pose' if pose_trajectory_quarantined else 'constraint_rows_embedded_for_render_labels', 'constraint_report_path': str(constraint_report_path), 'constraint_report_status': constraint_data.get('status'), 'physical_constraint_quarantined': bool(pose_trajectory_quarantined or constraint_data.get('physical_constraint_quarantined') is True), 'constraint_rows': constraint_rows}, 'temporal_mano_state': {'state': 'embedded_object_pose_quarantine' if pose_trajectory_quarantined and temporal_payload is not None else 'embedded' if temporal_payload is not None else 'not_supplied', 'path': str(temporal_mano_path) if temporal_mano_path is not None else None, 'status': temporal_payload.get('status') if isinstance(temporal_payload, dict) else None, 'physical_constraint_quarantined': bool(isinstance(temporal_payload, dict) and temporal_payload.get('physical_constraint_quarantined') is True), 'payload': temporal_payload}, 'hidden_volume_validation': {'state': 'embedded' if hidden_payload is not None else 'not_supplied', 'path': str(hidden_validation_path) if hidden_validation_path is not None else None, 'payload': hidden_payload}, 'projection_contract': {'intrinsics_coordinate_rule': "Use camera/hand fx_fy_cx_cy in the annotation frame's source coordinate system; scale fx,cx by rendered_width/source_width and fy,cy by rendered_height/source_height before projection.", 'source_size_fields': ['frame.source_width/source_height', 'raw_video.width/height'], 'render_size_source': 'actual decoded raw_frame_path image size', 'forbidden_projection_rule': 'Do not project a 1408x1408/source-size K directly onto a 960x960 rendered frame.'}, 'outputs': {'render_state_json': str(output)}, 'evidence': {'total_frames': len(frame_ids), 'pose_rows': len(pose_rows), 'constraint_rows': len(constraint_rows), 'temporal_mano_rows': len(temporal_payload.get('per_frame_states', [])) if isinstance(temporal_payload, dict) and isinstance(temporal_payload.get('per_frame_states'), list) else 0, 'missing_pose_frame_count': len(missing_pose_frames), 'pose_trajectory_annotation_ready': pose_annotation_ready if isinstance(pose_annotation_ready, bool) else None, 'graph_support_sufficient': graph_support_sufficient if isinstance(graph_support_sufficient, bool) else None, 'pose_readiness_legacy_fields_missing': pose_readiness_legacy_fields_missing, 'physical_state_quarantined': pose_trajectory_quarantined}, 'total_elapsed_s': time.time() - started}
+    write_json_payload(output, state)
     return state
 
 def formal_state_cli(argv=None) -> None:
@@ -684,35 +678,33 @@ def core_arrays(core, annotations, hawor, mesh_path, resolve_archive=None):
             if side in SIDES and joints is not None:
                 require(out[f'{side}_valid'][i], f'annotation/HaWoR validity mismatch: {side}')
                 same(joints, out[f'{side}_joints_world'][i], f'annotation/HaWoR source joints: {side}')
-    payload=(core.get('temporal_mano_state') or {}).get('payload') or {}
-    acceptance=payload.get('full_mano_acceptance') or {}
+    payload = (core.get('temporal_mano_state') or {}).get('payload') or {}
+    acceptance = payload.get('full_mano_acceptance') or {}
     if acceptance.get('accepted') is True:
-        require(acceptance.get('signed_object_surface_factor_active') is True and
-                acceptance.get('signed_geometry_declared_ready') is True and
-                acceptance.get('physical_state_quarantined') is not True and
-                core.get('physical_state_quarantined') is not True,
-                'accepted MANO cannot bypass signed/source quarantine')
-        reference=payload.get('accepted_full_mano_vertices_world_archive')
-        archive=Path(reference) if resolve_archive is None else resolve_archive(reference)
-        require(sha256(archive)==payload.get('accepted_full_mano_vertices_world_archive_sha256'),
-                'accepted full MANO archive identity mismatch')
-        data=load_npz(archive);rows={(int(i),str(side)):pos for pos,(i,side) in
-            enumerate(zip(data['frame_idx'],data['hand_side']))}
-        require(len(rows)==len(data['frame_idx']),'duplicate accepted MANO archive rows')
+        require(acceptance.get('signed_object_surface_factor_active') is True and acceptance.get('signed_geometry_declared_ready') is True and (acceptance.get('physical_state_quarantined') is not True) and (core.get('physical_state_quarantined') is not True), 'accepted MANO cannot bypass signed/source quarantine')
+        reference = payload.get('accepted_full_mano_vertices_world_archive')
+        archive = Path(reference) if resolve_archive is None else resolve_archive(reference)
+        require(sha256(archive) == payload.get('accepted_full_mano_vertices_world_archive_sha256'), 'accepted full MANO archive identity mismatch')
+        data = load_npz(archive)
+        rows = {(int(i), str(side)): pos for (pos, (i, side)) in enumerate(zip(data['frame_idx'], data['hand_side']))}
+        require(len(rows) == len(data['frame_idx']), 'duplicate accepted MANO archive rows')
         for side in SIDES:
-            if not out[side+'_valid'].any():continue
-            out[side+'_source_vertices_world']=out[side+'_vertices_world'].copy()
-            out[side+'_source_joints_world']=out[side+'_joints_world'].copy()
-            out[side+'_physical_accepted']=np.zeros(n,bool)
-            for i,fid in enumerate(ids):
-                if not out[side+'_valid'][i]:continue
-                require((int(fid),side) in rows,'accepted MANO lacks a valid source row')
-                position=rows[int(fid),side]
-                vertices=data['vertices_world_m'][position];joints=data['joints_world_m'][position]
-                require(vertices.shape==(778,3) and joints.shape==(21,3) and
-                        np.isfinite(vertices).all() and np.isfinite(joints).all(),'invalid accepted MANO geometry')
-                out[side+'_vertices_world'][i]=vertices;out[side+'_joints_world'][i]=joints
-                out[side+'_physical_accepted'][i]=True
+            if not out[side + '_valid'].any():
+                continue
+            out[side + '_source_vertices_world'] = out[side + '_vertices_world'].copy()
+            out[side + '_source_joints_world'] = out[side + '_joints_world'].copy()
+            out[side + '_physical_accepted'] = np.zeros(n, bool)
+            for (i, fid) in enumerate(ids):
+                if not out[side + '_valid'][i]:
+                    continue
+                require((int(fid), side) in rows, 'accepted MANO lacks a valid source row')
+                position = rows[int(fid), side]
+                vertices = data['vertices_world_m'][position]
+                joints = data['joints_world_m'][position]
+                require(vertices.shape == (778, 3) and joints.shape == (21, 3) and np.isfinite(vertices).all() and np.isfinite(joints).all(), 'invalid accepted MANO geometry')
+                out[side + '_vertices_world'][i] = vertices
+                out[side + '_joints_world'][i] = joints
+                out[side + '_physical_accepted'][i] = True
     return out
 
 def demo_mesh_contract(core, completion):
@@ -787,8 +779,7 @@ def load_package(path):
     require(layers_load_json(asset(metric['source_assets']['interaction_judgments'])) == metric['interaction_judgments'], 'P17 source document mismatch')
     hawor_path = asset(metric['source_assets']['hawor_npz'])
     validate_hawor_bindings(ann, hawor_path, metric.get('hawor_source_bindings', {}), asset)
-    expected = core_arrays(core, ann, load_npz(hawor_path), asset(metric['canonical_mesh_asset']),
-        lambda reference:asset(package['source_asset_map'][str(Path(reference).resolve())]))
+    expected = core_arrays(core, ann, load_npz(hawor_path), asset(metric['canonical_mesh_asset']), lambda reference: asset(package['source_asset_map'][str(Path(reference).resolve())]))
     pred = load_npz(asset(metric['render_arrays_asset']))
     compare_arrays(pred, expected, 'prediction')
     timeline = package['timeline']
@@ -941,8 +932,7 @@ def assemble_formal_layers(args):
     for p in core_files:
         snap.copy(p)
     mesh_asset = snap.copy(canonical)
-    metric = {'render_state': core, 'annotations': ann, 'interaction_judgments': judgments, 'source_assets': sources, 'canonical_mesh_asset': mesh_asset, 'completion_report_binding': {'reference': core['inputs']['completion_report'], 'sha256': sha256(source_paths['completion_report'])}, 'hawor_source_bindings': {ref: {'asset': snap.copy(binding['asset']), 'sha256': binding['sha256']} for (ref, binding) in hawor_bindings.items()}, 'render_arrays_asset': snap.generated('prediction_render_arrays.npz', prediction), 'authority': 'source metric prediction with explicit gate-accepted full MANO when present; no demo promotion',
-        'full_mano_acceptance':(core.get('temporal_mano_state',{}).get('payload') or {}).get('full_mano_acceptance',{'accepted':False})}
+    metric = {'render_state': core, 'annotations': ann, 'interaction_judgments': judgments, 'source_assets': sources, 'canonical_mesh_asset': mesh_asset, 'completion_report_binding': {'reference': core['inputs']['completion_report'], 'sha256': sha256(source_paths['completion_report'])}, 'hawor_source_bindings': {ref: {'asset': snap.copy(binding['asset']), 'sha256': binding['sha256']} for (ref, binding) in hawor_bindings.items()}, 'render_arrays_asset': snap.generated('prediction_render_arrays.npz', prediction), 'authority': 'source metric prediction with explicit gate-accepted full MANO when present; no demo promotion', 'full_mano_acceptance': (core.get('temporal_mano_state', {}).get('payload') or {}).get('full_mano_acceptance', {'accepted': False})}
     demo_block = None
     if demo is not None:
         demo_block = {'source_assets': {'state': snap.copy(demo_source), 'report': snap.copy(demo_report)}, 'report': layers_load_json(demo_report), 'canonical_mesh_binding': {'reference': demo_mesh_reference, 'asset': snap.copy(demo_mesh)}, 'render_arrays_asset': snap.generated('demo_render_arrays.npz', demo), 'authority': 'visual hypothesis only; not contact/collision/sign evidence', 'annotation_ready': False, 'collision_eligible': False}
@@ -1049,9 +1039,10 @@ def render_formal_rrd(package_path, output, layer='both', display_geometry=None)
     rr.log('/world/authority', rr.TextDocument(package['run_mode'] + '\nPrediction: source metric state. Demo: visual hypothesis, not collision/contact authority.'), static=True)
     p = layers['prediction']
     if display_geometry is not None:
-        name='display_'+display_geometry['backend']
-        layers={name:display_backend_state(p,display_geometry,package_path)};selected=[name]
-        rr.log('/world/authority',rr.TextDocument('Shared physical pose/MANO; generated object geometry is display-only, no signed/contact authority'),static=True)
+        name = 'display_' + display_geometry['backend']
+        layers = {name: display_backend_state(p, display_geometry, package_path)}
+        selected = [name]
+        rr.log('/world/authority', rr.TextDocument('Shared physical pose/MANO; generated object geometry is display-only, no signed/contact authority'), static=True)
     rr.log('/world/camera_trajectory', rr.LineStrips3D([p['T_world_camera'][:, :3, 3]], colors=[150, 150, 150]), static=True)
     for (i, fid) in enumerate(p['frame_idx']):
         rr.set_time('frame', sequence=int(fid))
@@ -1152,7 +1143,7 @@ def render_formal_video(package_path, source_video, output_dir, width=640, expec
         require(video_hash == expected_video_sha256, 'original video hash mismatch')
     pred = layers['prediction']
     if display_geometry is not None:
-        layers={'display_'+display_geometry['backend']:display_backend_state(pred,display_geometry,package_path)}
+        layers = {'display_' + display_geometry['backend']: display_backend_state(pred, display_geometry, package_path)}
     n = len(pred['frame_idx'])
     source_timing = read_cfr_video_timing(source_video, expected_frame_count=n)
     fps = source_timing.fps
@@ -1218,42 +1209,38 @@ def formal_video_cli(argv=None):
     args = parser.parse_args(argv)
     print(render_formal_video(args.package, args.source_video, args.output_dir, args.render_width, args.source_video_sha256))
 
-
 def display_backend_state(shared, geometry, package_path):
     """Only complete object geometry branches; camera, poses, MANO and validity stay shared."""
-    require(geometry.get('backend') in {'sam3d','trellis'},'unknown retained geometry backend')
-    require(geometry.get('package_sha256')==sha256(package_path),'geometry belongs to another shared state')
-    require(geometry.get('canonical_frame')=='shared_completed_canonical_meters','backend mesh gauge is unbound')
-    require(geometry.get('role')=='generated_display_only','generated backend has no physical force authority')
-    path=Path(geometry['mesh'])
-    require(sha256(path)==geometry['mesh_sha256'],'backend mesh bytes changed')
-    mesh=load_geometry_mesh(path)
-    return {**shared,'object_vertices_canonical':mesh['object_vertices_canonical'],'object_faces':mesh['object_faces']}
+    require(geometry.get('backend') in {'sam3d', 'trellis'}, 'unknown retained geometry backend')
+    require(geometry.get('package_sha256') == sha256(package_path), 'geometry belongs to another shared state')
+    require(geometry.get('canonical_frame') == 'shared_completed_canonical_meters', 'backend mesh gauge is unbound')
+    require(geometry.get('role') == 'generated_display_only', 'generated backend has no physical force authority')
+    path = Path(geometry['mesh'])
+    require(sha256(path) == geometry['mesh_sha256'], 'backend mesh bytes changed')
+    mesh = load_geometry_mesh(path)
+    return {**shared, 'object_vertices_canonical': mesh['object_vertices_canonical'], 'object_faces': mesh['object_faces']}
 
-
-def render_dual_backend(package_path,source_video,geometries,output):
+def render_dual_backend(package_path, source_video, geometries, output):
     """Publish two full display branches after one already-frozen shared physical solve."""
-    output=Path(output)
-    require(not output.exists(),'dual output must be new')
-    require({g['backend'] for g in geometries}=={'sam3d','trellis'} and len(geometries)==2,
-            'dual display requires exactly SAM3D and TRELLIS')
-    package,states=load_package(package_path)
-    for geometry in geometries:display_backend_state(states['prediction'],geometry,package_path)
-    output.mkdir(parents=True)
-    shared_digest=hashlib.sha256()
-    for name,value in sorted(states['prediction'].items()):
-        if name not in {'object_vertices_canonical','object_faces'}:
-            shared_digest.update(name.encode());shared_digest.update(np.ascontiguousarray(value).tobytes())
-    results=[]
+    output = Path(output)
+    require(not output.exists(), 'dual output must be new')
+    require({g['backend'] for g in geometries} == {'sam3d', 'trellis'} and len(geometries) == 2, 'dual display requires exactly SAM3D and TRELLIS')
+    (package, states) = load_package(package_path)
     for geometry in geometries:
-        directory=output/geometry['backend'];directory.mkdir()
-        render_formal_rrd(package_path,directory/'world.rrd',layer='prediction',display_geometry=geometry)
-        video=render_formal_video(package_path,source_video,directory/'video',expected_video_sha256=sha256(source_video),display_geometry=geometry)
-        results.append({'backend':geometry['backend'],'geometry':geometry,'rrd_sha256':sha256(directory/'world.rrd'),
-                        'video_sha256':sha256(video),'shared_state_sha256':shared_digest.hexdigest()})
-    manifest={'schema':'dual_backend_shared_state_display_v1','package_sha256':sha256(package_path),
-              'shared_state_sha256':shared_digest.hexdigest(),'shared_physics_recomputed':False,
-              'generated_geometry_authority':'display_only','branches':results,
-              'physical_acceptance':package['metric_prediction'].get('full_mano_acceptance',{'accepted':False})}
-    (output/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False))
+        display_backend_state(states['prediction'], geometry, package_path)
+    output.mkdir(parents=True)
+    shared_digest = hashlib.sha256()
+    for (name, value) in sorted(states['prediction'].items()):
+        if name not in {'object_vertices_canonical', 'object_faces'}:
+            shared_digest.update(name.encode())
+            shared_digest.update(np.ascontiguousarray(value).tobytes())
+    results = []
+    for geometry in geometries:
+        directory = output / geometry['backend']
+        directory.mkdir()
+        render_formal_rrd(package_path, directory / 'world.rrd', layer='prediction', display_geometry=geometry)
+        video = render_formal_video(package_path, source_video, directory / 'video', expected_video_sha256=sha256(source_video), display_geometry=geometry)
+        results.append({'backend': geometry['backend'], 'geometry': geometry, 'rrd_sha256': sha256(directory / 'world.rrd'), 'video_sha256': sha256(video), 'shared_state_sha256': shared_digest.hexdigest()})
+    manifest = {'schema': 'dual_backend_shared_state_display_v1', 'package_sha256': sha256(package_path), 'shared_state_sha256': shared_digest.hexdigest(), 'shared_physics_recomputed': False, 'generated_geometry_authority': 'display_only', 'branches': results, 'physical_acceptance': package['metric_prediction'].get('full_mano_acceptance', {'accepted': False})}
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2, allow_nan=False))
     return manifest

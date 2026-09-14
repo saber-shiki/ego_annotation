@@ -1,20 +1,12 @@
 """Grouped observation/numerical implementation."""
 from __future__ import annotations
+from utils.data import write_json_payload
+from utils.data import read_json_mapping
 import argparse
 import json
 from pathlib import Path
 from typing import Any
 import numpy as np
-
-def load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
 
 def iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
     (ax1, ay1, ax2, ay2) = [float(x) for x in a]
@@ -77,7 +69,7 @@ def pred_box(npz: Any, side: str, idx: int, score_threshold: float) -> tuple[np.
     return (raw[:4], score, detected)
 
 def evaluate_boxes(args: argparse.Namespace) -> dict[str, Any]:
-    gt = load_json(args.hot3d_gt)
+    gt = read_json_mapping(args.hot3d_gt)
     frames = gt.get('frames')
     if not isinstance(frames, list) or not frames:
         raise RuntimeError('HOT3D GT sidecar has no frames')
@@ -105,7 +97,7 @@ def evaluate_boxes(args: argparse.Namespace) -> dict[str, Any]:
         sm = [r for r in matched_rows if r['side'] == side]
         by_side[side] = {'measurable_frames': len(sr), 'matched_frames': len(sm), 'match_rate': float(len(sm) / max(1, len(sr))), 'iou': summarize([float(r['iou']) for r in sm if r['iou'] is not None]), 'center_distance_px': summarize([float(r['center_distance_px']) for r in sm if r['center_distance_px'] is not None]), 'pred_score': summarize([float(r['pred_score']) for r in sm if r['pred_score'] is not None])}
     report = {'status': 'ok', 'method': 'evaluate_v19_hot3d_hawor_boxes', 'claim_scope': '2D hand-box localization against HOT3D amodal boxes; not 3D MANO/contact/object-pose scoring', 'hot3d_gt': str(args.hot3d_gt), 'hawor_npz': str(args.hawor_npz), 'stream_id': args.stream_id, 'visibility_threshold': float(args.visibility_threshold), 'score_threshold': float(args.score_threshold), 'frame_count_gt': len(frames), 'rows': rows, 'summary': {'measurable_rows': len(measurable_rows), 'matched_rows': len(matched_rows), 'match_rate': float(len(matched_rows) / max(1, len(measurable_rows))), 'iou': summarize([float(r['iou']) for r in matched_rows if r['iou'] is not None]), 'center_distance_px': summarize([float(r['center_distance_px']) for r in matched_rows if r['center_distance_px'] is not None]), 'by_side': by_side}}
-    write_json(args.output_report, report)
+    write_json_payload(args.output_report, report)
     print(json.dumps({k: v for (k, v) in report.items() if k != 'rows'}, indent=2)[:20000])
     return report
 
@@ -137,16 +129,6 @@ def patch_legacy_numpy() -> None:
         if not hasattr(np, name):
             setattr(np, name, value)
 
-def mano_eval_load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
-
-def mano_eval_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-
 def quat_wxyz_to_matrix(q: list[float] | tuple[float, ...] | np.ndarray) -> np.ndarray:
     (w, x, y, z) = [float(v) for v in q]
     n = math.sqrt(w * w + x * x + y * y + z * z)
@@ -166,7 +148,7 @@ def load_hand_shape(gt: dict[str, Any], sidecar_path: Path) -> tuple[np.ndarray,
         return (np.asarray(gt['hand_shapes']['mano'], dtype=np.float32), 'sidecar:hand_shapes')
     sibling = sidecar_path.parent / 'hot3d_hand_shapes.json'
     if sibling.exists():
-        shape = mano_eval_load_json(sibling)
+        shape = read_json_mapping(sibling)
         if 'mano' not in shape:
             raise RuntimeError(f'{sibling} lacks mano hand shape')
         return (np.asarray(shape['mano'], dtype=np.float32), str(sibling))
@@ -294,7 +276,7 @@ def camera_trajectory_from_annotations(annotation_path: Path, args: argparse.Nam
     position, and projects world points as ``(p_world - t_c2w) @ R_c2w``.  The
     evaluator uses the same convention.
     """
-    annotations = mano_eval_load_json(localize_prediction_path(annotation_path, args))
+    annotations = read_json_mapping(localize_prediction_path(annotation_path, args))
     frames = annotations.get('frames')
     if not isinstance(frames, list) or not frames:
         raise RuntimeError(f'{annotation_path} lacks frames for interval-state camera trajectory')
@@ -322,7 +304,7 @@ def load_interval_state_prediction(args: argparse.Namespace, frames_list: list[d
     if args.interval_state is None:
         raise RuntimeError('internal error: interval-state path missing')
     interval_path = localize_prediction_path(args.interval_state, args)
-    state = mano_eval_load_json(interval_path)
+    state = read_json_mapping(interval_path)
     rows = state.get('per_frame_states')
     if not isinstance(rows, list) or not rows:
         raise RuntimeError(f'{interval_path} lacks nonempty per_frame_states')
@@ -386,7 +368,7 @@ def row_metric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
 def render_review(args: argparse.Namespace, rows: list[dict[str, Any]], gt_frames: dict[int, dict[str, Any]], pred_cache: dict[tuple[int, str], tuple[np.ndarray, np.ndarray]]) -> str | None:
     if args.review_output is None or args.image_manifest is None:
         return None
-    manifest = mano_eval_load_json(args.image_manifest)
+    manifest = read_json_mapping(args.image_manifest)
     frame_paths = {int(r['frame_idx']): Path(r['raw_frame_path']) for r in manifest.get('frames', []) if isinstance(r, dict) and r.get('raw_frame_path')}
     by_frame_side = {(int(r['frame_idx']), str(r['side'])): r for r in rows if r.get('matched')}
     tiles: list[np.ndarray] = []
@@ -435,7 +417,7 @@ def render_review(args: argparse.Namespace, rows: list[dict[str, Any]], gt_frame
 
 def evaluate_mano(args: argparse.Namespace) -> dict[str, Any]:
     import torch
-    gt = mano_eval_load_json(args.hot3d_gt)
+    gt = read_json_mapping(args.hot3d_gt)
     frames_list = gt.get('frames')
     if not isinstance(frames_list, list) or not frames_list:
         raise RuntimeError('HOT3D GT sidecar has no frames')
@@ -505,7 +487,7 @@ def evaluate_mano(args: argparse.Namespace) -> dict[str, Any]:
     review = render_review(args, rows, gt_frames, pred_cache)
     vertex_metric_scope = 'full predicted MANO vertices' if prediction.get('full_vertices_available') else 'not reported: interval state stores optimized joints and sampled vertices, not full predicted MANO vertices'
     report = {'status': 'ok', 'method': 'evaluate_v19_hot3d_hawor_mano3d', 'claim_scope': '3D MANO hand joint localization/articulation against HOT3D MANO in camera coordinates; root_aligned metrics are wrist-subtracted translation-aligned only; not contact, occlusion, nonpenetration, or object-pose scoring', 'hot3d_gt': str(args.hot3d_gt), 'prediction_source': {'kind': prediction['kind'], 'path': prediction['path'], 'source_hawor_npz': prediction.get('source_hawor_npz'), 'camera_trajectory_source': prediction.get('camera_trajectory_source', prediction.get('source_hawor_npz')), 'full_vertices_available': bool(prediction.get('full_vertices_available')), 'vertex_metric_scope': vertex_metric_scope}, 'hawor_npz': str(args.hawor_npz) if args.hawor_npz is not None else None, 'interval_state': str(args.interval_state) if args.interval_state is not None else None, 'stream_id': args.stream_id, 'mano_left': str(args.mano_left), 'mano_right': str(args.mano_right), 'hand_shape_source': hand_shape_source, 'review': review, 'summary': {'measurable_rows': len(measurable), 'matched_rows': len(matched), 'match_rate': float(len(matched) / max(1, len(measurable))), 'root_aligned_metric_definition': "Subtract each hand's wrist joint translation before computing joint errors; no rotation or scale alignment is applied.", 'wrist_error_m': mano_eval_summarize(row_metric_values(matched, 'wrist_error_m')), 'joint_mpjpe_m': mano_eval_summarize(row_metric_values(matched, 'joint_mpjpe_m')), 'joint_median_error_m': mano_eval_summarize(row_metric_values(matched, 'joint_median_error_m')), 'root_aligned_mpjpe_m': mano_eval_summarize(row_metric_values(matched, 'root_aligned_mpjpe_m')), 'root_aligned_median_error_m': mano_eval_summarize(row_metric_values(matched, 'root_aligned_median_error_m')), 'vertex_centroid_error_m': mano_eval_summarize(row_metric_values(matched, 'vertex_centroid_error_m')), 'by_side': by_side}, 'rows': rows}
-    mano_eval_write_json(args.output_report, report)
+    write_json_payload(args.output_report, report)
     print(json.dumps({k: v for (k, v) in report.items() if k != 'rows'}, indent=2)[:20000])
     return report
 
@@ -735,16 +717,6 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 
-def box_summary_load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
-
-def box_summary_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-
 def box_summary_summarize(values: list[float]) -> dict[str, Any]:
     arr = np.asarray([v for v in values if np.isfinite(v)], dtype=float)
     if arr.size == 0:
@@ -755,7 +727,7 @@ def aggregate_boxes(args: argparse.Namespace) -> dict[str, Any]:
     clip_summaries: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     for report_path in args.reports:
-        report = box_summary_load_json(report_path)
+        report = read_json_mapping(report_path)
         if report.get('method') != 'evaluate_v19_hot3d_hawor_boxes':
             raise RuntimeError(f"unexpected method in {report_path}: {report.get('method')}")
         clip_id = report_path.parent.parent.name if report_path.parent.name == 'evaluation' else report_path.stem
@@ -776,7 +748,7 @@ def aggregate_boxes(args: argparse.Namespace) -> dict[str, Any]:
         sm = [r for r in matched if r.get('side') == side]
         by_side[side] = {'measurable_rows': len(sr), 'matched_rows': len(sm), 'match_rate': float(len(sm) / max(1, len(sr))), 'iou': box_summary_summarize([float(r['iou']) for r in sm if r.get('iou') is not None]), 'center_distance_px': box_summary_summarize([float(r['center_distance_px']) for r in sm if r.get('center_distance_px') is not None]), 'pred_score': box_summary_summarize([float(r['pred_score']) for r in sm if r.get('pred_score') is not None])}
     payload = {'status': 'ok', 'method': 'aggregate_v19_hot3d_box_evals', 'claim_scope': 'aggregate 2D HOT3D hand-box localization only; not 3D MANO/contact/object-pose scoring', 'reports': [str(p) for p in args.reports], 'clip_summaries': clip_summaries, 'summary': {'clip_count': len(args.reports), 'measurable_rows': len(measurable), 'matched_rows': len(matched), 'match_rate': float(len(matched) / max(1, len(measurable))), 'iou': box_summary_summarize([float(r['iou']) for r in matched if r.get('iou') is not None]), 'center_distance_px': box_summary_summarize([float(r['center_distance_px']) for r in matched if r.get('center_distance_px') is not None]), 'by_side': by_side}}
-    box_summary_write_json(args.output_report, payload)
+    write_json_payload(args.output_report, payload)
     print(json.dumps(payload['summary'], indent=2))
     return payload
 
@@ -792,16 +764,6 @@ from typing import Any
 import numpy as np
 METRIC_KEYS = ['wrist_error_m', 'joint_mpjpe_m', 'joint_median_error_m', 'root_aligned_mpjpe_m', 'root_aligned_median_error_m', 'vertex_centroid_error_m']
 
-def mano_summary_load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
-
-def mano_summary_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-
 def mano_summary_summarize(values: list[float]) -> dict[str, Any]:
     arr = np.asarray([v for v in values if np.isfinite(v)], dtype=float)
     if arr.size == 0:
@@ -812,7 +774,7 @@ def aggregate_mano(args: argparse.Namespace) -> dict[str, Any]:
     clip_reports: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     for report_path in args.reports:
-        report = mano_summary_load_json(report_path)
+        report = read_json_mapping(report_path)
         if report.get('status') != 'ok':
             raise RuntimeError(f"report {report_path} is not ok: {report.get('status')}")
         clip_id = next((part for part in reversed(report_path.parts) if part.startswith('clip-')), report_path.parent.name)
@@ -833,7 +795,7 @@ def aggregate_mano(args: argparse.Namespace) -> dict[str, Any]:
     detected = [r for r in matched if r.get('pred_detected_same_frame') is True]
     infilled = [r for r in matched if r.get('pred_detected_same_frame') is False]
     payload = {'status': 'ok', 'method': 'aggregate_v19_hot3d_mano3d_evals', 'claim_scope': 'Fixed-slice aggregate of 3D MANO hand localization/articulation against HOT3D MANO in camera coordinates; root_aligned metrics are wrist-subtracted translation-aligned only; not contact, occlusion, nonpenetration, or object-pose scoring', 'reports': [str(p) for p in args.reports], 'clip_count': len(args.reports), 'clip_summaries': clip_reports, 'summary': {'measurable_rows': len(measurable), 'matched_rows': len(matched), 'match_rate': float(len(matched) / max(1, len(measurable))), 'same_frame_detector_supported_rows': len(detected), 'infilled_or_not_same_frame_rows': len(infilled), 'same_frame_detector_supported_rate_among_matched': float(len(detected) / max(1, len(matched))), 'root_aligned_metric_definition': "Subtract each hand's wrist joint translation before computing joint errors; no rotation or scale alignment is applied.", **{key: mano_summary_summarize([float(r[key]) for r in matched if key in r and r[key] is not None]) for key in METRIC_KEYS}, 'by_detection_support': {'same_frame_detector_supported': {'rows': len(detected), **{key: mano_summary_summarize([float(r[key]) for r in detected if key in r and r[key] is not None]) for key in METRIC_KEYS}}, 'infilled_or_not_same_frame': {'rows': len(infilled), **{key: mano_summary_summarize([float(r[key]) for r in infilled if key in r and r[key] is not None]) for key in METRIC_KEYS}}}, 'by_side': by_side}}
-    mano_summary_write_json(args.output_report, payload)
+    write_json_payload(args.output_report, payload)
     print(json.dumps(payload, indent=2)[:20000])
     return payload
 

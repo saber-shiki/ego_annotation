@@ -496,3 +496,24 @@ class ImageFactorObservation:
     silhouette_points_canonical: np.ndarray
     silhouette_target_uv: np.ndarray
     silhouette_kind: np.ndarray
+
+def read_json(path: Path) -> Any:
+    with path.open('r', encoding='utf-8') as f:
+        return json.load(f)
+
+def write_json_payload(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+
+def read_json_mapping(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f'{path} must contain a JSON object')
+    return payload
+
+def list_or_empty(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+def write_json_utf8(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')

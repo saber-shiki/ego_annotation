@@ -146,14 +146,14 @@ def align_trellis_to_observed(trellis: trimesh.Trimesh, observed_points: np.ndar
     return {'scale': float(s_total), 'rotation': r_total.astype(float).tolist(), 'translation': t_total.astype(float).tolist(), 'matrix_model_to_canonical': np.vstack([np.hstack([s_total * r_total, t_total.reshape(3, 1)]), np.array([[0.0, 0.0, 0.0, 1.0]])]).astype(float).tolist(), 'initial_scale_from_rms_radius': float(initial_scale), 'observed_pca_eigenvalues': obs_vals.astype(float).tolist(), 'trellis_pca_eigenvalues': model_vals.astype(float).tolist(), 'observed_to_trellis_stats_initial': best['observed_to_trellis_stats_initial'], 'observed_to_trellis_stats_final': final_stats_obs_to_model, 'trellis_to_observed_stats_final': final_stats_model_to_obs, 'icp_refinement_stats': refinement_stats}
 
 def identity_metric_canonical_alignment(generated: trimesh.Trimesh, observed_points: np.ndarray, input_report: dict[str, Any], mesh_path: Path, max_samples: int=20000) -> dict[str, Any]:
-    from observations.object.shape import completion_support_load_json
+    from utils.data import read_json as completion_support_load_json
     from observations.object.shape import nearest_stats
     import trimesh
     from pathlib import Path
     from typing import Any
     import numpy as np
     from observations.object.shape import completion_support_deterministic_sample_mesh
-    from observations.object.shape import completion_support_sha256_file
+    from utils.state import content_sha256 as completion_support_sha256_file
     import trimesh
     if input_report.get('schema') != 'v19_metric_canonical_generated_prior_input_v1':
         raise RuntimeError('--input-mesh-already-metric-canonical requires the strict metric-canonical input schema')

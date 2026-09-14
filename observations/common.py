@@ -1,5 +1,9 @@
 """Assemble qualified current-run metric observations on the complete timeline."""
 from __future__ import annotations
+from utils.data import write_json_payload
+from utils.data import read_json_mapping
+from utils.data import list_or_empty
+from utils.state import content_sha256
 import copy
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
@@ -10,84 +14,82 @@ from gates.object.observation import p09_geometry_validation
 def pose_from_values(rotation, translation):
     if rotation is None and translation is None:
         return None
-    r, t = np.asarray(rotation, float), np.asarray(translation, float)
-    if not valid_rotation(r) or t.shape != (3,) or not np.isfinite(t).all():
+    (r, t) = (np.asarray(rotation, float), np.asarray(translation, float))
+    if not valid_rotation(r) or t.shape != (3,) or (not np.isfinite(t).all()):
         raise ValueError('malformed declared pose')
-    return r, t
-
+    return (r, t)
 
 def build_nodes(annotations, source, object_id):
     frames = sorted(indexed(annotations['frames']).values(), key=lambda f: f['time_s'])
     rows = indexed(source['pose_rows'])
     if set(rows) - {f['frame_idx'] for f in frames}:
         raise ValueError('source pose outside annotation timeline')
-    known = {i: p for i, row in rows.items() if (p := pose_from_values(row.get(RKEY), row.get(TKEY))) is not None}
-    if not known: raise ValueError('no source pose establishes a canonical gauge')
+    known = {i: p for (i, row) in rows.items() if (p := pose_from_values(row.get(RKEY), row.get(TKEY))) is not None}
+    if not known:
+        raise ValueError('no source pose establishes a canonical gauge')
     times = {f['frame_idx']: float(f['time_s']) for f in frames}
     ordered = sorted(known, key=times.get)
     nodes = []
     for f in frames:
-        idx = f['frame_idx']; objects = [o for o in f.get('objects', []) if o['object_id'] == object_id]
-        if len(objects) > 1: raise ValueError('duplicate selected object')
+        idx = f['frame_idx']
+        objects = [o for o in f.get('objects', []) if o['object_id'] == object_id]
+        if len(objects) > 1:
+            raise ValueError('duplicate selected object')
         obj = objects[0] if objects else None
-        points, reason, diagnostics = p09_geometry_validation(obj, f)
-        # Unverified ownership never licenses a depth source; appearance is separate.
+        (points, reason, diagnostics) = p09_geometry_validation(obj, f)
         if obj is None or obj.get('rigid_pose_observation_eligible') is not True or (obj.get('visible_geometry_candidate') or {}).get('rigid_pose_observation_eligible') is not True:
             points = None
         if idx in known:
-            r, t = known[idx]
+            (r, t) = known[idx]
         else:
             before = [k for k in ordered if times[k] <= times[idx]]
             after = [k for k in ordered if times[k] >= times[idx]]
-            a, b = (before[-1] if before else ordered[0]), (after[0] if after else ordered[-1])
-            if a == b: r, t = known[a]
+            (a, b) = (before[-1] if before else ordered[0], after[0] if after else ordered[-1])
+            if a == b:
+                (r, t) = known[a]
             else:
                 alpha = (times[idx] - times[a]) / (times[b] - times[a])
                 r = Slerp([times[a], times[b]], Rotation.from_matrix([known[a][0], known[b][0]]))([times[idx]]).as_matrix()[0]
-                t = (1-alpha)*known[a][1] + alpha*known[b][1]
-        nodes.append(PoseNode(idx, r.copy(), t.copy(), points, reason, points is not None,
-                              .1 if idx in known and points is not None else .95,
-                              copy.deepcopy(rows.get(idx, {'frame_idx': idx}))))
-    return nodes, np.array([times[n.frame_idx] for n in nodes])
-
+                t = (1 - alpha) * known[a][1] + alpha * known[b][1]
+        nodes.append(PoseNode(idx, r.copy(), t.copy(), points, reason, points is not None, 0.1 if idx in known and points is not None else 0.95, copy.deepcopy(rows.get(idx, {'frame_idx': idx}))))
+    return (nodes, np.array([times[n.frame_idx] for n in nodes]))
 from utils.data import frame_ids, join_indices, validate_times, render_size
 from utils.geometry import validate_transforms, resized_K
+
 def annotation_timeline(ann, params, pose_rows, width=None):
-    frames = ann["frames"]
-    aid = frame_ids([f["frame_idx"] for f in frames], "annotation")
-    order = np.argsort([f["time_s"] for f in frames])
+    frames = ann['frames']
+    aid = frame_ids([f['frame_idx'] for f in frames], 'annotation')
+    order = np.argsort([f['time_s'] for f in frames])
     frames = [frames[i] for i in order]
     ids = aid[order]
-    times = validate_times([f["time_s"] for f in frames], len(ids))
-    zi = join_indices(params["frame_idx"], ids)
-    if "time_s" in params:
-        parameter_times = np.asarray(params["time_s"], dtype=float)
-        if parameter_times.shape != (len(ids),) or not np.allclose(parameter_times[zi], times, atol=1e-6, rtol=0):
-            raise ValueError("HaWoR/annotation timestamp mismatch")
-    pi = join_indices([r["frame_idx"] for r in pose_rows], ids)
+    times = validate_times([f['time_s'] for f in frames], len(ids))
+    zi = join_indices(params['frame_idx'], ids)
+    if 'time_s' in params:
+        parameter_times = np.asarray(params['time_s'], dtype=float)
+        if parameter_times.shape != (len(ids),) or not np.allclose(parameter_times[zi], times, atol=1e-06, rtol=0):
+            raise ValueError('HaWoR/annotation timestamp mismatch')
+    pi = join_indices([r['frame_idx'] for r in pose_rows], ids)
     poses = [pose_rows[i] for i in pi]
-    for row, time_s in zip(poses, times):
-        if "time_s" in row and not np.isclose(row["time_s"], time_s, atol=1e-6, rtol=0):
-            raise ValueError("pose/annotation timestamp mismatch")
-    source = np.array([[f["source_width"], f["source_height"]] for f in frames])
+    for (row, time_s) in zip(poses, times):
+        if 'time_s' in row and (not np.isclose(row['time_s'], time_s, atol=1e-06, rtol=0)):
+            raise ValueError('pose/annotation timestamp mismatch')
+    source = np.array([[f['source_width'], f['source_height']] for f in frames])
     if not np.all(source == source[0]):
-        raise ValueError("source video dimensions change across timeline")
+        raise ValueError('source video dimensions change across timeline')
     size = render_size(source[0], width)
-    K = np.array([resized_K(f["camera"]["intrinsics_fx_fy_cx_cy"], source[0], size) for f in frames])
-    T = validate_transforms([f["camera"]["T_world_camera_metric"] for f in frames])
-    aligned = {k: np.asarray(v) for k, v in params.items()}
+    K = np.array([resized_K(f['camera']['intrinsics_fx_fy_cx_cy'], source[0], size) for f in frames])
+    T = validate_transforms([f['camera']['T_world_camera_metric'] for f in frames])
+    aligned = {k: np.asarray(v) for (k, v) in params.items()}
     for side in SIDES:
-        for suffix in ("root_orient_axis_angle", "hand_pose_axis_angle", "betas", "trans_world_m", "vertices_world_m", "joints_world_m", "valid"):
-            k = side + "_" + suffix
+        for suffix in ('root_orient_axis_angle', 'hand_pose_axis_angle', 'betas', 'trans_world_m', 'vertices_world_m', 'joints_world_m', 'valid'):
+            k = side + '_' + suffix
             if k in aligned:
                 if len(aligned[k]) != len(zi):
-                    raise ValueError(f"{k}: timeline length mismatch")
+                    raise ValueError(f'{k}: timeline length mismatch')
                 aligned[k] = aligned[k][zi]
-    aligned["frame_idx"] = ids
-    return frames, aligned, poses, times, T, K, size, source[0]
-
-SIDES = ("left", "right")
-
+    aligned['frame_idx'] = ids
+    return (frames, aligned, poses, times, T, K, size, source[0])
+SIDES = ('left', 'right')
 import argparse
 import hashlib
 import json
@@ -101,18 +103,11 @@ from gates.camera.calibration import plane_intrinsics as camera_contract_plane_i
 from gates.camera.calibration import summarize_contract as summarize_camera_contract_v2
 FULL_K_RECTIFIED_MODE = 'explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam'
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for block in iter(lambda : handle.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
 def aggregate_file_sha256(paths: list[Path]) -> str:
     digest = hashlib.sha256()
     for path in paths:
         digest.update(path.name.encode('utf-8'))
-        digest.update(bytes.fromhex(sha256_file(path)))
+        digest.update(bytes.fromhex(content_sha256(path)))
     return digest.hexdigest()
 
 def K_from_intrinsics(value: Any, label: str) -> np.ndarray:
@@ -131,11 +126,11 @@ def validate_hawor_camera_image_plane_contract(arrays: dict[str, np.ndarray], *,
         raise RuntimeError('full-K rectified HaWoR archive lacks source K, source size, or source video binding')
     if not source_video.is_file():
         raise RuntimeError(f'HaWoR source video is missing: {source_video}')
-    source_video_sha256 = sha256_file(source_video)
+    source_video_sha256 = content_sha256(source_video)
     if expected_source_video is not None:
         if not expected_source_video.is_file():
             raise RuntimeError(f'raw-manifest source video is missing: {expected_source_video}')
-        expected_source_sha256 = sha256_file(expected_source_video)
+        expected_source_sha256 = content_sha256(expected_source_video)
         if expected_source_sha256 != source_video_sha256:
             raise RuntimeError('HaWoR source video is not byte-identical to the raw-manifest input video')
     else:
@@ -165,9 +160,9 @@ def validate_hawor_camera_image_plane_contract(arrays: dict[str, np.ndarray], *,
     if not path_values.size or not hash_values.size:
         raise RuntimeError('HaWoR NPZ lacks camera image-plane contract path/hash')
     contract_path = Path(str(path_values[0]))
-    if not contract_path.is_file() or sha256_file(contract_path) != str(hash_values[0]):
+    if not contract_path.is_file() or content_sha256(contract_path) != str(hash_values[0]):
         raise RuntimeError('HaWoR camera image-plane contract file/hash mismatch')
-    contract = load_json(contract_path)
+    contract = read_json_mapping(contract_path)
     if contract.get('status') != 'exact_source_to_centered_hawor_image_plane':
         raise RuntimeError('HaWoR camera image-plane contract is not exact/validated')
     if contract.get('mode') != FULL_K_RECTIFIED_MODE:
@@ -185,25 +180,12 @@ def validate_hawor_camera_image_plane_contract(arrays: dict[str, np.ndarray], *,
     actual_frame_hash = aggregate_file_sha256(rectified_frames)
     if actual_frame_hash != contract.get('inference_frames_aggregate_sha256'):
         raise RuntimeError('HaWoR rectified image-plane frame hash mismatch')
-    if sha256_file(rectified_frames[0]) != contract.get('inference_first_frame_sha256') or sha256_file(rectified_frames[-1]) != contract.get('inference_last_frame_sha256'):
+    if content_sha256(rectified_frames[0]) != contract.get('inference_first_frame_sha256') or content_sha256(rectified_frames[-1]) != contract.get('inference_last_frame_sha256'):
         raise RuntimeError('HaWoR rectified image-plane endpoint frame hash mismatch')
     for (actual, expected, label) in ((contract.get('source_intrinsics_fx_fy_cx_cy'), source_rows[0], 'source K'), (contract.get('hawor_inference_intrinsics_fx_fy_cx_cy'), inference_rows[0], 'inference K'), (contract.get('A_hawor_inference_from_source'), A_inference_from_source, 'source-to-inference affine'), (contract.get('A_source_from_hawor_inference'), A_source_from_inference, 'inference-to-source affine')):
         if not np.allclose(np.asarray(actual, dtype=np.float64), np.asarray(expected, dtype=np.float64), atol=1e-09, rtol=0.0):
             raise RuntimeError(f'HaWoR NPZ/contract {label} mismatch')
-    return {'status': 'validated_source_K_affine_centered_hawor_inference_plane', 'mode': mode, 'validated': True, 'contract_path': str(contract_path), 'contract_sha256': sha256_file(contract_path), 'source_intrinsics_fx_fy_cx_cy': source_rows[0].tolist(), 'hawor_inference_intrinsics_fx_fy_cx_cy': inference_rows[0].tolist(), 'A_hawor_inference_from_source': A_inference_from_source.tolist(), 'A_source_from_hawor_inference': A_source_from_inference.tolist(), 'inference_frame_count': frame_count, 'source_video': str(source_video), 'source_video_sha256': source_video_sha256, 'raw_manifest_source_video': str(expected_source_video) if expected_source_video is not None else None, 'raw_manifest_source_video_sha256': expected_source_sha256, 'inference_frames_aggregate_sha256': actual_frame_hash, 'inference_extracted_frames': str(frame_dir)}
-
-def load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f'{path} must contain a JSON object')
-    return payload
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-
-def as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
+    return {'status': 'validated_source_K_affine_centered_hawor_inference_plane', 'mode': mode, 'validated': True, 'contract_path': str(contract_path), 'contract_sha256': content_sha256(contract_path), 'source_intrinsics_fx_fy_cx_cy': source_rows[0].tolist(), 'hawor_inference_intrinsics_fx_fy_cx_cy': inference_rows[0].tolist(), 'A_hawor_inference_from_source': A_inference_from_source.tolist(), 'A_source_from_hawor_inference': A_source_from_inference.tolist(), 'inference_frame_count': frame_count, 'source_video': str(source_video), 'source_video_sha256': source_video_sha256, 'raw_manifest_source_video': str(expected_source_video) if expected_source_video is not None else None, 'raw_manifest_source_video_sha256': expected_source_sha256, 'inference_frames_aggregate_sha256': actual_frame_hash, 'inference_extracted_frames': str(frame_dir)}
 
 def finite_matrix4(value: Any) -> np.ndarray | None:
     arr = np.asarray(value, dtype=float)
@@ -212,8 +194,8 @@ def finite_matrix4(value: Any) -> np.ndarray | None:
     return None
 
 def load_raw_manifest(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    payload = load_json(path)
-    frames = [f for f in as_list(payload.get('frames')) if isinstance(f, dict)]
+    payload = read_json_mapping(path)
+    frames = [f for f in list_or_empty(payload.get('frames')) if isinstance(f, dict)]
     if not frames:
         raise RuntimeError(f'raw manifest has no frame rows: {path}')
     seen: set[int] = set()
@@ -305,7 +287,7 @@ def load_calibration_contract(path: Path | None, frame_ids: list[int]) -> tuple[
         return ({}, None)
     if not path.exists():
         raise FileNotFoundError(f'missing calibration contract: {path}')
-    payload = load_json(path)
+    payload = read_json_mapping(path)
     v2_declared = payload.get('schema') == CAMERA_CONTRACT_V2_SCHEMA
     v2_fields_present = 'calibration_plane' in payload or 'image_planes' in payload
     if v2_declared or v2_fields_present:
@@ -529,7 +511,7 @@ def load_sam2_tracks(values: list[str], root: Path | None) -> dict[str, dict[int
     for (track_id, path) in pairs:
         if not path.exists():
             raise FileNotFoundError(f'missing SAM2 track for {track_id}: {path}')
-        payload = load_json(path)
+        payload = read_json_mapping(path)
         rows: dict[int, dict[str, Any]] = {}
         for (key, row) in payload.items():
             try:
@@ -547,9 +529,9 @@ def load_object_plan(path: Path | None) -> dict[str, dict[str, Any]]:
         return {}
     if not path.exists():
         raise FileNotFoundError(f'missing object plan: {path}')
-    payload = load_json(path)
+    payload = read_json_mapping(path)
     plan = payload.get('plan') if isinstance(payload.get('plan'), dict) else payload
-    objects = as_list(plan.get('objects') if isinstance(plan, dict) else None)
+    objects = list_or_empty(plan.get('objects') if isinstance(plan, dict) else None)
     out: dict[str, dict[str, Any]] = {}
     for obj in objects:
         if not isinstance(obj, dict):
@@ -560,7 +542,7 @@ def load_object_plan(path: Path | None) -> dict[str, dict[str, Any]]:
     return out
 
 def interval_active(obj: dict[str, Any], frame_idx: int) -> bool:
-    intervals = as_list(obj.get('active_intervals'))
+    intervals = list_or_empty(obj.get('active_intervals'))
     if not intervals:
         return True
     for interval in intervals:
@@ -727,12 +709,12 @@ def build_base_annotations(args: argparse.Namespace) -> dict[str, Any]:
     annotations = {'status': 'ok', 'method': 'build_v19_base_annotations', 'claim_scope': 'fresh V19 one-frame-per-source-frame annotation backbone from run-root measurements; object pose/contact/occlusion are produced by later components', 'case': args.case, 'raw_video': raw_payload.get('video') if isinstance(raw_payload.get('video'), dict) else None, 'input_video': raw_payload.get('input_video'), 'raw_frame_count': int(len(output_frames)), 'frames': output_frames, 'v19_inputs': {'raw_frame_manifest': str(args.raw_frame_manifest), 'camera_npz': camera_path, 'depth_npz': str(args.depth_npz) if args.depth_npz else None, 'calibration_contract': str(args.calibration_contract) if args.calibration_contract else None, 'hawor_npz': hawor_path, 'object_plan': str(args.object_plan) if args.object_plan else None, 'sam2_tracks': {track_id: 'loaded' for track_id in sam2_tracks}, 'mano_bridge_npz': str(bridge_path) if bridge_rows and bridge_path is not None else None, 'camera_hand_contract_alignment': camera_hand_contract_alignment, 'hawor_camera_image_plane_contract': hawor_camera_image_plane_contract}}
     args.output_dir.mkdir(parents=True, exist_ok=True)
     annotations_path = args.output_dir / 'annotations_v19_base.json'
-    write_json(annotations_path, annotations)
+    write_json_payload(annotations_path, annotations)
     physical_state = {'status': 'ok', 'method': 'build_v19_base_annotations_state_sidecar', 'case': args.case, 'annotations': str(annotations_path), 'raw_frame_manifest': str(args.raw_frame_manifest), 'camera_source_count': dict(Counter((frame['camera']['v19_camera_pose_source'] for frame in output_frames))), 'intrinsics_source_count': dict(Counter((frame['camera'].get('intrinsics_source') for frame in output_frames))), 'calibration_contract': calibration_summary, 'hand_state_source': 'fresh_hawor_world_npz' if hawor_arrays else 'none', 'object_roster': sorted(object_plan), 'mano_bridge': bridge_report, 'camera_hand_contract_alignment': camera_hand_contract_alignment, 'hawor_camera_image_plane_contract': hawor_camera_image_plane_contract, 'claim_scope': 'base physical measurement backbone only; final pose/contact/occlusion/interval correction state must be added by later V19 components'}
     state_path = args.output_dir / 'v19_base_physical_state.json'
-    write_json(state_path, physical_state)
+    write_json_payload(state_path, physical_state)
     report = {'status': 'ok', 'method': 'build_v19_base_annotations', 'case': args.case, 'outputs': {'annotations': str(annotations_path), 'physical_state': str(state_path), 'mano_bridge': bridge_report.get('path')}, 'frame_count': int(len(output_frames)), 'camera_source_count': physical_state['camera_source_count'], 'intrinsics_source_count': physical_state['intrinsics_source_count'], 'calibration_contract': calibration_summary, 'counts': dict(counts), 'object_track_count': int(len(object_plan)), 'sam2_track_count': int(len(sam2_tracks)), 'mano_bridge': bridge_report, 'camera_hand_contract_alignment': camera_hand_contract_alignment, 'hawor_camera_image_plane_contract': hawor_camera_image_plane_contract}
-    write_json(args.output_dir / 'v19_base_annotations_report.json', report)
+    write_json_payload(args.output_dir / 'v19_base_annotations_report.json', report)
     return report
 
 def base_parse_args(argv=None) -> argparse.Namespace:
