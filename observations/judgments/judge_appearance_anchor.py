@@ -1,7 +1,7 @@
 """Independent appearance anchor image judgment, fixed to gpt-6-astra."""
 from utils.runtime import astra_request, judgment_cli
 
-PROMPT = 'Select one appearance frame for native complete-shape generation using actual RGB and appearance masks. Inspect the supplied preferred_frame_idx first and retain it unless a concrete visual defect disqualifies it; explain any deviation in visual_rationale. Keep appearance separate from metric-owned masks. Choose only an available candidate; report blur, occlusion, truncation and shape ambiguity.'
+PROMPT = 'Select one appearance frame for native complete-shape generation using actual RGB and appearance masks. Inspect the supplied preferred_frame_idx first and retain it unless a concrete visual defect disqualifies it; explain any deviation in visual_rationale. Keep appearance separate from metric-owned masks. Choose only a frame in frame_ids with anchor_eligible=true; unavailable or raw diagnostic rows are not selectable. report blur, occlusion, truncation and shape ambiguity.'
 SCHEMA = {'type': 'object',
  'properties': {'object_id': {'type': 'string', 'minLength': 1},
                 'selected_frame_idx': {'type': 'integer', 'minimum': 0},
@@ -13,6 +13,9 @@ SCHEMA = {'type': 'object',
 
 def judge(evidence, images):
     """Consume current-run image evidence and return a validated appearance_anchor judgment."""
+    candidates = {row['frame_idx']: row for row in evidence['appearance']['frames']}
+    if not evidence['frame_ids'] or any(candidates[idx].get('anchor_eligible') is not True for idx in evidence['frame_ids']):
+        raise ValueError('appearance choices require explicit retained metric anchor eligibility')
     result, provenance = astra_request(PROMPT, SCHEMA, evidence, images)
     if 'object_id' in result and result['object_id'] != evidence['object_id']:
         raise ValueError('judgment changed selected object identity')

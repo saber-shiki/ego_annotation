@@ -254,3 +254,8 @@ and preserves attachment/mechanism uncertainty. The standalone rigid gate remain
 articulated, deformable, rigid-part or unresolved results stop the run with the
 original Astra answer saved. A rigid label that contradicts observed component
 motion also stops. Richer evidence never licenses rewriting a previous answer.
+
+Appearance anchors require the shared strict retained-P09 predicate (explicit
+object and geometry eligibility, ownership, positive camera samples and
+camera/world consistency). Raw appearance diagnostics remain in the manifest;
+`anchor_eligible=false` rows are never Astra choices or native-shape anchors.

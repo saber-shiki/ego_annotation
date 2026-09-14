@@ -168,19 +168,14 @@ def metric_object(row: dict, object_id: str) -> dict | None:
     return matches[0] if matches else None
 
 def metric_alignment(obj: dict | None, frame: dict) -> dict | None:
-    if obj is None:
+    """Strict retained P09 alignment for appearance anchoring."""
+    from gates.object.observation import retained_metric_alignment
+    (points, reason, _) = retained_metric_alignment(obj, frame)
+    if points is None:
         return None
-    geom = obj.get('visible_geometry_candidate')
-    camera = frame.get('camera')
-    if not isinstance(geom, dict) or not isinstance(camera, dict):
-        return None
-    world = np.asarray(geom.get('world_vertices_sample_m', []), dtype=float)
-    cam = np.asarray(geom.get('camera_vertices_sample_m', []), dtype=float)
-    centroid = np.asarray(geom.get('centroid_world_m', []), dtype=float)
-    transform = np.asarray(camera.get('T_world_camera_metric', []), dtype=float)
-    if world.ndim != 2 or world.shape[1:] != (3,) or len(world) < 3 or (cam.shape != world.shape) or (centroid.shape != (3,)) or (transform.shape != (4, 4)) or (not all((np.isfinite(x).all() for x in (world, cam, centroid, transform)))):
-        return None
-    return {'camera': camera, 'centroid_world_m': centroid.tolist(), 'world_surfels_m': world.tolist(), 'camera_surfels_m': cam.tolist(), 'owned_metric_mask_path': obj.get('mask_path'), 'role': 'same_frame_metric_alignment_only_not_appearance_conditioning'}
+    geometry = obj['visible_geometry_candidate']
+    return {'camera': frame['camera'], 'centroid_world_m': np.asarray(geometry['centroid_world_m'], dtype=float).tolist(), 'world_surfels_m': np.asarray(geometry['world_vertices_sample_m'], dtype=float).tolist(), 'camera_surfels_m': np.asarray(geometry['camera_vertices_sample_m'], dtype=float).tolist(), 'owned_metric_mask_path': obj.get('mask_path'), 'role': 'same_frame_retained_P09_metric_alignment'}
+
 
 def score_mask(image: np.ndarray, mask: np.ndarray, *, min_area_fraction: float, min_border_fraction: float, min_sharpness: float) -> dict:
     support = mask > 0

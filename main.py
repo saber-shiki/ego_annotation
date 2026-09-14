@@ -259,8 +259,8 @@ def appearance_candidate_ids(rows, annotations, object_id, preferred):
     frames=indexed(annotations['frames'])
     def aligned(frame):
         return metric_alignment(metric_object(frames[frame],object_id),frames[frame]) is not None
-    if not aligned(preferred):raise ValueError('preferred appearance anchor lost retained metric alignment')
-    ranked=sorted((row for row in rows.values() if row['status']=='available' and aligned(row['frame_idx'])),
+    if rows[preferred].get('anchor_eligible') is not True or not aligned(preferred):raise ValueError('preferred appearance anchor lost retained metric alignment')
+    ranked=sorted((row for row in rows.values() if row['status']=='available' and row.get('anchor_eligible') is True and aligned(row['frame_idx'])),
                   key=lambda row:(-float(row.get('score',0.)),row['frame_idx']))
     return list(dict.fromkeys([preferred,*[row['frame_idx'] for row in ranked[:12]]]))
 

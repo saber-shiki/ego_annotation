@@ -111,6 +111,24 @@ def p09_geometry_validation(obj: Mapping[str, Any] | None, frame: Mapping[str, A
     source = 'P09.world_vertices_sample_m' if world is not None else 'P09.camera_vertices_sample_m->world'
     return (points, source, {'status': 'accepted', 'verified': bool(world is not None and camera is not None and (transform_error_m is not None)), 'ownership': ownership_diag, 'camera_world_consistency': {'checked': bool(world is not None and camera is not None), 'max_error_m': transform_error_m, 'tolerance_m': float(camera_world_tolerance_m)}, 'source': source, 'point_count': int(len(points))})
 
+def retained_metric_alignment(obj: Mapping[str, Any] | None, frame: Mapping[str, Any]):
+    """Strict current-run P09 predicate shared by appearance producer and binder.
+
+    Legacy geometry validation permits absent eligibility metadata. Native shape
+    anchors require explicit retention at both object and geometry levels.
+    """
+    geometry = (obj or {}).get('visible_geometry_candidate') or {}
+    if obj is None or obj.get('rigid_pose_observation_eligible') is not True or geometry.get('rigid_pose_observation_eligible') is not True:
+        return None, 'P09_explicit_retained_metric_alignment_required', {'verified': False}
+    points, reason, diagnostic = p09_geometry_validation(obj, frame)
+    if points is None:
+        return points, reason, diagnostic
+    centroid = np.asarray(geometry.get('centroid_world_m', []), dtype=float)
+    if centroid.shape != (3,) or not np.isfinite(centroid).all() or _finite_point_array(geometry.get('camera_vertices_sample_m')) is None or _finite_point_array(geometry.get('world_vertices_sample_m')) is None:
+        return None, 'P09_incomplete_metric_alignment_arrays', {'verified': False}
+    return points, reason, diagnostic
+
+
 def rigid_pose_observation_eligibility(obj: dict[str, Any], geom: dict[str, Any]) -> tuple[bool | None, list[str], list[str]]:
     """Resolve explicit P09 eligibility without rejecting legacy rows lacking the field."""
     from typing import Any

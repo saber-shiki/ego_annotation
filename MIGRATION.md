@@ -120,3 +120,9 @@ failures. A live Astra diagnostic rereview of frozen cold03 used 150 frames in15
 sheets and returned rigid/no observed relative cap motion while preserving cap
 mechanism uncertainty; request/response/group were all gpt-6-astra. This is richer
 evidence for a new run, not a modification of cold03 or a completed annotation.
+
+### Cold-run retained appearance alignment
+`gates.object.observation.retained_metric_alignment` is the current-run anchor
+contract shared by candidate generation, main's choice filter and shape binding.
+The legacy tolerant geometry validator remains unchanged for its other callers.
+A finite but explicitly rejected P09 surface cannot condition metric alignment.

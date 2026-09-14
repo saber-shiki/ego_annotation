@@ -24,7 +24,7 @@ from utils.data import load, indexed
 from utils.state import sha, in_run
 from utils.geometry import resized_K
 from gates.object.geometry import validate_posterior
-from gates.object.observation import p09_geometry_validation
+from gates.object.observation import retained_metric_alignment
 from observations.object.shape import AUTHORITY, record, mesh_arrays, write_mesh, scene_similarity
 from optimization.common.variables import canonical_gauge
 
@@ -64,8 +64,8 @@ def bind(posterior_path, annotations_path, appearance_path, decision_path, qc_pa
         return ({'mask': mask > 0, 'K': K, 'T': T, 'R': r, 't': t}, rgb, mask_path)
     (anchor, rgb, mask_path) = observation(idx)
     obj = next((o for o in frames[idx]['objects'] if o['object_id'] == object_id))
-    (world, reason, _) = p09_geometry_validation(obj, frames[idx])
-    if world is None or obj.get('rigid_pose_observation_eligible') is not True or obj['visible_geometry_candidate'].get('rigid_pose_observation_eligible') is not True:
+    (world, reason, _) = retained_metric_alignment(obj, frames[idx])
+    if masks[idx].get('anchor_eligible') is not True or world is None:
         raise ValueError('appearance anchor requires retained metric alignment, not mask depth')
     T = anchor['T']
     observed = (world - T[:3, 3]) @ T[:3, :3]

@@ -1,0 +1,1475 @@
+{
+  "source_run_id": "1c70c4bf-b7a1-415d-ab07-b14ed85a1405",
+  "source_sha256": "cc5a81e0fdacc1a62caeb948fa5437888b9ac513d9cfcc2890f12a44b13a0ac7",
+  "extraction": "frames105/106 camera and object P09 metadata; first three paired surface samples, paths redacted",
+  "frames": [
+    {
+      "frame_idx": 105,
+      "time_s": 3.5,
+      "camera": {
+        "T_world_camera_metric": [
+          [
+            0.9978571534156799,
+            -0.06516251713037491,
+            0.005911295767873526,
+            -0.0024911353830248117
+          ],
+          [
+            0.06504266709089279,
+            0.9977091550827026,
+            0.018599379807710648,
+            -0.0060326107777655125
+          ],
+          [
+            -0.007109736558049917,
+            -0.018175039440393448,
+            0.9998095631599426,
+            0.013179452158510685
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "T_world_camera": [
+          [
+            0.9978571534156799,
+            -0.06516251713037491,
+            0.005911295767873526,
+            -0.0024911353830248117
+          ],
+          [
+            0.06504266709089279,
+            0.9977091550827026,
+            0.018599379807710648,
+            -0.0060326107777655125
+          ],
+          [
+            -0.007109736558049917,
+            -0.018175039440393448,
+            0.9998095631599426,
+            0.013179452158510685
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "position_world_m": [
+          -0.0024911353830248117,
+          -0.0060326107777655125,
+          0.013179452158510685
+        ],
+        "v19_camera_pose_source": "base_annotations_camera_T_world_camera_metric",
+        "intrinsics_fx_fy_cx_cy": [
+          974.9777343750001,
+          974.9777343750001,
+          702.7274169921875,
+          705.8724365234375
+        ],
+        "intrinsics_source": "camera_contract_source_rgb:HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+        "inherited_hand_camera_contract_alignment": {
+          "status": "source_hawor_intrinsics_match_active_camera_contract",
+          "source_hawor_img_focal_px": 974.9777221679688,
+          "source_hawor_image_size_wh": [
+            1408,
+            1408
+          ],
+          "source_hawor_intrinsics_fx_fy_cx_cy": [
+            974.9777343750001,
+            974.9777343750001,
+            702.7274169921875,
+            705.8724365234375
+          ],
+          "source_hawor_camera_contract_mode": "explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam",
+          "source_hawor_full_K_bound_to_inference": true,
+          "source_hawor_intrinsics_model": "explicit_source_full_pinhole_K_bound_through_affine_centered_hawor_inference_plane_and_slam",
+          "source_hawor_principal_point_convention": "explicit source-plane cx,cy transformed by a hash-bound affine to HaWoR image center; inverse affine returns projections to source pixels",
+          "active_camera_intrinsics_fx_fy_cx_cy_median": [
+            974.9777343750001,
+            974.9777343750001,
+            702.7274169921875,
+            705.8724365234375
+          ],
+          "active_camera_intrinsics_max_abs_deviation_px": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "active_minus_hawor_intrinsics_fx_fy_cx_cy_px": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "active_camera_focal_geom_px_median": 974.9777343750001,
+          "active_camera_focal_geom_px_max_deviation": 0.0,
+          "active_minus_hawor_focal_abs_px": 1.2207031318212103e-05,
+          "active_to_hawor_focal_ratio": 1.0000000125203181,
+          "focal_match_tolerance_px": 0.01,
+          "source_hawor_focal_matches_active_contract": true,
+          "source_hawor_principal_point_matches_active_contract": true,
+          "source_hawor_state_intrinsics_match_active_contract": true,
+          "source_hawor_camera_and_mano_share_intrinsics": true,
+          "builder_reestimated_hawor_camera_or_mano": false,
+          "active_contract_reinference_required": false,
+          "hawor_camera_mano_intrinsics_consistent": true,
+          "hawor_camera_mano_intrinsics_consistent_with_active_contract": true,
+          "source_hawor_intrinsics_numerically_match_active_contract": true,
+          "claim_scope": "The source HaWoR run consumed a hash-bound centered inference image plane obtained from the active source-plane [fx,fy,cx,cy] by an exact affine; MANO regression, projected hand masks, and HaWoR SLAM share the centered K, while the inverse affine binds exported projections back to source pixels.",
+          "hawor_camera_image_plane_contract": {
+            "status": "validated_source_K_affine_centered_hawor_inference_plane",
+            "mode": "explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam",
+            "validated": true,
+            "contract_path": "<run>/hawor_full_K_image_plane_contract.json",
+            "contract_sha256": "589a7b85ba303b31ff3292ee075d82345eb1521994e2176483b0702f9ec377e7",
+            "source_intrinsics_fx_fy_cx_cy": [
+              974.9777343750001,
+              974.9777343750001,
+              702.7274169921875,
+              705.8724365234375
+            ],
+            "hawor_inference_intrinsics_fx_fy_cx_cy": [
+              974.9777343750001,
+              974.9777343750001,
+              704.0,
+              704.0
+            ],
+            "A_hawor_inference_from_source": [
+              [
+                1.0,
+                0.0,
+                1.2725830078125
+              ],
+              [
+                0.0,
+                1.0,
+                -1.8724365234375
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "A_source_from_hawor_inference": [
+              [
+                1.0,
+                0.0,
+                -1.2725830078125
+              ],
+              [
+                0.0,
+                1.0,
+                1.8724365234375
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "inference_frame_count": 150,
+            "source_video": "<run>/input.mp4",
+            "source_video_sha256": "2b498b47c54d752e01fe379fa88675e2182e43bb52fc3c80f4b0041f59be0006",
+            "raw_manifest_source_video": "<run>/raw.mp4",
+            "raw_manifest_source_video_sha256": "2b498b47c54d752e01fe379fa88675e2182e43bb52fc3c80f4b0041f59be0006",
+            "inference_frames_aggregate_sha256": "225e0dba9513fd5a87d689ecc1dfb32b43062526cbd87814b7e7ad97c5c36cfe",
+            "inference_extracted_frames": "<run>/extracted_images"
+          }
+        }
+      },
+      "objects": [
+        {
+          "object_id": "object_1",
+          "track_id": "track_1",
+          "label": "track_1",
+          "description": "Cylindrical alphabet soup can with a blue upper label, red lower label decorated with yellow letters, a white nutrition panel, and gray circular ends. It is held in the left hand while the right index finger points along the nutrition panel, then rotated with both hands to show the front label and a circular end. The can remains the single manipulated object throughout the supplied images.",
+          "status": "visible_metric_surface_measurement",
+          "visible": true,
+          "mask_path": "<run>/000105_object_1_object_owned_mask.png",
+          "bbox_xyxy": [
+            676.1333333333333,
+            673.1999999999999,
+            1010.5333333333333,
+            1088.2666666666667
+          ],
+          "area_px": 109960.49777777777,
+          "raw_sam2_bbox_xyxy": [
+            676.3666666666668,
+            673.4333333333334,
+            1010.7666666666668,
+            1088.5
+          ],
+          "raw_sam2_area_px": 109960.4977777778,
+          "mask_metadata_coordinate_frame": "source_image_pixels_recomputed_from_object_owned_mask",
+          "depth_m": 0.269287109375,
+          "visible_geometry_candidate": {
+            "status": "visible_surface_from_sam2_mask_metric_depth",
+            "source": "build_v19_visible_geometry_from_sam2_depth",
+            "frame_idx": 105,
+            "object_id": "object_1",
+            "track_id": "track_1",
+            "mask_path": "<run>/000105_object_1_object_owned_mask.png",
+            "source_mask_path": "<run>/000105.png",
+            "source_width": 1408,
+            "source_height": 1408,
+            "depth_npz": "<run>/unidepth_full_frame_depth_camera_contract_v2.npz",
+            "depth_frame_index": 105,
+            "camera_pose_source": "base_annotations_camera_T_world_camera_metric",
+            "intrinsics_fx_fy_cx_cy": [
+              974.9777343750001,
+              974.9777343750001,
+              702.7274169921875,
+              705.8724365234375
+            ],
+            "intrinsics_source": "camera_contract:HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+            "intrinsics_transform_contract": {
+              "calibration_authority": "prediction_side_sensor_metadata",
+              "intrinsics_source": "HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+              "calibration_plane_size_wh": [
+                1408,
+                1408
+              ],
+              "declared_plane_name": "source_rgb",
+              "declared_plane_size_wh": [
+                1408,
+                1408
+              ],
+              "actual_plane_size_wh": [
+                1408,
+                1408
+              ],
+              "A_declared_plane_from_calibration": [
+                [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "A_actual_plane_from_declared_plane": [
+                [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "A_actual_plane_from_calibration": [
+                [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "implicit_resize_compatibility_override": false,
+              "pixel_center_convention": "integer_pixel_centers_opencv",
+              "transform_kind": "explicit_source_image_transform"
+            },
+            "mask_depth_transform_contract": {
+              "mask_image_plane": "sam2_mask",
+              "depth_image_plane": "source_rgb",
+              "mask_size_wh": [
+                960,
+                960
+              ],
+              "depth_size_wh": [
+                1408,
+                1408
+              ],
+              "A_depth_from_mask_coordinate_model": [
+                [
+                  1.4666666666666666,
+                  0.0,
+                  0.23333333333333328
+                ],
+                [
+                  0.0,
+                  1.4666666666666666,
+                  0.23333333333333328
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "raster_resampling": "cv2.resize INTER_NEAREST_EXACT; discrete samples follow the declared OpenCV half-pixel coordinate model",
+              "interpolation": "cv2.INTER_NEAREST_EXACT",
+              "pixel_center_convention": "integer_pixel_centers_opencv",
+              "camera_contract_consistent": true,
+              "mask_plane_transform": {
+                "calibration_authority": "prediction_side_sensor_metadata",
+                "intrinsics_source": "HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+                "calibration_plane_size_wh": [
+                  1408,
+                  1408
+                ],
+                "declared_plane_name": "sam2_mask",
+                "declared_plane_size_wh": [
+                  960,
+                  960
+                ],
+                "actual_plane_size_wh": [
+                  960,
+                  960
+                ],
+                "A_declared_plane_from_calibration": [
+                  [
+                    0.6818181818181818,
+                    0.0,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.6818181818181818,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ],
+                "A_actual_plane_from_declared_plane": [
+                  [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ],
+                "A_actual_plane_from_calibration": [
+                  [
+                    0.6818181818181818,
+                    0.0,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.6818181818181818,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ],
+                "implicit_resize_compatibility_override": false,
+                "pixel_center_convention": "integer_pixel_centers_opencv",
+                "transform_kind": "source_to_manifest_resize"
+              }
+            },
+            "vertex_count": 2500,
+            "world_vertices_sample_m": [
+              [
+                0.03705250161417103,
+                0.006043584911218862,
+                0.27058261835888586
+              ],
+              [
+                0.03848991704782463,
+                0.07221600011880604,
+                0.2781338562878632
+              ],
+              [
+                0.037235852788746145,
+                0.013762398630692882,
+                0.27483331028196895
+              ]
+            ],
+            "camera_vertices_sample_m": [
+              [
+                0.03841430064114294,
+                0.004793455577523705,
+                0.2578125
+              ],
+              [
+                0.04409897898422842,
+                0.07058336751790963,
+                0.2666015625
+              ],
+              [
+                0.03906908985661697,
+                0.01240538224776871,
+                0.26220703125
+              ]
+            ],
+            "centroid_world_m": [
+              0.03418908757544529,
+              0.046093231770508135,
+              0.28722588283046807
+            ],
+            "world_extent_m": [
+              0.3945081322982996,
+              0.19816064413607676,
+              1.0170515887350944
+            ],
+            "anchor_extent_world_m": [
+              0.08985149536874307,
+              0.11290193105708822,
+              0.08720573291117456
+            ],
+            "extent_population_sorted_axis_median_m": [
+              0.10151958077616785,
+              0.08157059320747595,
+              0.06304426022101262
+            ],
+            "extent_population_diag_median_m": 0.1454822088260052,
+            "extent_consistency_basis": "frame-population median of orientation-invariant sorted extents and extent diagonal",
+            "extent_ratio_to_population_diag": 7.6211190170679615,
+            "extent_ratio_to_population_sorted_axis": [
+              10.018280029913713,
+              4.83640141361805,
+              3.143198816853274
+            ],
+            "rigid_pose_observation_eligible": false,
+            "rigid_pose_observation_reason": "systematic_mask_extent_inconsistent_with_orientation_invariant_visible_population_reference_probable_hand_background_leakage",
+            "depth_median_m": 0.269287109375,
+            "depth_p05_m": 0.261474609375,
+            "depth_p95_m": 0.294921875,
+            "sample_summary": {
+              "valid_depth_mask_pixels": 100025,
+              "sampled_points_before_finite_filter": 2500,
+              "sampled_points": 2500,
+              "pixel_stride": 4,
+              "max_points": 2500
+            },
+            "object_surface_ownership_filter": {
+              "state": "disabled",
+              "input_mask_pixels": 51118,
+              "output_mask_pixels": 51118,
+              "fail_closed": false
+            },
+            "first_surface_depth_ownership": {
+              "enabled": true,
+              "state": "validated_boundary_depth_tail_quarantined",
+              "method": "per_component_mad_seed_confidence_geodesic_growth",
+              "input_valid_depth_pixels": 101936,
+              "retained_depth_pixels": 100025,
+              "removed_depth_pixels": 1911,
+              "retained_fraction": 0.9812529430230733,
+              "removed_fraction": 0.0187470569769267,
+              "median_depth_m": 0.26953125,
+              "median_absolute_deviation_m": 0.004638671875,
+              "mad_sigma": 2.5,
+              "minimum_half_width_m": 0.03,
+              "confidence_semantics": "UniDepth exp(logconfidence); larger values predict larger depth error",
+              "confidence_seed_percentile": 95.0,
+              "local_depth_step_max_m": 0.005,
+              "max_removed_distance_inside_mask_px": 10.0,
+              "max_confidence_flagged_interior_fraction": 0.015,
+              "min_interior_confidence_flagged_fraction": 0.95,
+              "max_unexplained_interior_pixels": 5,
+              "component_count": 5,
+              "component_rows": [
+                {
+                  "label": 1,
+                  "bbox_xywh": [
+                    676,
+                    673,
+                    314,
+                    385
+                  ],
+                  "pixels": 77094,
+                  "median_depth_m": 0.27001953125,
+                  "median_absolute_deviation_m": 0.00537109375,
+                  "robust_sigma_m": 0.00796318359375,
+                  "seed_half_width_m": 0.03,
+                  "seed_pixels": 71455,
+                  "seed_fraction": 0.9268555270189639,
+                  "confidence_seed_percentile": 95.0,
+                  "confidence_threshold": 1.353515625,
+                  "retained_pixels": 75195,
+                  "retained_fraction": 0.9753677328975018,
+                  "growth_iterations": 41,
+                  "accepted_depth_summary_m": {
+                    "count": 75195,
+                    "min": 0.253662109375,
+                    "median": 0.269775390625,
+                    "p95": 0.2998046875,
+                    "max": 0.367919921875
+                  },
+                  "state": "depth_confidence_geodesic_support"
+                },
+                {
+                  "label": 2,
+                  "bbox_xywh": [
+                    991,
+                    813,
+                    20,
+                    16
+                  ],
+                  "pixels": 232,
+                  "median_depth_m": 1.26953125,
+                  "median_absolute_deviation_m": 0.005859375,
+                  "robust_sigma_m": 0.008687109375,
+                  "seed_half_width_m": 0.03,
+                  "seed_pixels": 221,
+                  "seed_fraction": 0.9525862068965517,
+                  "confidence_seed_percentile": 95.0,
+                  "confidence_threshold": 0.71630859375,
+                  "retained_pixels": 221,
+                  "retained_fraction": 0.9525862068965517,
+                  "growth_iterations": 0,
+                  "accepted_depth_summary_m": {
+                    "count": 221,
+                    "min": 1.240234375,
+                    "median": 1.2705078125,
+                    "p95": 1.2822265625,
+                    "max": 1.2861328125
+                  },
+                  "state": "depth_confidence_geodesic_support"
+                },
+                {
+                  "label": 3,
+                  "bbox_xywh": [
+                    711,
+                    888,
+                    152,
+                    177
+                  ],
+                  "pixels": 11150,
+                  "median_depth_m": 0.27294921875,
+                  "median_absolute_deviation_m": 0.0048828125,
+                  "robust_sigma_m": 0.007239257812499999,
+                  "seed_half_width_m": 0.03,
+                  "seed_pixels": 11131,
+                  "seed_fraction": 0.9982959641255605,
+                  "confidence_seed_percentile": 95.0,
+                  "confidence_threshold": 1.388671875,
+                  "retained_pixels": 11150,
+                  "retained_fraction": 1.0,
+                  "growth_iterations": 3,
+                  "accepted_depth_summary_m": {
+                    "count": 11150,
+                    "min": 0.265869140625,
+                    "median": 0.27294921875,
+                    "p95": 0.288330078125,
+                    "max": 0.31103515625
+                  },
+                  "state": "depth_confidence_geodesic_support"
+                },
+                {
+                  "label": 4,
+                  "bbox_xywh": [
+                    756,
+                    968,
+                    202,
+                    120
+                  ],
+                  "pixels": 13459,
+                  "median_depth_m": 0.267822265625,
+                  "median_absolute_deviation_m": 0.00146484375,
+                  "robust_sigma_m": 0.00217177734375,
+                  "seed_half_width_m": 0.03,
+                  "seed_pixels": 13459,
+                  "seed_fraction": 1.0,
+                  "confidence_seed_percentile": 95.0,
+                  "confidence_threshold": 1.3984375,
+                  "retained_pixels": 13459,
+                  "retained_fraction": 1.0,
+                  "growth_iterations": 0,
+                  "accepted_depth_summary_m": {
+                    "count": 13459,
+                    "min": 0.262451171875,
+                    "median": 0.267822265625,
+                    "p95": 0.275390625,
+                    "max": 0.281494140625
+                  },
+                  "state": "depth_confidence_geodesic_support"
+                },
+                {
+                  "label": 5,
+                  "pixels": 1,
+                  "state": "dropped_small_component"
+                }
+              ],
+              "small_component_pixels": 1,
+              "small_component_fraction": 9.810076911002982e-06,
+              "raw_backprojected_extent_m": [
+                0.4354012253585118,
+                0.340639134646689,
+                1.947509765625
+              ],
+              "raw_backprojected_extent_diag_m": 2.0244514156435764,
+              "robust_backprojected_extent_m": [
+                0.4086138658238906,
+                0.16989819849793847,
+                1.032470703125
+              ],
+              "robust_backprojected_extent_diag_m": 1.123310483351696,
+              "raw_to_robust_extent_diag_ratio": 1.8022189284685446,
+              "fail_raw_to_robust_extent_ratio": 2.0,
+              "raw_rejected_depth_dominates_extent": false,
+              "raw_tail_dominates_extent_but_is_quarantined": false,
+              "removed_pixel_distance_inside_owned_mask_px": {
+                "count": 1911,
+                "min": 1.0,
+                "median": 2.0,
+                "p95": 5.0,
+                "max": 7.796899795532227
+              },
+              "interior_rejection_quarantine": {
+                "boundary_band_distance_px": 10.0,
+                "interior_removed_pixels": 0,
+                "interior_removed_fraction_of_valid_owned_depth": 0.0,
+                "interior_removed_depth_summary_m": {
+                  "count": 0,
+                  "min": null,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "interior_removed_confidence_summary": {
+                  "count": 0,
+                  "min": null,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "confidence_flagged_interior_pixels": 0,
+                "confidence_flagged_interior_fraction": 0.0,
+                "max_confidence_flagged_interior_fraction": 0.015,
+                "min_interior_confidence_flagged_fraction": 0.95,
+                "max_unexplained_interior_pixels": 5,
+                "validated": true,
+                "mode": "none",
+                "semantics": "Pixels beyond the ordinary boundary band remain excluded only when isolated or when a sparse region is overwhelmingly marked by UniDepth as higher predicted error than its component seed. This is explicit unresolved-depth quarantine, not object-mask erosion."
+              },
+              "fail_closed": false,
+              "failure_reasons": [],
+              "claim_scope": "Depth first-surface surfel ownership only. Excluded owned depth remains unresolved; the P11 RGB/mask appearance contract is not eroded or rewritten."
+            },
+            "native_depth_metric_eligibility": {
+              "manifest": "<run>/native_depth_metric_eligibility.json",
+              "raster": "<run>/000105.npz",
+              "counts": {
+                "outside_owned_appearance": 1871523,
+                "hand_clearly_front": 966,
+                "hand_clearly_behind": 24613,
+                "near_depth_ambiguous": 2213,
+                "clear_no_hand_overlap_candidate": 77326,
+                "no_hit_uncertainty_fringe": 5823,
+                "unsupported_depth": 0,
+                "invalid_mask_coordinate": 0,
+                "unresolved_hand_geometry": 0,
+                "metric_candidate_eligible": 101936,
+                "appearance_owned_at_depth": 109965,
+                "raw_appearance_at_depth": 110941
+              },
+              "class_codes": {
+                "outside_owned_appearance": 0,
+                "hand_clearly_front": 1,
+                "hand_clearly_behind": 2,
+                "near_depth_ambiguous": 3,
+                "clear_no_hand_overlap_candidate": 4,
+                "no_hit_uncertainty_fringe": 5,
+                "unsupported_depth": 6,
+                "invalid_mask_coordinate": 7,
+                "unresolved_hand_geometry": 8
+              }
+            },
+            "claim_scope": "visible metric surface measurement only; hand-owned and non-first-surface depth pixels are excluded before metric lifting; not hidden geometry and not final object pose"
+          },
+          "reconstructed_geometry_pose": {
+            "rotation_world_from_canonical_matrix": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_world_m": [
+              0.03418908757544529,
+              0.046093231770508135,
+              0.28722588283046807
+            ],
+            "pose_source": "v19_visible_geometry_adapter_centroid_initial_pose_not_final_rigid_pose",
+            "pose_uncertainty": "centroid-only initialization from current visible SAM2/depth surfels; rigid completion and pose fitting must refine it",
+            "anchor_frame_idx": 106,
+            "anchor_centroid_world_m": [
+              0.03240764888421742,
+              0.046843833495863324,
+              0.28310111648902314
+            ]
+          },
+          "v19_physical_model": null,
+          "rigid_pose_observation_eligible": false,
+          "rigid_pose_observation_reason": "systematic_mask_extent_inconsistent_with_orientation_invariant_visible_population_reference_probable_hand_background_leakage"
+        }
+      ]
+    },
+    {
+      "frame_idx": 106,
+      "time_s": 3.533333333333333,
+      "camera": {
+        "T_world_camera_metric": [
+          [
+            0.9978218078613281,
+            -0.06589094549417496,
+            0.0031714974902570248,
+            -0.0016394645208492875
+          ],
+          [
+            0.0658281072974205,
+            0.9976868033409119,
+            0.016963372007012367,
+            -0.0064598205499351025
+          ],
+          [
+            -0.004281893838196993,
+            -0.01671764813363552,
+            0.9998511075973511,
+            0.013570524752140045
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "T_world_camera": [
+          [
+            0.9978218078613281,
+            -0.06589094549417496,
+            0.0031714974902570248,
+            -0.0016394645208492875
+          ],
+          [
+            0.0658281072974205,
+            0.9976868033409119,
+            0.016963372007012367,
+            -0.0064598205499351025
+          ],
+          [
+            -0.004281893838196993,
+            -0.01671764813363552,
+            0.9998511075973511,
+            0.013570524752140045
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "position_world_m": [
+          -0.0016394645208492875,
+          -0.0064598205499351025,
+          0.013570524752140045
+        ],
+        "v19_camera_pose_source": "base_annotations_camera_T_world_camera_metric",
+        "intrinsics_fx_fy_cx_cy": [
+          974.9777343750001,
+          974.9777343750001,
+          702.7274169921875,
+          705.8724365234375
+        ],
+        "intrinsics_source": "camera_contract_source_rgb:HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+        "inherited_hand_camera_contract_alignment": {
+          "status": "source_hawor_intrinsics_match_active_camera_contract",
+          "source_hawor_img_focal_px": 974.9777221679688,
+          "source_hawor_image_size_wh": [
+            1408,
+            1408
+          ],
+          "source_hawor_intrinsics_fx_fy_cx_cy": [
+            974.9777343750001,
+            974.9777343750001,
+            702.7274169921875,
+            705.8724365234375
+          ],
+          "source_hawor_camera_contract_mode": "explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam",
+          "source_hawor_full_K_bound_to_inference": true,
+          "source_hawor_intrinsics_model": "explicit_source_full_pinhole_K_bound_through_affine_centered_hawor_inference_plane_and_slam",
+          "source_hawor_principal_point_convention": "explicit source-plane cx,cy transformed by a hash-bound affine to HaWoR image center; inverse affine returns projections to source pixels",
+          "active_camera_intrinsics_fx_fy_cx_cy_median": [
+            974.9777343750001,
+            974.9777343750001,
+            702.7274169921875,
+            705.8724365234375
+          ],
+          "active_camera_intrinsics_max_abs_deviation_px": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "active_minus_hawor_intrinsics_fx_fy_cx_cy_px": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "active_camera_focal_geom_px_median": 974.9777343750001,
+          "active_camera_focal_geom_px_max_deviation": 0.0,
+          "active_minus_hawor_focal_abs_px": 1.2207031318212103e-05,
+          "active_to_hawor_focal_ratio": 1.0000000125203181,
+          "focal_match_tolerance_px": 0.01,
+          "source_hawor_focal_matches_active_contract": true,
+          "source_hawor_principal_point_matches_active_contract": true,
+          "source_hawor_state_intrinsics_match_active_contract": true,
+          "source_hawor_camera_and_mano_share_intrinsics": true,
+          "builder_reestimated_hawor_camera_or_mano": false,
+          "active_contract_reinference_required": false,
+          "hawor_camera_mano_intrinsics_consistent": true,
+          "hawor_camera_mano_intrinsics_consistent_with_active_contract": true,
+          "source_hawor_intrinsics_numerically_match_active_contract": true,
+          "claim_scope": "The source HaWoR run consumed a hash-bound centered inference image plane obtained from the active source-plane [fx,fy,cx,cy] by an exact affine; MANO regression, projected hand masks, and HaWoR SLAM share the centered K, while the inverse affine binds exported projections back to source pixels.",
+          "hawor_camera_image_plane_contract": {
+            "status": "validated_source_K_affine_centered_hawor_inference_plane",
+            "mode": "explicit_source_full_pinhole_K_consumed_via_affine_centered_hawor_plane_and_slam",
+            "validated": true,
+            "contract_path": "<run>/hawor_full_K_image_plane_contract.json",
+            "contract_sha256": "589a7b85ba303b31ff3292ee075d82345eb1521994e2176483b0702f9ec377e7",
+            "source_intrinsics_fx_fy_cx_cy": [
+              974.9777343750001,
+              974.9777343750001,
+              702.7274169921875,
+              705.8724365234375
+            ],
+            "hawor_inference_intrinsics_fx_fy_cx_cy": [
+              974.9777343750001,
+              974.9777343750001,
+              704.0,
+              704.0
+            ],
+            "A_hawor_inference_from_source": [
+              [
+                1.0,
+                0.0,
+                1.2725830078125
+              ],
+              [
+                0.0,
+                1.0,
+                -1.8724365234375
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "A_source_from_hawor_inference": [
+              [
+                1.0,
+                0.0,
+                -1.2725830078125
+              ],
+              [
+                0.0,
+                1.0,
+                1.8724365234375
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "inference_frame_count": 150,
+            "source_video": "<run>/input.mp4",
+            "source_video_sha256": "2b498b47c54d752e01fe379fa88675e2182e43bb52fc3c80f4b0041f59be0006",
+            "raw_manifest_source_video": "<run>/raw.mp4",
+            "raw_manifest_source_video_sha256": "2b498b47c54d752e01fe379fa88675e2182e43bb52fc3c80f4b0041f59be0006",
+            "inference_frames_aggregate_sha256": "225e0dba9513fd5a87d689ecc1dfb32b43062526cbd87814b7e7ad97c5c36cfe",
+            "inference_extracted_frames": "<run>/extracted_images"
+          }
+        }
+      },
+      "objects": [
+        {
+          "object_id": "object_1",
+          "track_id": "track_1",
+          "label": "track_1",
+          "description": "Cylindrical alphabet soup can with a blue upper label, red lower label decorated with yellow letters, a white nutrition panel, and gray circular ends. It is held in the left hand while the right index finger points along the nutrition panel, then rotated with both hands to show the front label and a circular end. The can remains the single manipulated object throughout the supplied images.",
+          "status": "visible_metric_surface_measurement",
+          "visible": true,
+          "mask_path": "<run>/000106_object_1_object_owned_mask.png",
+          "bbox_xyxy": [
+            664.4,
+            671.7333333333332,
+            1013.4666666666666,
+            1098.5333333333333
+          ],
+          "area_px": 113307.62666666666,
+          "raw_sam2_bbox_xyxy": [
+            664.6333333333334,
+            671.9666666666667,
+            1013.7,
+            1098.7666666666669
+          ],
+          "raw_sam2_area_px": 113307.62666666668,
+          "mask_metadata_coordinate_frame": "source_image_pixels_recomputed_from_object_owned_mask",
+          "depth_m": 0.266357421875,
+          "visible_geometry_candidate": {
+            "status": "visible_surface_from_sam2_mask_metric_depth",
+            "source": "build_v19_visible_geometry_from_sam2_depth",
+            "frame_idx": 106,
+            "object_id": "object_1",
+            "track_id": "track_1",
+            "mask_path": "<run>/000106_object_1_object_owned_mask.png",
+            "source_mask_path": "<run>/000106.png",
+            "source_width": 1408,
+            "source_height": 1408,
+            "depth_npz": "<run>/unidepth_full_frame_depth_camera_contract_v2.npz",
+            "depth_frame_index": 106,
+            "camera_pose_source": "base_annotations_camera_T_world_camera_metric",
+            "intrinsics_fx_fy_cx_cy": [
+              974.9777343750001,
+              974.9777343750001,
+              702.7274169921875,
+              705.8724365234375
+            ],
+            "intrinsics_source": "camera_contract:HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+            "intrinsics_transform_contract": {
+              "calibration_authority": "prediction_side_sensor_metadata",
+              "intrinsics_source": "HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+              "calibration_plane_size_wh": [
+                1408,
+                1408
+              ],
+              "declared_plane_name": "source_rgb",
+              "declared_plane_size_wh": [
+                1408,
+                1408
+              ],
+              "actual_plane_size_wh": [
+                1408,
+                1408
+              ],
+              "A_declared_plane_from_calibration": [
+                [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "A_actual_plane_from_declared_plane": [
+                [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "A_actual_plane_from_calibration": [
+                [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "implicit_resize_compatibility_override": false,
+              "pixel_center_convention": "integer_pixel_centers_opencv",
+              "transform_kind": "explicit_source_image_transform"
+            },
+            "mask_depth_transform_contract": {
+              "mask_image_plane": "sam2_mask",
+              "depth_image_plane": "source_rgb",
+              "mask_size_wh": [
+                960,
+                960
+              ],
+              "depth_size_wh": [
+                1408,
+                1408
+              ],
+              "A_depth_from_mask_coordinate_model": [
+                [
+                  1.4666666666666666,
+                  0.0,
+                  0.23333333333333328
+                ],
+                [
+                  0.0,
+                  1.4666666666666666,
+                  0.23333333333333328
+                ],
+                [
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ],
+              "raster_resampling": "cv2.resize INTER_NEAREST_EXACT; discrete samples follow the declared OpenCV half-pixel coordinate model",
+              "interpolation": "cv2.INTER_NEAREST_EXACT",
+              "pixel_center_convention": "integer_pixel_centers_opencv",
+              "camera_contract_consistent": true,
+              "mask_plane_transform": {
+                "calibration_authority": "prediction_side_sensor_metadata",
+                "intrinsics_source": "HOT3D official FISHEYE624 online calibration median over selected RGB frames, then fixed pinhole output plane",
+                "calibration_plane_size_wh": [
+                  1408,
+                  1408
+                ],
+                "declared_plane_name": "sam2_mask",
+                "declared_plane_size_wh": [
+                  960,
+                  960
+                ],
+                "actual_plane_size_wh": [
+                  960,
+                  960
+                ],
+                "A_declared_plane_from_calibration": [
+                  [
+                    0.6818181818181818,
+                    0.0,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.6818181818181818,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ],
+                "A_actual_plane_from_declared_plane": [
+                  [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    1.0,
+                    0.0
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ],
+                "A_actual_plane_from_calibration": [
+                  [
+                    0.6818181818181818,
+                    0.0,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.6818181818181818,
+                    -0.15909090909090912
+                  ],
+                  [
+                    0.0,
+                    0.0,
+                    1.0
+                  ]
+                ],
+                "implicit_resize_compatibility_override": false,
+                "pixel_center_convention": "integer_pixel_centers_opencv",
+                "transform_kind": "source_to_manifest_resize"
+              }
+            },
+            "vertex_count": 2500,
+            "world_vertices_sample_m": [
+              [
+                0.030091060713989967,
+                0.07766436583567778,
+                0.2759979643601727
+              ],
+              [
+                0.06050830452046408,
+                0.05402005525715162,
+                0.2833837615460254
+              ],
+              [
+                0.036527142513776055,
+                0.06296137059999359,
+                0.27647117580812863
+              ]
+            ],
+            "camera_vertices_sample_m": [
+              [
+                0.03607545881242213,
+                0.07745166258758815,
+                0.263916015625
+              ],
+              [
+                0.06483836147767394,
+                0.051734353373400446,
+                0.27099609375
+              ],
+              [
+                0.04152762473303004,
+                0.06235068861789928,
+                0.26416015625
+              ]
+            ],
+            "centroid_world_m": [
+              0.03240764888421742,
+              0.046843833495863324,
+              0.28310111648902314
+            ],
+            "world_extent_m": [
+              0.08985149536874307,
+              0.11290193105708822,
+              0.08720573291117456
+            ],
+            "anchor_extent_world_m": [
+              0.08985149536874307,
+              0.11290193105708822,
+              0.08720573291117456
+            ],
+            "extent_population_sorted_axis_median_m": [
+              0.10151958077616785,
+              0.08157059320747595,
+              0.06304426022101262
+            ],
+            "extent_population_diag_median_m": 0.1454822088260052,
+            "extent_consistency_basis": "frame-population median of orientation-invariant sorted extents and extent diagonal",
+            "extent_ratio_to_population_diag": 1.158884556913811,
+            "extent_ratio_to_population_sorted_axis": [
+              1.1121197526023712,
+              1.1015182290044714,
+              1.38324619252347
+            ],
+            "rigid_pose_observation_eligible": true,
+            "rigid_pose_observation_reason": "metric_extent_consistent_with_orientation_invariant_visible_population_reference",
+            "depth_median_m": 0.266357421875,
+            "depth_p05_m": 0.259521484375,
+            "depth_p95_m": 0.295166015625,
+            "sample_summary": {
+              "valid_depth_mask_pixels": 102543,
+              "sampled_points_before_finite_filter": 2500,
+              "sampled_points": 2500,
+              "pixel_stride": 4,
+              "max_points": 2500
+            },
+            "object_surface_ownership_filter": {
+              "state": "disabled",
+              "input_mask_pixels": 52674,
+              "output_mask_pixels": 52674,
+              "fail_closed": false
+            },
+            "first_surface_depth_ownership": {
+              "enabled": true,
+              "state": "validated_sparse_interior_and_boundary_depth_quarantined",
+              "method": "per_component_mad_seed_confidence_geodesic_growth",
+              "input_valid_depth_pixels": 105425,
+              "retained_depth_pixels": 102543,
+              "removed_depth_pixels": 2882,
+              "retained_fraction": 0.9726630305904671,
+              "removed_fraction": 0.027336969409532844,
+              "median_depth_m": 0.2666015625,
+              "median_absolute_deviation_m": 0.004638671875,
+              "mad_sigma": 2.5,
+              "minimum_half_width_m": 0.03,
+              "confidence_semantics": "UniDepth exp(logconfidence); larger values predict larger depth error",
+              "confidence_seed_percentile": 95.0,
+              "local_depth_step_max_m": 0.005,
+              "max_removed_distance_inside_mask_px": 10.0,
+              "max_confidence_flagged_interior_fraction": 0.015,
+              "min_interior_confidence_flagged_fraction": 0.95,
+              "max_unexplained_interior_pixels": 5,
+              "component_count": 3,
+              "component_rows": [
+                {
+                  "label": 1,
+                  "bbox_xywh": [
+                    664,
+                    672,
+                    349,
+                    393
+                  ],
+                  "pixels": 80759,
+                  "median_depth_m": 0.267578125,
+                  "median_absolute_deviation_m": 0.00537109375,
+                  "robust_sigma_m": 0.00796318359375,
+                  "seed_half_width_m": 0.03,
+                  "seed_pixels": 73031,
+                  "seed_fraction": 0.9043078789980065,
+                  "confidence_seed_percentile": 95.0,
+                  "confidence_threshold": 1.373046875,
+                  "retained_pixels": 77877,
+                  "retained_fraction": 0.9643135749575898,
+                  "growth_iterations": 43,
+                  "accepted_depth_summary_m": {
+                    "count": 77877,
+                    "min": 0.2529296875,
+                    "median": 0.26708984375,
+                    "p95": 0.30859375,
+                    "max": 0.35546875
+                  },
+                  "state": "depth_confidence_geodesic_support"
+                },
+                {
+                  "label": 2,
+                  "bbox_xywh": [
+                    717,
+                    906,
+                    161,
+                    175
+                  ],
+                  "pixels": 11734,
+                  "median_depth_m": 0.268310546875,
+                  "median_absolute_deviation_m": 0.00390625,
+                  "robust_sigma_m": 0.00579140625,
+                  "seed_half_width_m": 0.03,
+                  "seed_pixels": 11734,
+                  "seed_fraction": 1.0,
+                  "confidence_seed_percentile": 95.0,
+                  "confidence_threshold": 1.439453125,
+                  "retained_pixels": 11734,
+                  "retained_fraction": 1.0,
+                  "growth_iterations": 0,
+                  "accepted_depth_summary_m": {
+                    "count": 11734,
+                    "min": 0.26220703125,
+                    "median": 0.268310546875,
+                    "p95": 0.28173828125,
+                    "max": 0.29248046875
+                  },
+                  "state": "depth_confidence_geodesic_support"
+                },
+                {
+                  "label": 3,
+                  "bbox_xywh": [
+                    765,
+                    984,
+                    206,
+                    115
+                  ],
+                  "pixels": 12932,
+                  "median_depth_m": 0.263427734375,
+                  "median_absolute_deviation_m": 0.001708984375,
+                  "robust_sigma_m": 0.002533740234375,
+                  "seed_half_width_m": 0.03,
+                  "seed_pixels": 12932,
+                  "seed_fraction": 1.0,
+                  "confidence_seed_percentile": 95.0,
+                  "confidence_threshold": 1.46484375,
+                  "retained_pixels": 12932,
+                  "retained_fraction": 1.0,
+                  "growth_iterations": 0,
+                  "accepted_depth_summary_m": {
+                    "count": 12932,
+                    "min": 0.259033203125,
+                    "median": 0.263427734375,
+                    "p95": 0.268798828125,
+                    "max": 0.274169921875
+                  },
+                  "state": "depth_confidence_geodesic_support"
+                }
+              ],
+              "small_component_pixels": 0,
+              "small_component_fraction": 0.0,
+              "raw_backprojected_extent_m": [
+                0.611441386364018,
+                0.3533953711117558,
+                2.0419921875
+              ],
+              "raw_backprojected_extent_diag_m": 2.1606667839102363,
+              "robust_backprojected_extent_m": [
+                0.09683173442485511,
+                0.11846720469550251,
+                0.1025390625
+              ],
+              "robust_backprojected_extent_diag_m": 0.18418773769844363,
+              "raw_to_robust_extent_diag_ratio": 11.730785180975127,
+              "fail_raw_to_robust_extent_ratio": 2.0,
+              "raw_rejected_depth_dominates_extent": true,
+              "raw_tail_dominates_extent_but_is_quarantined": true,
+              "removed_pixel_distance_inside_owned_mask_px": {
+                "count": 2882,
+                "min": 1.0,
+                "median": 2.0,
+                "p95": 10.3937997341156,
+                "max": 24.0
+              },
+              "interior_rejection_quarantine": {
+                "boundary_band_distance_px": 10.0,
+                "interior_removed_pixels": 153,
+                "interior_removed_fraction_of_valid_owned_depth": 0.00145126867441309,
+                "interior_removed_depth_summary_m": {
+                  "count": 153,
+                  "min": 0.297607421875,
+                  "median": 0.91455078125,
+                  "p95": 1.211328125,
+                  "max": 1.21875
+                },
+                "interior_removed_confidence_summary": {
+                  "count": 153,
+                  "min": 1.05078125,
+                  "median": 5.4765625,
+                  "p95": 15.384375,
+                  "max": 17.921875
+                },
+                "confidence_flagged_interior_pixels": 151,
+                "confidence_flagged_interior_fraction": 0.9869281045751634,
+                "max_confidence_flagged_interior_fraction": 0.015,
+                "min_interior_confidence_flagged_fraction": 0.95,
+                "max_unexplained_interior_pixels": 5,
+                "validated": true,
+                "mode": "sparse_unidepth_predicted_error_flagged_interior_holes",
+                "semantics": "Pixels beyond the ordinary boundary band remain excluded only when isolated or when a sparse region is overwhelmingly marked by UniDepth as higher predicted error than its component seed. This is explicit unresolved-depth quarantine, not object-mask erosion."
+              },
+              "fail_closed": false,
+              "failure_reasons": [],
+              "claim_scope": "Depth first-surface surfel ownership only. Excluded owned depth remains unresolved; the P11 RGB/mask appearance contract is not eroded or rewritten."
+            },
+            "native_depth_metric_eligibility": {
+              "manifest": "<run>/native_depth_metric_eligibility.json",
+              "raster": "<run>/000106.npz",
+              "counts": {
+                "outside_owned_appearance": 1868956,
+                "hand_clearly_front": 189,
+                "hand_clearly_behind": 24675,
+                "near_depth_ambiguous": 2082,
+                "clear_no_hand_overlap_candidate": 80759,
+                "no_hit_uncertainty_fringe": 5803,
+                "unsupported_depth": 0,
+                "invalid_mask_coordinate": 0,
+                "unresolved_hand_geometry": 0,
+                "metric_candidate_eligible": 105425,
+                "appearance_owned_at_depth": 113316,
+                "raw_appearance_at_depth": 113508
+              },
+              "class_codes": {
+                "outside_owned_appearance": 0,
+                "hand_clearly_front": 1,
+                "hand_clearly_behind": 2,
+                "near_depth_ambiguous": 3,
+                "clear_no_hand_overlap_candidate": 4,
+                "no_hit_uncertainty_fringe": 5,
+                "unsupported_depth": 6,
+                "invalid_mask_coordinate": 7,
+                "unresolved_hand_geometry": 8
+              }
+            },
+            "claim_scope": "visible metric surface measurement only; hand-owned and non-first-surface depth pixels are excluded before metric lifting; not hidden geometry and not final object pose"
+          },
+          "reconstructed_geometry_pose": {
+            "rotation_world_from_canonical_matrix": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "translation_world_m": [
+              0.03240764888421742,
+              0.046843833495863324,
+              0.28310111648902314
+            ],
+            "pose_source": "v19_visible_geometry_adapter_centroid_initial_pose_not_final_rigid_pose",
+            "pose_uncertainty": "centroid-only initialization from current visible SAM2/depth surfels; rigid completion and pose fitting must refine it",
+            "anchor_frame_idx": 106,
+            "anchor_centroid_world_m": [
+              0.03240764888421742,
+              0.046843833495863324,
+              0.28310111648902314
+            ]
+          },
+          "v19_physical_model": null,
+          "rigid_pose_observation_eligible": true,
+          "rigid_pose_observation_reason": "metric_extent_consistent_with_orientation_invariant_visible_population_reference"
+        }
+      ]
+    }
+  ]
+}
