@@ -44,6 +44,8 @@ def judge(evidence, images):
         elif isinstance(value, list):
             for child in value:check_frames(child)
     check_frames(result)
+    if any(row['backend'] not in evidence['backends'] for row in result['backends']):
+        raise ValueError('judgment claimed an unavailable geometry backend')
     result['judgment_provenance'] = {'kind':'current_run_visual_judgment','judgment':'backend_geometry',**provenance}
     return result
 

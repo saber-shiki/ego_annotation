@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Astra-only structured image transport and isolated model process execution.
 
 No model selector or fallback exists. The gateway response and routing group must
@@ -80,9 +81,39 @@ def judgment_cli(judge):
     return value
 
 
-def run_model(command, *, cwd, environment):
-    """Run an explicit model command in its provisioned environment; never retry elsewhere."""
-    return subprocess.run([str(x) for x in command],cwd=cwd,env=environment,check=True)
+def inspect_gpu(index, *, expected_uuid=None, min_free_mib=12000):
+    """Inspect exactly the requested physical GPU; never choose a replacement."""
+    devices=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid,memory.free',
+        '--format=csv,noheader,nounits'],text=True)
+    records=[row.strip().split(',') for row in devices.splitlines() if row.strip()]
+    selected=[row for row in records if int(row[0])==int(index)]
+    if len(selected)!=1:raise RuntimeError('requested GPU index is unavailable')
+    _,uuid,free=map(str.strip,selected[0]);free=int(free)
+    if expected_uuid is not None and uuid!=expected_uuid:
+        raise RuntimeError('requested GPU UUID changed; refusing another device')
+    processes=subprocess.check_output(['nvidia-smi','--query-compute-apps=gpu_uuid,pid',
+        '--format=csv,noheader,nounits'],text=True)
+    occupants=[row for row in processes.splitlines() if row.split(',')[0].strip()==uuid]
+    if occupants:raise RuntimeError('requested GPU has an active compute process')
+    if free<int(min_free_mib):raise RuntimeError('requested GPU has insufficient free memory')
+    return {'index':int(index),'uuid':uuid,'free_mib':free,'exclusive_compute_check':True}
+
+
+def run_model(command, *, cwd, environment, gpu=None, expected_uuid=None,
+              min_free_mib=12000, stdout=None):
+    """Run in a provisioned environment after checking the pinned GPU at launch."""
+    import contextlib, fcntl, tempfile
+    with contextlib.ExitStack() as stack:
+        resources=None
+        if gpu is not None:
+            resources=inspect_gpu(gpu,expected_uuid=expected_uuid,min_free_mib=min_free_mib)
+            lock=stack.enter_context(open(Path(tempfile.gettempdir())/f"ego-annotation-{resources['uuid']}.lock",'a'))
+            try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError as exc:raise RuntimeError('requested GPU is leased by another annotation') from exc
+            environment={**environment,'CUDA_VISIBLE_DEVICES':resources['uuid']}
+        subprocess.run([str(x) for x in command],cwd=cwd,env=environment,check=True,
+                       stdout=stdout,stderr=subprocess.STDOUT if stdout is not None else None)
+        return resources
 
 def install_offline_dinov2_hub(local_repo: Path, local_checkpoint: Path) -> dict:
     """Route only the frozen DINOv2 hub request to byte-bound local assets."""
@@ -137,3 +168,21 @@ def install_offline_dinov2_hub(local_repo: Path, local_checkpoint: Path) -> dict
     torch.hub.load_state_dict_from_url = offline_state_dict_from_url
     torch.hub.load = offline_load
     return state
+
+from pathlib import Path
+from urllib.parse import urlparse
+from utils.state import sha as offline_sha
+
+def bind_offline_weights(records, torch):
+    """Replace URL resolution, not model code; only declared local bytes load."""
+
+    def offline_load(url, *unused, **kwargs):
+        name = kwargs.get('file_name') or Path(urlparse(url).path).name
+        if name not in records:
+            raise ValueError(f'undeclared Torch checkpoint request: {name}')
+        record = records[name]
+        path = Path(record['path'])
+        if not path.is_file() or offline_sha(path) != record['sha256']:
+            raise ValueError(f'offline LightGlue checkpoint missing/changed: {path}')
+        return torch.load(path, map_location=kwargs.get('map_location'), weights_only=False)
+    torch.hub.load_state_dict_from_url = offline_load

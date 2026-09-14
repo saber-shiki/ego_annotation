@@ -197,7 +197,7 @@ class ExportTests(unittest.TestCase):
             with self.subTest(object_id=object_id),tempfile.TemporaryDirectory() as td:
                 root=Path(td).resolve();z,b=fixture(object_id,size)
                 with patch('subprocess.Popen',side_effect=AssertionError('encoder/subprocess forbidden')):
-                    doc=export(z,b,'case_b',object_id,'track_d',root/'internal/final',visibility=judgment(object_id),identity=identity())
+                    doc=export(z,b,'case_b',object_id,'track_d',root/'internal/final',visibility=judgment(object_id),identity=identity(),mode="geometry_debug")
                 self.assertEqual(sorted(p.name for p in (root/'internal/final').iterdir()),['annotation.json','world.rrd'])
                 shutil.copytree(root/'internal/final',root/'portable');shutil.rmtree(root/'internal')
                 doc=json.loads((root/'portable/annotation.json').read_text())
@@ -240,12 +240,12 @@ class ExportTests(unittest.TestCase):
     def test_no_copythrough_or_malformed_state(self):
         with tempfile.TemporaryDirectory() as td:
             z,b=fixture();bad=copy.deepcopy(z);bad['base_object_rotation'][:]=np.eye(3)
-            with self.assertRaisesRegex(ValueError,'reset'):export(bad,b,'c','vessel','vessel',Path(td)/'bad',visibility=judgment(),identity=identity('c'))
+            with self.assertRaisesRegex(ValueError,'reset'):export(bad,b,'c','vessel','vessel',Path(td)/'bad',visibility=judgment(),identity=identity('c'),mode="geometry_debug")
             for mutate in [lambda d:d.update(frame_idx=np.array([7,7,103])),lambda d:d.update(time_s=np.array([.1,.1,1.])),lambda d:d.update(object_faces=np.array([[0,1,99]])),lambda d:d.update(intrinsics_render=np.zeros((3,4))),lambda d:d['object_rotation'].__setitem__(0,np.zeros((3,3)))]:
                 bad=copy.deepcopy(z);mutate(bad)
                 with self.assertRaises(ValueError):timeline(bad)
             bad=copy.deepcopy(b);bad['object_id']='other'
-            with self.assertRaises(ValueError):export(z,bad,'c','vessel','vessel',Path(td)/'wrong',visibility=judgment(),identity=identity('c'))
+            with self.assertRaises(ValueError):export(z,bad,'c','vessel','vessel',Path(td)/'wrong',visibility=judgment(),identity=identity('c'),mode="geometry_debug")
 
     def test_visibility_rejects_missing_duplicate_incomplete_bad_identity_and_states(self):
         z,b=fixture()
@@ -290,7 +290,7 @@ class ExportTests(unittest.TestCase):
             np.testing.assert_array_equal(state['object_valid'],[True,False,True])
             for key in ('object_rotation','object_translation_world','left_valid','left_vertices_world'):
                 np.testing.assert_array_equal(state[key],z[key])
-            doc=export(state,b,'case_b','vessel','track',root/'final',visibility=judgment(),identity=identity())
+            doc=export(state,b,'case_b','vessel','track',root/'final',visibility=judgment(),identity=identity(),mode="geometry_debug")
             self.assertIsNone(doc['frames'][1]['object']['geometry'])
             self.assertIsNotNone(doc['frames'][2]['object']['geometry'])
             self.assertTrue(batches(root/'final/world.rrd'))
@@ -400,6 +400,105 @@ class AstraTransportTests(unittest.TestCase):
         self.assertEqual(len({m.PROMPT for m in modules}),13)
         self.assertEqual(len({json.dumps(m.SCHEMA,sort_keys=True) for m in modules}),13)
         self.assertTrue(all(callable(m.judge) for m in modules))
+
+
+
+class CompleteRawExportTests(unittest.TestCase):
+    def test_complete_export_requires_real_registered_rgb_and_rejects_foreign_frames(self):
+        import cv2
+        from types import SimpleNamespace
+        from dataclasses import replace
+        from observations.camera.calibration import build
+        from utils.data import RawFrameSource, read_cfr_video_timing
+        from utils.state import RunState, input_identity, validated_raw_frames
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();(root/'input').mkdir()
+            raw=root/'input/raw.mp4'
+            writer=cv2.VideoWriter(str(raw),cv2.VideoWriter_fourcc(*'mp4v'),30.,(64,64))
+            self.assertTrue(writer.isOpened())
+            for channel in range(3):
+                image=np.zeros((64,64,3),np.uint8);image[:,:,channel]=180;writer.write(image)
+            writer.release()
+            timing=read_cfr_video_timing(raw)
+            bundle=root/'input/bundle.json';bundle.write_text('{}')
+            contract={'schema':'rgb_scene_input_v1','run_id':identity().run_id,'run_root':str(root),
+                'case':'case_b','input_video':str(raw),'input_video_sha256':sha(raw),
+                'bundle_manifest_sha256':sha(bundle),'sensor_calibration_metadata':None,
+                'sensor_calibration_sha256':None,'source_timing':timing.report()}
+            (root/'input/runtime_input_contract.json').write_text(json.dumps(contract))
+            manifest=root/'input/raw_frame_manifest/manifest.json'
+            build(SimpleNamespace(video=raw,output_dir=manifest.parent,render_width=64,
+                frame_start=None,frame_end=None,jpeg_quality=95))
+            RunState(root).record('actual_decode',[(manifest,'raw_manifest')],frame_ids=[0,1,2])
+            source=RawFrameSource(manifest,root)
+            ident=input_identity(root/'input/runtime_input_contract.json',root,bundle)
+            frames,_=validated_raw_frames(source,ident)
+            z,b=fixture(size=(64,64));z['frame_idx']=np.arange(3);z['time_s']=np.arange(3)/30.
+            for name in ('pose_rows','source_pose_rows'):
+                for i,row in enumerate(b[name]):row['frame_idx']=i
+            j=judgment()
+            for i,row in enumerate(j['frames']):row['frame_idx']=i
+            with self.assertRaisesRegex(ValueError,'raw-frame source'):
+                export(z,b,'case_b','vessel','track',root/'absent',visibility=j,identity=ident)
+            doc=export(z,b,'case_b','vessel','track',root/'complete',raw_source=source,visibility=j,identity=ident)
+            self.assertFalse(doc['partial']);self.assertFalse(doc['annotation_ready'])
+            self.assertFalse(doc['physical_contact_authority'])
+            self.assertEqual(doc['raw_frame_provenance']['input_video_sha256'],sha(raw))
+            first=Path(frames[0]['raw_frame_path']);first.write_bytes(b'foreign RGB with identical frame ID/time')
+            with self.assertRaisesRegex(ValueError,'RGB bytes'):
+                export(z,b,'case_b','vessel','track',root/'tampered',raw_source=source,visibility=j,identity=ident)
+
+
+class TriangleRenderTests(unittest.TestCase):
+    def test_rendered_overlay_uses_actual_triangles_and_clears_missing_geometry(self):
+        from render import mesh_overlay
+        state={'intrinsics_render':np.array([[40.,40.,31.5,31.5]]),'render_size_wh':np.array([64,64]),
+            'T_world_camera':np.eye(4)[None],'object_valid':np.array([True]),
+            'object_vertices_canonical':np.array([[-.2,-.2,0],[.2,-.2,0],[0,.2,0]]),
+            'object_faces':np.array([[0,1,2]]),'object_rotation':np.eye(3)[None],
+            'object_translation_world':np.array([[0,0,1.]]),
+            'left_display_valid':np.array([False]),'right_display_valid':np.array([False])}
+        image=np.zeros((64,64,3),np.uint8)
+        rendered=mesh_overlay(state,0,image)
+        self.assertGreater(rendered.sum(),0)
+        self.assertGreater(rendered[31,31].sum(),0)
+        state['object_valid'][0]=False
+        np.testing.assert_array_equal(mesh_overlay(state,0,image),image)
+
+
+
+class ColdControlFlowTests(unittest.TestCase):
+    def test_visual_rejection_and_uncertainty_are_preserved_without_physical_promotion(self):
+        from main import scene_review_summary
+        mask={'identity_consistent':True,'intervals':[{'state':'usable'}]}
+        trajectory={'trajectory_consistent':True,'flagged_intervals':[]}
+        clean={'visual_result':'reviewed_usable','physical_authority_granted':False}
+        result=scene_review_summary(mask,trajectory,[clean])
+        self.assertTrue(result['accepted']);self.assertFalse(result['physical_authority_granted'])
+        self.assertFalse(scene_review_summary(mask,trajectory,[])['accepted'])
+        self.assertFalse(scene_review_summary(mask,{**trajectory,'trajectory_consistent':False},[clean])['accepted'])
+        result=scene_review_summary({**mask,'intervals':[{'state':'uncertain'}]},trajectory,[clean])
+        self.assertEqual(result['status'],'reviewed_with_defects')
+        result=scene_review_summary(mask,trajectory,[{**clean,'visual_result':'rejected'}])
+        self.assertEqual(result['status'],'rejected');self.assertFalse(result['accepted'])
+
+    def test_gpu_launch_checks_exact_uuid_occupancy_and_memory_without_fallback(self):
+        from utils.runtime import inspect_gpu, run_model
+        from unittest.mock import patch
+        devices='4, GPU-test-device-four, 16000\n5, GPU-test-device-five, 40000\n'
+        with patch('subprocess.check_output',side_effect=[devices,'GPU-test-device-five, 42\n']):
+            self.assertEqual(inspect_gpu(4)['uuid'],'GPU-test-device-four')
+        with patch('subprocess.check_output',side_effect=[devices,'GPU-test-device-four, 42\n']):
+            with self.assertRaisesRegex(RuntimeError,'active compute'):inspect_gpu(4)
+        with patch('subprocess.check_output',return_value=devices):
+            with self.assertRaisesRegex(RuntimeError,'UUID changed'):inspect_gpu(4,expected_uuid='other')
+        with patch('subprocess.check_output',side_effect=[devices,'']):
+            with self.assertRaisesRegex(RuntimeError,'free memory'):inspect_gpu(4,min_free_mib=20000)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('subprocess.check_output',side_effect=[devices,'']),patch('tempfile.gettempdir',return_value=directory),patch('subprocess.run') as run:
+                result=run_model(['python','model'],cwd=directory,environment={},gpu=4)
+                self.assertEqual(run.call_args.kwargs['env']['CUDA_VISIBLE_DEVICES'],'GPU-test-device-four')
+                self.assertEqual(result['index'],4)
 
 if __name__ == '__main__':
     unittest.main()

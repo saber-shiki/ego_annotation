@@ -2,14 +2,14 @@
 from pathlib import Path
 import json, re, uuid
 import numpy as np
-from utils.data import indexed, RKEY, TKEY, load
+from utils.data import indexed, RKEY, TKEY, load, RawFrameSource
 from utils.state import sha, InputIdentity
 from observations.common import pose_from_values
 from gates.output.acceptance import mesh, timeline
 from gates.interaction.visibility import validate_visibility, apply_display_visibility, POLICY
 
 
-def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibration=None,visibility=None,provenance=None,identity=None):
+def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,raw_source=None,mode="complete",calibration=None,visibility=None,provenance=None,identity=None,visual_review=None):
     """All backing arrays are embedded in RRD or numeric JSON, never NPZ/PLY refs."""
     for value in (case,object_id,track_id):
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',value):raise ValueError('unsafe scene identity')
@@ -31,6 +31,14 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
         r,t=pose_from_values(poses[int(idx)][RKEY],poses[int(idx)][TKEY])
         if not np.allclose(z['base_object_rotation'][i],r,atol=1e-7) or not np.allclose(z['base_object_translation_world'][i],t,atol=1e-7):
             raise ValueError('fit reset the refined posterior to a stale source')
+    if mode not in {'complete','geometry_debug'}:raise ValueError('unknown export mode')
+    raw_provenance=None
+    if mode=='complete':
+        from utils.state import validated_raw_frames
+        verified,raw_provenance=validated_raw_frames(raw_source,identity)
+        if raw_frames is not None and raw_frames!=verified:
+            raise ValueError('caller RGB differs from producer-bound raw frames')
+        raw_frames=verified
     if raw_frames is not None and set(raw_frames)!=set(ids.tolist()):raise ValueError('RGB/full timeline mismatch')
     if provenance is None:provenance={}
     staging=output.with_name('.'+output.name+'.staging-'+uuid.uuid4().hex)
@@ -101,7 +109,11 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
         recording.flush()
     finally:
         recording.disconnect()
-    document={'schema':'rgb_scene_annotation_v1','scene_id':case,'object_id':object_id,'track_id':track_id,
+    document={'schema':'rgb_scene_annotation_v1' if mode=='complete' else 'rgb_scene_geometry_debug_v1',
+        'partial':mode!='complete','annotation_ready':False,'physical_contact_authority':False,
+        'physical_acceptance':{'accepted':False,'scope':'standalone_visual_candidate'},
+        'visual_acceptance':visual_review or {'status':'pending_visual_review','accepted':False},
+        'raw_frame_provenance':raw_provenance,'scene_id':case,'object_id':object_id,'track_id':track_id,
         'input_identity':identity.document(),'display_visibility_policy':POLICY,
         'units':'meters','transform_convention':'column vectors; world_from_camera and world_from_object; left SO3 plus additive world translation',
         'canonical_gauge':binding['canonical_gauge'],
@@ -128,7 +140,7 @@ def export(z,binding,case,object_id,track_id,output,*,raw_frames=None,calibratio
     return document
 
 
-def export_scene(state_path,binding_path,fit_report_path,run_root,bundle_manifest,output):
+def export_scene(state_path,binding_path,fit_report_path,run_root,bundle_manifest,output,*,visual_review=None):
     """Validate an actual fitted archive and publish complete JSON/RRD geometry."""
     from utils.state import in_run, input_identity
     from gates.object.geometry import validate_posterior
@@ -157,8 +169,9 @@ def export_scene(state_path,binding_path,fit_report_path,run_root,bundle_manifes
     identity=input_identity(root/'input/runtime_input_contract.json',root,bundle_manifest)
     raw=indexed(load(root/'input/raw_frame_manifest/manifest.json')['frames'])
     return export(state,binding,identity.case,binding['object_id'],binding.get('track_id',binding['object_id']),
-        Path(output),raw_frames=raw,visibility=load(judgment_path),identity=identity,
-        provenance={'fit_report_sha256':sha(fit_report_path),'input_hashes':fit['input_hashes']})
+        Path(output),raw_source=RawFrameSource(root/'input/raw_frame_manifest/manifest.json',root),visibility=load(judgment_path),identity=identity,
+        visual_review=visual_review,provenance={'fit_report_sha256':sha(fit_report_path),'input_hashes':fit['input_hashes'],
+        'interaction_diagnostics':load(judgment_path).get('diagnostics',{})})
 
 
 def main(argv=None):
@@ -171,3 +184,101 @@ def main(argv=None):
 
 
 if __name__=='__main__':main()
+
+
+def mesh_overlay(state, position, image):
+    """Render actual object/MANO triangles through the declared calibrated camera."""
+    import cv2
+    import open3d as o3d
+    from utils.geometry import resized_K
+    width=min(960,image.shape[1]);height=round(image.shape[0]*width/image.shape[1])
+    image=cv2.resize(image,(width,height))
+    K=resized_K(state['intrinsics_render'][position],state['render_size_wh'],(width,height))
+    T=state['T_world_camera'][position]
+    scene=o3d.t.geometry.RaycastingScene(nthreads=4);colors={}
+    def add(vertices,faces,color):
+        vertices=(np.asarray(vertices)-T[:3,3])@T[:3,:3]
+        key=scene.add_triangles(o3d.core.Tensor(vertices.astype('float32')),
+                                o3d.core.Tensor(np.asarray(faces,dtype='uint32')))
+        colors[key]=np.asarray(color,float)
+    if state['object_valid'][position]:
+        add(state['object_vertices_canonical']@state['object_rotation'][position].T+
+            state['object_translation_world'][position],state['object_faces'],[183,188,80])
+    for side in ('left','right'):
+        if state[side+'_display_valid'][position]:
+            add(state[side+'_vertices_world'][position],state[side+'_faces'],[158,183,235])
+    if not colors:return image
+    y,x=np.mgrid[:height,:width]
+    rays=np.stack([np.zeros_like(x),np.zeros_like(x),np.zeros_like(x),
+                   (x-K[2])/K[0],(y-K[3])/K[1],np.ones_like(x)],axis=-1).astype('float32')
+    hit=scene.cast_rays(o3d.core.Tensor(rays),nthreads=4)
+    ids=hit['geometry_ids'].numpy();normals=hit['primitive_normals'].numpy()
+    shading=.4+.6*np.abs(normals[:,:,2])
+    result=image.astype(float)
+    for key,color in colors.items():
+        selected=ids==key
+        result[selected]=.35*result[selected]+.65*color*shading[selected,None]
+    return np.clip(result,0,255).astype('uint8')
+
+
+def render_video(state_path, raw_manifest_path, output):
+    """Full-timeline MP4 driven by complete triangles, not 2-D proxy boxes."""
+    import cv2
+    output=Path(output)
+    if output.exists():raise ValueError('video output must be new')
+    with np.load(state_path,allow_pickle=False) as archive:state=dict(archive)
+    ids,times,order,*_=timeline(state)
+    raw=indexed(load(raw_manifest_path)['frames'])
+    if set(raw)!=set(map(int,ids)):raise ValueError('render raw/state timeline mismatch')
+    fps=1/float(np.median(np.diff(times))) if len(times)>1 else 30.
+    writer=None;reviews=[]
+    output.parent.mkdir(parents=True,exist_ok=True)
+    try:
+        for pos in order:
+            row=raw[int(ids[pos])]
+            image=cv2.imread(str(row['raw_frame_path']))
+            if image is None:raise ValueError('render raw RGB missing')
+            rendered=mesh_overlay(state,pos,image)
+            if writer is None:
+                writer=cv2.VideoWriter(str(output),cv2.VideoWriter_fourcc(*'mp4v'),fps,(rendered.shape[1],rendered.shape[0]))
+                if not writer.isOpened():raise RuntimeError('MP4 encoder did not open')
+            writer.write(rendered)
+            review=output.parent/'review'/f'{int(ids[pos]):06d}.jpg';review.parent.mkdir(exist_ok=True)
+            if not cv2.imwrite(str(review),rendered):raise RuntimeError('failed to write rendered review frame')
+            reviews.append({'frame_idx':int(ids[pos]),'path':str(review),'sha256':sha(review)})
+    finally:
+        if writer is not None:writer.release()
+    return reviews
+
+
+def pose_review_images(annotations, binding, hand_archive, frame_ids, output):
+    """Project the actual refined full mesh and immutable source MANO for pose review."""
+    import cv2
+    from observations.object.shape import mesh_arrays
+    from optimization.hand.mano import hand_validity
+    frames=indexed(annotations['frames']);poses=indexed(binding['pose_rows'])
+    ids=list(frames)
+    with np.load(hand_archive,allow_pickle=False) as archive:hands=dict(archive)
+    positions={int(i):j for j,i in enumerate(hands['frame_idx'])}
+    order=[positions[i] for i in ids]
+    vertices,faces=mesh_arrays(binding['render_mesh_contract']['required_mesh_path'])
+    state={'T_world_camera':np.array([frames[i]['camera']['T_world_camera_metric'] for i in ids]),
+        'intrinsics_render':np.array([frames[i]['camera']['intrinsics_fx_fy_cx_cy'] for i in ids]),
+        'render_size_wh':np.array([frames[ids[0]]['source_width'],frames[ids[0]]['source_height']]),
+        'object_vertices_canonical':vertices,'object_faces':faces,'object_valid':np.ones(len(ids),bool),
+        'object_rotation':np.array([poses[i][RKEY] for i in ids]),
+        'object_translation_world':np.array([poses[i][TKEY] for i in ids])}
+    for side in ('left','right'):
+        state[side+'_display_valid']=hand_validity(hands,side,len(ids))[order]
+        if state[side+'_display_valid'].any():
+            state[side+'_vertices_world']=hands[side+'_vertices_world_m'][order]
+            state[side+'_faces']=hands[side+'_faces']
+    output=Path(output);output.mkdir(parents=True,exist_ok=True);images=[]
+    for frame in frame_ids:
+        image=cv2.imread(frames[frame]['raw_frame_path'])
+        if image is None:raise ValueError('missing raw pose-review image')
+        path=output/f'{frame:06d}.jpg'
+        if not cv2.imwrite(str(path),mesh_overlay(state,ids.index(frame),image)):
+            raise RuntimeError('pose-review triangle rendering failed')
+        images.append(path)
+    return images

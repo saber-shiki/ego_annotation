@@ -484,3 +484,9 @@ def load_mesh(path: Path) -> trimesh.Trimesh:
     if not isinstance(geom, trimesh.Trimesh):
         raise RuntimeError(f'Unsupported mesh geometry from {path}: {type(geom)}')
     return trimesh.Trimesh(vertices=np.asarray(geom.vertices, dtype=float), faces=np.asarray(geom.faces, dtype=np.int64), process=False)
+
+
+@dataclass(frozen=True)
+class RawFrameSource:
+    manifest: Path
+    run_root: Path

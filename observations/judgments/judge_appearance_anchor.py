@@ -1,7 +1,7 @@
 """Independent appearance anchor image judgment, fixed to gpt-6-astra."""
 from utils.runtime import astra_request, judgment_cli
 
-PROMPT = 'Select one appearance frame for native complete-shape generation using actual RGB and appearance masks. Keep appearance separate from metric-owned masks. Choose only an available candidate; report blur, occlusion, truncation and shape ambiguity.'
+PROMPT = 'Select one appearance frame for native complete-shape generation using actual RGB and appearance masks. Inspect the supplied preferred_frame_idx first and retain it unless a concrete visual defect disqualifies it; explain any deviation in visual_rationale. Keep appearance separate from metric-owned masks. Choose only an available candidate; report blur, occlusion, truncation and shape ambiguity.'
 SCHEMA = {'type': 'object',
  'properties': {'object_id': {'type': 'string', 'minLength': 1},
                 'selected_frame_idx': {'type': 'integer', 'minimum': 0},

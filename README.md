@@ -4,7 +4,31 @@ The grouped entry is `python main.py`. Numerical stages are owned by
 `optimization/solve.py`; observation eligibility and physical acceptance remain
 separate from candidate estimates.
 
-## Implemented checkpoint
+## Cold raw-video entry
+
+```bash
+python main.py annotate --video INPUT_VIDEO --case CASE_ID --run-root NEW_RUN_DIRECTORY \
+  --assets-manifest LOCAL_MODEL_ENVIRONMENTS_JSON --gpu EXPLICIT_GPU_INDEX
+```
+
+The run directory must not exist. Use the separately provisioned model-environment
+manifest; the runner does not install models or download missing weights. It
+copies raw input, produces new camera/depth/MANO/mask observations, executes the
+independent Astra decisions, builds native complete geometry and observed/RGB
+pose evidence, fits the visual scene, and writes `final/annotation.json`,
+`final/world.rrd`, and `renders/annotation.mp4`. Per-frame visibility/contact
+judgments receive every corresponding raw frame in bounded batches; final
+inspection receives every rendered frame. Stage logs and producer receipts remain
+inside this run. Do not use a GPU occupied by another job.
+
+The cold entry is implemented and its CPU contracts are tested. A full model run
+of this checkpoint has not yet been executed; it is not evidence of three completed
+annotations. Standalone results explicitly retain `annotation_ready=false` and
+`physical_contact_authority=false`. The complete exporter requires current decoded
+RGB bytes; `mode="geometry_debug"` is explicitly partial and is never used by the
+cold entry.
+
+## Prepared numerical entries
 
 `python main.py refine-pose --annotations ANNOTATIONS --source-pose SOURCE
 --rgb-edges EDGES_NPZ --rgb-report EDGES_JSON --object-id OBJECT --anchor FRAME
@@ -58,9 +82,8 @@ translation-support gates. Optional compositions are named, and numeric tuning
 cannot switch Boolean factor families. This candidate still requires the formal
 full-MANO acceptance stage before physical publication.
 
-Cold raw-video business orchestration, observation assembly/ownership and RGB edge
-production, remaining formal acceptance/shared-tail paths, MP4/evaluation and final
-legacy removal are under migration. The historical documentation below
+Formal object/shared-tail acceptance, optional WiLoR, evaluation consolidation,
+remaining owner deduplication and final legacy removal are still under migration. The historical documentation below
 is retained only during extraction and does not describe the new CLI.
 
 ---

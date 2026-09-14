@@ -215,8 +215,6 @@ class CorrectionTests(unittest.TestCase):
         poses,_=solve(nodes,[0,1,1.3,2],edges,0,cfg)
         for i in (1,2):self.assertLess(Rot.from_matrix(poses[i][0]@truth[i].T).magnitude(),.02)
 
-if __name__ == '__main__':
-    unittest.main()
 
 class FormalProblemTests(unittest.TestCase):
     def problem(self, **kwargs):
@@ -247,3 +245,6 @@ class FormalProblemTests(unittest.TestCase):
         result,states,archive=optimize_rows([],None,None,None,None)
         self.assertEqual(result['status'],'no_rows');self.assertEqual(states,[])
         self.assertEqual(archive['vertices_world_m'].shape,(0,778,3))
+
+if __name__ == '__main__':
+    unittest.main()

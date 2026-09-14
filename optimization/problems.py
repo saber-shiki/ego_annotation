@@ -90,8 +90,26 @@ class FormalManoInterval:
         args.optimize_contact_state=True
         for key,value in profiles[self.profile].items():setattr(args,key,value)
         for key,value in self.numeric_options.items():
+            if key in {'start_frame','end_frame'}:raise ValueError('numeric tuning cannot replace interval identity')
             default=getattr(args,key,None)
             if type(value) not in (int,float) or type(default) not in (int,float):
                 raise ValueError('numeric options cannot change problem composition')
             setattr(args,key,type(default)(value))
         return args
+
+
+@dataclass(frozen=True)
+class ObservedObjectPose:
+    arguments: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StandaloneShape:
+    posterior: object
+    annotations: object
+    appearance: object
+    decision: object
+    native_qc: object
+    output: object
+    object_id: str
+    run_root: object
