@@ -147,3 +147,23 @@ token IDs/counts, rationale and image provenance saved under `state/detector_tex
 No detector text is truncated. The inference worker rejects any remaining overflow
 before loading model weights and pads valid mixed-length queries to the model's
 actual positional budget.
+
+Formal tail specifications may include `object_problem` with `profile` equal to
+`observed_only`, `image_assisted` plus `image_factors`, or
+`nonpenetration_assisted` plus `nonpenetration_targets`. `mano_problem` selects a
+named interval profile, current-run `factor_reports`, optional `hand_ray_prior`,
+and scalar `numeric_options`. These selectors do not accept arbitrary Boolean
+factor combinations. `prepare hand-visibility` produces the actual report accepted
+by the formal loader; image targets, visible-surface track and face-eligibility
+builders expose the corresponding preserved argument schemas.
+
+`python main.py render-dual --spec DUAL_JSON` renders two already-bound display
+geometries against one immutable physical package. The specification names
+`package`, `source_video`, `output`, and exactly two `geometries` records
+(`sam3d`/`trellis`, mesh path/hash, package hash,
+`canonical_frame=shared_completed_canonical_meters`,
+`role=generated_display_only`). This entry does no second physical optimization.
+The formal renderer accepts a distinct physical-completion report so display mesh
+identity cannot overwrite signed-proxy readiness or collision-surface provenance.
+WiLoR's optional worker is a raw hand-provider API, not a replacement for HaWoR's
+world-camera trajectory and downstream archive contract.

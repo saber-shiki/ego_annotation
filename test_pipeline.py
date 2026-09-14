@@ -1056,5 +1056,35 @@ class SharedBackendGeometryTests(unittest.TestCase):
             with self.assertRaises(ValueError):display_backend_state(shared,{**geometry,'role':'collision'},package)
             with self.assertRaises(ValueError):display_backend_state(shared,{**geometry,'package_sha256':'0'*64},package)
 
+
+
+class FormalGeometryRoleTests(unittest.TestCase):
+    def test_distinct_physical_report_never_relabels_display_mesh(self):
+        from render import build_formal_render_state,formal_state_parse_args
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve()
+            def write(name,value):
+                path=root/name;path.write_text(json.dumps(value));return path
+            display=root/'display.ply';display.write_bytes(b'display surface fixture')
+            physical=root/'physical.ply';physical.write_bytes(b'signed topology fixture')
+            ann=write('ann.json',{'frames':[{'frame_idx':0}]})
+            pose=write('pose.json',{'annotation_ready':True,'graph_support':{'sufficient':True},
+                'pose_rows':[{'frame_idx':0,'status':'corrected_temporal_rigid_pose_graph',
+                    'rotation_world_from_completed_canonical_matrix':np.eye(3).tolist(),'translation_world_m':[0,0,1]}]})
+            visual_report=write('display.json',{'outputs':{'completed_mesh_labeled':str(display),
+                'collision_eligible_mesh_labeled':str(display)},'geometry_readiness':{'signed_geometry_ready':False}})
+            physical_report=write('physical.json',{'outputs':{'collision_eligible_mesh_labeled':str(physical)},
+                'geometry_readiness':{'signed_geometry_ready':True,'signed_geometry_consumer_policy':'local_observation_authority_faces_only'}})
+            constraints=write('constraints.json',{'constraint_rows':[]})
+            args=formal_state_parse_args(['--case','case','--object-id','object','--annotations',str(ann),
+                '--pose-report',str(pose),'--completion-report',str(visual_report),
+                '--physical-completion-report',str(physical_report),'--constraint-report',str(constraints),
+                '--output',str(root/'state.json')])
+            state=build_formal_render_state(args)
+            self.assertEqual(state['object_geometry']['completed_mesh_path'],str(display))
+            self.assertEqual(state['object_geometry']['physical_surface']['mesh'],str(physical))
+            self.assertTrue(state['object_geometry']['physical_surface']['signed_geometry_ready'])
+            self.assertEqual(state['object_geometry']['physical_surface']['completion_report_sha256'],sha(physical_report))
+
 if __name__ == '__main__':
     unittest.main()

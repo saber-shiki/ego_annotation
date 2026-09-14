@@ -622,8 +622,6 @@ class RGBMetricReplayTests(unittest.TestCase):
             (obj, mask, depth, intr, parameters, _, _) = self.fixture(Path(td).resolve())
             with self.assertRaisesRegex(ValueError, 'eligibility is required'):
                 reproduce_source_depth_support(obj, mask, depth, np.ones_like(depth), intr, parameters)
-if __name__ == '__main__':
-    unittest.main()
 
 from optimization.common.correspondences import first_hit_z, nearest_hand_first_hits
 
@@ -654,3 +652,27 @@ class Owlv2TokenBudgetTests(unittest.TestCase):
         invalid=text_budget_report(processor,config,[overflow,'cup'])
         self.assertFalse(invalid['valid']);self.assertGreater(invalid['prompts'][0]['token_count_including_special'],16)
         with self.assertRaisesRegex(ValueError,'shorten with Astra'):encode_detector_inputs(processor,config,Image.new('RGB',(32,32)),[overflow,'cup'])
+
+
+class OptionalFactorProducerTests(unittest.TestCase):
+    def test_visibility_producer_flows_into_formal_loader_and_weight_consumer(self):
+        from observations.interaction.evidence import build_hand_visibility,hand_visibility_parse_args
+        from gates.interaction.contact import load_generic_factor_reports
+        from gates.hand.observation import hand_observation_visibility_for_row
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'ownership.json'
+            source.write_text(json.dumps({'ownership_rows':[{'frame_idx':7,'hand_side':'left',
+                'target_entity_id':'object:item','counts':{'candidate_non_object_owned_px':10,'non_object_owned_px':0}}]}))
+            args=hand_visibility_parse_args(['--case','case','--ownership-factor-report',str(source),
+                '--target-entity-id','object:item','--output-root',str(root),'--joint-observation-weight-multiplier','.12'])
+            result=build_hand_visibility(args);path=root/'visibility.json';path.write_text(json.dumps(result))
+            loaded=load_generic_factor_reports([path],target_entity_id='object:item')
+            row=loaded['hand_observation_visibility'][7,'left']
+            effective=hand_observation_visibility_for_row(row,SimpleNamespace(occluded_joint_observation_weight=.5))
+            self.assertEqual(effective['state'],'active_hand_observation_visibility')
+            self.assertEqual(effective['weight_multiplier'],.12)
+            with self.assertRaises(ValueError):load_generic_factor_reports([path],target_entity_id='object:other')
+
+if __name__ == '__main__':
+    unittest.main()

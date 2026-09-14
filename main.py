@@ -180,7 +180,13 @@ def main(argv=None):
     prepare=commands.add_parser('prepare',help='build a retained optional observation or geometry input')
     prepare.add_argument('kind',choices=('image-targets','visible-surface-track','surface-eligibility','hand-visibility','signed-proxy','multiview-support'))
     prepare.add_argument('arguments',nargs=argparse.REMAINDER)
+    dual=commands.add_parser('render-dual',help='two geometry display branches of one frozen physical package')
+    dual.add_argument('--spec',type=Path,required=True)
     args=parser.parse_args(argv)
+    if args.command=='render-dual':
+        from render import render_dual_backend
+        spec=load(args.spec)
+        return render_dual_backend(Path(spec['package']),Path(spec['source_video']),spec['geometries'],Path(spec['output']))
     if args.command=='prepare':
         from observations.object import surface, signed_geometry
         from observations.interaction import evidence
@@ -625,7 +631,11 @@ def formal_tail(spec):
         with np.load(edge_path,allow_pickle=False) as archive:arrays=dict(archive)
         initialized=initialize(load(source),load(ann),obj,arrays,load(edge_report)['rows'],int(spec['anchor_frame']))
         source=out/'rgb_initialized_pose.json';source.write_text(json.dumps(initialized,indent=2,allow_nan=False))
-    object_problem=FormalObjectTrajectory(ann,source,completion,out/'pose',obj)
+    object_settings=spec.get('object_problem',{})
+    object_problem=FormalObjectTrajectory(ann,source,completion,out/'pose',obj,
+        profile=object_settings.get('profile','observed_only'),
+        image_factors=in_run(object_settings['image_factors'],root) if object_settings.get('image_factors') else None,
+        nonpenetration_targets=in_run(object_settings['nonpenetration_targets'],root) if object_settings.get('nonpenetration_targets') else None)
     pose_report=solve(object_problem)
     pose_path=out/'pose/v19_rigid_object_pose_graph_report.json'
     physical_completion=completion
@@ -644,7 +654,10 @@ def formal_tail(spec):
     mesh=load(completion)['outputs'].get('pose_hypothesis_mesh_labeled') or load(completion)['outputs']['completed_mesh_labeled']
     mano=FormalManoInterval(case,obj,ann,pose_path,Path(mesh),physical_completion,depth,out/'mano',
         Path(spec['wilor_root']),Path(spec['mano_left']),min(frame_ids),max(frame_ids),
-        profile='hot3d_shared' if profile=='hot3d_shared' else 'formal',device=spec.get('device','cpu'),factor_reports=[factor_path])
+        profile='hot3d_shared' if profile=='hot3d_shared' else spec.get('mano_problem',{}).get('profile','formal'),
+        device=spec.get('device','cpu'),factor_reports=[factor_path,*[in_run(path,root) for path in spec.get('mano_problem',{}).get('factor_reports',[])]],
+        hand_ray_prior=in_run(spec['mano_problem']['hand_ray_prior'],root) if spec.get('mano_problem',{}).get('hand_ray_prior') else None,
+        numeric_options=spec.get('mano_problem',{}).get('numeric_options',{}))
     solve(mano)
     contact_state=out/'mano'/case/'v18_joint_mano_interval_trajectory_state.json'
     accepted=out/'accepted_mano.json'
@@ -657,7 +670,7 @@ def formal_tail(spec):
     state=out/'render_state.json'
     build_formal_render_state(formal_state_parse_args(list(map(str,['--case',case,'--object-id',obj,
         '--annotations',ann,'--pose-report',pose_path,'--completion-report',completion,
-        '--constraint-report',constraints,'--temporal-mano-state',accepted,'--output',state]))))
+        '--physical-completion-report',physical_completion,'--constraint-report',constraints,'--temporal-mano-state',accepted,'--output',state]))))
     package=assemble_formal_layers(SimpleNamespace(render_state=state,annotations=ann,hawor_npz=hawor,
         interaction_judgments=judgments,output_dir=out/'package',run_root=root,demo_state=None,demo_report=None,allow_external_replay=False))
     package_path=out/'package/annotation.json'
