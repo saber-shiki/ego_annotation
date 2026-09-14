@@ -615,7 +615,7 @@ class Snapshot:
         self.assets[rel] = {'sha256': sha256(p), 'size_bytes': p.stat().st_size, 'source': 'derived_lossless_render_arrays'}
         return rel
 
-def core_arrays(core, annotations, hawor, mesh_path):
+def core_arrays(core, annotations, hawor, mesh_path, resolve_archive=None):
     frames = annotations.get('frames')
     require(isinstance(frames, list) and len(frames) > 0, 'required component: annotation frames')
     n = len(frames)
@@ -678,6 +678,35 @@ def core_arrays(core, annotations, hawor, mesh_path):
             if side in SIDES and joints is not None:
                 require(out[f'{side}_valid'][i], f'annotation/HaWoR validity mismatch: {side}')
                 same(joints, out[f'{side}_joints_world'][i], f'annotation/HaWoR source joints: {side}')
+    payload=(core.get('temporal_mano_state') or {}).get('payload') or {}
+    acceptance=payload.get('full_mano_acceptance') or {}
+    if acceptance.get('accepted') is True:
+        require(acceptance.get('signed_object_surface_factor_active') is True and
+                acceptance.get('signed_geometry_declared_ready') is True and
+                acceptance.get('physical_state_quarantined') is not True and
+                core.get('physical_state_quarantined') is not True,
+                'accepted MANO cannot bypass signed/source quarantine')
+        reference=payload.get('accepted_full_mano_vertices_world_archive')
+        archive=Path(reference) if resolve_archive is None else resolve_archive(reference)
+        require(sha256(archive)==payload.get('accepted_full_mano_vertices_world_archive_sha256'),
+                'accepted full MANO archive identity mismatch')
+        data=load_npz(archive);rows={(int(i),str(side)):pos for pos,(i,side) in
+            enumerate(zip(data['frame_idx'],data['hand_side']))}
+        require(len(rows)==len(data['frame_idx']),'duplicate accepted MANO archive rows')
+        for side in SIDES:
+            if not out[side+'_valid'].any():continue
+            out[side+'_source_vertices_world']=out[side+'_vertices_world'].copy()
+            out[side+'_source_joints_world']=out[side+'_joints_world'].copy()
+            out[side+'_physical_accepted']=np.zeros(n,bool)
+            for i,fid in enumerate(ids):
+                if not out[side+'_valid'][i]:continue
+                require((int(fid),side) in rows,'accepted MANO lacks a valid source row')
+                position=rows[int(fid),side]
+                vertices=data['vertices_world_m'][position];joints=data['joints_world_m'][position]
+                require(vertices.shape==(778,3) and joints.shape==(21,3) and
+                        np.isfinite(vertices).all() and np.isfinite(joints).all(),'invalid accepted MANO geometry')
+                out[side+'_vertices_world'][i]=vertices;out[side+'_joints_world'][i]=joints
+                out[side+'_physical_accepted'][i]=True
     return out
 
 def demo_mesh_contract(core, completion):
@@ -752,7 +781,8 @@ def load_package(path):
     require(layers_load_json(asset(metric['source_assets']['interaction_judgments'])) == metric['interaction_judgments'], 'P17 source document mismatch')
     hawor_path = asset(metric['source_assets']['hawor_npz'])
     validate_hawor_bindings(ann, hawor_path, metric.get('hawor_source_bindings', {}), asset)
-    expected = core_arrays(core, ann, load_npz(hawor_path), asset(metric['canonical_mesh_asset']))
+    expected = core_arrays(core, ann, load_npz(hawor_path), asset(metric['canonical_mesh_asset']),
+        lambda reference:asset(package['source_asset_map'][str(Path(reference).resolve())]))
     pred = load_npz(asset(metric['render_arrays_asset']))
     compare_arrays(pred, expected, 'prediction')
     timeline = package['timeline']
@@ -905,7 +935,8 @@ def assemble_formal_layers(args):
     for p in core_files:
         snap.copy(p)
     mesh_asset = snap.copy(canonical)
-    metric = {'render_state': core, 'annotations': ann, 'interaction_judgments': judgments, 'source_assets': sources, 'canonical_mesh_asset': mesh_asset, 'completion_report_binding': {'reference': core['inputs']['completion_report'], 'sha256': sha256(source_paths['completion_report'])}, 'hawor_source_bindings': {ref: {'asset': snap.copy(binding['asset']), 'sha256': binding['sha256']} for (ref, binding) in hawor_bindings.items()}, 'render_arrays_asset': snap.generated('prediction_render_arrays.npz', prediction), 'authority': 'unchanged source metric prediction; no demo corrections or collision promotion'}
+    metric = {'render_state': core, 'annotations': ann, 'interaction_judgments': judgments, 'source_assets': sources, 'canonical_mesh_asset': mesh_asset, 'completion_report_binding': {'reference': core['inputs']['completion_report'], 'sha256': sha256(source_paths['completion_report'])}, 'hawor_source_bindings': {ref: {'asset': snap.copy(binding['asset']), 'sha256': binding['sha256']} for (ref, binding) in hawor_bindings.items()}, 'render_arrays_asset': snap.generated('prediction_render_arrays.npz', prediction), 'authority': 'source metric prediction with explicit gate-accepted full MANO when present; no demo promotion',
+        'full_mano_acceptance':(core.get('temporal_mano_state',{}).get('payload') or {}).get('full_mano_acceptance',{'accepted':False})}
     demo_block = None
     if demo is not None:
         demo_block = {'source_assets': {'state': snap.copy(demo_source), 'report': snap.copy(demo_report)}, 'report': layers_load_json(demo_report), 'canonical_mesh_binding': {'reference': demo_mesh_reference, 'asset': snap.copy(demo_mesh)}, 'render_arrays_asset': snap.generated('demo_render_arrays.npz', demo), 'authority': 'visual hypothesis only; not contact/collision/sign evidence', 'annotation_ready': False, 'collision_eligible': False}
@@ -995,7 +1026,7 @@ def encode_process(path, size, fps):
 import argparse
 from pathlib import Path
 
-def render_formal_rrd(package_path, output, layer='both'):
+def render_formal_rrd(package_path, output, layer='both', display_geometry=None):
     import rerun as rr
     import rerun.blueprint as rrb
     require(layer in ('prediction', 'demo', 'both'), 'invalid layer selection')
@@ -1011,6 +1042,10 @@ def render_formal_rrd(package_path, output, layer='both'):
     rr.log('/world', rr.ViewCoordinates.RDF, static=True)
     rr.log('/world/authority', rr.TextDocument(package['run_mode'] + '\nPrediction: source metric state. Demo: visual hypothesis, not collision/contact authority.'), static=True)
     p = layers['prediction']
+    if display_geometry is not None:
+        name='display_'+display_geometry['backend']
+        layers={name:display_backend_state(p,display_geometry,package_path)};selected=[name]
+        rr.log('/world/authority',rr.TextDocument('Shared physical pose/MANO; generated object geometry is display-only, no signed/contact authority'),static=True)
     rr.log('/world/camera_trajectory', rr.LineStrips3D([p['T_world_camera'][:, :3, 3]], colors=[150, 150, 150]), static=True)
     for (i, fid) in enumerate(p['frame_idx']):
         rr.set_time('frame', sequence=int(fid))
@@ -1099,7 +1134,7 @@ def header(image, text):
     cv2.putText(output, text, (8, max(13, int(30 * scale))), cv2.FONT_HERSHEY_SIMPLEX, scale, (245, 245, 245), 1, cv2.LINE_AA)
     return output
 
-def render_formal_video(package_path, source_video, output_dir, width=640, expected_video_sha256=None):
+def render_formal_video(package_path, source_video, output_dir, width=640, expected_video_sha256=None, display_geometry=None):
     (package, layers) = load_package(package_path)
     out = Path(output_dir).resolve()
     require(not out.exists(), 'new video output directory required')
@@ -1110,6 +1145,8 @@ def render_formal_video(package_path, source_video, output_dir, width=640, expec
     if expected_video_sha256:
         require(video_hash == expected_video_sha256, 'original video hash mismatch')
     pred = layers['prediction']
+    if display_geometry is not None:
+        layers={'display_'+display_geometry['backend']:display_backend_state(pred,display_geometry,package_path)}
     n = len(pred['frame_idx'])
     source_timing = read_cfr_video_timing(source_video, expected_frame_count=n)
     fps = source_timing.fps
@@ -1141,7 +1178,7 @@ def render_formal_video(package_path, source_video, output_dir, width=640, expec
                     (shaded, mask, geometry_ids) = (np.zeros_like(rgb), np.zeros(rgb.shape[:2], bool), np.full(rgb.shape[:2], -1))
                 overlay = rgb.copy()
                 overlay[mask] = (0.25 * rgb[mask] + 0.75 * shaded[mask]).astype(np.uint8)
-                panels.append(header(overlay, 'Metric prediction (estimated)' if name == 'prediction' else 'Demo visual (fitted hypothesis)'))
+                panels.append(header(overlay, 'Metric prediction (estimated)' if name == 'prediction' else 'Generated display (shared physical state)'))
                 row['layers'][name] = {'object_valid': bool(state['object_valid'][index]), 'left_valid': bool(state['left_valid'][index]), 'right_valid': bool(state['right_valid'][index]), 'pixels_by_object_left_right': [int(np.count_nonzero(mask & (geometry_ids == k))) for k in range(3)], 'triangle_count': sum((len(f) for f in faces)), 'faces_removed': 0}
             image = np.concatenate(panels, axis=1)
             writer.stdin.write(np.ascontiguousarray(image).tobytes())
@@ -1174,3 +1211,43 @@ def formal_video_cli(argv=None):
     parser.add_argument('--source-video-sha256', required=True, help='Original authorized RGB bytes; not an inferred video identity')
     args = parser.parse_args(argv)
     print(render_formal_video(args.package, args.source_video, args.output_dir, args.render_width, args.source_video_sha256))
+
+
+def display_backend_state(shared, geometry, package_path):
+    """Only complete object geometry branches; camera, poses, MANO and validity stay shared."""
+    require(geometry.get('backend') in {'sam3d','trellis'},'unknown retained geometry backend')
+    require(geometry.get('package_sha256')==sha256(package_path),'geometry belongs to another shared state')
+    require(geometry.get('canonical_frame')=='shared_completed_canonical_meters','backend mesh gauge is unbound')
+    require(geometry.get('role')=='generated_display_only','generated backend has no physical force authority')
+    path=Path(geometry['mesh'])
+    require(sha256(path)==geometry['mesh_sha256'],'backend mesh bytes changed')
+    mesh=load_geometry_mesh(path)
+    return {**shared,'object_vertices_canonical':mesh['object_vertices_canonical'],'object_faces':mesh['object_faces']}
+
+
+def render_dual_backend(package_path,source_video,geometries,output):
+    """Publish two full display branches after one already-frozen shared physical solve."""
+    output=Path(output)
+    require(not output.exists(),'dual output must be new')
+    require({g['backend'] for g in geometries}=={'sam3d','trellis'} and len(geometries)==2,
+            'dual display requires exactly SAM3D and TRELLIS')
+    package,states=load_package(package_path)
+    for geometry in geometries:display_backend_state(states['prediction'],geometry,package_path)
+    output.mkdir(parents=True)
+    shared_digest=hashlib.sha256()
+    for name,value in sorted(states['prediction'].items()):
+        if name not in {'object_vertices_canonical','object_faces'}:
+            shared_digest.update(name.encode());shared_digest.update(np.ascontiguousarray(value).tobytes())
+    results=[]
+    for geometry in geometries:
+        directory=output/geometry['backend'];directory.mkdir()
+        render_formal_rrd(package_path,directory/'world.rrd',layer='prediction',display_geometry=geometry)
+        video=render_formal_video(package_path,source_video,directory/'video',expected_video_sha256=sha256(source_video),display_geometry=geometry)
+        results.append({'backend':geometry['backend'],'geometry':geometry,'rrd_sha256':sha256(directory/'world.rrd'),
+                        'video_sha256':sha256(video),'shared_state_sha256':shared_digest.hexdigest()})
+    manifest={'schema':'dual_backend_shared_state_display_v1','package_sha256':sha256(package_path),
+              'shared_state_sha256':shared_digest.hexdigest(),'physical_optimization_count':1,
+              'generated_geometry_authority':'display_only','branches':results,
+              'physical_acceptance':package['metric_prediction'].get('full_mano_acceptance',{'accepted':False})}
+    (output/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False))
+    return manifest

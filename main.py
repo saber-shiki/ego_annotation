@@ -621,6 +621,9 @@ def formal_tail(spec):
     if isinstance(package,(str,Path)):package_path=Path(package)
     render_formal_rrd(package_path,out/'world.rrd',layer='prediction')
     render_formal_video(package_path,in_run(spec['source_video'],root),out/'video')
+    if spec.get('backend_geometry') is not None:
+        from render import render_dual_backend
+        render_dual_backend(package_path,in_run(spec['source_video'],root),spec['backend_geometry'],out/'dual_display')
     acceptance=load(accepted)['full_mano_acceptance']
     result={'profile':profile,'source_pose_sha256':sha(source),'pose_report':str(pose_path),
         'mano_candidate':str(contact_state),'mano_acceptance':acceptance,'package':str(package_path),

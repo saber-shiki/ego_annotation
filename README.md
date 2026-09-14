@@ -168,3 +168,10 @@ exposes the five retained HOT3D evaluation/summary tools. Evaluation reads froze
 prediction plus explicitly supplied evaluation input; prediction `main.py` never
 imports evaluation. `python -m observations.hand.wilor --help` provides optional
 WiLoR prediction in its pre-provisioned environment; the default remains HaWoR.
+
+The shared formal renderer consumes a bound accepted full-778 MANO archive only
+when the actual P18b acceptance says accepted, signed-ready and not quarantined;
+source surfaces remain separately stored. `render.render_dual_backend` branches
+only complete SAM3D/TRELLIS display geometry after that shared solve and records an
+identical shared-state hash for both outputs. Geometry records must bind the
+shared package hash, mesh hash, canonical frame and `generated_display_only` role.

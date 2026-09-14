@@ -607,6 +607,29 @@ class AnnotationLayersTests(unittest.TestCase):
     def dump(self, name, value):
         (self.run / name).write_text(json.dumps(value))
 
+    def test_accepted_full_mano_drives_render_and_survives_portable_snapshot(self):
+        self.args.demo_state=self.args.demo_report=None
+        self.core['physical_state_quarantined']=False
+        valid=np.flatnonzero(self.hawor['left_valid'])
+        archive=self.run/'accepted.npz'
+        corrected=self.hawor['left_vertices_world_m'][valid]+[.001,0,0]
+        np.savez(archive,frame_idx=self.hawor['frame_idx'][valid],hand_side=np.array(['left']*len(valid)),
+            vertices_world_m=corrected,joints_world_m=self.hawor['left_joints_world_m'][valid]+[.001,0,0])
+        payload={'full_mano_acceptance':{'accepted':True,'signed_object_surface_factor_active':True,
+            'signed_geometry_declared_ready':True,'physical_state_quarantined':False},
+            'accepted_full_mano_vertices_world_archive':str(archive.resolve()),
+            'accepted_full_mano_vertices_world_archive_sha256':sha256(archive)}
+        self.core['temporal_mano_state']['payload']=payload
+        self.dump('p18b.json',payload);self.dump('core.json',self.core)
+        path=assemble(self.args)
+        package,layers=load_package(path)
+        np.testing.assert_allclose(layers['prediction']['left_vertices_world'][valid],corrected)
+        np.testing.assert_array_equal(layers['prediction']['left_source_vertices_world'],self.hawor['left_vertices_world_m'])
+        self.assertTrue(package['metric_prediction']['full_mano_acceptance']['accepted'])
+        moved=self.root/'portable';shutil.copytree(path.parent,moved);shutil.rmtree(self.run)
+        _,portable=load_package(moved/path.name)
+        np.testing.assert_allclose(portable['prediction']['left_vertices_world'][valid],corrected)
+
     def test_source_immutability_layer_separation_and_missing_hand(self):
         before = {str(p): sha256(p) for p in self.run.iterdir()}
         path = assemble(self.args)
@@ -1000,8 +1023,6 @@ class AnnotationLayersTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "demo layer"):
             render(path, self.root / "no.rrd", "demo")
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class AppearanceAlignmentTests(unittest.TestCase):
@@ -1014,3 +1035,26 @@ class AppearanceAlignmentTests(unittest.TestCase):
         with patch('observations.object.shape.metric_object',lambda row,obj:row),patch('observations.object.shape.metric_alignment',lambda obj,row:None if row['frame_idx']==1 else {}):
             self.assertEqual(appearance_candidate_ids(rows,annotations,'object',0),[0,2])
             with self.assertRaises(ValueError):appearance_candidate_ids(rows,annotations,'object',1)
+
+
+class SharedBackendGeometryTests(unittest.TestCase):
+    def test_backend_geometry_cannot_change_shared_physical_arrays(self):
+        import trimesh
+        from render import display_backend_state
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);package=root/'shared.json';package.write_text('{}')
+            mesh=root/'mesh.ply';trimesh.creation.box().export(mesh)
+            shared={'object_rotation':np.eye(3)[None],'left_vertices_world':np.ones((1,778,3)),
+                    'object_vertices_canonical':np.zeros((4,3)),'object_faces':np.array([[0,1,2]])}
+            geometry={'backend':'sam3d','package_sha256':sha(package),'canonical_frame':'shared_completed_canonical_meters',
+                      'role':'generated_display_only','mesh':str(mesh),'mesh_sha256':sha(mesh)}
+            result=display_backend_state(shared,geometry,package)
+            self.assertIs(result['object_rotation'],shared['object_rotation'])
+            self.assertIs(result['left_vertices_world'],shared['left_vertices_world'])
+            self.assertEqual(shared['object_vertices_canonical'].shape,(4,3))
+            self.assertEqual(result['object_vertices_canonical'].shape,(8,3))
+            with self.assertRaises(ValueError):display_backend_state(shared,{**geometry,'role':'collision'},package)
+            with self.assertRaises(ValueError):display_backend_state(shared,{**geometry,'package_sha256':'0'*64},package)
+
+if __name__ == '__main__':
+    unittest.main()
