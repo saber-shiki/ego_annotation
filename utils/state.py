@@ -317,6 +317,34 @@ def document_sha(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
+def planned_stage_contract(producer_id, producer_type, *, parameters, inputs, execution):
+    """Declarative identity, supplied before execution; never inspect a callback.
+
+    Input paths/values are explicit; StageRecovery additionally binds the full
+    immutable dependency prefix (including baseline raw/config/model identity).
+    Callers must hash any external stage inputs not covered by that prefix.
+    """
+    def normalize(value):
+        if isinstance(value, Path):
+            return str(value.expanduser().resolve())
+        if isinstance(value, (tuple, list)):
+            return [normalize(item) for item in value]
+        if isinstance(value, dict):
+            if not all(isinstance(key, str) for key in value):
+                raise TypeError('planned contract keys must be strings')
+            return {key: normalize(item) for key, item in value.items()}
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        raise TypeError(f'non-declarative planned contract value: {type(value).__name__}')
+    if not producer_id or producer_type not in {'inprocess', 'subprocess', 'astra'}:
+        raise ValueError('planned contract requires explicit producer identity/type')
+    value = normalize({'schema': 'planned_stage_contract_v1', 'producer_id': producer_id,
+        'producer_type': producer_type, 'parameters': parameters, 'inputs': inputs,
+        'execution': execution})
+    # Reject NaN/Infinity and detach all mutable caller-owned containers.
+    return json.loads(json.dumps(value, sort_keys=True, allow_nan=False))
+
+
 class StageRecovery:
     """Same-run linear prefix recovery; main owns stage ordering and computation.
 
@@ -348,13 +376,16 @@ class StageRecovery:
                 if not self.path.is_file():
                     raise ValueError('run has no recoverable stage receipts; legacy/frozen imports are refused')
                 self.value = load(self.path)
+                if self.value.get('schema') != 'same_run_stage_receipts_v2' or any(
+                        'planned_contract' not in stage for stage in self.value.get('stages', [])):
+                    raise ValueError('journal lacks planned stage contracts; legacy recovery refused (no restamping)')
                 if self.value['identity'] != identity:
                     raise ValueError('run/code/model configuration/input identity changed; cross-version recovery refused')
                 self._recover(rewind, reason, candidate)
             else:
                 if self.path.exists():
                     raise ValueError('cold stage journal already exists')
-                self.value = {'schema': 'same_run_stage_receipts_v1', 'identity': identity,
+                self.value = {'schema': 'same_run_stage_receipts_v2', 'identity': identity,
                               'baseline': self.snapshot(), 'stages': []}
                 self.save()
         except BaseException:
@@ -469,25 +500,33 @@ class StageRecovery:
         with (self.control/'events.jsonl').open('a') as handle:
             handle.write(json.dumps({'time': datetime.now(timezone.utc).isoformat(), 'action': action, **details})+'\n')
 
-    def run(self, name, producer):
+    def run(self, name, producer, *, contract):
         if self.failed:
             raise ValueError('failed stage requires explicit resume before further execution')
         stages = self.value['stages']
-        if self.position < len(stages):
-            stage = stages[self.position]
-            if stage['name'] != name:
-                raise ValueError('main stage order differs from committed same-code receipt')
-            self.position += 1
-            self.event('reuse', stage=name, receipt_sha256=stage['receipt_sha256'])
-            return _stage_value(stage['result'])
-        if any(stage['name'] == name for stage in stages):
-            raise ValueError('stage names must be unique within one run')
         before = self.snapshot()
         expected = dict(self.value['baseline'])
         for prior in stages:
             expected.update(prior['outputs'])
         if before != expected:
             raise ValueError('unreceipted or changed artifacts require explicit resume')
+        if contract.get('schema') != 'planned_stage_contract_v1':
+            raise ValueError('explicit planned stage contract required')
+        planned = planned_stage_contract(contract['producer_id'], contract['producer_type'],
+            parameters=contract['parameters'], inputs=contract['inputs'], execution=contract['execution'])
+        planned['input_prefix_receipt_sha256'] = (stages[self.position-1]['receipt_sha256']
+            if self.position else document_sha({'identity': self.identity, 'baseline': self.value['baseline']}))
+        if self.position < len(stages):
+            stage = stages[self.position]
+            if stage['name'] != name:
+                raise ValueError('main stage order differs from committed same-code receipt')
+            if stage['planned_contract'] != planned:
+                raise ValueError(f'planned stage contract changed for {name}; explicit rewind at this stage or earlier required')
+            self.position += 1
+            self.event('reuse', stage=name, receipt_sha256=stage['receipt_sha256'])
+            return _stage_value(stage['result'])
+        if any(stage['name'] == name for stage in stages):
+            raise ValueError('stage names must be unique within one run')
         old_records = load(self.ledger.registry)['records']
         self.event('start', stage=name)
         try:
@@ -499,7 +538,8 @@ class StageRecovery:
             records = load(self.ledger.registry)['records']
             if records[:len(old_records)] != old_records:
                 raise ValueError('stage rewrote prior producer records')
-            stage = {'name': name, 'outputs': {key:value for key,value in after.items() if key not in before},
+            stage = {'name': name, 'planned_contract': planned,
+                'outputs': {key:value for key,value in after.items() if key not in before},
                 'producer_records': records[len(old_records):], 'result': _stage_json(result),
                 'dependency_receipt_sha256': stages[-1]['receipt_sha256'] if stages else document_sha(self.identity)}
             stage['receipt_sha256'] = document_sha(stage)

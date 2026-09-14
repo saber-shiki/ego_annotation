@@ -10,7 +10,7 @@ calls a retired ego-annotation script.
 
 | Entry | Implemented behavior | Verification boundary |
 |---|---|---|
-| `main.py resume` | Same-run immutable code/config/raw/sensor/target identity, complete stage-file hashes and original producer receipts; explicit suffix rewind/candidate attempts, partial-output quarantine | CPU fake-producer execution-count and real CLI failure/recovery tests; no cross-code/config or old-run import |
+| `main.py resume` | Same-run immutable code/config/raw/sensor/target identity, planned producer/argv/environment/input contracts, complete stage-file hashes and original producer receipts; explicit suffix rewind/candidate attempts, partial-output quarantine | CPU fake-producer and actual CLI changed-GPU/UUID/environment rejection, prefix-counter/receipt preservation; no cross-code/config or v1 journal import |
 | `main.py annotate` | Fresh raw video, fixed/estimated K, conditioned camera-z depth, private-input HaWoR, OWLv2/SAM2, metric ownership, full native SAM3D shape, observed/RGB SO3+SE3, full-MANO unsigned visual fit, batched Astra judgments, complete JSON/RRD and triangle MP4 | CPU contracts and real worker-interface checks; full fresh-video acceptance requires the separately executed runtime cases |
 | `main.py refine-pose` | Same-run role/raw/object/timeline-bound prepared observations and paired RGB producer inputs | Numerical/gradient/restoration/PnP tests; empty accepted RGB is a valid measured outcome, absent producer is an error |
 | `main.py fit-visual` | Prepared full MANO/object candidate; immutable source replay, scale/rotation/articulation bounds, 12-step triangle/outline refresh | Real MANO CPU smoke and baseline loss parity; physical acceptance remains false |
@@ -44,7 +44,14 @@ calls a retired ego-annotation script.
 
 The initial raw entry remains create-only. `main.py resume` now verifies the
 same run's input contract, code manifest, model configuration and declared model
-asset bytes, then reuses only its successful stage prefix. Each stage binds all
+asset bytes, then reuses only its successful stage prefix. V2 journals require a
+pre-execution planned contract for every stage. Subprocess contracts bind producer
+module, executable bytes/path, argv, cwd, GPU request, critical environment hashes
+and output roles. In-process contracts bind named role and explicit inputs/parameters
+without inventing shell argv; all stages bind the immutable input prefix receipt.
+Astra contracts include prompt/schema/model/endpoint, evidence and ordered image
+hashes. A same-name stage with a different plan refuses skip until explicitly rewound.
+No callback address, repr or trial execution supplies this identity. Each stage binds all
 files it produced, including native meshes, private caches, rendered images,
 Astra responses and logs; missing or changed evidence invalidates that stage and
 the ordered dependent suffix. Original producer IDs and receipts are retained.
@@ -57,8 +64,10 @@ importing arbitrary old meshes, foreign videos or old-version receipts is refuse
 
 Cross-code or model-configuration changes are refused even with `--rewind`.
 There is no approved interface-patch exception or per-producer cross-version
-compatibility inference. Runs created before this stage journal existed cannot
-be imported by pretending their loose artifacts are new successful receipts.
+compatibility inference. V1 journals lacking planned contracts, including frozen
+8252 runs, cannot be upgraded/restamped even with rewind; those cases use their own
+frozen build. Runs created before the journal existed likewise cannot be imported
+by pretending their loose artifacts are new successful receipts.
 Provisioned interpreter binaries and declared source/model trees are byte-bound;
 installed site-packages are not recursively fingerprinted and must remain frozen.
 

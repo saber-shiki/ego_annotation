@@ -42,7 +42,16 @@ python main.py resume --run-root RUN_DIRECTORY \
 `resume` reads the original case, target, raw video and sensor identity from the
 run contract. It verifies the full raw/input hashes, source hashes, model config,
 declared model/source trees and successful stage receipts before skipping any
-producer. The run has one writer lock. The original Astra response and producer
+producer. Each v2 stage receipt also compares the **current planned contract**:
+producer identity/type, executable and argv, cwd, critical execution environment,
+GPU index/UUID request, output roles, explicit stage parameters and immutable input
+prefix. Astra stages additionally bind the prompt, schema, fixed model/endpoint,
+evidence JSON and ordered image paths/hashes. Planning never executes a producer.
+A changed contract refuses reuse and requires explicit rewind at the first changed
+stage or earlier. Reuse requires the same working directory/environment and GPU
+request (including whether `--gpu-uuid` was supplied); changing `--gpu` requires
+rewind at the first affected model stage, not merely at a later fit.
+The run has one writer lock. The original Astra response and producer
 ID are reused; no replacement API receipt is minted. The original GPU UUID is
 retained and the next actual worker still performs the normal availability check.
 No GPU is allocated for a fully cached replay.
@@ -69,11 +78,12 @@ this run's successful byte-bound native producer, including its mesh and inputs;
 there is no arbitrary old-mesh import.
 
 Code/config/asset changes are rejected, including with `--rewind`; install a new
-frozen version and start a fresh run instead. Pre-journal runs, including frozen
-older integration attempts, are not automatically importable. Asset verification
+frozen version and start a fresh run instead. Pre-journal and v1 journals (including
+8252 integration attempts without planned contracts) are refused without restamping,
+even with rewind. Existing cases must keep using their own frozen build. Asset verification
 reads all declared cold-path model/source files (and interpreter binaries), so
 startup includes real checkpoint hashing; installed site-packages must remain
-frozen separately. No credentials are hashed or copied into the run. These rules
+frozen separately. Credential file contents are not hashed or copied into the run. These rules
 preserve the requirement that all three cases receive their own fresh observations.
 
 Recovery CPU tests: `python -m unittest test_pipeline.StageRecoveryTests

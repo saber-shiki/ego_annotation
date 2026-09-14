@@ -1095,6 +1095,11 @@ class FormalGeometryRoleTests(unittest.TestCase):
 
 
 class StageRecoveryTests(unittest.TestCase):
+    def contract(self, name, **parameters):
+        from utils.state import planned_stage_contract
+        return planned_stage_contract('fixture.'+name,'inprocess',parameters=parameters,
+            inputs={'raw':'baseline'},execution={'fixture':'cpu-only'})
+
     def fixture(self, root):
         import json
         from utils.state import RunState, sha
@@ -1128,17 +1133,17 @@ class StageRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);ledger,identity=self.fixture(root);counts={}
             recovery=StageRecovery(ledger,identity)
-            first=recovery.run('depth',self.produce(ledger,'depth',counts))
+            first=recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'))
             old=json.loads(ledger.registry.read_text())['records'][0]
             with self.assertRaisesRegex(RuntimeError,'injected'):
-                recovery.run('native',self.produce(ledger,'native',counts,fail=True))
+                recovery.run('native',self.produce(ledger,'native',counts,fail=True),contract=self.contract('native'))
             recovery.close()
             recovery=StageRecovery(ledger,identity,resume=True)
             self.assertFalse((root/'native').exists())
-            replay=recovery.run('depth',self.produce(ledger,'depth',counts))
+            replay=recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'))
             self.assertEqual(first,replay)
-            recovery.run('native',self.produce(ledger,'native',counts))
-            recovery.run('fit',self.produce(ledger,'fit',counts))
+            recovery.run('native',self.produce(ledger,'native',counts),contract=self.contract('native'))
+            recovery.run('fit',self.produce(ledger,'fit',counts),contract=self.contract('fit'))
             recovery.close()
             self.assertEqual(counts,{'depth':1,'native':2,'fit':1})
             self.assertEqual(json.loads(ledger.registry.read_text())['records'][0],old)
@@ -1147,7 +1152,7 @@ class StageRecoveryTests(unittest.TestCase):
             # Finished replay neither executes nor mints replacement producer IDs.
             receipts=ledger.registry.read_text()
             recovery=StageRecovery(ledger,identity,resume=True)
-            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts),contract=self.contract(name))
             recovery.close()
             self.assertEqual(ledger.registry.read_text(),receipts)
             self.assertEqual(counts,{'depth':1,'native':2,'fit':1})
@@ -1157,13 +1162,13 @@ class StageRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);ledger,identity=self.fixture(root);counts={}
             recovery=StageRecovery(ledger,identity)
-            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts),contract=self.contract(name))
             recovery.close()
             (root/'native/native.mesh').write_bytes(b'mutated native dependency')
             recovery=StageRecovery(ledger,identity,resume=True)
             self.assertTrue((root/'depth/value.json').is_file())
             self.assertFalse((root/'fit').exists())
-            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts),contract=self.contract(name))
             recovery.close()
             self.assertEqual(counts,{'depth':1,'native':2,'fit':2})
             self.assertEqual(list((root/'quarantine').glob('*/artifacts/native/native.mesh'))[0].read_bytes(),b'mutated native dependency')
@@ -1174,11 +1179,11 @@ class StageRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);ledger,identity=self.fixture(root);counts={}
             recovery=StageRecovery(ledger,identity)
-            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts),contract=self.contract(name))
             recovery.close()
             native=json.loads(ledger.registry.read_text())['records'][1]
             recovery=StageRecovery(ledger,identity,resume=True,rewind='fit',reason='new optimization attempt',candidate='attempt-b')
-            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts))
+            for name in ('depth','native','fit'):recovery.run(name,self.produce(ledger,name,counts),contract=self.contract(name))
             recovery.close()
             self.assertEqual(counts,{'depth':1,'native':1,'fit':2})
             self.assertEqual(json.loads(ledger.registry.read_text())['records'][1],native)
@@ -1193,7 +1198,7 @@ class StageRecoveryTests(unittest.TestCase):
         from utils.state import StageRecovery
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);ledger,identity=self.fixture(root)
-            recovery=StageRecovery(ledger,identity);recovery.run('depth',self.produce(ledger,'depth',{}));recovery.close()
+            recovery=StageRecovery(ledger,identity);recovery.run('depth',self.produce(ledger,'depth',{}),contract=self.contract('depth'));recovery.close()
             before=ledger.registry.read_bytes()
             for key in ('run_id','code','config','contract','agent_model'):
                 with self.subTest(key=key),self.assertRaises(ValueError):
@@ -1209,17 +1214,130 @@ class StageRecoveryTests(unittest.TestCase):
         from utils.state import StageRecovery
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);ledger,identity=self.fixture(root);counts={}
-            recovery=StageRecovery(ledger,identity);recovery.run('depth',self.produce(ledger,'depth',counts));recovery.close()
+            recovery=StageRecovery(ledger,identity);recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'));recovery.close()
             self.produce(ledger,'native',counts)()  # public row exists, no successful stage receipt
             recovery=StageRecovery(ledger,identity,resume=True)
-            recovery.run('depth',self.produce(ledger,'depth',counts))
-            recovery.run('native',self.produce(ledger,'native',counts));recovery.close()
+            recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'))
+            recovery.run('native',self.produce(ledger,'native',counts),contract=self.contract('native'));recovery.close()
             self.assertEqual(counts,{'depth':1,'native':2})
             registry=json.loads(ledger.registry.read_text());registry['records']=registry['records'][:1]
             ledger.registry.write_text(json.dumps(registry))
             recovery=StageRecovery(ledger,identity,resume=True)
-            recovery.run('depth',self.produce(ledger,'depth',counts));recovery.run('native',self.produce(ledger,'native',counts));recovery.close()
+            recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'));recovery.run('native',self.produce(ledger,'native',counts),contract=self.contract('native'));recovery.close()
             self.assertEqual(counts,{'depth':1,'native':3})
+
+    def test_planned_subprocess_contract_refuses_argv_role_inputs_and_environment(self):
+        import copy, json, subprocess, sys
+        from utils.state import StageRecovery, planned_stage_contract, sha
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);root=base/'run';root.mkdir()
+            ledger,identity=self.fixture(root)
+            counter=base/'counter';source=base/'source';source.write_bytes(b'input-A')
+            script=base/'producer.py'
+            script.write_text("import pathlib,sys\np=pathlib.Path(sys.argv[1]); p.write_text(str(int(p.read_text())+1) if p.exists() else '1')\npathlib.Path(sys.argv[2]).write_bytes(b'output')\n")
+            output=root/'output';command=[sys.executable,str(script),str(counter),str(output),'--gpu','0']
+            planned=planned_stage_contract('fixture.depth','subprocess',
+                parameters={'outputs':[(output,'depth')]},inputs={'source':sha(source)},
+                execution={'executable':sys.executable,'argv':command[1:],'cwd':base,
+                           'environment':{'CUDA_VISIBLE_DEVICES':'0'}})
+            def produce():
+                subprocess.run(command,check=True,cwd=base)
+                ledger.record('same-name',[(output,'depth')],command=command)
+                return output
+            recovery=StageRecovery(ledger,identity)
+            recovery.run('same-name',produce,contract=planned);recovery.close()
+            original=ledger.registry.read_bytes()
+            for dimension in ('argv','producer_id','producer_type','role','input','cwd','env'):
+                altered=copy.deepcopy(planned)
+                if dimension=='argv':altered['execution']['argv'][-1]='1'
+                elif dimension=='producer_id':altered['producer_id']='fixture.hands'
+                elif dimension=='producer_type':altered['producer_type']='inprocess'
+                elif dimension=='role':altered['parameters']['outputs'][0][1]='hands'
+                elif dimension=='input':
+                    source.write_bytes(b'input-B');altered['inputs']['source']=sha(source)
+                elif dimension=='cwd':altered['execution']['cwd']=str(base/'elsewhere')
+                else:altered['execution']['environment']['CUDA_VISIBLE_DEVICES']='1'
+                recovery=StageRecovery(ledger,identity,resume=True)
+                with self.subTest(dimension=dimension),self.assertRaisesRegex(ValueError,'planned stage contract changed'):
+                    recovery.run('same-name',produce,contract=altered)
+                recovery.close()
+                self.assertEqual(counter.read_text(),'1')
+                self.assertEqual(ledger.registry.read_bytes(),original)
+            source.write_bytes(b'input-A')
+            recovery=StageRecovery(ledger,identity,resume=True)
+            self.assertEqual(recovery.run('same-name',produce,contract=planned),output)
+            recovery.close();self.assertEqual(counter.read_text(),'1')
+            # A changed stage contract is legal only after an explicit suffix rewind.
+            recovery=StageRecovery(ledger,identity,resume=True,rewind='same-name',reason='new CPU arguments',candidate='args-b')
+            changed=copy.deepcopy(planned);command[-1]='1';changed['execution']['argv']=command[1:]
+            recovery.run('same-name',produce,contract=changed);recovery.close()
+            self.assertEqual(counter.read_text(),'2')
+            archives=[json.loads(path.read_text()) for path in (root/'quarantine').glob('*/producers.before.json')]
+            self.assertTrue(any(value==json.loads(original) for value in archives))
+            self.assertEqual(json.loads(original)['records'][0]['command'][-1],'0')
+            self.assertEqual(json.loads(ledger.registry.read_text())['records'][0]['command'][-1],'1')
+
+    def test_astra_planned_prompt_schema_model_evidence_and_ordered_images(self):
+        import copy
+        from utils.runtime import astra_stage_inputs
+        from utils.state import StageRecovery, planned_stage_contract
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);root=base/'run';root.mkdir();ledger,identity=self.fixture(root)
+            a=base/'a.png';b=base/'b.png';a.write_bytes(b'image-A');b.write_bytes(b'image-B')
+            def plan():
+                return planned_stage_contract('judge.fixture','astra',parameters={'output':'judgment'},
+                    inputs=astra_stage_inputs('prompt',{'type':'object'},{'frame_ids':[0,1]},[a,b]),
+                    execution={'transport':'fixture'})
+            original=plan();counts={};recovery=StageRecovery(ledger,identity)
+            recovery.run('judgment',self.produce(ledger,'judgment',counts),contract=original);recovery.close()
+            for field in ('prompt','schema','model','evidence','images','image-bytes'):
+                altered=copy.deepcopy(original)
+                if field=='images':altered['inputs']['images'].reverse()
+                elif field=='image-bytes':a.write_bytes(b'image-C');altered=plan()
+                else:altered['inputs'][field]={'different':True}
+                recovery=StageRecovery(ledger,identity,resume=True)
+                with self.subTest(field=field),self.assertRaisesRegex(ValueError,'planned stage contract changed'):
+                    recovery.run('judgment',self.produce(ledger,'judgment',counts),contract=altered)
+                recovery.close()
+            self.assertEqual(counts,{'judgment':1})
+
+    def test_legacy_or_contractless_journal_refused_without_restamping(self):
+        import json
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root)
+            recovery=StageRecovery(ledger,identity)
+            recovery.run('depth',self.produce(ledger,'depth',{}),contract=self.contract('depth'));recovery.close()
+            path=root/'state/recovery/stages.json';value=json.loads(path.read_text())
+            for old in ({**value,'schema':'same_run_stage_receipts_v1'},
+                        {**value,'stages':[{k:v for k,v in value['stages'][0].items() if k!='planned_contract'}]}):
+                path.write_text(json.dumps(old));before=path.read_bytes();registry=ledger.registry.read_bytes()
+                with self.assertRaisesRegex(ValueError,'legacy recovery refused'):
+                    StageRecovery(ledger,identity,resume=True,rewind='depth',reason='must not waive format')
+                self.assertEqual(path.read_bytes(),before);self.assertEqual(ledger.registry.read_bytes(),registry)
+                self.assertFalse((root/'quarantine').exists())
+
+    def test_changed_inprocess_parameter_requires_rewind_preserving_prefix_receipt(self):
+        import json
+        from utils.state import StageRecovery
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);ledger,identity=self.fixture(root);counts={}
+            recovery=StageRecovery(ledger,identity)
+            recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'))
+            recovery.run('fit',self.produce(ledger,'fit',counts),contract=self.contract('fit',iterations=2));recovery.close()
+            before=json.loads((root/'state/recovery/stages.json').read_text())
+            recovery=StageRecovery(ledger,identity,resume=True)
+            recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'))
+            with self.assertRaisesRegex(ValueError,'planned stage contract changed'):
+                recovery.run('fit',self.produce(ledger,'fit',counts),contract=self.contract('fit',iterations=3))
+            recovery.close()
+            recovery=StageRecovery(ledger,identity,resume=True,rewind='fit',reason='change iteration count')
+            recovery.run('depth',self.produce(ledger,'depth',counts),contract=self.contract('depth'))
+            recovery.run('fit',self.produce(ledger,'fit',counts),contract=self.contract('fit',iterations=3));recovery.close()
+            after=json.loads((root/'state/recovery/stages.json').read_text())
+            self.assertEqual(counts,{'depth':1,'fit':2});self.assertEqual(before['stages'][0],after['stages'][0])
+            archived=[json.loads(path.read_text()) for path in (root/'quarantine').glob('*/stages.before.json')]
+            self.assertIn(before['stages'][1],[entry for value in archived for entry in value['stages']])
 
     def test_run_lock_rejects_parallel_writer(self):
         from utils.state import StageRecovery
@@ -1296,9 +1414,9 @@ class MainResumeCLITests(unittest.TestCase):
             writer.release()
             sensor=root/'sensor.json';sensor.write_text('{}')
             config={'agent_model':'gpt-6-astra','agent_provider':'dexgem-responses','agent_disable_fallbacks':True,
-                'agent_credential_file':'unused-fixture','sam2_source':'unused-fixture','unidepth_python':'unused-fixture',
-                'unidepth_repo':'unused-fixture','unidepth_model':'unused-fixture','hawor_python':'unused-fixture',
-                'hawor_root':'unused-fixture','owlv2_python':'unused-fixture','owlv2_model':'unused-fixture'}
+                'agent_credential_file':'unused-fixture','sam2_source':'unused-fixture','unidepth_python':sys.executable,
+                'unidepth_repo':'unused-fixture','unidepth_model':'unused-fixture','hawor_python':sys.executable,
+                'hawor_root':'unused-fixture','owlv2_python':sys.executable,'owlv2_model':'unused-fixture'}
             assets.write_text(json.dumps(config));control.write_text(json.dumps({'fail':'hawor','counts':{}}))
             prefix=[sys.executable,'-c','from test_pipeline import _cpu_resume_cli_fixture; _cpu_resume_cli_fixture()']
             env={**os.environ,'EGO_TEST_RECOVERY_CONTROL':str(control)}
@@ -1310,6 +1428,15 @@ class MainResumeCLITests(unittest.TestCase):
             old=json.loads((run/'state/producer_receipts.json').read_text())['records']
             values=json.loads(control.read_text());values['fail']='owlv2';control.write_text(json.dumps(values))
             command=[*prefix,'resume','--run-root',str(run),'--assets-manifest',str(assets),'--gpu','0']
+            original_counts=json.loads(control.read_text())['counts']
+            for changed_command,changed_env in (
+                    ([*command[:-1],'1'],env),
+                    ([*command,'--gpu-uuid','different-device'],env),
+                    (command,{**env,'OMP_NUM_THREADS':'987'})):
+                refused=subprocess.run(changed_command,env=changed_env,capture_output=True,text=True)
+                self.assertIn('planned stage contract changed',refused.stderr)
+                self.assertEqual(json.loads(control.read_text())['counts'],original_counts)
+                self.assertEqual(json.loads((run/'state/producer_receipts.json').read_text())['records'],old)
             resumed=subprocess.run(command,env=env,capture_output=True,text=True)
             self.assertIn('synthetic transient failure: owlv2',resumed.stderr)
             counts=json.loads(control.read_text())['counts']

@@ -325,7 +325,8 @@ def annotate(args):
     from optimization.problems import ObservedObjectPose, StandaloneShape
     from render import render_video, export_scene
     from utils.config import preflight_providers
-    from utils.state import StageRecovery
+    from utils.state import StageRecovery, planned_stage_contract
+    from utils.runtime import stage_environment, astra_stage_inputs
     from utils.config import recovery_asset_manifest
     assets=load(args.assets_manifest)
     if assets.get('agent_model')!='gpt-6-astra' or assets.get('agent_provider')!='dexgem-responses' or assets.get('agent_disable_fallbacks') is not True:
@@ -383,10 +384,17 @@ def annotate(args):
         'agent_model':'gpt-6-astra','run_id':contract['run_id']},resume=recovering,
         rewind=getattr(args,'rewind',None),reason=getattr(args,'reason',None),candidate=getattr(args,'candidate',None))
     try:
-        def stage(name):
+        import sys
+        process_execution={'executable':str(Path(sys.executable).absolute()),
+            'resolved_executable':str(Path(sys.executable).resolve()), 'executable_sha256':sha(sys.executable),
+            'cwd':Path.cwd(), 'environment':stage_environment(os.environ)}
+        def stage(name, *, inputs, parameters):
             def execute(function):
                 verify_code()
-                return recovery.run(name,function)
+                planned=planned_stage_contract('main.annotate.'+name,'inprocess',
+                    inputs={'object_id':object_id,'frame_ids':ids,'values':inputs},
+                    parameters=parameters,execution=process_execution)
+                return recovery.run(name,function,contract=planned)
             return execute
         environment={**os.environ,'CUDA_VISIBLE_DEVICES':str(args.gpu),'HF_HUB_OFFLINE':'1',
             'TRANSFORMERS_OFFLINE':'1','EGO_SAM2_SOURCE':assets['sam2_source'],
@@ -402,30 +410,48 @@ def annotate(args):
         gpu_uuid=args.gpu_uuid
         def worker(stage_name,python,module,argv,outputs,overlay=None):
             nonlocal gpu_uuid
+            verify_code()
+            command=[str(python),'-m',module,*map(str,argv)]
+            worker_environment={**environment,**(overlay or {})}
+            executable=Path(shutil.which(str(python),path=worker_environment.get('PATH')) or python).absolute()
+            planned=planned_stage_contract(module,'subprocess',
+                parameters={'command':command,'outputs':outputs,'object_id':object_id,'frame_ids':ids},
+                inputs={'argv':command[3:]},execution={'executable':executable,
+                    'resolved_executable':executable.resolve(),'executable_sha256':sha(executable),
+                    'argv':command[1:],'cwd':code_root,
+                    'environment':stage_environment(worker_environment,(overlay or {}).keys()),
+                    'gpu':args.gpu,'expected_uuid':gpu_uuid,
+                    'min_free_mib':int(assets.get('sam3d_min_free_mib',12000))})
             def execute():
                 verify_code()
-                command=[str(python),'-m',module,*map(str,argv)]
                 (root/'logs').mkdir(parents=True,exist_ok=True)
                 with (root/'logs'/f'{stage_name}.log').open('x') as log:
-                    resources=run_model(command,cwd=code_root,environment={**environment,**(overlay or {})},
+                    resources=run_model(command,cwd=code_root,environment=worker_environment,
                         gpu=args.gpu,expected_uuid=gpu_uuid,min_free_mib=int(assets.get('sam3d_min_free_mib',12000)),stdout=log)
                 (root/'logs'/f'{stage_name}.resources.json').write_text(json.dumps(resources,indent=2))
                 record(stage_name,outputs,command)
                 return resources
-            resources=recovery.run(stage_name,execute)
+            resources=recovery.run(stage_name,execute,contract=planned)
             gpu_uuid=resources['uuid']
         def ask(name,evidence,images,path):
+            verify_code()
+            module=importlib.import_module('observations.judgments.judge_'+name)
+            request_evidence={'frame_ids':ids,**({'object_id':object_id} if object_id else {}),**evidence}
+            planned=planned_stage_contract('observations.judgments.judge_'+name,'astra',
+                parameters={'output':path,'role':'judgment'},
+                inputs=astra_stage_inputs(module.PROMPT,module.SCHEMA,request_evidence,images),
+                execution=process_execution)
             def execute():
                 verify_code()
                 if path.exists():raise ValueError('judgment output already exists')
-                module=importlib.import_module('observations.judgments.judge_'+name)
-                value=module.judge({'frame_ids':ids,**({'object_id':object_id} if object_id else {}),**evidence},images)
+                value=module.judge(request_evidence,images)
                 path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value,indent=2,allow_nan=False))
                 ledger.record('judge_'+name,[(path,'judgment')],object_id=object_id,frame_ids=evidence.get('frame_ids',ids))
                 return value
-            return recovery.run('judge_'+name+':'+str(path.relative_to(root)),execute)
+            return recovery.run('judge_'+name+':'+str(path.relative_to(root)),execute,contract=planned)
         manifest=root/'input/raw_frame_manifest/manifest.json'
-        @stage('raw_frames')
+        @stage('raw_frames', inputs={'video':raw},
+            parameters={'output_dir':manifest.parent,'render_width':960,'frame_start':None,'frame_end':None,'jpeg_quality':95})
         def _stage_raw_frames():
             calibration.build(SimpleNamespace(video=raw,output_dir=manifest.parent,render_width=960,
                 frame_start=None,frame_end=None,jpeg_quality=95))
@@ -438,7 +464,9 @@ def annotate(args):
         obj=plan['objects'][0];object_id=obj['object_id'];track=obj['track_id']
         if not all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',v) for v in (args.case,object_id,track)):
             raise ValueError('unsafe case/object/track identity')
-        @stage('detector_text')
+        from observations.judgments import judge_object as shorten
+        @stage('detector_text', inputs={'object':obj,'images':astra_stage_inputs(shorten.PROMPT,shorten.SCHEMA,obj,images),'shorten_prompt':shorten.SHORTEN_PROMPT,'shorten_schema':shorten.SHORTEN_SCHEMA,'assets':assets['owlv2_model']},
+            parameters={'directory':root/'state/detector_text','python':assets['owlv2_python'],'module':'observations.object.owlv2','mode':'text-contract','max_attempts':3,'cwd':code_root,'offline':True})
         def _stage_detector_text():
             detector_contract=detector_prompt_contract(obj,images,assets,root/'state/detector_text')
             record('detector_text',[(root/'state/detector_text/contract.json','detector_text_contract')])
@@ -460,7 +488,8 @@ def annotate(args):
         else:
             probe=depth_job('intrinsics_probe',root/'measurements/depth_slam/unidepth_intrinsics_probe')
             extra=['--unidepth-npz',probe,'--aggregation','median','--square-focal']
-        @stage('camera')
+        @stage('camera', inputs={'manifest':manifest,'sensor_or_probe':extra},
+            parameters={'case':args.case,'output_dir':camera_dir})
         def _stage_camera():
             calibration.resolve_camera(calibration.camera_parse_args(list(map(str,['--case',args.case,
                 '--raw-frame-manifest',manifest,'--output-dir',camera_dir,*extra]))))
@@ -470,7 +499,8 @@ def annotate(args):
         if not np.isclose(K[0],K[1],atol=1e-6,rtol=1e-6):raise ValueError('HaWoR requires square focal; sensor K cannot be averaged')
         depth=depth_job('conditioned_depth',root/'measurements/depth_slam/unidepth_full_frame',True)
         bound=camera_dir/'depth_camera_contract/unidepth_full_frame_depth_camera_contract_v2.npz'
-        @stage('depth_binding')
+        @stage('depth_binding', inputs={'depth':depth,'camera':camera},
+            parameters={'depth_plane':'source_rgb','output_dir':bound.parent})
         def _stage_depth_binding():
             calibration.bind_depth_contract(calibration.depth_parse_args(list(map(str,['--source-depth-npz',depth,
                 '--camera-contract',camera,'--depth-plane','source_rgb','--output-dir',bound.parent]))))
@@ -492,7 +522,8 @@ def annotate(args):
         worker('sam2',assets['unidepth_python'],'observations.object.sam2',
             ['--clip',raw,'--point-root',detector,'--output-root',sam2,'--checkpoint',assets['sam2_checkpoint'],
              '--frame-start',0,'--frame-end',ids[-1]],[(track_path,'object_masks')])
-        @stage('mask_review')
+        @stage('mask_review', inputs={'track':track_path,'raw_manifest':manifest,'sampled':sampled},
+            parameters={'output_dir':root/'renders/mask_review'})
         def _stage_mask_review():
             track_payload=load(track_path);mask_reviews=[]
             for frame in sampled:
@@ -513,7 +544,8 @@ def annotate(args):
         if mask_judgment['identity_consistent'] is False:
             raise ValueError('mask identity review rejected the selected-object track; no scene is published')
         base=root/'state/base_annotations/annotations_v19_base.json'
-        @stage('base')
+        @stage('base', inputs={'manifest':manifest,'depth':bound,'camera':camera,'hawor':hawor,'object_plan':plan_path,'sam2':sam2},
+            parameters={'case':args.case,'output_dir':base.parent})
         def _stage_base():
             build_base_annotations(base_parse_args(list(map(str,['--case',args.case,'--raw-frame-manifest',manifest,
                 '--output-dir',base.parent,'--depth-npz',bound,'--calibration-contract',camera,
@@ -523,7 +555,8 @@ def annotate(args):
             return bridge
         bridge = _stage_base
         owned=root/'measurements/object_tracks/depth_order_owned'/track
-        @stage('ownership')
+        @stage('ownership', inputs={'base':base,'track':track_path,'depth':bound,'camera':camera,'bridge':bridge,'hawor':hawor},
+            parameters={'case':args.case,'object_id':object_id,'track_id':track,'output_dir':owned})
         def _stage_ownership():
             surface.build_depth_order(surface.depth_order_parse_args(list(map(str,['--base-annotations',base,
                 '--raw-sam2-track',track_path,'--depth-npz',bound,'--calibration-contract',camera,
@@ -531,7 +564,8 @@ def annotate(args):
                 '--object-id',object_id,'--track-id',track]))))
             record('ownership',[(owned/'sam2_track.json','owned_masks'),(owned/'native_depth_metric_eligibility.json','metric_eligibility')])
         proposals=root/'measurements/object_geometry/anchor_candidates'/object_id
-        @stage('anchor_candidates')
+        @stage('anchor_candidates', inputs={'argv':owned_surface_arguments(root,args.case,object_id,track,proposals)},
+            parameters={'propose_anchor_candidates_only':True})
         def _stage_anchor_candidates():
             surface.build_visible_geometry(surface.surface_parse_args(owned_surface_arguments(root,args.case,object_id,track,proposals)))
         proposal_path=proposals/'anchor_candidate_proposals.json'
@@ -539,14 +573,16 @@ def annotate(args):
             [proposals/'anchor_candidate_review.jpg'],root/'state/anchor_decisions'/f'{object_id}.json')
         anchor=decision['selected_anchor_frame_idx']
         visible=root/'measurements/object_geometry/visible_geometry'/object_id
-        @stage('surface')
+        @stage('surface', inputs={'argv':owned_surface_arguments(root,args.case,object_id,track,visible,anchor=anchor)},
+            parameters={'anchor':anchor,'require_anchor_frame':True})
         def _stage_surface():
             surface.build_visible_geometry(surface.surface_parse_args(owned_surface_arguments(root,args.case,object_id,track,visible,anchor=anchor)))
             ann=visible/'annotations_v19_visible_geometry.json'
             record('surface',[(ann,'observations'),(visible/'v19_visible_geometry_adapter_report.json','surface_report')])
             return ann
         ann = _stage_surface
-        @stage('rigidity_evidence')
+        @stage('rigidity_evidence', inputs={'root':root,'object_id':object_id,'plan':plan_path,'manifest':manifest,'track':track_path,'owned':owned/'sam2_track.json'},
+            parameters={'output_dir':root/'state/rigidity_evidence'})
         def _stage_rigidity_evidence():
             return surface.build_rigidity_motion_evidence(root,object_id,plan_path,manifest,track_path,
                 owned/'sam2_track.json',root/'state/rigidity_evidence')
@@ -554,7 +590,8 @@ def annotate(args):
         rigidity=ask('rigidity',rigidity_evidence,rigidity_images,root/'state/rigidity.json')
         from gates.object.geometry import require_rigid_tracked_whole
         require_rigid_tracked_whole(rigidity)
-        @stage('metric_inputs')
+        @stage('metric_inputs', inputs={'annotations':ann,'visible':visible,'decision':decision},
+            parameters={'anchor':anchor,'case':args.case,'object_id':object_id})
         def _stage_metric_inputs():
             evidence_root=root/'measurements/geometry_completion/rigid_evidence'
             surface.build_anchor_evidence(list(map(str,['--case',args.case,'--object-id',object_id,'--annotations',ann,
@@ -576,7 +613,8 @@ def annotate(args):
             worker(stage,assets['sam3d_python'],'observations.object.sam3d',argv,[(qc,'native_geometry')],assets.get('sam3d_environment',{}))
             return name,qc,argv
         name,qc,command=native_job('metric_native',conditioning['image'],conditioning['mask'],geometry/'native_reconstruction',anchor)
-        @stage('metric_geometry')
+        @stage('metric_geometry', inputs={'qc':qc,'name':name,'conditioning':conditioning,'command':command,'native_input':native_input,'evidence':evidence,'annotations':ann},
+            parameters={'geometry':geometry,'observed_band_scale':float(np.sqrt(3.)),'silhouette_free_space_filter':True,'planar_slab_support_filter':True})
         def _stage_metric_geometry():
             candidate=shape.sam3d_candidate_record(qc,name,Path(conditioning['image']),Path(conditioning['mask']),{'mode':'fresh_native_SAM3D_only','command':list(map(str,command))})
             prior=geometry/'sam3d_prior_report.json';prior.write_text(json.dumps({'schema':'v19_sam3d_only_prior_v1','status':'ok',
@@ -596,7 +634,8 @@ def annotate(args):
             return completion_path
         completion_path = _stage_metric_geometry
         source_pose=root/'measurements/pose_fits'/object_id/'visible_anchor_bound/v18_compact_rigid_object_pose_fit_report.json'
-        @stage('observed_pose')
+        @stage('observed_pose', inputs={'annotations':ann,'completion':completion_path},
+            parameters={'object_id':object_id,'output_dir':source_pose.parent})
         def _stage_observed_pose():
             solve(ObservedObjectPose(tuple(map(str,['--annotations',ann,'--completion-report',completion_path,'--object-id',object_id,'--output-dir',source_pose.parent]))))
             record('observed_pose',[(source_pose,'source_pose')])
@@ -607,12 +646,14 @@ def annotate(args):
             '--lightglue-root',assets['lightglue_root'],'--assets-manifest',args.assets_manifest,'--device','cuda:0',
             '--output-npz',edges,'--output-json',edges.with_suffix('.json')],[(edges,'rgb_edges'),(edges.with_suffix('.json'),'rgb_edge_report')])
         posterior=root/'state/scene'/object_id/'refined_pose.json'
-        @stage('refined_pose')
+        @stage('refined_pose', inputs={'annotations':ann,'source_pose':source_pose,'edges':edges,'edge_report':edges.with_suffix('.json')},
+            parameters={'object_id':object_id,'anchor':anchor,'output':posterior,'root':root})
         def _stage_refined_pose():
             refine(ann,source_pose,edges,edges.with_suffix('.json'),object_id,anchor,posterior,root)
             record('refined_pose',[(posterior,'candidate_pose')])
         appearance= root/'measurements/demo_visual'/object_id/'appearance_evidence/appearance_mask_manifest.json'
-        @stage('appearance_inputs')
+        @stage('appearance_inputs', inputs={'manifest':manifest,'annotations':ann,'track':track_path,'ownership_report':owned/'depth_order_ownership_report.json'},
+            parameters={'root':root,'object_id':object_id,'case':args.case,'track_id':track,'output_dir':appearance.parent})
         def _stage_appearance_inputs():
             shape.build_appearance(shape.appearance_order_parse_args(list(map(str,['--run-root',root,'--object-id',object_id,
                 '--case-id',args.case,'--track-id',track,'--raw-frame-manifest',manifest,'--annotations',ann,
@@ -631,21 +672,24 @@ def annotate(args):
         _,native_qc,_=native_job('appearance_native',selected_row['raw_rgb_path'],selected_row['appearance_mask_path'],
             root/'measurements/scene_native'/object_id,selected)
         binding_dir=root/'measurements/scene_shape'/object_id
-        @stage('shape_binding')
+        @stage('shape_binding', inputs={'posterior':posterior,'annotations':ann,'appearance':appearance,'choice':choice_path,'native_qc':native_qc},
+            parameters={'binding_dir':binding_dir,'object_id':object_id,'root':root})
         def _stage_shape_binding():
             solve(StandaloneShape(posterior,ann,appearance,choice_path,native_qc,binding_dir,object_id,root))
             binding=binding_dir/'pose_mesh.json'
             return binding
         binding = _stage_shape_binding
         from render import pose_review_images
-        @stage('pose_review')
+        @stage('pose_review', inputs={'annotations':ann,'binding':binding,'hawor':hawor,'sampled':sampled},
+            parameters={'output_dir':root/'renders/refined_pose'})
         def _stage_pose_review():
             pose_images=pose_review_images(load(ann),load(binding),hawor,sampled,root/'renders/refined_pose')
             return pose_images
         pose_images = _stage_pose_review
         trajectory_judgment=ask('pose_trajectory',{'posterior':load(posterior),'inspected_frame_ids':sampled},pose_images,
             root/'state/pose_trajectory_judgment.json')
-        @stage('depth_review')
+        @stage('depth_review', inputs={'bound':bound,'manifest':manifest},
+            parameters={'output_dir':root/'renders/depth','percentiles':[2,98]})
         def _stage_depth_review():
             depth_images={}
             with np.load(bound,allow_pickle=False) as archive:
@@ -691,7 +735,8 @@ def annotate(args):
                         entry={**row,'frame_start':frame,'frame_end':frame}
                         if candidates:entry['primary_contact_pads']={'digits':candidates[0]['digits'],'rationale':candidates[0]['rationale']}
                         interaction['interaction_judgments'].append(entry)
-        @stage('interaction_assembly')
+        @stage('interaction_assembly', inputs={'interaction':interaction},
+            parameters={'output':root/'state/agent_interaction_judgments'/f'{object_id}.json'})
         def _stage_interaction_assembly():
             judgments=root/'state/agent_interaction_judgments'/f'{object_id}.json';judgments.parent.mkdir(parents=True,exist_ok=True)
             judgments.write_text(json.dumps(interaction,indent=2));record('interaction_assembly',[(judgments,'interaction_judgment')])
@@ -702,7 +747,8 @@ def annotate(args):
             '--pose-report',binding,'--mano-bridge',bridge,'--hawor-params',hawor,'--mano-models',assets['mano_models'],
             '--object-id',object_id,'--appearance-mask-manifest',appearance,'--interaction-judgments',judgments,
             '--device','cuda:0','--output-dir',fit],[(fit/'demo_state.npz','visual_state'),(fit/'fit_report.json','visual_fit_report')])
-        @stage('render_video')
+        @stage('render_video', inputs={'state':fit/'demo_state.npz','manifest':manifest},
+            parameters={'output':root/'renders/annotation.mp4'})
         def _stage_render_video():
             reviews=render_video(fit/'demo_state.npz',manifest,root/'renders/annotation.mp4')
             return reviews
@@ -717,7 +763,8 @@ def annotate(args):
         output=root/'final'
         review=scene_review_summary(mask_judgment,trajectory_judgment,inspections)
         review['backend_geometry']={'role':'diagnostic_only','judgment':{k:v for k,v in backend_judgment.items() if k!='judgment_provenance'},'judgment_sha256':sha(root/'state/backend_judgment.json')}
-        @stage('export')
+        @stage('export', inputs={'state':fit/'demo_state.npz','binding':binding,'fit_report':fit/'fit_report.json','code_manifest':code_manifest,'review':review},
+            parameters={'root':root,'output':output})
         def _stage_export():
             result=export_scene(fit/'demo_state.npz',binding,fit/'fit_report.json',root,code_manifest,output,visual_review=review)
             return {'run_root':str(root),'annotation':str(output/'annotation.json'),'rrd':str(output/'world.rrd'),

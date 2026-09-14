@@ -19,6 +19,34 @@ ASTRA_MODEL = 'gpt-6-astra'
 ASTRA_ENDPOINT = 'https://litellm.dex-gem.ai/v1/responses'
 
 
+def stage_environment(environment, extra_keys=()):
+    """Fingerprint execution-affecting settings without persisting credentials.
+
+    Arbitrary configured worker-overlay keys are included as well. Volatile shell
+    bookkeeping (PWD, SHLVL, test control files) is intentionally not an input.
+    """
+    import hashlib
+    keys = {'PATH', 'HOME', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONNOUSERSITE', 'PYTHONHASHSEED', 'LD_LIBRARY_PATH',
+        'CUDA_HOME', 'CUDA_PATH', 'LIDRA_SKIP_INIT', 'ATTN_BACKEND', 'SPCONV_ALGO',
+        'PYOPENGL_PLATFORM', 'TORCH_EXTENSIONS_DIR',
+        'LD_PRELOAD', 'CUDA_VISIBLE_DEVICES', 'CUDA_DEVICE_ORDER', 'CUBLAS_WORKSPACE_CONFIG',
+        'HF_HOME', 'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'TRANSFORMERS_CACHE',
+        'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'TORCH_HOME', 'XDG_CACHE_HOME',
+        'EGO_SAM2_SOURCE', 'TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', 'TORCH_FORCE_WEIGHTS_ONLY_LOAD',
+        'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+        'CONDA_PREFIX', 'VIRTUAL_ENV', *extra_keys}
+    return {key: hashlib.sha256(str(environment[key]).encode()).hexdigest()
+        if key in environment else None for key in sorted(keys)}
+
+
+def astra_stage_inputs(prompt, schema, evidence, images):
+    """Plan exactly the ordered visual request inputs, without calling Astra."""
+    return {'model': ASTRA_MODEL, 'endpoint': ASTRA_ENDPOINT, 'disable_fallbacks': True,
+        'prompt': prompt, 'schema': schema, 'evidence': evidence,
+        'images': [{'path': str(Path(image).resolve()), 'sha256': sha(image),
+                    'mime': mimetypes.guess_type(str(image))[0]} for image in images]}
+
+
 def astra_request(prompt, schema, evidence, images):
     credential_path=Path(os.environ['EGO_ASTRA_CREDENTIAL_FILE'])
     info=credential_path.stat()
