@@ -476,6 +476,8 @@ class ColdControlFlowTests(unittest.TestCase):
         result=scene_review_summary(mask,trajectory,[clean])
         self.assertTrue(result['accepted']);self.assertFalse(result['physical_authority_granted'])
         self.assertFalse(scene_review_summary(mask,trajectory,[])['accepted'])
+        inconsistent={**clean,'defects':[{'rationale':'real visible defect'}]}
+        self.assertEqual(scene_review_summary(mask,trajectory,[inconsistent])['status'],'reviewed_with_defects')
         self.assertFalse(scene_review_summary(mask,{**trajectory,'trajectory_consistent':False},[clean])['accepted'])
         result=scene_review_summary({**mask,'intervals':[{'state':'uncertain'}]},trajectory,[clean])
         self.assertEqual(result['status'],'reviewed_with_defects')
@@ -1000,3 +1002,15 @@ class AnnotationLayersTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AppearanceAlignmentTests(unittest.TestCase):
+    def test_alignment_required_but_low_image_quality_override_preserved(self):
+        from main import appearance_candidate_ids
+        from unittest.mock import patch
+        rows={i:{'frame_idx':i,'status':'available','score':score,'anchor_eligible':eligible}
+              for i,score,eligible in [(0,10.,True),(1,20.,True),(2,1.,False)]}
+        annotations={'frames':[{'frame_idx':i} for i in rows]}
+        with patch('observations.object.shape.metric_object',lambda row,obj:row),patch('observations.object.shape.metric_alignment',lambda obj,row:None if row['frame_idx']==1 else {}):
+            self.assertEqual(appearance_candidate_ids(rows,annotations,'object',0),[0,2])
+            with self.assertRaises(ValueError):appearance_candidate_ids(rows,annotations,'object',1)

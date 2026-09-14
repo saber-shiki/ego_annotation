@@ -213,13 +213,24 @@ def scene_review_summary(mask, trajectory, inspections):
               or any(row['visual_result']=='rejected' for row in inspections))
     defects=(any(row['state']!='usable' for row in mask['intervals'])
              or bool(trajectory['flagged_intervals'])
-             or any(row['visual_result']!='reviewed_usable' for row in inspections))
+             or any(row['visual_result']!='reviewed_usable' or bool(row.get('defects')) for row in inspections))
     status='rejected' if rejected else 'pending_visual_review' if not inspections else 'reviewed_with_defects' if defects else 'reviewed_usable'
     return {'status':status,'accepted':status=='reviewed_usable',
         'physical_authority_granted':False,
         'mask_track':{k:v for k,v in mask.items() if k!='judgment_provenance'},
         'pose_trajectory':{k:v for k,v in trajectory.items() if k!='judgment_provenance'},
         'final_inspections':[{k:v for k,v in row.items() if k!='judgment_provenance'} for row in inspections]}
+
+
+def appearance_candidate_ids(rows, annotations, object_id, preferred):
+    from observations.object.shape import metric_alignment, metric_object
+    frames=indexed(annotations['frames'])
+    def aligned(frame):
+        return metric_alignment(metric_object(frames[frame],object_id),frames[frame]) is not None
+    if not aligned(preferred):raise ValueError('preferred appearance anchor lost retained metric alignment')
+    ranked=sorted((row for row in rows.values() if row['status']=='available' and aligned(row['frame_idx'])),
+                  key=lambda row:(-float(row.get('score',0.)),row['frame_idx']))
+    return list(dict.fromkeys([preferred,*[row['frame_idx'] for row in ranked[:12]]]))
 
 
 def owned_surface_arguments(root, case, object_id, track_id, output, *, anchor=None):
@@ -455,15 +466,14 @@ def annotate(args):
     appearance_rows=indexed(load(appearance)['frames'])
     choice_path=root/'state/appearance_decisions'/f'{object_id}.json'
     preferred=load(appearance.with_name('anchor_decision.json'))['selected_frame_idx']
-    available_ranked=sorted((row for row in appearance_rows.values() if row['status']=='available'),
-        key=lambda row:(-float(row.get('score',0.)),row['frame_idx']))
-    appearance_candidates=list(dict.fromkeys([preferred,*[row['frame_idx'] for row in available_ranked[:12]]]))
+    appearance_candidates=appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred)
     if not appearance_candidates:raise ValueError('no inspected available appearance anchor')
     appearance_images=[]
     for frame in appearance_candidates:
         appearance_images.extend([Path(appearance_rows[frame]['raw_rgb_path']),Path(appearance_rows[frame]['appearance_mask_path'])])
     choice=ask('appearance_anchor',{'frame_ids':appearance_candidates,'preferred_frame_idx':preferred,'appearance':load(appearance)},appearance_images,choice_path)
     selected=choice['selected_frame_idx'];selected_row=appearance_rows[selected]
+    if selected not in appearance_candidate_ids(appearance_rows,load(ann),object_id,preferred):raise ValueError('selected appearance anchor lacks same-frame metric alignment')
     _,native_qc,_=native_job('appearance_native',selected_row['raw_rgb_path'],selected_row['appearance_mask_path'],
         root/'measurements/scene_native'/object_id,selected)
     binding_dir=root/'measurements/scene_shape'/object_id
@@ -488,7 +498,7 @@ def annotate(args):
             if not cv2.imwrite(str(path),color):raise RuntimeError('depth review raster write failed')
             depth_images[int(frame)]=path
     interaction={'object_id':object_id,'status':'ok','interaction_judgments':[],'frames':[],
-        'diagnostics':{'occlusion':[],'depth_reliability':[]}}
+        'diagnostics':{'occlusion':[],'depth_reliability':[]},'timeline_evidence':{'contact':[],'pads':[]}}
     for offset in range(0,len(ids),12):
         batch=ids[offset:offset+12];batch_images=[Path(raw_by_id[i]['raw_frame_path']) for i in batch]
         evidence_batch={'frame_ids':batch}
@@ -502,6 +512,10 @@ def annotate(args):
                 'intervals':result['intervals'],'judgment_sha256':sha(destination/f'{name}.json')})
         visibility=ask('visibility',evidence_batch,batch_images,destination/'visibility.json')
         interaction['frames'].extend(visibility['frames'])
+        interaction['timeline_evidence']['contact'].append({'judgment_sha256':sha(destination/'contact.json'),
+            'intervals':contact['interaction_judgments'],'provenance':contact['judgment_provenance']})
+        interaction['timeline_evidence']['pads'].append({'judgment_sha256':sha(destination/'pads.json'),
+            'intervals':pads['intervals'],'provenance':pads['judgment_provenance']})
         for row in contact['interaction_judgments']:
             # Expand supplied intervals only to attach the independently judged anatomical pads.
             for frame in batch:
@@ -520,7 +534,7 @@ def annotate(args):
         '--device','cuda:0','--output-dir',fit],[(fit/'demo_state.npz','visual_state'),(fit/'fit_report.json','visual_fit_report')])
     reviews=render_video(fit/'demo_state.npz',manifest,root/'renders/annotation.mp4')
     review_images=[Path(r['path']) for r in reviews]
-    ask('backend_geometry',{'backends':['sam3d'],'binding':load(binding)},
+    backend_judgment=ask('backend_geometry',{'backends':['sam3d'],'binding':load(binding)},
         [review_images[i] for i in np.unique(np.linspace(0,len(ids)-1,min(12,len(ids)),dtype=int))],root/'state/backend_judgment.json')
     inspections=[]
     for offset in range(0,len(ids),12):
@@ -528,6 +542,7 @@ def annotate(args):
             root/'state/final_inspection'/f'{offset:06d}.json'))
     output=root/'final'
     review=scene_review_summary(mask_judgment,trajectory_judgment,inspections)
+    review['backend_geometry']={'role':'diagnostic_only','judgment':{k:v for k,v in backend_judgment.items() if k!='judgment_provenance'},'judgment_sha256':sha(root/'state/backend_judgment.json')}
     result=export_scene(fit/'demo_state.npz',binding,fit/'fit_report.json',root,code_manifest,output,visual_review=review)
     return {'run_root':str(root),'annotation':str(output/'annotation.json'),'rrd':str(output/'world.rrd'),
         'video':str(root/'renders/annotation.mp4'),'annotation_ready':False,
