@@ -126,3 +126,11 @@ evidence for a new run, not a modification of cold03 or a completed annotation.
 contract shared by candidate generation, main's choice filter and shape binding.
 The legacy tolerant geometry validator remains unchanged for its other callers.
 A finite but explicitly rejected P09 surface cannot condition metric alignment.
+
+### Cold-run object instance association
+The old per-keyframe category argmax is removed. Dense OWLv2 association precedes
+SAM2 prompting and a run-bound candidate/mask check precedes the unchanged Astra
+mask gate. CPU regression uses actual mug frame149 detections and frame148 SAM2
+support, labelled as fixture-only; no historical mask is a production input.
+Dense detection increases OWLv2 work relative to sparse keyframes. Lost or
+ambiguous tracks are unsupported, not silently reacquired as another instance.

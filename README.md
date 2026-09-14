@@ -259,3 +259,13 @@ Appearance anchors require the shared strict retained-P09 predicate (explicit
 object and geometry eligibility, ownership, positive camera samples and
 camera/world consistency). Raw appearance diagnostics remain in the manifest;
 `anchor_eligible=false` rows are never Astra choices or native-shape anchors.
+
+OWLv2 now detects every frame of the selected active interval, preserving all
+thresholded candidates and image hashes in `candidate_identity.json`. One track
+is seeded once, then associated by IoU, normalized center displacement and log
+side-ratio cost; detector confidence is a minor continuation term. Ambiguous
+instances or more than three missed frames reject explicitly (no category
+re-seeding). Requested keyframes alone seed SAM2. Before visual judgment,
+`candidate_mask_identity.json` checks every associated box against the current
+SAM2 mask in the same pixel plane and binds candidate/track/raw hashes. Astra
+still judges identity against the selected object plan and raw mask overlays.

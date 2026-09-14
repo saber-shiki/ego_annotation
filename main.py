@@ -517,11 +517,31 @@ def annotate(args):
             '--owlv2-model',assets['owlv2_model'],'--box-threshold',.03,'--device','cuda','--box-only']
         for prompt in detector_contract['effective_prompts']:owlargs+=['--text-prompt',prompt]
         worker('owlv2',assets['owlv2_python'],'observations.object.owlv2',owlargs,
-            [(detector/object_id/'object_point_prompts_vlm.json','object_boxes')])
+            [(detector/object_id/'object_point_prompts_vlm.json','object_boxes'),
+             (detector/object_id/'candidate_identity.json','candidate_identity')])
         sam2=root/'measurements/object_tracks/sam2_owlv2_box_points';track_path=sam2/track/'sam2/sam2_track.json'
         worker('sam2',assets['unidepth_python'],'observations.object.sam2',
             ['--clip',raw,'--point-root',detector,'--output-root',sam2,'--checkpoint',assets['sam2_checkpoint'],
              '--frame-start',0,'--frame-end',ids[-1]],[(track_path,'object_masks')])
+        @stage('candidate_mask_identity', inputs={'candidates':detector/object_id/'candidate_identity.json','track':track_path,'manifest':manifest},
+            parameters={'output':root/'state/candidate_mask_identity.json'})
+        def _stage_candidate_mask_identity():
+            from observations.object.owlv2 import check_candidate_mask_identity
+            from utils.state import sha
+            candidate_report=load(detector/object_id/'candidate_identity.json')
+            if (candidate_report['case_id'],candidate_report['object_id'],candidate_report['track_id'])!=(args.case,object_id,track):
+                raise ValueError('candidate identity differs from Astra selected object plan')
+            if candidate_report['raw_frame_manifest_sha256']!=sha(manifest):raise ValueError('candidate raw manifest changed')
+            for row in candidate_report['detections']:
+                raw_row=raw_by_id[row['frame_idx']]
+                if Path(row['image_path']).resolve()!=Path(raw_row['raw_frame_path']).resolve() or row['image_sha256']!=sha(raw_row['raw_frame_path']):
+                    raise ValueError('candidate frame not bound to current run raw bytes')
+            value=check_candidate_mask_identity(candidate_report,load(track_path),
+                [frames[0]['source_width'],frames[0]['source_height']])
+            value['inputs']={'candidates_sha256':sha(detector/object_id/'candidate_identity.json'),'sam2_track_sha256':sha(track_path),'manifest_sha256':sha(manifest)}
+            output=root/'state/candidate_mask_identity.json';output.write_text(json.dumps(value,indent=2))
+            if value['status']!='ok':raise ValueError('mask-track candidate identity check failed; see candidate_mask_identity.json')
+            record('candidate_mask_identity',[(output,'candidate_mask_identity')])
         @stage('mask_review', inputs={'track':track_path,'raw_manifest':manifest,'sampled':sampled},
             parameters={'output_dir':root/'renders/mask_review'})
         def _stage_mask_review():
@@ -540,7 +560,7 @@ def annotate(args):
                 mask_reviews.append(path)
             return track_payload, mask_reviews
         track_payload, mask_reviews = _stage_mask_review
-        mask_judgment=ask('mask_track',{'track':track_payload,'inspected_frame_ids':sampled},mask_reviews,root/'state/mask_track_judgment.json')
+        mask_judgment=ask('mask_track',{'track':track_payload,'selected_object_plan':obj,'candidate_identity_checks':load(root/'state/candidate_mask_identity.json'),'inspected_frame_ids':sampled},mask_reviews,root/'state/mask_track_judgment.json')
         if mask_judgment['identity_consistent'] is False:
             raise ValueError('mask identity review rejected the selected-object track; no scene is published')
         base=root/'state/base_annotations/annotations_v19_base.json'
